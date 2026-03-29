@@ -1,0 +1,16 @@
+name: "AI: Address PR Review Feedback"
+on:
+  pull_request_review:
+    types: [submitted]
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+jobs:
+  run:
+    if: github.event.review.state == 'changes_requested'
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-pr-review-addresser.lock.yml@main
+    with:
+      title-prefix: "[review-fix]"
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}

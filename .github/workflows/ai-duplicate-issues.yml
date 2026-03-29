@@ -1,0 +1,14 @@
+name: "AI: Duplicate Issue Detector"
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-duplicate-issue-detector.lock.yml@main
+    with:
+      title-prefix: "[duplicate]"
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}

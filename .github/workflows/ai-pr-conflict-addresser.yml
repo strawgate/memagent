@@ -1,0 +1,15 @@
+name: "AI: Address Merge Conflicts"
+on:
+  push:
+    branches: [master]
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-pr-conflict-addresser.lock.yml@main
+    with:
+      title-prefix: "[merge-conflict]"
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
