@@ -1,3 +1,7 @@
+> **Historical reference** from the v1 implementation. See [ARCHITECTURE.md](../ARCHITECTURE.md) for the current design.
+
+---
+
 # Research Benchmarks
 
 Findings from prototyping the DataFusion integration. All Python benchmarks

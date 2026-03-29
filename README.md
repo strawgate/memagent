@@ -1,76 +1,149 @@
 # logfwd
 
-A high-performance log forwarder written in Rust. Reads log files, parses CRI container format, encodes to OTLP protobuf or JSON lines, compresses, and ships to a remote endpoint.
+A high-performance log forwarder. Tails log files, parses JSON and CRI container format, transforms with SQL, and ships to OTLP, HTTP, or stdout.
 
-## Performance
-
-Measured on Apple M-series (arm64), single core:
-
-| Pipeline | Lines/sec | Notes |
-|----------|----------|-------|
-| CRI parse only | 26.4M | read + parse, no encoding |
-| JSON lines + zstd | 6.0M | newline-delimited JSON, compressed |
-| OTLP protobuf + zstd | 4.7M | full field extraction, compressed |
-| OTLP raw body + zstd | 5.3M | body = raw line, no JSON parse |
-
-Validated end-to-end in the [VictoriaMetrics log-collectors-benchmark](https://github.com/VictoriaMetrics/log-collectors-benchmark) Kubernetes setup at ~1M lines/sec with CRI parse, JSON field injection, and HTTP POST to the log-verifier, matching vlagent's throughput on the same hardware.
-
-## Quick Start
+## Quick start
 
 ```bash
-# Build
-cargo build --release
-
-# Generate test data
-./target/release/logfwd --generate-json 5000000 /tmp/json_logs.txt
-
-# Benchmark (reads from file, no networking)
-./target/release/logfwd /tmp/json_logs.txt --mode otlp
-
-# End-to-end benchmark with CRI parsing
-./target/release/logfwd --e2e --wrap-cri /tmp/json_logs.txt /tmp/cri_logs.txt
-./target/release/logfwd --e2e /tmp/cri_logs.txt otlp-zstd
-
-# Live tail a file
-./target/release/logfwd /path/to/logfile --tail --mode otlp
-
-# Run as Kubernetes DaemonSet daemon
-./target/release/logfwd --daemon --glob "/var/log/containers/*.log" --endpoint "http://host:8080/insert/jsonline"
+cargo build --release -p logfwd
 ```
 
-## Output Modes
+Create `config.yaml`:
 
-| Mode | Description |
-|------|-------------|
-| `passthrough` | Read + count lines, no encoding or compression |
-| `raw` | Compress raw newline-delimited bytes with zstd |
-| `otlp` | Parse JSON fields, encode as OTLP protobuf, compress |
+```yaml
+input:
+  type: file
+  path: /var/log/pods/**/*.log
+  format: cri
 
-## E2E Benchmark Modes
+output:
+  type: stdout
+  format: json
+```
 
-| Mode | Description |
-|------|-------------|
-| `cri-only` | CRI parse only, discard output |
-| `jsonlines` | CRI parse + JSON field injection |
-| `jsonlines-zstd` | Above + zstd compression |
-| `otlp` | CRI parse + OTLP protobuf (with JSON field extraction) |
-| `otlp-raw` | CRI parse + OTLP protobuf (raw line as body) |
-| `otlp-zstd` | OTLP with field extraction + zstd |
-| `otlp-raw-zstd` | OTLP raw body + zstd |
-
-## Kubernetes Deployment
-
-See `deploy/` for DaemonSet manifests. Compatible with the [VictoriaMetrics log-collectors-benchmark](https://github.com/VictoriaMetrics/log-collectors-benchmark) for head-to-head comparison with vlagent, Vector, Fluent Bit, etc.
+Run:
 
 ```bash
-# Build and load image into KIND
-docker build -t logfwd:latest .
-kind load docker-image --name log-collectors-bench logfwd:latest
+./target/release/logfwd --config config.yaml
+```
 
-# Deploy
-kubectl apply -f deploy/daemonset.yml
+## Configuration
+
+logfwd uses YAML configuration with two modes:
+
+**Simple** (single pipeline):
+
+```yaml
+input:
+  type: file
+  path: /var/log/app/*.log
+  format: json
+
+transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 400
+
+output:
+  type: otlp
+  endpoint: otel-collector:4317
+```
+
+**Advanced** (multiple pipelines):
+
+```yaml
+pipelines:
+  errors:
+    input:
+      type: file
+      path: /var/log/pods/**/*.log
+      format: cri
+    transform: SELECT * FROM logs WHERE level_str = 'ERROR'
+    output:
+      type: otlp
+      endpoint: otel-collector:4317
+
+  all-logs:
+    input:
+      type: file
+      path: /var/log/pods/**/*.log
+      format: cri
+    output:
+      type: stdout
+      format: json
+```
+
+### Input types
+
+| Type | Description | Status |
+|------|-------------|--------|
+| `file` | Tail log files by glob pattern | Implemented |
+| `tcp` | TCP listener | Not yet |
+| `udp` | UDP listener | Not yet |
+| `otlp` | Receive OTLP logs | Not yet |
+
+### Output types
+
+| Type | Description | Status |
+|------|-------------|--------|
+| `otlp` | OTLP protobuf over HTTP/gRPC | Implemented |
+| `http` | JSON lines over HTTP | Implemented |
+| `stdout` | Print to stdout (json or text) | Implemented |
+| `elasticsearch` | Elasticsearch bulk API | Stub |
+| `loki` | Grafana Loki push API | Stub |
+| `parquet` | Parquet files | Stub |
+
+### SQL transforms
+
+Transforms use DataFusion SQL. Column names follow the pattern `{field}_{type}`:
+
+```sql
+-- Filter by level
+SELECT * FROM logs WHERE level_str = 'ERROR'
+
+-- Extract fields
+SELECT level_str, status_int, duration_ms_float FROM logs
+
+-- Type casting
+SELECT int(status_str) AS status_int FROM logs
+
+-- Pattern matching
+SELECT grok('%{IP:client_ip} %{WORD:method}', msg_str) FROM logs
+```
+
+Available UDFs: `int()`, `float()`, `grok()`, `regexp_extract()`.
+
+### Enrichment
+
+Enrichment tables are available as DataFusion tables for SQL JOINs:
+
+```yaml
+enrichment:
+  static_labels:
+    type: static
+    fields:
+      environment: production
+      cluster: us-east-1
+
+  k8s:
+    type: k8s_path
+```
+
+```sql
+SELECT l.*, k.namespace, k.pod_name
+FROM logs l JOIN k8s k ON l._file_str = k.log_path_prefix
+```
+
+## CLI
+
+```
+logfwd --config <config.yaml>        Run pipeline
+logfwd --config <config.yaml> --validate   Validate config without running
+logfwd --config <config.yaml> --dry-run    Build pipelines, don't start
+logfwd --blackhole [bind_addr]       OTLP collector for benchmarks
+logfwd --generate-json <n> <file>    Generate synthetic test data
+logfwd --version                     Print version
 ```
 
 ## Architecture
 
-See [DEVELOPING.md](DEVELOPING.md) for internal architecture details.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for internal design.
+
+See [DEVELOPING.md](DEVELOPING.md) for development guide.
