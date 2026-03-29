@@ -9,14 +9,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::config::{Format, InputConfig, InputType, PipelineConfig};
-use crate::cri::{self, CriReassembler};
-use crate::diagnostics::{ComponentStats, PipelineMetrics};
-use crate::input::{FileInput, InputEvent, InputSource};
-use crate::output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
-use crate::scanner::Scanner;
-use crate::tail::TailConfig;
-use crate::transform::SqlTransform;
+use logfwd_config::{Format, InputConfig, InputType, PipelineConfig};
+use logfwd_core::cri::{self, CriReassembler};
+use logfwd_core::diagnostics::{ComponentStats, PipelineMetrics};
+use logfwd_core::input::{FileInput, InputEvent, InputSource};
+use logfwd_core::scanner::Scanner;
+use logfwd_core::tail::TailConfig;
+use logfwd_output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
+use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------
 // Per-input state
@@ -362,7 +362,7 @@ fn now_nanos() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Format, OutputConfig, OutputType};
+    use logfwd_config::{Format, OutputConfig, OutputType};
 
     #[test]
     fn test_accumulate_json_lines_basic() {
@@ -518,7 +518,7 @@ output:
 "#,
             log_path.display()
         );
-        let config = crate::config::Config::load_str(&yaml).unwrap();
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
         let pipeline = Pipeline::from_config("default", pipe_cfg);
         assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
@@ -543,7 +543,7 @@ output:
 "#,
             log_path.display()
         );
-        let config = crate::config::Config::load_str(&yaml).unwrap();
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
         let pipeline = Pipeline::from_config("default", pipe_cfg);
         assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
@@ -580,7 +580,7 @@ output:
 "#,
             log_path.display()
         );
-        let config = crate::config::Config::load_str(&yaml).unwrap();
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
         let mut pipeline = Pipeline::from_config("default", pipe_cfg).unwrap();
 

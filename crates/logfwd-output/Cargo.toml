@@ -1,0 +1,10 @@
+[package]
+name = "logfwd-output"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+logfwd-config = { path = "../logfwd-config" }
+logfwd-core = { path = "../logfwd-core" }
+arrow = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls"] }

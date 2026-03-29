@@ -1,7 +1,7 @@
 FROM rust:1-bookworm AS builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock* ./
-COPY src/ src/
+COPY crates/ crates/
 COPY benches/ benches/
 ENV RUSTFLAGS="-C target-cpu=native"
 RUN cargo build --release --bin logfwd

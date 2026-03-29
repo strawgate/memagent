@@ -1600,20 +1600,57 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 name = "logfwd"
 version = "0.1.0"
 dependencies = [
+ "dhat",
+ "logfwd-config",
+ "logfwd-core",
+ "logfwd-output",
+ "logfwd-transform",
+ "memchr",
+ "tempfile",
+ "tiny_http",
+]
+
+[[package]]
+name = "logfwd-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
+name = "logfwd-core"
+version = "0.1.0"
+dependencies = [
  "arrow",
  "crossbeam-channel",
- "datafusion",
- "dhat",
  "memchr",
  "notify",
  "serde",
- "serde_yaml",
  "tempfile",
  "tiny_http",
- "tokio",
- "ureq",
  "xxhash-rust",
  "zstd",
+]
+
+[[package]]
+name = "logfwd-output"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "logfwd-config",
+ "logfwd-core",
+ "ureq",
+]
+
+[[package]]
+name = "logfwd-transform"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "datafusion",
+ "logfwd-core",
+ "tokio",
 ]
 
 [[package]]

@@ -4,8 +4,8 @@ use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
-use crate::compress::ChunkCompressor;
-use crate::otlp::{
+use logfwd_core::compress::ChunkCompressor;
+use logfwd_core::otlp::{
     Severity, bytes_field_size, encode_bytes_field, encode_fixed64, encode_tag, encode_varint,
     encode_varint_field, parse_severity, parse_timestamp_nanos, varint_len,
 };

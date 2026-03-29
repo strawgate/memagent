@@ -1,32 +1,16 @@
-[package]
-name = "logfwd"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
+members = [
+    "crates/logfwd-config",
+    "crates/logfwd-core",
+    "crates/logfwd-transform",
+    "crates/logfwd-output",
+    "crates/logfwd",
+]
 
-[features]
-dhat-heap = ["dhat"]  # enable with: cargo run --release --features dhat-heap
-
-[dependencies]
+[workspace.dependencies]
 arrow = { version = "54", default-features = false }
-crossbeam-channel = "0.5"
-datafusion = { version = "45", default-features = false, features = [
-    "string_expressions",
-    "unicode_expressions",
-    "recursive_protection",
-] }
-dhat = { version = "0.3", optional = true }
-memchr = "2"
-notify = "7"
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
-tiny_http = "0.12"
-ureq = { version = "3", default-features = false, features = ["rustls"] }
-tokio = { version = "1", features = ["rt"] }
-xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
-zstd = "0.13"
-
-[dev-dependencies]
-tempfile = "3"
 
 [profile.release]
 opt-level = 3

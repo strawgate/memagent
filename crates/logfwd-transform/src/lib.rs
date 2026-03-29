@@ -18,7 +18,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::prelude::*;
 
-use crate::scanner::ScanConfig;
+use logfwd_core::scanner::ScanConfig;
 
 // Re-export sqlparser through datafusion.
 use datafusion::sql::sqlparser::ast::{
@@ -106,7 +106,7 @@ impl QueryAnalyzer {
                 keep_raw: true,
             }
         } else {
-            use crate::scanner::FieldSpec;
+            use logfwd_core::scanner::FieldSpec;
             use std::collections::HashSet;
             let mut seen = HashSet::new();
             let wanted: Vec<FieldSpec> = self

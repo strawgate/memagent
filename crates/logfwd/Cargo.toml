@@ -1,0 +1,19 @@
+[package]
+name = "logfwd"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+dhat-heap = ["dhat"]
+
+[dependencies]
+logfwd-config = { path = "../logfwd-config" }
+logfwd-core = { path = "../logfwd-core" }
+logfwd-transform = { path = "../logfwd-transform" }
+logfwd-output = { path = "../logfwd-output" }
+dhat = { version = "0.3", optional = true }
+memchr = "2"
+tiny_http = "0.12"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,17 @@
+[package]
+name = "logfwd-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arrow = { workspace = true }
+crossbeam-channel = "0.5"
+memchr = "2"
+notify = "7"
+serde = { workspace = true }
+tiny_http = "0.12"
+xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
+zstd = "0.13"
+
+[dev-dependencies]
+tempfile = "3"

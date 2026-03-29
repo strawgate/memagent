@@ -22,7 +22,7 @@ use std::io::{self, Write};
 use arrow::array::{Array, AsArray};
 use arrow::record_batch::RecordBatch;
 
-use crate::config::{Format, OutputConfig, OutputType};
+use logfwd_config::{Format, OutputConfig, OutputType};
 
 // ---------------------------------------------------------------------------
 // Trait + metadata

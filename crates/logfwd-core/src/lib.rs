@@ -1,12 +1,8 @@
 pub mod batch_builder;
 pub mod compress;
-pub mod config;
 pub mod cri;
 pub mod diagnostics;
 pub mod input;
 pub mod otlp;
-pub mod output;
-pub mod pipeline_v2;
 pub mod scanner;
 pub mod tail;
-pub mod transform;

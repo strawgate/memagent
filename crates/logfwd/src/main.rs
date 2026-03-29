@@ -51,7 +51,7 @@ fn main() -> io::Result<()> {
         let validate_only = args.iter().any(|a| a == "--validate");
         let dry_run = args.iter().any(|a| a == "--dry-run");
 
-        let config = logfwd::config::Config::load(config_path)
+        let config = logfwd_config::Config::load(config_path)
             .map_err(|e| io::Error::other(e.to_string()))?;
 
         if validate_only {
@@ -174,9 +174,9 @@ fn run_blackhole(addr: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn run_v2_pipelines(config: logfwd::config::Config, dry_run: bool) -> io::Result<()> {
-    use logfwd::diagnostics::DiagnosticsServer;
+fn run_v2_pipelines(config: logfwd_config::Config, dry_run: bool) -> io::Result<()> {
     use logfwd::pipeline_v2::Pipeline;
+    use logfwd_core::diagnostics::DiagnosticsServer;
 
     let shutdown = Arc::new(AtomicBool::new(false));
 

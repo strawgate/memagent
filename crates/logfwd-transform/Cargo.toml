@@ -1,0 +1,14 @@
+[package]
+name = "logfwd-transform"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+logfwd-core = { path = "../logfwd-core" }
+arrow = { workspace = true }
+datafusion = { version = "45", default-features = false, features = [
+    "string_expressions",
+    "unicode_expressions",
+    "recursive_protection",
+] }
+tokio = { version = "1", features = ["rt"] }
