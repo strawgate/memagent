@@ -15,7 +15,6 @@ memchr = "2"
 notify = "7"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
-smallvec = { version = "1", features = ["union"] }
 tiny_http = "0.12"
 ureq = "3"
 tokio = { version = "1", features = ["rt"] }
@@ -23,13 +22,7 @@ xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
 zstd = "0.13"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-rand = "0.9"
 tempfile = "3"
-
-[[bench]]
-name = "pipeline"
-harness = false
 
 [profile.release]
 opt-level = 3
