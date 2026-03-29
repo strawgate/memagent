@@ -1179,6 +1179,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fancy-regex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e24cb5a94bcae1e5408b0effca5cd7172ea3c5755049c5f3af4cd283a165298"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1426,6 +1437,16 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "grok"
+version = "2.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ddab6a9c8bb998cb2fc3101fde8ef561b7c4970db3957be7a8eee1e168f666b"
+dependencies = [
+ "fancy-regex",
+ "glob",
+]
 
 [[package]]
 name = "half"
@@ -2065,7 +2086,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sonic-rs",
- "sonic-simd",
  "tempfile",
  "tiny_http",
  "xxhash-rust",
@@ -2089,6 +2109,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "datafusion",
+ "grok",
  "logfwd-core",
  "regex",
  "tokio",
