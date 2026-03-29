@@ -10,6 +10,8 @@
 //!
 //!   --lines N        Number of JSON log lines to generate (default: 5_000_000)
 //!   --agents A,B,C   Comma-separated agents to run (default: all available)
+//!   --scenarios S,S  Scenarios to run (default: passthrough)
+//!                    Available: passthrough, json_parse, filter
 //!   --markdown       Output results as markdown table
 //!   --json           Output structured JSON (for CI dashboards)
 //!   --no-download        Only use agents already on PATH (binary mode only)
@@ -31,7 +33,7 @@ use std::process;
 
 use runner::{BenchContext, BenchResult, DockerLimits};
 
-use crate::agents::{Agent, all_agents};
+use crate::agents::{Agent, Scenario, all_agents};
 
 fn main() {
     let args = Args::parse();
@@ -192,31 +194,59 @@ fn main() {
         lines: args.lines,
     };
 
-    // Run benchmarks.
+    // Run benchmarks across all scenarios.
     let mut results: Vec<BenchResult> = Vec::new();
-    for resolved in &available {
-        let result = if let Some(image) = &resolved.image {
-            runner::run_agent_docker(resolved.agent, image, &ctx, &blackhole, &args.docker_limits)
-        } else if let Some(binary) = &resolved.binary {
-            runner::run_agent(resolved.agent, binary, &ctx, &blackhole)
-        } else {
-            Err("no binary or image available".to_string())
-        };
+    for scenario in &args.scenarios {
+        eprintln!(
+            "=== Scenario: {} ({}) ===",
+            scenario.name(),
+            scenario.description()
+        );
+        eprintln!();
 
-        match result {
-            Ok(r) => {
-                print_result_stderr(&r, args.lines);
-                results.push(r);
-            }
-            Err(e) => {
-                eprintln!("--- {} ---", resolved.agent.name());
-                eprintln!("  ERROR: {e}");
+        for resolved in &available {
+            // vlagent only supports passthrough (CLI-flag based, no transform support).
+            if *scenario != Scenario::Passthrough && resolved.agent.name() == "vlagent" {
+                eprintln!(
+                    "--- {} --- (skipped: {} not supported)",
+                    resolved.agent.name(),
+                    scenario.name()
+                );
                 eprintln!();
-                results.push(BenchResult {
-                    name: resolved.agent.name().to_string(),
-                    lines_done: 0,
-                    elapsed_ms: 0,
-                });
+                continue;
+            }
+
+            let result = if let Some(image) = &resolved.image {
+                runner::run_agent_docker(
+                    resolved.agent,
+                    image,
+                    &ctx,
+                    &blackhole,
+                    &args.docker_limits,
+                    *scenario,
+                )
+            } else if let Some(binary) = &resolved.binary {
+                runner::run_agent(resolved.agent, binary, &ctx, &blackhole, *scenario)
+            } else {
+                Err("no binary or image available".to_string())
+            };
+
+            match result {
+                Ok(r) => {
+                    print_result_stderr(&r, args.lines);
+                    results.push(r);
+                }
+                Err(e) => {
+                    eprintln!("--- {} ---", resolved.agent.name());
+                    eprintln!("  ERROR: {e}");
+                    eprintln!();
+                    results.push(BenchResult {
+                        name: resolved.agent.name().to_string(),
+                        scenario: *scenario,
+                        lines_done: 0,
+                        elapsed_ms: 0,
+                    });
+                }
             }
         }
     }
@@ -402,37 +432,53 @@ fn print_result_stderr(result: &BenchResult, total_lines: usize) {
 
 fn print_markdown(results: &[BenchResult], lines: usize, file_size: u64, args: &Args) {
     let mb = file_size as f64 / 1_048_576.0;
-    if args.docker {
-        println!(
-            "### Competitive Throughput ({lines} lines, {mb:.1} MB, Docker: {} CPU / {} RAM)\n",
-            args.docker_limits.cpus, args.docker_limits.memory
-        );
-    } else {
-        println!("### Competitive Throughput ({lines} lines, {mb:.1} MB)\n");
-    }
-    println!("| Agent | Time | Throughput |");
-    println!("|-------|-----:|-----------:|");
-    for r in results {
-        let rate = if r.lines_done == 0 && r.elapsed_ms == 0 {
-            "FAILED".to_string()
-        } else {
-            fmt_rate(lines, r.elapsed_ms)
-        };
-        println!("| {} | {}ms | {} |", r.name, r.elapsed_ms, rate);
-    }
 
-    if results.len() > 1 && results[0].elapsed_ms > 0 {
-        println!();
-        let base = &results[0];
-        for r in &results[1..] {
-            if r.elapsed_ms > 0 {
-                let ratio = r.elapsed_ms as f64 / base.elapsed_ms as f64;
-                println!(
-                    "> **{}** is **{:.1}x faster** than {}",
-                    base.name, ratio, r.name
-                );
+    // Group results by scenario.
+    for scenario in &args.scenarios {
+        let scenario_results: Vec<&BenchResult> =
+            results.iter().filter(|r| r.scenario == *scenario).collect();
+        if scenario_results.is_empty() {
+            continue;
+        }
+
+        if args.docker {
+            println!(
+                "### {} ({lines} lines, {mb:.1} MB, Docker: {} CPU / {} RAM)\n",
+                scenario.description(),
+                args.docker_limits.cpus,
+                args.docker_limits.memory
+            );
+        } else {
+            println!(
+                "### {} ({lines} lines, {mb:.1} MB)\n",
+                scenario.description()
+            );
+        }
+        println!("| Agent | Time | Throughput |");
+        println!("|-------|-----:|-----------:|");
+        for r in &scenario_results {
+            let rate = if r.lines_done == 0 && r.elapsed_ms == 0 {
+                "FAILED".to_string()
+            } else {
+                fmt_rate(lines, r.elapsed_ms)
+            };
+            println!("| {} | {}ms | {} |", r.name, r.elapsed_ms, rate);
+        }
+
+        if scenario_results.len() > 1 && scenario_results[0].elapsed_ms > 0 {
+            println!();
+            let base = scenario_results[0];
+            for r in &scenario_results[1..] {
+                if r.elapsed_ms > 0 {
+                    let ratio = r.elapsed_ms as f64 / base.elapsed_ms as f64;
+                    println!(
+                        "> **{}** is **{:.1}x faster** than {}",
+                        base.name, ratio, r.name
+                    );
+                }
             }
         }
+        println!();
     }
 }
 
@@ -502,31 +548,49 @@ fn write_json_file(
 
 fn print_table(results: &[BenchResult], lines: usize, file_size: u64) {
     let mb = file_size as f64 / 1_048_576.0;
-    println!("===========================================");
-    println!("  RESULTS ({lines} lines, {mb:.1} MB)");
-    println!("===========================================");
-    println!("  {:<16} {:>10} {:>20}", "Agent", "Time", "Throughput");
-    println!("  {:<16} {:>10} {:>20}", "-----", "----", "----------");
 
-    for r in results {
-        let rate = if r.lines_done == 0 && r.elapsed_ms == 0 {
-            "FAILED".to_string()
-        } else {
-            fmt_rate(lines, r.elapsed_ms)
-        };
-        println!("  {:<16} {:>8}ms {:>20}", r.name, r.elapsed_ms, rate);
-    }
-    println!("===========================================");
-
-    if results.len() > 1 && results[0].elapsed_ms > 0 {
-        println!();
-        let base = &results[0];
-        for r in &results[1..] {
-            if r.elapsed_ms > 0 {
-                let ratio = r.elapsed_ms as f64 / base.elapsed_ms as f64;
-                println!("  {} is {:.1}x vs {}", base.name, ratio, r.name);
+    // Collect unique scenarios from results.
+    let scenarios: Vec<Scenario> = {
+        let mut seen = Vec::new();
+        for r in results {
+            if !seen.contains(&r.scenario) {
+                seen.push(r.scenario);
             }
         }
+        seen
+    };
+
+    for scenario in &scenarios {
+        let scenario_results: Vec<&BenchResult> =
+            results.iter().filter(|r| r.scenario == *scenario).collect();
+
+        println!("===========================================");
+        println!("  {} ({lines} lines, {mb:.1} MB)", scenario.description());
+        println!("===========================================");
+        println!("  {:<16} {:>10} {:>20}", "Agent", "Time", "Throughput");
+        println!("  {:<16} {:>10} {:>20}", "-----", "----", "----------");
+
+        for r in &scenario_results {
+            let rate = if r.lines_done == 0 && r.elapsed_ms == 0 {
+                "FAILED".to_string()
+            } else {
+                fmt_rate(lines, r.elapsed_ms)
+            };
+            println!("  {:<16} {:>8}ms {:>20}", r.name, r.elapsed_ms, rate);
+        }
+        println!("===========================================");
+
+        if scenario_results.len() > 1 && scenario_results[0].elapsed_ms > 0 {
+            println!();
+            let base = scenario_results[0];
+            for r in &scenario_results[1..] {
+                if r.elapsed_ms > 0 {
+                    let ratio = r.elapsed_ms as f64 / base.elapsed_ms as f64;
+                    println!("  {} is {:.1}x vs {}", base.name, ratio, r.name);
+                }
+            }
+        }
+        println!();
     }
 }
 
@@ -537,6 +601,7 @@ fn print_table(results: &[BenchResult], lines: usize, file_size: u64) {
 struct Args {
     lines: usize,
     agents: Vec<String>,
+    scenarios: Vec<Scenario>,
     markdown: bool,
     json: bool,
     /// Write JSON results to a file (can be combined with --markdown).
@@ -556,6 +621,7 @@ impl Args {
         let mut result = Args {
             lines: 5_000_000,
             agents: Vec::new(),
+            scenarios: Vec::new(),
             markdown: false,
             json: false,
             json_file: None,
@@ -576,6 +642,26 @@ impl Args {
                 "--agents" => {
                     i += 1;
                     result.agents = args[i].split(',').map(|s| s.to_string()).collect();
+                }
+                "--scenarios" => {
+                    i += 1;
+                    result.scenarios = args[i]
+                        .split(',')
+                        .map(|s| {
+                            Scenario::from_name(s.trim()).unwrap_or_else(|| {
+                                eprintln!("Unknown scenario: {s}");
+                                eprintln!(
+                                    "Available: {}",
+                                    Scenario::all()
+                                        .iter()
+                                        .map(|s| s.name())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                );
+                                process::exit(1);
+                            })
+                        })
+                        .collect();
                 }
                 "--markdown" => result.markdown = true,
                 "--json" => result.json = true,
@@ -607,6 +693,8 @@ impl Args {
                     eprintln!();
                     eprintln!("  --lines N            Lines to generate (default: 5000000)");
                     eprintln!("  --agents A,B,C       Agents to run (default: all)");
+                    eprintln!("  --scenarios S,S      Scenarios to run (default: passthrough)");
+                    eprintln!("                       Available: passthrough, json_parse, filter");
                     eprintln!("  --markdown           Output markdown table");
                     eprintln!("  --json               Output structured JSON (for CI dashboards)");
                     eprintln!(
@@ -624,6 +712,10 @@ impl Args {
                 }
             }
             i += 1;
+        }
+        // Default: passthrough only (backward compat).
+        if result.scenarios.is_empty() {
+            result.scenarios.push(Scenario::Passthrough);
         }
         result
     }

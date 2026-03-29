@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{Agent, SetupState};
+use super::{Agent, Scenario, SetupState};
 use crate::download::arch_alt;
 use crate::runner::BenchContext;
 
@@ -20,7 +20,6 @@ impl Agent for Filebeat {
     }
 
     fn download_url(&self, os: &str, arch: &str) -> Option<String> {
-        // Filebeat uses x86_64/aarch64 (not arm64).
         let fb_arch = match arch_alt(arch) {
             "arm64" => "aarch64",
             "amd64" => "x86_64",
@@ -35,11 +34,41 @@ impl Agent for Filebeat {
         Some(format!("{DOCKER_IMAGE}:{VERSION}"))
     }
 
-    fn write_config(&self, ctx: &BenchContext) -> Result<PathBuf, String> {
+    fn write_config(&self, ctx: &BenchContext, scenario: Scenario) -> Result<PathBuf, String> {
         let data_dir = ctx.bench_dir.join("fb_data");
         let logs_dir = ctx.bench_dir.join("fb_logs");
         std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&logs_dir).map_err(|e| e.to_string())?;
+
+        let processors_section = match scenario {
+            Scenario::Passthrough => String::new(),
+            Scenario::JsonParse => r#"
+processors:
+  - decode_json_fields:
+      fields: ["message"]
+      target: ""
+      overwrite_keys: true
+  - rename:
+      fields:
+        - from: "duration_ms"
+          to: "latency_ms"
+      ignore_missing: true
+"#
+            .to_string(),
+            Scenario::Filter => {
+                // Filebeat uses drop_event with a condition to filter.
+                // Keep only lines containing WARN or ERROR.
+                r#"
+processors:
+  - drop_event:
+      when:
+        not:
+          regexp:
+            message: "(WARN|ERROR)"
+"#
+                .to_string()
+            }
+        };
 
         let cfg_path = ctx.bench_dir.join("filebeat.yaml");
         let config = format!(
@@ -48,7 +77,7 @@ impl Agent for Filebeat {
     enabled: true
     paths:
       - "{data_file}"
-
+{processors}
 output.elasticsearch:
   hosts: ["http://{blackhole}"]
 
@@ -60,6 +89,7 @@ path.logs: "{logs_dir}"
 logging.level: error
 "#,
             data_file = ctx.data_file.display(),
+            processors = processors_section,
             blackhole = ctx.blackhole_addr,
             data_dir = data_dir.display(),
             logs_dir = logs_dir.display(),

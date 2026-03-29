@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{Agent, SetupState};
+use super::{Agent, Scenario, SetupState};
 use crate::runner::BenchContext;
 
 const VERSION: &str = "0.54.0";
@@ -35,9 +35,39 @@ impl Agent for Vector {
         Some(format!("{DOCKER_IMAGE}:{VERSION}-debian"))
     }
 
-    fn write_config(&self, ctx: &BenchContext) -> Result<PathBuf, String> {
+    fn write_config(&self, ctx: &BenchContext, scenario: Scenario) -> Result<PathBuf, String> {
         let data_dir = ctx.bench_dir.join("vector_data");
         std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+
+        let transforms_section = match scenario {
+            Scenario::Passthrough => String::new(),
+            Scenario::JsonParse => r#"
+transforms:
+  parse_json:
+    type: remap
+    inputs: ["bench_in"]
+    source: |
+      . = parse_json!(string!(.message))
+      .latency_ms = del(.duration_ms)
+"#
+            .to_string(),
+            Scenario::Filter => r#"
+transforms:
+  filter_level:
+    type: filter
+    inputs: ["bench_in"]
+    condition:
+      type: vrl
+      source: 'includes(["WARN", "ERROR"], parse_json!(string!(.message)).level)'
+"#
+            .to_string(),
+        };
+
+        let sink_input = match scenario {
+            Scenario::Passthrough => "bench_in",
+            Scenario::JsonParse => "parse_json",
+            Scenario::Filter => "filter_level",
+        };
 
         let cfg_path = ctx.bench_dir.join("vector.yaml");
         let config = format!(
@@ -49,10 +79,10 @@ sources:
       - "{data_file}"
     read_from: beginning
     ignore_checkpoints: true
-sinks:
+{transforms}sinks:
   bench_out:
     type: http
-    inputs: ["bench_in"]
+    inputs: ["{sink_input}"]
     uri: "http://{blackhole}"
     encoding:
       codec: text
@@ -65,6 +95,7 @@ sinks:
 "#,
             data_dir = data_dir.display(),
             data_file = ctx.data_file.display(),
+            transforms = transforms_section,
             blackhole = ctx.blackhole_addr,
         );
         std::fs::write(&cfg_path, config).map_err(|e| e.to_string())?;

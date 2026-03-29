@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{Agent, SetupState};
+use super::{Agent, Scenario, SetupState};
 use crate::runner::BenchContext;
 
 pub struct Logfwd;
@@ -20,8 +20,17 @@ impl Agent for Logfwd {
         None
     }
 
-    fn write_config(&self, ctx: &BenchContext) -> Result<PathBuf, String> {
+    fn write_config(&self, ctx: &BenchContext, scenario: Scenario) -> Result<PathBuf, String> {
         let cfg_path = ctx.bench_dir.join("logfwd.yaml");
+        let transform = match scenario {
+            Scenario::Passthrough => "SELECT * FROM logs".to_string(),
+            Scenario::JsonParse => {
+                "SELECT timestamp, level, message, duration_ms AS latency_ms, request_id, service FROM logs".to_string()
+            }
+            Scenario::Filter => {
+                "SELECT * FROM logs WHERE level IN ('WARN', 'ERROR')".to_string()
+            }
+        };
         let config = format!(
             r#"server:
   diagnostics: "127.0.0.1:19876"
@@ -31,7 +40,7 @@ pipelines:
       - type: file
         path: "{data_file}"
         format: json
-    transform: "SELECT * FROM logs"
+    transform: "{transform}"
     outputs:
       - type: http
         endpoint: "http://{blackhole}"

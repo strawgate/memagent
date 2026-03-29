@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use crate::agents::Agent;
+use crate::agents::{Agent, Scenario};
 use crate::blackhole::Blackhole;
 
 /// Everything an agent needs to set up and run.
@@ -44,6 +44,7 @@ impl Default for DockerLimits {
 #[derive(serde::Serialize)]
 pub struct BenchResult {
     pub name: String,
+    pub scenario: Scenario,
     pub lines_done: u64,
     pub elapsed_ms: u64,
 }
@@ -54,12 +55,13 @@ pub fn run_agent(
     binary: &Path,
     ctx: &BenchContext,
     blackhole: &Blackhole,
+    scenario: Scenario,
 ) -> Result<BenchResult, String> {
     blackhole.reset();
 
     let setup_state = agent.setup(ctx)?;
 
-    let config_path = agent.write_config(ctx)?;
+    let config_path = agent.write_config(ctx, scenario)?;
     let mut cmd = agent.command(binary, &config_path, ctx);
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
@@ -75,7 +77,8 @@ pub fn run_agent(
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", agent.name()))?;
 
-    let lines_done = wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(120));
+    let expected = (ctx.lines as f64 * scenario.expected_line_ratio()) as usize;
+    let lines_done = wait_blackhole_done(blackhole, expected, Duration::from_secs(120));
     let elapsed = start.elapsed();
 
     kill_and_wait(&mut child);
@@ -83,6 +86,7 @@ pub fn run_agent(
 
     Ok(BenchResult {
         name: agent.name().to_string(),
+        scenario,
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
     })
@@ -95,13 +99,14 @@ pub fn run_agent_docker(
     ctx: &BenchContext,
     blackhole: &Blackhole,
     limits: &DockerLimits,
+    scenario: Scenario,
 ) -> Result<BenchResult, String> {
     blackhole.reset();
 
     let setup_state = agent.setup(ctx)?;
 
     // Write config. Agent writes it using host addresses; we rewrite for Docker.
-    let config_path = agent.write_config(ctx)?;
+    let config_path = agent.write_config(ctx, scenario)?;
 
     // Rewrite config file: host paths → /bench, host blackhole → Docker-reachable addr.
     if let Ok(content) = std::fs::read_to_string(&config_path) {
@@ -177,7 +182,8 @@ pub fn run_agent_docker(
         .spawn()
         .map_err(|e| format!("failed to start docker container for {}: {e}", agent.name()))?;
 
-    let lines_done = wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(180));
+    let expected = (ctx.lines as f64 * scenario.expected_line_ratio()) as usize;
+    let lines_done = wait_blackhole_done(blackhole, expected, Duration::from_secs(180));
     let elapsed = start.elapsed();
 
     // Stop the container.
@@ -192,6 +198,7 @@ pub fn run_agent_docker(
 
     Ok(BenchResult {
         name: agent.name().to_string(),
+        scenario,
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
     })
@@ -236,7 +243,7 @@ pub fn run_agent_perf(
     blackhole.reset();
 
     let setup_state = agent.setup(ctx)?;
-    let config_path = agent.write_config(ctx)?;
+    let config_path = agent.write_config(ctx, Scenario::Passthrough)?;
 
     let perf_data = output_dir.join("perf.data");
 
@@ -334,7 +341,7 @@ pub fn run_agent_dhat(
     blackhole.reset();
 
     let setup_state = agent.setup(ctx)?;
-    let config_path = agent.write_config(ctx)?;
+    let config_path = agent.write_config(ctx, Scenario::Passthrough)?;
 
     let mut cmd = agent.command(dhat_binary, &config_path, ctx);
     cmd.stdout(std::process::Stdio::null());

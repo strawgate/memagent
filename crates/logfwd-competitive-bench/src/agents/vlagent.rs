@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use super::{Agent, SetupState};
+use super::{Agent, Scenario, SetupState};
 use crate::download::arch_alt;
 use crate::fake_k8s::{FakeK8sApi, FakeK8sConfig};
 use crate::runner::{self, BenchContext};
@@ -42,7 +42,7 @@ impl Agent for Vlagent {
         ))
     }
 
-    fn write_config(&self, ctx: &BenchContext) -> Result<PathBuf, String> {
+    fn write_config(&self, ctx: &BenchContext, _scenario: Scenario) -> Result<PathBuf, String> {
         // vlagent uses CLI flags, not a config file. Write a kubeconfig instead.
         let kubeconfig_path = ctx.bench_dir.join("vlagent-kubeconfig");
         let kubeconfig = format!(

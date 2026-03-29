@@ -59,6 +59,7 @@ jobs:
         run: >
           just bench-competitive
           --lines 5000000 --docker --cpus 1 --memory 1g --markdown
+          --scenarios passthrough,json_parse,filter
           --json-file bench-result.json
           --profile ./profiles --dhat-binary ./target/release/logfwd-dhat
           > competitive_body.md

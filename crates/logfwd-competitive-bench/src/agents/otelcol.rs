@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{Agent, SetupState};
+use super::{Agent, Scenario, SetupState};
 use crate::download::arch_alt;
 use crate::runner::BenchContext;
 
@@ -30,7 +30,35 @@ impl Agent for Otelcol {
         Some(format!("{DOCKER_IMAGE}:{VERSION}"))
     }
 
-    fn write_config(&self, ctx: &BenchContext) -> Result<PathBuf, String> {
+    fn write_config(&self, ctx: &BenchContext, scenario: Scenario) -> Result<PathBuf, String> {
+        let (processors_def, processors_list) = match scenario {
+            Scenario::Passthrough => (String::new(), "batch".to_string()),
+            Scenario::JsonParse => {
+                let def = r#"
+  transform/json_parse:
+    log_statements:
+      - context: log
+        statements:
+          - merge_maps(cache, ParseJSON(body), "insert")
+          - set(attributes["latency_ms"], cache["duration_ms"])
+          - delete_key(cache, "duration_ms")
+          - set(body, cache)
+"#
+                .to_string();
+                (def, "transform/json_parse, batch".to_string())
+            }
+            Scenario::Filter => {
+                let def = r#"
+  filter/level:
+    logs:
+      log_record:
+        - 'not IsMatch(body, "(WARN|ERROR)")'
+"#
+                .to_string();
+                (def, "filter/level, batch".to_string())
+            }
+        };
+
         let cfg_path = ctx.bench_dir.join("otelcol.yaml");
         let config = format!(
             r#"receivers:
@@ -43,7 +71,7 @@ processors:
   batch:
     send_batch_size: 1000
     timeout: 200ms
-
+{processors_def}
 exporters:
   otlphttp:
     endpoint: "http://{blackhole}"
@@ -57,7 +85,7 @@ service:
   pipelines:
     logs:
       receivers: [filelog]
-      processors: [batch]
+      processors: [{processors_list}]
       exporters: [otlphttp]
 "#,
             data_file = ctx.data_file.display(),

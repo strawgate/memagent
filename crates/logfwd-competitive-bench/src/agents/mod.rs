@@ -13,6 +13,59 @@ use std::process::Command;
 
 use crate::runner::BenchContext;
 
+/// A benchmark scenario defining what work each agent does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scenario {
+    /// Tail file → sink, no transforms. Measures raw I/O throughput.
+    Passthrough,
+    /// Parse JSON log lines and extract/rename fields.
+    JsonParse,
+    /// Filter logs: only forward ERROR and WARN levels (~50% of input).
+    Filter,
+}
+
+impl Scenario {
+    pub fn name(&self) -> &str {
+        match self {
+            Scenario::Passthrough => "passthrough",
+            Scenario::JsonParse => "json_parse",
+            Scenario::Filter => "filter",
+        }
+    }
+
+    pub fn description(&self) -> &str {
+        match self {
+            Scenario::Passthrough => "file tail -> sink (no transforms)",
+            Scenario::JsonParse => "file tail -> JSON parse + field extract -> sink",
+            Scenario::Filter => "file tail -> filter ERROR/WARN only -> sink",
+        }
+    }
+
+    pub fn all() -> &'static [Scenario] {
+        &[Scenario::Passthrough, Scenario::JsonParse, Scenario::Filter]
+    }
+
+    pub fn from_name(s: &str) -> Option<Scenario> {
+        match s {
+            "passthrough" => Some(Scenario::Passthrough),
+            "json_parse" => Some(Scenario::JsonParse),
+            "filter" => Some(Scenario::Filter),
+            _ => None,
+        }
+    }
+
+    /// For the filter scenario, how many lines should the blackhole expect?
+    /// Our datagen cycles levels as INFO, DEBUG, WARN, ERROR (i%4),
+    /// so exactly 50% are ERROR or WARN.
+    pub fn expected_line_ratio(&self) -> f64 {
+        match self {
+            Scenario::Filter => 0.5,
+            _ => 1.0,
+        }
+    }
+}
+
 /// State returned by `Agent::setup()`, passed back to `teardown()`.
 #[derive(Default)]
 pub struct SetupState {
@@ -61,8 +114,8 @@ pub trait Agent {
         Vec::new()
     }
 
-    /// Write a config file for this agent. Returns path to the config.
-    fn write_config(&self, ctx: &BenchContext) -> Result<PathBuf, String>;
+    /// Write a config file for this agent and scenario. Returns path to the config.
+    fn write_config(&self, ctx: &BenchContext, scenario: Scenario) -> Result<PathBuf, String>;
 
     /// Build the Command to launch this agent in binary mode.
     fn command(&self, binary: &Path, config: &Path, ctx: &BenchContext) -> Command;

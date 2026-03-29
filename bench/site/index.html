@@ -17,13 +17,24 @@
     background: var(--bg); color: var(--text); padding: 2rem; line-height: 1.5;
   }
   h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
-  .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 2rem; }
+  h2 { font-size: 1.1rem; margin-bottom: 1rem; }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+  .tabs {
+    display: flex; gap: 0.5rem; margin-bottom: 1.5rem; flex-wrap: wrap;
+  }
+  .tab {
+    padding: 0.4rem 1rem; border-radius: 6px; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--muted); font-size: 0.85rem; transition: all 0.15s;
+  }
+  .tab:hover { border-color: var(--accent); color: var(--text); }
+  .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   .chart-container {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 8px; padding: 1.5rem; margin-bottom: 2rem;
     position: relative; height: 400px;
   }
-  .chart-title { font-size: 1.1rem; margin-bottom: 1rem; }
+  .chart-title { font-size: 1rem; margin-bottom: 1rem; color: var(--muted); }
   .stats {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 1rem; margin-bottom: 2rem;
@@ -55,8 +66,10 @@
 
 <h1>logfwd Benchmark Dashboard</h1>
 <p class="subtitle">
-  Nightly competitive throughput: logfwd vs vector, fluent-bit, filebeat, otelcol-contrib, vlagent
+  Nightly competitive throughput across multiple scenarios
 </p>
+
+<div class="tabs" id="scenarioTabs"></div>
 
 <div id="stats" class="stats"></div>
 
@@ -66,13 +79,13 @@
 </div>
 
 <div class="chart-container">
-  <div class="chart-title">Relative Performance (x faster than logfwd baseline = 1.0)</div>
+  <div class="chart-title">Relative Performance (time vs logfwd, lower = faster)</div>
   <canvas id="relativeChart"></canvas>
 </div>
 
-<h2 style="font-size:1.1rem; margin-bottom:1rem;">Latest Results</h2>
+<h2>Latest Results</h2>
 <table id="latestTable">
-  <thead><tr><th>Agent</th><th>Time</th><th>Throughput</th><th>vs logfwd</th></tr></thead>
+  <thead><tr><th>Agent</th><th>Scenario</th><th>Time</th><th>Throughput</th><th>vs logfwd</th></tr></thead>
   <tbody id="latestBody"></tbody>
 </table>
 
@@ -85,24 +98,31 @@
 const COLORS = {
   logfwd: '#58a6ff',
   vector: '#f0883e',
-  fluent_bit: '#3fb950',
+  'fluent-bit': '#3fb950',
   filebeat: '#bc8cff',
   otelcol: '#f778ba',
   vlagent: '#d2a8ff',
 };
+
+const SCENARIO_LABELS = {
+  passthrough: 'Passthrough (no transforms)',
+  json_parse: 'JSON Parse + Field Extract',
+  filter: 'Filter (ERROR/WARN only)',
+};
+
+let allData = [];
+let currentScenario = 'passthrough';
+let throughputChart = null;
+let relativeChart = null;
 
 async function loadData() {
   try {
     const resp = await fetch('data/index.json');
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const index = await resp.json();
-
-    // Load all result files in parallel
     const results = await Promise.all(
       index.files.map(f => fetch(`data/${f}`).then(r => r.json()))
     );
-
-    // Sort by timestamp
     results.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     return results;
   } catch (e) {
@@ -123,6 +143,40 @@ function lps(lines, ms) {
   return ms > 0 ? lines / (ms / 1000) : 0;
 }
 
+function getScenarioResults(run, scenario) {
+  return (run.results || []).filter(r => (r.scenario || 'passthrough') === scenario);
+}
+
+function allScenarios(data) {
+  const s = new Set();
+  for (const run of data) {
+    for (const r of run.results || []) {
+      s.add(r.scenario || 'passthrough');
+    }
+  }
+  return [...s].sort();
+}
+
+function renderTabs(data) {
+  const scenarios = allScenarios(data);
+  // If no scenario field in data (old format), just show passthrough
+  if (scenarios.length === 0) scenarios.push('passthrough');
+
+  const container = document.getElementById('scenarioTabs');
+  container.innerHTML = scenarios.map(s =>
+    `<div class="tab ${s === currentScenario ? 'active' : ''}" data-scenario="${s}">
+      ${SCENARIO_LABELS[s] || s}
+    </div>`
+  ).join('');
+
+  container.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      currentScenario = tab.dataset.scenario;
+      renderAll(allData);
+    });
+  });
+}
+
 function renderStats(data) {
   const container = document.getElementById('stats');
   if (data.length === 0) {
@@ -132,11 +186,16 @@ function renderStats(data) {
 
   const latest = data[data.length - 1];
   const prev = data.length > 1 ? data[data.length - 2] : null;
+  const results = getScenarioResults(latest, currentScenario);
+  const prevResults = prev ? getScenarioResults(prev, currentScenario) : [];
 
-  const logfwd = latest.results.find(r => r.name === 'logfwd');
-  const logfwdPrev = prev?.results.find(r => r.name === 'logfwd');
+  const logfwd = results.find(r => r.name === 'logfwd');
+  const logfwdPrev = prevResults.find(r => r.name === 'logfwd');
 
-  if (!logfwd) return;
+  if (!logfwd || logfwd.elapsed_ms === 0) {
+    container.innerHTML = `<div class="loading">No ${currentScenario} data in latest run</div>`;
+    return;
+  }
 
   const rate = lps(latest.lines, logfwd.elapsed_ms);
   const prevRate = logfwdPrev ? lps(prev.lines, logfwdPrev.elapsed_ms) : null;
@@ -149,8 +208,7 @@ function renderStats(data) {
     deltaHtml = `<div class="stat-delta ${cls}">${sign}${pct}% vs previous</div>`;
   }
 
-  // Fastest competitor
-  const competitors = latest.results.filter(r => r.name !== 'logfwd' && r.elapsed_ms > 0);
+  const competitors = results.filter(r => r.name !== 'logfwd' && r.elapsed_ms > 0);
   const fastest = competitors.sort((a, b) => a.elapsed_ms - b.elapsed_ms)[0];
   const speedup = (fastest && logfwd.elapsed_ms > 0)
     ? (fastest.elapsed_ms / logfwd.elapsed_ms).toFixed(1) : 'N/A';
@@ -179,15 +237,17 @@ function renderStats(data) {
 }
 
 function renderThroughputChart(data) {
+  if (throughputChart) throughputChart.destroy();
   if (data.length === 0) return;
 
-  // Collect all agent names across all runs
-  const agentNames = [...new Set(data.flatMap(d => d.results.map(r => r.name)))];
+  const agentNames = [...new Set(data.flatMap(d =>
+    getScenarioResults(d, currentScenario).map(r => r.name)
+  ))];
 
   const datasets = agentNames.map(name => ({
     label: name,
     data: data.map(d => {
-      const r = d.results.find(r => r.name === name);
+      const r = getScenarioResults(d, currentScenario).find(r => r.name === name);
       return {
         x: d.timestamp,
         y: r && r.elapsed_ms > 0 ? lps(d.lines, r.elapsed_ms) : null,
@@ -200,94 +260,60 @@ function renderThroughputChart(data) {
     borderWidth: name === 'logfwd' ? 3 : 1.5,
   }));
 
-  new Chart(document.getElementById('throughputChart'), {
+  throughputChart = new Chart(document.getElementById('throughputChart'), {
     type: 'line',
     data: { datasets },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
+      responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       scales: {
-        x: {
-          type: 'time',
-          time: { unit: 'day', tooltipFormat: 'yyyy-MM-dd' },
-          grid: { color: '#30363d' },
-          ticks: { color: '#8b949e' },
-        },
-        y: {
-          title: { display: true, text: 'lines/sec', color: '#8b949e' },
-          grid: { color: '#30363d' },
-          ticks: { color: '#8b949e', callback: v => v >= 1e6 ? `${(v/1e6).toFixed(1)}M` : `${(v/1e3).toFixed(0)}K` },
-        },
+        x: { type: 'time', time: { unit: 'day', tooltipFormat: 'yyyy-MM-dd' }, grid: { color: '#30363d' }, ticks: { color: '#8b949e' } },
+        y: { title: { display: true, text: 'lines/sec', color: '#8b949e' }, grid: { color: '#30363d' }, ticks: { color: '#8b949e', callback: v => v >= 1e6 ? `${(v/1e6).toFixed(1)}M` : `${(v/1e3).toFixed(0)}K` } },
       },
       plugins: {
         legend: { labels: { color: '#e6edf3' } },
-        tooltip: {
-          callbacks: {
-            label: ctx => {
-              const v = ctx.parsed.y;
-              const label = ctx.dataset.label;
-              return `${label}: ${v >= 1e6 ? (v/1e6).toFixed(2) + 'M' : (v/1e3).toFixed(0) + 'K'} lines/sec`;
-            },
-          },
-        },
+        tooltip: { callbacks: { label: ctx => { const v = ctx.parsed.y; return `${ctx.dataset.label}: ${v >= 1e6 ? (v/1e6).toFixed(2) + 'M' : (v/1e3).toFixed(0) + 'K'} lines/sec`; } } },
       },
     },
   });
 }
 
 function renderRelativeChart(data) {
+  if (relativeChart) relativeChart.destroy();
   if (data.length === 0) return;
 
-  const agentNames = [...new Set(data.flatMap(d => d.results.map(r => r.name)))];
+  const agentNames = [...new Set(data.flatMap(d =>
+    getScenarioResults(d, currentScenario).map(r => r.name)
+  ))];
 
   const datasets = agentNames.map(name => ({
     label: name,
     data: data.map(d => {
-      const logfwdR = d.results.find(r => r.name === 'logfwd');
-      const r = d.results.find(r => r.name === name);
+      const results = getScenarioResults(d, currentScenario);
+      const logfwdR = results.find(r => r.name === 'logfwd');
+      const r = results.find(r => r.name === name);
       if (!logfwdR || !r || logfwdR.elapsed_ms === 0 || r.elapsed_ms === 0) return null;
-      return {
-        x: d.timestamp,
-        // Ratio: how much slower than logfwd (logfwd = 1.0)
-        y: r.elapsed_ms / logfwdR.elapsed_ms,
-      };
+      return { x: d.timestamp, y: r.elapsed_ms / logfwdR.elapsed_ms };
     }).filter(Boolean),
     borderColor: COLORS[name] || '#8b949e',
     backgroundColor: (COLORS[name] || '#8b949e') + '33',
-    tension: 0.3,
-    pointRadius: 3,
+    tension: 0.3, pointRadius: 3,
     borderWidth: name === 'logfwd' ? 3 : 1.5,
   }));
 
-  new Chart(document.getElementById('relativeChart'), {
+  relativeChart = new Chart(document.getElementById('relativeChart'), {
     type: 'line',
     data: { datasets },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
+      responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       scales: {
-        x: {
-          type: 'time',
-          time: { unit: 'day', tooltipFormat: 'yyyy-MM-dd' },
-          grid: { color: '#30363d' },
-          ticks: { color: '#8b949e' },
-        },
-        y: {
-          title: { display: true, text: 'time relative to logfwd', color: '#8b949e' },
-          grid: { color: '#30363d' },
-          ticks: { color: '#8b949e', callback: v => `${v.toFixed(1)}x` },
-          min: 0,
-        },
+        x: { type: 'time', time: { unit: 'day', tooltipFormat: 'yyyy-MM-dd' }, grid: { color: '#30363d' }, ticks: { color: '#8b949e' } },
+        y: { title: { display: true, text: 'time relative to logfwd', color: '#8b949e' }, grid: { color: '#30363d' }, ticks: { color: '#8b949e', callback: v => `${v.toFixed(1)}x` }, min: 0 },
       },
       plugins: {
         legend: { labels: { color: '#e6edf3' } },
-        tooltip: {
-          callbacks: {
-            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}x`,
-          },
-        },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}x` } },
       },
     },
   });
@@ -296,37 +322,53 @@ function renderRelativeChart(data) {
 function renderLatestTable(data) {
   const tbody = document.getElementById('latestBody');
   if (data.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="loading">No data yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="loading">No data yet</td></tr>';
     return;
   }
 
   const latest = data[data.length - 1];
-  const logfwd = latest.results.find(r => r.name === 'logfwd');
+  tbody.innerHTML = '';
 
-  for (const r of latest.results) {
-    const rate = fmtRate(latest.lines, r.elapsed_ms);
-    let ratio = '-';
-    if (logfwd && logfwd.elapsed_ms > 0 && r.elapsed_ms > 0 && r.name !== 'logfwd') {
-      ratio = `${(r.elapsed_ms / logfwd.elapsed_ms).toFixed(2)}x slower`;
-    } else if (r.name === 'logfwd') {
-      ratio = 'baseline';
+  // Show all scenarios in the table
+  const scenarios = allScenarios(data);
+  for (const scenario of scenarios) {
+    const results = getScenarioResults(latest, scenario);
+    const logfwd = results.find(r => r.name === 'logfwd');
+
+    for (const r of results) {
+      const rate = fmtRate(latest.lines, r.elapsed_ms);
+      let ratio = '-';
+      if (logfwd && logfwd.elapsed_ms > 0 && r.elapsed_ms > 0 && r.name !== 'logfwd') {
+        ratio = `${(r.elapsed_ms / logfwd.elapsed_ms).toFixed(2)}x slower`;
+      } else if (r.name === 'logfwd') {
+        ratio = 'baseline';
+      }
+      const failed = r.elapsed_ms === 0 && r.lines_done === 0;
+      tbody.innerHTML += `<tr>
+        <td><strong>${r.name}</strong></td>
+        <td>${SCENARIO_LABELS[scenario] || scenario}</td>
+        <td>${failed ? 'FAILED' : r.elapsed_ms + 'ms'}</td>
+        <td>${failed ? '-' : rate}</td>
+        <td>${failed ? '-' : ratio}</td>
+      </tr>`;
     }
-    const failed = r.elapsed_ms === 0 && r.lines_done === 0;
-    tbody.innerHTML += `<tr>
-      <td><strong>${r.name}</strong></td>
-      <td>${failed ? 'FAILED' : r.elapsed_ms + 'ms'}</td>
-      <td>${failed ? '-' : rate}</td>
-      <td>${failed ? '-' : ratio}</td>
-    </tr>`;
   }
 }
 
-(async () => {
-  const data = await loadData();
+function renderAll(data) {
+  renderTabs(data);
   renderStats(data);
   renderThroughputChart(data);
   renderRelativeChart(data);
   renderLatestTable(data);
+}
+
+(async () => {
+  allData = await loadData();
+  // Default to first available scenario
+  const scenarios = allScenarios(allData);
+  if (scenarios.length > 0) currentScenario = scenarios[0];
+  renderAll(allData);
 })();
 </script>
 </body>
