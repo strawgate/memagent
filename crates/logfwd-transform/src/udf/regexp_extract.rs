@@ -33,6 +33,12 @@ pub struct RegexpExtractUdf {
     signature: Signature,
 }
 
+impl Default for RegexpExtractUdf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegexpExtractUdf {
     pub fn new() -> Self {
         Self {

@@ -194,6 +194,12 @@ pub struct GrokUdf {
     signature: Signature,
 }
 
+impl Default for GrokUdf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GrokUdf {
     pub fn new() -> Self {
         Self {
@@ -230,22 +236,20 @@ impl ScalarUDFImpl for GrokUdf {
         args: datafusion::logical_expr::ReturnTypeArgs,
     ) -> DfResult<datafusion::logical_expr::ReturnInfo> {
         // If the pattern argument is a literal, extract field names and return Struct type.
-        if args.scalar_arguments.len() >= 2 {
-            if let Some(pattern_lit) = args.scalar_arguments[1] {
-                if let datafusion::common::ScalarValue::Utf8(Some(pattern_str)) = pattern_lit {
-                    if let Ok(compiled) = compile_grok(pattern_str) {
-                        let fields: Vec<Field> = compiled
-                            .field_names
-                            .iter()
-                            .map(|name| Field::new(name, DataType::Utf8, true))
-                            .collect();
-                        if !fields.is_empty() {
-                            return Ok(datafusion::logical_expr::ReturnInfo::new_nullable(
-                                DataType::Struct(Fields::from(fields)),
-                            ));
-                        }
-                    }
-                }
+        if args.scalar_arguments.len() >= 2
+            && let Some(datafusion::common::ScalarValue::Utf8(Some(pattern_str))) =
+                args.scalar_arguments[1]
+            && let Ok(compiled) = compile_grok(pattern_str)
+        {
+            let fields: Vec<Field> = compiled
+                .field_names
+                .iter()
+                .map(|name| Field::new(name, DataType::Utf8, true))
+                .collect();
+            if !fields.is_empty() {
+                return Ok(datafusion::logical_expr::ReturnInfo::new_nullable(
+                    DataType::Struct(Fields::from(fields)),
+                ));
             }
         }
         // Fallback: can't determine struct fields, return Utf8
