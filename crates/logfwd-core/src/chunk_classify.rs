@@ -6,8 +6,9 @@
 //
 // This is the simdjson "stage 1" algorithm adapted for our use case.
 //
-// All loops are written as plain Rust — LLVM auto-vectorizes them to
-// NEON (aarch64), SSE2/AVX2 (x86_64), etc. No manual SIMD intrinsics.
+// All loops are written as plain Rust with no manual SIMD intrinsics.
+// Character detection (find_char_mask) compiles to branchless scalar code;
+// LLVM may auto-vectorize on some targets but this is not guaranteed.
 
 /// Pre-computed structural classification for a buffer.
 ///
@@ -327,8 +328,7 @@ fn prefix_xor(mut bitmask: u64) -> u64 {
 /// Produces a u64 bitmask where bit i indicates the character at
 /// position offset+i is a quote (or backslash, respectively).
 ///
-/// Accepts a `&[u8; 64]` to guarantee the exact trip count, enabling
-/// LLVM to auto-vectorize both the comparison and bitmask packing.
+/// Accepts a `&[u8; 64]` to give the compiler a known trip count.
 #[inline]
 fn find_quotes_and_backslashes(data: &[u8; 64]) -> (u64, u64) {
     (find_char_mask(data, b'"'), find_char_mask(data, b'\\'))
@@ -347,8 +347,8 @@ fn find_quotes_and_backslashes(data: &[u8; 64]) -> (u64, u64) {
 #[inline]
 fn find_char_mask(data: &[u8; 64], needle: u8) -> u64 {
     let mut bits: u64 = 0;
-    for i in 0..64 {
-        bits |= ((data[i] == needle) as u64) << i;
+    for (i, &byte) in data.iter().enumerate() {
+        bits |= ((byte == needle) as u64) << i;
     }
     bits
 }
