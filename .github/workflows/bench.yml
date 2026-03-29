@@ -24,67 +24,76 @@ jobs:
           cache-on-failure: true
 
       - name: Run benchmarks
-        run: cargo bench -p logfwd-bench -- --output-format bencher 2>/dev/null | tee bench_raw.txt
+        run: cargo bench -p logfwd-bench 2>&1 | tee bench_raw.txt
 
       - name: Parse results
-        id: parse
         run: |
-          # Extract benchmark results into a markdown table.
-          cat <<'SCRIPT' > parse_bench.py
+          cat <<'PYEOF' > parse_bench.py
           import sys, re
           from collections import defaultdict
 
           groups = defaultdict(list)
-          for line in sys.stdin:
-              m = re.match(r'^test (\S+)\s+... bench:\s+([\d,]+) ns/iter \(\+/- ([\d,]+)\)$', line.strip())
-              if not m:
-                  continue
-              name = m.group(1)
-              ns = int(m.group(2).replace(',', ''))
-              stddev = int(m.group(3).replace(',', ''))
-              # Group by first path segment
-              parts = name.split('/')
-              group = parts[0] if len(parts) > 1 else 'misc'
-              bench_name = '/'.join(parts[1:]) if len(parts) > 1 else parts[0]
-              groups[group].append((bench_name, ns, stddev))
+          current_name = None
 
+          for line in sys.stdin:
+              line = line.rstrip()
+
+              # Criterion prints the benchmark name on its own line, e.g.:
+              #   scanner/scan_all_fields/1000
+              # followed by time/thrpt lines indented with spaces.
+              name_match = re.match(r'^(\S+/\S+)', line)
+              if name_match and 'time:' not in line and 'thrpt:' not in line:
+                  current_name = name_match.group(1)
+                  continue
+
+              if current_name is None:
+                  continue
+
+              # Parse: time:   [229.56 µs 230.07 µs 230.57 µs]
+              time_match = re.search(r'time:\s+\[([\d.]+)\s+(ns|µs|ms|s)\s+([\d.]+)\s+(ns|µs|ms|s)\s+([\d.]+)\s+(ns|µs|ms|s)\]', line)
+              if time_match and 'change' not in line and '%' not in line:
+                  median = float(time_match.group(3))
+                  unit = time_match.group(4)
+
+                  # Also look for throughput on the next-ish line — store time for now
+                  parts = current_name.split('/')
+                  group = parts[0]
+                  bench_name = '/'.join(parts[1:])
+                  groups[group].append({
+                      'name': bench_name,
+                      'median': median,
+                      'unit': unit,
+                      'low': float(time_match.group(1)),
+                      'high': float(time_match.group(5)),
+                      'thrpt': None,
+                  })
+                  continue
+
+              # Parse: thrpt:  [757.25 MiB/s 758.91 MiB/s 760.61 MiB/s]
+              thrpt_match = re.search(r'thrpt:\s+\[[\d.]+ \S+ ([\d.]+) (\S+) [\d.]+ \S+\]', line)
+              if thrpt_match and 'change' not in line and '%' not in line:
+                  if groups:
+                      last_group = list(groups.values())[-1]
+                      if last_group:
+                          last_group[-1]['thrpt'] = f"{thrpt_match.group(1)} {thrpt_match.group(2)}"
+                  continue
+
+          # Generate markdown
           body = ""
           for group, benches in sorted(groups.items()):
               body += f"\n### {group}\n\n"
-              body += "| Benchmark | Time | ±StdDev | Throughput |\n"
-              body += "|-----------|-----:|--------:|----------:|\n"
-              for name, ns, stddev in sorted(benches):
-                  # Try to extract element count from name for throughput calc
-                  m2 = re.search(r'(\d+)$', name)
-                  if m2 and ns > 0:
-                      count = int(m2.group(1))
-                      rate = count * 1_000_000_000 / ns
-                      if rate > 1_000_000:
-                          tp = f"{rate/1_000_000:.1f}M lines/s"
-                      elif rate > 1_000:
-                          tp = f"{rate/1_000:.0f}K lines/s"
-                      else:
-                          tp = f"{rate:.0f} lines/s"
-                  else:
-                      tp = "—"
-
-                  if ns >= 1_000_000:
-                      time_str = f"{ns/1_000_000:.2f} ms"
-                  elif ns >= 1_000:
-                      time_str = f"{ns/1_000:.1f} µs"
-                  else:
-                      time_str = f"{ns} ns"
-
-                  stddev_str = f"±{stddev/1_000:.0f} µs" if stddev >= 1_000 else f"±{stddev} ns"
-                  body += f"| {name} | {time_str} | {stddev_str} | {tp} |\n"
+              body += "| Benchmark | Time (median) | Range | Throughput |\n"
+              body += "|-----------|-----:|------:|----------:|\n"
+              for b in benches:
+                  tp = b['thrpt'] or '—'
+                  body += f"| {b['name']} | {b['median']} {b['unit']} | {b['low']}–{b['high']} {b['unit']} | {tp} |\n"
 
           if not body:
-              body = "\n⚠️ No benchmark results parsed.\n"
+              body = "\n> No benchmark results parsed. Check the [workflow run](../../actions) for details.\n"
 
-          # Write to file for the next step
           with open('bench_body.md', 'w') as f:
               f.write(body)
-          SCRIPT
+          PYEOF
 
           python3 parse_bench.py < bench_raw.txt
 
@@ -96,7 +105,8 @@ jobs:
           COMMIT=$(git rev-parse --short HEAD)
 
           TITLE="Benchmark results ${DATE} (${COMMIT})"
-          BODY="## Benchmark Results — ${DATE}
+          BODY="$(cat <<HEREDOC
+          ## Benchmark Results — ${DATE}
 
           **Commit:** \`${COMMIT}\` on \`master\`
           **Runner:** \`ubuntu-latest\`
@@ -104,11 +114,13 @@ jobs:
           $(cat bench_body.md)
 
           ---
-          <sub>Generated by [nightly bench workflow](.github/workflows/bench.yml)</sub>"
+          <sub>Generated by [nightly bench workflow](.github/workflows/bench.yml)</sub>
+          HEREDOC
+          )"
 
           # Close previous nightly bench issues to avoid clutter.
           gh issue list --label benchmark --state open --json number -q '.[].number' | while read num; do
-            gh issue close "$num" --comment "Superseded by new benchmark run."
+            gh issue close "$num" --comment "Superseded by new benchmark run." 2>/dev/null || true
           done
 
           gh issue create \
