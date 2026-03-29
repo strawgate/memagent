@@ -13,6 +13,7 @@ logfwd-core = { path = "../logfwd-core" }
 logfwd-transform = { path = "../logfwd-transform" }
 logfwd-output = { path = "../logfwd-output" }
 dhat = { version = "0.3", optional = true }
+libc = "0.2"
 memchr = "2"
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
