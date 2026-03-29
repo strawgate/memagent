@@ -119,21 +119,5 @@ fn count_lines(body: &[u8], url: &str) -> u64 {
 
 /// Count `"body":` occurrences in OTLP JSON — one per log record.
 fn count_otlp_body_keys(body: &[u8]) -> u64 {
-    let needle = b"\"body\":";
-    let mut count = 0u64;
-    let mut pos = 0;
-    while pos + needle.len() <= body.len() {
-        if let Some(offset) = memchr::memchr(b'"', &body[pos..]) {
-            let start = pos + offset;
-            if start + needle.len() <= body.len() && body[start..start + needle.len()] == *needle {
-                count += 1;
-                pos = start + needle.len();
-            } else {
-                pos = start + 1;
-            }
-        } else {
-            break;
-        }
-    }
-    count
+    memchr::memmem::find_iter(body, b"\"body\":").count() as u64
 }

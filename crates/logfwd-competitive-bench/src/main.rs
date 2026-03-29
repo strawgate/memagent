@@ -232,6 +232,10 @@ fn main() {
             } else if run_docker && !run_binary {
                 // Docker requested but no image — fall back to binary.
                 if let Some(binary) = &resolved.binary {
+                    eprintln!(
+                        "  WARN: no Docker image for {}, falling back to binary",
+                        resolved.agent.name()
+                    );
                     run_one(
                         resolved.agent,
                         Some(binary),
