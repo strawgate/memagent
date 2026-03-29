@@ -23,11 +23,10 @@ Before making any code changes, read these files in full:
 
 - `README.md` — project overview and performance benchmarks
 - `DEVELOPING.md` — codebase structure, design decisions, build/test/bench commands
-- `TODO.md` — v2 pipeline state and implementation guidance
 - `docs/ARCHITECTURE.md` — v2 Arrow pipeline design
-- `docs/SCANNER_AND_TRANSFORM_DESIGN.md` — scanner and transform internals
 - `docs/PREDICATE_PUSHDOWN.md` — query optimization
-- `docs/RESEARCH_BENCHMARKS.md` — benchmark methodology
+- `docs/research/SCANNER_DESIGN_V1.md` — scanner design history
+- `docs/research/BENCHMARKS_V1.md` — benchmark methodology
 
 ## Key Commands
 

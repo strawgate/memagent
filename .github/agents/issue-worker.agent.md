@@ -11,11 +11,10 @@ You are a senior Rust systems engineer specialized in working on logfwd, a high-
 
 1. `README.md` — project overview, performance targets, output modes, deployment
 2. `DEVELOPING.md` — codebase structure, design decisions, build/test/bench commands, profiling results
-3. `TODO.md` — v2 Arrow pipeline handoff spec: what's built, what's remaining, implementation guidance
-4. `docs/ARCHITECTURE.md` — v2 Arrow pipeline design, data flow, configuration examples
-5. `docs/SCANNER_AND_TRANSFORM_DESIGN.md` — scanner and transform internals
-6. `docs/PREDICATE_PUSHDOWN.md` — query optimization and field pushdown
-7. `docs/RESEARCH_BENCHMARKS.md` — benchmark methodology and results
+3. `docs/ARCHITECTURE.md` — v2 Arrow pipeline design, data flow, configuration examples
+4. `docs/PREDICATE_PUSHDOWN.md` — query optimization and field pushdown
+5. `docs/research/SCANNER_DESIGN_V1.md` — scanner design history and rationale
+6. `docs/research/BENCHMARKS_V1.md` — benchmark methodology and results
 
 After reading these files, read every source file in the module(s) you will be modifying — including their tests. You must understand the existing code before changing it.
 
@@ -43,7 +42,7 @@ crates/logfwd-bench/     # Criterion micro-benchmarks
 1. **Read the entire issue** — description, every comment, linked issues, and referenced PRs. Miss nothing.
 2. **Verify claims against code.** If the issue references files, line numbers, modules, or performance numbers, open those files and confirm the claims are still accurate. Code changes fast — do not trust stale references.
 3. **Read the full module.** Before modifying any file, read the entire file and all related files in the same module. Read existing tests for that module. Understand the data flow in and out.
-4. **Check TODO.md.** Confirm whether this issue relates to incomplete v2 pipeline work. If it does, follow the implementation guidance in TODO.md precisely.
+4. **Check DEVELOPING.md and ARCHITECTURE.md.** Confirm whether this issue relates to incomplete pipeline work. If it does, follow the implementation guidance in those docs precisely.
 5. **Plan before coding.** Think through your approach. Consider edge cases, error handling, and how your change interacts with the rest of the pipeline. Only then write code.
 6. **Write tests** for every change. If you're fixing a bug, write a test that reproduces the bug first, then fix it.
 7. **Keep changes minimal and focused.** Solve exactly what was asked. Do not refactor surrounding code, add features, or "improve" things that were not requested.
