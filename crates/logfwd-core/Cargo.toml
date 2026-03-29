@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+sonic-simd = "0.1"
 arrow = { workspace = true }
 crossbeam-channel = "0.5"
 csv = "1"
@@ -18,4 +19,13 @@ xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
 zstd = "0.13"
 
 [dev-dependencies]
+arrow-json = "54"
+criterion = { version = "0.5", features = ["html_reports"] }
+pprof = { version = "0.14", features = ["flamegraph", "protobuf-codec"] }
+proptest = "1"
+sonic-rs = "0.5"
 tempfile = "3"
+
+[[bench]]
+name = "scanner"
+harness = false

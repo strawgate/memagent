@@ -66,14 +66,26 @@ pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
         return None;
     }
     let mut acc: i64 = 0;
-    for &b in &bytes[start..] {
-        if !b.is_ascii_digit() {
-            return None;
+    if neg {
+        // Accumulate as negative to handle i64::MIN without overflow.
+        for &b in &bytes[start..] {
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            acc = acc.checked_mul(10)?;
+            acc = acc.checked_sub((b - b'0') as i64)?;
         }
-        acc = acc.checked_mul(10)?;
-        acc = acc.checked_add((b - b'0') as i64)?;
+        Some(acc)
+    } else {
+        for &b in &bytes[start..] {
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            acc = acc.checked_mul(10)?;
+            acc = acc.checked_add((b - b'0') as i64)?;
+        }
+        Some(acc)
     }
-    if neg { Some(-acc) } else { Some(acc) }
 }
 
 /// Parse a byte slice as f64 using the standard library.
@@ -267,6 +279,9 @@ impl BatchBuilder {
         let row = self.row_count;
         let idx = self.get_or_create_field(key);
         let fc = &mut self.fields[idx];
+        if fc.current_row_set {
+            return; // duplicate key — first-writer-wins
+        }
         fc.has_str = true;
         fc.current_row_set = true;
         // SAFETY: JSON string content (after escape processing) is valid UTF-8.
@@ -287,6 +302,9 @@ impl BatchBuilder {
         let row = self.row_count;
         let idx = self.get_or_create_field(key);
         let fc = &mut self.fields[idx];
+        if fc.current_row_set {
+            return;
+        }
         fc.has_int = true;
         fc.current_row_set = true;
         if let Some(v) = parse_int_fast(value) {
@@ -309,6 +327,9 @@ impl BatchBuilder {
         let row = self.row_count;
         let idx = self.get_or_create_field(key);
         let fc = &mut self.fields[idx];
+        if fc.current_row_set {
+            return;
+        }
         fc.has_float = true;
         fc.current_row_set = true;
         if let Some(v) = parse_float_fast(value) {
@@ -325,16 +346,70 @@ impl BatchBuilder {
         }
     }
 
+    /// Append a pre-parsed integer value directly (no string→int conversion).
+    #[inline]
+    pub fn append_int_val(&mut self, key: &[u8], v: i64) {
+        let row = self.row_count;
+        let idx = self.get_or_create_field(key);
+        let fc = &mut self.fields[idx];
+        if fc.current_row_set {
+            return;
+        }
+        fc.has_int = true;
+        fc.current_row_set = true;
+        fc.ensure_int(row).append_value(v);
+        if let Some(ref mut b) = fc.str_builder {
+            b.append_null();
+        }
+        if let Some(ref mut b) = fc.float_builder {
+            b.append_null();
+        }
+    }
+
+    /// Append a pre-parsed float value directly (no string→f64 conversion).
+    #[inline]
+    pub fn append_float_val(&mut self, key: &[u8], v: f64) {
+        let row = self.row_count;
+        let idx = self.get_or_create_field(key);
+        let fc = &mut self.fields[idx];
+        if fc.current_row_set {
+            return;
+        }
+        fc.has_float = true;
+        fc.current_row_set = true;
+        fc.ensure_float(row).append_value(v);
+        if let Some(ref mut b) = fc.str_builder {
+            b.append_null();
+        }
+        if let Some(ref mut b) = fc.int_builder {
+            b.append_null();
+        }
+    }
+
     /// Append an explicit null for `key`.
     #[inline]
     pub fn append_null(&mut self, key: &[u8]) {
         let row = self.row_count;
         let idx = self.get_or_create_field(key);
         let fc = &mut self.fields[idx];
+        if fc.current_row_set {
+            return;
+        }
         fc.current_row_set = true;
         // Pad all active builders.
         let _ = row; // used by ensure_* if needed
         fc.pad_null();
+    }
+
+    /// Check if a field has already been written in the current row.
+    /// Used to detect duplicate keys and skip second occurrences.
+    #[inline]
+    pub fn is_field_set(&self, key: &[u8]) -> bool {
+        if let Some(&idx) = self.field_index.get(key) {
+            self.fields[idx].current_row_set
+        } else {
+            false
+        }
     }
 
     /// Append to the _raw column.
@@ -452,6 +527,11 @@ mod tests {
         assert_eq!(parse_int_fast(b"-"), None);
         assert_eq!(parse_int_fast(b"3.14"), None); // dot
         assert_eq!(parse_int_fast(b"abc"), None);
+        // Boundary values
+        assert_eq!(parse_int_fast(b"9223372036854775807"), Some(i64::MAX));
+        assert_eq!(parse_int_fast(b"-9223372036854775808"), Some(i64::MIN));
+        assert_eq!(parse_int_fast(b"9223372036854775808"), None); // i64::MAX + 1
+        assert_eq!(parse_int_fast(b"-9223372036854775809"), None); // i64::MIN - 1
     }
 
     #[test]

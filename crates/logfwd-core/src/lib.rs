@@ -1,10 +1,15 @@
 pub mod batch_builder;
+pub mod chunk_classify;
+pub mod columnar_builder;
 pub mod compress;
 pub mod cri;
 pub mod diagnostics;
 pub mod enrichment;
 pub mod format;
+pub mod indexed_builder;
 pub mod input;
 pub mod otlp;
 pub mod scanner;
+pub mod simd_scan;
+pub mod simd_scanner;
 pub mod tail;
