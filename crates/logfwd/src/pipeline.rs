@@ -1,7 +1,14 @@
 //! Pipeline: YAML config → inputs → Scanner → SQL transform → output sinks.
 //!
-//! Single thread per pipeline. All components are already built and tested;
-//! this module wires them together.
+//! Three execution modes are supported:
+//!
+//! | Mode | Threads | Notes |
+//! |------|---------|-------|
+//! | `memory` | 1 | Default. Collect → transform → output on one core. |
+//! | `disk` | 2 | Collector writes compressed Arrow IPC to a disk queue; processor reads, transforms, and outputs on a second core. Survives restarts. |
+//! | `memory_multi` | 2 | Collector passes Arrow batches through a bounded in-memory channel; processor transforms and outputs on a second core. |
+//!
+//! In all modes [`Pipeline::run`] blocks until the `shutdown` flag is set.
 
 use std::io;
 use std::path::PathBuf;
@@ -9,10 +16,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use arrow::record_batch::RecordBatch;
+use crossbeam_channel::{RecvTimeoutError, Sender, bounded};
 use opentelemetry::metrics::Meter;
 
-use logfwd_config::{Format, InputConfig, InputType, PipelineConfig};
+use logfwd_config::{Format, InputConfig, InputType, PipelineConfig, PipelineMode};
 use logfwd_core::diagnostics::{ComponentStats, PipelineMetrics};
+use logfwd_core::disk_queue::{DiskQueueReader, DiskQueueWriter};
 use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_core::input::{FileInput, InputEvent, InputSource};
 use logfwd_core::scanner::Scanner;
@@ -29,9 +39,22 @@ struct InputState {
     name: String,
     source: Box<dyn InputSource>,
     parser: Box<dyn FormatParser>,
-    /// Buffer accumulating newline-delimited JSON for the scanner.
+    /// Accumulates newline-delimited JSON for the scanner.
     json_buf: Vec<u8>,
     stats: Arc<ComponentStats>,
+}
+
+// ---------------------------------------------------------------------------
+// Run mode (internal)
+// ---------------------------------------------------------------------------
+
+enum RunMode {
+    /// Single thread: collect → scan → transform → output.
+    Memory,
+    /// Two threads: collector writes to disk queue; processor reads from it.
+    Disk { dir: PathBuf, max_bytes: u64 },
+    /// Two threads: collector sends through a bounded in-memory channel.
+    MemoryMulti { channel_capacity: usize },
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +65,7 @@ struct InputState {
 pub struct Pipeline {
     #[expect(dead_code, reason = "reserved for future per-pipeline logging")]
     name: String,
+    mode: RunMode,
     inputs: Vec<InputState>,
     scanner: Scanner,
     transform: SqlTransform,
@@ -92,8 +116,25 @@ impl Pipeline {
             Box::new(FanOut::new(sinks))
         };
 
+        let mode = match &config.mode {
+            PipelineMode::Memory => RunMode::Memory,
+            PipelineMode::Disk => {
+                let dq = config.disk_queue.as_ref().ok_or_else(|| {
+                    format!("pipeline '{name}': mode=disk requires a disk_queue section")
+                })?;
+                RunMode::Disk {
+                    dir: PathBuf::from(&dq.dir),
+                    max_bytes: dq.max_bytes,
+                }
+            }
+            PipelineMode::MemoryMulti => RunMode::MemoryMulti {
+                channel_capacity: config.channel_capacity,
+            },
+        };
+
         Ok(Pipeline {
             name: name.to_string(),
+            mode,
             inputs,
             scanner,
             transform,
@@ -109,120 +150,515 @@ impl Pipeline {
         &self.metrics
     }
 
-    /// Run the pipeline until `shutdown` is signaled. Blocks the calling thread.
-    pub fn run(&mut self, shutdown: &AtomicBool) -> io::Result<()> {
-        let mut last_flush = Instant::now();
+    /// Run the pipeline until `shutdown` is signaled. Consumes the pipeline.
+    ///
+    /// In `memory` mode this blocks on the calling thread.
+    /// In `disk` and `memory_multi` modes a collector thread is spawned;
+    /// the calling thread becomes the processor.
+    pub fn run(self, shutdown: &AtomicBool) -> io::Result<()> {
+        // Destructure so we can move fields into different threads.
+        let Pipeline {
+            name: _,
+            mode,
+            inputs,
+            scanner,
+            transform,
+            output,
+            metrics,
+            batch_target_bytes,
+            batch_timeout,
+            poll_interval,
+        } = self;
 
-        loop {
-            if shutdown.load(Ordering::Relaxed) {
-                break;
-            }
+        match mode {
+            RunMode::Memory => run_memory(
+                inputs,
+                scanner,
+                transform,
+                output,
+                metrics,
+                batch_target_bytes,
+                batch_timeout,
+                poll_interval,
+                shutdown,
+            ),
+            RunMode::Disk { dir, max_bytes } => run_disk(
+                inputs,
+                scanner,
+                transform,
+                output,
+                metrics,
+                batch_target_bytes,
+                batch_timeout,
+                poll_interval,
+                shutdown,
+                dir,
+                max_bytes,
+            ),
+            RunMode::MemoryMulti { channel_capacity } => run_memory_multi(
+                inputs,
+                scanner,
+                transform,
+                output,
+                metrics,
+                batch_target_bytes,
+                batch_timeout,
+                poll_interval,
+                shutdown,
+                channel_capacity,
+            ),
+        }
+    }
+}
 
-            let mut had_data = false;
+// ---------------------------------------------------------------------------
+// Memory mode — single thread
+// ---------------------------------------------------------------------------
 
-            for input in &mut self.inputs {
-                let events = input.source.poll()?;
-                if events.is_empty() {
-                    continue;
-                }
-                had_data = true;
+#[allow(clippy::too_many_arguments)]
+fn run_memory(
+    mut inputs: Vec<InputState>,
+    mut scanner: Scanner,
+    mut transform: SqlTransform,
+    mut output: Box<dyn OutputSink>,
+    metrics: Arc<PipelineMetrics>,
+    batch_target_bytes: usize,
+    batch_timeout: Duration,
+    poll_interval: Duration,
+    shutdown: &AtomicBool,
+) -> io::Result<()> {
+    let mut last_flush = Instant::now();
 
-                for event in events {
-                    match event {
-                        InputEvent::Data { bytes, .. } => {
-                            input.stats.inc_bytes(bytes.len() as u64);
-                            let n = input.parser.process(&bytes, &mut input.json_buf);
-                            input.stats.inc_lines(n as u64);
-                        }
-                        InputEvent::Rotated | InputEvent::Truncated => {
-                            input.parser.reset();
-                        }
-                    }
-                }
-            }
-
-            // Flush when any input buffer exceeds threshold or timeout elapsed.
-            let size_ready = self
-                .inputs
-                .iter()
-                .any(|i| i.json_buf.len() >= self.batch_target_bytes);
-            let time_ready = had_data
-                && !self.inputs.iter().all(|i| i.json_buf.is_empty())
-                && last_flush.elapsed() >= self.batch_timeout;
-
-            if size_ready || time_ready {
-                // Track flush reason.
-                if size_ready {
-                    self.metrics.inc_flush_by_size();
-                } else {
-                    self.metrics.inc_flush_by_timeout();
-                }
-
-                let mut combined = Vec::new();
-                for input in &mut self.inputs {
-                    if !input.json_buf.is_empty() {
-                        combined.append(&mut input.json_buf);
-                    }
-                }
-
-                if !combined.is_empty() {
-                    // Scan stage.
-                    let t0 = Instant::now();
-                    let batch = self.scanner.scan(&combined);
-                    let scan_elapsed = t0.elapsed();
-
-                    if batch.num_rows() > 0 {
-                        let num_rows = batch.num_rows() as u64;
-                        self.metrics.transform_in.inc_lines(num_rows);
-
-                        // Transform stage.
-                        let t1 = Instant::now();
-                        let result = match self.transform.execute(batch) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                self.metrics.inc_transform_error();
-                                return Err(io::Error::other(format!("transform error: {e}")));
-                            }
-                        };
-                        let transform_elapsed = t1.elapsed();
-
-                        self.metrics
-                            .transform_out
-                            .inc_lines(result.num_rows() as u64);
-
-                        // Output stage.
-                        let t2 = Instant::now();
-                        let metadata = BatchMetadata {
-                            resource_attrs: vec![],
-                            observed_time_ns: now_nanos(),
-                        };
-                        if let Err(e) = self.output.send_batch(&result, &metadata) {
-                            self.metrics.output_error();
-                            return Err(e);
-                        }
-                        let output_elapsed = t2.elapsed();
-
-                        // Record batch-level metrics.
-                        self.metrics.record_batch(
-                            num_rows,
-                            scan_elapsed.as_nanos() as u64,
-                            transform_elapsed.as_nanos() as u64,
-                            output_elapsed.as_nanos() as u64,
-                        );
-                    }
-                }
-
-                last_flush = Instant::now();
-            }
-
-            if !had_data {
-                std::thread::sleep(self.poll_interval);
-            }
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
         }
 
-        self.output.flush()?;
-        Ok(())
+        let had_data = collect_inputs(&mut inputs);
+
+        let size_ready = inputs.iter().any(|i| i.json_buf.len() >= batch_target_bytes);
+        // Time-based flush fires when there is buffered data AND enough time
+        // has elapsed since the last flush — regardless of whether new data
+        // arrived this particular iteration.  The `had_data &&` guard that was
+        // originally here was incorrect: data arrives before the timeout fires
+        // and would never be flushed if no further data came in later.
+        let time_ready = !inputs.iter().all(|i| i.json_buf.is_empty())
+            && last_flush.elapsed() >= batch_timeout;
+
+        if size_ready || time_ready {
+            if size_ready {
+                metrics.inc_flush_by_size();
+            } else {
+                metrics.inc_flush_by_timeout();
+            }
+
+            let combined = drain_inputs(&mut inputs);
+            if !combined.is_empty() {
+                let t0 = Instant::now();
+                let batch = scanner.scan(&combined);
+                let scan_elapsed = t0.elapsed();
+
+                if batch.num_rows() > 0 {
+                    let num_rows = batch.num_rows() as u64;
+                    metrics.transform_in.inc_lines(num_rows);
+
+                    let t1 = Instant::now();
+                    let result = transform.execute(batch).map_err(|e| {
+                        metrics.inc_transform_error();
+                        io::Error::other(format!("transform error: {e}"))
+                    })?;
+                    let transform_elapsed = t1.elapsed();
+
+                    metrics.transform_out.inc_lines(result.num_rows() as u64);
+
+                    let t2 = Instant::now();
+                    let metadata = BatchMetadata {
+                        resource_attrs: vec![],
+                        observed_time_ns: now_nanos(),
+                    };
+                    if let Err(e) = output.send_batch(&result, &metadata) {
+                        metrics.output_error();
+                        return Err(e);
+                    }
+                    let output_elapsed = t2.elapsed();
+
+                    metrics.record_batch(
+                        num_rows,
+                        scan_elapsed.as_nanos() as u64,
+                        transform_elapsed.as_nanos() as u64,
+                        output_elapsed.as_nanos() as u64,
+                    );
+                }
+            }
+
+            last_flush = Instant::now();
+        }
+
+        if !had_data {
+            std::thread::sleep(poll_interval);
+        }
     }
+
+    output.flush()
+}
+
+// ---------------------------------------------------------------------------
+// Disk mode — two threads with disk queue
+// ---------------------------------------------------------------------------
+
+/// Collector loop for disk mode: scan JSON → Arrow, write to disk queue.
+///
+/// Retries on `WouldBlock` (queue full) with a short sleep so the processor
+/// can catch up.  Exits when `shutdown` is set.
+#[allow(clippy::too_many_arguments)]
+fn collector_to_disk(
+    mut inputs: Vec<InputState>,
+    mut scanner: Scanner,
+    metrics: Arc<PipelineMetrics>,
+    mut queue_writer: DiskQueueWriter,
+    batch_target_bytes: usize,
+    batch_timeout: Duration,
+    poll_interval: Duration,
+    shutdown: &AtomicBool,
+) -> io::Result<()> {
+    let mut last_flush = Instant::now();
+
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let had_data = collect_inputs(&mut inputs);
+
+        let size_ready = inputs.iter().any(|i| i.json_buf.len() >= batch_target_bytes);
+        // Time-based flush fires when there is buffered data AND enough time
+        // has elapsed since the last flush — regardless of whether new data
+        // arrived this particular iteration.  The `had_data &&` guard that was
+        // originally here was incorrect: data arrives before the timeout fires
+        // and would never be flushed if no further data came in later.
+        let time_ready = !inputs.iter().all(|i| i.json_buf.is_empty())
+            && last_flush.elapsed() >= batch_timeout;
+
+        if size_ready || time_ready {
+            if size_ready {
+                metrics.inc_flush_by_size();
+            } else {
+                metrics.inc_flush_by_timeout();
+            }
+
+            let combined = drain_inputs(&mut inputs);
+            if !combined.is_empty() {
+                let batch = scanner.scan(&combined);
+
+                if batch.num_rows() > 0 {
+                    // If queue is full, back off until the processor catches up.
+                    loop {
+                        match queue_writer.push(&batch) {
+                            Ok(()) => break,
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                metrics.inc_backpressure_stall();
+                                if shutdown.load(Ordering::Relaxed) {
+                                    return Ok(());
+                                }
+                                std::thread::sleep(Duration::from_millis(50));
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+            }
+
+            last_flush = Instant::now();
+        }
+
+        if !had_data {
+            std::thread::sleep(poll_interval);
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_disk(
+    inputs: Vec<InputState>,
+    scanner: Scanner,
+    mut transform: SqlTransform,
+    mut output: Box<dyn OutputSink>,
+    metrics: Arc<PipelineMetrics>,
+    batch_target_bytes: usize,
+    batch_timeout: Duration,
+    poll_interval: Duration,
+    shutdown: &AtomicBool,
+    dir: PathBuf,
+    max_bytes: u64,
+) -> io::Result<()> {
+    let queue_writer = DiskQueueWriter::new(&dir, max_bytes)
+        .map_err(|e| io::Error::other(format!("disk queue init: {e}")))?;
+    let queue_reader = DiskQueueReader::new(&dir)
+        .map_err(|e| io::Error::other(format!("disk queue init: {e}")))?;
+
+    // Signal sent from processor → collector when the processor wants to stop.
+    let stop_collector = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop_collector);
+    let metrics_clone = Arc::clone(&metrics);
+
+    let collector_handle = std::thread::Builder::new()
+        .name("logfwd-collector".into())
+        .spawn(move || {
+            collector_to_disk(
+                inputs,
+                scanner,
+                metrics_clone,
+                queue_writer,
+                batch_target_bytes,
+                batch_timeout,
+                poll_interval,
+                &stop_clone,
+            )
+        })
+        .map_err(|e| io::Error::other(format!("spawn collector thread: {e}")))?;
+
+    // Processor loop on the calling thread.
+    loop {
+        // Propagate external shutdown to the collector.
+        if shutdown.load(Ordering::Relaxed) {
+            stop_collector.store(true, Ordering::Relaxed);
+        }
+
+        match queue_reader.pop() {
+            Ok(Some(batch)) => {
+                process_batch(batch, &mut transform, &mut *output, &metrics)?;
+            }
+            Ok(None) => {
+                // Queue empty: if collector is also done we can exit.
+                if collector_handle.is_finished() {
+                    break;
+                }
+                std::thread::sleep(poll_interval);
+            }
+            Err(e) => {
+                stop_collector.store(true, Ordering::Relaxed);
+                let _ = collector_handle.join();
+                return Err(e);
+            }
+        }
+    }
+
+    let _ = collector_handle.join();
+    output.flush()
+}
+
+// ---------------------------------------------------------------------------
+// MemoryMulti mode — two threads, bounded in-memory channel
+// ---------------------------------------------------------------------------
+
+/// Collector loop for memory-multi mode: scan JSON → Arrow, send to channel.
+#[allow(clippy::too_many_arguments)]
+fn collector_to_channel(
+    mut inputs: Vec<InputState>,
+    mut scanner: Scanner,
+    metrics: Arc<PipelineMetrics>,
+    tx: Sender<RecordBatch>,
+    batch_target_bytes: usize,
+    batch_timeout: Duration,
+    poll_interval: Duration,
+    shutdown: &AtomicBool,
+) -> io::Result<()> {
+    let mut last_flush = Instant::now();
+
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let had_data = collect_inputs(&mut inputs);
+
+        let size_ready = inputs.iter().any(|i| i.json_buf.len() >= batch_target_bytes);
+        // Time-based flush fires when there is buffered data AND enough time
+        // has elapsed since the last flush — regardless of whether new data
+        // arrived this particular iteration.  The `had_data &&` guard that was
+        // originally here was incorrect: data arrives before the timeout fires
+        // and would never be flushed if no further data came in later.
+        let time_ready = !inputs.iter().all(|i| i.json_buf.is_empty())
+            && last_flush.elapsed() >= batch_timeout;
+
+        if size_ready || time_ready {
+            if size_ready {
+                metrics.inc_flush_by_size();
+            } else {
+                metrics.inc_flush_by_timeout();
+            }
+
+            let combined = drain_inputs(&mut inputs);
+            if !combined.is_empty() {
+                let batch = scanner.scan(&combined);
+
+                if batch.num_rows() > 0 {
+                    // Bounded send: blocks when the channel is full (back-pressure).
+                    if tx.send(batch).is_err() {
+                        // Receiver dropped (processor exited) — stop collecting.
+                        break;
+                    }
+                }
+            }
+
+            last_flush = Instant::now();
+        }
+
+        if !had_data {
+            std::thread::sleep(poll_interval);
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_memory_multi(
+    inputs: Vec<InputState>,
+    scanner: Scanner,
+    mut transform: SqlTransform,
+    mut output: Box<dyn OutputSink>,
+    metrics: Arc<PipelineMetrics>,
+    batch_target_bytes: usize,
+    batch_timeout: Duration,
+    poll_interval: Duration,
+    shutdown: &AtomicBool,
+    channel_capacity: usize,
+) -> io::Result<()> {
+    let (tx, rx) = bounded::<RecordBatch>(channel_capacity);
+
+    let stop_collector = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop_collector);
+    let metrics_clone = Arc::clone(&metrics);
+
+    let collector_handle = std::thread::Builder::new()
+        .name("logfwd-collector".into())
+        .spawn(move || {
+            collector_to_channel(
+                inputs,
+                scanner,
+                metrics_clone,
+                tx,
+                batch_target_bytes,
+                batch_timeout,
+                poll_interval,
+                &stop_clone,
+            )
+        })
+        .map_err(|e| io::Error::other(format!("spawn collector thread: {e}")))?;
+
+    // Processor loop on the calling thread.
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            stop_collector.store(true, Ordering::Relaxed);
+        }
+
+        match rx.recv_timeout(poll_interval) {
+            Ok(batch) => {
+                process_batch(batch, &mut transform, &mut *output, &metrics)?;
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if collector_handle.is_finished() {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                break;
+            }
+        }
+    }
+
+    let _ = collector_handle.join();
+    output.flush()
+}
+
+// ---------------------------------------------------------------------------
+// Shared processor helper
+// ---------------------------------------------------------------------------
+
+/// Transform and output a single RecordBatch, recording metrics.
+fn process_batch(
+    batch: RecordBatch,
+    transform: &mut SqlTransform,
+    output: &mut dyn OutputSink,
+    metrics: &PipelineMetrics,
+) -> io::Result<()> {
+    let num_rows = batch.num_rows() as u64;
+    metrics.transform_in.inc_lines(num_rows);
+
+    let t1 = Instant::now();
+    let result = transform.execute(batch).map_err(|e| {
+        metrics.inc_transform_error();
+        io::Error::other(format!("transform error: {e}"))
+    })?;
+    let transform_elapsed = t1.elapsed();
+
+    metrics.transform_out.inc_lines(result.num_rows() as u64);
+
+    let t2 = Instant::now();
+    let metadata = BatchMetadata {
+        resource_attrs: vec![],
+        observed_time_ns: now_nanos(),
+    };
+    if let Err(e) = output.send_batch(&result, &metadata) {
+        metrics.output_error();
+        return Err(e);
+    }
+    let output_elapsed = t2.elapsed();
+
+    metrics.record_batch(
+        num_rows,
+        0, // scan time tracked by collector in multi-core modes
+        transform_elapsed.as_nanos() as u64,
+        output_elapsed.as_nanos() as u64,
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared input helpers
+// ---------------------------------------------------------------------------
+
+/// Poll all inputs; accumulate JSON into per-input buffers.
+/// Returns `true` if any input produced data.
+fn collect_inputs(inputs: &mut [InputState]) -> bool {
+    let mut had_data = false;
+    for input in inputs.iter_mut() {
+        let events = match input.source.poll() {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if events.is_empty() {
+            continue;
+        }
+        had_data = true;
+        for event in events {
+            match event {
+                InputEvent::Data { bytes, .. } => {
+                    input.stats.inc_bytes(bytes.len() as u64);
+                    let n = input.parser.process(&bytes, &mut input.json_buf);
+                    input.stats.inc_lines(n as u64);
+                }
+                InputEvent::Rotated | InputEvent::Truncated => {
+                    input.parser.reset();
+                }
+            }
+        }
+    }
+    had_data
+}
+
+/// Drain all non-empty input JSON buffers into a single combined buffer.
+fn drain_inputs(inputs: &mut [InputState]) -> Vec<u8> {
+    let mut combined = Vec::new();
+    for input in inputs.iter_mut() {
+        if !input.json_buf.is_empty() {
+            combined.append(&mut input.json_buf);
+        }
+    }
+    combined
 }
 
 // ---------------------------------------------------------------------------
@@ -358,7 +794,6 @@ mod tests {
 
     #[test]
     fn test_pipeline_from_config() {
-        // Write a temp JSON file so the tailer has something to open.
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("test.log");
         std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
@@ -407,13 +842,65 @@ output:
     }
 
     #[test]
-    fn test_pipeline_run_one_batch() {
-        use std::sync::atomic::AtomicBool;
+    fn test_pipeline_from_config_disk_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        let queue_dir = dir.path().join("queue");
+        std::fs::write(&log_path, b"").unwrap();
 
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {log}
+  format: json
+mode: disk
+disk_queue:
+  dir: {queue}
+output:
+  type: stdout
+  format: json
+"#,
+            log = log_path.display(),
+            queue = queue_dir.display(),
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter());
+        assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
+    }
+
+    #[test]
+    fn test_pipeline_from_config_memory_multi_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"").unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+mode: memory_multi
+channel_capacity: 32
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter());
+        assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
+    }
+
+    #[test]
+    fn test_pipeline_run_one_batch() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("test.log");
 
-        // Write JSON lines.
         let mut data = String::new();
         for i in 0..10 {
             data.push_str(&format!(
@@ -440,14 +927,14 @@ output:
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
-
-        // Use a very short batch timeout so the test flushes quickly.
         pipeline.batch_timeout = Duration::from_millis(10);
         pipeline.poll_interval = Duration::from_millis(5);
 
+        // Save metrics Arc before run() consumes the pipeline.
+        let metrics = Arc::clone(pipeline.metrics());
+
         let shutdown = Arc::new(AtomicBool::new(false));
         let sd_clone = Arc::clone(&shutdown);
-
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(500));
             sd_clone.store(true, Ordering::Relaxed);
@@ -456,12 +943,106 @@ output:
         let result = pipeline.run(&shutdown);
         assert!(result.is_ok(), "got: {:?}", result.err());
 
-        // Verify metrics show data was processed.
-        let lines_in = pipeline
-            .metrics
-            .transform_in
-            .lines_total
-            .load(Ordering::Relaxed);
+        let lines_in = metrics.transform_in.lines_total.load(Ordering::Relaxed);
+        assert!(lines_in > 0, "expected transform_in > 0, got {lines_in}");
+    }
+
+    #[test]
+    fn test_pipeline_run_disk_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        let queue_dir = dir.path().join("queue");
+
+        let mut data = String::new();
+        for i in 0..10 {
+            data.push_str(&format!(r#"{{"level":"INFO","n":{}}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {log}
+  format: json
+mode: disk
+disk_queue:
+  dir: {queue}
+output:
+  type: stdout
+  format: json
+"#,
+            log = log_path.display(),
+            queue = queue_dir.display(),
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        pipeline.batch_timeout = Duration::from_millis(10);
+        pipeline.poll_interval = Duration::from_millis(5);
+
+        let metrics = Arc::clone(pipeline.metrics());
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let sd_clone = Arc::clone(&shutdown);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            sd_clone.store(true, Ordering::Relaxed);
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(result.is_ok(), "got: {:?}", result.err());
+
+        let lines_in = metrics.transform_in.lines_total.load(Ordering::Relaxed);
+        assert!(lines_in > 0, "expected transform_in > 0, got {lines_in}");
+    }
+
+    #[test]
+    fn test_pipeline_run_memory_multi_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+
+        let mut data = String::new();
+        for i in 0..10 {
+            data.push_str(&format!(r#"{{"level":"INFO","n":{}}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+mode: memory_multi
+channel_capacity: 16
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        pipeline.batch_timeout = Duration::from_millis(10);
+        pipeline.poll_interval = Duration::from_millis(5);
+
+        let metrics = Arc::clone(pipeline.metrics());
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let sd_clone = Arc::clone(&shutdown);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(600));
+            sd_clone.store(true, Ordering::Relaxed);
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(result.is_ok(), "got: {:?}", result.err());
+
+        let lines_in = metrics.transform_in.lines_total.load(Ordering::Relaxed);
         assert!(lines_in > 0, "expected transform_in > 0, got {lines_in}");
     }
 }

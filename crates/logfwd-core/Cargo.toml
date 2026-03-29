@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-arrow = { workspace = true }
+arrow = { workspace = true, features = ["ipc"] }
 crossbeam-channel = "0.5"
 opentelemetry = { workspace = true }
 memchr = "2"

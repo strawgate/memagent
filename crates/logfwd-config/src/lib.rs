@@ -118,6 +118,57 @@ pub struct OutputConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Pipeline execution mode
+// ---------------------------------------------------------------------------
+
+/// How the pipeline distributes work across CPU cores.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineMode {
+    /// Single-threaded (default): collect → scan → transform → output on one core.
+    ///
+    /// Zero inter-thread overhead, lowest latency per batch.
+    #[default]
+    Memory,
+
+    /// Two-threaded with a disk queue between collection and processing.
+    ///
+    /// The **collector** thread (core 1) polls inputs, scans JSON → Arrow, and
+    /// writes compressed IPC files to a local directory.  The **processor**
+    /// thread (core 2) reads those files, runs the SQL transform, and sends to
+    /// outputs.  Requires a [`DiskQueueConfig`] section.
+    ///
+    /// Benefits: survives restarts (batches on disk survive crashes), decouples
+    /// a slow/bursty output from input collection, usable with object storage.
+    Disk,
+
+    /// Two-threaded with an in-memory bounded channel between collection and
+    /// processing.
+    ///
+    /// The **collector** thread (core 1) scans JSON → Arrow and sends batches
+    /// through a `crossbeam_channel::bounded` channel.  The **processor**
+    /// thread (core 2) receives batches, transforms, and outputs.  No disk I/O
+    /// overhead; back-pressure via channel capacity.
+    ///
+    /// Use `channel_capacity` to tune the in-flight batch limit.
+    MemoryMulti,
+}
+
+/// Disk queue settings — required when `mode: disk`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiskQueueConfig {
+    /// Directory for queue files.  Created automatically if it doesn't exist.
+    pub dir: String,
+    /// Maximum total queue size in bytes.  0 = unlimited.
+    #[serde(default)]
+    pub max_bytes: u64,
+}
+
+fn default_channel_capacity() -> usize {
+    64
+}
+
+// ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
 
@@ -129,6 +180,14 @@ pub struct PipelineConfig {
     pub transform: Option<String>,
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
     pub outputs: Vec<OutputConfig>,
+    /// Execution mode.  Defaults to `memory` (single-threaded).
+    #[serde(default)]
+    pub mode: PipelineMode,
+    /// Disk queue settings (required when `mode: disk`).
+    pub disk_queue: Option<DiskQueueConfig>,
+    /// In-memory channel capacity for `mode: memory_multi` (default: 64).
+    #[serde(default = "default_channel_capacity")]
+    pub channel_capacity: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +222,10 @@ struct RawConfig {
     input: Option<InputConfig>,
     transform: Option<String>,
     output: Option<OutputConfig>,
+    // Simple-form pipeline mode fields (mirrored from PipelineConfig).
+    mode: Option<PipelineMode>,
+    disk_queue: Option<DiskQueueConfig>,
+    channel_capacity: Option<usize>,
 
     // Advanced form
     pipelines: Option<HashMap<String, PipelineConfig>>,
@@ -205,6 +268,9 @@ impl Config {
                     inputs: vec![input],
                     transform: raw.transform,
                     outputs: vec![output],
+                    mode: raw.mode.unwrap_or_default(),
+                    disk_queue: raw.disk_queue,
+                    channel_capacity: raw.channel_capacity.unwrap_or_else(default_channel_capacity),
                 };
                 let mut map = HashMap::new();
                 map.insert("default".to_string(), pipeline);
