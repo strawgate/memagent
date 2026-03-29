@@ -1,3 +1,4 @@
+use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
@@ -274,18 +275,17 @@ impl DiagnosticsServer {
         self.pipelines.push(metrics);
     }
 
-    /// Spawn the server on a background thread. Returns the join handle.
-    pub fn start(self) -> JoinHandle<()> {
-        thread::spawn(move || self.run())
-    }
-
-    fn run(&self) {
+    /// Spawn the server on a background thread. Binds synchronously before
+    /// returning so that port-in-use errors are reported at startup.
+    /// Returns the join handle on success or an `io::Error` on bind failure.
+    pub fn start(self) -> io::Result<JoinHandle<()>> {
         let server = tiny_http::Server::http(&self.bind_addr)
-            .expect("diagnostics: failed to bind HTTP server");
-
-        for request in server.incoming_requests() {
-            let _ = self.handle_request(request);
-        }
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        Ok(thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let _ = self.handle_request(request);
+            }
+        }))
     }
 
     fn handle_request(
