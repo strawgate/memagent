@@ -46,7 +46,7 @@ impl Default for ScanConfig {
 impl ScanConfig {
     /// Is this field name wanted?
     #[inline]
-    fn is_wanted(&self, _key: &[u8]) -> bool {
+    pub fn is_wanted(&self, _key: &[u8]) -> bool {
         if self.extract_all {
             return true;
         }

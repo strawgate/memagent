@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.dependencies]
-arrow = { version = "54", default-features = false }
+arrow = { version = "54", default-features = false, features = ["ipc_compression"] }
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31", features = ["http-proto", "reqwest-client"] }
