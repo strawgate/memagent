@@ -18,7 +18,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::prelude::*;
 
-use logfwd_core::scanner::ScanConfig;
+use logfwd_core::scan_config::ScanConfig;
 
 pub mod udf;
 
@@ -108,7 +108,7 @@ impl QueryAnalyzer {
                 keep_raw: true,
             }
         } else {
-            use logfwd_core::scanner::FieldSpec;
+            use logfwd_core::scan_config::FieldSpec;
             use std::collections::HashSet;
             let mut seen = HashSet::new();
             let wanted: Vec<FieldSpec> = self

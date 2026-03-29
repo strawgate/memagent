@@ -2,7 +2,7 @@
 //!
 //! Each format (CRI, JSON, Raw) implements the [`FormatParser`] trait.
 //! The pipeline feeds raw bytes in and gets back newline-terminated JSON
-//! lines suitable for the [`Scanner`](crate::scanner::Scanner).
+//! lines suitable for the SIMD scanner.
 
 use crate::cri::{self, CriReassembler};
 

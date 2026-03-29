@@ -1,6 +1,6 @@
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use logfwd_core::scanner::{FieldSpec, ScanConfig};
-use logfwd_core::simd_scanner::SimdScanner;
+use logfwd_core::scan_config::{FieldSpec, ScanConfig};
+use logfwd_core::scanner::SimdScanner;
 
 // ===========================================================================
 // Data generators
@@ -222,14 +222,14 @@ fn arrow_json_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
 }
 
 // ===========================================================================
-// sonic-rs baseline: spec-compliant SIMD JSON parser → BatchBuilder
+// sonic-rs baseline: spec-compliant SIMD JSON parser → StorageBuilder
 // ===========================================================================
 
 fn sonic_rs_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
-    use logfwd_core::batch_builder::BatchBuilder;
+    use logfwd_core::storage_builder::StorageBuilder;
     use sonic_rs::{JsonContainerTrait, JsonNumberTrait, JsonValueTrait};
 
-    let mut builder = BatchBuilder::new(8192, false);
+    let mut builder = StorageBuilder::new(false);
     builder.begin_batch();
 
     for line in data.split(|&b| b == b'\n') {
@@ -281,7 +281,7 @@ macro_rules! bench_scenario {
             group.throughput(Throughput::Bytes(data.len() as u64));
 
             group.bench_function("SIMD scanner", |b| {
-                let mut scanner = SimdScanner::new($config(), $count);
+                let mut scanner = SimdScanner::new($config());
                 b.iter(|| black_box(scanner.scan(black_box(&data))))
             });
 

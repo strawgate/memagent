@@ -9,7 +9,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 
 use logfwd_core::compress::ChunkCompressor;
 use logfwd_core::cri::{CriReassembler, parse_cri_line};
-use logfwd_core::scanner::{ScanConfig, Scanner};
+use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use logfwd_output::{BatchMetadata, OutputSink};
 use logfwd_transform::SqlTransform;
 
@@ -106,7 +106,7 @@ fn bench_scanner(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(bytes));
         group.bench_with_input(BenchmarkId::new("scan_all_fields", n), &data, |b, data| {
             b.iter(|| {
-                let mut scanner = Scanner::new(ScanConfig::default(), n);
+                let mut scanner = Scanner::new(ScanConfig::default());
                 scanner.scan(data)
             })
         });
@@ -116,15 +116,15 @@ fn bench_scanner(c: &mut Criterion) {
             b.iter(|| {
                 let config = ScanConfig {
                     wanted_fields: vec![
-                        logfwd_core::scanner::FieldSpec {
+                        FieldSpec {
                             name: "level".into(),
                             aliases: vec![],
                         },
-                        logfwd_core::scanner::FieldSpec {
+                        FieldSpec {
                             name: "status".into(),
                             aliases: vec![],
                         },
-                        logfwd_core::scanner::FieldSpec {
+                        FieldSpec {
                             name: "duration_ms".into(),
                             aliases: vec![],
                         },
@@ -132,7 +132,7 @@ fn bench_scanner(c: &mut Criterion) {
                     extract_all: false,
                     keep_raw: false,
                 };
-                let mut scanner = Scanner::new(config, n);
+                let mut scanner = Scanner::new(config);
                 scanner.scan(data)
             })
         });
@@ -208,7 +208,7 @@ fn bench_transform(c: &mut Criterion) {
 
     let n = 10_000;
     let data = gen_json_lines(n);
-    let mut scanner = Scanner::new(ScanConfig::default(), n);
+    let mut scanner = Scanner::new(ScanConfig::default());
     let batch = scanner.scan(&data);
 
     // Passthrough: SELECT *
@@ -288,7 +288,7 @@ fn bench_output(c: &mut Criterion) {
 
     let n = 10_000;
     let data = gen_json_lines(n);
-    let mut scanner = Scanner::new(ScanConfig::default(), n);
+    let mut scanner = Scanner::new(ScanConfig::default());
     let batch = scanner.scan(&data);
     let meta = make_metadata();
 
@@ -320,7 +320,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let mut scanner = Scanner::new(ScanConfig::default(), n);
+            let mut scanner = Scanner::new(ScanConfig::default());
             let batch = scanner.scan(&data);
             let result = transform.execute(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
@@ -333,7 +333,7 @@ fn bench_end_to_end(c: &mut Criterion) {
             SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let mut scanner = Scanner::new(ScanConfig::default(), n);
+            let mut scanner = Scanner::new(ScanConfig::default());
             let batch = scanner.scan(&data);
             let result = transform.execute(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
@@ -349,7 +349,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         .unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let mut scanner = Scanner::new(ScanConfig::default(), n);
+            let mut scanner = Scanner::new(ScanConfig::default());
             let batch = scanner.scan(&data);
             let result = transform.execute(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();

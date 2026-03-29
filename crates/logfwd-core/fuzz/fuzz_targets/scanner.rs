@@ -2,7 +2,8 @@
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use logfwd_core::scanner::{ScanConfig, Scanner};
+use logfwd_core::scan_config::ScanConfig;
+use logfwd_core::scanner::SimdScanner;
 
 fn validate_batch(batch: &arrow::record_batch::RecordBatch, label: &str) {
     let num_rows = batch.num_rows();
@@ -25,18 +26,18 @@ fuzz_target!(|data: &[u8]| {
         extract_all: true,
         keep_raw: true,
     };
-    let mut scanner = Scanner::new(config, 128);
+    let mut scanner = SimdScanner::new(config);
     let batch = scanner.scan(data);
     validate_batch(&batch, "extract_all");
 
     // Field pushdown mode.
     let config2 = ScanConfig {
         wanted_fields: vec![
-            logfwd_core::scanner::FieldSpec {
+            logfwd_core::scan_config::FieldSpec {
                 name: "level".to_string(),
                 aliases: vec![],
             },
-            logfwd_core::scanner::FieldSpec {
+            logfwd_core::scan_config::FieldSpec {
                 name: "msg".to_string(),
                 aliases: vec![],
             },
@@ -44,7 +45,7 @@ fuzz_target!(|data: &[u8]| {
         extract_all: false,
         keep_raw: false,
     };
-    let mut scanner2 = Scanner::new(config2, 128);
+    let mut scanner2 = SimdScanner::new(config2);
     let batch2 = scanner2.scan(data);
     validate_batch(&batch2, "pushdown");
 });

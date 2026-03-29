@@ -2051,6 +2051,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "arrow-json",
+ "bytes",
  "criterion",
  "crossbeam-channel",
  "csv",

@@ -14,8 +14,8 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    name: Lint & Test (Linux)
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     env:
       RUSTC_WRAPPER: ""
@@ -30,7 +30,6 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      # Install tools from pre-built binaries (not cargo install, which compiles from source).
       - name: Install tools
         run: |
           curl -sSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
@@ -55,13 +54,25 @@ jobs:
       - name: Typos
         uses: crate-ci/typos@v1
 
-      # Tests reuse clippy's compiled artifacts (same dev profile).
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Install just
+        run: curl -sSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+
       - name: Tests
         run: just test
-
-      # Verify release profile compiles (catches LTO issues, etc.)
-      - name: Release check
-        run: cargo check --release
 
   test-macos:
     name: Test (macOS)
@@ -79,6 +90,23 @@ jobs:
 
       - name: Tests
         run: cargo test
+
+  release-check:
+    name: Release build check
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Release check
+        run: cargo check --release
 
   actionlint:
     name: Actionlint

@@ -100,6 +100,7 @@ impl ChunkIndex {
         let mut real_quotes = Vec::with_capacity(num_blocks);
         let mut in_string_vec = Vec::with_capacity(num_blocks);
         let mut in_string = false;
+        let mut escaped_next = false;
         let mut i = 0;
 
         for _ in 0..num_blocks {
@@ -109,23 +110,28 @@ impl ChunkIndex {
                 if i >= len {
                     break;
                 }
+                if escaped_next {
+                    escaped_next = false;
+                    if in_string {
+                        s_bits |= 1u64 << bit;
+                    }
+                    i += 1;
+                    continue;
+                }
                 if in_string {
-                    s_bits |= 1u64 << bit;
                     if buf[i] == b'\\' {
+                        s_bits |= 1u64 << bit;
+                        escaped_next = true;
                         i += 1;
-                        if i < len {
-                            i += 1;
-                            // next bit is also in string
-                            if bit + 1 < 64 {
-                                s_bits |= 1u64 << (bit + 1);
-                            }
-                        }
                         continue;
                     }
                     if buf[i] == b'"' {
                         q_bits |= 1u64 << bit;
                         in_string = false;
+                        i += 1;
+                        continue;
                     }
+                    s_bits |= 1u64 << bit;
                 } else if buf[i] == b'"' {
                     q_bits |= 1u64 << bit;
                     in_string = true;

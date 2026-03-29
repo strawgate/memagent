@@ -15,7 +15,7 @@ use logfwd_config::{Format, InputConfig, InputType, PipelineConfig};
 use logfwd_core::diagnostics::{ComponentStats, PipelineMetrics};
 use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_core::input::{FileInput, InputEvent, InputSource};
-use logfwd_core::simd_scanner::SimdScanner as Scanner;
+use logfwd_core::scanner::SimdScanner as Scanner;
 use logfwd_core::tail::TailConfig;
 use logfwd_output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
 use logfwd_transform::SqlTransform;
@@ -58,7 +58,7 @@ impl Pipeline {
         let transform_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
         let transform = SqlTransform::new(transform_sql)?;
         let scan_config = transform.scan_config();
-        let scanner = Scanner::new(scan_config, 8192);
+        let scanner = Scanner::new(scan_config);
 
         let mut metrics = PipelineMetrics::new(name, transform_sql, meter);
 
