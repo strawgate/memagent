@@ -1,3 +1,7 @@
+> **Historical reference** from the v1 implementation. See [ARCHITECTURE.md](../ARCHITECTURE.md) for the current design.
+
+---
+
 # Scanner and Transform Design
 
 Design rationale for the Arrow-first pipeline. The implementations are in
