@@ -13,8 +13,8 @@
 //!   cargo test --features simd-scanner -p logfwd-core --test scanner_conformance -- --nocapture
 
 use arrow::array::{Array, Float64Array, Int64Array, StringArray};
-use logfwd_core::scanner::ScanConfig;
-use logfwd_core::simd_scanner::SimdScanner;
+use logfwd_core::scan_config::ScanConfig;
+use logfwd_core::scanner::SimdScanner;
 use proptest::prelude::*;
 use sonic_rs::JsonContainerTrait;
 
@@ -27,7 +27,7 @@ use sonic_rs::JsonContainerTrait;
 fn assert_values_correct(input: &[u8]) {
     use sonic_rs::{JsonContainerTrait, JsonNumberTrait, JsonValueTrait};
 
-    let mut simd = SimdScanner::new(ScanConfig::default(), 64);
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let batch = simd.scan(input);
 
     // Parse each line with sonic-rs and verify the Arrow output matches
@@ -37,6 +37,30 @@ fn assert_values_correct(input: &[u8]) {
             continue;
         }
         let s = std::str::from_utf8(line).unwrap_or("");
+
+        // Skip lines with duplicate keys — our scanner does first-writer-wins,
+        // sonic-rs does last-writer-wins. Both are valid per RFC 8259.
+        // Skip lines with duplicate keys — our scanner does first-writer-wins,
+        // sonic-rs does last-writer-wins. Both are valid per RFC 8259.
+        // Use to_object_iter which yields ALL keys including duplicates.
+        {
+            let mut seen = std::collections::HashSet::new();
+            let mut has_dup = false;
+            let iter = unsafe { sonic_rs::to_object_iter_unchecked(s) };
+            for item in iter {
+                if let Ok((key, _)) = item {
+                    if !seen.insert(key.to_string()) {
+                        has_dup = true;
+                        break;
+                    }
+                }
+            }
+            if has_dup {
+                row += 1;
+                continue;
+            }
+        }
+
         let parsed: Result<sonic_rs::Value, _> = sonic_rs::from_str(s);
         let obj = match parsed {
             Ok(ref v) => match v.as_object() {
@@ -276,6 +300,109 @@ proptest! {
 }
 
 // ===========================================================================
+// Cross-builder consistency: SimdScanner vs StreamingSimdScanner
+// ===========================================================================
+
+/// Verify both scanners produce the same row count and the same non-null
+/// values for the same input. Accounts for StringArray vs StringViewArray.
+fn assert_builders_consistent(input: &[u8]) {
+    use logfwd_core::scanner::StreamingSimdScanner;
+
+    let mut storage = SimdScanner::new(ScanConfig::default());
+    let mut streaming = StreamingSimdScanner::new(ScanConfig::default());
+
+    let sb = storage.scan(input);
+    let stb = streaming.scan(bytes::Bytes::from(input.to_vec()));
+
+    assert_eq!(
+        sb.num_rows(),
+        stb.num_rows(),
+        "Row count mismatch between builders"
+    );
+
+    // Compare column names (both should produce the same set)
+    let mut s_names: Vec<_> = sb
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
+    let mut st_names: Vec<_> = stb
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
+    s_names.sort();
+    st_names.sort();
+    assert_eq!(
+        s_names, st_names,
+        "Column names differ between builders.\nStorage: {s_names:?}\nStreaming: {st_names:?}"
+    );
+
+    // Compare values row-by-row for int and float columns
+    for col_name in &s_names {
+        let s_col = sb.column_by_name(col_name).unwrap();
+        let st_col = stb.column_by_name(col_name).unwrap();
+        for row in 0..sb.num_rows() {
+            assert_eq!(
+                s_col.is_null(row),
+                st_col.is_null(row),
+                "Null mismatch at {col_name}[{row}] between builders"
+            );
+            if !s_col.is_null(row) {
+                if let Some(a) = s_col.as_any().downcast_ref::<Int64Array>() {
+                    let b = st_col.as_any().downcast_ref::<Int64Array>().unwrap();
+                    assert_eq!(
+                        a.value(row),
+                        b.value(row),
+                        "Int mismatch at {col_name}[{row}]"
+                    );
+                }
+                if let Some(a) = s_col.as_any().downcast_ref::<Float64Array>() {
+                    let b = st_col.as_any().downcast_ref::<Float64Array>().unwrap();
+                    assert!(
+                        (a.value(row) - b.value(row)).abs() < 1e-10,
+                        "Float mismatch at {col_name}[{row}]"
+                    );
+                }
+                // String comparison: StorageBuilder uses Utf8, StreamingBuilder uses Utf8View.
+                // Both support .as_any().downcast_ref::<StringArray>() won't work for views.
+                // Use arrow::array::Array::as_ref() and string accessor instead.
+                if col_name.ends_with("_str") {
+                    let s_val =
+                        arrow::compute::cast(s_col, &arrow::datatypes::DataType::Utf8).unwrap();
+                    let st_val =
+                        arrow::compute::cast(st_col, &arrow::datatypes::DataType::Utf8).unwrap();
+                    let sa = s_val.as_any().downcast_ref::<StringArray>().unwrap();
+                    let sta = st_val.as_any().downcast_ref::<StringArray>().unwrap();
+                    assert_eq!(
+                        sa.value(row),
+                        sta.value(row),
+                        "String mismatch at {col_name}[{row}]"
+                    );
+                }
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn consistency_single_line(obj in arb_flat_object(1..15)) {
+        let input = format!("{obj}\n");
+        assert_builders_consistent(input.as_bytes());
+    }
+
+    #[test]
+    fn consistency_multi_line(buf in arb_ndjson_buffer()) {
+        assert_builders_consistent(&buf);
+    }
+}
+
+// ===========================================================================
 // Curated edge cases
 // ===========================================================================
 
@@ -441,8 +568,8 @@ fn edge_large_batch() {
 fn edge_duplicate_keys() {
     let input = br#"{"a":1,"a":2}
 "#;
-    // Both scanners handle duplicates via first-writer-wins in BatchBuilder
-    let mut simd = SimdScanner::new(ScanConfig::default(), 4);
+    // Both scanners handle duplicates via first-writer-wins in the builder
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let batch = simd.scan(input);
     assert_eq!(batch.num_rows(), 1);
     // First-writer-wins
@@ -459,7 +586,7 @@ fn edge_duplicate_keys() {
 fn edge_duplicate_keys_different_types() {
     let input = br#"{"a":1,"a":"hello"}
 "#;
-    let mut simd = SimdScanner::new(ScanConfig::default(), 4);
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let batch = simd.scan(input);
     assert_eq!(batch.num_rows(), 1);
 }
@@ -469,42 +596,42 @@ fn edge_duplicate_keys_different_types() {
 #[test]
 fn no_panic_truncated_string() {
     let input = b"{\"a\":\"unterminated\n";
-    let mut simd = SimdScanner::new(ScanConfig::default(), 4);
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let _batch = simd.scan(input); // must not panic
 }
 
 #[test]
 fn no_panic_truncated_object() {
     let input = b"{\"a\":1,\"b\"\n";
-    let mut simd = SimdScanner::new(ScanConfig::default(), 4);
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let _batch = simd.scan(input);
 }
 
 #[test]
 fn no_panic_garbage() {
     let input = b"not json at all\n";
-    let mut simd = SimdScanner::new(ScanConfig::default(), 4);
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let _batch = simd.scan(input);
 }
 
 #[test]
 fn no_panic_random_bytes() {
     let input: Vec<u8> = (0..256).map(|i| i as u8).collect();
-    let mut simd = SimdScanner::new(ScanConfig::default(), 4);
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let _batch = simd.scan(&input);
 }
 
 #[test]
 fn no_panic_only_quotes() {
     let input = b"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"";
-    let mut simd = SimdScanner::new(ScanConfig::default(), 4);
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let _batch = simd.scan(input);
 }
 
 #[test]
 fn no_panic_only_backslashes() {
     let input = b"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\";
-    let mut simd = SimdScanner::new(ScanConfig::default(), 4);
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let _batch = simd.scan(input);
 }
 
@@ -520,6 +647,6 @@ fn no_panic_deeply_nested() {
         input.push('}');
     }
     input.push_str("}\n");
-    let mut simd = SimdScanner::new(ScanConfig::default(), 4);
+    let mut simd = SimdScanner::new(ScanConfig::default());
     let _batch = simd.scan(input.as_bytes());
 }

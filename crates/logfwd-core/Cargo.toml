@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+bytes = "1"
 sonic-simd = "0.1"
 arrow = { workspace = true }
 crossbeam-channel = "0.5"
