@@ -120,9 +120,12 @@ async function loadData() {
     const resp = await fetch('data/index.json');
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const index = await resp.json();
-    const results = await Promise.all(
+    const settled = await Promise.allSettled(
       index.files.map(f => fetch(`data/${f}`).then(r => r.json()))
     );
+    const results = settled
+      .filter(r => r.status === 'fulfilled')
+      .map(r => r.value);
     results.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     return results;
   } catch (e) {

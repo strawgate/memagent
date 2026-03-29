@@ -522,14 +522,63 @@ fn build_json_report(results: &[BenchResult], lines: usize, file_size: u64, args
     serde_json::to_string_pretty(&report).unwrap()
 }
 
-/// Returns current UTC time as ISO 8601 string by shelling out to `date`.
+/// Returns current UTC time as ISO 8601 string.
 fn utc_timestamp() -> String {
-    std::process::Command::new("date")
-        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    // Manual UTC breakdown — no external crate needed.
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let h = time_secs / 3600;
+    let m = (time_secs % 3600) / 60;
+    let s = time_secs % 60;
+    // Days since 1970-01-01 → year/month/day.
+    let (y, mo, d) = days_to_ymd(days);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
+fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+    // Civil calendar conversion from days since epoch.
+    let mut y = 1970;
+    loop {
+        let yd = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if days < yd {
+            break;
+        }
+        days -= yd;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let mdays = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut mo = 0;
+    for md in &mdays {
+        if days < *md {
+            break;
+        }
+        days -= md;
+        mo += 1;
+    }
+    (y, mo + 1, days + 1)
 }
 
 fn write_json_file(
@@ -540,10 +589,10 @@ fn write_json_file(
     path: &std::path::Path,
 ) {
     let json = build_json_report(results, lines, file_size, args);
-    std::fs::write(path, json).unwrap_or_else(|e| {
-        eprintln!("ERROR: failed to write JSON to {}: {e}", path.display());
-    });
-    eprintln!("JSON results written to {}", path.display());
+    match std::fs::write(path, json) {
+        Ok(()) => eprintln!("JSON results written to {}", path.display()),
+        Err(e) => eprintln!("ERROR: failed to write JSON to {}: {e}", path.display()),
+    }
 }
 
 fn print_table(results: &[BenchResult], lines: usize, file_size: u64) {

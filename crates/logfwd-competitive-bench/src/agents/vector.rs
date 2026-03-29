@@ -58,7 +58,8 @@ transforms:
     inputs: ["bench_in"]
     condition:
       type: vrl
-      source: 'includes(["WARN", "ERROR"], parse_json!(string!(.message)).level)'
+      source: |
+        match(string!(.message), r'"level":"(WARN|ERROR)"')
 "#
             .to_string(),
         };
