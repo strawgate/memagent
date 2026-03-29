@@ -463,7 +463,7 @@ fn build_json_report(results: &[BenchResult], lines: usize, file_size: u64, args
         .unwrap_or_default();
 
     let report = JsonReport {
-        timestamp: chrono_now(),
+        timestamp: utc_timestamp(),
         commit,
         lines,
         file_size_bytes: file_size,
@@ -476,8 +476,8 @@ fn build_json_report(results: &[BenchResult], lines: usize, file_size: u64, args
     serde_json::to_string_pretty(&report).unwrap()
 }
 
-/// Returns current UTC time as ISO 8601 string without pulling in chrono.
-fn chrono_now() -> String {
+/// Returns current UTC time as ISO 8601 string by shelling out to `date`.
+fn utc_timestamp() -> String {
     std::process::Command::new("date")
         .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
         .output()
@@ -609,7 +609,9 @@ impl Args {
                     eprintln!("  --agents A,B,C       Agents to run (default: all)");
                     eprintln!("  --markdown           Output markdown table");
                     eprintln!("  --json               Output structured JSON (for CI dashboards)");
-                    eprintln!("  --json-file PATH     Write JSON results to file (combinable with --markdown)");
+                    eprintln!(
+                        "  --json-file PATH     Write JSON results to file (combinable with --markdown)"
+                    );
                     eprintln!("  --no-download        Skip binary downloads");
                     eprintln!("  --docker             Run in Docker with resource limits");
                     eprintln!("  --cpus N             CPU limit per container (default: 1)");

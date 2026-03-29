@@ -152,7 +152,8 @@ function renderStats(data) {
   // Fastest competitor
   const competitors = latest.results.filter(r => r.name !== 'logfwd' && r.elapsed_ms > 0);
   const fastest = competitors.sort((a, b) => a.elapsed_ms - b.elapsed_ms)[0];
-  const speedup = fastest ? (fastest.elapsed_ms / logfwd.elapsed_ms).toFixed(1) : 'N/A';
+  const speedup = (fastest && logfwd.elapsed_ms > 0)
+    ? (fastest.elapsed_ms / logfwd.elapsed_ms).toFixed(1) : 'N/A';
 
   container.innerHTML = `
     <div class="stat-card">

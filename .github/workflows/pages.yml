@@ -54,6 +54,7 @@ jobs:
             echo "  Downloading ${name} (id: ${id})..."
             gh api "repos/${{ github.repository }}/actions/artifacts/${id}/zip" \
               > "/tmp/${name}.zip" 2>/dev/null || continue
+            rm -rf /tmp/extract
             unzip -qo "/tmp/${name}.zip" -d /tmp/extract 2>/dev/null || continue
 
             # The artifact contains bench-result.json — rename using date+commit from JSON
