@@ -336,14 +336,11 @@ fn find_quotes_and_backslashes(data: &[u8; 64]) -> (u64, u64) {
 
 /// Build a u64 bitmask where bit i is set if data[i] == needle.
 ///
-/// Note: LLVM compiles this to branchless scalar code (cmpb+sete),
-/// not SIMD. The `<< i` variable shift prevents auto-vectorization.
-/// This is still fast because: (1) branchless = no mispredictions,
-/// (2) the real bottleneck is `compute_real_quotes` not character
-/// detection, (3) it's ~550 lines simpler than hand-written NEON.
-///
-/// If profiling shows this is a bottleneck, consider `std::simd`
-/// (when stabilized) or a targeted `#[cfg(target_arch)]` override.
+/// LLVM auto-vectorizes this when compiled as a standalone function
+/// (verified: pcmpeqb on SSE2, vpcmpeqb on AVX2/512), but thin LTO
+/// inlines it into ChunkIndex::new where LLVM's cost model skips
+/// vectorization, producing branchless scalar code (cmpb+sete) instead.
+/// Still fast enough — character detection is not the bottleneck.
 #[inline]
 fn find_char_mask(data: &[u8; 64], needle: u8) -> u64 {
     let mut bits: u64 = 0;
