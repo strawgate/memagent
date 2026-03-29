@@ -47,6 +47,26 @@ deny:
 build:
     cargo build --release
 
+# Build release binary with Profile-Guided Optimisation (PGO).
+# Runs a training workload automatically; output binary is target/release/logfwd-pgo.
+# Requires llvm-profdata on PATH (e.g. `sudo apt install llvm`).
+build-pgo:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PGO_DIR=$(mktemp -d)
+    echo "==> Step 1: build with PGO instrumentation (profile-generate)"
+    RUSTFLAGS="-Cprofile-generate=${PGO_DIR}" cargo build --release -p logfwd
+    echo "==> Step 2: run training workload to collect profiles"
+    LOGFWD=./target/release/logfwd cargo run -p logfwd-competitive-bench --release -- \
+        --lines 500000 --mode binary --cpus 1 --memory 1g \
+        --scenarios passthrough,json_parse,filter
+    echo "==> Step 3: merge raw profiles"
+    llvm-profdata merge -output="${PGO_DIR}/merged.profdata" "${PGO_DIR}"/*.profraw
+    echo "==> Step 4: rebuild with PGO profile applied"
+    RUSTFLAGS="-Cprofile-use=${PGO_DIR}/merged.profdata" cargo build --release -p logfwd
+    cp target/release/logfwd target/release/logfwd-pgo
+    echo "PGO binary written to target/release/logfwd-pgo"
+
 # Run criterion microbenchmarks
 bench:
     cargo bench -p logfwd-bench

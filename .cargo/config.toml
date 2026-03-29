@@ -2,7 +2,10 @@
 rustc-wrapper = "sccache"
 
 # Deny common mistakes in all builds (not just CI).
+# Enable AVX2/BMI2/FMA on x86-64-v3 (Haswell+) for better throughput on CI runners.
+# Override locally with RUSTFLAGS="" if your CPU predates Haswell (2013).
 [target.'cfg(all())']
 rustflags = [
     "-Dclippy::dbg_macro",
+    "-Ctarget-cpu=x86-64-v3",
 ]

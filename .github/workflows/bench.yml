@@ -42,6 +42,37 @@ jobs:
           cargo build --release -p logfwd
 
       # ---------------------------------------------------------------
+      # PGO — profile-guided optimisation for the release binary
+      # ---------------------------------------------------------------
+
+      - name: Install LLVM tools for PGO
+        run: sudo apt-get install -y -qq llvm
+
+      - name: Build logfwd with PGO instrumentation
+        env:
+          RUSTFLAGS: "-Cprofile-generate=/tmp/pgo-data"
+        run: cargo build --release -p logfwd
+
+      - name: Run training workload to generate PGO profiles
+        run: >
+          just bench-competitive
+          --lines 1000000
+          --mode binary --cpus 1 --memory 1g
+          --scenarios passthrough,json_parse,filter
+        env:
+          LOGFWD: ./target/release/logfwd
+
+      - name: Merge PGO profile data
+        run: llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw
+
+      - name: Rebuild logfwd with PGO profile applied
+        env:
+          RUSTFLAGS: "-Cprofile-use=/tmp/pgo-data/merged.profdata"
+        run: |
+          cargo build --release -p logfwd
+          cp target/release/logfwd target/release/logfwd-pgo
+
+      # ---------------------------------------------------------------
       # Criterion microbenchmarks
       # ---------------------------------------------------------------
 
@@ -70,6 +101,18 @@ jobs:
         env:
           LOGFWD: ./target/release/logfwd
 
+      - name: Run PGO competitive benchmarks (delta report)
+        run: >
+          just bench-competitive
+          --lines 5000000
+          --mode binary --cpus 1 --memory 1g
+          --scenarios passthrough,json_parse,filter
+          --markdown
+          --json-file bench-result-pgo.json
+          > competitive_pgo_body.md
+        env:
+          LOGFWD: ./target/release/logfwd-pgo
+
       # ---------------------------------------------------------------
       # Upload artifacts
       # ---------------------------------------------------------------
@@ -80,6 +123,7 @@ jobs:
           name: bench-result-${{ github.run_number }}
           path: |
             bench-result.json
+            bench-result-pgo.json
             gh-bench.json
           retention-days: 90
 
@@ -132,6 +176,12 @@ jobs:
           ---
 
           $(cat competitive_body.md)
+
+          ---
+
+          ### PGO delta (profile-guided optimisation vs standard release)
+
+          $(cat competitive_pgo_body.md)
 
           ---
 
