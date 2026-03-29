@@ -545,10 +545,10 @@ mod tests {
         let buf = br#"{"A1":"\n\"","B":"x"}"#;
         let idx = ChunkIndex::new(buf);
         // Key "A1" at positions 1-4
-        let (k, after_k) = idx.scan_string(buf, 1).unwrap();
+        let (k, _after_k) = idx.scan_string(buf, 1).unwrap();
         assert_eq!(k, b"A1");
         // Value "\n\"" at positions 6-11
-        let (v, after_v) = idx.scan_string(buf, 6).unwrap();
+        let (v, _after_v) = idx.scan_string(buf, 6).unwrap();
         assert_eq!(v, b"\\n\\\"", "got: {:?}", std::str::from_utf8(v));
         // Key "B" should be findable after the comma
         let (k2, _) = idx.scan_string(buf, 13).unwrap();
@@ -584,7 +584,7 @@ mod tests {
 
         // Verify: real quotes should be at {1,3,5,29,31,33,35,36,38,40,42,43,45,47}
         // Key "a" at 1, closing at 3
-        let (k, ak) = idx.scan_string(buf, 1).unwrap();
+        let (k, _ak) = idx.scan_string(buf, 1).unwrap();
         assert_eq!(k, b"a", "key a");
 
         // Value string opens at 5, should close at 29

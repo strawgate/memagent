@@ -111,6 +111,7 @@ impl QueryAnalyzer {
                 wanted_fields: vec![],
                 extract_all: true,
                 keep_raw: true,
+                validate_utf8: false,
             }
         } else {
             use logfwd_core::scan_config::FieldSpec;
@@ -130,6 +131,7 @@ impl QueryAnalyzer {
                 wanted_fields: wanted,
                 extract_all: false,
                 keep_raw: false,
+                validate_utf8: false,
             }
         }
     }

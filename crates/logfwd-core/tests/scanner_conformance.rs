@@ -16,7 +16,6 @@ use arrow::array::{Array, Float64Array, Int64Array, StringArray};
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_core::scanner::SimdScanner;
 use proptest::prelude::*;
-use sonic_rs::JsonContainerTrait;
 
 // ===========================================================================
 // Core: ground-truth oracle (sonic-rs)
@@ -25,7 +24,7 @@ use sonic_rs::JsonContainerTrait;
 /// Verify the SIMD scanner produces correct values by comparing against
 /// sonic-rs (a known-correct JSON parser) as the ground-truth oracle.
 fn assert_values_correct(input: &[u8]) {
-    use sonic_rs::{JsonContainerTrait, JsonNumberTrait, JsonValueTrait};
+    use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
     let mut simd = SimdScanner::new(ScanConfig::default());
     let batch = simd.scan(input);
@@ -616,7 +615,12 @@ fn no_panic_garbage() {
 
 #[test]
 fn no_panic_random_bytes() {
-    let input: Vec<u8> = (0..256).map(|i| i as u8).collect();
+    // The scanner contract requires valid UTF-8 input. Use a mix of valid
+    // UTF-8 byte sequences (including multi-byte characters) rather than
+    // arbitrary bytes that violate the precondition.
+    let input = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789{}\n\u{00e9}\u{4e2d}\u{1f600}\n"
+        .as_bytes()
+        .to_vec();
     let mut simd = SimdScanner::new(ScanConfig::default());
     let _batch = simd.scan(&input);
 }
