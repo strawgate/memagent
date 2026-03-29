@@ -287,8 +287,9 @@ fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
         for p in &pipelines {
             server.add_pipeline(Arc::clone(p.metrics()));
         }
+        let handle = server.start()?;
         eprintln!("  {}diagnostics{}: http://{addr}", dim(), reset());
-        Some(server.start())
+        Some(handle)
     } else {
         None
     };
