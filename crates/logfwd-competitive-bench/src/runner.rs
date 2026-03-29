@@ -45,6 +45,7 @@ impl Default for DockerLimits {
 pub struct BenchResult {
     pub name: String,
     pub scenario: Scenario,
+    pub mode: String,
     pub lines_done: u64,
     pub elapsed_ms: u64,
 }
@@ -87,6 +88,7 @@ pub fn run_agent(
     Ok(BenchResult {
         name: agent.name().to_string(),
         scenario,
+        mode: "binary".to_string(),
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
     })
@@ -108,11 +110,19 @@ pub fn run_agent_docker(
     // Write config. Agent writes it using host addresses; we rewrite for Docker.
     let config_path = agent.write_config(ctx, scenario)?;
 
-    // Rewrite config file: host paths → /bench, host blackhole → Docker-reachable addr.
+    // Rewrite config file: host paths → /bench, host addresses → Docker-reachable.
+    // Replace the full host:port first, then bare IP for other ports (e.g., K8s API).
     if let Ok(content) = std::fs::read_to_string(&config_path) {
+        let host_ip = ctx.blackhole_addr.split(':').next().unwrap_or("127.0.0.1");
+        let docker_ip = ctx
+            .docker_blackhole_addr
+            .split(':')
+            .next()
+            .unwrap_or(host_ip);
         let rewritten = content
             .replace(&ctx.bench_dir.to_string_lossy().to_string(), "/bench")
-            .replace(&ctx.blackhole_addr, &ctx.docker_blackhole_addr);
+            .replace(&ctx.blackhole_addr, &ctx.docker_blackhole_addr)
+            .replace(host_ip, docker_ip);
         let _ = std::fs::write(&config_path, rewritten);
     }
 
@@ -199,6 +209,7 @@ pub fn run_agent_docker(
     Ok(BenchResult {
         name: agent.name().to_string(),
         scenario,
+        mode: "docker".to_string(),
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
     })

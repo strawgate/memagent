@@ -44,13 +44,16 @@ impl Agent for Vlagent {
 
     fn write_config(&self, ctx: &BenchContext, _scenario: Scenario) -> Result<PathBuf, String> {
         // vlagent uses CLI flags, not a config file. Write a kubeconfig instead.
+        // Use the blackhole host IP so the Docker config rewriter can replace it
+        // with the Docker-accessible address (host.docker.internal on macOS).
+        let host = ctx.blackhole_addr.split(':').next().unwrap_or("127.0.0.1");
         let kubeconfig_path = ctx.bench_dir.join("vlagent-kubeconfig");
         let kubeconfig = format!(
             r#"apiVersion: v1
 kind: Config
 clusters:
   - cluster:
-      server: http://127.0.0.1:{FAKE_K8S_PORT}
+      server: http://{host}:{FAKE_K8S_PORT}
       insecure-skip-tls-verify: true
     name: fake
 contexts:
