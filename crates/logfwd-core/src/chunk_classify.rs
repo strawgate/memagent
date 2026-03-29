@@ -5,9 +5,11 @@
 // SIMD loads.
 //
 // This is the simdjson "stage 1" algorithm adapted for our use case.
+//
+// Uses sonic-simd for portable SIMD — works on aarch64 (NEON), x86_64 (SSE2),
+// and falls back to scalar automatically. No platform-specific intrinsics.
 
-#[cfg(target_arch = "aarch64")]
-use core::arch::aarch64::*;
+use sonic_simd::{Mask, Simd, u8x16};
 
 /// Pre-computed structural classification for a buffer.
 ///
@@ -23,7 +25,10 @@ pub struct ChunkIndex {
 
 impl ChunkIndex {
     /// Classify an entire buffer in one SIMD pass.
-    #[cfg(target_arch = "aarch64")]
+    ///
+    /// Processes the buffer in 64-byte blocks (4x 16-byte SIMD loads).
+    /// For each block, produces bitmasks for unescaped quote positions
+    /// and string interior positions.
     pub fn new(buf: &[u8]) -> Self {
         let len = buf.len();
         let num_blocks = len.div_ceil(64);
@@ -38,16 +43,12 @@ impl ChunkIndex {
             let remaining = len - offset;
 
             let (quote_bits, bs_bits) = if remaining >= 64 {
-                // Full block — read directly from buffer, no copy.
-                // SAFETY: remaining >= 64 guarantees 64 readable bytes.
-                unsafe {
-                    find_quotes_and_backslashes(&*(buf.as_ptr().add(offset) as *const [u8; 64]))
-                }
+                find_quotes_and_backslashes(buf, offset)
             } else {
                 // Tail block — pad with spaces.
                 let mut padded = [b' '; 64];
                 padded[..remaining].copy_from_slice(&buf[offset..offset + remaining]);
-                unsafe { find_quotes_and_backslashes(&padded) }
+                find_quotes_and_backslashes(&padded, 0)
             };
             let real_q = compute_real_quotes(quote_bits, bs_bits, &mut prev_odd_backslash);
 
@@ -88,63 +89,6 @@ impl ChunkIndex {
         ChunkIndex {
             real_quotes,
             in_string,
-            buf_len: len,
-        }
-    }
-
-    /// Scalar fallback for non-aarch64 platforms.
-    #[cfg(not(target_arch = "aarch64"))]
-    pub fn new(buf: &[u8]) -> Self {
-        let len = buf.len();
-        let num_blocks = len.div_ceil(64);
-        let mut real_quotes = Vec::with_capacity(num_blocks);
-        let mut in_string_vec = Vec::with_capacity(num_blocks);
-        let mut in_string = false;
-        let mut escaped_next = false;
-        let mut i = 0;
-
-        for _ in 0..num_blocks {
-            let mut q_bits: u64 = 0;
-            let mut s_bits: u64 = 0;
-            for bit in 0..64u64 {
-                if i >= len {
-                    break;
-                }
-                if escaped_next {
-                    escaped_next = false;
-                    if in_string {
-                        s_bits |= 1u64 << bit;
-                    }
-                    i += 1;
-                    continue;
-                }
-                if in_string {
-                    if buf[i] == b'\\' {
-                        s_bits |= 1u64 << bit;
-                        escaped_next = true;
-                        i += 1;
-                        continue;
-                    }
-                    if buf[i] == b'"' {
-                        q_bits |= 1u64 << bit;
-                        in_string = false;
-                        i += 1;
-                        continue;
-                    }
-                    s_bits |= 1u64 << bit;
-                } else if buf[i] == b'"' {
-                    q_bits |= 1u64 << bit;
-                    in_string = true;
-                }
-                i += 1;
-            }
-            real_quotes.push(q_bits);
-            in_string_vec.push(s_bits);
-        }
-
-        ChunkIndex {
-            real_quotes,
-            in_string: in_string_vec,
             buf_len: len,
         }
     }
@@ -375,57 +319,34 @@ fn prefix_xor(mut bitmask: u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// NEON intrinsics
+// Portable SIMD character detection (via sonic-simd)
 // ---------------------------------------------------------------------------
 
-#[cfg(target_arch = "aarch64")]
+/// Find quote and backslash positions in a 64-byte block using SIMD.
+///
+/// Processes 4x 16-byte chunks via sonic-simd, producing a u64 bitmask
+/// where bit i indicates the character at position offset+i matches.
+///
+/// Works on aarch64 (NEON), x86_64 (SSE2), and scalar fallback automatically.
 #[inline]
-unsafe fn find_quotes_and_backslashes(data: &[u8; 64]) -> (u64, u64) {
-    unsafe {
-        let ptr = data.as_ptr();
-        let v0 = vld1q_u8(ptr);
-        let v1 = vld1q_u8(ptr.add(16));
-        let v2 = vld1q_u8(ptr.add(32));
-        let v3 = vld1q_u8(ptr.add(48));
+fn find_quotes_and_backslashes(buf: &[u8], offset: usize) -> (u64, u64) {
+    let quote_vec = u8x16::splat(b'"');
+    let bs_vec = u8x16::splat(b'\\');
+    let ptr = buf.as_ptr();
 
-        let quote = vdupq_n_u8(b'"');
-        let backslash = vdupq_n_u8(b'\\');
+    let mut q_bits: u64 = 0;
+    let mut bs_bits: u64 = 0;
 
-        let q0 = vceqq_u8(v0, quote);
-        let q1 = vceqq_u8(v1, quote);
-        let q2 = vceqq_u8(v2, quote);
-        let q3 = vceqq_u8(v3, quote);
-
-        let b0 = vceqq_u8(v0, backslash);
-        let b1 = vceqq_u8(v1, backslash);
-        let b2 = vceqq_u8(v2, backslash);
-        let b3 = vceqq_u8(v3, backslash);
-
-        (
-            neon_to_bitmask64(q0, q1, q2, q3),
-            neon_to_bitmask64(b0, b1, b2, b3),
-        )
+    for i in 0..4 {
+        // SAFETY: caller guarantees offset + 64 <= buf.len() (or uses padded buffer)
+        let chunk = unsafe { u8x16::loadu(ptr.add(offset + i * 16)) };
+        let q_mask = chunk.eq(&quote_vec).bitmask() as u64;
+        let bs_mask = chunk.eq(&bs_vec).bitmask() as u64;
+        q_bits |= q_mask << (i * 16);
+        bs_bits |= bs_mask << (i * 16);
     }
-}
 
-#[cfg(target_arch = "aarch64")]
-#[inline]
-unsafe fn neon_to_bitmask64(v0: uint8x16_t, v1: uint8x16_t, v2: uint8x16_t, v3: uint8x16_t) -> u64 {
-    unsafe {
-        let bit_mask: uint8x16_t = core::mem::transmute([
-            0x01u8, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20,
-            0x40, 0x80,
-        ]);
-        let t0 = vandq_u8(v0, bit_mask);
-        let t1 = vandq_u8(v1, bit_mask);
-        let t2 = vandq_u8(v2, bit_mask);
-        let t3 = vandq_u8(v3, bit_mask);
-        let pair01 = vpaddq_u8(t0, t1);
-        let pair23 = vpaddq_u8(t2, t3);
-        let quad = vpaddq_u8(pair01, pair23);
-        let octa = vpaddq_u8(quad, quad);
-        vgetq_lane_u64(vreinterpretq_u64_u8(octa), 0)
-    }
+    (q_bits, bs_bits)
 }
 
 // ---------------------------------------------------------------------------
