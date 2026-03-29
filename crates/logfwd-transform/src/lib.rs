@@ -20,6 +20,8 @@ use datafusion::prelude::*;
 
 use logfwd_core::scanner::ScanConfig;
 
+pub mod udf;
+
 // Re-export sqlparser through datafusion.
 use datafusion::sql::sqlparser::ast::{
     self as sqlast, Expr as SqlExpr, SelectItem, SetExpr, Statement, WildcardAdditionalOptions,
@@ -247,7 +249,7 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
 
 /// UDF: int(col) — safe cast from Utf8 to Int64, returns NULL on failure.
 #[derive(Debug)]
-struct IntCastUdf {
+pub(crate) struct IntCastUdf {
     signature: Signature,
 }
 
@@ -412,6 +414,8 @@ impl SqlTransform {
             // Register custom UDFs.
             ctx.register_udf(ScalarUDF::from(IntCastUdf::new()));
             ctx.register_udf(ScalarUDF::from(FloatCastUdf::new()));
+            ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
+            ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
 
             // Register the batch as a MemTable named "logs".
             let schema = batch.schema();

@@ -1650,6 +1650,7 @@ dependencies = [
  "arrow",
  "datafusion",
  "logfwd-core",
+ "regex",
  "tokio",
 ]
 

@@ -9,6 +9,8 @@ arrow = { workspace = true }
 datafusion = { version = "45", default-features = false, features = [
     "string_expressions",
     "unicode_expressions",
+    "regex_expressions",
     "recursive_protection",
 ] }
+regex = "1"
 tokio = { version = "1", features = ["rt"] }
