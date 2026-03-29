@@ -56,8 +56,6 @@ pub struct FilterHints {
     /// unreferenced fields (field pushdown, already in ScanConfig).
     pub wanted_fields: Option<Vec<String>>,
 
-    /// True if the query uses SELECT * (need all fields).
-    pub wants_all_fields: bool,
 }
 ```
 
@@ -150,8 +148,6 @@ impl QueryAnalyzer {
         } else {
             Some(self.referenced_columns.iter().cloned().collect())
         };
-        hints.wants_all_fields = self.uses_select_star;
-
         hints
     }
 }

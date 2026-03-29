@@ -139,7 +139,7 @@ def read_ringbuf(rb_fd, rb_size):
             hdr = struct.unpack_from('<I', data_mm, off)[0]
             entry_len = hdr & 0x0FFFFFFF
             busy = (hdr >> 31) & 1
-            if busy or entry_len == 0:
+            if busy or entry_len == 0 or entry_len > rb_size:
                 break
             aligned = (entry_len + 7) & ~7
             discard = (hdr >> 30) & 1

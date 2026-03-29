@@ -182,16 +182,16 @@ fn extract_pushable_predicates(expr: &SqlExpr, hints: &mut logfwd_core::filter_h
                 if let Some(val) = expr_as_u8_literal(right) {
                     match (col_base.as_str(), op) {
                         ("severity", sqlast::BinaryOperator::LtEq) => {
-                            hints.max_severity = Some(val);
+                            tighten_max_severity(&mut hints.max_severity, val);
                         }
                         ("severity", sqlast::BinaryOperator::Lt) if val > 0 => {
-                            hints.max_severity = Some(val - 1);
+                            tighten_max_severity(&mut hints.max_severity, val - 1);
                         }
                         ("severity", sqlast::BinaryOperator::Eq) => {
-                            hints.max_severity = Some(val);
+                            tighten_max_severity(&mut hints.max_severity, val);
                         }
                         ("facility", sqlast::BinaryOperator::Eq) => {
-                            hints.facilities = Some(vec![val]);
+                            tighten_facilities(&mut hints.facilities, vec![val]);
                         }
                         _ => {}
                     }
@@ -203,12 +203,10 @@ fn extract_pushable_predicates(expr: &SqlExpr, hints: &mut logfwd_core::filter_h
                 if let Some(val) = expr_as_u8_literal(left) {
                     match (col_base.as_str(), op) {
                         ("severity", sqlast::BinaryOperator::GtEq) => {
-                            // N >= severity means severity <= N
-                            hints.max_severity = Some(val);
+                            tighten_max_severity(&mut hints.max_severity, val);
                         }
                         ("severity", sqlast::BinaryOperator::Gt) if val > 0 => {
-                            // N > severity means severity < N, i.e. severity <= N-1
-                            hints.max_severity = Some(val - 1);
+                            tighten_max_severity(&mut hints.max_severity, val - 1);
                         }
                         _ => {}
                     }
@@ -226,7 +224,7 @@ fn extract_pushable_predicates(expr: &SqlExpr, hints: &mut logfwd_core::filter_h
                 if col_base == "facility" {
                     let vals: Vec<u8> = list.iter().filter_map(expr_as_u8_literal).collect();
                     if !vals.is_empty() && vals.len() == list.len() {
-                        hints.facilities = Some(vals);
+                        tighten_facilities(&mut hints.facilities, vals);
                     }
                 }
             }
@@ -240,10 +238,24 @@ fn extract_pushable_predicates(expr: &SqlExpr, hints: &mut logfwd_core::filter_h
     }
 }
 
-/// Extract column name from a simple identifier expression.
+/// Tighten severity bound: keep the minimum of existing and new.
+fn tighten_max_severity(slot: &mut Option<u8>, candidate: u8) {
+    *slot = Some(slot.map_or(candidate, |cur| cur.min(candidate)));
+}
+
+/// Tighten facility set: intersect with existing, or set if first time.
+fn tighten_facilities(slot: &mut Option<Vec<u8>>, candidate: Vec<u8>) {
+    match slot {
+        Some(current) => current.retain(|f| candidate.contains(f)),
+        None => *slot = Some(candidate),
+    }
+}
+
+/// Extract column name from an identifier expression.
 fn expr_as_column(expr: &SqlExpr) -> Option<String> {
     match expr {
         SqlExpr::Identifier(ident) => Some(ident.value.clone()),
+        SqlExpr::CompoundIdentifier(parts) => parts.last().map(|ident| ident.value.clone()),
         _ => None,
     }
 }
@@ -1048,5 +1060,24 @@ mod tests {
         let a = QueryAnalyzer::new("SELECT * FROM logs WHERE 5 > severity").unwrap();
         let h = a.filter_hints();
         assert_eq!(h.max_severity, Some(4));
+    }
+
+    #[test]
+    fn test_filter_hints_tighten_severity() {
+        // Multiple severity bounds should keep the tightest (minimum)
+        let a =
+            QueryAnalyzer::new("SELECT * FROM logs WHERE severity <= 4 AND severity <= 2").unwrap();
+        let h = a.filter_hints();
+        assert_eq!(h.max_severity, Some(2)); // tighter bound wins
+    }
+
+    #[test]
+    fn test_filter_hints_tighten_facility() {
+        // Multiple facility constraints should intersect
+        let a =
+            QueryAnalyzer::new("SELECT * FROM logs WHERE facility IN (1, 4, 16) AND facility = 4")
+                .unwrap();
+        let h = a.filter_hints();
+        assert_eq!(h.facilities, Some(vec![4])); // intersection
     }
 }

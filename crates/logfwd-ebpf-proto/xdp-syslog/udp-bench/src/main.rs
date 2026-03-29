@@ -424,21 +424,21 @@ fn main() -> io::Result<()> {
 
     match mode.as_str() {
         "receive" => {
-            let port: u16 = get_arg("port", "5514").parse().unwrap();
-            let sev: u8 = get_arg("severity", "4").parse().unwrap();
-            let batch: usize = get_arg("batch", "64").parse().unwrap();
+            let port: u16 = get_arg("port", "5514").parse().expect("invalid argument value");
+            let sev: u8 = get_arg("severity", "4").parse().expect("invalid argument value");
+            let batch: usize = get_arg("batch", "64").parse().expect("invalid argument value");
             run_receiver(port, sev, batch)
         }
         "receive-batch" => {
-            let port: u16 = get_arg("port", "5514").parse().unwrap();
-            let sev: u8 = get_arg("severity", "4").parse().unwrap();
-            let batch: usize = get_arg("batch", "64").parse().unwrap();
+            let port: u16 = get_arg("port", "5514").parse().expect("invalid argument value");
+            let sev: u8 = get_arg("severity", "4").parse().expect("invalid argument value");
+            let batch: usize = get_arg("batch", "64").parse().expect("invalid argument value");
             run_batch_receiver(port, sev, batch)
         }
         "generate" => {
-            let port: u16 = get_arg("port", "5514").parse().unwrap();
-            let count: u64 = get_arg("count", "1000000").parse().unwrap();
-            let pps: u64 = get_arg("pps", "0").parse().unwrap();
+            let port: u16 = get_arg("port", "5514").parse().expect("invalid argument value");
+            let count: u64 = get_arg("count", "1000000").parse().expect("invalid argument value");
+            let pps: u64 = get_arg("pps", "0").parse().expect("invalid argument value");
             run_generator(port, count, pps)
         }
         _ => {
