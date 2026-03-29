@@ -224,7 +224,7 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
             )))
         }
         _ => Err(format!(
-            "output '{name}': type {:?} not yet supported in v2 pipeline",
+            "output '{name}': type {:?} not yet supported",
             cfg.output_type
         )),
     }

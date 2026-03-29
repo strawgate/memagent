@@ -59,7 +59,7 @@ fn main() -> io::Result<()> {
             return Ok(());
         }
 
-        return run_v2_pipelines(config, dry_run);
+        return run_pipelines(config, dry_run);
     }
 
     eprintln!("Unknown command: {}", args[1]);
@@ -174,8 +174,8 @@ fn run_blackhole(addr: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn run_v2_pipelines(config: logfwd_config::Config, dry_run: bool) -> io::Result<()> {
-    use logfwd::pipeline_v2::Pipeline;
+fn run_pipelines(config: logfwd_config::Config, dry_run: bool) -> io::Result<()> {
+    use logfwd::pipeline::Pipeline;
     use logfwd_core::diagnostics::DiagnosticsServer;
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -208,7 +208,7 @@ fn run_v2_pipelines(config: logfwd_config::Config, dry_run: bool) -> io::Result<
         None
     };
 
-    eprintln!("logfwd v2 starting ({} pipeline(s))", pipelines.len());
+    eprintln!("logfwd starting ({} pipeline(s))", pipelines.len());
 
     // Run each pipeline on its own thread.
     let mut handles = Vec::new();

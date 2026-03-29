@@ -1,4 +1,4 @@
-//! V2 pipeline: YAML config → inputs → Scanner → DataFusion SQL → output sinks.
+//! Pipeline: YAML config → inputs → Scanner → SQL transform → output sinks.
 //!
 //! Single thread per pipeline. All components are already built and tested;
 //! this module wires them together.
@@ -23,7 +23,7 @@ use logfwd_transform::SqlTransform;
 // ---------------------------------------------------------------------------
 
 struct InputState {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "reserved for future per-input logging")]
     name: String,
     source: Box<dyn InputSource>,
     parser: Box<dyn FormatParser>,
@@ -36,9 +36,9 @@ struct InputState {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-/// A single v2 pipeline: inputs → Scanner → DataFusion SQL → output sinks.
+/// A single pipeline: inputs → Scanner → SQL transform → output sinks.
 pub struct Pipeline {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "reserved for future per-pipeline logging")]
     name: String,
     inputs: Vec<InputState>,
     scanner: Scanner,
@@ -234,7 +234,7 @@ fn build_input_state(
             })
         }
         _ => Err(format!(
-            "input '{name}': type {:?} not yet supported in v2 pipeline",
+            "input '{name}': type {:?} not yet supported",
             cfg.input_type
         )),
     }

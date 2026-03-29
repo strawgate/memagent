@@ -1,1 +1,1 @@
-pub mod pipeline_v2;
+pub mod pipeline;
