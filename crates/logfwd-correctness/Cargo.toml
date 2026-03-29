@@ -1,0 +1,22 @@
+[package]
+name = "logfwd-correctness"
+version = "0.1.0"
+edition = "2024"
+# This crate exists solely for integration / correctness tests.
+# It has no library code of its own — all tests live under tests/.
+
+[lib]
+# Provide a tiny helper library for the test modules.
+name = "logfwd_correctness"
+path = "src/lib.rs"
+
+[dependencies]
+logfwd-core = { path = "../logfwd-core" }
+logfwd-output = { path = "../logfwd-output" }
+arrow = { workspace = true, features = ["prettyprint"] }
+
+[dev-dependencies]
+logfwd-core = { path = "../logfwd-core" }
+logfwd-output = { path = "../logfwd-output" }
+arrow = { workspace = true, features = ["prettyprint"] }
+serde_json = "1"

@@ -15,9 +15,9 @@ mod loki;
 mod parquet;
 
 pub use fanout::FanOut;
+pub use stdout::{StdoutFormat, StdoutSink};
 use json_lines::*;
 use otlp_sink::*;
-use stdout::*;
 
 use std::io::{self, Write};
 

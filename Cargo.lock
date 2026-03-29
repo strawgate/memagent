@@ -1895,6 +1895,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "logfwd-correctness"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "logfwd-core",
+ "logfwd-output",
+ "serde_json",
+]
+
+[[package]]
 name = "logfwd-output"
 version = "0.1.0"
 dependencies = [

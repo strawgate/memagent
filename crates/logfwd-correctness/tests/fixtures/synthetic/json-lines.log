@@ -1,0 +1,10 @@
+{"timestamp":"2024-01-15T10:30:00Z","level":"info","service":"api","msg":"request received","method":"GET","path":"/users","status":200,"duration_ms":12}
+{"timestamp":"2024-01-15T10:30:01Z","level":"warn","service":"api","msg":"slow query","method":"POST","path":"/orders","status":201,"duration_ms":340}
+{"timestamp":"2024-01-15T10:30:02Z","level":"error","service":"worker","msg":"job failed","job_id":"abc123","retries":3,"error":"timeout after 30s"}
+{"timestamp":"2024-01-15T10:30:03Z","level":"info","service":"api","msg":"request received","method":"DELETE","path":"/sessions/xyz","status":204,"duration_ms":5}
+{"timestamp":"2024-01-15T10:30:04Z","level":"info","service":"db","msg":"connection pool healthy","pool_size":10,"active":3,"idle":7}
+{"timestamp":"2024-01-15T10:30:05Z","level":"debug","service":"api","msg":"cache hit","key":"user:42","ttl":3600}
+{"timestamp":"2024-01-15T10:30:06Z","level":"info","service":"api","msg":"request received","method":"GET","path":"/metrics","status":200,"duration_ms":2}
+{"timestamp":"2024-01-15T10:30:07Z","level":"error","service":"mailer","msg":"smtp error","to":"user@example.com","code":550}
+{"timestamp":"2024-01-15T10:30:08Z","level":"info","service":"api","msg":"request received","method":"PUT","path":"/users/42","status":200,"duration_ms":18}
+{"timestamp":"2024-01-15T10:30:09Z","level":"info","service":"worker","msg":"job completed","job_id":"def456","duration_ms":1200}

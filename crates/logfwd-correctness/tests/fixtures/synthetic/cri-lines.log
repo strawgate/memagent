@@ -1,0 +1,8 @@
+2024-01-15T10:30:00.123456789Z stdout F {"level":"info","msg":"server started","port":8080}
+2024-01-15T10:30:01.000000000Z stdout F {"level":"info","msg":"request received","method":"GET","path":"/health","status":200}
+2024-01-15T10:30:02.500000000Z stderr F {"level":"error","msg":"connection refused","host":"db:5432"}
+2024-01-15T10:30:03.000000000Z stdout P {"level":"warn","msg":"partial-line-chunk-one-
+2024-01-15T10:30:03.000000001Z stdout F partial-line-chunk-two","component":"router"}
+2024-01-15T10:30:04.000000000Z stdout F {"level":"info","msg":"graceful shutdown initiated"}
+2024-01-15T10:30:04.100000000Z stdout F {"level":"info","msg":"all connections drained"}
+2024-01-15T10:30:04.200000000Z stdout F {"level":"info","msg":"server stopped"}
