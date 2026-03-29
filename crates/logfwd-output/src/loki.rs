@@ -11,7 +11,6 @@ use super::{BatchMetadata, OutputSink};
 /// Sends log records to Grafana Loki.
 pub struct LokiSink {
     name: String,
-    #[allow(dead_code)]
     endpoint: String,
 }
 

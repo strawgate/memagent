@@ -1,21 +1,23 @@
 //! Output sink trait and implementations for serializing Arrow RecordBatches
 //! to various formats: stdout JSON/text, JSON lines over HTTP, OTLP protobuf.
 
-mod elasticsearch;
 mod fanout;
 mod json_lines;
-mod loki;
 mod otlp_sink;
-mod parquet;
 mod stdout;
 
-pub use elasticsearch::*;
-pub use fanout::*;
-pub use json_lines::*;
-pub use loki::*;
-pub use otlp_sink::*;
-pub use parquet::*;
-pub use stdout::*;
+// Placeholder sinks — not yet wired into build_output_sink.
+#[allow(dead_code)]
+mod elasticsearch;
+#[allow(dead_code)]
+mod loki;
+#[allow(dead_code)]
+mod parquet;
+
+pub use fanout::FanOut;
+use json_lines::*;
+use otlp_sink::*;
+use stdout::*;
 
 use std::io::{self, Write};
 

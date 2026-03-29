@@ -441,7 +441,7 @@ impl BatchBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, Float64Array, Int64Array, StringArray};
+    use arrow::array::{Array, Int64Array, StringArray};
 
     #[test]
     fn test_parse_int_fast() {

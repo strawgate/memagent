@@ -11,7 +11,6 @@ use super::{BatchMetadata, OutputSink};
 /// Writes log records to Parquet files.
 pub struct ParquetSink {
     name: String,
-    #[allow(dead_code)]
     path: String,
 }
 

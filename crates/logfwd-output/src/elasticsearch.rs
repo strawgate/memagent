@@ -11,7 +11,6 @@ use super::{BatchMetadata, OutputSink};
 /// Sends log records to Elasticsearch.
 pub struct ElasticsearchSink {
     name: String,
-    #[allow(dead_code)]
     endpoint: String,
 }
 

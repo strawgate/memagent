@@ -28,7 +28,7 @@ pub struct FileIdentity {
 
 /// State tracked per tailed file.
 struct TailedFile {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "retained for debug logging")]
     path: PathBuf,
     identity: FileIdentity,
     file: File,
