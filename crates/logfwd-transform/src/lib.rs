@@ -39,6 +39,8 @@ pub struct QueryAnalyzer {
     pub referenced_columns: HashSet<String>,
     pub uses_select_star: bool,
     pub except_fields: Vec<String>,
+    /// The WHERE clause AST, if present. Used for predicate pushdown extraction.
+    where_clause: Option<SqlExpr>,
 }
 
 impl QueryAnalyzer {
@@ -56,6 +58,7 @@ impl QueryAnalyzer {
         let mut referenced_columns = HashSet::new();
         let mut uses_select_star = false;
         let mut except_fields = Vec::new();
+        let mut where_clause = None;
 
         if let Statement::Query(query) = stmt {
             if let SetExpr::Select(select) = query.body.as_ref() {
@@ -81,6 +84,7 @@ impl QueryAnalyzer {
                 // Walk WHERE clause for column references.
                 if let Some(ref selection) = select.selection {
                     collect_column_refs(selection, &mut referenced_columns);
+                    where_clause = Some(selection.clone());
                 }
             }
         } else {
@@ -92,6 +96,7 @@ impl QueryAnalyzer {
             referenced_columns,
             uses_select_star,
             except_fields,
+            where_clause,
         })
     }
 
@@ -127,6 +132,126 @@ impl QueryAnalyzer {
                 keep_raw: false,
             }
         }
+    }
+
+    /// Extract filter hints from the SQL for predicate pushdown.
+    ///
+    /// Walks the WHERE clause looking for simple predicates on known syslog
+    /// columns (severity, facility) that can be pushed to input sources.
+    /// Only predicates in top-level AND chains are extracted — OR'd predicates
+    /// are left for DataFusion since pushing them could miss matching rows.
+    pub fn filter_hints(&self) -> logfwd_core::filter_hints::FilterHints {
+        let mut hints = logfwd_core::filter_hints::FilterHints::default();
+
+        if let Some(ref where_expr) = self.where_clause {
+            extract_pushable_predicates(where_expr, &mut hints);
+        }
+
+        hints.wanted_fields = if self.uses_select_star {
+            None
+        } else {
+            Some(
+                self.referenced_columns
+                    .iter()
+                    .map(|c| strip_type_suffix(c))
+                    .collect(),
+            )
+        };
+
+        hints
+    }
+}
+
+/// Walk a WHERE clause AST and extract predicates that can be pushed down.
+/// Only extracts from top-level AND chains (not OR branches).
+fn extract_pushable_predicates(
+    expr: &SqlExpr,
+    hints: &mut logfwd_core::filter_hints::FilterHints,
+) {
+    match expr {
+        // AND: recurse into both sides
+        SqlExpr::BinaryOp {
+            left,
+            op: sqlast::BinaryOperator::And,
+            right,
+        } => {
+            extract_pushable_predicates(left, hints);
+            extract_pushable_predicates(right, hints);
+        }
+        // severity <= N, severity < N, severity = N
+        SqlExpr::BinaryOp { left, op, right } => {
+            if let Some(col) = expr_as_column(left) {
+                let col_base = strip_type_suffix(&col);
+                if let Some(val) = expr_as_u8_literal(right) {
+                    match (col_base.as_str(), op) {
+                        ("severity", sqlast::BinaryOperator::LtEq) => {
+                            hints.max_severity = Some(val);
+                        }
+                        ("severity", sqlast::BinaryOperator::Lt) if val > 0 => {
+                            hints.max_severity = Some(val - 1);
+                        }
+                        ("severity", sqlast::BinaryOperator::Eq) => {
+                            hints.max_severity = Some(val);
+                        }
+                        ("facility", sqlast::BinaryOperator::Eq) => {
+                            hints.facilities = Some(vec![val]);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Also handle N <= severity (reversed operand order)
+            if let Some(col) = expr_as_column(right) {
+                let col_base = strip_type_suffix(&col);
+                if let Some(val) = expr_as_u8_literal(left) {
+                    match (col_base.as_str(), op) {
+                        ("severity", sqlast::BinaryOperator::GtEq) => {
+                            // N >= severity means severity <= N
+                            hints.max_severity = Some(val);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // facility IN (1, 4, 16)
+        SqlExpr::InList {
+            expr,
+            list,
+            negated: false,
+        } => {
+            if let Some(col) = expr_as_column(expr) {
+                let col_base = strip_type_suffix(&col);
+                if col_base == "facility" {
+                    let vals: Vec<u8> = list.iter().filter_map(expr_as_u8_literal).collect();
+                    if !vals.is_empty() && vals.len() == list.len() {
+                        hints.facilities = Some(vals);
+                    }
+                }
+            }
+        }
+        // Parenthesized expression
+        SqlExpr::Nested(inner) => {
+            extract_pushable_predicates(inner, hints);
+        }
+        // OR, complex expressions — don't push (might miss rows)
+        _ => {}
+    }
+}
+
+/// Extract column name from a simple identifier expression.
+fn expr_as_column(expr: &SqlExpr) -> Option<String> {
+    match expr {
+        SqlExpr::Identifier(ident) => Some(ident.value.clone()),
+        _ => None,
+    }
+}
+
+/// Extract a small integer literal from a SQL expression.
+fn expr_as_u8_literal(expr: &SqlExpr) -> Option<u8> {
+    match expr {
+        SqlExpr::Value(sqlast::Value::Number(s, _)) => s.parse::<u8>().ok(),
+        _ => None,
     }
 }
 
@@ -816,5 +941,99 @@ mod tests {
         // Should not error — empty table just skipped.
         let result = transform.execute(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
+    }
+
+    // --- FilterHints predicate pushdown tests ---
+
+    #[test]
+    fn test_filter_hints_severity_lte() {
+        let a = QueryAnalyzer::new("SELECT * FROM logs WHERE severity <= 4").unwrap();
+        let h = a.filter_hints();
+        assert_eq!(h.max_severity, Some(4));
+    }
+
+    #[test]
+    fn test_filter_hints_severity_lt() {
+        let a = QueryAnalyzer::new("SELECT * FROM logs WHERE severity < 5").unwrap();
+        let h = a.filter_hints();
+        assert_eq!(h.max_severity, Some(4)); // < 5 becomes <= 4
+    }
+
+    #[test]
+    fn test_filter_hints_severity_eq() {
+        let a = QueryAnalyzer::new("SELECT * FROM logs WHERE severity = 3").unwrap();
+        let h = a.filter_hints();
+        assert_eq!(h.max_severity, Some(3));
+    }
+
+    #[test]
+    fn test_filter_hints_facility_eq() {
+        let a = QueryAnalyzer::new("SELECT * FROM logs WHERE facility = 16").unwrap();
+        let h = a.filter_hints();
+        assert_eq!(h.facilities, Some(vec![16]));
+    }
+
+    #[test]
+    fn test_filter_hints_facility_in() {
+        let a = QueryAnalyzer::new("SELECT * FROM logs WHERE facility IN (1, 4, 16)").unwrap();
+        let h = a.filter_hints();
+        let mut facs = h.facilities.unwrap();
+        facs.sort();
+        assert_eq!(facs, vec![1, 4, 16]);
+    }
+
+    #[test]
+    fn test_filter_hints_combined_and() {
+        let a = QueryAnalyzer::new(
+            "SELECT * FROM logs WHERE severity <= 4 AND facility = 16",
+        )
+        .unwrap();
+        let h = a.filter_hints();
+        assert_eq!(h.max_severity, Some(4));
+        assert_eq!(h.facilities, Some(vec![16]));
+    }
+
+    #[test]
+    fn test_filter_hints_or_not_pushed() {
+        // OR with non-pushable predicate — should NOT push severity
+        let a = QueryAnalyzer::new(
+            "SELECT * FROM logs WHERE severity <= 4 OR msg_str = 'error'",
+        )
+        .unwrap();
+        let h = a.filter_hints();
+        // The OR is at top level, not an AND chain — nothing should be pushed
+        assert!(h.max_severity.is_none());
+    }
+
+    #[test]
+    fn test_filter_hints_no_where() {
+        let a = QueryAnalyzer::new("SELECT * FROM logs").unwrap();
+        let h = a.filter_hints();
+        assert!(h.max_severity.is_none());
+        assert!(h.facilities.is_none());
+        assert!(h.wanted_fields.is_none()); // SELECT * = all fields
+    }
+
+    #[test]
+    fn test_filter_hints_field_pushdown() {
+        let a = QueryAnalyzer::new(
+            "SELECT hostname_str, message_str FROM logs WHERE severity <= 2",
+        )
+        .unwrap();
+        let h = a.filter_hints();
+        assert_eq!(h.max_severity, Some(2));
+        let mut fields = h.wanted_fields.unwrap();
+        fields.sort();
+        assert!(fields.contains(&"hostname".to_string()));
+        assert!(fields.contains(&"message".to_string()));
+        assert!(fields.contains(&"severity".to_string())); // referenced in WHERE
+    }
+
+    #[test]
+    fn test_filter_hints_typed_column_stripped() {
+        // severity_int in WHERE should strip to "severity" for pushdown
+        let a = QueryAnalyzer::new("SELECT * FROM logs WHERE severity_int <= 4").unwrap();
+        let h = a.filter_hints();
+        assert_eq!(h.max_severity, Some(4));
     }
 }

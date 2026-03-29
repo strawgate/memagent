@@ -1,6 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
+use crate::filter_hints::FilterHints;
 use crate::tail::{FileTailer, TailConfig, TailEvent};
 
 /// Events produced by an input source.
@@ -19,6 +20,11 @@ pub trait InputSource: Send {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>>;
     /// Name of this input (from config).
     fn name(&self) -> &str;
+
+    /// Apply filter hints for predicate pushdown. Inputs that support
+    /// pushdown use these to skip data early (e.g., XDP severity filtering).
+    /// Default implementation ignores hints — correct but slower.
+    fn apply_hints(&mut self, _hints: &FilterHints) {}
 }
 
 /// An input source backed by a `FileTailer`.
