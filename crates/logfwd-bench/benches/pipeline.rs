@@ -10,7 +10,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use logfwd_core::compress::ChunkCompressor;
 use logfwd_core::cri::{CriReassembler, parse_cri_line};
 use logfwd_core::scanner::{ScanConfig, Scanner};
-use logfwd_output::{BatchMetadata, OutputSink, StdoutFormat, StdoutSink};
+use logfwd_output::{BatchMetadata, OutputSink};
 use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------
@@ -292,10 +292,10 @@ fn bench_output(c: &mut Criterion) {
     let batch = scanner.scan(&data);
     let meta = make_metadata();
 
-    // StdoutSink writing to /dev/null
+    // NullSink (measures overhead of scan + batch creation only)
     group.throughput(Throughput::Elements(n as u64));
-    group.bench_function("stdout_json_devnull", |b| {
-        let mut sink = StdoutSink::new("bench".into(), StdoutFormat::Json);
+    group.bench_function("null_sink", |b| {
+        let mut sink = NullSink;
         b.iter(|| sink.send_batch(&batch, &meta).unwrap())
     });
 
