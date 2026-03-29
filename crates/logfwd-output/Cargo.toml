@@ -8,4 +8,5 @@ publish = false
 logfwd-config = { path = "../logfwd-config" }
 logfwd-core = { path = "../logfwd-core" }
 arrow = { workspace = true }
+libc = "0.2"
 ureq = { version = "3", default-features = false, features = ["rustls"] }

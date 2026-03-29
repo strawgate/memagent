@@ -1995,6 +1995,7 @@ name = "logfwd"
 version = "0.1.0"
 dependencies = [
  "dhat",
+ "libc",
  "logfwd-config",
  "logfwd-core",
  "logfwd-output",
@@ -2076,6 +2077,7 @@ name = "logfwd-output"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "libc",
  "logfwd-config",
  "logfwd-core",
  "ureq",

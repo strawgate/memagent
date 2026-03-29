@@ -189,6 +189,7 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
         OutputType::Stdout => {
             let fmt = match cfg.format.as_ref() {
                 Some(Format::Json) => StdoutFormat::Json,
+                Some(Format::Console) => StdoutFormat::Console,
                 _ => StdoutFormat::Text,
             };
             Ok(Box::new(StdoutSink::new(name.to_string(), fmt)))

@@ -85,6 +85,8 @@ pub enum Format {
     Syslog,
     Raw,
     Auto,
+    /// Human-readable colored console output for debugging/testing.
+    Console,
 }
 
 // ---------------------------------------------------------------------------
