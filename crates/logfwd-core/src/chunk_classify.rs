@@ -9,8 +9,6 @@
 // Uses sonic-simd for portable SIMD — works on aarch64 (NEON), x86_64 (SSE2),
 // and falls back to scalar automatically. No platform-specific intrinsics.
 
-use sonic_simd::{Mask, Simd, u8x16};
-
 /// Pre-computed structural classification for a buffer.
 ///
 /// Each entry covers 64 bytes of input. Bit i = byte (block_index * 64 + i).
@@ -319,31 +317,29 @@ fn prefix_xor(mut bitmask: u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Portable SIMD character detection (via sonic-simd)
+// Portable character detection
 // ---------------------------------------------------------------------------
 
-/// Find quote and backslash positions in a 64-byte block using SIMD.
+/// Find quote and backslash positions in a 64-byte block.
 ///
-/// Processes 4x 16-byte chunks via sonic-simd, producing a u64 bitmask
-/// where bit i indicates the character at position offset+i matches.
+/// Produces a u64 bitmask where bit i indicates the character at
+/// position offset+i is a quote (or backslash, respectively).
 ///
-/// Works on aarch64 (NEON), x86_64 (SSE2), and scalar fallback automatically.
+/// Uses simple byte comparison — the compiler auto-vectorizes this on
+/// platforms with SIMD support (verified via benchmarks).
 #[inline]
 fn find_quotes_and_backslashes(buf: &[u8], offset: usize) -> (u64, u64) {
-    let quote_vec = u8x16::splat(b'"');
-    let bs_vec = u8x16::splat(b'\\');
-    let ptr = buf.as_ptr();
-
     let mut q_bits: u64 = 0;
     let mut bs_bits: u64 = 0;
 
-    for i in 0..4 {
-        // SAFETY: caller guarantees offset + 64 <= buf.len() (or uses padded buffer)
-        let chunk = unsafe { u8x16::loadu(ptr.add(offset + i * 16)) };
-        let q_mask = chunk.eq(&quote_vec).bitmask() as u64;
-        let bs_mask = chunk.eq(&bs_vec).bitmask() as u64;
-        q_bits |= q_mask << (i * 16);
-        bs_bits |= bs_mask << (i * 16);
+    for i in 0..64 {
+        let b = buf[offset + i];
+        if b == b'"' {
+            q_bits |= 1u64 << i;
+        }
+        if b == b'\\' {
+            bs_bits |= 1u64 << i;
+        }
     }
 
     (q_bits, bs_bits)
