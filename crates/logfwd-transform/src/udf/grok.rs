@@ -23,7 +23,7 @@
 //! URI, TIMESTAMP_ISO8601, DATE, TIME, LOGLEVEL, HOSTNAME, EMAILADDRESS.
 
 use std::any::Any;
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use arrow::array::{Array, ArrayRef, AsArray, StringBuilder, StructArray};
 use arrow::datatypes::{DataType, Field, Fields};
@@ -32,8 +32,6 @@ use datafusion::common::Result as DfResult;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
-
-use regex::Regex;
 
 // ---------------------------------------------------------------------------
 // Grok pattern compilation (via grok crate)
@@ -47,26 +45,19 @@ struct CompiledGrok {
     field_names: Vec<String>,
 }
 
-/// Regex for extracting user-named captures from grok pattern strings.
-/// Used for Arrow schema planning (need ordered field names before matching).
-static FIELD_NAME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"%\{[^}]+:([^}]+)\}").unwrap());
-
 /// Compile a grok pattern using the `grok` crate's built-in pattern library.
 fn compile_grok(pattern: &str) -> Result<CompiledGrok, String> {
-    // Extract user-named captures for Arrow schema. We need ordered field names
-    // for struct column construction, and the matches iterator doesn't guarantee order.
-    let field_names: Vec<String> = FIELD_NAME_RE
-        .captures_iter(pattern)
-        .map(|cap| cap[1].to_string())
-        .collect();
-
     // alias_only=true: only include user-named captures (%{PATTERN:name}) in match
     // results, not internal pattern group names. Matches VRL/Tremor usage.
     let grok = grok::Grok::with_default_patterns();
     let compiled = grok
         .compile(pattern, true)
         .map_err(|e| format!("grok pattern compilation failed: {e}"))?;
+
+    // Derive field names from the compiled pattern's capture groups.
+    // With alias_only=true, this returns only user-named captures.
+    // Order is deterministic (alphabetical from BTreeMap internals).
+    let field_names: Vec<String> = compiled.capture_names().map(str::to_owned).collect();
 
     Ok(CompiledGrok {
         pattern: compiled,
@@ -248,46 +239,28 @@ impl ScalarUDFImpl for GrokUdf {
                     .map(|name| Field::new(name, DataType::Utf8, true))
                     .collect();
 
-                match compiled.pattern.match_against(val) {
-                    Some(matches) => {
-                        let values: Vec<datafusion::common::ScalarValue> = compiled
-                            .field_names
-                            .iter()
-                            .map(|name| match matches.get(name) {
-                                Some(v) => {
-                                    datafusion::common::ScalarValue::Utf8(Some(v.to_string()))
-                                }
-                                None => datafusion::common::ScalarValue::Utf8(None),
-                            })
-                            .collect();
-                        Ok(ColumnarValue::Scalar(
-                            datafusion::common::ScalarValue::Struct(Arc::new(StructArray::from(
-                                fields
-                                    .into_iter()
-                                    .zip(values)
-                                    .map(|(f, v)| (Arc::new(f), v.to_array().unwrap() as ArrayRef))
-                                    .collect::<Vec<_>>(),
-                            ))),
-                        ))
-                    }
-                    None => {
-                        // Return struct with all NULL fields
-                        let values: Vec<datafusion::common::ScalarValue> = compiled
-                            .field_names
-                            .iter()
-                            .map(|_| datafusion::common::ScalarValue::Utf8(None))
-                            .collect();
-                        Ok(ColumnarValue::Scalar(
-                            datafusion::common::ScalarValue::Struct(Arc::new(StructArray::from(
-                                fields
-                                    .into_iter()
-                                    .zip(values)
-                                    .map(|(f, v)| (Arc::new(f), v.to_array().unwrap() as ArrayRef))
-                                    .collect::<Vec<_>>(),
-                            ))),
-                        ))
-                    }
-                }
+                let matches = compiled.pattern.match_against(val);
+                let values: Vec<datafusion::common::ScalarValue> = compiled
+                    .field_names
+                    .iter()
+                    .map(|name| {
+                        matches
+                            .as_ref()
+                            .and_then(|m| m.get(name))
+                            .map(|v| datafusion::common::ScalarValue::Utf8(Some(v.to_string())))
+                            .unwrap_or(datafusion::common::ScalarValue::Utf8(None))
+                    })
+                    .collect();
+
+                Ok(ColumnarValue::Scalar(
+                    datafusion::common::ScalarValue::Struct(Arc::new(StructArray::from(
+                        fields
+                            .into_iter()
+                            .zip(values)
+                            .map(|(f, v)| (Arc::new(f), v.to_array().unwrap() as ArrayRef))
+                            .collect::<Vec<_>>(),
+                    ))),
+                ))
             }
         }
     }
@@ -333,7 +306,12 @@ mod tests {
     #[test]
     fn test_compile_grok_basic() {
         let compiled = compile_grok("%{WORD:method} %{URIPATH:path} %{NUMBER:status}").unwrap();
+        // capture_names() returns alphabetical order (BTreeMap internals)
         assert_eq!(compiled.field_names, vec!["method", "path", "status"]);
+        // Verify this is also alphabetical (it happens to match declaration order here)
+        let mut sorted = compiled.field_names.clone();
+        sorted.sort();
+        assert_eq!(compiled.field_names, sorted);
         assert!(
             compiled
                 .pattern
@@ -352,7 +330,6 @@ mod tests {
     fn test_compile_grok_unknown_pattern() {
         let result = compile_grok("%{DOESNOTEXIST:foo}");
         assert!(result.is_err());
-        
     }
 
     #[test]
