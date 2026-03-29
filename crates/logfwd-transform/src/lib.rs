@@ -388,11 +388,21 @@ impl SqlTransform {
     }
 
     /// Add an enrichment table that will be registered in each DataFusion
-    /// session alongside the `logs` table.
+    /// session alongside the `logs` table. Panics if a table with the same
+    /// name is already registered or if the name conflicts with "logs".
     pub fn add_enrichment_table(
         &mut self,
         table: Arc<dyn logfwd_core::enrichment::EnrichmentTable>,
     ) {
+        let name = table.name();
+        assert!(
+            name != "logs",
+            "enrichment table cannot be named 'logs' (reserved)"
+        );
+        assert!(
+            !self.enrichment_tables.iter().any(|t| t.name() == name),
+            "duplicate enrichment table name: '{name}'"
+        );
         self.enrichment_tables.push(table);
     }
 
@@ -447,6 +457,11 @@ impl SqlTransform {
                         .map_err(|e| {
                             format!("Failed to register enrichment table '{}': {e}", et.name())
                         })?;
+                } else {
+                    eprintln!(
+                        "  warning: enrichment table '{}' not yet loaded, skipping",
+                        et.name()
+                    );
                 }
             }
 
@@ -770,33 +785,36 @@ mod tests {
     }
 
     #[test]
-    fn test_enrichment_left_join() {
+    fn test_enrichment_unused_table_no_error() {
         use logfwd_core::enrichment::StaticTable;
 
-        // Build a batch with a "source_str" column to join on.
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("msg_str", DataType::Utf8, true),
-            Field::new("source_str", DataType::Utf8, true),
-        ]));
-        let msg: ArrayRef = Arc::new(StringArray::from(vec!["hello", "world"]));
-        let source: ArrayRef = Arc::new(StringArray::from(vec!["web", "api"]));
-        let batch = RecordBatch::try_new(schema, vec![msg, source]).unwrap();
-
-        // Enrichment table mapping source → team.
-        let teams = Arc::new(StaticTable::new(
-            "teams",
-            &[
-                ("source".to_string(), "web".to_string()),
-                // Note: StaticTable is one-row. For multi-row, we'd use K8sPathTable.
-                // This test just proves the JOIN machinery works.
-            ],
+        let batch = make_test_batch();
+        let table = Arc::new(StaticTable::new(
+            "unused",
+            &[("key".to_string(), "val".to_string())],
         ));
 
-        let mut transform =
-            SqlTransform::new("SELECT logs.msg_str, logs.source_str FROM logs").unwrap();
-        transform.add_enrichment_table(teams);
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+        transform.add_enrichment_table(table);
 
+        // Enrichment table registered but not referenced in SQL — should not error.
         let result = transform.execute(batch).unwrap();
-        assert_eq!(result.num_rows(), 2);
+        assert_eq!(result.num_rows(), 4);
+    }
+
+    #[test]
+    fn test_enrichment_empty_table_skipped() {
+        use logfwd_core::enrichment::K8sPathTable;
+
+        let batch = make_test_batch();
+        let k8s = Arc::new(K8sPathTable::new("k8s_pods"));
+        // Not loaded — snapshot() returns None.
+
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+        transform.add_enrichment_table(k8s);
+
+        // Should not error — empty table just skipped.
+        let result = transform.execute(batch).unwrap();
+        assert_eq!(result.num_rows(), 4);
     }
 }

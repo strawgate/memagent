@@ -40,8 +40,12 @@ pub struct StaticTable {
 }
 
 impl StaticTable {
-    /// Create from key-value pairs.
+    /// Create from key-value pairs. Panics if `labels` is empty.
     pub fn new(table_name: impl Into<String>, labels: &[(String, String)]) -> Self {
+        assert!(
+            !labels.is_empty(),
+            "StaticTable requires at least one label"
+        );
         let fields: Vec<Field> = labels
             .iter()
             .map(|(k, _)| Field::new(k, DataType::Utf8, false))
@@ -222,15 +226,19 @@ pub fn parse_cri_log_path(path: &str) -> Option<K8sPodEntry> {
     let container_end = after_pod_dir.find('/').unwrap_or(after_pod_dir.len());
     let container_name = &after_pod_dir[..container_end];
 
-    let prefix_end = pods_idx + 6 + slash_idx + 1 + container_end + 1;
-    let log_path_prefix = if prefix_end <= path.len() {
-        &path[..prefix_end]
-    } else {
-        path
-    };
+    if container_name.is_empty() {
+        return None;
+    }
+
+    // Build prefix up to and including "container/". Always end with '/'.
+    let prefix_end = pods_idx + 6 + slash_idx + 1 + container_end;
+    let mut log_path_prefix = path[..prefix_end.min(path.len())].to_string();
+    if !log_path_prefix.ends_with('/') {
+        log_path_prefix.push('/');
+    }
 
     Some(K8sPodEntry {
-        log_path_prefix: log_path_prefix.to_string(),
+        log_path_prefix,
         namespace: namespace.to_string(),
         pod_name: pod_name.to_string(),
         pod_uid: pod_uid.to_string(),
