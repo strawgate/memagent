@@ -2,6 +2,7 @@ pub mod batch_builder;
 pub mod compress;
 pub mod cri;
 pub mod diagnostics;
+pub mod format;
 pub mod input;
 pub mod otlp;
 pub mod scanner;

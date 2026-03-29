@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use logfwd_config::{Format, InputConfig, InputType, PipelineConfig};
-use logfwd_core::cri::{self, CriReassembler};
 use logfwd_core::diagnostics::{ComponentStats, PipelineMetrics};
+use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_core::input::{FileInput, InputEvent, InputSource};
 use logfwd_core::scanner::Scanner;
 use logfwd_core::tail::TailConfig;
@@ -26,12 +26,9 @@ struct InputState {
     #[allow(dead_code)]
     name: String,
     source: Box<dyn InputSource>,
-    format: Format,
-    reassembler: CriReassembler,
+    parser: Box<dyn FormatParser>,
     /// Buffer accumulating newline-delimited JSON for the scanner.
     json_buf: Vec<u8>,
-    /// Leftover partial line from previous poll (non-CRI formats).
-    partial_line: Vec<u8>,
     stats: Arc<ComponentStats>,
 }
 
@@ -132,45 +129,11 @@ impl Pipeline {
                     match event {
                         InputEvent::Data { bytes, .. } => {
                             input.stats.inc_bytes(bytes.len() as u64);
-                            match input.format {
-                                Format::Cri => {
-                                    let n = cri::process_cri_to_buf(
-                                        &bytes,
-                                        &mut input.reassembler,
-                                        None,
-                                        &mut input.json_buf,
-                                    );
-                                    input.stats.inc_lines(n as u64);
-                                }
-                                Format::Json | Format::Auto => {
-                                    accumulate_json_lines(
-                                        &bytes,
-                                        &mut input.partial_line,
-                                        &mut input.json_buf,
-                                        &input.stats,
-                                    );
-                                }
-                                Format::Raw => {
-                                    accumulate_raw_lines(
-                                        &bytes,
-                                        &mut input.partial_line,
-                                        &mut input.json_buf,
-                                        &input.stats,
-                                    );
-                                }
-                                _ => {
-                                    accumulate_json_lines(
-                                        &bytes,
-                                        &mut input.partial_line,
-                                        &mut input.json_buf,
-                                        &input.stats,
-                                    );
-                                }
-                            }
+                            let n = input.parser.process(&bytes, &mut input.json_buf);
+                            input.stats.inc_lines(n as u64);
                         }
                         InputEvent::Rotated | InputEvent::Truncated => {
-                            input.reassembler.reset();
-                            input.partial_line.clear();
+                            input.parser.reset();
                         }
                     }
                 }
@@ -232,6 +195,14 @@ impl Pipeline {
 // Input construction
 // ---------------------------------------------------------------------------
 
+fn build_format_parser(format: &Format) -> Box<dyn FormatParser> {
+    match format {
+        Format::Cri => Box::new(CriParser::new(2 * 1024 * 1024)),
+        Format::Raw => Box::new(RawParser::new()),
+        _ => Box::new(JsonParser::new()),
+    }
+}
+
 fn build_input_state(
     name: &str,
     cfg: &InputConfig,
@@ -257,10 +228,8 @@ fn build_input_state(
             Ok(InputState {
                 name: name.to_string(),
                 source: Box::new(source),
-                format,
-                reassembler: CriReassembler::new(2 * 1024 * 1024),
+                parser: build_format_parser(&format),
                 json_buf: Vec::with_capacity(4 * 1024 * 1024),
-                partial_line: Vec::new(),
                 stats,
             })
         }
@@ -268,83 +237,6 @@ fn build_input_state(
             "input '{name}': type {:?} not yet supported in v2 pipeline",
             cfg.input_type
         )),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Line accumulation helpers
-// ---------------------------------------------------------------------------
-
-/// Accumulate raw bytes into complete JSON lines, carrying partial lines across calls.
-fn accumulate_json_lines(
-    bytes: &[u8],
-    partial: &mut Vec<u8>,
-    out: &mut Vec<u8>,
-    stats: &ComponentStats,
-) {
-    let mut start = 0;
-    for pos in memchr::memchr_iter(b'\n', bytes) {
-        if partial.is_empty() {
-            let line = &bytes[start..pos];
-            if !line.is_empty() {
-                out.extend_from_slice(line);
-                out.push(b'\n');
-                stats.inc_lines(1);
-            }
-        } else {
-            partial.extend_from_slice(&bytes[start..pos]);
-            if !partial.is_empty() {
-                out.extend_from_slice(partial);
-                out.push(b'\n');
-                stats.inc_lines(1);
-            }
-            partial.clear();
-        }
-        start = pos + 1;
-    }
-    if start < bytes.len() {
-        partial.extend_from_slice(&bytes[start..]);
-    }
-}
-
-/// Wrap each complete line as `{"_raw":"<escaped>"}\n` for raw format.
-fn accumulate_raw_lines(
-    bytes: &[u8],
-    partial: &mut Vec<u8>,
-    out: &mut Vec<u8>,
-    stats: &ComponentStats,
-) {
-    let mut start = 0;
-    for pos in memchr::memchr_iter(b'\n', bytes) {
-        let line = if partial.is_empty() {
-            &bytes[start..pos]
-        } else {
-            partial.extend_from_slice(&bytes[start..pos]);
-            partial.as_slice()
-        };
-
-        if !line.is_empty() {
-            out.extend_from_slice(b"{\"_raw\":\"");
-            for &b in line {
-                match b {
-                    b'"' => out.extend_from_slice(b"\\\""),
-                    b'\\' => out.extend_from_slice(b"\\\\"),
-                    b'\r' => out.extend_from_slice(b"\\r"),
-                    b'\t' => out.extend_from_slice(b"\\t"),
-                    _ => out.push(b),
-                }
-            }
-            out.extend_from_slice(b"\"}\n");
-            stats.inc_lines(1);
-        }
-
-        if !partial.is_empty() {
-            partial.clear();
-        }
-        start = pos + 1;
-    }
-    if start < bytes.len() {
-        partial.extend_from_slice(&bytes[start..]);
     }
 }
 
@@ -363,79 +255,6 @@ fn now_nanos() -> u64 {
 mod tests {
     use super::*;
     use logfwd_config::{Format, OutputConfig, OutputType};
-
-    #[test]
-    fn test_accumulate_json_lines_basic() {
-        let stats = ComponentStats::new();
-        let mut partial = Vec::new();
-        let mut out = Vec::new();
-
-        accumulate_json_lines(b"{\"a\":1}\n{\"b\":2}\n", &mut partial, &mut out, &stats);
-
-        let result = String::from_utf8(out).unwrap();
-        assert_eq!(result, "{\"a\":1}\n{\"b\":2}\n");
-        assert_eq!(stats.lines_total.load(Ordering::Relaxed), 2);
-        assert!(partial.is_empty());
-    }
-
-    #[test]
-    fn test_accumulate_json_lines_partial_carry() {
-        let stats = ComponentStats::new();
-        let mut partial = Vec::new();
-        let mut out = Vec::new();
-
-        // First chunk ends mid-line.
-        accumulate_json_lines(b"{\"a\":1}\n{\"b\":", &mut partial, &mut out, &stats);
-        assert_eq!(stats.lines_total.load(Ordering::Relaxed), 1);
-        assert_eq!(partial, b"{\"b\":");
-
-        // Second chunk completes the line.
-        accumulate_json_lines(b"2}\n", &mut partial, &mut out, &stats);
-        assert_eq!(stats.lines_total.load(Ordering::Relaxed), 2);
-        assert!(partial.is_empty());
-
-        let result = String::from_utf8(out).unwrap();
-        assert_eq!(result, "{\"a\":1}\n{\"b\":2}\n");
-    }
-
-    #[test]
-    fn test_accumulate_raw_lines() {
-        let stats = ComponentStats::new();
-        let mut partial = Vec::new();
-        let mut out = Vec::new();
-
-        accumulate_raw_lines(
-            b"plain log line\nanother line\n",
-            &mut partial,
-            &mut out,
-            &stats,
-        );
-
-        let result = String::from_utf8(out).unwrap();
-        assert!(result.contains("{\"_raw\":\"plain log line\"}\n"));
-        assert!(result.contains("{\"_raw\":\"another line\"}\n"));
-        assert_eq!(stats.lines_total.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn test_accumulate_raw_lines_escaping() {
-        let stats = ComponentStats::new();
-        let mut partial = Vec::new();
-        let mut out = Vec::new();
-
-        accumulate_raw_lines(
-            b"has \"quotes\" and \\backslash\n",
-            &mut partial,
-            &mut out,
-            &stats,
-        );
-
-        let result = String::from_utf8(out).unwrap();
-        assert!(
-            result.contains(r#"{"_raw":"has \"quotes\" and \\backslash"}"#),
-            "got: {result}"
-        );
-    }
 
     #[test]
     fn test_build_output_sink_stdout() {
