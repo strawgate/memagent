@@ -370,6 +370,8 @@ pub struct SqlTransform {
     analyzer: QueryAnalyzer,
     /// Schema fingerprint for cache invalidation.
     schema_hash: u64,
+    /// Enrichment tables registered alongside `logs` in each DataFusion session.
+    enrichment_tables: Vec<Arc<dyn logfwd_core::enrichment::EnrichmentTable>>,
 }
 
 impl SqlTransform {
@@ -381,7 +383,27 @@ impl SqlTransform {
             user_sql: sql.to_string(),
             analyzer,
             schema_hash: 0,
+            enrichment_tables: Vec::new(),
         })
+    }
+
+    /// Add an enrichment table that will be registered in each DataFusion
+    /// session alongside the `logs` table. Panics if a table with the same
+    /// name is already registered or if the name conflicts with "logs".
+    pub fn add_enrichment_table(
+        &mut self,
+        table: Arc<dyn logfwd_core::enrichment::EnrichmentTable>,
+    ) {
+        let name = table.name();
+        assert!(
+            name != "logs",
+            "enrichment table cannot be named 'logs' (reserved)"
+        );
+        assert!(
+            !self.enrichment_tables.iter().any(|t| t.name() == name),
+            "duplicate enrichment table name: '{name}'"
+        );
+        self.enrichment_tables.push(table);
     }
 
     /// Execute the SQL transform on a RecordBatch.
@@ -423,6 +445,25 @@ impl SqlTransform {
                 .map_err(|e| format!("Failed to create MemTable: {e}"))?;
             ctx.register_table("logs", Arc::new(table))
                 .map_err(|e| format!("Failed to register table: {e}"))?;
+
+            // Register enrichment tables (snapshots from background providers).
+            for et in &self.enrichment_tables {
+                if let Some(snapshot) = et.snapshot() {
+                    let et_table = MemTable::try_new(snapshot.schema(), vec![vec![snapshot]])
+                        .map_err(|e| {
+                            format!("Failed to create enrichment table '{}': {e}", et.name())
+                        })?;
+                    ctx.register_table(et.name(), Arc::new(et_table))
+                        .map_err(|e| {
+                            format!("Failed to register enrichment table '{}': {e}", et.name())
+                        })?;
+                } else {
+                    eprintln!(
+                        "  warning: enrichment table '{}' not yet loaded, skipping",
+                        et.name()
+                    );
+                }
+            }
 
             // Execute the SQL.
             let df = ctx
@@ -711,5 +752,69 @@ mod tests {
         let analyzer = QueryAnalyzer::new("SELECT * EXCEPT (stack_trace_str) FROM logs").unwrap();
         assert!(analyzer.uses_select_star);
         assert_eq!(analyzer.except_fields, vec!["stack_trace_str"]);
+    }
+
+    #[test]
+    fn test_enrichment_cross_join() {
+        use logfwd_core::enrichment::StaticTable;
+
+        let batch = make_test_batch();
+        let mut transform =
+            SqlTransform::new("SELECT logs.*, env.environment FROM logs CROSS JOIN env").unwrap();
+
+        // Add a static enrichment table.
+        let env_table = Arc::new(StaticTable::new(
+            "env",
+            &[("environment".to_string(), "production".to_string())],
+        ));
+        transform.add_enrichment_table(env_table);
+
+        let result = transform.execute(batch).unwrap();
+        assert_eq!(result.num_rows(), 4);
+
+        // Should have original columns plus "environment".
+        let env_col = result
+            .column_by_name("environment")
+            .expect("should have environment column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for i in 0..4 {
+            assert_eq!(env_col.value(i), "production");
+        }
+    }
+
+    #[test]
+    fn test_enrichment_unused_table_no_error() {
+        use logfwd_core::enrichment::StaticTable;
+
+        let batch = make_test_batch();
+        let table = Arc::new(StaticTable::new(
+            "unused",
+            &[("key".to_string(), "val".to_string())],
+        ));
+
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+        transform.add_enrichment_table(table);
+
+        // Enrichment table registered but not referenced in SQL — should not error.
+        let result = transform.execute(batch).unwrap();
+        assert_eq!(result.num_rows(), 4);
+    }
+
+    #[test]
+    fn test_enrichment_empty_table_skipped() {
+        use logfwd_core::enrichment::K8sPathTable;
+
+        let batch = make_test_batch();
+        let k8s = Arc::new(K8sPathTable::new("k8s_pods"));
+        // Not loaded — snapshot() returns None.
+
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+        transform.add_enrichment_table(k8s);
+
+        // Should not error — empty table just skipped.
+        let result = transform.execute(batch).unwrap();
+        assert_eq!(result.num_rows(), 4);
     }
 }
