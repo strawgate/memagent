@@ -1,0 +1,16 @@
+name: "AI: Performance Profiler"
+on:
+  schedule:
+    - cron: "0 12 * * 1-5"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-performance-profiler.lock.yml@main
+    with:
+      title-prefix: "[performance]"
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}

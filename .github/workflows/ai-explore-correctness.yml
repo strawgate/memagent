@@ -1,0 +1,53 @@
+name: "Explore: Correctness Issues"
+on:
+  schedule:
+    - cron: "0 10 * * 3"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-scheduled-audit.lock.yml@main
+    with:
+      title-prefix: "[correctness]"
+      additional-instructions: |
+        You are a **correctness auditor** for logfwd, a log forwarder that
+        processes millions of lines per second. Data correctness is critical —
+        every log line must be preserved faithfully.
+
+        Review the codebase for correctness issues:
+
+        1. **JSON parsing fidelity**: Does the SIMD scanner in
+           `crates/logfwd-core/src/scanner.rs` correctly handle all JSON
+           edge cases? Check: escaped quotes in strings, unicode escapes
+           (\uXXXX), nested objects/arrays, empty objects, null values,
+           very long strings, numbers at int64 boundaries.
+
+        2. **CRI format parsing**: Does `crates/logfwd-core/src/cri.rs`
+           correctly handle all CRI edge cases? Check: partial lines across
+           buffer boundaries, multi-line log entries (P flag), timestamps
+           with varying precision, stderr vs stdout streams.
+
+        3. **Type detection**: The scanner detects int vs float vs string.
+           Check: does "123" get correctly typed as int? Does "123.0" get
+           float? Does "123e5" get float? What about "0x1A" or "NaN"?
+           What about numbers that overflow i64?
+
+        4. **SQL transform**: Does the DataFusion integration correctly
+           handle: NULL propagation, empty batches, type mismatches between
+           SQL literals and column types, LIKE patterns with special chars?
+
+        5. **Output fidelity**: Do output sinks correctly serialize all
+           Arrow types? Check: null values in JSON output, special float
+           values (NaN, Infinity), very long strings, binary data.
+
+        6. **Concurrency**: Are there any race conditions in the diagnostics
+           server (shared atomic counters), file tailer (inotify events vs
+           read), or multi-pipeline execution?
+
+        File one issue with all findings. Include reproducible test cases
+        where possible.
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
