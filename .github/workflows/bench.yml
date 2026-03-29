@@ -11,7 +11,7 @@ concurrency:
 
 permissions:
   issues: write
-  contents: read
+  contents: write
 
 jobs:
   bench:
@@ -42,7 +42,7 @@ jobs:
           cargo build --release -p logfwd
 
       # ---------------------------------------------------------------
-      # Criterion microbenchmarks (internal components)
+      # Criterion microbenchmarks
       # ---------------------------------------------------------------
 
       - name: Run criterion microbenchmarks
@@ -52,16 +52,20 @@ jobs:
         run: just bench-report > micro_body.md
 
       # ---------------------------------------------------------------
-      # Competitive benchmarks (downloads agents into temp dir)
+      # Competitive benchmarks — both binary and Docker modes
       # ---------------------------------------------------------------
 
-      - name: Run competitive benchmarks (Docker, 1 CPU / 1 GB per agent)
+      - name: Run competitive benchmarks
         run: >
           just bench-competitive
-          --lines 5000000 --docker --cpus 1 --memory 1g --markdown
+          --lines 5000000
+          --mode both --cpus 1 --memory 1g
           --scenarios passthrough,json_parse,filter
+          --markdown
           --json-file bench-result.json
-          --profile ./profiles --dhat-binary ./target/release/logfwd-dhat
+          --gh-bench-file gh-bench.json
+          --profile "$PWD/profiles"
+          --dhat-binary "$PWD/target/release/logfwd-dhat"
           > competitive_body.md
         env:
           LOGFWD: ./target/release/logfwd
@@ -70,11 +74,13 @@ jobs:
       # Upload artifacts
       # ---------------------------------------------------------------
 
-      - name: Upload benchmark results (JSON)
+      - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
           name: bench-result-${{ github.run_number }}
-          path: bench-result.json
+          path: |
+            bench-result.json
+            gh-bench.json
           retention-days: 90
 
       - name: Upload profiles
@@ -87,6 +93,22 @@ jobs:
             profiles/dhat-heap.json
             profiles/perf.data
           retention-days: 30
+
+      # ---------------------------------------------------------------
+      # Dashboard via github-action-benchmark
+      # ---------------------------------------------------------------
+
+      - name: Publish to benchmark dashboard
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Competitive Benchmarks
+          tool: customBiggerIsBetter
+          output-file-path: gh-bench.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          auto-push: true
+          alert-threshold: "150%"
+          comment-on-alert: true
 
       # ---------------------------------------------------------------
       # Post results as GitHub issue
@@ -105,7 +127,7 @@ jobs:
 
           **Commit:** \`${COMMIT}\` on \`master\`
           **Runner:** \`ubuntu-latest\`
-          **Dashboard:** https://strawgate.github.io/memagent/
+          **Dashboard:** https://strawgate.github.io/memagent/dev/bench/
 
           ---
 

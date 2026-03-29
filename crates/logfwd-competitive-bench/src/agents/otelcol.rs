@@ -69,12 +69,13 @@ impl Agent for Otelcol {
 
 processors:
   batch:
-    send_batch_size: 1000
-    timeout: 200ms
+    send_batch_size: 5000
+    timeout: 1s
 {processors_def}
 exporters:
   otlphttp:
     endpoint: "http://{blackhole}"
+    encoding: json
     tls:
       insecure: true
 

@@ -38,7 +38,8 @@ use crate::agents::{Agent, Scenario, all_agents};
 fn main() {
     let args = Args::parse();
 
-    if args.docker && !runner::docker_available() {
+    let needs_docker = args.docker || args.mode == "docker" || args.mode == "both";
+    if needs_docker && !runner::docker_available() {
         eprintln!("ERROR: --docker requires Docker to be installed and running");
         process::exit(1);
     }
@@ -75,58 +76,42 @@ fn main() {
         selected
     };
 
-    // Resolve agent binaries/images.
-    let mode_label = if args.docker { "docker" } else { "binary" };
-    eprintln!("=== Resolving agents ({mode_label} mode) ===");
+    // Resolve agent binaries and/or Docker images based on mode.
+    let run_binary = args.mode == "binary" || args.mode == "both";
+    let run_docker = args.mode == "docker" || args.mode == "both";
+    eprintln!("=== Resolving agents (mode: {}) ===", args.mode);
 
     let mut available: Vec<ResolvedAgent> = Vec::new();
     for agent in &agents {
-        if args.docker {
-            match resolve_docker(agent) {
-                Some(image) => {
-                    eprintln!("  {:<14} {}", format!("{}:", agent.name()), image);
-                    available.push(ResolvedAgent {
-                        agent: *agent,
-                        binary: None,
-                        image: Some(image),
-                    });
-                }
-                None => {
-                    // Fall back to binary mode for agents without Docker images (logfwd).
-                    match resolve_binary(agent, &bin_dir, args.no_download) {
-                        Some(path) => {
-                            eprintln!(
-                                "  {:<14} {} (binary, no Docker image)",
-                                format!("{}:", agent.name()),
-                                path.display()
-                            );
-                            available.push(ResolvedAgent {
-                                agent: *agent,
-                                binary: Some(path),
-                                image: None,
-                            });
-                        }
-                        None => {
-                            eprintln!("  {:<14} (skipped)", format!("{}:", agent.name()));
-                        }
-                    }
-                }
-            }
+        let binary = if run_binary {
+            resolve_binary(agent, &bin_dir, args.no_download)
         } else {
-            match resolve_binary(agent, &bin_dir, args.no_download) {
-                Some(path) => {
-                    eprintln!("  {:<14} {}", format!("{}:", agent.name()), path.display());
-                    available.push(ResolvedAgent {
-                        agent: *agent,
-                        binary: Some(path),
-                        image: None,
-                    });
-                }
-                None => {
-                    eprintln!("  {:<14} (skipped)", format!("{}:", agent.name()));
-                }
+            None
+        };
+        let image = if run_docker {
+            resolve_docker(agent)
+        } else {
+            None
+        };
+
+        let label = format!("{}:", agent.name());
+        match (&binary, &image) {
+            (Some(b), Some(img)) => {
+                eprintln!("  {label:<14} {} + {img}", b.display());
+            }
+            (Some(b), None) => eprintln!("  {label:<14} {}", b.display()),
+            (None, Some(img)) => eprintln!("  {label:<14} {img}"),
+            (None, None) => {
+                eprintln!("  {label:<14} (skipped)");
+                continue;
             }
         }
+
+        available.push(ResolvedAgent {
+            agent: *agent,
+            binary,
+            image,
+        });
     }
     eprintln!();
 
@@ -194,7 +179,7 @@ fn main() {
         lines: args.lines,
     };
 
-    // Run benchmarks across all scenarios.
+    // Run benchmarks across all scenarios and modes.
     let mut results: Vec<BenchResult> = Vec::new();
     for scenario in &args.scenarios {
         eprintln!(
@@ -216,36 +201,48 @@ fn main() {
                 continue;
             }
 
-            let result = if let Some(image) = &resolved.image {
-                runner::run_agent_docker(
+            // Binary mode.
+            if let Some(binary) = resolved.binary.as_ref().filter(|_| run_binary) {
+                run_one(
                     resolved.agent,
-                    image,
+                    Some(binary),
+                    None,
                     &ctx,
                     &blackhole,
                     &args.docker_limits,
                     *scenario,
-                )
-            } else if let Some(binary) = &resolved.binary {
-                runner::run_agent(resolved.agent, binary, &ctx, &blackhole, *scenario)
-            } else {
-                Err("no binary or image available".to_string())
-            };
+                    args.lines,
+                    &mut results,
+                );
+            }
 
-            match result {
-                Ok(r) => {
-                    print_result_stderr(&r, args.lines);
-                    results.push(r);
-                }
-                Err(e) => {
-                    eprintln!("--- {} ---", resolved.agent.name());
-                    eprintln!("  ERROR: {e}");
-                    eprintln!();
-                    results.push(BenchResult {
-                        name: resolved.agent.name().to_string(),
-                        scenario: *scenario,
-                        lines_done: 0,
-                        elapsed_ms: 0,
-                    });
+            // Docker mode.
+            if let Some(image) = resolved.image.as_ref().filter(|_| run_docker) {
+                run_one(
+                    resolved.agent,
+                    None,
+                    Some(image.as_str()),
+                    &ctx,
+                    &blackhole,
+                    &args.docker_limits,
+                    *scenario,
+                    args.lines,
+                    &mut results,
+                );
+            } else if run_docker && !run_binary {
+                // Docker requested but no image — fall back to binary.
+                if let Some(binary) = &resolved.binary {
+                    run_one(
+                        resolved.agent,
+                        Some(binary),
+                        None,
+                        &ctx,
+                        &blackhole,
+                        &args.docker_limits,
+                        *scenario,
+                        args.lines,
+                        &mut results,
+                    );
                 }
             }
         }
@@ -263,6 +260,11 @@ fn main() {
     // Optionally write JSON to a file (can be combined with any output mode).
     if let Some(ref json_path) = args.json_file {
         write_json_file(&results, args.lines, file_size, &args, json_path);
+    }
+
+    // Optionally write github-action-benchmark format.
+    if let Some(ref path) = args.gh_bench_file {
+        write_gh_bench_json(&results, args.lines, path);
     }
 
     // Profiling pass (logfwd only).
@@ -330,6 +332,48 @@ fn main() {
             eprintln!();
         } else {
             eprintln!("WARN: logfwd binary not available, skipping profiling");
+        }
+    }
+}
+
+/// Run a single agent benchmark (binary or Docker) and collect the result.
+#[expect(clippy::too_many_arguments)]
+fn run_one(
+    agent: &dyn Agent,
+    binary: Option<&std::path::Path>,
+    image: Option<&str>,
+    ctx: &BenchContext,
+    blackhole: &blackhole::Blackhole,
+    limits: &DockerLimits,
+    scenario: Scenario,
+    total_lines: usize,
+    results: &mut Vec<BenchResult>,
+) {
+    let mode_label = if image.is_some() { "docker" } else { "binary" };
+    let result = if let Some(img) = image {
+        runner::run_agent_docker(agent, img, ctx, blackhole, limits, scenario)
+    } else if let Some(bin) = binary {
+        runner::run_agent(agent, bin, ctx, blackhole, scenario)
+    } else {
+        return;
+    };
+
+    match result {
+        Ok(r) => {
+            print_result_stderr(&r, total_lines);
+            results.push(r);
+        }
+        Err(e) => {
+            eprintln!("--- {} ({mode_label}) ---", agent.name());
+            eprintln!("  ERROR: {e}");
+            eprintln!();
+            results.push(BenchResult {
+                name: agent.name().to_string(),
+                scenario,
+                mode: mode_label.to_string(),
+                lines_done: 0,
+                elapsed_ms: 0,
+            });
         }
     }
 }
@@ -454,15 +498,18 @@ fn print_markdown(results: &[BenchResult], lines: usize, file_size: u64, args: &
                 scenario.description()
             );
         }
-        println!("| Agent | Time | Throughput |");
-        println!("|-------|-----:|-----------:|");
+        println!("| Agent | Mode | Time | Throughput |");
+        println!("|-------|------|-----:|-----------:|");
         for r in &scenario_results {
             let rate = if r.lines_done == 0 && r.elapsed_ms == 0 {
                 "FAILED".to_string()
             } else {
                 fmt_rate(lines, r.elapsed_ms)
             };
-            println!("| {} | {}ms | {} |", r.name, r.elapsed_ms, rate);
+            println!(
+                "| {} | {} | {}ms | {} |",
+                r.name, r.mode, r.elapsed_ms, rate
+            );
         }
 
         if scenario_results.len() > 1 && scenario_results[0].elapsed_ms > 0 {
@@ -581,6 +628,35 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     (y, mo + 1, days + 1)
 }
 
+/// Write results in github-action-benchmark's `customBiggerIsBetter` format.
+fn write_gh_bench_json(results: &[BenchResult], lines: usize, path: &std::path::Path) {
+    #[derive(serde::Serialize)]
+    struct Entry {
+        name: String,
+        unit: String,
+        value: f64,
+    }
+
+    let entries: Vec<Entry> = results
+        .iter()
+        .filter(|r| r.elapsed_ms > 0)
+        .map(|r| {
+            let lps = lines as f64 / (r.elapsed_ms as f64 / 1000.0);
+            Entry {
+                name: format!("{}/{} ({})", r.scenario.name(), r.name, r.mode),
+                unit: "lines/sec".to_string(),
+                value: lps,
+            }
+        })
+        .collect();
+
+    let json = serde_json::to_string_pretty(&entries).unwrap();
+    match std::fs::write(path, json) {
+        Ok(()) => eprintln!("github-action-benchmark JSON written to {}", path.display()),
+        Err(e) => eprintln!("ERROR: failed to write gh-bench JSON: {e}"),
+    }
+}
+
 fn write_json_file(
     results: &[BenchResult],
     lines: usize,
@@ -616,8 +692,14 @@ fn print_table(results: &[BenchResult], lines: usize, file_size: u64) {
         println!("===========================================");
         println!("  {} ({lines} lines, {mb:.1} MB)", scenario.description());
         println!("===========================================");
-        println!("  {:<16} {:>10} {:>20}", "Agent", "Time", "Throughput");
-        println!("  {:<16} {:>10} {:>20}", "-----", "----", "----------");
+        println!(
+            "  {:<16} {:<8} {:>10} {:>20}",
+            "Agent", "Mode", "Time", "Throughput"
+        );
+        println!(
+            "  {:<16} {:<8} {:>10} {:>20}",
+            "-----", "----", "----", "----------"
+        );
 
         for r in &scenario_results {
             let rate = if r.lines_done == 0 && r.elapsed_ms == 0 {
@@ -625,7 +707,10 @@ fn print_table(results: &[BenchResult], lines: usize, file_size: u64) {
             } else {
                 fmt_rate(lines, r.elapsed_ms)
             };
-            println!("  {:<16} {:>8}ms {:>20}", r.name, r.elapsed_ms, rate);
+            println!(
+                "  {:<16} {:<8} {:>8}ms {:>20}",
+                r.name, r.mode, r.elapsed_ms, rate
+            );
         }
         println!("===========================================");
 
@@ -651,10 +736,14 @@ struct Args {
     lines: usize,
     agents: Vec<String>,
     scenarios: Vec<Scenario>,
+    /// Execution mode: "binary", "docker", or "both".
+    mode: String,
     markdown: bool,
     json: bool,
     /// Write JSON results to a file (can be combined with --markdown).
     json_file: Option<PathBuf>,
+    /// Write github-action-benchmark format to a file.
+    gh_bench_file: Option<PathBuf>,
     no_download: bool,
     docker: bool,
     docker_limits: DockerLimits,
@@ -671,9 +760,11 @@ impl Args {
             lines: 5_000_000,
             agents: Vec::new(),
             scenarios: Vec::new(),
+            mode: "binary".to_string(),
             markdown: false,
             json: false,
             json_file: None,
+            gh_bench_file: None,
             no_download: false,
             docker: false,
             docker_limits: DockerLimits::default(),
@@ -718,8 +809,21 @@ impl Args {
                     i += 1;
                     result.json_file = Some(PathBuf::from(&args[i]));
                 }
+                "--gh-bench-file" => {
+                    i += 1;
+                    result.gh_bench_file = Some(PathBuf::from(&args[i]));
+                }
                 "--no-download" => result.no_download = true,
                 "--docker" => result.docker = true,
+                "--mode" => {
+                    i += 1;
+                    let m = args[i].as_str();
+                    if !["binary", "docker", "both"].contains(&m) {
+                        eprintln!("Invalid --mode: {m} (expected: binary, docker, both)");
+                        process::exit(1);
+                    }
+                    result.mode = m.to_string();
+                }
                 "--cpus" => {
                     i += 1;
                     result.docker_limits.cpus = args[i].clone();
@@ -750,7 +854,10 @@ impl Args {
                         "  --json-file PATH     Write JSON results to file (combinable with --markdown)"
                     );
                     eprintln!("  --no-download        Skip binary downloads");
-                    eprintln!("  --docker             Run in Docker with resource limits");
+                    eprintln!(
+                        "  --mode M             Execution mode: binary, docker, both (default: binary)"
+                    );
+                    eprintln!("  --docker             Enable Docker (sets mode to docker)");
                     eprintln!("  --cpus N             CPU limit per container (default: 1)");
                     eprintln!("  --memory N           Memory limit per container (default: 1g)");
                     eprintln!("  --profile DIR        Write CPU/memory profiles to DIR");
@@ -765,6 +872,10 @@ impl Args {
         // Default: passthrough only (backward compat).
         if result.scenarios.is_empty() {
             result.scenarios.push(Scenario::Passthrough);
+        }
+        // --docker without --mode → set mode to "docker" for backward compat.
+        if result.docker && result.mode == "binary" {
+            result.mode = "docker".to_string();
         }
         result
     }
