@@ -2065,7 +2065,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sonic-rs",
- "sonic-simd",
  "tempfile",
  "tiny_http",
  "xxhash-rust",
