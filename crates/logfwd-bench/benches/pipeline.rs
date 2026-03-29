@@ -360,6 +360,143 @@ fn bench_end_to_end(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// JSON extraction mode comparison
+//
+// Compares two approaches to extracting fields from JSON log lines:
+//
+// 1. Scanner extraction (current):
+//    scanner(extract fields → typed Arrow columns) → DataFusion SQL
+//
+// 2. DataFusion-only extraction:
+//    scanner(keep _raw only) → DataFusion SQL with json_get_str / json_get_int UDFs
+//
+// The DataFusion-only approach trades upfront scanner work for per-row UDF calls
+// inside DataFusion.  Potential advantages:
+//   - DataFusion can apply WHERE before extracting all fields (predicate pushdown)
+//   - Schema stays fixed (_raw: Utf8) — no schema evolution to manage
+//   - Simpler scanner configuration
+//
+// Potential disadvantages:
+//   - N UDF calls per batch (one per extracted field) vs one scanner pass
+//   - Each UDF call re-scans the raw JSON for its key
+//   - DataFusion plan/context overhead still applies per batch
+// ---------------------------------------------------------------------------
+
+fn bench_json_extraction_mode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("json_extraction_mode");
+    group.sample_size(20);
+
+    let n = 10_000;
+    let data = gen_json_lines(n);
+
+    // --- Approach 1: scanner extracts fields → DataFusion SQL ---
+
+    // Baseline: scan all fields, passthrough SELECT *
+    group.throughput(Throughput::Elements(n as u64));
+    group.bench_function("scanner_select_star", |b| {
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+        b.iter(|| {
+            let mut scanner = Scanner::new(ScanConfig::default(), n);
+            let batch = scanner.scan(&data);
+            transform.execute(batch).unwrap()
+        })
+    });
+
+    // Scanner + DataFusion filter on pre-extracted columns
+    group.bench_function("scanner_with_filter", |b| {
+        let mut transform = SqlTransform::new(
+            "SELECT level_str, status_int, duration_ms_int FROM logs \
+             WHERE level_str = 'ERROR'",
+        )
+        .unwrap();
+        b.iter(|| {
+            let scan_cfg = transform.scan_config();
+            let mut scanner = Scanner::new(scan_cfg, n);
+            let batch = scanner.scan(&data);
+            transform.execute(batch).unwrap()
+        })
+    });
+
+    // --- Approach 2: raw-only scan → DataFusion json_get UDFs ---
+
+    // Cost of the raw-only scan alone (no DataFusion)
+    group.bench_function("raw_only_scan", |b| {
+        b.iter(|| {
+            let cfg = ScanConfig {
+                wanted_fields: vec![],
+                extract_all: false,
+                keep_raw: true,
+            };
+            let mut scanner = Scanner::new(cfg, n);
+            scanner.scan(&data)
+        })
+    });
+
+    // DataFusion-only: extract 3 fields via UDFs, no filter
+    group.bench_function("datafusion_json_get_projection", |b| {
+        let sql = "SELECT \
+                     json_get_str(_raw, 'level')       AS level, \
+                     json_get_int(_raw, 'status')      AS status, \
+                     json_get_int(_raw, 'duration_ms') AS duration_ms \
+                   FROM logs";
+        let mut transform = SqlTransform::new(sql).unwrap();
+        b.iter(|| {
+            let cfg = ScanConfig {
+                wanted_fields: vec![],
+                extract_all: false,
+                keep_raw: true,
+            };
+            let mut scanner = Scanner::new(cfg, n);
+            let batch = scanner.scan(&data);
+            transform.execute(batch).unwrap()
+        })
+    });
+
+    // DataFusion-only: extract 3 fields + WHERE filter via UDFs
+    // This exercises the key advantage of late extraction: DataFusion can
+    // (in principle) apply the filter before projecting non-filter columns.
+    group.bench_function("datafusion_json_get_filter", |b| {
+        let sql = "SELECT \
+                     json_get_str(_raw, 'level')       AS level, \
+                     json_get_int(_raw, 'status')      AS status, \
+                     json_get_int(_raw, 'duration_ms') AS duration_ms \
+                   FROM logs \
+                   WHERE json_get_str(_raw, 'level') = 'ERROR'";
+        let mut transform = SqlTransform::new(sql).unwrap();
+        b.iter(|| {
+            let cfg = ScanConfig {
+                wanted_fields: vec![],
+                extract_all: false,
+                keep_raw: true,
+            };
+            let mut scanner = Scanner::new(cfg, n);
+            let batch = scanner.scan(&data);
+            transform.execute(batch).unwrap()
+        })
+    });
+
+    // --- Equivalent scanner+filter for direct apples-to-apples comparison ---
+
+    // Scanner with field pushdown (only extract the 3 needed fields), + filter
+    group.bench_function("scanner_pushdown_filter", |b| {
+        let mut transform = SqlTransform::new(
+            "SELECT level_str, status_int, duration_ms_int FROM logs \
+             WHERE level_str = 'ERROR'",
+        )
+        .unwrap();
+        b.iter(|| {
+            // Use scan_config() pushdown so scanner only extracts the 3 fields.
+            let scan_cfg = transform.scan_config();
+            let mut scanner = Scanner::new(scan_cfg, n);
+            let batch = scanner.scan(&data);
+            transform.execute(batch).unwrap()
+        })
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -371,5 +508,6 @@ criterion_group!(
     bench_compress,
     bench_output,
     bench_end_to_end,
+    bench_json_extraction_mode,
 );
 criterion_main!(benches);

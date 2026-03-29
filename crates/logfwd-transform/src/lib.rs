@@ -370,17 +370,26 @@ pub struct SqlTransform {
     analyzer: QueryAnalyzer,
     /// Schema fingerprint for cache invalidation.
     schema_hash: u64,
+    /// Reusable tokio runtime — creating one per batch is expensive (~0.5–1 ms)
+    /// since it involves thread spawning and OS resources.  The runtime is
+    /// thread-safe to reuse across `block_on` calls.
+    runtime: tokio::runtime::Runtime,
 }
 
 impl SqlTransform {
     /// Create a new SQL transform from a SQL string.
     pub fn new(sql: &str) -> Result<Self, String> {
         let analyzer = QueryAnalyzer::new(sql)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
 
         Ok(SqlTransform {
             user_sql: sql.to_string(),
             analyzer,
             schema_hash: 0,
+            runtime,
         })
     }
 
@@ -402,13 +411,9 @@ impl SqlTransform {
 
         let sql = self.user_sql.clone();
 
-        // DataFusion requires async — use a minimal tokio runtime.
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
-
-        rt.block_on(async {
+        // DataFusion requires async — use the cached tokio runtime (created once
+        // in `new()`) rather than spinning up a new one per batch.
+        self.runtime.block_on(async {
             let ctx = SessionContext::new();
 
             // Register custom UDFs.
@@ -416,6 +421,8 @@ impl SqlTransform {
             ctx.register_udf(ScalarUDF::from(FloatCastUdf::new()));
             ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
             ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
+            ctx.register_udf(ScalarUDF::from(crate::udf::JsonGetStrUdf::new()));
+            ctx.register_udf(ScalarUDF::from(crate::udf::JsonGetIntUdf::new()));
 
             // Register the batch as a MemTable named "logs".
             let schema = batch.schema();
