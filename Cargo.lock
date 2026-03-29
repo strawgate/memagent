@@ -2058,6 +2058,7 @@ dependencies = [
  "csv",
  "gethostname",
  "memchr",
+ "memmap2",
  "notify",
  "opentelemetry",
  "pprof",
