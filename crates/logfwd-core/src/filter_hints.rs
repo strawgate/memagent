@@ -1,13 +1,11 @@
-/// Filter hints extracted from user SQL for predicate pushdown.
+/// Hints that input sources and parsers can use to filter early.
 ///
-/// These hints flow from the transform layer (which parses the SQL) to input
+/// These flow from the transform layer (which parses the SQL) to input
 /// sources and scanners, allowing them to skip work early. Every hint is
 /// advisory — the SQL transform still applies all predicates, so correctness
 /// doesn't depend on pushdown. It only affects performance.
 ///
-/// See docs/PREDICATE_PUSHDOWN.md for the full design.
-
-/// Hints that input sources and parsers can use to filter early.
+/// See `docs/PREDICATE_PUSHDOWN.md` for the full design.
 #[derive(Debug, Clone, Default)]
 pub struct FilterHints {
     /// Syslog: only forward messages with severity <= this value.
