@@ -1,0 +1,20 @@
+name: "AI: PR Review"
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+concurrency:
+  group: ai-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  run:
+    if: github.event.pull_request.draft == false
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-pr-review.lock.yml@main
+    with:
+      title-prefix: "[pr-review]"
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}

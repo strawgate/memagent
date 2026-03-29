@@ -1,0 +1,55 @@
+name: "Explore: New User Experience"
+on:
+  schedule:
+    - cron: "0 11 * * 3"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-scheduled-audit.lock.yml@main
+    with:
+      title-prefix: "[new-user]"
+      additional-instructions: |
+        You are a **new user** trying logfwd for the first time. You are an
+        experienced DevOps engineer familiar with Vector, Fluent Bit, and
+        Filebeat, but you have never used logfwd before.
+
+        Walk through the new user experience:
+
+        1. **README.md**: Is it clear what logfwd does and why you'd use it?
+           Can you understand the value prop in 30 seconds? Are install
+           instructions present and correct?
+
+        2. **Getting started**: Try to set up a minimal pipeline:
+           - Generate test data: `logfwd --generate-json 1000 /tmp/test.jsonl`
+           - Write a config to tail that file and output to stdout
+           - Run it with `logfwd --config config.yaml`
+           - Does it work? Are error messages helpful if you get the config wrong?
+
+        3. **Configuration**: Read `crates/logfwd-config/src/lib.rs` for the
+           config schema. Is it documented anywhere user-facing? Can you figure
+           out the YAML format without reading source code? Are there example
+           configs in the repo?
+
+        4. **SQL transforms**: The killer feature is SQL transforms. Is it
+           clear how to write one? Is the `level_str` vs `level` naming
+           explained anywhere? Would a new user know they need type suffixes?
+
+        5. **Diagnostics**: If `server.diagnostics` is configured, can you
+           find and use the /health, /metrics, /api/pipelines endpoints?
+           Is the dashboard useful?
+
+        6. **Error experience**: What happens when you:
+           - Use a nonexistent file path?
+           - Write invalid SQL?
+           - Point to a down OTLP endpoint?
+           - Use an unsupported input type (UDP)?
+
+        File one issue with all findings about the new user experience.
+        Focus on friction points, missing docs, confusing errors, and
+        things that would make someone give up and go back to Vector.
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}

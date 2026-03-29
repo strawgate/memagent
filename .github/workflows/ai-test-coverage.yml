@@ -1,0 +1,16 @@
+name: "AI: Test Coverage Detector"
+on:
+  schedule:
+    - cron: "0 15 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-test-coverage-detector.lock.yml@main
+    with:
+      title-prefix: "[test-coverage]"
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
