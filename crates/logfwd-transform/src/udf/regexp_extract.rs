@@ -33,12 +33,6 @@ pub struct RegexpExtractUdf {
     signature: Signature,
 }
 
-impl Default for RegexpExtractUdf {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl RegexpExtractUdf {
     pub fn new() -> Self {
         Self {
@@ -120,8 +114,7 @@ impl ScalarUDFImpl for RegexpExtractUdf {
         match input {
             ColumnarValue::Array(array) => {
                 let str_array = array.as_string::<i32>();
-                let mut builder =
-                    StringBuilder::with_capacity(str_array.len(), str_array.len() * 32);
+                let mut builder = StringBuilder::with_capacity(str_array.len(), str_array.len() * 32);
 
                 for i in 0..str_array.len() {
                     if str_array.is_null(i) {
@@ -175,8 +168,8 @@ mod tests {
         let ctx = SessionContext::new();
         ctx.register_udf(ScalarUDF::from(RegexpExtractUdf::new()));
         ctx.register_udf(ScalarUDF::from(crate::IntCastUdf::new()));
-        let table =
-            datafusion::datasource::MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
+        let table = datafusion::datasource::MemTable::try_new(batch.schema(), vec![vec![batch]])
+            .unwrap();
         ctx.register_table("logs", Arc::new(table)).unwrap();
         let df = ctx.sql(sql).await.unwrap();
         let batches = df.collect().await.unwrap();
