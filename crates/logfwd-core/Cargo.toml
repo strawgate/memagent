@@ -6,11 +6,13 @@ edition = "2024"
 [dependencies]
 arrow = { workspace = true }
 crossbeam-channel = "0.5"
+csv = "1"
 gethostname = "1"
 opentelemetry = { workspace = true }
 memchr = "2"
 notify = "7"
 serde = { workspace = true }
+serde_json = "1"
 tiny_http = "0.12"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
 zstd = "0.13"

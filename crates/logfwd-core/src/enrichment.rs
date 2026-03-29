@@ -4,6 +4,8 @@
 //! Each provider produces an Arrow RecordBatch representing a lookup table.
 //! The SqlTransform registers these as MemTables so users can JOIN against them.
 
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use arrow::array::StringArray;
@@ -16,7 +18,6 @@ use arrow::record_batch::RecordBatch;
 
 /// A named lookup table whose contents may be refreshed in the background.
 ///
-/// Implementations store their data behind `Arc<RwLock<Option<RecordBatch>>>`.
 /// The pipeline reads a snapshot once per batch (cheap RwLock read), not per row.
 pub trait EnrichmentTable: Send + Sync {
     /// Table name for SQL (e.g., "k8s_pods", "host_info").
@@ -32,17 +33,7 @@ pub trait EnrichmentTable: Send + Sync {
 
 /// A one-row table with fixed key-value pairs from the YAML config.
 ///
-/// ```yaml
-/// enrichment:
-///   - type: static
-///     table_name: env
-///     labels:
-///       environment: production
-///       cluster: us-east-1
-/// ```
-///
-/// SQL: `SELECT *, (SELECT environment FROM env) AS env FROM logs`
-/// Or:  `SELECT logs.*, e.* FROM logs CROSS JOIN env AS e`
+/// SQL: `SELECT logs.*, e.* FROM logs CROSS JOIN env AS e`
 pub struct StaticTable {
     table_name: String,
     batch: RecordBatch,
@@ -85,8 +76,6 @@ impl EnrichmentTable for StaticTable {
 /// System host metadata. One row, resolved at construction time.
 ///
 /// Columns: hostname, os_type, os_arch
-///
-/// SQL: `SELECT logs.*, h.hostname FROM logs CROSS JOIN host_info AS h`
 pub struct HostInfoTable {
     batch: RecordBatch,
 }
@@ -142,16 +131,6 @@ impl EnrichmentTable for HostInfoTable {
 ///   /var/log/pods/<namespace>_<pod-name>_<pod-uid>/<container>/0.log
 ///
 /// This is zero-cost enrichment — no K8s API calls needed.
-///
-/// Columns: log_path_prefix, namespace, pod_name, pod_uid, container_name
-///
-/// SQL:
-/// ```sql
-/// SELECT logs.*, k8s.namespace, k8s.pod_name
-/// FROM logs
-/// LEFT JOIN k8s_pods AS k8s
-///   ON logs._source LIKE k8s.log_path_prefix || '%'
-/// ```
 pub struct K8sPathTable {
     table_name: String,
     data: Arc<RwLock<Option<RecordBatch>>>,
@@ -160,7 +139,6 @@ pub struct K8sPathTable {
 /// One parsed K8s pod entry from a CRI log path.
 #[derive(Debug, Clone)]
 pub struct K8sPodEntry {
-    /// The directory prefix, e.g. "/var/log/pods/default_myapp-abc_uid123/container/"
     pub log_path_prefix: String,
     pub namespace: String,
     pub pod_name: String,
@@ -176,8 +154,7 @@ impl K8sPathTable {
         }
     }
 
-    /// Parse CRI log paths and update the table. Call this when new files
-    /// are discovered or on a periodic refresh.
+    /// Parse CRI log paths and update the table.
     pub fn update_from_paths(&self, paths: &[String]) {
         let mut entries = Vec::new();
         for path in paths {
@@ -185,7 +162,6 @@ impl K8sPathTable {
                 entries.push(entry);
             }
         }
-        // Deduplicate by (namespace, pod_name, container_name).
         entries.sort_by(|a, b| {
             (&a.namespace, &a.pod_name, &a.container_name).cmp(&(
                 &b.namespace,
@@ -200,8 +176,7 @@ impl K8sPathTable {
         });
 
         let batch = build_k8s_batch(&entries);
-        let mut data = self.data.write().expect("k8s table lock poisoned");
-        *data = Some(batch);
+        *self.data.write().expect("k8s table lock poisoned") = Some(batch);
     }
 }
 
@@ -216,25 +191,18 @@ impl EnrichmentTable for K8sPathTable {
 }
 
 /// Parse a CRI log path into K8s metadata.
-///
-/// Expected format: `/var/log/pods/<namespace>_<pod-name>_<pod-uid>/<container>/<N>.log`
 pub fn parse_cri_log_path(path: &str) -> Option<K8sPodEntry> {
-    // Find the "/pods/" segment.
     let pods_idx = path.find("/pods/")?;
-    let after_pods = &path[pods_idx + 6..]; // skip "/pods/"
+    let after_pods = &path[pods_idx + 6..];
 
-    // Split: <namespace>_<pod-name>_<pod-uid>/<container>/N.log
     let slash_idx = after_pods.find('/')?;
     let pod_dir = &after_pods[..slash_idx];
     let after_pod_dir = &after_pods[slash_idx + 1..];
 
-    // Parse pod directory: namespace_podname_uid
-    // UID is always 36 chars (UUID format). Work backwards.
+    // UID is always 36 chars (UUID). Work backwards from the end of pod_dir.
     if pod_dir.len() < 38 {
-        return None; // too short for namespace_name_uuid
+        return None;
     }
-
-    // Find the last underscore before the UID (which is 36 chars from the end).
     let uid_start = pod_dir.len() - 36;
     if pod_dir.as_bytes().get(uid_start.wrapping_sub(1))? != &b'_' {
         return None;
@@ -242,7 +210,7 @@ pub fn parse_cri_log_path(path: &str) -> Option<K8sPodEntry> {
     let pod_uid = &pod_dir[uid_start..];
     let name_and_ns = &pod_dir[..uid_start - 1];
 
-    // namespace_podname — find the first underscore (namespace can't contain underscores).
+    // namespace_podname — first underscore separates them.
     let ns_end = name_and_ns.find('_')?;
     let namespace = &name_and_ns[..ns_end];
     let pod_name = &name_and_ns[ns_end + 1..];
@@ -251,11 +219,9 @@ pub fn parse_cri_log_path(path: &str) -> Option<K8sPodEntry> {
         return None;
     }
 
-    // Container name is the next path segment.
     let container_end = after_pod_dir.find('/').unwrap_or(after_pod_dir.len());
     let container_name = &after_pod_dir[..container_end];
 
-    // Build the path prefix (directory up to and including container/).
     let prefix_end = pods_idx + 6 + slash_idx + 1 + container_end + 1;
     let log_path_prefix = if prefix_end <= path.len() {
         &path[..prefix_end]
@@ -301,12 +267,242 @@ fn build_k8s_batch(entries: &[K8sPodEntry]) -> RecordBatch {
 }
 
 // ---------------------------------------------------------------------------
+// File-based lookup table (CSV)
+// ---------------------------------------------------------------------------
+
+/// A lookup table loaded from a CSV file. All columns are Utf8.
+/// Supports periodic refresh via `reload()`.
+///
+/// ```yaml
+/// enrichment:
+///   - type: csv
+///     table_name: assets
+///     path: /etc/logfwd/assets.csv
+/// ```
+///
+/// SQL: `SELECT logs.*, a.owner FROM logs LEFT JOIN assets AS a ON logs.host_str = a.hostname`
+pub struct CsvFileTable {
+    table_name: String,
+    path: PathBuf,
+    data: Arc<RwLock<Option<RecordBatch>>>,
+}
+
+impl CsvFileTable {
+    /// Create a CSV file table. Call `reload()` to load the data.
+    pub fn new(table_name: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        CsvFileTable {
+            table_name: table_name.into(),
+            path: path.into(),
+            data: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Load the file from a reader (useful for testing).
+    pub fn load_from_reader<R: io::Read>(&self, reader: R) -> Result<usize, String> {
+        let batch = read_csv_to_batch(reader)?;
+        let num_rows = batch.num_rows();
+        *self.data.write().expect("csv table lock poisoned") = Some(batch);
+        Ok(num_rows)
+    }
+
+    /// Reload the CSV file from disk. Returns the number of rows loaded.
+    pub fn reload(&self) -> Result<usize, String> {
+        let file = std::fs::File::open(&self.path)
+            .map_err(|e| format!("failed to open {}: {e}", self.path.display()))?;
+        self.load_from_reader(io::BufReader::new(file))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl EnrichmentTable for CsvFileTable {
+    fn name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn snapshot(&self) -> Option<RecordBatch> {
+        self.data.read().expect("csv table lock poisoned").clone()
+    }
+}
+
+/// Read a CSV into an Arrow RecordBatch. All columns are Utf8.
+fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
+    let mut csv_reader = csv::ReaderBuilder::new().flexible(true).from_reader(reader);
+
+    let headers: Vec<String> = csv_reader
+        .headers()
+        .map_err(|e| format!("CSV header error: {e}"))?
+        .iter()
+        .map(|h| h.to_string())
+        .collect();
+
+    if headers.is_empty() {
+        return Err("CSV has no columns".to_string());
+    }
+
+    // Read all rows into column-oriented vecs.
+    let num_cols = headers.len();
+    let mut columns: Vec<Vec<String>> = vec![Vec::new(); num_cols];
+
+    for result in csv_reader.records() {
+        let record = result.map_err(|e| format!("CSV parse error: {e}"))?;
+        for (i, field) in record.iter().enumerate() {
+            if i < num_cols {
+                columns[i].push(field.to_string());
+            }
+        }
+        // Pad missing columns with empty string.
+        for col in columns.iter_mut().skip(record.len()) {
+            col.push(String::new());
+        }
+    }
+
+    let fields: Vec<Field> = headers
+        .iter()
+        .map(|h| Field::new(h, DataType::Utf8, true))
+        .collect();
+    let schema = Arc::new(Schema::new(fields));
+
+    let arrays: Vec<Arc<dyn arrow::array::Array>> = columns
+        .iter()
+        .map(|col| {
+            let arr: StringArray = col.iter().map(|s| Some(s.as_str())).collect();
+            Arc::new(arr) as _
+        })
+        .collect();
+
+    RecordBatch::try_new(schema, arrays).map_err(|e| format!("Arrow batch error: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// JSON Lines file-based lookup table
+// ---------------------------------------------------------------------------
+
+/// A lookup table loaded from a JSON Lines file (one JSON object per line).
+/// Discovers columns from all rows (union schema). All values stored as Utf8.
+///
+/// ```yaml
+/// enrichment:
+///   - type: jsonl
+///     table_name: ip_owners
+///     path: /etc/logfwd/ip-owners.jsonl
+/// ```
+pub struct JsonLinesFileTable {
+    table_name: String,
+    path: PathBuf,
+    data: Arc<RwLock<Option<RecordBatch>>>,
+}
+
+impl JsonLinesFileTable {
+    pub fn new(table_name: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        JsonLinesFileTable {
+            table_name: table_name.into(),
+            path: path.into(),
+            data: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Load from a reader (useful for testing).
+    pub fn load_from_reader<R: io::BufRead>(&self, reader: R) -> Result<usize, String> {
+        let batch = read_jsonl_to_batch(reader)?;
+        let num_rows = batch.num_rows();
+        *self.data.write().expect("jsonl table lock poisoned") = Some(batch);
+        Ok(num_rows)
+    }
+
+    /// Reload from disk.
+    pub fn reload(&self) -> Result<usize, String> {
+        let file = std::fs::File::open(&self.path)
+            .map_err(|e| format!("failed to open {}: {e}", self.path.display()))?;
+        self.load_from_reader(io::BufReader::new(file))
+    }
+}
+
+impl EnrichmentTable for JsonLinesFileTable {
+    fn name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn snapshot(&self) -> Option<RecordBatch> {
+        self.data.read().expect("jsonl table lock poisoned").clone()
+    }
+}
+
+/// Read JSON Lines into a RecordBatch. Discovers union schema from all rows.
+/// All values are stored as Utf8 (stringified).
+fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String> {
+    use std::collections::BTreeMap;
+
+    // First pass: discover all keys and collect rows.
+    let mut all_keys: Vec<String> = Vec::new();
+    let mut key_set = std::collections::HashSet::new();
+    let mut rows: Vec<BTreeMap<String, String>> = Vec::new();
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("JSONL read error: {e}"))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Minimal JSON object parsing — extract top-level string key-value pairs.
+        // We use serde_json-style parsing but store everything as strings.
+        let obj: BTreeMap<String, serde_json::Value> =
+            serde_json::from_str(trimmed).map_err(|e| format!("JSONL parse error: {e}"))?;
+
+        let mut row = BTreeMap::new();
+        for (k, v) in &obj {
+            if key_set.insert(k.clone()) {
+                all_keys.push(k.clone());
+            }
+            // Stringify all values.
+            let s = match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Null => continue,
+                other => other.to_string(),
+            };
+            row.insert(k.clone(), s);
+        }
+        rows.push(row);
+    }
+
+    if all_keys.is_empty() {
+        return Err("JSONL has no fields".to_string());
+    }
+
+    // Build columnar arrays.
+    let fields: Vec<Field> = all_keys
+        .iter()
+        .map(|k| Field::new(k, DataType::Utf8, true))
+        .collect();
+    let schema = Arc::new(Schema::new(fields));
+
+    let arrays: Vec<Arc<dyn arrow::array::Array>> = all_keys
+        .iter()
+        .map(|key| {
+            let arr: StringArray = rows
+                .iter()
+                .map(|row| row.get(key).map(|s| s.as_str()))
+                .collect();
+            Arc::new(arr) as _
+        })
+        .collect();
+
+    RecordBatch::try_new(schema, arrays).map_err(|e| format!("Arrow batch error: {e}"))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::Array;
+
+    // -- CRI path parsing ---------------------------------------------------
 
     #[test]
     fn parse_standard_cri_path() {
@@ -329,14 +525,38 @@ mod tests {
     }
 
     #[test]
-    fn parse_invalid_path_returns_none() {
-        assert!(parse_cri_log_path("/var/log/messages").is_none());
-        assert!(parse_cri_log_path("/var/log/pods/").is_none());
-        assert!(parse_cri_log_path("/var/log/pods/short/container/0.log").is_none());
+    fn parse_hyphenated_namespace() {
+        let path = "/var/log/pods/my-team-prod_api-server-xyz_abcdefab-1234-5678-9abc-def012345678/app/0.log";
+        let entry = parse_cri_log_path(path).expect("should parse");
+        // Hyphens in namespace are fine — only underscores separate ns from pod name.
+        assert_eq!(entry.namespace, "my-team-prod");
+        assert_eq!(entry.pod_name, "api-server-xyz");
     }
 
     #[test]
-    fn static_table_creates_one_row() {
+    fn parse_pod_name_with_underscores() {
+        // Pod names can contain underscores in some edge cases (StatefulSets, etc.)
+        // Our parser uses the FIRST underscore as ns/pod separator.
+        let path =
+            "/var/log/pods/ns_pod_with_underscores_abcdefab-1234-5678-9abc-def012345678/c/0.log";
+        let entry = parse_cri_log_path(path).expect("should parse");
+        assert_eq!(entry.namespace, "ns");
+        assert_eq!(entry.pod_name, "pod_with_underscores");
+    }
+
+    #[test]
+    fn parse_invalid_paths() {
+        assert!(parse_cri_log_path("/var/log/messages").is_none());
+        assert!(parse_cri_log_path("/var/log/pods/").is_none());
+        assert!(parse_cri_log_path("/var/log/pods/short/container/0.log").is_none());
+        assert!(parse_cri_log_path("").is_none());
+        assert!(parse_cri_log_path("/var/log/pods/a/b/0.log").is_none()); // no valid UUID
+    }
+
+    // -- Static table -------------------------------------------------------
+
+    #[test]
+    fn static_table_one_row() {
         let table = StaticTable::new(
             "env",
             &[
@@ -348,61 +568,68 @@ mod tests {
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 2);
-        let env_col = batch
+        let env = batch
             .column_by_name("environment")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
-        assert_eq!(env_col.value(0), "production");
+        assert_eq!(env.value(0), "production");
     }
 
     #[test]
-    fn host_info_table_has_data() {
+    fn static_table_single_label() {
+        let table = StaticTable::new("t", &[("key".to_string(), "value".to_string())]);
+        let batch = table.snapshot().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 1);
+    }
+
+    // -- Host info ----------------------------------------------------------
+
+    #[test]
+    fn host_info_has_all_columns() {
         let table = HostInfoTable::new();
         assert_eq!(table.name(), "host_info");
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 1);
-        // hostname should be non-empty
-        let host = batch
-            .column_by_name("hostname")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert!(!host.value(0).is_empty());
-        // os_type should be known
-        let os = batch
-            .column_by_name("os_type")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert!(!os.value(0).is_empty());
+        assert_eq!(batch.num_columns(), 3);
+        for col_name in &["hostname", "os_type", "os_arch"] {
+            let col = batch
+                .column_by_name(col_name)
+                .unwrap_or_else(|| panic!("missing column: {col_name}"))
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            assert!(!col.value(0).is_empty(), "{col_name} should be non-empty");
+        }
+    }
+
+    // -- K8s path table -----------------------------------------------------
+
+    #[test]
+    fn k8s_path_table_initially_empty() {
+        let table = K8sPathTable::new("k8s_pods");
+        assert!(table.snapshot().is_none());
     }
 
     #[test]
     fn k8s_path_table_update_and_snapshot() {
         let table = K8sPathTable::new("k8s_pods");
-        assert!(table.snapshot().is_none()); // initially empty
-
         table.update_from_paths(&[
             "/var/log/pods/default_app-a-12345_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/main/0.log"
                 .to_string(),
             "/var/log/pods/monitoring_prom-0_11111111-2222-3333-4444-555555555555/prometheus/0.log"
                 .to_string(),
         ]);
-
         let batch = table.snapshot().expect("should have data");
         assert_eq!(batch.num_rows(), 2);
-
         let ns = batch
             .column_by_name("namespace")
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
-        // Sorted by namespace
         assert_eq!(ns.value(0), "default");
         assert_eq!(ns.value(1), "monitoring");
     }
@@ -417,6 +644,264 @@ mod tests {
                 .to_string(),
         ]);
         let batch = table.snapshot().unwrap();
-        assert_eq!(batch.num_rows(), 1); // deduplicated
+        assert_eq!(batch.num_rows(), 1);
+    }
+
+    #[test]
+    fn k8s_path_table_ignores_invalid_paths() {
+        let table = K8sPathTable::new("k8s_pods");
+        table.update_from_paths(&[
+            "/var/log/messages".to_string(),
+            "/var/log/pods/default_app-12345_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/main/0.log"
+                .to_string(),
+            "/not/a/cri/path".to_string(),
+        ]);
+        let batch = table.snapshot().unwrap();
+        assert_eq!(batch.num_rows(), 1); // only the valid one
+    }
+
+    #[test]
+    fn k8s_path_table_refresh_replaces_data() {
+        let table = K8sPathTable::new("k8s_pods");
+        table.update_from_paths(&[
+            "/var/log/pods/default_app-a_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/c/0.log".to_string(),
+        ]);
+        assert_eq!(table.snapshot().unwrap().num_rows(), 1);
+
+        // Refresh with different data.
+        table.update_from_paths(&[
+            "/var/log/pods/ns1_pod1_11111111-2222-3333-4444-555555555555/c/0.log".to_string(),
+            "/var/log/pods/ns2_pod2_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/c/0.log".to_string(),
+        ]);
+        assert_eq!(table.snapshot().unwrap().num_rows(), 2);
+    }
+
+    // -- CSV file table -----------------------------------------------------
+
+    #[test]
+    fn csv_load_basic() {
+        let csv_data = b"hostname,owner,team\nweb-1,alice,platform\napi-2,bob,backend\n";
+        let table = CsvFileTable::new("assets", "/fake/path.csv");
+        let rows = table.load_from_reader(&csv_data[..]).unwrap();
+        assert_eq!(rows, 2);
+        assert_eq!(table.name(), "assets");
+
+        let batch = table.snapshot().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(batch.num_columns(), 3);
+
+        let hostname = batch
+            .column_by_name("hostname")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(hostname.value(0), "web-1");
+        assert_eq!(hostname.value(1), "api-2");
+
+        let team = batch
+            .column_by_name("team")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(team.value(0), "platform");
+        assert_eq!(team.value(1), "backend");
+    }
+
+    #[test]
+    fn csv_with_missing_fields() {
+        let csv_data = b"a,b,c\n1,2,3\n4,5\n"; // row 2 missing column c
+        let table = CsvFileTable::new("t", "/fake");
+        table.load_from_reader(&csv_data[..]).unwrap();
+        let batch = table.snapshot().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        let c = batch
+            .column_by_name("c")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(c.value(0), "3");
+        assert_eq!(c.value(1), ""); // padded with empty
+    }
+
+    #[test]
+    fn csv_empty_file_fails() {
+        let table = CsvFileTable::new("t", "/fake");
+        let result = table.load_from_reader(&b""[..]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn csv_reload_replaces_data() {
+        let table = CsvFileTable::new("t", "/fake");
+        table.load_from_reader(&b"col\nval1\n"[..]).unwrap();
+        assert_eq!(table.snapshot().unwrap().num_rows(), 1);
+
+        table
+            .load_from_reader(&b"col\nval1\nval2\nval3\n"[..])
+            .unwrap();
+        assert_eq!(table.snapshot().unwrap().num_rows(), 3);
+    }
+
+    #[test]
+    fn csv_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv_path = dir.path().join("test.csv");
+        std::fs::write(&csv_path, "ip,region\n10.0.0.1,us-east\n10.0.0.2,eu-west\n").unwrap();
+
+        let table = CsvFileTable::new("ips", &csv_path);
+        let rows = table.reload().unwrap();
+        assert_eq!(rows, 2);
+
+        let batch = table.snapshot().unwrap();
+        let region = batch
+            .column_by_name("region")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(region.value(0), "us-east");
+        assert_eq!(region.value(1), "eu-west");
+    }
+
+    // -- JSON Lines file table ----------------------------------------------
+
+    #[test]
+    fn jsonl_load_basic() {
+        let data =
+            b"{\"ip\":\"10.0.0.1\",\"owner\":\"alice\"}\n{\"ip\":\"10.0.0.2\",\"owner\":\"bob\"}\n";
+        let table = JsonLinesFileTable::new("ip_owners", "/fake");
+        let rows = table.load_from_reader(&data[..]).unwrap();
+        assert_eq!(rows, 2);
+
+        let batch = table.snapshot().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let ip = batch
+            .column_by_name("ip")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(ip.value(0), "10.0.0.1");
+        assert_eq!(ip.value(1), "10.0.0.2");
+    }
+
+    #[test]
+    fn jsonl_union_schema() {
+        // Row 1 has {a, b}, row 2 has {b, c} — result should have {a, b, c}.
+        let data = b"{\"a\":\"1\",\"b\":\"2\"}\n{\"b\":\"3\",\"c\":\"4\"}\n";
+        let table = JsonLinesFileTable::new("t", "/fake");
+        table.load_from_reader(&data[..]).unwrap();
+
+        let batch = table.snapshot().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(batch.num_columns(), 3);
+
+        let a = batch
+            .column_by_name("a")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(a.value(0), "1");
+        assert!(a.is_null(1)); // row 2 doesn't have "a"
+
+        let c = batch
+            .column_by_name("c")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(c.is_null(0)); // row 1 doesn't have "c"
+        assert_eq!(c.value(1), "4");
+    }
+
+    #[test]
+    fn jsonl_non_string_values_stringified() {
+        let data = b"{\"name\":\"web\",\"port\":8080,\"active\":true}\n";
+        let table = JsonLinesFileTable::new("t", "/fake");
+        table.load_from_reader(&data[..]).unwrap();
+
+        let batch = table.snapshot().unwrap();
+        let port = batch
+            .column_by_name("port")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(port.value(0), "8080");
+
+        let active = batch
+            .column_by_name("active")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(active.value(0), "true");
+    }
+
+    #[test]
+    fn jsonl_skips_blank_lines() {
+        let data = b"{\"a\":\"1\"}\n\n{\"a\":\"2\"}\n\n";
+        let table = JsonLinesFileTable::new("t", "/fake");
+        table.load_from_reader(&data[..]).unwrap();
+        assert_eq!(table.snapshot().unwrap().num_rows(), 2);
+    }
+
+    #[test]
+    fn jsonl_empty_fails() {
+        let table = JsonLinesFileTable::new("t", "/fake");
+        let result = table.load_from_reader(&b""[..]);
+        assert!(result.is_err());
+    }
+
+    // -- Trait object dispatch -----------------------------------------------
+
+    #[test]
+    fn trait_object_dispatch() {
+        let tables: Vec<Box<dyn EnrichmentTable>> = vec![
+            Box::new(StaticTable::new(
+                "env",
+                &[("k".to_string(), "v".to_string())],
+            )),
+            Box::new(HostInfoTable::new()),
+            Box::new(K8sPathTable::new("k8s_pods")),
+        ];
+
+        assert_eq!(tables[0].name(), "env");
+        assert!(tables[0].snapshot().is_some());
+        assert_eq!(tables[1].name(), "host_info");
+        assert!(tables[1].snapshot().is_some());
+        assert_eq!(tables[2].name(), "k8s_pods");
+        assert!(tables[2].snapshot().is_none()); // not loaded yet
+    }
+
+    // -- Concurrent access --------------------------------------------------
+
+    #[test]
+    fn concurrent_read_write() {
+        let table = Arc::new(K8sPathTable::new("k8s_pods"));
+
+        // Spawn a writer.
+        let writer = Arc::clone(&table);
+        let handle = std::thread::spawn(move || {
+            for i in 0..10 {
+                let path =
+                    format!("/var/log/pods/ns_pod-{i}_aaaaaaaa-bbbb-cccc-dddd-{i:012x}/c/0.log");
+                writer.update_from_paths(&[path]);
+            }
+        });
+
+        // Read concurrently.
+        for _ in 0..100 {
+            let _ = table.snapshot(); // should not panic
+        }
+
+        handle.join().unwrap();
+        // Final state should have data.
+        assert!(table.snapshot().is_some());
     }
 }

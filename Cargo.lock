@@ -1894,11 +1894,13 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "crossbeam-channel",
+ "csv",
  "gethostname",
  "memchr",
  "notify",
  "opentelemetry",
  "serde",
+ "serde_json",
  "tempfile",
  "tiny_http",
  "xxhash-rust",
