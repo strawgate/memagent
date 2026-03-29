@@ -146,9 +146,8 @@ impl Pipeline {
                 .inputs
                 .iter()
                 .any(|i| i.json_buf.len() >= self.batch_target_bytes);
-            let time_ready = had_data
-                && !self.inputs.iter().all(|i| i.json_buf.is_empty())
-                && last_flush.elapsed() >= self.batch_timeout;
+            let has_buffered = !self.inputs.iter().all(|i| i.json_buf.is_empty());
+            let time_ready = has_buffered && last_flush.elapsed() >= self.batch_timeout;
 
             if size_ready || time_ready {
                 // Track flush reason.
