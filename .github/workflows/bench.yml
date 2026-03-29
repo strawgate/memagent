@@ -59,14 +59,22 @@ jobs:
         run: >
           just bench-competitive
           --lines 5000000 --docker --cpus 1 --memory 1g --markdown
+          --json-file bench-result.json
           --profile ./profiles --dhat-binary ./target/release/logfwd-dhat
           > competitive_body.md
         env:
           LOGFWD: ./target/release/logfwd
 
       # ---------------------------------------------------------------
-      # Upload profiles as artifacts
+      # Upload artifacts
       # ---------------------------------------------------------------
+
+      - name: Upload benchmark results (JSON)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-result-${{ github.run_number }}
+          path: bench-result.json
+          retention-days: 90
 
       - name: Upload profiles
         uses: actions/upload-artifact@v4
@@ -92,10 +100,11 @@ jobs:
 
           TITLE="Benchmark results ${DATE} (${COMMIT})"
           BODY="$(cat <<HEREDOC
-          ## Benchmark Results — ${DATE}
+          ## Benchmark Results --- ${DATE}
 
           **Commit:** \`${COMMIT}\` on \`master\`
           **Runner:** \`ubuntu-latest\`
+          **Dashboard:** https://strawgate.github.io/memagent/
 
           ---
 

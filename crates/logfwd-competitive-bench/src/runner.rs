@@ -41,6 +41,7 @@ impl Default for DockerLimits {
     }
 }
 
+#[derive(serde::Serialize)]
 pub struct BenchResult {
     pub name: String,
     pub lines_done: u64,

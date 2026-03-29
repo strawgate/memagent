@@ -11,6 +11,7 @@
 //!   --lines N        Number of JSON log lines to generate (default: 5_000_000)
 //!   --agents A,B,C   Comma-separated agents to run (default: all available)
 //!   --markdown       Output results as markdown table
+//!   --json           Output structured JSON (for CI dashboards)
 //!   --no-download        Only use agents already on PATH (binary mode only)
 //!   --docker             Run agents in Docker containers with resource limits
 //!   --cpus N             CPU limit per container (default: 1, Docker mode only)
@@ -221,10 +222,17 @@ fn main() {
     }
 
     // Output summary.
-    if args.markdown {
+    if args.json {
+        print_json(&results, args.lines, file_size, &args);
+    } else if args.markdown {
         print_markdown(&results, args.lines, file_size, &args);
     } else {
         print_table(&results, args.lines, file_size);
+    }
+
+    // Optionally write JSON to a file (can be combined with any output mode).
+    if let Some(ref json_path) = args.json_file {
+        write_json_file(&results, args.lines, file_size, &args, json_path);
     }
 
     // Profiling pass (logfwd only).
@@ -428,6 +436,70 @@ fn print_markdown(results: &[BenchResult], lines: usize, file_size: u64, args: &
     }
 }
 
+fn print_json(results: &[BenchResult], lines: usize, file_size: u64, args: &Args) {
+    println!("{}", build_json_report(results, lines, file_size, args));
+}
+
+fn build_json_report(results: &[BenchResult], lines: usize, file_size: u64, args: &Args) -> String {
+    #[derive(serde::Serialize)]
+    struct JsonReport<'a> {
+        timestamp: String,
+        commit: String,
+        lines: usize,
+        file_size_bytes: u64,
+        docker: bool,
+        cpus: &'a str,
+        memory: &'a str,
+        results: &'a [BenchResult],
+    }
+
+    let commit = std::env::var("GITHUB_SHA")
+        .or_else(|_| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        })
+        .unwrap_or_default();
+
+    let report = JsonReport {
+        timestamp: chrono_now(),
+        commit,
+        lines,
+        file_size_bytes: file_size,
+        docker: args.docker,
+        cpus: &args.docker_limits.cpus,
+        memory: &args.docker_limits.memory,
+        results,
+    };
+
+    serde_json::to_string_pretty(&report).unwrap()
+}
+
+/// Returns current UTC time as ISO 8601 string without pulling in chrono.
+fn chrono_now() -> String {
+    std::process::Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn write_json_file(
+    results: &[BenchResult],
+    lines: usize,
+    file_size: u64,
+    args: &Args,
+    path: &std::path::Path,
+) {
+    let json = build_json_report(results, lines, file_size, args);
+    std::fs::write(path, json).unwrap_or_else(|e| {
+        eprintln!("ERROR: failed to write JSON to {}: {e}", path.display());
+    });
+    eprintln!("JSON results written to {}", path.display());
+}
+
 fn print_table(results: &[BenchResult], lines: usize, file_size: u64) {
     let mb = file_size as f64 / 1_048_576.0;
     println!("===========================================");
@@ -466,6 +538,9 @@ struct Args {
     lines: usize,
     agents: Vec<String>,
     markdown: bool,
+    json: bool,
+    /// Write JSON results to a file (can be combined with --markdown).
+    json_file: Option<PathBuf>,
     no_download: bool,
     docker: bool,
     docker_limits: DockerLimits,
@@ -482,6 +557,8 @@ impl Args {
             lines: 5_000_000,
             agents: Vec::new(),
             markdown: false,
+            json: false,
+            json_file: None,
             no_download: false,
             docker: false,
             docker_limits: DockerLimits::default(),
@@ -501,6 +578,11 @@ impl Args {
                     result.agents = args[i].split(',').map(|s| s.to_string()).collect();
                 }
                 "--markdown" => result.markdown = true,
+                "--json" => result.json = true,
+                "--json-file" => {
+                    i += 1;
+                    result.json_file = Some(PathBuf::from(&args[i]));
+                }
                 "--no-download" => result.no_download = true,
                 "--docker" => result.docker = true,
                 "--cpus" => {
@@ -526,6 +608,8 @@ impl Args {
                     eprintln!("  --lines N            Lines to generate (default: 5000000)");
                     eprintln!("  --agents A,B,C       Agents to run (default: all)");
                     eprintln!("  --markdown           Output markdown table");
+                    eprintln!("  --json               Output structured JSON (for CI dashboards)");
+                    eprintln!("  --json-file PATH     Write JSON results to file (combinable with --markdown)");
                     eprintln!("  --no-download        Skip binary downloads");
                     eprintln!("  --docker             Run in Docker with resource limits");
                     eprintln!("  --cpus N             CPU limit per container (default: 1)");
