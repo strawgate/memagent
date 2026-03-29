@@ -1,0 +1,78 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use super::{Agent, SetupState};
+use crate::download::arch_alt;
+use crate::runner::BenchContext;
+
+const VERSION: &str = "8.17.0";
+
+pub struct Filebeat;
+
+impl Agent for Filebeat {
+    fn name(&self) -> &str {
+        "filebeat"
+    }
+
+    fn binary_name(&self) -> &str {
+        "filebeat"
+    }
+
+    fn download_url(&self, os: &str, arch: &str) -> Option<String> {
+        // Filebeat uses x86_64/aarch64 (not arm64).
+        let fb_arch = match arch_alt(arch) {
+            "arm64" => "aarch64",
+            "amd64" => "x86_64",
+            other => other,
+        };
+        Some(format!(
+            "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-{VERSION}-{os}-{fb_arch}.tar.gz"
+        ))
+    }
+
+    fn write_config(&self, ctx: &BenchContext) -> Result<PathBuf, String> {
+        let data_dir = ctx.bench_dir.join("fb_data");
+        let logs_dir = ctx.bench_dir.join("fb_logs");
+        std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&logs_dir).map_err(|e| e.to_string())?;
+
+        let cfg_path = ctx.bench_dir.join("filebeat.yaml");
+        let config = format!(
+            r#"filebeat.inputs:
+  - type: log
+    enabled: true
+    paths:
+      - "{data_file}"
+
+output.elasticsearch:
+  hosts: ["http://{blackhole}"]
+
+setup.ilm.enabled: false
+setup.template.enabled: false
+
+path.data: "{data_dir}"
+path.logs: "{logs_dir}"
+logging.level: error
+"#,
+            data_file = ctx.data_file.display(),
+            blackhole = ctx.blackhole_addr,
+            data_dir = data_dir.display(),
+            logs_dir = logs_dir.display(),
+        );
+        std::fs::write(&cfg_path, config).map_err(|e| e.to_string())?;
+        Ok(cfg_path)
+    }
+
+    fn command(&self, binary: &Path, config: &Path, _ctx: &BenchContext) -> Command {
+        let mut cmd = Command::new(binary);
+        cmd.arg("-e")
+            .arg("-c")
+            .arg(config)
+            .arg("--strict.perms=false");
+        cmd
+    }
+
+    fn setup(&self, _ctx: &BenchContext) -> Result<SetupState, String> {
+        Ok(SetupState::default())
+    }
+}
