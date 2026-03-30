@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent - logfwd Benchmarks</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="container">
+    <a href="index.html" class="back-link">&larr; Dashboard</a>
+    <div class="header">
+      <h1 id="page-title">Loading...</h1>
+      <p>Performance across all scenarios over time</p>
+    </div>
+
+    <div id="loading" class="loading">Loading data</div>
+    <div id="error" class="error" style="display:none"></div>
+    <div id="content" style="display:none">
+
+      <div class="card">
+        <h2>Throughput by Scenario</h2>
+        <div id="trend-charts" class="chart-grid"></div>
+      </div>
+
+      <div class="card">
+        <h2>Latest Results</h2>
+        <table>
+          <thead><tr><th>Scenario</th><th class="num">Latest LPS</th><th class="num">Runs</th><th></th></tr></thead>
+          <tbody id="summary-tbody"></tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const COLORS = {'logfwd':'#2563eb','vector':'#7c3aed','fluent-bit':'#059669','filebeat':'#d97706','otelcol':'#dc2626','vlagent':'#64748b'};
+    function C(a){return COLORS[a]||'#9ca3af';}
+
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    Chart.defaults.color = isDark ? '#8b949e' : '#656d76';
+    Chart.defaults.borderColor = gridColor;
+
+    function fmtLPS(v){if(v>=1e6)return(v/1e6).toFixed(2)+'M';if(v>=1e3)return(v/1e3).toFixed(0)+'K';return v.toFixed(0);}
+    function fmtDate(s){return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric'});}
+    async function fetchJSON(url){const r=await fetch(url);if(!r.ok)throw new Error(r.status);return r.json();}
+
+    const agent = new URLSearchParams(window.location.search).get('name');
+
+    async function init() {
+      if (!agent) { document.getElementById('loading').style.display='none'; document.getElementById('error').textContent='No agent specified. Use ?name=logfwd'; document.getElementById('error').style.display='block'; return; }
+      document.getElementById('page-title').textContent = agent;
+      document.title = `${agent} - logfwd Benchmarks`;
+
+      const color = C(agent);
+
+      try {
+        const index = await fetchJSON('data/index.json');
+        const runs = index.runs || [];
+
+        // Collect per-scenario time series.
+        const scenarioPoints = {}; // scenario -> [{date, lps}]
+
+        for (const run of [...runs].reverse()) {
+          try {
+            const data = await fetchJSON(`data/runs/${run.id}.json`);
+            for (const [scenario, agents] of Object.entries(data.scenarios||{})) {
+              if (!agents[agent]) continue;
+              if (!scenarioPoints[scenario]) scenarioPoints[scenario] = [];
+              scenarioPoints[scenario].push({ date: data.date, lps: agents[agent].avg_lps });
+            }
+          } catch(e) { /* skip */ }
+        }
+
+        if (Object.keys(scenarioPoints).length === 0) throw new Error('No data for this agent');
+
+        // Charts per scenario
+        const container = document.getElementById('trend-charts');
+        for (const [scenario, points] of Object.entries(scenarioPoints)) {
+          const div = document.createElement('div');
+          div.className = 'chart-container';
+          div.innerHTML = `<h3><a href="scenario.html?name=${scenario}" style="color:var(--accent);text-decoration:none">${scenario}</a></h3><canvas></canvas>`;
+          container.appendChild(div);
+          new Chart(div.querySelector('canvas'), {
+            type:'line',
+            data:{labels:points.map(p=>fmtDate(p.date)),datasets:[{label:agent,data:points.map(p=>p.lps),borderColor:color,backgroundColor:color+'33',borderWidth:2,pointRadius:4,tension:0.1,fill:true}]},
+            options:{responsive:true,interaction:{intersect:false,mode:'index'},
+              plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${fmtLPS(ctx.parsed.y)} lines/sec`}}},
+              scales:{y:{title:{display:true,text:'Lines/sec'},beginAtZero:false,grid:{color:gridColor}},x:{grid:{display:false},ticks:{maxRotation:45,font:{size:11}}}},
+            },
+          });
+        }
+
+        // Summary table
+        let html = '';
+        for (const [scenario, points] of Object.entries(scenarioPoints)) {
+          const latest = points[points.length - 1];
+          html += `<tr>
+            <td><a href="scenario.html?name=${scenario}" style="color:var(--accent)">${scenario}</a></td>
+            <td class="num">${latest ? fmtLPS(latest.lps) + ' lines/sec' : 'N/A'}</td>
+            <td class="num">${points.length}</td>
+            <td><a href="scenario.html?name=${scenario}" style="color:var(--accent);font-size:12px">Compare agents</a></td>
+          </tr>`;
+        }
+        document.getElementById('summary-tbody').innerHTML = html;
+
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('content').style.display = 'block';
+      } catch(e) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('error').textContent = 'Failed: ' + e.message;
+        document.getElementById('error').style.display = 'block';
+      }
+    }
+    init();
+  </script>
+</body>
+</html>

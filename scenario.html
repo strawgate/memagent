@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scenario - logfwd Benchmarks</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="container">
+    <a href="index.html" class="back-link">&larr; Dashboard</a>
+    <div class="header">
+      <h1 id="page-title">Loading...</h1>
+      <p>Throughput trend across nightly runs &mdash; all agents compared</p>
+    </div>
+
+    <div id="loading" class="loading">Loading data</div>
+    <div id="error" class="error" style="display:none"></div>
+    <div id="content" style="display:none">
+
+      <div class="card">
+        <h2>Lines/sec Over Time</h2>
+        <div class="chart-container" style="border:none;box-shadow:none;padding:0">
+          <canvas id="trend-chart"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Latest Standings</h2>
+        <table>
+          <thead><tr><th>Agent</th><th class="num">Latest LPS</th><th class="num">Runs</th></tr></thead>
+          <tbody id="standings-tbody"></tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const COLORS = {'logfwd':'#2563eb','vector':'#7c3aed','fluent-bit':'#059669','filebeat':'#d97706','otelcol':'#dc2626','vlagent':'#64748b'};
+    const COLORS_BG = {'logfwd':'rgba(37,99,235,0.3)','vector':'rgba(124,58,237,0.3)','fluent-bit':'rgba(5,150,105,0.3)','filebeat':'rgba(217,119,6,0.3)','otelcol':'rgba(220,38,38,0.3)','vlagent':'rgba(100,116,139,0.3)'};
+    function C(a){return COLORS[a]||'#9ca3af';}
+    function CB(a){return COLORS_BG[a]||'rgba(156,163,175,0.3)';}
+
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    Chart.defaults.color = isDark ? '#8b949e' : '#656d76';
+    Chart.defaults.borderColor = gridColor;
+
+    function fmtLPS(v){if(v>=1e6)return(v/1e6).toFixed(2)+'M';if(v>=1e3)return(v/1e3).toFixed(0)+'K';return v.toFixed(0);}
+    function fmtDate(s){return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric'});}
+    async function fetchJSON(url){const r=await fetch(url);if(!r.ok)throw new Error(r.status);return r.json();}
+
+    const scenario = new URLSearchParams(window.location.search).get('name');
+
+    async function init() {
+      if (!scenario) { document.getElementById('loading').style.display='none'; document.getElementById('error').textContent='No scenario specified. Use ?name=passthrough'; document.getElementById('error').style.display='block'; return; }
+      document.getElementById('page-title').textContent = scenario;
+      document.title = `${scenario} - logfwd Benchmarks`;
+
+      try {
+        const index = await fetchJSON('data/index.json');
+        const runs = index.runs || [];
+
+        // Load all runs that have this scenario.
+        const points = []; // {date, agents: {name: lps}}
+        const agentSet = new Set();
+
+        for (const run of [...runs].reverse()) {
+          try {
+            const data = await fetchJSON(`data/runs/${run.id}.json`);
+            const scenarioData = (data.scenarios||{})[scenario];
+            if (!scenarioData) continue;
+            const agents = {};
+            for (const [agent, m] of Object.entries(scenarioData)) {
+              agentSet.add(agent);
+              agents[agent] = m.avg_lps;
+            }
+            points.push({ date: data.date, agents });
+          } catch(e) { /* skip */ }
+        }
+
+        if (points.length === 0) throw new Error('No data for this scenario');
+
+        // Trend chart
+        const agents = [...agentSet];
+        const labels = points.map(p => fmtDate(p.date));
+        const datasets = agents.map(a => ({
+          label: a, data: points.map(p => p.agents[a] || null),
+          borderColor: C(a), backgroundColor: CB(a), borderWidth: 2, pointRadius: 4, tension: 0.1, fill: false, spanGaps: true,
+        }));
+        new Chart(document.getElementById('trend-chart'), {
+          type:'line', data:{labels,datasets},
+          options:{responsive:true, interaction:{intersect:false,mode:'index'},
+            plugins:{tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.parsed.y!=null?fmtLPS(ctx.parsed.y):'N/A'} lines/sec`}},legend:{position:'top'}},
+            scales:{y:{title:{display:true,text:'Lines/sec'},beginAtZero:false,grid:{color:gridColor}},x:{grid:{display:false},ticks:{maxRotation:45,font:{size:11}}}},
+          },
+        });
+
+        // Standings table
+        const latest = points[points.length - 1];
+        const sorted = agents.map(a=>({name:a,lps:latest.agents[a]||0,count:points.filter(p=>p.agents[a]).length})).sort((a,b)=>b.lps-a.lps);
+        let html = '';
+        for (const a of sorted) {
+          const w = a === sorted[0] ? ' winner' : '';
+          html += `<tr><td class="${w}"><a href="agent.html?name=${a.name}" style="color:${C(a.name)};text-decoration:none">${a.name}</a></td><td class="num${w}">${fmtLPS(a.lps)} lines/sec</td><td class="num">${a.count}</td></tr>`;
+        }
+        document.getElementById('standings-tbody').innerHTML = html;
+
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('content').style.display = 'block';
+      } catch(e) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('error').textContent = 'Failed: ' + e.message;
+        document.getElementById('error').style.display = 'block';
+      }
+    }
+    init();
+  </script>
+</body>
+</html>
