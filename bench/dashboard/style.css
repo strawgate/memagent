@@ -237,7 +237,7 @@ td.numeric, th.numeric { text-align: right; font-variant-numeric: tabular-nums; 
 }
 
 .run-meta code {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 12px;
   background: var(--bg-secondary);
   padding: 2px 6px;

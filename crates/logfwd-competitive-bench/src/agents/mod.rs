@@ -83,18 +83,25 @@ pub struct SetupState {
 /// A snapshot of runtime metrics collected during a benchmark run.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AgentSample {
+    /// Seconds elapsed since the benchmark run started.
     #[serde(default)]
     pub elapsed_sec: f64,
+    /// Resident set size in bytes.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub rss_bytes: u64,
+    /// User CPU time in milliseconds.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub cpu_user_ms: u64,
+    /// System CPU time in milliseconds.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub cpu_sys_ms: u64,
+    /// Total events observed by the agent.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub events_total: u64,
+    /// Total bytes observed by the agent.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub bytes_total: u64,
+    /// Total failed events observed by the agent.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub errors_total: u64,
 }

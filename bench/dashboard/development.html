@@ -77,7 +77,7 @@ function formatNs(ns) {
   if (ns >= 1e9) return (ns / 1e9).toFixed(2) + 's';
   if (ns >= 1e6) return (ns / 1e6).toFixed(2) + 'ms';
   if (ns >= 1e3) return (ns / 1e3).toFixed(1) + 'us';
-  return ns + 'ns';
+  return Math.round(ns) + 'ns';
 }
 
 function isDark() { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
@@ -198,8 +198,8 @@ async function main() {
     if (rateRuns.length > 1) {
       document.getElementById('rate-trend-section').style.display = '';
       const trendLabels = rateRuns.map(r => r.id || '');
-      const rss100k = rateRuns.map(r => r.rates?.['100000']?.rss_mb ?? null);
-      const cpu100k = rateRuns.map(r => r.rates?.['100000']?.cpu_pct ?? null);
+      const rss100k = rateRuns.map(r => r.rates?.[100000]?.rss_mb ?? null);
+      const cpu100k = rateRuns.map(r => r.rates?.[100000]?.cpu_pct ?? null);
 
       new Chart(document.getElementById('chart-rss-trend'), {
         type: 'line',
@@ -245,19 +245,21 @@ async function main() {
     criterionRuns.forEach(r => Object.keys(r.benchmarks || {}).forEach(n => allBenchNames.add(n)));
 
     let sparkIdx = 0;
+    let rowsHtml = '';
     for (const name of Object.keys(benchmarks)) {
       const b = benchmarks[name];
       const thrpt = b.thrpt_mib_s ? b.thrpt_mib_s.toFixed(1) + ' MiB/s'
                   : b.thrpt_melem_s ? b.thrpt_melem_s.toFixed(1) + ' Melem/s' : '--';
 
       const sparkId = 'crit-spark-' + sparkIdx++;
-      tbody.innerHTML += `<tr>
+      rowsHtml += `<tr>
         <td>${name}</td>
         <td class="numeric">${formatNs(b.mean_ns)}</td>
         <td class="numeric">${thrpt}</td>
         <td><canvas class="sparkline" id="${sparkId}" width="120" height="36"></canvas></td>
       </tr>`;
     }
+    tbody.innerHTML = rowsHtml;
 
     // Draw trend sparklines after DOM update
     requestAnimationFrame(() => {

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Run Detail - Benchmark Dashboard</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3"></script>
 </head>
 <body>
 <div class="container">
@@ -73,6 +73,10 @@ async function main() {
     document.getElementById('loading').textContent = 'No run ID specified. Use ?id=<run_id>';
     return;
   }
+  if (!/^[a-zA-Z0-9._-]+$/.test(runId)) {
+    document.getElementById('loading').textContent = 'Invalid run ID format.';
+    return;
+  }
 
   document.getElementById('breadcrumb-title').textContent = 'Run #' + runId;
 
@@ -101,6 +105,7 @@ async function main() {
 
   // Per-scenario bar charts
   const chartsEl = document.getElementById('scenario-charts');
+  let rowsHtml = '';
   for (const sn of scenarios) {
     const sc = run.scenarios?.[sn];
     if (!sc) continue;
@@ -178,8 +183,9 @@ async function main() {
         row += '<td class="numeric">--</td><td class="numeric">--</td><td class="numeric">--</td><td class="numeric">--</td>';
       }
     }
-    tbody.innerHTML += `<tr>${row}</tr>`;
+    rowsHtml += `<tr>${row}</tr>`;
   }
+  tbody.innerHTML = rowsHtml;
 }
 
 main();

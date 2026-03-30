@@ -150,6 +150,11 @@ fn fmt_rate(lines: u64, ms: u64) -> String {
     }
 }
 
+/// Aggregate benchmark result JSONL files and emit summary reports.
+///
+/// Reads all `*.jsonl` files under `results_dir`, groups rows by
+/// `(agent, scenario, mode)`, prints either markdown or text summaries,
+/// and optionally writes `gh-bench` plus dashboard JSON artifacts.
 pub fn run(
     results_dir: &Path,
     markdown: bool,
@@ -320,7 +325,7 @@ fn write_dual_gh_bench(groups: &[AggResult], path: &Path) {
         });
     }
 
-    let json = serde_json::to_string_pretty(&bigger).unwrap();
+    let json = serde_json::to_string_pretty(&bigger).expect("serialize throughput gh-bench JSON");
     match std::fs::write(path, &json) {
         Ok(()) => eprintln!("gh-bench throughput JSON written to {}", path.display()),
         Err(e) => eprintln!("ERROR: write gh-bench: {e}"),
@@ -331,7 +336,7 @@ fn write_dual_gh_bench(groups: &[AggResult], path: &Path) {
             .map(|s| format!("{}-efficiency.json", s.to_string_lossy()))
             .unwrap_or_else(|| "gh-bench-efficiency.json".to_string()),
     );
-    let json = serde_json::to_string_pretty(&smaller).unwrap();
+    let json = serde_json::to_string_pretty(&smaller).expect("serialize efficiency gh-bench JSON");
     match std::fs::write(&smaller_path, &json) {
         Ok(()) => eprintln!(
             "gh-bench efficiency JSON written to {}",

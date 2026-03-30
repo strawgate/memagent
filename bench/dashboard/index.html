@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Benchmark Dashboard</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3"></script>
 </head>
 <body>
 <div class="container">
@@ -164,10 +164,10 @@ async function main() {
     for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
       const sc = latestRun.scenarios[sn];
       if (!sc?.logfwd) continue;
-      const logfwdLps = sc.logfwd.avg_lps;
+      const scenarioLogfwdLps = sc.logfwd.avg_lps;
       for (const agent of Object.keys(sc)) {
         if (agent === 'logfwd') continue;
-        const ratio = logfwdLps / (sc[agent].avg_lps || 1);
+        const ratio = scenarioLogfwdLps / (sc[agent].avg_lps || 1);
         if (!bestRatio || ratio > bestRatio.value) bestRatio = { value: ratio, vs: agent, scenario: sn };
       }
     }
@@ -181,8 +181,8 @@ async function main() {
 
   // Card 3: RSS at 100K eps
   let rss100k = null;
-  if (latestRate && latestRate.rates?.['100000']) {
-    rss100k = latestRate.rates['100000'].rss_mb;
+  if (latestRate && latestRate.rates?.[100000]) {
+    rss100k = latestRate.rates[100000].rss_mb;
   }
   cardsEl.innerHTML += `
     <div class="tracking-card">
@@ -204,6 +204,7 @@ async function main() {
     agents.forEach(a => { thead.innerHTML += `<th class="numeric">${a}</th>`; });
 
     const tbody = table.querySelector('tbody');
+    let rowsHtml = '';
     for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
       const sc = latestRun.scenarios[sn];
       let bestAgent = null, bestLps = 0;
@@ -215,8 +216,9 @@ async function main() {
         const cls = a === bestAgent ? 'numeric winner' : 'numeric';
         row += `<td class="${cls}">${lps ? formatLPS(lps) : '--'}</td>`;
       });
-      tbody.innerHTML += `<tr>${row}</tr>`;
+      rowsHtml += `<tr>${row}</tr>`;
     }
+    tbody.innerHTML = rowsHtml;
   }
 
   // Recent development metrics
@@ -225,15 +227,17 @@ async function main() {
     section.style.display = '';
     const tbody = document.querySelector('#dev-table tbody');
     const benchmarks = latestCriterion.benchmarks;
+    let rowsHtml = '';
     for (const [name, data] of Object.entries(benchmarks).slice(0, 10)) {
       const thrpt = data.thrpt_mib_s ? data.thrpt_mib_s.toFixed(1) + ' MiB/s'
                   : data.thrpt_melem_s ? data.thrpt_melem_s.toFixed(1) + ' Melem/s' : '--';
-      tbody.innerHTML += `<tr>
+      rowsHtml += `<tr>
         <td><a href="development.html">${name}</a></td>
         <td class="numeric">${formatNs(data.mean_ns)}</td>
         <td class="numeric">${thrpt}</td>
       </tr>`;
     }
+    tbody.innerHTML = rowsHtml;
   }
 
   // All runs list
@@ -244,19 +248,21 @@ async function main() {
     const tbody = document.querySelector('#runs-table tbody');
 
     // Show runs in reverse order (newest first)
+    let rowsHtml = '';
     for (const id of [...allRunIds].reverse().slice(0, 50)) {
       const types = [];
       if (runs.includes(id)) types.push('competitive');
       if (rateRuns.includes(id)) types.push('rate');
       if (criterionRuns.includes(id)) types.push('criterion');
 
-      tbody.innerHTML += `<tr>
+      rowsHtml += `<tr>
         <td><a href="run.html?id=${id}">#${id}</a></td>
         <td>--</td>
         <td>--</td>
         <td>${types.map(t => '<span class="badge">' + t + '</span> ').join('')}</td>
       </tr>`;
     }
+    tbody.innerHTML = rowsHtml;
   }
 }
 

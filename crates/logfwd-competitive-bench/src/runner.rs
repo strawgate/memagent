@@ -129,7 +129,7 @@ pub fn run_agent(
         mode: "binary".to_string(),
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
-        iteration: 0,
+        iteration: default_iteration(),
         samples,
     })
 }
@@ -252,7 +252,7 @@ pub fn run_agent_docker(
         mode: "docker".to_string(),
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
-        iteration: 0,
+        iteration: default_iteration(),
         samples: Vec::new(), // TODO: Docker sampling
     })
 }
@@ -493,7 +493,11 @@ fn collect_samples(
         let (rss, cpu_user, cpu_sys) = procfs_stats(pid);
 
         let http_body = stats_url.and_then(|url| {
-            ureq::get(url)
+            ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_secs(2)))
+                .build()
+                .new_agent()
+                .get(url)
                 .call()
                 .ok()
                 .and_then(|resp| resp.into_body().read_to_string().ok())
@@ -533,7 +537,7 @@ fn procfs_stats(pid: u32) -> (u64, u64, u64) {
             .and_then(|s| {
                 let after_comm = s.rfind(')')?.checked_add(2)?;
                 let fields: Vec<&str> = s[after_comm..].split_whitespace().collect();
-                let tps = 100u64;
+                let tps = clock_ticks_per_second();
                 let u = fields.get(11)?.parse::<u64>().ok()? * 1000 / tps;
                 let sy = fields.get(12)?.parse::<u64>().ok()? * 1000 / tps;
                 Some((u, sy))
@@ -547,6 +551,18 @@ fn procfs_stats(pid: u32) -> (u64, u64, u64) {
         let _ = pid;
         (0, 0, 0)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn clock_ticks_per_second() -> u64 {
+    // SAFETY: sysconf is thread-safe and does not require any preconditions.
+    let raw = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if raw > 0 { raw as u64 } else { 100 }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn clock_ticks_per_second() -> u64 {
+    100
 }
 
 /// Poll blackhole stats until lines reach expected count or bytes stabilize.

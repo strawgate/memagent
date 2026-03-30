@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Competitive Analysis - Benchmark Dashboard</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3"></script>
 </head>
 <body>
 <div class="container">
@@ -193,6 +193,7 @@ async function main() {
   thead.innerHTML = headerHtml;
 
   // Rows (newest first)
+  let rowsHtml = '';
   for (const run of [...allRuns].reverse()) {
     const runScenarios = run.scenario_names || Object.keys(run.scenarios || {});
     for (const sn of runScenarios) {
@@ -218,9 +219,10 @@ async function main() {
           row += `<td class="numeric">--</td><td class="numeric">--</td>`;
         }
       }
-      tbody.innerHTML += `<tr>${row}</tr>`;
+      rowsHtml += `<tr>${row}</tr>`;
     }
   }
+  tbody.innerHTML = rowsHtml;
 }
 
 main();

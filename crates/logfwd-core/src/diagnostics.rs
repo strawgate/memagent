@@ -641,7 +641,7 @@ fn process_metrics() -> (u64, u64, u64) {
             .and_then(|s| {
                 let after_comm = s.rfind(')')?.checked_add(2)?;
                 let fields: Vec<&str> = s[after_comm..].split_whitespace().collect();
-                let tps = 100u64;
+                let tps = clock_ticks_per_second();
                 let u = fields.get(11)?.parse::<u64>().ok()? * 1000 / tps;
                 let sy = fields.get(12)?.parse::<u64>().ok()? * 1000 / tps;
                 Some((u, sy))
@@ -691,6 +691,18 @@ fn process_metrics() -> (u64, u64, u64) {
     {
         (0, 0, 0)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn clock_ticks_per_second() -> u64 {
+    // SAFETY: sysconf is thread-safe and does not require any preconditions.
+    let raw = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if raw > 0 { raw as u64 } else { 100 }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn clock_ticks_per_second() -> u64 {
+    100
 }
 
 /// Minimal JSON-string escaping (backslash, double-quote, control chars).
@@ -877,6 +889,45 @@ mod tests {
             "body: {}",
             body
         );
+    }
+
+    #[test]
+    fn test_stats_endpoint_contract() {
+        let port = free_port();
+        let mut server = server_with_test_pipeline(port);
+        server.set_memory_stats_fn(|| {
+            Some(MemoryStats {
+                resident: 1_000_000,
+                allocated: 800_000,
+                active: 900_000,
+            })
+        });
+        let _handle = server.start();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/api/stats");
+        assert_eq!(status, 200);
+        assert!(body.contains(r#""uptime_sec":"#), "body: {}", body);
+        assert!(body.contains(r#""rss_bytes":"#), "body: {}", body);
+        assert!(body.contains(r#""cpu_user_ms":"#), "body: {}", body);
+        assert!(body.contains(r#""cpu_sys_ms":"#), "body: {}", body);
+        assert!(body.contains(r#""input_lines":1000"#), "body: {}", body);
+        assert!(body.contains(r#""input_bytes":50000"#), "body: {}", body);
+        assert!(body.contains(r#""output_lines":900"#), "body: {}", body);
+        assert!(body.contains(r#""output_bytes":30000"#), "body: {}", body);
+        assert!(body.contains(r#""output_errors":2"#), "body: {}", body);
+        assert!(body.contains(r#""batches":50"#), "body: {}", body);
+        assert!(body.contains(r#""scan_sec":0.100000"#), "body: {}", body);
+        assert!(
+            body.contains(r#""transform_sec":0.500000"#),
+            "body: {}",
+            body
+        );
+        assert!(body.contains(r#""output_sec":0.200000"#), "body: {}", body);
+        assert!(body.contains(r#""mem_resident":1000000"#), "body: {}", body);
+        assert!(body.contains(r#""mem_allocated":800000"#), "body: {}", body);
+        assert!(body.contains(r#""mem_active":900000"#), "body: {}", body);
     }
 
     #[test]

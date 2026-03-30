@@ -890,6 +890,14 @@ fn print_table(results: &[BenchResult], lines: usize, file_size: u64) {
 // Args
 // ---------------------------------------------------------------------------
 
+fn detect_subcommand(args: &[String]) -> Option<(String, usize)> {
+    args.iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, arg)| !arg.starts_with('-'))
+        .map(|(idx, arg)| (arg.clone(), idx))
+}
+
 struct Args {
     lines: usize,
     agents: Vec<String>,
@@ -917,6 +925,8 @@ struct Args {
     results_file: Option<PathBuf>,
     /// Subcommand: "summarize" reads result files from matrix cells.
     subcommand: Option<String>,
+    /// Positional index where subcommand was found.
+    subcommand_index: Option<usize>,
     /// Directory containing result artifacts for summarize subcommand.
     results_dir: Option<PathBuf>,
     /// Write dashboard data JSON.
@@ -944,13 +954,15 @@ impl Args {
             iterations: 1,
             results_file: None,
             subcommand: None,
+            subcommand_index: None,
             results_dir: None,
             dashboard_file: None,
         };
 
-        // Check for subcommand as first non-flag argument.
-        if args.len() > 1 && !args[1].starts_with('-') {
-            result.subcommand = Some(args[1].clone());
+        // Check for subcommand as first non-flag argument anywhere.
+        if let Some((subcommand, idx)) = detect_subcommand(&args) {
+            result.subcommand = Some(subcommand);
+            result.subcommand_index = Some(idx);
         }
 
         let mut i = 1;
@@ -1038,8 +1050,12 @@ impl Args {
                     i += 1;
                     result.dashboard_file = Some(PathBuf::from(&args[i]));
                 }
-                other if result.subcommand.is_some() && !other.starts_with('-') => {
-                    // Skip the subcommand word itself.
+                other
+                    if result.subcommand.is_some()
+                        && result.subcommand_index.is_some_and(|idx| idx == i)
+                        && !other.starts_with('-') =>
+                {
+                    // Skip the detected subcommand word itself.
                 }
                 other => {
                     eprintln!("Unknown argument: {other}");
