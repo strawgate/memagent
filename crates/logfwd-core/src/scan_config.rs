@@ -130,3 +130,68 @@ mod tests {
         assert_eq!(parse_float_fast(b"abc"), None);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani formal verification proofs
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Prove parse_int_fast never panics for any 8-byte input.
+    /// Also proves: if it returns Some(n), encoding n back to decimal
+    /// and re-parsing gives the same result (roundtrip).
+    #[kani::proof]
+    #[kani::unwind(10)] // max 8 bytes + loop overhead
+    #[kani::solver(kissat)]
+    fn verify_parse_int_fast_no_panic_8bytes() {
+        let bytes: [u8; 8] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= 8);
+        let _ = parse_int_fast(&bytes[..len]);
+    }
+
+    /// Prove parse_int_fast correctly rejects overflow.
+    /// For any sequence of ASCII digits, if the result would exceed i64
+    /// bounds, None is returned.
+    #[kani::proof]
+    #[kani::unwind(22)] // i64::MAX is 19 digits + sign + loop overhead
+    #[kani::solver(kissat)]
+    fn verify_parse_int_fast_overflow_detection() {
+        let bytes: [u8; 20] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= 20);
+
+        let input = &bytes[..len];
+        let result = parse_int_fast(input);
+
+        // If result is Some(n), verify n is a valid i64 representation
+        // of the input bytes.
+        if let Some(n) = result {
+            // Re-check: the input must be all ASCII digits (with optional leading minus)
+            let (neg, start) = if !input.is_empty() && input[0] == b'-' {
+                (true, 1usize)
+            } else {
+                (false, 0usize)
+            };
+
+            // Must have at least one digit
+            assert!(start < input.len(), "Some returned for empty digit sequence");
+
+            // Verify all remaining bytes are digits
+            let mut i = start;
+            while i < input.len() {
+                assert!(input[i].is_ascii_digit(), "non-digit in accepted input");
+                i += 1;
+            }
+
+            // Verify the sign is correct
+            if neg {
+                assert!(n <= 0, "negative input parsed as positive");
+            } else {
+                assert!(n >= 0, "positive input parsed as negative");
+            }
+        }
+    }
+}

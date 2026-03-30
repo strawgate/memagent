@@ -735,3 +735,118 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani formal verification proofs
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Prove varint_len matches encode_varint output length for ALL u64 values.
+    ///
+    /// This is the foundational wire format proof — if these disagree,
+    /// protobuf message size calculations are wrong and payloads are corrupt.
+    #[kani::proof]
+    #[kani::unwind(12)] // varint loop: max 10 iterations + overhead
+    #[kani::solver(kissat)]
+    fn verify_varint_len_matches_encode() {
+        let value: u64 = kani::any();
+        let mut buf = Vec::new();
+        encode_varint(&mut buf, value);
+        assert!(
+            buf.len() == varint_len(value),
+            "varint_len disagrees with encode_varint"
+        );
+    }
+
+    /// Prove encode_varint produces valid protobuf varint format for ALL u64.
+    ///
+    /// Properties:
+    /// 1. Length is 1-10 bytes
+    /// 2. All bytes except the last have the continuation bit (0x80) set
+    /// 3. The last byte does NOT have the continuation bit set
+    /// 4. Decoding the varint gives back the original value
+    #[kani::proof]
+    #[kani::unwind(12)]
+    #[kani::solver(kissat)]
+    fn verify_varint_format_and_roundtrip() {
+        let value: u64 = kani::any();
+        let mut buf = Vec::new();
+        encode_varint(&mut buf, value);
+
+        let len = buf.len();
+
+        // Property 1: length is 1-10
+        assert!(len >= 1 && len <= 10, "varint length out of range");
+
+        // Property 2: all bytes except last have continuation bit
+        let mut i = 0;
+        while i < len - 1 {
+            assert!(
+                buf[i] & 0x80 != 0,
+                "non-last byte missing continuation bit"
+            );
+            i += 1;
+        }
+
+        // Property 3: last byte has no continuation bit
+        assert!(
+            buf[len - 1] & 0x80 == 0,
+            "last byte has continuation bit"
+        );
+
+        // Property 4: decode roundtrip
+        let mut decoded: u64 = 0;
+        let mut shift: u32 = 0;
+        let mut j = 0;
+        while j < len {
+            let byte = buf[j] as u64;
+            decoded |= (byte & 0x7F) << shift;
+            shift += 7;
+            j += 1;
+        }
+        assert!(decoded == value, "varint roundtrip mismatch");
+    }
+
+    /// Prove encode_varint never panics for any u64 input.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn verify_varint_no_panic() {
+        let value: u64 = kani::any();
+        let mut buf = Vec::new();
+        encode_varint(&mut buf, value);
+    }
+
+    /// Prove encode_tag produces correct field_number and wire_type encoding.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn verify_encode_tag() {
+        let field_number: u32 = kani::any();
+        let wire_type: u8 = kani::any();
+        kani::assume(field_number > 0);
+        kani::assume(field_number <= 0x1FFFFFFF); // max protobuf field number
+        kani::assume(wire_type <= 5); // valid wire types: 0-5
+
+        let mut buf = Vec::new();
+        encode_tag(&mut buf, field_number, wire_type);
+
+        // Decode the tag varint
+        let mut tag_value: u64 = 0;
+        let mut shift: u32 = 0;
+        let mut i = 0;
+        while i < buf.len() {
+            let byte = buf[i] as u64;
+            tag_value |= (byte & 0x7F) << shift;
+            shift += 7;
+            i += 1;
+        }
+
+        // Verify field_number and wire_type
+        let decoded_wire = (tag_value & 0x7) as u8;
+        let decoded_field = (tag_value >> 3) as u32;
+        assert!(decoded_wire == wire_type, "wire type mismatch");
+        assert!(decoded_field == field_number, "field number mismatch");
+    }
+}
