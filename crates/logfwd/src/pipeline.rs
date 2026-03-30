@@ -1051,6 +1051,245 @@ output:
         );
     }
 
+    // -------------------------------------------------------------------
+    // Shutdown stress tests
+    // -------------------------------------------------------------------
+
+    /// Shutdown must not deadlock when the bounded channel is full and
+    /// input threads are blocked in blocking_send. This was a real bug:
+    /// if the pipeline joins threads before draining the channel, the
+    /// threads can't make progress and the join hangs forever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_shutdown_does_not_deadlock_on_full_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("full_channel.log");
+
+        // Write enough data to fill the channel (16 slots). Use a tiny
+        // batch target so each line becomes its own channel message.
+        let mut data = String::new();
+        for i in 0..200 {
+            data.push_str(&format!(r#"{{"i":{i}}}"#));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+
+        // SlowSink blocks the consumer, causing the channel to fill up.
+        pipeline = pipeline.with_output(Box::new(SlowSink {
+            delay: Duration::from_millis(50),
+            rows_received: 0,
+        }));
+        pipeline.batch_target_bytes = 64; // tiny batches → many channel sends
+        pipeline.batch_timeout = Duration::from_millis(10);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        // Cancel quickly — while input threads are likely blocked on a full channel.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            sd.cancel();
+        });
+
+        // This must complete without deadlock. If the drain/join order is
+        // wrong, this will hang and the test will time out.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            pipeline.run_async(&shutdown),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "pipeline should not deadlock on shutdown with full channel"
+        );
+        assert!(
+            result.unwrap().is_ok(),
+            "pipeline should complete successfully"
+        );
+    }
+
+    /// Shutdown with a slow output must still drain all buffered data.
+    /// The output takes 50ms per batch, but shutdown should wait for
+    /// the drain to complete rather than dropping data.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_shutdown_drains_with_slow_output() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("slow_output.log");
+
+        let mut data = String::new();
+        for i in 0..50 {
+            data.push_str(&format!(r#"{{"msg":"slow {}"}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        pipeline = pipeline.with_output(Box::new(SlowSink {
+            delay: Duration::from_millis(20),
+            rows_received: 0,
+        }));
+        pipeline.batch_timeout = Duration::from_millis(30);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            sd.cancel();
+        });
+
+        pipeline.run_async(&shutdown).await.unwrap();
+
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert!(
+            lines_in >= 50,
+            "slow output: all data should drain on shutdown, got {lines_in} (expected >= 50)"
+        );
+    }
+
+    /// After all file data is read, shutdown must still drain everything.
+    /// The file tailer keeps polling after EOF (it's a tailer, not a
+    /// reader), so the pipeline only exits via shutdown signal.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_pipeline_processes_all_data_before_shutdown() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("eof_test.log");
+
+        let mut data = String::new();
+        for i in 0..30 {
+            data.push_str(&format!(r#"{{"eof":{i}}}"#));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        pipeline = pipeline.with_output(Box::new(DevNullSink::new()));
+        pipeline.batch_timeout = Duration::from_millis(20);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        // Wait for data to be processed, then shut down.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            sd.cancel();
+        });
+
+        pipeline.run_async(&shutdown).await.unwrap();
+
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert!(
+            lines_in >= 30,
+            "all file data should be processed before shutdown, got {lines_in} (expected >= 30)"
+        );
+    }
+
+    /// Shutdown with zero data should complete instantly without errors.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_shutdown_empty_pipeline() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("empty.log");
+        std::fs::write(&log_path, b"").unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        pipeline = pipeline.with_output(Box::new(DevNullSink::new()));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            sd.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            pipeline.run_async(&shutdown),
+        )
+        .await;
+
+        assert!(result.is_ok(), "empty pipeline should shut down cleanly");
+        assert!(result.unwrap().is_ok());
+    }
+
+    // -------------------------------------------------------------------
+    // Test sinks
+    // -------------------------------------------------------------------
+
     /// A sink that discards data but counts rows received.
     struct DevNullSink {
         rows_received: u64,
@@ -1076,6 +1315,30 @@ output:
         }
         fn name(&self) -> &str {
             "devnull"
+        }
+    }
+
+    /// A sink that sleeps on each send_batch to simulate slow output.
+    struct SlowSink {
+        delay: Duration,
+        rows_received: u64,
+    }
+
+    impl OutputSink for SlowSink {
+        fn send_batch(
+            &mut self,
+            batch: &arrow::record_batch::RecordBatch,
+            _metadata: &BatchMetadata,
+        ) -> io::Result<()> {
+            std::thread::sleep(self.delay);
+            self.rows_received += batch.num_rows() as u64;
+            Ok(())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn name(&self) -> &str {
+            "slow"
         }
     }
 }
