@@ -136,7 +136,78 @@ git commit --no-edit
 git push origin HEAD:branch-name
 ```
 
-## 6. Merging
+## 6. Resolving Review Comments
+
+After fixing review feedback, resolve the addressed threads via GraphQL (the REST API doesn't support review threads):
+
+```bash
+# List all unresolved review threads on a PR
+gh api graphql -f query='
+{
+  repository(owner: "strawgate", name: "memagent") {
+    pullRequest(number: PR_NUMBER) {
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes {
+              body
+              author { login }
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+
+# Resolve a specific thread by ID
+gh api graphql -f query='
+mutation {
+  resolveReviewThread(input: {
+    threadId: "THREAD_NODE_ID"
+  }) {
+    thread { isResolved }
+  }
+}'
+```
+
+**When to resolve:**
+- The fix is pushed and addresses the reviewer's exact concern
+- The thread is outdated (code was refactored/removed)
+- The comment was informational (no action needed)
+
+**When NOT to resolve:**
+- The fix is partial or a workaround — leave open for the reviewer
+- The comment raises an architectural question that needs discussion
+
+**Bulk resolve** — after pushing fixes, resolve all clearly-addressed threads in one pass:
+
+```bash
+# Get all unresolved thread IDs
+THREADS=$(gh api graphql -f query='
+{
+  repository(owner: "strawgate", name: "memagent") {
+    pullRequest(number: PR_NUMBER) {
+      reviewThreads(first: 100) {
+        nodes { id isResolved }
+      }
+    }
+  }
+}' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id')
+
+# Review what will be resolved
+echo "Unresolved threads:"
+echo "$THREADS"
+
+# Resolve each one
+for tid in $THREADS; do
+  gh api graphql -f query="mutation { resolveReviewThread(input: { threadId: \"$tid\" }) { thread { isResolved } } }"
+done
+```
+
+## 7. Merging
 
 ```bash
 # Squash merge (preferred for Copilot PRs)
@@ -146,7 +217,7 @@ gh pr merge ISSUE_NUMBER --squash
 gh pr merge ISSUE_NUMBER --squash --auto
 ```
 
-## 7. Closing Stale PRs
+## 8. Closing Stale PRs
 
 When PRs are superseded or too stale to salvage:
 ```bash
@@ -155,7 +226,7 @@ gh pr close ISSUE_NUMBER --comment "Closing — [reason]. [what to do instead]."
 
 If the underlying work is still needed, file a focused issue and assign to Copilot.
 
-## 8. Stale PR Triage
+## 9. Stale PR Triage
 
 Periodically check if WIP PRs are still relevant:
 
@@ -165,7 +236,7 @@ Periodically check if WIP PRs are still relevant:
 4. **Partially superseded** → close, file focused issue for remaining work
 5. **Still needed** → leave open or close and refile with updated scope
 
-## 9. Master CI Health
+## 10. Master CI Health
 
 After merging batches, verify master CI is green:
 ```bash
