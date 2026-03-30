@@ -1,6 +1,6 @@
 # Building a proven kernel crate in Rust with formal verification
 
-**A `logfwd-kernel` crate can enforce purity, safety, and formal verification through a combination of `#![no_std]` + `alloc`, Kani proofs gated behind `#[cfg(kani)]`, bolero for unified test/fuzz/proof harnesses, cargo-vet for per-crate dependency auditing, and a layered CI pipeline.** The approach is battle-tested: AWS's s2n-quic uses this exact pattern with bolero + Kani across dozens of modules in production. The migration from logfwd-core should proceed as five small PRs, starting with the lowest-dependency pure-logic modules and using `pub use` re-exports to maintain backward compatibility throughout.
+**A `logfwd-core` crate can enforce purity, safety, and formal verification through a combination of `#![no_std]` + `alloc`, Kani proofs gated behind `#[cfg(kani)]`, bolero for unified test/fuzz/proof harnesses, cargo-vet for per-crate dependency auditing, and a layered CI pipeline.** The approach is battle-tested: AWS's s2n-quic uses this exact pattern with bolero + Kani across dozens of modules in production. The migration from logfwd-core should proceed as five small PRs, starting with the lowest-dependency pure-logic modules and using `pub use` re-exports to maintain backward compatibility throughout.
 
 ---
 
@@ -10,13 +10,13 @@ The proven kernel needs two layers of defense: structural enforcement via `#![no
 
 **With `#![no_std]` + `extern crate alloc`**, you get `Vec`, `String`, `Box`, `Rc`, `Arc`, `BTreeMap`, `BTreeSet`, `VecDeque`, `BinaryHeap`, and `Cow` — but **not `HashMap` or `HashSet`**. These are `std`-only because they rely on OS-sourced random seeds for HashDoS protection. If you need hash maps, add `hashbrown` — it's the same implementation backing `std::HashMap` since Rust 1.36, packaged for `no_std`. Its default hasher (`foldhash`) lacks HashDoS resistance, which is fine for a kernel processing trusted internal data.
 
-Is `no_std` worth it when you need `alloc` anyway? **Yes.** It provides structural enforcement — the compiler itself blocks IO access, not just lints. It also makes the kernel usable in WASM, embedded, and other constrained environments. The one catch: your entire dependency tree must also be `no_std`-compatible, and the compiler won't warn you otherwise. Verify with CI: `cargo build --target thumbv6m-none-eabi -p logfwd-kernel`.
+Is `no_std` worth it when you need `alloc` anyway? **Yes.** It provides structural enforcement — the compiler itself blocks IO access, not just lints. It also makes the kernel usable in WASM, embedded, and other constrained environments. The one catch: your entire dependency tree must also be `no_std`-compatible, and the compiler won't warn you otherwise. Verify with CI: `cargo build --target thumbv6m-none-eabi -p logfwd-core`.
 
 Here is the concrete Cargo.toml for the kernel crate, modeled on s2n-quic's pattern:
 
 ```toml
 [package]
-name = "logfwd-kernel"
+name = "logfwd-core"
 version = "0.0.0"
 edition = "2021"
 
@@ -135,18 +135,18 @@ mod verification {
 
 ```toml
 # supply-chain/config.toml
-[policy.logfwd-kernel]
+[policy.logfwd-core]
 criteria = "safe-to-deploy"
 notes = "All kernel dependencies must be fully audited"
 
-[policy.logfwd-kernel]
+[policy.logfwd-core]
 dependency-criteria = { bolero-generator = ["safe-to-run"] }
 notes = "bolero-generator is only used for test/fuzz generation"
 ```
 
-This means every dependency of `logfwd-kernel` must meet the `safe-to-deploy` criteria — either through your own audits or imported audits from trusted organizations. Mozilla, Google, Bytecode Alliance, and Embark Studios all publish audit sets you can import. Firefox uses this exact pattern with a 773-line `config.toml` that sets per-crate policies across their entire Rust dependency tree.
+This means every dependency of `logfwd-core` must meet the `safe-to-deploy` criteria — either through your own audits or imported audits from trusted organizations. Mozilla, Google, Bytecode Alliance, and Embark Studios all publish audit sets you can import. Firefox uses this exact pattern with a 773-line `config.toml` that sets per-crate policies across their entire Rust dependency tree.
 
-**cargo-deny operates at the workspace level**, not per-member. It cannot natively express "crate X may only depend on Y and Z." The workaround is running `cargo deny check --manifest-path crates/logfwd-kernel/Cargo.toml` with a stricter deny.toml specific to the kernel. For the kernel, use an allow-list approach:
+**cargo-deny operates at the workspace level**, not per-member. It cannot natively express "crate X may only depend on Y and Z." The workaround is running `cargo deny check --manifest-path crates/logfwd-core/Cargo.toml` with a stricter deny.toml specific to the kernel. For the kernel, use an allow-list approach:
 
 ```toml
 # kernel-deny.toml
@@ -154,7 +154,7 @@ This means every dependency of `logfwd-kernel` must meet the `safe-to-deploy` cr
 multiple-versions = "deny"
 wildcards = "deny"
 allow = [
-    "logfwd-kernel",
+    "logfwd-core",
     "memchr",
     "hashbrown",
     "bolero-generator",
@@ -165,16 +165,16 @@ A simpler CI check for dependency growth uses `cargo metadata`:
 
 ```bash
 #!/usr/bin/env bash
-CURRENT=$(cargo metadata --no-deps -p logfwd-kernel --format-version 1 \
+CURRENT=$(cargo metadata --no-deps -p logfwd-core --format-version 1 \
   | jq -r '.packages[0].dependencies[].name' | sort -u)
-ALLOWED=$(cat crates/logfwd-kernel/allowed-deps.txt)
+ALLOWED=$(cat crates/logfwd-core/allowed-deps.txt)
 NEW=$(comm -13 <(echo "$ALLOWED") <(echo "$CURRENT"))
 if [ -n "$NEW" ]; then
   echo "❌ New kernel dependencies: $NEW"; exit 1
 fi
 ```
 
-Google Fuchsia goes further with a **graded UB risk scale** (ub-risk-0 through ub-risk-4) where only designated unsafe reviewers can certify crates at each level. Their critical-path crates must be ub-risk-1 or lower. For logfwd-kernel, this level of formality isn't necessary, but the principle is sound: the kernel's dependencies deserve stricter scrutiny than the rest of the workspace.
+Google Fuchsia goes further with a **graded UB risk scale** (ub-risk-0 through ub-risk-4) where only designated unsafe reviewers can certify crates at each level. Their critical-path crates must be ub-risk-1 or lower. For logfwd-core, this level of formality isn't necessary, but the principle is sound: the kernel's dependencies deserve stricter scrutiny than the rest of the workspace.
 
 ---
 
@@ -191,16 +191,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cargo fmt --check -p logfwd-kernel
-      - run: cargo clippy -p logfwd-kernel -- -D warnings
-      - run: cargo build -p logfwd-kernel --target thumbv6m-none-eabi  # verify no_std
+      - run: cargo fmt --check -p logfwd-core
+      - run: cargo clippy -p logfwd-core -- -D warnings
+      - run: cargo build -p logfwd-core --target thumbv6m-none-eabi  # verify no_std
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cargo test -p logfwd-kernel --all-features
-      - run: cargo test -p logfwd-kernel --all-features -- --ignored  # long proptests
+      - run: cargo test -p logfwd-core --all-features
+      - run: cargo test -p logfwd-core --all-features -- --ignored  # long proptests
 
   kani:
     runs-on: ubuntu-latest
@@ -208,7 +208,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: model-checking/kani-github-action@v1
         with:
-          working-directory: crates/logfwd-kernel
+          working-directory: crates/logfwd-core
           args: --tests -Z function-contracts
 
   coverage:
@@ -216,7 +216,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: cargo llvm-cov -p logfwd-kernel --fail-under-lines 100 --fail-under-functions 100
+      - run: cargo llvm-cov -p logfwd-core --fail-under-lines 100 --fail-under-functions 100
 
   semver:
     runs-on: ubuntu-latest
@@ -224,14 +224,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          package: logfwd-kernel
+          package: logfwd-core
 
   deps:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: cargo install cargo-deny cargo-vet
-      - run: cargo deny check --manifest-path crates/logfwd-kernel/Cargo.toml -c kernel-deny.toml
+      - run: cargo deny check --manifest-path crates/logfwd-core/Cargo.toml -c kernel-deny.toml
       - run: cargo vet
       - run: ./scripts/check-kernel-deps.sh
 
@@ -239,21 +239,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: ./scripts/check-proof-coverage.sh logfwd-kernel
+      - run: ./scripts/check-proof-coverage.sh logfwd-core
 ```
 
 **Kani proof timing** depends on harness complexity. Individual simple proofs complete in seconds; a crate with 20-30 proofs typically finishes in **5-15 minutes** on standard CI hardware. Kani results cannot be cached (CBMC re-solves every run), but you can cache the Kani installation and Cargo build artifacts. The official GitHub Action (`model-checking/kani-github-action@v1`) handles installation automatically.
 
-**Mutation testing with cargo-mutants** belongs on a weekly schedule, not every PR — it runs `cargo test` against hundreds of mutated source variants and takes **30-60 minutes** for a small crate. It's valuable alongside Kani because it tests a different property: Kani proves your assertions hold for all inputs, while mutation testing checks that your test suite actually detects behavioral changes. Run with `cargo mutants -vV --in-place --package logfwd-kernel` and use `--shard K/N` to split across CI workers.
+**Mutation testing with cargo-mutants** belongs on a weekly schedule, not every PR — it runs `cargo test` against hundreds of mutated source variants and takes **30-60 minutes** for a small crate. It's valuable alongside Kani because it tests a different property: Kani proves your assertions hold for all inputs, while mutation testing checks that your test suite actually detects behavioral changes. Run with `cargo mutants -vV --in-place --package logfwd-core` and use `--shard K/N` to split across CI workers.
 
 The proof-coverage check script extracts public functions from rustdoc JSON and verifies each has a corresponding `kani::proof_for_contract` or `kani::proof` harness:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-PUB_FNS=$(grep -rn '^[[:space:]]*pub fn ' crates/logfwd-kernel/src/ \
+PUB_FNS=$(grep -rn '^[[:space:]]*pub fn ' crates/logfwd-core/src/ \
   | grep -v '#\[cfg(test)\]' | grep -oP 'pub fn \K\w+' | sort -u)
-PROVED=$(grep -rn 'proof_for_contract\|kani::proof' crates/logfwd-kernel/src/ \
+PROVED=$(grep -rn 'proof_for_contract\|kani::proof' crates/logfwd-core/src/ \
   | grep -oP 'proof_for_contract\(\K[^)]+|fn \K\w+' | sort -u)
 UNPROVED=$(comm -23 <(echo "$PUB_FNS") <(echo "$PROVED"))
 if [ -n "$UNPROVED" ]; then
@@ -289,7 +289,7 @@ disallowed-methods = [
 
 ---
 
-## Migration plan: five PRs from logfwd-core to logfwd-kernel
+## Migration plan (superseded — see dev-docs/PHASES.md)
 
 The migration follows a principle: **move lowest-dependency, purest-logic modules first**, using `pub use` re-exports to maintain backward compatibility at every step. Always use `pub use`, never `pub type` — the latter is a semver hazard for unit structs and tuple structs that breaks construction syntax.
 
@@ -302,21 +302,21 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.dependencies]
-logfwd-kernel = { path = "crates/logfwd-kernel" }
+logfwd-core = { path = "crates/logfwd-core" }
 memchr = "2"
 serde = { version = "1", features = ["derive"] }
 ```
 
-**PR 1 — Scaffold and utility functions.** Create the workspace structure and empty `logfwd-kernel` crate. Move `parse_int_fast` and `parse_float_fast` from `scan_config.rs`. Add `pub use logfwd_kernel::{parse_int_fast, parse_float_fast}` in logfwd-core. This is the lowest-risk PR that establishes the build infrastructure, lint configuration, and Kani pipeline. All existing tests pass unchanged.
+**PR 1 — Scaffold and utility functions.** Create the workspace structure and empty `logfwd-core` crate. Move `parse_int_fast` and `parse_float_fast` from `scan_config.rs`. Add `pub use logfwd_kernel::{parse_int_fast, parse_float_fast}` in logfwd-core. This is the lowest-risk PR that establishes the build infrastructure, lint configuration, and Kani pipeline. All existing tests pass unchanged.
 
 **PR 2 — Pure types and classification.** Move `format.rs` and `chunk_classify.rs` entirely. These are data types and byte-pattern classification — inherently pure. Re-export with `pub use logfwd_kernel::format::*` and `pub use logfwd_kernel::chunk_classify::*` in logfwd-core. Other modules that depend on these types continue working through re-exports.
 
 **PR 3 — CRI parsing.** Move `cri.rs` entirely. CRI line parsing is pure string/byte parsing that depends on `format.rs` types (already in kernel from PR 2). Re-export from logfwd-core.
 
-**PR 4 — Scanner split.** This is the first split module. Define a `ParsedLine` struct in `logfwd-kernel/src/scanner_parse.rs` as the interface boundary — a plain Rust struct containing only primitive types and `Vec`/`String`. Move all parsing logic into the kernel. Leave Arrow `ArrayBuilder` dispatch in `logfwd-core/src/scanner.rs`, which consumes `ParsedLine` structs:
+**PR 4 — Scanner split.** This is the first split module. Define a `ParsedLine` struct in `logfwd-core/src/scanner_parse.rs` as the interface boundary — a plain Rust struct containing only primitive types and `Vec`/`String`. Move all parsing logic into the kernel. Leave Arrow `ArrayBuilder` dispatch in `logfwd-core/src/scanner.rs`, which consumes `ParsedLine` structs:
 
 ```rust
-// logfwd-kernel/src/scanner_parse.rs
+// logfwd-core/src/scanner_parse.rs
 pub struct ParsedLine<'a> {
     pub timestamp: Option<i64>,
     pub severity: Option<u8>,
@@ -327,7 +327,7 @@ pub struct ParsedLine<'a> {
 pub fn parse_log_line(line: &[u8], format: &Format) -> ParsedLine<'_> { /* ... */ }
 ```
 
-**PR 5 — OTLP split.** Same pattern: define `OtlpLogRecord` in `logfwd-kernel/src/otlp_wire.rs` for the decoded wire format, move protobuf decoding there, leave `RecordBatch` assembly in logfwd-core. The struct approach (vs. a trait-based `ParseSink`) is simpler and produces values that proptest oracles can directly inspect.
+**PR 5 — OTLP split.** Same pattern: define `OtlpLogRecord` in `logfwd-core/src/otlp_wire.rs` for the decoded wire format, move protobuf decoding there, leave `RecordBatch` assembly in logfwd-core. The struct approach (vs. a trait-based `ParseSink`) is simpler and produces values that proptest oracles can directly inspect.
 
 During migration, **existing fuzz targets and proptest tests continue working** through re-exports. Once all five PRs land and the kernel is stable, fuzz targets testing pure parsing logic can optionally move to the kernel crate; tests exercising Arrow integration stay in logfwd-core. The `http` crate (pure types, no IO) + `hyper` (client/server with IO) is the canonical example of this pattern in the Rust ecosystem.
 
