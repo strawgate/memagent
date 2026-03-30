@@ -29,6 +29,9 @@ proptest = "1"
 sonic-rs = "0.5"
 tempfile = "3"
 
+[features]
+debug_bitmask = []
+
 [[bench]]
 name = "scanner"
 harness = false

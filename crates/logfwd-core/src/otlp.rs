@@ -631,21 +631,21 @@ mod tests {
         let nanos = parse_timestamp_nanos(ts);
         // 2024-01-15 10:30:00 UTC
         // Expected: 1705314600 seconds * 1e9
-        assert_eq!(nanos, 1705314600_000_000_000);
+        assert_eq!(nanos, 1_705_314_600_000_000_000);
     }
 
     #[test]
     fn test_parse_timestamp_fractional() {
         let ts = b"2024-01-15T10:30:00.123Z";
         let nanos = parse_timestamp_nanos(ts);
-        assert_eq!(nanos, 1705314600_123_000_000);
+        assert_eq!(nanos, 1_705_314_600_123_000_000);
     }
 
     #[test]
     fn test_parse_timestamp_nanos_precision() {
         let ts = b"2024-01-15T10:30:00.123456789Z";
         let nanos = parse_timestamp_nanos(ts);
-        assert_eq!(nanos, 1705314600_123_456_789);
+        assert_eq!(nanos, 1_705_314_600_123_456_789);
     }
 
     #[test]
@@ -685,7 +685,7 @@ mod tests {
     fn test_encode_single_record() {
         let line = br#"{"timestamp":"2024-01-15T10:30:00Z","level":"INFO","message":"hello"}"#;
         let mut buf = Vec::new();
-        let size = encode_log_record(line, 1705314600_000_000_000, &mut buf);
+        let size = encode_log_record(line, 1_705_314_600_000_000_000, &mut buf);
         assert!(size > 0);
         assert_eq!(buf.len(), size);
         // The encoded bytes should be valid protobuf (we verify via decode in the batch test).
@@ -698,7 +698,7 @@ mod tests {
             br#"{"timestamp":"2024-01-15T10:30:01Z","level":"WARN","message":"second"}"#,
             br#"{"timestamp":"2024-01-15T10:30:02Z","level":"ERROR","message":"third"}"#,
         ];
-        let batch = encode_batch(&lines, 1705314600_000_000_000);
+        let batch = encode_batch(&lines, 1_705_314_600_000_000_000);
         assert!(!batch.is_empty());
 
         // Basic structure check: starts with tag for field 1 (ResourceLogs).
@@ -710,7 +710,7 @@ mod tests {
     fn test_non_json_line_uses_full_body() {
         let line = b"2024-01-15 INFO just a plain text log line";
         let mut buf = Vec::new();
-        encode_log_record(line, 1705314600_000_000_000, &mut buf);
+        encode_log_record(line, 1_705_314_600_000_000_000, &mut buf);
         // Should still encode — body will be the full line since no JSON fields found.
         assert!(!buf.is_empty());
     }
@@ -724,7 +724,7 @@ mod tests {
             msg
         );
         let mut buf = Vec::new();
-        let size = encode_log_record(line.as_bytes(), 1705314600_000_000_000, &mut buf);
+        let size = encode_log_record(line.as_bytes(), 1_705_314_600_000_000_000, &mut buf);
 
         // Body is 200 bytes. Overhead should be small.
         let overhead = size - 200;

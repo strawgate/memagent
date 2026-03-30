@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn test_parse_float_fast() {
-        assert!((parse_float_fast(b"3.14").unwrap() - 3.14).abs() < 1e-10);
+        assert!((parse_float_fast(b"3.25").unwrap() - 3.25).abs() < 1e-10);
         assert_eq!(parse_float_fast(b"abc"), None);
     }
 }
