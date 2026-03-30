@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774895632258,
+  "lastUpdate": 1774898315716,
   "repoUrl": "https://github.com/strawgate/memagent",
   "entries": {
     "Efficiency": [
@@ -54,6 +54,34 @@ window.BENCHMARK_DATA = {
           {
             "name": "passthrough/logfwd (binary) ms/M-lines",
             "value": 2000,
+            "unit": "ms",
+            "extra": "n=2"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "strawgate",
+            "username": "strawgate",
+            "email": "williamseaston@gmail.com"
+          },
+          "committer": {
+            "name": "strawgate",
+            "username": "strawgate",
+            "email": "williamseaston@gmail.com"
+          },
+          "id": "566f59769957451fc0bab2b4ed09f59920f779bd",
+          "message": "fix: Tighten micro benchmark grep to name+time+throughput only\n\nPrevious grep was too broad, matching \"Warming up\", \"Collecting\",\n\"Analyzing\" lines. Now only captures benchmark name, time, and\nthroughput summary lines.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-03-30T18:55:50Z",
+          "url": "https://github.com/strawgate/memagent/commit/566f59769957451fc0bab2b4ed09f59920f779bd"
+        },
+        "date": 1774898315241,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "passthrough/logfwd (binary) ms/M-lines",
+            "value": 2500,
             "unit": "ms",
             "extra": "n=2"
           }
