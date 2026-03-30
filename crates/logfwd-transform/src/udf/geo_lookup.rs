@@ -21,7 +21,9 @@ use std::any::Any;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, AsArray, Float64Builder, Int64Builder, StringBuilder, StructArray};
+use arrow::array::{
+    Array, ArrayRef, AsArray, Float64Builder, Int64Builder, StringBuilder, StructArray,
+};
 use arrow::datatypes::{DataType, Field, Fields};
 
 use datafusion::common::Result as DfResult;
@@ -258,9 +260,7 @@ fn build_struct_array(
 }
 
 /// Convert a single `GeoResult` into a DataFusion `ScalarValue::Struct`.
-fn geo_result_to_scalar(
-    result: Option<&GeoResult>,
-) -> DfResult<datafusion::common::ScalarValue> {
+fn geo_result_to_scalar(result: Option<&GeoResult>) -> DfResult<datafusion::common::ScalarValue> {
     let fields = match geo_result_type() {
         DataType::Struct(f) => f,
         _ => unreachable!(),
@@ -335,10 +335,18 @@ impl MmdbDatabase {
     ///
     /// Returns an error if the file cannot be read or is not a valid MMDB.
     pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, String> {
-        let data = std::fs::read(path.as_ref())
-            .map_err(|e| format!("failed to read MMDB file '{}': {e}", path.as_ref().display()))?;
-        let reader = maxminddb::Reader::from_source(data)
-            .map_err(|e| format!("failed to parse MMDB file '{}': {e}", path.as_ref().display()))?;
+        let data = std::fs::read(path.as_ref()).map_err(|e| {
+            format!(
+                "failed to read MMDB file '{}': {e}",
+                path.as_ref().display()
+            )
+        })?;
+        let reader = maxminddb::Reader::from_source(data).map_err(|e| {
+            format!(
+                "failed to parse MMDB file '{}': {e}",
+                path.as_ref().display()
+            )
+        })?;
         Ok(Self { reader })
     }
 }
@@ -685,4 +693,3 @@ mod tests {
         assert_eq!(cc.value(3), "DE");
     }
 }
-
