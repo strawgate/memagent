@@ -6,6 +6,8 @@ language = "en"
 
 [output.html]
 default-theme = "navy"
-preferred-dark-theme = "navy"
+preferred-dark-theme = "ayu"
 git-repository-url = "https://github.com/strawgate/memagent"
 edit-url-template = "https://github.com/strawgate/memagent/edit/master/{path}"
+additional-css = ["theme/custom.css"]
+no-section-label = true
