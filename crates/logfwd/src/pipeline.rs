@@ -176,7 +176,7 @@ impl Pipeline {
 
                         // Transform stage.
                         let t1 = Instant::now();
-                        let result = match self.transform.execute(batch) {
+                        let result = match self.transform.execute_blocking(batch) {
                             Ok(r) => r,
                             Err(e) => {
                                 self.metrics.inc_transform_error();

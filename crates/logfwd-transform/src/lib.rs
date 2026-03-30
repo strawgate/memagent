@@ -553,7 +553,7 @@ impl SqlTransform {
     ///
     /// Schema changes (new fields in later batches) are handled automatically
     /// since each call creates a new context matching the batch schema.
-    pub fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch, String> {
+    pub async fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch, String> {
         if batch.num_rows() == 0 {
             return Ok(batch);
         }
@@ -564,77 +564,81 @@ impl SqlTransform {
 
         let sql = self.user_sql.clone();
 
-        // DataFusion requires async — use a minimal tokio runtime.
+        let ctx = SessionContext::new();
+
+        // Register custom UDFs.
+        ctx.register_udf(ScalarUDF::from(IntCastUdf::new()));
+        ctx.register_udf(ScalarUDF::from(FloatCastUdf::new()));
+        ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
+        ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
+
+        // Register the batch as a MemTable named "logs".
+        let schema = batch.schema();
+        let table = MemTable::try_new(schema, vec![vec![batch]])
+            .map_err(|e| format!("Failed to create MemTable: {e}"))?;
+        ctx.register_table("logs", Arc::new(table))
+            .map_err(|e| format!("Failed to register table: {e}"))?;
+
+        // Register enrichment tables (snapshots from background providers).
+        for et in &self.enrichment_tables {
+            if let Some(snapshot) = et.snapshot() {
+                let et_table =
+                    MemTable::try_new(snapshot.schema(), vec![vec![snapshot]]).map_err(|e| {
+                        format!("Failed to create enrichment table '{}': {e}", et.name())
+                    })?;
+                ctx.register_table(et.name(), Arc::new(et_table))
+                    .map_err(|e| {
+                        format!("Failed to register enrichment table '{}': {e}", et.name())
+                    })?;
+            } else {
+                eprintln!(
+                    "  warning: enrichment table '{}' not yet loaded, skipping",
+                    et.name()
+                );
+            }
+        }
+
+        // Execute the SQL.
+        let df = ctx
+            .sql(&sql)
+            .await
+            .map_err(|e| format!("SQL execution error: {e}"))?;
+
+        let batches = df
+            .collect()
+            .await
+            .map_err(|e| format!("Failed to collect results: {e}"))?;
+
+        // Concat all result batches into one.
+        match batches.len() {
+            0 => {
+                // Return an empty batch with the result schema.
+                let df2 = ctx
+                    .sql(&sql)
+                    .await
+                    .map_err(|e| format!("SQL schema error: {e}"))?;
+                let df_schema = df2.schema();
+                Ok(RecordBatch::new_empty(Arc::clone(df_schema.inner())))
+            }
+            1 => Ok(batches.into_iter().next().unwrap()),
+            _ => {
+                let schema = batches[0].schema();
+                concat_batches(&schema, &batches)
+                    .map_err(|e| format!("Failed to concat batches: {e}"))
+            }
+        }
+    }
+
+    /// Synchronous wrapper around [`execute`](Self::execute) for callers that
+    /// are not yet async. Creates a short-lived tokio runtime per call.
+    ///
+    /// When the calling code is made async, switch to `execute().await` directly.
+    pub fn execute_blocking(&mut self, batch: RecordBatch) -> Result<RecordBatch, String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
-
-        rt.block_on(async {
-            let ctx = SessionContext::new();
-
-            // Register custom UDFs.
-            ctx.register_udf(ScalarUDF::from(IntCastUdf::new()));
-            ctx.register_udf(ScalarUDF::from(FloatCastUdf::new()));
-            ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
-            ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
-
-            // Register the batch as a MemTable named "logs".
-            let schema = batch.schema();
-            let table = MemTable::try_new(schema, vec![vec![batch]])
-                .map_err(|e| format!("Failed to create MemTable: {e}"))?;
-            ctx.register_table("logs", Arc::new(table))
-                .map_err(|e| format!("Failed to register table: {e}"))?;
-
-            // Register enrichment tables (snapshots from background providers).
-            for et in &self.enrichment_tables {
-                if let Some(snapshot) = et.snapshot() {
-                    let et_table = MemTable::try_new(snapshot.schema(), vec![vec![snapshot]])
-                        .map_err(|e| {
-                            format!("Failed to create enrichment table '{}': {e}", et.name())
-                        })?;
-                    ctx.register_table(et.name(), Arc::new(et_table))
-                        .map_err(|e| {
-                            format!("Failed to register enrichment table '{}': {e}", et.name())
-                        })?;
-                } else {
-                    eprintln!(
-                        "  warning: enrichment table '{}' not yet loaded, skipping",
-                        et.name()
-                    );
-                }
-            }
-
-            // Execute the SQL.
-            let df = ctx
-                .sql(&sql)
-                .await
-                .map_err(|e| format!("SQL execution error: {e}"))?;
-
-            let batches = df
-                .collect()
-                .await
-                .map_err(|e| format!("Failed to collect results: {e}"))?;
-
-            // Concat all result batches into one.
-            match batches.len() {
-                0 => {
-                    // Return an empty batch with the result schema.
-                    let df2 = ctx
-                        .sql(&sql)
-                        .await
-                        .map_err(|e| format!("SQL schema error: {e}"))?;
-                    let df_schema = df2.schema();
-                    Ok(RecordBatch::new_empty(Arc::clone(df_schema.inner())))
-                }
-                1 => Ok(batches.into_iter().next().unwrap()),
-                _ => {
-                    let schema = batches[0].schema();
-                    concat_batches(&schema, &batches)
-                        .map_err(|e| format!("Failed to concat batches: {e}"))
-                }
-            }
-        })
+        rt.block_on(self.execute(batch))
     }
 
     /// Get the ScanConfig for field pushdown.
@@ -709,7 +713,7 @@ mod tests {
     fn test_simple_passthrough() {
         let batch = make_test_batch();
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
-        let result = transform.execute(batch.clone()).unwrap();
+        let result = transform.execute_blocking(batch.clone()).unwrap();
         assert_eq!(result.num_rows(), 4);
         assert_eq!(result.num_columns(), 3);
         // Verify data matches.
@@ -728,7 +732,7 @@ mod tests {
         let batch = make_test_batch();
         let mut transform =
             SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
-        let result = transform.execute(batch).unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 2);
         let level = result
             .column_by_name("level_str")
@@ -753,7 +757,7 @@ mod tests {
     fn test_except() {
         let batch = make_test_batch();
         let mut transform = SqlTransform::new("SELECT * EXCEPT (status_str) FROM logs").unwrap();
-        let result = transform.execute(batch).unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
         // status_str should be removed.
         assert!(result.column_by_name("status_str").is_none());
@@ -766,7 +770,7 @@ mod tests {
     fn test_computed() {
         let batch = make_test_batch();
         let mut transform = SqlTransform::new("SELECT *, 'prod' AS env FROM logs").unwrap();
-        let result = transform.execute(batch).unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
         let env = result
             .column_by_name("env")
@@ -784,7 +788,7 @@ mod tests {
         let batch = make_test_batch();
         let mut transform =
             SqlTransform::new("SELECT int(status_str) AS status_int FROM logs").unwrap();
-        let result = transform.execute(batch).unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
         let status = result
             .column_by_name("status_int")
@@ -816,7 +820,7 @@ mod tests {
         )
         .unwrap();
 
-        let result1 = transform.execute(batch1).unwrap();
+        let result1 = transform.execute_blocking(batch1).unwrap();
         assert_eq!(result1.num_columns(), 2);
         assert_eq!(result1.num_rows(), 2);
 
@@ -836,7 +840,7 @@ mod tests {
         )
         .unwrap();
 
-        let result2 = transform.execute(batch2).unwrap();
+        let result2 = transform.execute_blocking(batch2).unwrap();
         assert_eq!(result2.num_columns(), 3);
         assert_eq!(result2.num_rows(), 1);
         assert!(result2.column_by_name("region_str").is_some());
@@ -857,7 +861,7 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![vals]).unwrap();
 
         let mut transform = SqlTransform::new("SELECT float(val_str) AS val_f FROM logs").unwrap();
-        let result = transform.execute(batch).unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
         let col = result
             .column_by_name("val_f")
             .unwrap()
@@ -909,7 +913,7 @@ mod tests {
         ));
         transform.add_enrichment_table(env_table);
 
-        let result = transform.execute(batch).unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
 
         // Should have original columns plus "environment".
@@ -938,7 +942,7 @@ mod tests {
         transform.add_enrichment_table(table);
 
         // Enrichment table registered but not referenced in SQL — should not error.
-        let result = transform.execute(batch).unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
     }
 
@@ -954,7 +958,7 @@ mod tests {
         transform.add_enrichment_table(k8s);
 
         // Should not error — empty table just skipped.
-        let result = transform.execute(batch).unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
     }
 
