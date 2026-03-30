@@ -267,7 +267,11 @@ jobs:
             --results-dir all-results \
             --markdown \
             --gh-bench-file gh-bench.json \
+            --dashboard-file dashboard-data.json \
             > competitive_body.md
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SHA: ${{ github.sha }}
 
       - name: Upload summary artifacts
         uses: actions/upload-artifact@v4
@@ -276,23 +280,88 @@ jobs:
           path: |
             competitive_body.md
             gh-bench.json
+            gh-bench-efficiency.json
+            dashboard-data.json
           retention-days: 90
 
       # -----------------------------------------------------------
-      # Dashboard via github-action-benchmark
+      # Publish throughput chart (benchmark-action auto-chart)
       # -----------------------------------------------------------
 
-      - name: Publish to benchmark dashboard
+      - name: Publish throughput chart
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          name: Competitive Benchmarks
+          name: Throughput
           tool: customBiggerIsBetter
           output-file-path: gh-bench.json
           gh-pages-branch: gh-pages
-          benchmark-data-dir-path: dev/bench
+          benchmark-data-dir-path: dev/bench/throughput
           auto-push: true
           alert-threshold: "150%"
           comment-on-alert: true
+
+      - name: Publish efficiency chart
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Efficiency
+          tool: customSmallerIsBetter
+          output-file-path: gh-bench-efficiency.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench/efficiency
+          auto-push: true
+
+      # -----------------------------------------------------------
+      # Publish custom dashboard data to gh-pages
+      # -----------------------------------------------------------
+
+      - name: Publish dashboard data
+        run: |
+          RUN_ID="${{ github.run_id }}"
+
+          # Clone gh-pages branch.
+          git clone --branch gh-pages --single-branch --depth 1 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+            gh-pages-checkout
+
+          # Write run data.
+          mkdir -p gh-pages-checkout/data/runs
+          cp dashboard-data.json "gh-pages-checkout/data/runs/${RUN_ID}.json"
+
+          # Update index.json — merge new entry, sort by date desc.
+          python3 -c "
+          import json, sys
+          index_path = 'gh-pages-checkout/data/index.json'
+          try:
+              with open(index_path) as f:
+                  index = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError):
+              index = {'runs': []}
+
+          with open('dashboard-index-entry.json') as f:
+              entry = json.load(f)
+
+          # Remove any existing entry with same ID.
+          index['runs'] = [r for r in index['runs'] if r.get('id') != entry['id']]
+          index['runs'].append(entry)
+          index['runs'].sort(key=lambda r: r.get('date', ''), reverse=True)
+
+          # Keep last 90 runs max.
+          index['runs'] = index['runs'][:90]
+
+          with open(index_path, 'w') as f:
+              json.dump(index, f, indent=2)
+          "
+
+          # Commit and push.
+          cd gh-pages-checkout
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "Add benchmark data for run ${RUN_ID}"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # -----------------------------------------------------------
       # Post results as GitHub issue
@@ -316,9 +385,9 @@ jobs:
           ## Benchmark Results --- ${DATE}
 
           **Commit:** \`${COMMIT}\` on \`master\`
-          **Runner:** \`ubuntu-latest\` (matrix: agent × scenario)
+          **Runner:** \`ubuntu-latest\` (matrix: agent x scenario)
           **Iterations:** ${{ env.ITERATIONS }} per cell
-          **Dashboard:** https://strawgate.github.io/memagent/dev/bench/
+          **Dashboard:** https://strawgate.com/memagent/
 
           ---
 

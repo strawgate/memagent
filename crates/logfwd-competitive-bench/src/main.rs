@@ -48,7 +48,12 @@ fn main() {
                     eprintln!("ERROR: summarize requires --results-dir DIR");
                     process::exit(1);
                 });
-                summarize::run(dir, args.markdown, args.gh_bench_file.as_deref());
+                summarize::run(
+                    dir,
+                    args.markdown,
+                    args.gh_bench_file.as_deref(),
+                    args.dashboard_file.as_deref(),
+                );
                 return;
             }
             other => {
@@ -639,7 +644,7 @@ fn build_json_report(results: &[BenchResult], lines: usize, file_size: u64, args
 }
 
 /// Returns current UTC time as ISO 8601 string.
-fn utc_timestamp() -> String {
+pub fn utc_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -828,6 +833,8 @@ struct Args {
     subcommand: Option<String>,
     /// Directory containing result artifacts for summarize subcommand.
     results_dir: Option<PathBuf>,
+    /// Write dashboard data JSON for custom GitHub Pages dashboard.
+    dashboard_file: Option<PathBuf>,
 }
 
 impl Args {
@@ -851,6 +858,7 @@ impl Args {
             results_file: None,
             subcommand: None,
             results_dir: None,
+            dashboard_file: None,
         };
 
         // Check for subcommand as first non-flag argument.
@@ -937,6 +945,10 @@ impl Args {
                 "--results-dir" => {
                     i += 1;
                     result.results_dir = Some(PathBuf::from(&args[i]));
+                }
+                "--dashboard-file" => {
+                    i += 1;
+                    result.dashboard_file = Some(PathBuf::from(&args[i]));
                 }
                 other if result.subcommand.is_some() && !other.starts_with('-') => {
                     // Skip the subcommand itself (already parsed above).

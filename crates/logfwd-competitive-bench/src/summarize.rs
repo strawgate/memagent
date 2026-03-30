@@ -3,7 +3,8 @@
 //! Reads JSONL result files from `--results-dir` (one per matrix cell),
 //! computes averages and standard deviation, and outputs:
 //! - Markdown summary table (to stdout)
-//! - github-action-benchmark JSON (optional, via --gh-bench-file)
+//! - github-action-benchmark JSON (throughput + efficiency, via --gh-bench-file)
+//! - Custom dashboard JSON (via --dashboard-file)
 
 use std::collections::BTreeMap;
 use std::io::BufRead;
@@ -48,6 +49,23 @@ impl AggResult {
         valid.iter().sum::<u64>() / valid.len() as u64
     }
 
+    fn avg_lps(&self) -> f64 {
+        let avg_ms = self.avg_elapsed_ms();
+        let avg_lines = self.avg_lines_done();
+        if avg_ms == 0 {
+            return 0.0;
+        }
+        avg_lines as f64 / (avg_ms as f64 / 1000.0)
+    }
+
+    fn lps_values(&self) -> Vec<f64> {
+        self.runs
+            .iter()
+            .filter(|r| r.elapsed_ms > 0)
+            .map(|r| r.lines_done as f64 / (r.elapsed_ms as f64 / 1000.0))
+            .collect()
+    }
+
     fn stddev_elapsed_ms(&self) -> f64 {
         let valid: Vec<f64> = self
             .runs
@@ -74,7 +92,6 @@ impl AggResult {
 }
 
 /// Load all JSONL result files from a directory tree.
-/// Expects files named `results-*.jsonl` or any `.jsonl` file in subdirectories.
 fn load_results(dir: &Path) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
@@ -147,7 +164,12 @@ fn fmt_rate(lines: u64, ms: u64) -> String {
     }
 }
 
-pub fn run(results_dir: &Path, markdown: bool, gh_bench_file: Option<&Path>) {
+pub fn run(
+    results_dir: &Path,
+    markdown: bool,
+    gh_bench_file: Option<&Path>,
+    dashboard_file: Option<&Path>,
+) {
     let results = load_results(results_dir);
     if results.is_empty() {
         eprintln!("No results found in {}", results_dir.display());
@@ -173,7 +195,11 @@ pub fn run(results_dir: &Path, markdown: bool, gh_bench_file: Option<&Path>) {
     }
 
     if let Some(path) = gh_bench_file {
-        write_gh_bench_json(&groups, path);
+        write_dual_gh_bench_json(&groups, path);
+    }
+
+    if let Some(path) = dashboard_file {
+        write_dashboard_json(&groups, &scenarios, path);
     }
 }
 
@@ -273,36 +299,174 @@ fn print_table_summary(groups: &[AggResult], scenarios: &[String]) {
     }
 }
 
-fn write_gh_bench_json(groups: &[AggResult], path: &Path) {
+/// Write dual gh-bench JSON files: throughput (bigger=better) + efficiency (smaller=better).
+/// The path given is for the "bigger" file; the "smaller" file is derived by suffix.
+fn write_dual_gh_bench_json(groups: &[AggResult], path: &Path) {
     #[derive(serde::Serialize)]
     struct Entry {
         name: String,
         unit: String,
         value: f64,
+        #[serde(skip_serializing_if = "String::is_empty")]
         extra: String,
     }
 
-    let entries: Vec<Entry> = groups
-        .iter()
-        .filter(|g| g.avg_elapsed_ms() > 0)
-        .map(|g| {
-            let avg_ms = g.avg_elapsed_ms();
-            let avg_lines = g.avg_lines_done();
-            let lps = avg_lines as f64 / (avg_ms as f64 / 1000.0);
-            let stddev = g.stddev_elapsed_ms();
-            let n = g.runs.len();
-            Entry {
-                name: format!("{}/{} ({})", g.scenario, g.name, g.mode),
-                unit: "lines/sec".to_string(),
-                value: lps,
-                extra: format!("avg={avg_ms}ms stddev={stddev:.0}ms n={n}"),
-            }
-        })
-        .collect();
+    let mut bigger: Vec<Entry> = Vec::new();
+    let mut smaller: Vec<Entry> = Vec::new();
 
-    let json = serde_json::to_string_pretty(&entries).unwrap();
-    match std::fs::write(path, json) {
-        Ok(()) => eprintln!("github-action-benchmark JSON written to {}", path.display()),
+    for g in groups {
+        let avg_ms = g.avg_elapsed_ms();
+        if avg_ms == 0 {
+            continue;
+        }
+        let avg_lines = g.avg_lines_done();
+        let lps = avg_lines as f64 / (avg_ms as f64 / 1000.0);
+        let stddev = g.stddev_elapsed_ms();
+        let n = g.runs.len();
+        let label = format!("{}/{} ({})", g.scenario, g.name, g.mode);
+
+        // Throughput: bigger is better.
+        bigger.push(Entry {
+            name: format!("{label} lines/sec"),
+            unit: "lines/sec".to_string(),
+            value: lps,
+            extra: format!("avg={avg_ms}ms stddev={stddev:.0}ms n={n}"),
+        });
+
+        // Efficiency: smaller is better — time per million lines.
+        let ms_per_m = if avg_lines > 0 {
+            avg_ms as f64 / (avg_lines as f64 / 1_000_000.0)
+        } else {
+            0.0
+        };
+        smaller.push(Entry {
+            name: format!("{label} ms/M-lines"),
+            unit: "ms".to_string(),
+            value: ms_per_m,
+            extra: format!("n={n}"),
+        });
+    }
+
+    // Write bigger (throughput).
+    let json = serde_json::to_string_pretty(&bigger).unwrap();
+    match std::fs::write(path, &json) {
+        Ok(()) => eprintln!("gh-bench throughput JSON written to {}", path.display()),
         Err(e) => eprintln!("ERROR: failed to write gh-bench JSON: {e}"),
+    }
+
+    // Write smaller (efficiency) — derive filename.
+    let smaller_path = path.with_file_name(
+        path.file_stem()
+            .map(|s| format!("{}-efficiency.json", s.to_string_lossy()))
+            .unwrap_or_else(|| "gh-bench-efficiency.json".to_string()),
+    );
+    let json = serde_json::to_string_pretty(&smaller).unwrap();
+    match std::fs::write(&smaller_path, &json) {
+        Ok(()) => eprintln!(
+            "gh-bench efficiency JSON written to {}",
+            smaller_path.display()
+        ),
+        Err(e) => eprintln!("ERROR: failed to write efficiency JSON: {e}"),
+    }
+}
+
+/// Write structured dashboard JSON for the custom GitHub Pages dashboard.
+///
+/// Format:
+/// ```json
+/// {
+///   "id": "12345678",
+///   "date": "2026-03-30T...",
+///   "commit": "abc1234",
+///   "scenarios": {
+///     "passthrough": {
+///       "logfwd": { "lps": [1500000, 1520000], "avg_lps": 1510000, "avg_ms": 3300 },
+///       "vector": { "lps": [600000], "avg_lps": 600000, "avg_ms": 8300 }
+///     }
+///   },
+///   "agents": ["logfwd", "vector", ...],
+///   "scenario_names": ["passthrough", "json_parse", "filter"]
+/// }
+/// ```
+fn write_dashboard_json(groups: &[AggResult], scenarios: &[String], path: &Path) {
+    use serde_json::{Map, Value, json};
+
+    let run_id = std::env::var("GITHUB_RUN_ID")
+        .or_else(|_| std::env::var("GITHUB_RUN_NUMBER"))
+        .unwrap_or_else(|_| "local".to_string());
+
+    let commit = std::env::var("GITHUB_SHA")
+        .or_else(|_| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        })
+        .unwrap_or_default();
+
+    let date = crate::utc_timestamp();
+
+    // Build scenarios map: scenario -> agent -> metrics.
+    let mut scenario_map: Map<String, Value> = Map::new();
+    let mut agent_names: Vec<String> = Vec::new();
+
+    for g in groups {
+        if g.avg_elapsed_ms() == 0 {
+            continue;
+        }
+
+        if !agent_names.contains(&g.name) {
+            agent_names.push(g.name.clone());
+        }
+
+        let scenario_entry = scenario_map
+            .entry(g.scenario.clone())
+            .or_insert_with(|| Value::Object(Map::new()));
+
+        let agent_data = json!({
+            "lps": g.lps_values(),
+            "avg_lps": g.avg_lps().round() as u64,
+            "avg_ms": g.avg_elapsed_ms(),
+            "stddev_ms": g.stddev_elapsed_ms().round() as u64,
+            "lines_done": g.avg_lines_done(),
+            "iterations": g.runs.len(),
+            "mode": g.mode,
+        });
+
+        if let Value::Object(map) = scenario_entry {
+            map.insert(g.name.clone(), agent_data);
+        }
+    }
+
+    let dashboard = json!({
+        "id": run_id,
+        "date": date,
+        "commit": commit,
+        "scenarios": scenario_map,
+        "agents": agent_names,
+        "scenario_names": scenarios,
+    });
+
+    // Write run data.
+    let json = serde_json::to_string_pretty(&dashboard).unwrap();
+    match std::fs::write(path, &json) {
+        Ok(()) => eprintln!("Dashboard JSON written to {}", path.display()),
+        Err(e) => eprintln!("ERROR: failed to write dashboard JSON: {e}"),
+    }
+
+    // Also write an index entry (compact, for the manifest).
+    let index_entry = json!({
+        "id": run_id,
+        "date": date,
+        "commit": commit,
+        "agents": agent_names,
+        "scenarios": scenarios,
+    });
+
+    let index_path = path.with_file_name("dashboard-index-entry.json");
+    let json = serde_json::to_string_pretty(&index_entry).unwrap();
+    match std::fs::write(&index_path, &json) {
+        Ok(()) => eprintln!("Dashboard index entry written to {}", index_path.display()),
+        Err(e) => eprintln!("ERROR: failed to write index entry: {e}"),
     }
 }
