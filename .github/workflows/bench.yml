@@ -294,6 +294,7 @@ jobs:
           name: Throughput
           tool: customBiggerIsBetter
           output-file-path: gh-bench.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           gh-pages-branch: gh-pages
           benchmark-data-dir-path: dev/bench/throughput
           auto-push: true
@@ -306,6 +307,7 @@ jobs:
           name: Efficiency
           tool: customSmallerIsBetter
           output-file-path: gh-bench-efficiency.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           gh-pages-branch: gh-pages
           benchmark-data-dir-path: dev/bench/efficiency
           auto-push: true
