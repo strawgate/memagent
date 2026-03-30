@@ -174,10 +174,7 @@ fn compliance_file_rotate_copytruncate() {
 
     // Write new data (sequence continues from 5000).
     {
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .open(&log_path)
-            .unwrap();
+        let mut f = fs::OpenOptions::new().write(true).open(&log_path).unwrap();
         f.write_all(generate_lines(5000, 5000).as_bytes()).unwrap();
         f.flush().unwrap();
     }
@@ -229,19 +226,13 @@ fn compliance_file_truncate() {
 
     // Truncate the file in-place (same inode) and write new data.
     {
-        let f = fs::OpenOptions::new()
-            .write(true)
-            .open(&log_path)
-            .unwrap();
+        let f = fs::OpenOptions::new().write(true).open(&log_path).unwrap();
         f.set_len(0).unwrap();
     }
     std::thread::sleep(Duration::from_millis(200));
 
     {
-        let mut f = fs::OpenOptions::new()
-            .append(true)
-            .open(&log_path)
-            .unwrap();
+        let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
         f.write_all(generate_lines(1000, 1000).as_bytes()).unwrap();
         f.flush().unwrap();
     }
