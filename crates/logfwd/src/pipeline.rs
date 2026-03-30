@@ -6,7 +6,6 @@
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use opentelemetry::metrics::Meter;
@@ -19,6 +18,7 @@ use logfwd_core::scanner::SimdScanner as Scanner;
 use logfwd_core::tail::TailConfig;
 use logfwd_output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
 use logfwd_transform::SqlTransform;
+use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
 // Per-input state
@@ -109,12 +109,12 @@ impl Pipeline {
         &self.metrics
     }
 
-    /// Run the pipeline until `shutdown` is signaled. Blocks the calling thread.
-    pub fn run(&mut self, shutdown: &AtomicBool) -> io::Result<()> {
+    /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
+    pub fn run(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
         let mut last_flush = Instant::now();
 
         loop {
-            if shutdown.load(Ordering::Relaxed) {
+            if shutdown.is_cancelled() {
                 break;
             }
 
@@ -407,7 +407,7 @@ output:
 
     #[test]
     fn test_pipeline_run_one_batch() {
-        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
 
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("test.log");
@@ -444,12 +444,12 @@ output:
         pipeline.batch_timeout = Duration::from_millis(10);
         pipeline.poll_interval = Duration::from_millis(5);
 
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let sd_clone = Arc::clone(&shutdown);
+        let shutdown = CancellationToken::new();
+        let sd_clone = shutdown.clone();
 
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(500));
-            sd_clone.store(true, Ordering::Relaxed);
+            sd_clone.cancel();
         });
 
         let result = pipeline.run(&shutdown);

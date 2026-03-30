@@ -5,11 +5,11 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use std::env;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::WithExportConfig;
+use tokio_util::sync::CancellationToken;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -263,7 +263,34 @@ fn validate_pipelines(config: &logfwd_config::Config, dry_run: bool) -> io::Resu
 fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
     use logfwd::pipeline::Pipeline;
     use logfwd_core::diagnostics::DiagnosticsServer;
-    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown = CancellationToken::new();
+
+    // Spawn a background thread that listens for SIGINT (Ctrl-C) and SIGTERM and
+    // cancels the token so all pipeline threads shut down gracefully.
+    let shutdown_for_signal = shutdown.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("signal handler runtime");
+        rt.block_on(async {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut sigterm =
+                    signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::signal::ctrl_c().await.ok();
+            }
+            shutdown_for_signal.cancel();
+        });
+    });
 
     let meter_provider = build_meter_provider(&config)?;
     let meter = meter_provider.meter("logfwd");
@@ -310,11 +337,18 @@ fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
     }
 
     if let Some(mut main_pipe) = main_pipeline {
-        main_pipe.run(&shutdown)?;
-    }
-
-    for h in handles {
-        let _ = h.join();
+        let result = main_pipe.run(&shutdown);
+        // Cancel the token so all sibling threads stop when the main pipeline exits,
+        // whether it returned successfully or with an error.
+        shutdown.cancel();
+        for h in handles {
+            let _ = h.join();
+        }
+        result?;
+    } else {
+        for h in handles {
+            let _ = h.join();
+        }
     }
 
     if let Err(e) = meter_provider.shutdown() {
