@@ -1,4 +1,5 @@
 use std::io;
+use std::time::Duration;
 
 use arrow::array::{Array, AsArray, PrimitiveArray};
 use arrow::datatypes::{DataType, Float64Type, Int64Type};
@@ -10,7 +11,7 @@ use logfwd_core::otlp::{
     encode_varint_field, parse_severity, parse_timestamp_nanos, varint_len,
 };
 
-use super::{BatchMetadata, Compression, OutputSink, parse_column_name, str_value};
+use super::{BatchMetadata, Compression, OutputSink, parse_column_name, sink::{FlushFut, SendFut, SendResult, Sink}, str_value};
 
 // ---------------------------------------------------------------------------
 // OtlpSink
@@ -32,7 +33,10 @@ pub struct OtlpSink {
     pub encoder_buf: Vec<u8>,
     compress_buf: Vec<u8>,
     compressor: Option<ChunkCompressor>,
+    /// Synchronous HTTP agent (used by the legacy [`OutputSink`] impl).
     http_agent: ureq::Agent,
+    /// Async HTTP client (used by the new [`Sink`] impl).
+    http_client: reqwest::Client,
 }
 
 impl OtlpSink {
@@ -59,6 +63,7 @@ impl OtlpSink {
             compress_buf: Vec::with_capacity(64 * 1024),
             compressor,
             http_agent,
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -181,7 +186,88 @@ impl OutputSink for OtlpSink {
     }
 }
 
-/// Pre-downcast array variant for an attribute column.
+impl Sink for OtlpSink {
+    fn send_batch(
+        &mut self,
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+    ) -> SendFut {
+        // 1. Encode synchronously (requires &mut self).
+        self.encode_batch(batch, metadata);
+
+        // 2. Compress synchronously and capture the payload as owned bytes so
+        //    the returned future does not borrow self.
+        let payload_result: io::Result<Option<Vec<u8>>> = if self.encoder_buf.is_empty() {
+            Ok(None)
+        } else {
+            match self.compression {
+                Compression::Zstd => {
+                    if let Some(ref mut c) = self.compressor {
+                        c.compress(&self.encoder_buf)
+                            .map(|chunk| Some(chunk.data.to_vec()))
+                    } else {
+                        Ok(Some(self.encoder_buf.clone()))
+                    }
+                }
+                Compression::Gzip | Compression::None => Ok(Some(self.encoder_buf.clone())),
+            }
+        };
+
+        let client = self.http_client.clone();
+        let endpoint = self.endpoint.clone();
+        let content_type = match self.protocol {
+            OtlpProtocol::Grpc => "application/grpc",
+            OtlpProtocol::Http => "application/x-protobuf",
+        };
+        let is_zstd = self.compression == Compression::Zstd;
+
+        Box::pin(async move {
+            let payload = match payload_result? {
+                None => return Ok(SendResult::Ok),
+                Some(p) => p,
+            };
+
+            let mut builder = client
+                .post(&endpoint)
+                .header("Content-Type", content_type)
+                .body(payload);
+            if is_zstd {
+                builder = builder.header("Content-Encoding", "zstd");
+            }
+
+            let resp = match builder.send().await {
+                Ok(r) => r,
+                Err(e) if e.is_timeout() || e.is_connect() => {
+                    return Ok(SendResult::RetryAfter(Duration::from_secs(5)));
+                }
+                Err(e) => return Err(io::Error::other(e.to_string())),
+            };
+
+            let status = resp.status();
+            if status.is_success() {
+                Ok(SendResult::Ok)
+            } else if status.is_server_error() || status.as_u16() == 429 {
+                Ok(SendResult::RetryAfter(Duration::from_secs(5)))
+            } else {
+                Ok(SendResult::Rejected(format!("HTTP {}", status.as_u16())))
+            }
+        })
+    }
+
+    fn flush(&mut self) -> FlushFut {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn shutdown(&mut self) -> FlushFut {
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+
+/// Pre-downcast array variant
 enum AttrArray<'a> {
     Str(&'a dyn Array),
     Int(&'a PrimitiveArray<Int64Type>),

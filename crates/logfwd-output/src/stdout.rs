@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use arrow::array::{Array, AsArray};
 use arrow::record_batch::RecordBatch;
 
-use super::{BatchMetadata, OutputSink, build_col_infos, str_value, write_row_json};
+use super::{BatchMetadata, OutputSink, build_col_infos, sink::{FlushFut, SendFut, SendResult, Sink}, str_value, write_row_json};
 
 // ---------------------------------------------------------------------------
 // StdoutSink
@@ -236,5 +236,33 @@ impl OutputSink for StdoutSink {
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+impl Sink for StdoutSink {
+    fn send_batch(
+        &mut self,
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+    ) -> SendFut {
+        // Stdout writes are fast; perform them synchronously and return an
+        // immediately-ready future (no spawn_blocking needed).
+        let result = {
+            let mut stdout = io::stdout().lock();
+            self.write_batch_to(batch, metadata, &mut stdout)
+        };
+        Box::pin(std::future::ready(result.map(|_| SendResult::Ok)))
+    }
+
+    fn flush(&mut self) -> FlushFut {
+        Box::pin(std::future::ready(io::stdout().flush()))
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn shutdown(&mut self) -> FlushFut {
+        Box::pin(std::future::ready(io::stdout().flush()))
     }
 }

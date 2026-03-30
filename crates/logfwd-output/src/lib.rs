@@ -15,11 +15,12 @@ mod loki;
 #[allow(dead_code)]
 mod parquet;
 
-pub use fanout::FanOut;
+pub use fanout::{FanOut, FanOutSink};
 pub use json_lines::JsonLinesSink;
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
 pub use sink::{SendResult, Sink};
 use stdout::*;
+pub use stdout::StdoutFormat;
 
 use std::io::{self, Write};
 
@@ -562,5 +563,128 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("endpoint"), "got: {err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Async Sink trait tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: poll a future to completion on the current thread.
+    ///
+    /// Uses a minimal hand-rolled executor so tests in this module do not need
+    /// a full tokio runtime.  Only works for futures that complete on the first
+    /// poll (i.e. `std::future::ready(...)` and similar).  For async HTTP
+    /// futures this would not be sufficient, but those are not exercised here.
+    fn block_on_ready<T, F: std::future::Future<Output = T>>(fut: F) -> T {
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+        fn noop_clone(_data: *const ()) -> RawWaker {
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        fn noop(_data: *const ()) {}
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
+
+        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = std::pin::pin!(fut);
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(val) => val,
+            Poll::Pending => panic!("future was not ready on first poll"),
+        }
+    }
+
+    #[test]
+    fn test_stdout_sink_impl() {
+        let batch = make_test_batch();
+        let meta = make_metadata();
+        let mut sink = StdoutSink::new("test-async".to_string(), StdoutFormat::Json);
+
+        // send_batch via Sink trait should succeed.
+        let result = block_on_ready(Sink::send_batch(&mut sink, &batch, &meta)).unwrap();
+        assert!(matches!(result, SendResult::Ok));
+
+        // flush via Sink trait should succeed.
+        block_on_ready(Sink::flush(&mut sink)).unwrap();
+
+        // shutdown via Sink trait should succeed.
+        block_on_ready(Sink::shutdown(&mut sink)).unwrap();
+    }
+
+    #[test]
+    fn test_otlp_sink_impl_empty_batch() {
+        // An empty batch should return Ok immediately without sending anything.
+        let schema = Arc::new(Schema::new(vec![Field::new("level_str", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(Vec::<Option<&str>>::new()))]).unwrap();
+        let meta = make_metadata();
+
+        let mut sink = OtlpSink::new(
+            "test".to_string(),
+            "http://localhost:4318".to_string(),
+            OtlpProtocol::Http,
+            Compression::None,
+        );
+        let result = block_on_ready(Sink::send_batch(&mut sink, &batch, &meta)).unwrap();
+        assert!(matches!(result, SendResult::Ok));
+    }
+
+    #[test]
+    fn test_json_lines_sink_impl_empty_batch() {
+        // An empty batch should return Ok immediately without sending anything.
+        let schema = Arc::new(Schema::new(vec![Field::new("level_str", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(Vec::<Option<&str>>::new()))]).unwrap();
+        let meta = make_metadata();
+
+        let mut sink = JsonLinesSink::new(
+            "test".to_string(),
+            "http://localhost:9200".to_string(),
+            vec![],
+        );
+        let result = block_on_ready(Sink::send_batch(&mut sink, &batch, &meta)).unwrap();
+        assert!(matches!(result, SendResult::Ok));
+    }
+
+    #[test]
+    fn test_fanout_sink_ok() {
+        // FanOutSink with two StdoutSinks — both return Ok.
+        let batch = make_test_batch();
+        let meta = make_metadata();
+
+        let s1: Box<dyn Sink> =
+            Box::new(StdoutSink::new("s1".to_string(), StdoutFormat::Json));
+        let s2: Box<dyn Sink> =
+            Box::new(StdoutSink::new("s2".to_string(), StdoutFormat::Json));
+        let mut fanout = FanOutSink::new("test-fanout".to_string(), vec![s1, s2]);
+
+        assert_eq!(fanout.name(), "test-fanout");
+        let result = block_on_ready(Sink::send_batch(&mut fanout, &batch, &meta)).unwrap();
+        assert!(matches!(result, SendResult::Ok));
+
+        block_on_ready(Sink::flush(&mut fanout)).unwrap();
+        block_on_ready(Sink::shutdown(&mut fanout)).unwrap();
+    }
+
+    #[test]
+    fn test_fanout_sink_object_safe() {
+        // Verify that FanOutSink can hold heterogeneous Sink types via Box<dyn Sink>.
+        let batch = make_test_batch();
+        let meta = make_metadata();
+
+        let sinks: Vec<Box<dyn Sink>> = vec![
+            Box::new(StdoutSink::new("stdout".to_string(), StdoutFormat::Json)),
+            Box::new(OtlpSink::new(
+                "otlp".to_string(),
+                "http://127.0.0.1:4318".to_string(),
+                OtlpProtocol::Http,
+                Compression::None,
+            )),
+        ];
+        let mut fanout = FanOutSink::new("mixed".to_string(), sinks);
+        // StdoutSink succeeds; OtlpSink will fail (no server), but FanOutSink
+        // must NOT short-circuit — both sinks must be called.
+        // The future for OtlpSink is an async HTTP future; we can't poll it to
+        // completion with our minimal executor, so we just verify construction.
+        assert_eq!(fanout.name(), "mixed");
+        // Calling send_batch returns a future without panicking.
+        let _fut = Sink::send_batch(&mut fanout, &batch, &meta);
     }
 }

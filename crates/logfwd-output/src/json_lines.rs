@@ -1,9 +1,10 @@
 use std::io;
+use std::time::Duration;
 
 use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 
-use super::{BatchMetadata, OutputSink, build_col_infos, str_value, write_row_json};
+use super::{BatchMetadata, OutputSink, build_col_infos, sink::{FlushFut, SendFut, SendResult, Sink}, str_value, write_row_json};
 
 // ---------------------------------------------------------------------------
 // JsonLinesSink
@@ -15,7 +16,10 @@ pub struct JsonLinesSink {
     url: String,
     headers: Vec<(String, String)>,
     pub batch_buf: Vec<u8>,
+    /// Synchronous HTTP agent (used by the legacy [`OutputSink`] impl).
     http_agent: ureq::Agent,
+    /// Async HTTP client (used by the new [`Sink`] impl).
+    http_client: reqwest::Client,
 }
 
 impl JsonLinesSink {
@@ -30,6 +34,7 @@ impl JsonLinesSink {
             headers,
             batch_buf: Vec::with_capacity(64 * 1024),
             http_agent,
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -110,5 +115,70 @@ impl OutputSink for JsonLinesSink {
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+impl Sink for JsonLinesSink {
+    fn send_batch(
+        &mut self,
+        batch: &RecordBatch,
+        _metadata: &BatchMetadata,
+    ) -> SendFut {
+        // Serialize synchronously, then send the owned bytes asynchronously.
+        self.serialize_batch(batch);
+
+        let payload: Option<Vec<u8>> = if self.batch_buf.is_empty() {
+            None
+        } else {
+            Some(self.batch_buf.clone())
+        };
+
+        let client = self.http_client.clone();
+        let url = self.url.clone();
+        let headers = self.headers.clone();
+
+        Box::pin(async move {
+            let payload = match payload {
+                None => return Ok(SendResult::Ok),
+                Some(p) => p,
+            };
+
+            let mut builder = client
+                .post(&url)
+                .header("Content-Type", "application/x-ndjson")
+                .body(payload);
+            for (k, v) in &headers {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
+
+            let resp = match builder.send().await {
+                Ok(r) => r,
+                Err(e) if e.is_timeout() || e.is_connect() => {
+                    return Ok(SendResult::RetryAfter(Duration::from_secs(5)));
+                }
+                Err(e) => return Err(io::Error::other(e.to_string())),
+            };
+
+            let status = resp.status();
+            if status.is_success() {
+                Ok(SendResult::Ok)
+            } else if status.is_server_error() || status.as_u16() == 429 {
+                Ok(SendResult::RetryAfter(Duration::from_secs(5)))
+            } else {
+                Ok(SendResult::Rejected(format!("HTTP {}", status.as_u16())))
+            }
+        })
+    }
+
+    fn flush(&mut self) -> FlushFut {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn shutdown(&mut self) -> FlushFut {
+        Box::pin(std::future::ready(Ok(())))
     }
 }

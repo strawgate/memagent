@@ -9,4 +9,5 @@ logfwd-config = { path = "../logfwd-config" }
 logfwd-core = { path = "../logfwd-core" }
 arrow = { workspace = true }
 libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
