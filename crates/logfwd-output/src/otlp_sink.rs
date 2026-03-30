@@ -64,6 +64,10 @@ impl OtlpSink {
 
     /// Encode a full ExportLogsServiceRequest from a RecordBatch.
     /// Returns the raw protobuf bytes in `self.encoder_buf`.
+    ///
+    /// Rows are grouped by their distinct `_resource_*` column value
+    /// combination.  Each group produces one `ResourceLogs` message inside
+    /// a single `ExportLogsServiceRequest`.
     pub fn encode_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) {
         self.encoder_buf.clear();
         let num_rows = batch.num_rows();
@@ -74,63 +78,35 @@ impl OtlpSink {
         // Resolve column roles and downcast arrays once for the whole batch.
         let columns = resolve_batch_columns(batch);
 
-        // Phase 1: encode all LogRecords into a temp buffer.
-        let mut records_buf: Vec<u8> = Vec::with_capacity(num_rows * 128);
-        let mut record_ranges: Vec<(usize, usize)> = Vec::with_capacity(num_rows);
+        // Group rows by distinct _resource_* column combinations.
+        // Most batches will have exactly one group (single source / pod).
+        let groups = group_rows_by_resource(batch, &columns.resource_cols, num_rows);
 
-        for row in 0..num_rows {
-            let start = records_buf.len();
-            encode_row_as_log_record(&columns, row, metadata, &mut records_buf);
-            record_ranges.push((start, records_buf.len()));
+        // Encode each group as a ResourceLogs into a temp buffer, then wrap
+        // them all in ExportLogsServiceRequest.
+        let mut resource_logs_bufs: Vec<Vec<u8>> = Vec::with_capacity(groups.len());
+
+        for (resource_key, row_indices) in &groups {
+            let rl_buf = encode_resource_logs(
+                &columns,
+                row_indices,
+                &columns.resource_cols,
+                resource_key,
+                metadata,
+            );
+            resource_logs_bufs.push(rl_buf);
         }
 
-        // Phase 2: compute sizes bottom-up.
-        // ScopeLogs inner = repeated field 2 (LogRecord) entries
-        let mut scope_logs_inner_size = 0usize;
-        for &(start, end) in &record_ranges {
-            let record_len = end - start;
-            // tag for field 2 wire type 2 + varint length + payload
-            scope_logs_inner_size +=
-                varint_len(((2u64) << 3) | 2) + varint_len(record_len as u64) + record_len;
-        }
+        // Compute total size of ExportLogsServiceRequest.
+        // field 1 (resource_logs) repeated — one entry per group.
+        let total_inner: usize = resource_logs_bufs
+            .iter()
+            .map(|b| bytes_field_size(1, b.len()))
+            .sum();
 
-        // ResourceLogs inner = resource attributes (field 1) + scope_logs (field 2)
-        let mut resource_inner_size = bytes_field_size(2, scope_logs_inner_size);
-
-        // Encode resource attributes as Resource message (field 1 of ResourceLogs)
-        let mut resource_msg: Vec<u8> = Vec::new();
-        if !metadata.resource_attrs.is_empty() {
-            for (k, v) in &metadata.resource_attrs {
-                encode_key_value_string(&mut resource_msg, k.as_bytes(), v.as_bytes());
-            }
-        }
-        if !resource_msg.is_empty() {
-            // Resource message field 1 (attributes) — we wrote KeyValues directly.
-            // Wrap in Resource message (field 1 of ResourceLogs).
-            resource_inner_size += bytes_field_size(1, resource_msg.len());
-        }
-
-        let request_size = bytes_field_size(1, resource_inner_size);
-
-        // Phase 3: write the final protobuf.
-        self.encoder_buf.reserve(request_size + 16);
-
-        // ExportLogsServiceRequest.resource_logs (field 1)
-        encode_tag(&mut self.encoder_buf, 1, 2);
-        encode_varint(&mut self.encoder_buf, resource_inner_size as u64);
-
-        // Resource (field 1 of ResourceLogs)
-        if !resource_msg.is_empty() {
-            encode_bytes_field(&mut self.encoder_buf, 1, &resource_msg);
-        }
-
-        // ScopeLogs (field 2 of ResourceLogs)
-        encode_tag(&mut self.encoder_buf, 2, 2);
-        encode_varint(&mut self.encoder_buf, scope_logs_inner_size as u64);
-
-        // LogRecords (field 2 of ScopeLogs, repeated)
-        for &(start, end) in &record_ranges {
-            encode_bytes_field(&mut self.encoder_buf, 2, &records_buf[start..end]);
+        self.encoder_buf.reserve(total_inner + 16);
+        for rl_buf in &resource_logs_bufs {
+            encode_bytes_field(&mut self.encoder_buf, 1, rl_buf);
         }
     }
 }
@@ -188,6 +164,15 @@ enum AttrArray<'a> {
     Float(&'a PrimitiveArray<Float64Type>),
 }
 
+/// A resolved `_resource_*` column: column name (without the `_resource_` prefix
+/// used as the OTLP attribute key) and the backing array.
+struct ResourceCol<'a> {
+    /// OTLP attribute key, e.g. `"k8s.pod.name"`.  We preserve the raw column
+    /// name (minus leading `_resource_`) so that callers control the key.
+    col_name: String,
+    arr: &'a dyn Array,
+}
+
 /// Pre-resolved column roles and downcast arrays for one RecordBatch.
 ///
 /// Built once in [`encode_batch`] before the per-row loop to avoid
@@ -204,6 +189,8 @@ struct BatchColumns<'a> {
     raw_col: Option<(usize, &'a dyn Array)>,
     /// Non-special attribute columns: (field_name, pre-downcast array).
     attribute_cols: Vec<(String, AttrArray<'a>)>,
+    /// `_resource_*` columns resolved for grouping and Resource encoding.
+    resource_cols: Vec<ResourceCol<'a>>,
 }
 
 /// Scan the batch schema once and resolve column roles and downcast arrays.
@@ -213,11 +200,22 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
     let mut level_col: Option<(usize, &dyn Array)> = None;
     let mut body_col: Option<(usize, &dyn Array)> = None;
     let mut raw_col: Option<(usize, &dyn Array)> = None;
+    let mut resource_cols: Vec<ResourceCol<'_>> = Vec::new();
     // Indices of columns to exclude from attributes.
     let mut excluded: Vec<usize> = Vec::with_capacity(4);
 
     for (idx, field) in schema.fields().iter().enumerate() {
         let col_name = field.name().as_str();
+        // _resource_* columns are source-identity metadata — exclude from
+        // LogRecord attributes; collect for Resource grouping instead.
+        if col_name.starts_with("_resource_") {
+            resource_cols.push(ResourceCol {
+                col_name: col_name.to_string(),
+                arr: batch.column(idx).as_ref(),
+            });
+            excluded.push(idx);
+            continue;
+        }
         let (field_name, _) = parse_column_name(col_name);
         match field_name {
             "timestamp" | "time" | "ts" => {
@@ -276,7 +274,127 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         body_col,
         raw_col,
         attribute_cols,
+        resource_cols,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Resource grouping helpers
+// ---------------------------------------------------------------------------
+
+/// Group row indices by their distinct `_resource_*` column value combination.
+///
+/// Returns a list of `(resource_key, row_indices)` pairs.  The resource key
+/// is a `Vec<Option<String>>` — one entry per resource column, in column order.
+/// Rows with identical resource keys are assigned to the same group and will
+/// be encoded into the same `ResourceLogs` message.
+///
+/// Ordering within each group preserves the original row order.
+fn group_rows_by_resource<'a>(
+    _batch: &RecordBatch,
+    resource_cols: &[ResourceCol<'a>],
+    num_rows: usize,
+) -> Vec<(Vec<Option<String>>, Vec<usize>)> {
+    if resource_cols.is_empty() {
+        // No resource columns — all rows in one group with an empty key.
+        return vec![(vec![], (0..num_rows).collect())];
+    }
+
+    // Build a grouping map: key -> row indices.
+    // Use a Vec-of-pairs to preserve deterministic insertion order (batches
+    // are typically small and have very few distinct resource combinations).
+    let mut groups: Vec<(Vec<Option<String>>, Vec<usize>)> = Vec::new();
+
+    for row in 0..num_rows {
+        let key: Vec<Option<String>> = resource_cols
+            .iter()
+            .map(|rc| {
+                if rc.arr.is_null(row) {
+                    None
+                } else {
+                    Some(str_value(rc.arr, row).to_string())
+                }
+            })
+            .collect();
+
+        if let Some(g) = groups.iter_mut().find(|(k, _)| k == &key) {
+            g.1.push(row);
+        } else {
+            groups.push((key, vec![row]));
+        }
+    }
+
+    groups
+}
+
+/// Encode one `ResourceLogs` protobuf message for a single resource group.
+///
+/// The `resource_key` holds per-group `_resource_*` values (parallel to
+/// `resource_cols`).  These, combined with `metadata.resource_attrs`, form
+/// the OTLP `Resource.attributes`.
+fn encode_resource_logs(
+    columns: &BatchColumns<'_>,
+    row_indices: &[usize],
+    resource_cols: &[ResourceCol<'_>],
+    resource_key: &[Option<String>],
+    metadata: &BatchMetadata,
+) -> Vec<u8> {
+    // --- Phase 1: encode LogRecords ---
+    let mut records_buf: Vec<u8> = Vec::with_capacity(row_indices.len() * 128);
+    let mut record_ranges: Vec<(usize, usize)> = Vec::with_capacity(row_indices.len());
+
+    for &row in row_indices {
+        let start = records_buf.len();
+        encode_row_as_log_record(columns, row, metadata, &mut records_buf);
+        record_ranges.push((start, records_buf.len()));
+    }
+
+    // --- Phase 2: compute sizes bottom-up ---
+
+    // ScopeLogs inner: repeated LogRecord (field 2)
+    let mut scope_logs_inner_size = 0usize;
+    for &(start, end) in &record_ranges {
+        let record_len = end - start;
+        scope_logs_inner_size +=
+            varint_len(((2u64) << 3) | 2) + varint_len(record_len as u64) + record_len;
+    }
+
+    // Resource attributes: metadata.resource_attrs + per-group _resource_* values.
+    let mut resource_msg: Vec<u8> = Vec::new();
+    for (k, v) in &metadata.resource_attrs {
+        encode_key_value_string(&mut resource_msg, k.as_bytes(), v.as_bytes());
+    }
+    for (rc, val) in resource_cols.iter().zip(resource_key.iter()) {
+        if let Some(v) = val {
+            encode_key_value_string(
+                &mut resource_msg,
+                rc.col_name.as_bytes(),
+                v.as_bytes(),
+            );
+        }
+    }
+
+    // ResourceLogs inner: Resource (field 1) + ScopeLogs (field 2)
+    let mut resource_inner_size = bytes_field_size(2, scope_logs_inner_size);
+    if !resource_msg.is_empty() {
+        resource_inner_size += bytes_field_size(1, resource_msg.len());
+    }
+
+    // --- Phase 3: write the ResourceLogs buffer ---
+    let mut buf: Vec<u8> = Vec::with_capacity(resource_inner_size + 16);
+
+    if !resource_msg.is_empty() {
+        encode_bytes_field(&mut buf, 1, &resource_msg);
+    }
+
+    encode_tag(&mut buf, 2, 2);
+    encode_varint(&mut buf, scope_logs_inner_size as u64);
+
+    for &(start, end) in &record_ranges {
+        encode_bytes_field(&mut buf, 2, &records_buf[start..end]);
+    }
+
+    buf
 }
 
 /// Encode a single RecordBatch row as an OTLP LogRecord using pre-resolved columns.

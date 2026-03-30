@@ -85,12 +85,22 @@ pub(crate) struct ColInfo {
 /// Build a de-duplicated ordered list of columns for JSON output.
 /// When the same field_name appears multiple times (e.g. status_int and
 /// status_str), prefer int > float > str.
+///
+/// Columns with names starting with `_resource_` are excluded from JSON
+/// output — they are source-identity metadata used for resource grouping
+/// by output sinks (e.g. OTLP `ResourceLogs`), not payload fields.
 pub(crate) fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
     let schema = batch.schema();
     let mut infos: Vec<ColInfo> = Vec::new();
     // Collect all columns.
     for (idx, field) in schema.fields().iter().enumerate() {
         let name = field.name().as_str();
+        // Skip resource metadata columns — these identify the source of each
+        // row and are handled separately by output sinks (e.g. OTLP groups
+        // rows into ResourceLogs by distinct _resource_* combinations).
+        if name.starts_with("_resource_") {
+            continue;
+        }
         let (field_name, type_suffix) = parse_column_name(name);
         infos.push(ColInfo {
             idx,
@@ -562,5 +572,99 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("endpoint"), "got: {err}");
+    }
+
+    #[test]
+    fn test_resource_columns_excluded_from_json_output() {
+        // _resource_* columns should NOT appear in JSON output.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level_str", DataType::Utf8, true),
+            Field::new("_resource_k8s_pod_name", DataType::Utf8, false),
+            Field::new("_resource_k8s_namespace", DataType::Utf8, false),
+        ]));
+        let level = StringArray::from(vec![Some("INFO")]);
+        let pod = StringArray::from(vec![Some("my-pod")]);
+        let ns = StringArray::from(vec![Some("prod")]);
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(level), Arc::new(pod), Arc::new(ns)])
+                .unwrap();
+        let meta = make_metadata();
+
+        let mut sink = StdoutSink::new("test".to_string(), StdoutFormat::Json);
+        let mut out: Vec<u8> = Vec::new();
+        sink.write_batch_to(&batch, &meta, &mut out).unwrap();
+        let output = String::from_utf8(out).unwrap();
+
+        assert!(
+            output.contains("\"level\":\"INFO\""),
+            "level should be present: {output}"
+        );
+        assert!(
+            !output.contains("_resource_"),
+            "_resource_ columns must be absent from JSON output: {output}"
+        );
+    }
+
+    #[test]
+    fn test_raw_passthrough_with_resource_columns() {
+        // _resource_* columns must not break raw-passthrough detection.
+        use crate::JsonLinesSink;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("_raw", DataType::Utf8, true),
+            Field::new("_resource_k8s_pod_name", DataType::Utf8, false),
+        ]));
+        let raw = StringArray::from(vec![Some(r#"{"ts":"2024-01-15","msg":"hello"}"#)]);
+        let pod = StringArray::from(vec![Some("my-pod")]);
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(raw), Arc::new(pod)]).unwrap();
+
+        let mut sink = JsonLinesSink::new(
+            "test".to_string(),
+            "http://localhost:9200".to_string(),
+            vec![],
+        );
+        sink.serialize_batch(&batch);
+        let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
+        // Should use raw passthrough — the original JSON, not re-serialized.
+        assert_eq!(
+            output.trim(),
+            r#"{"ts":"2024-01-15","msg":"hello"}"#,
+            "got: {output}"
+        );
+    }
+
+    #[test]
+    fn test_otlp_resource_grouping() {
+        use crate::{Compression, OtlpProtocol, OtlpSink};
+        // Two rows from different pods → should produce two ResourceLogs.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message_str", DataType::Utf8, true),
+            Field::new("_resource_k8s_pod_name", DataType::Utf8, false),
+        ]));
+        let msg = StringArray::from(vec![Some("row A"), Some("row B")]);
+        let pod = StringArray::from(vec![Some("pod-a"), Some("pod-b")]);
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(msg), Arc::new(pod)]).unwrap();
+
+        let meta = BatchMetadata {
+            resource_attrs: vec![],
+            observed_time_ns: 1_700_000_000_000_000_000,
+        };
+
+        let mut sink = OtlpSink::new(
+            "test".to_string(),
+            "http://localhost:4318".to_string(),
+            OtlpProtocol::Http,
+            Compression::None,
+        );
+        sink.encode_batch(&batch, &meta);
+
+        // Should produce non-empty protobuf.
+        assert!(!sink.encoder_buf.is_empty(), "encoder_buf must not be empty");
+        // The outer field tag byte 0x0A = field 1, wire type 2 (ResourceLogs).
+        assert_eq!(
+            sink.encoder_buf[0], 0x0A,
+            "first byte must be ResourceLogs tag"
+        );
     }
 }

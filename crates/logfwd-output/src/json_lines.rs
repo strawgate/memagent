@@ -34,19 +34,21 @@ impl JsonLinesSink {
     }
 
     /// Check whether the batch is "raw passthrough eligible": has a `_raw` column
-    /// and every other column is null for every row (no transforms modified fields).
+    /// and every other column (except `_resource_*` metadata columns) is null for
+    /// every row (no transforms modified fields).
     fn is_raw_passthrough(batch: &RecordBatch) -> bool {
         let schema = batch.schema();
         let has_raw = schema.fields().iter().any(|f| f.name() == "_raw");
         if !has_raw {
             return false;
         }
-        // Simple heuristic: if the only non-null column is _raw, passthrough.
+        // Simple heuristic: if the only non-null non-resource column is _raw, passthrough.
         for field in schema.fields().iter() {
-            if field.name() == "_raw" {
+            let name = field.name().as_str();
+            if name == "_raw" || name.starts_with("_resource_") {
                 continue;
             }
-            let idx = schema.index_of(field.name()).unwrap();
+            let idx = schema.index_of(name).unwrap();
             if batch.column(idx).null_count() < batch.num_rows() {
                 return false;
             }

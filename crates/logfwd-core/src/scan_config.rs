@@ -4,12 +4,14 @@
 // (SimdScanner, StreamingSimdScanner) and the SQL transform layer.
 
 /// Specification for a single field to extract.
+#[derive(Clone)]
 pub struct FieldSpec {
     pub name: String,
     pub aliases: Vec<String>,
 }
 
 /// Controls which fields to extract and whether to keep _raw.
+#[derive(Clone)]
 pub struct ScanConfig {
     /// Fields to extract. Empty = extract all (SELECT *).
     pub wanted_fields: Vec<FieldSpec>,
@@ -21,6 +23,15 @@ pub struct ScanConfig {
     /// and panics with a descriptive message if it is not. Disabled by default
     /// for maximum throughput; enable when input provenance is untrusted.
     pub validate_utf8: bool,
+    /// Constant `_resource_*` columns to inject into every row of each scanned batch.
+    ///
+    /// These carry source identity (e.g. K8s pod name, namespace) through the
+    /// SQL transform to output sinks, which use them to group rows by resource
+    /// (e.g. one OTLP `ResourceLogs` per distinct `_resource_*` combination).
+    ///
+    /// Column names must start with `_resource_` by convention.
+    /// Values are constant for the lifetime of the source (file path, pipeline config).
+    pub resource_columns: Vec<(String, String)>,
 }
 
 impl Default for ScanConfig {
@@ -30,6 +41,7 @@ impl Default for ScanConfig {
             extract_all: true,
             keep_raw: false,
             validate_utf8: false,
+            resource_columns: vec![],
         }
     }
 }

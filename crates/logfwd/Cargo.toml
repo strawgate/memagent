@@ -12,6 +12,8 @@ logfwd-config = { path = "../logfwd-config" }
 logfwd-core = { path = "../logfwd-core" }
 logfwd-transform = { path = "../logfwd-transform" }
 logfwd-output = { path = "../logfwd-output" }
+arrow = { workspace = true }
+bytes = "1"
 dhat = { version = "0.3", optional = true }
 libc = "0.2"
 memchr = "2"
@@ -23,6 +25,5 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "tim
 tokio-util = { version = "0.7" }
 
 [dev-dependencies]
-arrow = { workspace = true }
 tempfile = "3"
 tiny_http = "0.12"

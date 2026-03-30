@@ -4,11 +4,15 @@
 //   SimdScanner          — StorageBuilder (self-contained, compressible)
 //   StreamingSimdScanner — StreamingBuilder (zero-copy StringViewArrays)
 
+use std::sync::Arc;
+
 use crate::chunk_classify::ChunkIndex;
 use crate::scan_config::ScanConfig;
 use crate::scan_config::parse_int_fast;
 use crate::storage_builder::StorageBuilder;
 use crate::streaming_builder::StreamingBuilder;
+use arrow::array::{ArrayRef, StringArray};
+use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use memchr::memchr;
@@ -307,7 +311,8 @@ impl SimdScanner {
             })?;
         }
         scan_into(buf, &self.config, &mut self.builder);
-        self.builder.finish_batch()
+        let batch = self.builder.finish_batch()?;
+        inject_resource_columns(batch, &self.config.resource_columns)
     }
 }
 
@@ -342,8 +347,46 @@ impl StreamingSimdScanner {
         }
         self.builder.begin_batch(buf.clone());
         scan_into(&buf, &self.config, &mut self.builder);
-        self.builder.finish_batch()
+        let batch = self.builder.finish_batch()?;
+        inject_resource_columns(batch, &self.config.resource_columns)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Resource column injection
+// ---------------------------------------------------------------------------
+
+/// Append constant `_resource_*` columns to a `RecordBatch`.
+///
+/// Each entry in `resource_columns` produces a non-nullable `Utf8` column
+/// where every row holds the same value. Columns are appended after all
+/// scanned fields, preserving their original order.
+///
+/// This is the injection point described in the architecture: source identity
+/// (K8s pod name, namespace, service name, …) becomes a first-class column
+/// that SQL transforms can filter/group on and output sinks can use for
+/// resource grouping (e.g. OTLP `ResourceLogs`).
+pub fn inject_resource_columns(
+    batch: RecordBatch,
+    resource_columns: &[(String, String)],
+) -> Result<RecordBatch, ArrowError> {
+    if resource_columns.is_empty() {
+        return Ok(batch);
+    }
+    let num_rows = batch.num_rows();
+    let schema = batch.schema();
+    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+
+    for (name, value) in resource_columns {
+        // Constant column: every row holds the same value.
+        let arr = StringArray::from(vec![value.as_str(); num_rows]);
+        fields.push(Field::new(name, DataType::Utf8, false));
+        columns.push(Arc::new(arr) as ArrayRef);
+    }
+
+    let new_schema = Arc::new(Schema::new(fields));
+    RecordBatch::try_new(new_schema, columns)
 }
 
 // ---------------------------------------------------------------------------
@@ -429,6 +472,7 @@ mod tests {
             extract_all: false,
             keep_raw: false,
             validate_utf8: false,
+            resource_columns: vec![],
         };
         let batch = SimdScanner::new(config)
             .scan(
@@ -446,6 +490,7 @@ mod tests {
             extract_all: true,
             keep_raw: true,
             validate_utf8: false,
+            resource_columns: vec![],
         };
         let batch = SimdScanner::new(config).scan(b"{\"msg\":\"hi\"}\n").unwrap();
         assert!(batch.column_by_name("_raw").is_some());
@@ -623,5 +668,73 @@ mod tests {
         let result =
             StreamingSimdScanner::new(config).scan(bytes::Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
         assert!(result.is_err());
+    }
+
+    // --- resource column injection ---
+
+    #[test]
+    fn test_resource_columns_injected_by_simd_scanner() {
+        let config = ScanConfig {
+            resource_columns: vec![
+                ("_resource_k8s_pod_name".to_string(), "my-pod".to_string()),
+                (
+                    "_resource_k8s_namespace".to_string(),
+                    "prod".to_string(),
+                ),
+            ],
+            ..ScanConfig::default()
+        };
+        let batch = SimdScanner::new(config)
+            .scan(b"{\"msg\":\"hello\"}\n{\"msg\":\"world\"}\n")
+            .unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let pod = batch.column_by_name("_resource_k8s_pod_name").unwrap();
+        let ns = batch.column_by_name("_resource_k8s_namespace").unwrap();
+
+        // All rows hold the constant resource value.
+        let pod_arr = pod.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(pod_arr.value(0), "my-pod");
+        assert_eq!(pod_arr.value(1), "my-pod");
+
+        let ns_arr = ns.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(ns_arr.value(0), "prod");
+        assert_eq!(ns_arr.value(1), "prod");
+    }
+
+    #[test]
+    fn test_resource_columns_injected_by_streaming_scanner() {
+        let config = ScanConfig {
+            resource_columns: vec![(
+                "_resource_service_name".to_string(),
+                "nginx".to_string(),
+            )],
+            ..ScanConfig::default()
+        };
+        let batch = StreamingSimdScanner::new(config)
+            .scan(bytes::Bytes::from_static(b"{\"level\":\"INFO\"}\n"))
+            .unwrap();
+        assert_eq!(batch.num_rows(), 1);
+
+        let svc = batch.column_by_name("_resource_service_name").unwrap();
+        let svc_arr = svc.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(svc_arr.value(0), "nginx");
+    }
+
+    #[test]
+    fn test_no_resource_columns_noop() {
+        // With no resource_columns, inject_resource_columns must be a no-op.
+        let config = ScanConfig::default();
+        let batch = StreamingSimdScanner::new(config)
+            .scan(bytes::Bytes::from_static(b"{\"x\":\"1\"}\n"))
+            .unwrap();
+        assert!(
+            !batch
+                .schema()
+                .fields()
+                .iter()
+                .any(|f| f.name().starts_with("_resource_")),
+            "expected no _resource_ columns"
+        );
     }
 }

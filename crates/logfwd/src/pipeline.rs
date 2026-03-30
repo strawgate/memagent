@@ -12,9 +12,11 @@ use opentelemetry::metrics::Meter;
 
 use logfwd_config::{Format, InputConfig, InputType, PipelineConfig};
 use logfwd_core::diagnostics::{ComponentStats, PipelineMetrics};
+use logfwd_core::enrichment::parse_cri_log_path;
 use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_core::input::{FileInput, InputEvent, InputSource};
-use logfwd_core::scanner::StreamingSimdScanner as Scanner;
+use logfwd_core::scan_config::ScanConfig;
+use logfwd_core::scanner::StreamingSimdScanner;
 use logfwd_core::tail::TailConfig;
 use logfwd_output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
 use logfwd_transform::SqlTransform;
@@ -29,6 +31,8 @@ struct InputState {
     name: String,
     source: Box<dyn InputSource>,
     parser: Box<dyn FormatParser>,
+    /// Per-input scanner carrying the input's `ScanConfig` (including resource columns).
+    scanner: StreamingSimdScanner,
     /// Buffer accumulating newline-delimited JSON for the scanner.
     json_buf: Vec<u8>,
     stats: Arc<ComponentStats>,
@@ -43,7 +47,6 @@ pub struct Pipeline {
     #[expect(dead_code, reason = "reserved for future per-pipeline logging")]
     name: String,
     inputs: Vec<InputState>,
-    scanner: Scanner,
     transform: SqlTransform,
     output: Box<dyn OutputSink>,
     metrics: Arc<PipelineMetrics>,
@@ -58,11 +61,13 @@ impl Pipeline {
         let transform_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
         let transform = SqlTransform::new(transform_sql)?;
         let scan_config = transform.scan_config();
-        let scanner = Scanner::new(scan_config);
 
         let mut metrics = PipelineMetrics::new(name, transform_sql, meter);
 
         // Build inputs (file only for now).
+        // Each input gets its own scanner so that per-input resource columns
+        // (e.g. K8s pod/namespace derived from the file path) are injected
+        // as constant columns on every row scanned from that source.
         let mut inputs = Vec::new();
         for (i, input_cfg) in config.inputs.iter().enumerate() {
             let input_name = input_cfg
@@ -71,7 +76,7 @@ impl Pipeline {
                 .unwrap_or_else(|| format!("input_{i}"));
             let input_type_str = format!("{:?}", input_cfg.input_type).to_lowercase();
             let input_stats = metrics.add_input(&input_name, &input_type_str);
-            inputs.push(build_input_state(&input_name, input_cfg, input_stats)?);
+            inputs.push(build_input_state(&input_name, input_cfg, &scan_config, input_stats)?);
         }
 
         // Build outputs.
@@ -95,7 +100,6 @@ impl Pipeline {
         Ok(Pipeline {
             name: name.to_string(),
             inputs,
-            scanner,
             transform,
             output,
             metrics: Arc::new(metrics),
@@ -157,63 +161,83 @@ impl Pipeline {
                     self.metrics.inc_flush_by_timeout();
                 }
 
-                let mut combined = Vec::new();
+                // Scan stage: each input is scanned by its own scanner so that
+                // per-input resource columns are correctly injected.
+                let t0 = Instant::now();
+                let mut per_input_batches = Vec::new();
                 for input in &mut self.inputs {
-                    if !input.json_buf.is_empty() {
-                        combined.append(&mut input.json_buf);
+                    if input.json_buf.is_empty() {
+                        continue;
                     }
-                }
-
-                if !combined.is_empty() {
-                    // Scan stage.
-                    let t0 = Instant::now();
-                    let batch = match self.scanner.scan(combined.into()) {
-                        Ok(b) => b,
+                    let buf = bytes::Bytes::from(std::mem::take(&mut input.json_buf));
+                    match input.scanner.scan(buf) {
+                        Ok(b) if b.num_rows() > 0 => per_input_batches.push(b),
+                        Ok(_) => {}
                         Err(e) => {
                             return Err(io::Error::other(format!("scan error: {e}")));
                         }
-                    };
-                    let scan_elapsed = t0.elapsed();
-
-                    if batch.num_rows() > 0 {
-                        let num_rows = batch.num_rows() as u64;
-                        self.metrics.transform_in.inc_lines(num_rows);
-
-                        // Transform stage.
-                        let t1 = Instant::now();
-                        let result = match self.transform.execute_blocking(batch) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                self.metrics.inc_transform_error();
-                                return Err(io::Error::other(format!("transform error: {e}")));
-                            }
-                        };
-                        let transform_elapsed = t1.elapsed();
-
-                        self.metrics
-                            .transform_out
-                            .inc_lines(result.num_rows() as u64);
-
-                        // Output stage.
-                        let t2 = Instant::now();
-                        let metadata = BatchMetadata {
-                            resource_attrs: vec![],
-                            observed_time_ns: now_nanos(),
-                        };
-                        if let Err(e) = self.output.send_batch(&result, &metadata) {
-                            self.metrics.output_error();
-                            return Err(e);
-                        }
-                        let output_elapsed = t2.elapsed();
-
-                        // Record batch-level metrics.
-                        self.metrics.record_batch(
-                            num_rows,
-                            scan_elapsed.as_nanos() as u64,
-                            transform_elapsed.as_nanos() as u64,
-                            output_elapsed.as_nanos() as u64,
-                        );
                     }
+                }
+                let scan_elapsed = t0.elapsed();
+
+                // Combine all per-input batches into one before transform.
+                let batch = match per_input_batches.len() {
+                    0 => {
+                        last_flush = Instant::now();
+                        continue;
+                    }
+                    1 => per_input_batches.remove(0),
+                    _ => {
+                        // concat_batches requires a common schema (same columns).
+                        // Inputs with differing resource columns will produce different
+                        // schemas; use the schema of the first batch as the target and
+                        // cast/pad missing columns with nulls.
+                        let schema = per_input_batches[0].schema();
+                        let refs: Vec<&arrow::record_batch::RecordBatch> =
+                            per_input_batches.iter().collect();
+                        arrow::compute::concat_batches(&schema, refs)
+                            .map_err(|e| io::Error::other(format!("concat error: {e}")))?
+                    }
+                };
+
+                if batch.num_rows() > 0 {
+                    let num_rows = batch.num_rows() as u64;
+                    self.metrics.transform_in.inc_lines(num_rows);
+
+                    // Transform stage.
+                    let t1 = Instant::now();
+                    let result = match self.transform.execute_blocking(batch) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.metrics.inc_transform_error();
+                            return Err(io::Error::other(format!("transform error: {e}")));
+                        }
+                    };
+                    let transform_elapsed = t1.elapsed();
+
+                    self.metrics
+                        .transform_out
+                        .inc_lines(result.num_rows() as u64);
+
+                    // Output stage.
+                    let t2 = Instant::now();
+                    let metadata = BatchMetadata {
+                        resource_attrs: vec![],
+                        observed_time_ns: now_nanos(),
+                    };
+                    if let Err(e) = self.output.send_batch(&result, &metadata) {
+                        self.metrics.output_error();
+                        return Err(e);
+                    }
+                    let output_elapsed = t2.elapsed();
+
+                    // Record batch-level metrics.
+                    self.metrics.record_batch(
+                        num_rows,
+                        scan_elapsed.as_nanos() as u64,
+                        transform_elapsed.as_nanos() as u64,
+                        output_elapsed.as_nanos() as u64,
+                    );
                 }
 
                 last_flush = Instant::now();
@@ -244,6 +268,7 @@ fn build_format_parser(format: &Format) -> Box<dyn FormatParser> {
 fn build_input_state(
     name: &str,
     cfg: &InputConfig,
+    scan_config: &ScanConfig,
     stats: Arc<ComponentStats>,
 ) -> Result<InputState, String> {
     match cfg.input_type {
@@ -263,10 +288,35 @@ fn build_input_state(
             let source = FileInput::new(name.to_string(), &paths, tail_config)
                 .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
 
+            // Derive resource columns from the file path.
+            // CRI log paths encode K8s pod/namespace/container; inject these as
+            // `_resource_*` columns so downstream sinks can group by resource identity.
+            let mut resource_columns = scan_config.resource_columns.clone();
+            if let Some(k8s) = parse_cri_log_path(path) {
+                resource_columns.push((
+                    "_resource_k8s_namespace".to_string(),
+                    k8s.namespace.clone(),
+                ));
+                resource_columns.push((
+                    "_resource_k8s_pod_name".to_string(),
+                    k8s.pod_name.clone(),
+                ));
+                resource_columns.push((
+                    "_resource_k8s_container_name".to_string(),
+                    k8s.container_name.clone(),
+                ));
+            }
+
+            let input_scan_config = ScanConfig {
+                resource_columns,
+                ..scan_config.clone()
+            };
+
             Ok(InputState {
                 name: name.to_string(),
                 source: Box::new(source),
                 parser: build_format_parser(&format),
+                scanner: StreamingSimdScanner::new(input_scan_config),
                 json_buf: Vec::with_capacity(4 * 1024 * 1024),
                 stats,
             })
