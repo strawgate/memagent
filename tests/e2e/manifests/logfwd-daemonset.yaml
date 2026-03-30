@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: logfwd
+  labels:
+    app: logfwd
+spec:
+  selector:
+    matchLabels:
+      app: logfwd
+  template:
+    metadata:
+      labels:
+        app: logfwd
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: logfwd
+          image: logfwd:e2e
+          imagePullPolicy: IfNotPresent
+          args: ["--config", "/etc/logfwd/config.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          ports:
+            - containerPort: 9090
+              name: diagnostics
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: config
+              mountPath: /etc/logfwd
+              readOnly: true
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+            type: Directory
+        - name: config
+          configMap:
+            name: logfwd-config
