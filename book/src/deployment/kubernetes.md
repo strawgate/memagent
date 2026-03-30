@@ -1,0 +1,343 @@
+# Deployment Guide
+
+This guide covers running logfwd in production environments.
+
+---
+
+## Docker — standalone container
+
+### Build the image
+
+```bash
+docker build -t logfwd:latest .
+```
+
+The multi-stage `Dockerfile` at the repository root compiles a statically-linked
+release binary and copies it into a minimal `debian:bookworm-slim` image.
+
+### Run with a config file
+
+Create `config.yaml`:
+
+```yaml
+input:
+  type: file
+  path: /var/log/app/*.log
+  format: json
+
+output:
+  type: otlp
+  endpoint: otel-collector:4317
+  protocol: grpc
+
+server:
+  diagnostics: 0.0.0.0:9090
+```
+
+Run the container, mounting the log directory and config:
+
+```bash
+docker run -d \
+  --name logfwd \
+  -v /var/log:/var/log:ro \
+  -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
+  -p 9090:9090 \
+  logfwd:latest \
+  --config /etc/logfwd/config.yaml
+```
+
+### Environment variable substitution
+
+Pass secrets and environment-specific values via environment variables instead of
+baking them into the config file:
+
+```yaml
+output:
+  type: otlp
+  endpoint: ${OTEL_ENDPOINT}
+```
+
+```bash
+docker run -d \
+  -e OTEL_ENDPOINT=otel-collector:4317 \
+  -v /var/log:/var/log:ro \
+  -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
+  logfwd:latest --config /etc/logfwd/config.yaml
+```
+
+---
+
+## Kubernetes — DaemonSet
+
+A DaemonSet is the recommended way to deploy logfwd in a Kubernetes cluster. Each
+node runs one logfwd pod that reads container logs from `/var/log` on the host.
+
+A ready-to-use manifest is provided at `deploy/daemonset.yml`.
+
+### Minimal DaemonSet
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: collectors
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: logfwd
+  namespace: collectors
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logfwd-config
+  namespace: collectors
+data:
+  config.yaml: |
+    input:
+      type: file
+      path: /var/log/pods/**/*.log
+      format: cri
+
+    transform: |
+      SELECT
+        level_str,
+        msg_str,
+        _time_ns_int,
+        _stream_str
+      FROM logs
+      WHERE level_str != 'DEBUG'
+
+    output:
+      type: otlp
+      endpoint: ${OTEL_ENDPOINT}
+      protocol: grpc
+      compression: zstd
+
+    server:
+      diagnostics: 0.0.0.0:9090
+      log_level: info
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: logfwd
+  namespace: collectors
+  labels:
+    app: logfwd
+spec:
+  selector:
+    matchLabels:
+      app: logfwd
+  template:
+    metadata:
+      labels:
+        app: logfwd
+    spec:
+      serviceAccountName: logfwd
+      tolerations:
+        - operator: Exists  # run on all nodes including control-plane
+      containers:
+        - name: logfwd
+          image: logfwd:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/logfwd/config.yaml
+          env:
+            - name: OTEL_ENDPOINT
+              value: otel-collector.monitoring.svc.cluster.local:4317
+          ports:
+            - name: diagnostics
+              containerPort: 9090
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: config
+              mountPath: /etc/logfwd
+              readOnly: true
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: config
+          configMap:
+            name: logfwd-config
+```
+
+Apply it:
+
+```bash
+kubectl apply -f deploy/daemonset.yml
+kubectl -n collectors rollout status daemonset/logfwd
+```
+
+### Kubernetes metadata enrichment
+
+Use the `k8s_path` enrichment table to attach namespace, pod, and container labels to
+every log record:
+
+```yaml
+enrichment:
+  k8s:
+    type: k8s_path
+
+transform: |
+  SELECT
+    l.level_str,
+    l.msg_str,
+    k.namespace,
+    k.pod_name,
+    k.container_name
+  FROM logs l
+  LEFT JOIN k8s k ON l._file_str = k.log_path_prefix
+```
+
+### Namespace filtering
+
+To collect logs only from specific namespaces, filter in the transform:
+
+```yaml
+transform: |
+  SELECT l.*, k.namespace, k.pod_name, k.container_name
+  FROM logs l
+  LEFT JOIN k8s k ON l._file_str = k.log_path_prefix
+  WHERE k.namespace IN ('production', 'staging')
+```
+
+### Scraping the diagnostics endpoint with Prometheus
+
+Expose port 9090 in the pod spec and add a Prometheus scrape annotation:
+
+```yaml
+metadata:
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+```
+
+---
+
+## OTLP collector integration
+
+logfwd sends log records as OTLP protobuf. Any OpenTelemetry-compatible collector
+can receive them.
+
+### OpenTelemetry Collector
+
+Add a `otlp` receiver to your collector config and enable the `logs` pipeline:
+
+```yaml
+# otel-collector-config.yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  debug:
+    verbosity: normal
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [debug, otlphttp/loki]
+```
+
+Point logfwd at the collector:
+
+```yaml
+output:
+  type: otlp
+  endpoint: otel-collector:4317
+  protocol: grpc
+  compression: zstd
+```
+
+### Grafana Alloy / Agent
+
+Grafana Alloy can receive OTLP logs and forward them to Loki or Tempo. Configure an
+`otelcol.receiver.otlp` component and connect it to your exporter pipeline.
+
+---
+
+## Resource sizing guidelines
+
+logfwd is designed to process logs on a single CPU core. The pipeline runs as a set
+of blocking OS threads — one per input plus shared coordinator threads.
+
+### Baseline
+
+| Scenario | CPU | Memory |
+|----------|-----|--------|
+| Quiet node (< 1 MB/s) | 50 m | 64 Mi |
+| Typical node (1–10 MB/s) | 250 m | 128 Mi |
+| High-throughput node (> 10 MB/s) | 500 m – 1 CPU | 256 Mi |
+
+### Memory breakdown
+
+| Component | Typical size |
+|-----------|-------------|
+| Arrow RecordBatch (per batch, 8 KB read) | ~512 Ki |
+| DataFusion query plan | ~4 Mi |
+| OTLP request buffer | ~2 Mi |
+| Enrichment tables | < 1 Mi |
+| Per-pipeline overhead | ~16 Mi |
+
+### Tuning tips
+
+- **Reduce memory**: avoid `keep_raw: true` (disabled by default) — it stores the full
+  JSON line and accounts for up to 65 % of table memory.
+- **Reduce CPU**: use a `WHERE` clause in the transform to drop unwanted records early.
+- **Multiple pipelines**: each pipeline occupies its own thread. Add CPU budget
+  proportionally.
+
+### Kubernetes resource example
+
+```yaml
+resources:
+  requests:
+    cpu: "250m"
+    memory: "128Mi"
+  limits:
+    cpu: "1"
+    memory: "512Mi"
+```
+
+Set the limit higher than the request so logfwd can burst during log spikes without
+being OOM-killed.
+
+---
+
+## Validating before deploy
+
+Use `--validate` to parse and validate the config without starting the pipeline:
+
+```bash
+logfwd --config config.yaml --validate
+```
+
+Use `--dry-run` to build all pipeline objects without starting them (catches errors
+such as SQL syntax issues):
+
+```bash
+logfwd --config config.yaml --dry-run
+```
+
+Both commands exit 0 on success and print an error to stderr on failure.
