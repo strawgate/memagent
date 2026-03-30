@@ -294,11 +294,20 @@ impl Config {
                     .as_deref()
                     .map(String::from)
                     .unwrap_or_else(|| format!("#{i}"));
+
+                // Reject placeholder output types that are not yet implemented.
                 match output.output_type {
-                    OutputType::Otlp
-                    | OutputType::Http
-                    | OutputType::Elasticsearch
-                    | OutputType::Loki => {
+                    OutputType::Elasticsearch | OutputType::Loki | OutputType::Parquet => {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': {} output type is not yet implemented",
+                            output_type_name(&output.output_type),
+                        )));
+                    }
+                    _ => {}
+                }
+
+                match output.output_type {
+                    OutputType::Otlp | OutputType::Http => {
                         if output.endpoint.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
@@ -306,7 +315,7 @@ impl Config {
                             )));
                         }
                     }
-                    OutputType::FileOut | OutputType::Parquet => {
+                    OutputType::FileOut => {
                         if output.path.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'path'",
@@ -315,6 +324,10 @@ impl Config {
                         }
                     }
                     OutputType::Stdout => {}
+                    // Elasticsearch, Loki, Parquet are already rejected above.
+                    OutputType::Elasticsearch | OutputType::Loki | OutputType::Parquet => {
+                        unreachable!("placeholder types are rejected before this match")
+                    }
                 }
             }
         }
@@ -616,20 +629,60 @@ output:
     }
 
     #[test]
+    fn validation_unimplemented_output_type() {
+        // Each placeholder type should be caught by Config::validate() before
+        // pipeline construction, not silently accepted.
+        for otype in ["elasticsearch", "loki", "parquet"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
+            );
+            let result = Config::load_str(&yaml);
+            assert!(
+                result.is_err(),
+                "validation should reject unimplemented type '{otype}'"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("not yet implemented"),
+                "error message should mention 'not yet implemented' for '{otype}': {msg}"
+            );
+            assert!(
+                msg.contains(otype),
+                "error message should include the type name '{otype}': {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn all_output_types() {
+        // Implemented output types should parse and validate successfully.
         for (otype, extra) in [
             ("otlp", "endpoint: x:4317"),
             ("http", "endpoint: http://x"),
-            ("elasticsearch", "endpoint: http://x"),
-            ("loki", "endpoint: http://x"),
             ("stdout", ""),
             ("file_out", "path: /tmp/out.log"),
-            ("parquet", "path: /tmp/out.parquet"),
         ] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  {extra}\n"
             );
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {otype}: {e}"));
+        }
+
+        // Placeholder output types must be rejected at validation time.
+        for otype in ["elasticsearch", "loki", "parquet"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
+            );
+            let result = Config::load_str(&yaml);
+            assert!(
+                result.is_err(),
+                "expected error for unimplemented type {otype}"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("not yet implemented"),
+                "expected 'not yet implemented' for {otype}: {msg}"
+            );
         }
     }
 
