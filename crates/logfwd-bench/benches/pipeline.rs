@@ -10,7 +10,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use logfwd_core::compress::ChunkCompressor;
 use logfwd_core::cri::{CriReassembler, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
-use logfwd_output::{BatchMetadata, OutputSink, SourceId};
+use logfwd_output::{BatchMetadata, OutputSink};
 use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------
@@ -68,8 +68,6 @@ fn make_metadata() -> BatchMetadata {
     BatchMetadata {
         resource_attrs: vec![("service.name".into(), "bench".into())],
         observed_time_ns: 0,
-        source_id: SourceId::default(),
-        batch_seq: 0,
     }
 }
 

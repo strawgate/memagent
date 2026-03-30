@@ -33,20 +33,12 @@ use logfwd_config::{Format, OutputConfig, OutputType};
 // Trait + metadata
 // ---------------------------------------------------------------------------
 
-/// Identifies the log source that produced a batch.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SourceId(pub String);
-
 /// Metadata about the batch for output serialization.
 pub struct BatchMetadata {
     /// Resource attributes (k8s pod name, namespace, etc.)
     pub resource_attrs: Vec<(String, String)>,
     /// Observed timestamp in nanoseconds.
     pub observed_time_ns: u64,
-    /// Identifies the source that produced this batch.
-    pub source_id: SourceId,
-    /// Monotonically increasing sequence number for this source.
-    pub batch_seq: u64,
 }
 
 /// Every output implements this trait.
@@ -317,8 +309,6 @@ mod tests {
         BatchMetadata {
             resource_attrs: vec![],
             observed_time_ns: 1_700_000_000_000_000_000,
-            source_id: SourceId::default(),
-            batch_seq: 0,
         }
     }
 
@@ -412,8 +402,6 @@ mod tests {
         let meta = BatchMetadata {
             resource_attrs: vec![("k8s.pod.name".to_string(), "myapp-abc".to_string())],
             observed_time_ns: 1_700_000_000_000_000_000,
-            source_id: SourceId::default(),
-            batch_seq: 0,
         };
 
         let mut sink = OtlpSink::new(

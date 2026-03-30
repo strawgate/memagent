@@ -16,7 +16,7 @@ use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_core::input::{FileInput, InputEvent, InputSource};
 use logfwd_core::scanner::StreamingSimdScanner as Scanner;
 use logfwd_core::tail::TailConfig;
-use logfwd_output::{BatchMetadata, FanOut, OutputSink, SourceId, build_output_sink};
+use logfwd_output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
 use logfwd_transform::SqlTransform;
 use tokio_util::sync::CancellationToken;
 
@@ -194,8 +194,6 @@ impl Pipeline {
                         let metadata = BatchMetadata {
                             resource_attrs: vec![],
                             observed_time_ns: now_nanos(),
-                            source_id: SourceId::default(),
-                            batch_seq: 0,
                         };
                         if let Err(e) = self.output.send_batch(&result, &metadata) {
                             self.metrics.output_error();
