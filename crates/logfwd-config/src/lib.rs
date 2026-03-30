@@ -121,6 +121,9 @@ pub struct InputConfig {
     pub path: Option<String>,
     pub listen: Option<String>,
     pub format: Option<Format>,
+    /// Maximum number of file descriptors to keep open simultaneously.
+    /// Applies only to `file` inputs. Defaults to 1024 when not set.
+    pub max_open_files: Option<usize>,
 }
 
 /// A single output destination.
