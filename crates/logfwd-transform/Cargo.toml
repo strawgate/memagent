@@ -16,7 +16,7 @@ datafusion = { version = "45", default-features = false, features = [
 grok = { version = "2.4", default-features = false, features = ["fancy-regex"] }
 maxminddb = "0.27"
 regex = "1"
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 
 [dev-dependencies]
 bytes = "1"
