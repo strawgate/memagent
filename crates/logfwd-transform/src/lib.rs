@@ -639,9 +639,7 @@ impl SqlTransform {
     /// When the calling code is made async, switch to `execute().await` directly.
     pub fn execute_blocking(&mut self, batch: RecordBatch) -> Result<RecordBatch, String> {
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                tokio::task::block_in_place(|| handle.block_on(self.execute(batch)))
-            }
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(self.execute(batch))),
             Err(_) => {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
