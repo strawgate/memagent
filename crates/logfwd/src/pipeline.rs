@@ -347,12 +347,13 @@ impl Pipeline {
 
         let batch_target = self.batch_target_bytes;
         let batch_timeout = self.batch_timeout;
+        let poll_interval = self.poll_interval;
         let mut input_handles = Vec::new();
         for input in self.inputs.drain(..) {
             let tx = tx.clone();
             let sd = shutdown.clone();
             input_handles.push(std::thread::spawn(move || {
-                input_poll_loop(input, tx, sd, batch_target, batch_timeout);
+                input_poll_loop(input, tx, sd, batch_target, batch_timeout, poll_interval);
             }));
         }
         drop(tx); // Drop our copy so rx.recv() returns None when all inputs exit.
@@ -363,8 +364,6 @@ impl Pipeline {
 
         loop {
             tokio::select! {
-                biased; // Check shutdown first.
-
                 _ = shutdown.cancelled() => {
                     break;
                 }
@@ -396,10 +395,14 @@ impl Pipeline {
             }
         }
 
-        // Drain: receive any remaining messages from input threads before
-        // they finish. This catches data that was in-flight when shutdown
-        // was signalled.
-        rx.close(); // Signal input threads to stop sending.
+        // Wait for input threads to finish. They flush remaining data
+        // through tx before exiting. We must join them *before* draining
+        // rx so their final sends succeed (rx is still open).
+        for h in input_handles {
+            let _ = h.join();
+        }
+        // All tx clones are now dropped, so rx.recv() returns None after
+        // the remaining buffered messages are consumed.
         while let Some(data) = rx.recv().await {
             json_buf.extend_from_slice(&data);
         }
@@ -407,11 +410,6 @@ impl Pipeline {
         // Flush any remaining buffered data.
         if !json_buf.is_empty() {
             self.flush_batch(&mut json_buf).await;
-        }
-
-        // Wait for input threads to finish.
-        for h in input_handles {
-            let _ = h.join();
         }
 
         tokio::task::block_in_place(|| self.output.flush())?;
@@ -493,6 +491,7 @@ fn input_poll_loop(
     shutdown: CancellationToken,
     batch_target_bytes: usize,
     batch_timeout: Duration,
+    poll_interval: Duration,
 ) {
     let mut last_send = Instant::now();
 
@@ -511,34 +510,26 @@ fn input_poll_loop(
         };
 
         if events.is_empty() {
-            // No new data — but if we have buffered data and the timeout
-            // elapsed, send what we have (don't let data sit forever).
-            if !input.json_buf.is_empty() && last_send.elapsed() >= batch_timeout {
-                let data = std::mem::take(&mut input.json_buf);
-                if tx.blocking_send(data).is_err() {
-                    break;
-                }
-                last_send = Instant::now();
-            }
-            std::thread::sleep(Duration::from_millis(10));
-            continue;
-        }
-
-        for event in events {
-            match event {
-                InputEvent::Data { bytes, .. } => {
-                    input.stats.inc_bytes(bytes.len() as u64);
-                    let n = input.parser.process(&bytes, &mut input.json_buf);
-                    input.stats.inc_lines(n as u64);
-                }
-                InputEvent::Rotated | InputEvent::Truncated => {
-                    input.parser.reset();
+            std::thread::sleep(poll_interval);
+        } else {
+            for event in events {
+                match event {
+                    InputEvent::Data { bytes, .. } => {
+                        input.stats.inc_bytes(bytes.len() as u64);
+                        let n = input.parser.process(&bytes, &mut input.json_buf);
+                        input.stats.inc_lines(n as u64);
+                    }
+                    InputEvent::Rotated | InputEvent::Truncated => {
+                        input.parser.reset();
+                    }
                 }
             }
         }
 
-        // Send when buffer reaches target size.
-        if input.json_buf.len() >= batch_target_bytes {
+        // Send when buffer reaches target size OR timeout elapsed.
+        let should_send = input.json_buf.len() >= batch_target_bytes
+            || (!input.json_buf.is_empty() && last_send.elapsed() >= batch_timeout);
+        if should_send {
             let data = std::mem::take(&mut input.json_buf);
             if tx.blocking_send(data).is_err() {
                 break;

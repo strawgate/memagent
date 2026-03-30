@@ -238,30 +238,3 @@ impl OutputSink for StdoutSink {
         &self.name
     }
 }
-
-#[allow(clippy::manual_async_fn)]
-impl super::sink::Sink for StdoutSink {
-    fn send_batch(
-        &mut self,
-        batch: &RecordBatch,
-        metadata: &BatchMetadata,
-    ) -> impl std::future::Future<Output = io::Result<super::sink::SendResult>> + Send {
-        // Stdout writes are fast — no need for block_in_place.
-        let result = <Self as OutputSink>::send_batch(self, batch, metadata);
-        async move { result.map(|()| super::sink::SendResult::Ok) }
-    }
-
-    fn flush(&mut self) -> impl std::future::Future<Output = io::Result<()>> + Send {
-        let result = <Self as OutputSink>::flush(self);
-        async move { result }
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn shutdown(&mut self) -> impl std::future::Future<Output = io::Result<()>> + Send {
-        let result = <Self as OutputSink>::flush(self);
-        async move { result }
-    }
-}

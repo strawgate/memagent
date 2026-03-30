@@ -189,48 +189,6 @@ impl OutputSink for OtlpSink {
     }
 }
 
-#[allow(clippy::manual_async_fn)]
-impl super::sink::Sink for OtlpSink {
-    fn send_batch(
-        &mut self,
-        batch: &RecordBatch,
-        metadata: &BatchMetadata,
-    ) -> impl std::future::Future<Output = io::Result<super::sink::SendResult>> + Send {
-        // Encode + compress + HTTP send are all sync. Use block_in_place to
-        // avoid blocking the tokio runtime while ureq waits for the response.
-        let result =
-            tokio::task::block_in_place(|| <Self as OutputSink>::send_batch(self, batch, metadata));
-        async move {
-            match result {
-                Ok(()) => Ok(super::sink::SendResult::Ok),
-                Err(e) => {
-                    // Treat all errors as retryable for now.
-                    let msg = e.to_string();
-                    if msg.contains("404") || msg.contains("401") || msg.contains("403") {
-                        Ok(super::sink::SendResult::Rejected(msg))
-                    } else {
-                        Ok(super::sink::SendResult::RetryAfter(
-                            std::time::Duration::from_secs(1),
-                        ))
-                    }
-                }
-            }
-        }
-    }
-
-    fn flush(&mut self) -> impl std::future::Future<Output = io::Result<()>> + Send {
-        async { Ok(()) }
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn shutdown(&mut self) -> impl std::future::Future<Output = io::Result<()>> + Send {
-        async { Ok(()) }
-    }
-}
-
 /// Pre-downcast array variant for an attribute column.
 enum AttrArray<'a> {
     Str(&'a dyn Array),
