@@ -12,6 +12,7 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, Float64Array, Int64Array, StringBuilder};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, Schema};
+use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
 use crate::scan_config::{parse_float_fast, parse_int_fast};
@@ -167,7 +168,7 @@ impl StorageBuilder {
         }
     }
 
-    pub fn finish_batch(&mut self) -> RecordBatch {
+    pub fn finish_batch(&mut self) -> Result<RecordBatch, ArrowError> {
         let num_rows = self.row_count as usize;
         let mut schema_fields: Vec<Field> = Vec::with_capacity(self.fields.len() + 1);
         let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.fields.len() + 1);
@@ -245,7 +246,6 @@ impl StorageBuilder {
         let schema = Arc::new(Schema::new(schema_fields));
         let opts = RecordBatchOptions::new().with_row_count(Some(num_rows));
         RecordBatch::try_new_with_options(schema, arrays, &opts)
-            .expect("storage_builder: schema/array mismatch")
     }
 }
 
@@ -268,7 +268,7 @@ mod tests {
         b.append_str_by_idx(h, b"web2");
         b.append_int_by_idx(s, b"404");
         b.end_row();
-        let batch = b.finish_batch();
+        let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 2);
         assert_eq!(
             batch
@@ -304,7 +304,7 @@ mod tests {
         b.begin_row();
         b.append_str_by_idx(bx, b"world");
         b.end_row();
-        let batch = b.finish_batch();
+        let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 2);
         let ac = batch.column_by_name("a_str").unwrap();
         assert!(!ac.is_null(0));
@@ -322,7 +322,7 @@ mod tests {
         b.begin_row();
         b.append_str_by_idx(idx, b"OK");
         b.end_row();
-        let batch = b.finish_batch();
+        let batch = b.finish_batch().unwrap();
         assert!(batch.column_by_name("status_int").is_some());
         assert!(batch.column_by_name("status_str").is_some());
     }
@@ -350,7 +350,7 @@ mod tests {
         b.append_str_by_idx(a, b"6");
         b.append_float_by_idx(f, b"7.0");
         b.end_row();
-        let batch = b.finish_batch();
+        let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 3);
         let ac = batch.column_by_name("a_str").unwrap();
         assert!(!ac.is_null(0));
@@ -367,7 +367,7 @@ mod tests {
         b.append_int_by_idx(idx, b"1");
         b.append_int_by_idx(idx, b"2");
         b.end_row();
-        let batch = b.finish_batch();
+        let batch = b.finish_batch().unwrap();
         assert_eq!(
             batch
                 .column_by_name("a_int")
@@ -384,7 +384,7 @@ mod tests {
     fn test_empty_batch() {
         let mut b = StorageBuilder::new(false);
         b.begin_batch();
-        let batch = b.finish_batch();
+        let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 0);
     }
 }

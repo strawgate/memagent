@@ -515,7 +515,7 @@ fn streaming_builder_realistic_transform() {
     b.append_float_by_idx(idx_latency, b"8.0");
     b.end_row();
 
-    let batch = b.finish_batch();
+    let batch = b.finish_batch().expect("batch build should succeed");
 
     // Verify schema types match StreamingBuilder contract.
     let schema = batch.schema();
@@ -562,7 +562,7 @@ fn streaming_builder_group_by_and_order_by() {
         b.end_row();
     }
 
-    let batch = b.finish_batch();
+    let batch = b.finish_batch().expect("batch build should succeed");
 
     let mut t = SqlTransform::new(
         "SELECT level_str, COUNT(*) AS cnt \

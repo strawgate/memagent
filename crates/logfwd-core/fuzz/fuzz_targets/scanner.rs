@@ -28,7 +28,9 @@ fuzz_target!(|data: &[u8]| {
         validate_utf8: false,
     };
     let mut scanner = SimdScanner::new(config);
-    let batch = scanner.scan(data);
+    let Ok(batch) = scanner.scan(data) else {
+        return;
+    };
     validate_batch(&batch, "extract_all");
 
     // Field pushdown mode.
@@ -48,6 +50,8 @@ fuzz_target!(|data: &[u8]| {
         validate_utf8: false,
     };
     let mut scanner2 = SimdScanner::new(config2);
-    let batch2 = scanner2.scan(data);
+    let Ok(batch2) = scanner2.scan(data) else {
+        return;
+    };
     validate_batch(&batch2, "pushdown");
 });

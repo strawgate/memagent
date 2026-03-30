@@ -167,7 +167,12 @@ impl Pipeline {
                 if !combined.is_empty() {
                     // Scan stage.
                     let t0 = Instant::now();
-                    let batch = self.scanner.scan(combined.into());
+                    let batch = match self.scanner.scan(combined.into()) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            return Err(io::Error::other(format!("scan error: {e}")));
+                        }
+                    };
                     let scan_elapsed = t0.elapsed();
 
                     if batch.num_rows() > 0 {

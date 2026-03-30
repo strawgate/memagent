@@ -433,12 +433,12 @@ fn run_blackhole(addr: &str) -> io::Result<()> {
                 stats_lines.load(Ordering::Relaxed),
                 stats_bytes.load(Ordering::Relaxed),
             );
+            let header =
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                    .map_err(|()| io::Error::other("invalid HTTP header"))?;
             let resp = tiny_http::Response::from_string(body)
                 .with_status_code(200)
-                .with_header(
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-                        .unwrap(),
-                );
+                .with_header(header);
             let _ = request.respond(resp);
             continue;
         }
@@ -455,12 +455,12 @@ fn run_blackhole(addr: &str) -> io::Result<()> {
         let is_bulk = request.url().contains("/_bulk");
         let resp_body = if is_bulk { es_bulk_response } else { "{}" };
 
+        let header =
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                .map_err(|()| io::Error::other("invalid HTTP header"))?;
         let resp = tiny_http::Response::from_string(resp_body)
             .with_status_code(200)
-            .with_header(
-                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-                    .unwrap(),
-            );
+            .with_header(header);
         let _ = request.respond(resp);
     }
 

@@ -107,7 +107,7 @@ fn bench_scanner(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("scan_all_fields", n), &data, |b, data| {
             b.iter(|| {
                 let mut scanner = Scanner::new(ScanConfig::default());
-                scanner.scan(data)
+                scanner.scan(data).expect("bench: scan should not fail")
             })
         });
 
@@ -134,7 +134,7 @@ fn bench_scanner(c: &mut Criterion) {
                     validate_utf8: false,
                 };
                 let mut scanner = Scanner::new(config);
-                scanner.scan(data)
+                scanner.scan(data).expect("bench: scan should not fail")
             })
         });
     }
@@ -210,9 +210,7 @@ fn bench_transform(c: &mut Criterion) {
     let n = 10_000;
     let data = gen_json_lines(n);
     let mut scanner = Scanner::new(ScanConfig::default());
-    let batch = scanner.scan(&data);
-
-    // Passthrough: SELECT *
+    let batch = scanner.scan(&data).expect("bench: scan should not fail");
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("select_star", |b| {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
@@ -290,7 +288,7 @@ fn bench_output(c: &mut Criterion) {
     let n = 10_000;
     let data = gen_json_lines(n);
     let mut scanner = Scanner::new(ScanConfig::default());
-    let batch = scanner.scan(&data);
+    let batch = scanner.scan(&data).expect("bench: scan should not fail");
     let meta = make_metadata();
 
     // NullSink (measures overhead of scan + batch creation only)
@@ -322,7 +320,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         let mut sink = NullSink;
         b.iter(|| {
             let mut scanner = Scanner::new(ScanConfig::default());
-            let batch = scanner.scan(&data);
+            let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
         })
@@ -335,7 +333,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         let mut sink = NullSink;
         b.iter(|| {
             let mut scanner = Scanner::new(ScanConfig::default());
-            let batch = scanner.scan(&data);
+            let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
         })
@@ -351,7 +349,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         let mut sink = NullSink;
         b.iter(|| {
             let mut scanner = Scanner::new(ScanConfig::default());
-            let batch = scanner.scan(&data);
+            let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
         })

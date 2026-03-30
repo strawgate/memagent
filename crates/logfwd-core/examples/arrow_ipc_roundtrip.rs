@@ -108,7 +108,7 @@ fn generate_batch(num_rows: usize) -> RecordBatch {
         builder.end_row();
     }
 
-    builder.finish_batch()
+    builder.finish_batch().expect("example: batch build failed")
 }
 
 // ---------------------------------------------------------------------------

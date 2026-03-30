@@ -185,7 +185,7 @@ impl K8sPathTable {
         });
 
         let batch = build_k8s_batch(&entries);
-        *self.data.write().expect("k8s table lock poisoned") = Some(batch);
+        *self.data.write().unwrap_or_else(|e| e.into_inner()) = Some(batch);
     }
 }
 
@@ -195,7 +195,7 @@ impl EnrichmentTable for K8sPathTable {
     }
 
     fn snapshot(&self) -> Option<RecordBatch> {
-        self.data.read().expect("k8s table lock poisoned").clone()
+        self.data.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -314,7 +314,7 @@ impl CsvFileTable {
     pub fn load_from_reader<R: io::Read>(&self, reader: R) -> Result<usize, String> {
         let batch = read_csv_to_batch(reader)?;
         let num_rows = batch.num_rows();
-        *self.data.write().expect("csv table lock poisoned") = Some(batch);
+        *self.data.write().unwrap_or_else(|e| e.into_inner()) = Some(batch);
         Ok(num_rows)
     }
 
@@ -336,7 +336,7 @@ impl EnrichmentTable for CsvFileTable {
     }
 
     fn snapshot(&self) -> Option<RecordBatch> {
-        self.data.read().expect("csv table lock poisoned").clone()
+        self.data.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -427,7 +427,7 @@ impl JsonLinesFileTable {
     pub fn load_from_reader<R: io::BufRead>(&self, reader: R) -> Result<usize, String> {
         let batch = read_jsonl_to_batch(reader)?;
         let num_rows = batch.num_rows();
-        *self.data.write().expect("jsonl table lock poisoned") = Some(batch);
+        *self.data.write().unwrap_or_else(|e| e.into_inner()) = Some(batch);
         Ok(num_rows)
     }
 
@@ -445,7 +445,7 @@ impl EnrichmentTable for JsonLinesFileTable {
     }
 
     fn snapshot(&self) -> Option<RecordBatch> {
-        self.data.read().expect("jsonl table lock poisoned").clone()
+        self.data.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 

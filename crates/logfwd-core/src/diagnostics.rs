@@ -303,12 +303,12 @@ impl DiagnosticsServer {
             // Prometheus /metrics removed — use OTLP metrics push instead.
             // The /api/pipelines endpoint provides the same data as JSON.
             _ => {
+                let header =
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..])
+                        .map_err(|()| io::Error::other("invalid HTTP header"))?;
                 let resp = tiny_http::Response::from_string("not found")
                     .with_status_code(404)
-                    .with_header(
-                        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..])
-                            .unwrap(),
-                    );
+                    .with_header(header);
                 request.respond(resp)?;
                 Ok(())
             }
@@ -321,10 +321,12 @@ impl DiagnosticsServer {
         &self,
         request: tiny_http::Request,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let resp = tiny_http::Response::from_string(DASHBOARD_HTML).with_header(
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
-                .unwrap(),
-        );
+        let header = tiny_http::Header::from_bytes(
+            &b"Content-Type"[..],
+            &b"text/html; charset=utf-8"[..],
+        )
+        .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        let resp = tiny_http::Response::from_string(DASHBOARD_HTML).with_header(header);
         request.respond(resp)?;
         Ok(())
     }
@@ -335,9 +337,10 @@ impl DiagnosticsServer {
             r#"{{"status":"ok","uptime_seconds":{},"version":"{}"}}"#,
             uptime, VERSION,
         );
-        let resp = tiny_http::Response::from_string(body).with_header(
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
-        );
+        let header =
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        let resp = tiny_http::Response::from_string(body).with_header(header);
         request.respond(resp)?;
         Ok(())
     }
@@ -426,9 +429,10 @@ impl DiagnosticsServer {
             VERSION,
         );
 
-        let resp = tiny_http::Response::from_string(body).with_header(
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
-        );
+        let header =
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        let resp = tiny_http::Response::from_string(body).with_header(header);
         request.respond(resp)?;
         Ok(())
     }

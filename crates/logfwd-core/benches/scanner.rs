@@ -268,7 +268,7 @@ fn sonic_rs_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
         }
         builder.end_row();
     }
-    builder.finish_batch()
+    builder.finish_batch().expect("bench: batch build failed")
 }
 
 // ===========================================================================
@@ -284,7 +284,7 @@ macro_rules! bench_scenario {
 
             group.bench_function("SIMD scanner", |b| {
                 let mut scanner = SimdScanner::new($config());
-                b.iter(|| black_box(scanner.scan(black_box(&data))))
+                b.iter(|| black_box(scanner.scan(black_box(&data)).expect("bench: scan should not fail")))
             });
 
             group.bench_function("sonic-rs DOM", |b| {
