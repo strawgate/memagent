@@ -229,22 +229,43 @@ impl FileTailer {
                 Err(_) => continue,
             };
 
-            if let Some(tailed) = self.files.get(path) {
-                // File exists and we're already tailing it.
-                if tailed.identity != current_identity {
-                    // Identity changed — file was rotated or replaced.
-                    // Check if it's inode reuse with different content (fingerprint mismatch)
-                    // or a genuine rotation.
-                    events.push(TailEvent::Rotated { path: path.clone() });
+            // Check for rotation or new file — borrow released before any mutation.
+            let is_rotated = self
+                .files
+                .get(path)
+                .map(|tailed| tailed.identity != current_identity)
+                .unwrap_or(false);
+            let is_new = !self.files.contains_key(path);
 
-                    // Re-open from the beginning.
-                    let _ = self.files.remove(path);
-                    let saved_start_from_end = self.config.start_from_end;
-                    self.config.start_from_end = false; // read new file from beginning
-                    let _ = self.open_file(path);
-                    self.config.start_from_end = saved_start_from_end;
+            if is_rotated {
+                // Drain any bytes written to the old fd after the last read but
+                // before the rename.  The kernel keeps the old inode alive while
+                // our File handle is open, so these bytes are still readable.
+                match self.read_new_data(path) {
+                    Ok(Some(data)) => {
+                        events.push(TailEvent::Data {
+                            path: path.clone(),
+                            bytes: data,
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        eprintln!(
+                            "warn: error draining rotated file {}: {e}",
+                            path.display()
+                        );
+                    }
                 }
-            } else {
+
+                // Now that the old fd is fully drained, emit the rotation event
+                // and switch to the new file.
+                events.push(TailEvent::Rotated { path: path.clone() });
+                let _ = self.files.remove(path);
+                let saved_start_from_end = self.config.start_from_end;
+                self.config.start_from_end = false; // read new file from beginning
+                let _ = self.open_file(path);
+                self.config.start_from_end = saved_start_from_end;
+            } else if is_new {
                 // New file appeared.
                 let saved = self.config.start_from_end;
                 self.config.start_from_end = false; // new files read from beginning
@@ -510,6 +531,89 @@ mod tests {
         assert!(
             new_str.contains("after rotation"),
             "should read new file content, got: {new_str}"
+        );
+    }
+
+    /// Regression test: bytes appended to the old file after the last poll but
+    /// before the rename must not be lost.
+    #[test]
+    fn test_tail_rotation_drains_old_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("drain.log");
+        let rotated_path = dir.path().join("drain.log.1");
+
+        // Write initial data.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "initial line").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(&[log_path.clone()], config).unwrap();
+
+        // First poll — drain initial data.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+
+        // Append lines to the OLD file WITHOUT polling first.
+        // These are the bytes that would be lost without the drain-on-rotation fix.
+        {
+            let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
+            writeln!(f, "pre-rotation line 1").unwrap();
+            writeln!(f, "pre-rotation line 2").unwrap();
+        }
+
+        // Rotate: rename old file, create new one.
+        fs::rename(&log_path, &rotated_path).unwrap();
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "post-rotation line").unwrap();
+        }
+
+        // This poll must detect rotation AND deliver the pre-rotation bytes.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+
+        let has_rotation = events
+            .iter()
+            .any(|e| matches!(e, TailEvent::Rotated { .. }));
+        assert!(has_rotation, "should detect rotation");
+
+        let all_data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        let s = String::from_utf8_lossy(&all_data);
+        assert!(
+            s.contains("pre-rotation line 1"),
+            "pre-rotation bytes must not be lost, got: {s}"
+        );
+        assert!(
+            s.contains("pre-rotation line 2"),
+            "pre-rotation bytes must not be lost, got: {s}"
+        );
+
+        // Data event with pre-rotation bytes must come BEFORE the Rotated event.
+        let first_data_pos = events
+            .iter()
+            .position(|e| matches!(e, TailEvent::Data { .. }))
+            .expect("should have a Data event");
+        let rotated_pos = events
+            .iter()
+            .position(|e| matches!(e, TailEvent::Rotated { .. }))
+            .expect("should have a Rotated event");
+        assert!(
+            first_data_pos < rotated_pos,
+            "Data event must precede Rotated event"
         );
     }
 
