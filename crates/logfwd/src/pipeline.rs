@@ -406,18 +406,19 @@ impl Pipeline {
             }
         }
 
-        // Wait for input threads to finish. They flush remaining data
-        // through tx before exiting. We must join them *before* draining
-        // rx so their final sends succeed (rx is still open).
+        // Drain channel messages before joining input threads.
+        // This prevents deadlock during shutdown if a producer is blocked in
+        // `blocking_send` while the bounded channel is full.
+        while let Some(data) = rx.recv().await {
+            json_buf.extend_from_slice(&data);
+        }
+
+        // All sender clones have now been dropped, so input threads can be
+        // joined without risking a channel backpressure deadlock.
         for h in input_handles {
             if let Err(e) = h.join() {
                 eprintln!("pipeline: input thread panicked: {e:?}");
             }
-        }
-        // All tx clones are now dropped, so rx.recv() returns None after
-        // the remaining buffered messages are consumed.
-        while let Some(data) = rx.recv().await {
-            json_buf.extend_from_slice(&data);
         }
 
         // Flush any remaining buffered data.
