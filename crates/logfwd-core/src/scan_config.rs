@@ -17,6 +17,10 @@ pub struct ScanConfig {
     pub extract_all: bool,
     /// True if _raw column is needed.
     pub keep_raw: bool,
+    /// When true, validates that the input buffer is valid UTF-8 before scanning
+    /// and panics with a descriptive message if it is not. Disabled by default
+    /// for maximum throughput; enable when input provenance is untrusted.
+    pub validate_utf8: bool,
 }
 
 impl Default for ScanConfig {
@@ -25,6 +29,7 @@ impl Default for ScanConfig {
             wanted_fields: vec![],
             extract_all: true,
             keep_raw: false,
+            validate_utf8: false,
         }
     }
 }

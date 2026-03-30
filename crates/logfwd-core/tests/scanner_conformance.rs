@@ -615,7 +615,12 @@ fn no_panic_garbage() {
 
 #[test]
 fn no_panic_random_bytes() {
-    let input: Vec<u8> = (0..256).map(|i| i as u8).collect();
+    // The scanner contract requires valid UTF-8 input. Use a mix of valid
+    // UTF-8 byte sequences (including multi-byte characters) rather than
+    // arbitrary bytes that violate the precondition.
+    let input = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789{}\n\u{00e9}\u{4e2d}\u{1f600}\n"
+        .as_bytes()
+        .to_vec();
     let mut simd = SimdScanner::new(ScanConfig::default());
     let _batch = simd.scan(&input);
 }

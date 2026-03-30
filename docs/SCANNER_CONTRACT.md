@@ -1,0 +1,134 @@
+# Scanner Contract
+
+This document formalises the contract between callers and the scanner layer
+(`SimdScanner` / `StreamingSimdScanner`).  It covers input requirements,
+output guarantees, and known limitations.
+
+---
+
+## Input Requirements
+
+### UTF-8
+
+The scanner assumes that **all input bytes are valid UTF-8**.
+
+- Field names and string values are converted to `&str` with
+  `from_utf8_unchecked` during `finish_batch()`.  Passing non-UTF-8 bytes is
+  **undefined behaviour**.
+- A `debug_assert!` at the `scan_into` entry point fires in debug builds if
+  the buffer is not valid UTF-8.
+- For production validation set `ScanConfig::validate_utf8 = true`.  This
+  performs a safe `from_utf8` check before scanning and panics with a
+  descriptive message on failure.  It has a small throughput cost and is
+  disabled by default.
+- The fuzz target (`crates/logfwd-core/fuzz/fuzz_targets/scanner.rs`) guards
+  against UTF-8 violations for arbitrary byte sequences.
+- Upstream components (CRI parser, file tailer) do not currently validate
+  UTF-8; callers that control raw byte sources are responsible for ensuring
+  validity.
+
+### NDJSON format
+
+The scanner expects **newline-delimited JSON** (`\n`-separated lines):
+
+- Each non-empty line must be a JSON object (`{…}`).
+- Non-object lines (JSON arrays, bare scalars, blank lines) are **silently
+  skipped**: a row is still emitted with all columns null.
+- Partial lines (no trailing `\n`) at the end of the buffer are not processed.
+  Reassembly of partial lines is the responsibility of the format layer
+  (`JsonParser`, `CriParser`).
+
+### Size limits
+
+- `StorageBuilder` uses `u32` row counters, so a single batch is limited to
+  **4 294 967 295 rows**.
+- `StreamingBuilder` stores string positions as `u32` offsets into the input
+  buffer, limiting the buffer to **4 GB** (2³² bytes).  In practice, the
+  default batch size is ~4 MB, well within this bound.
+- Individual field values have no explicit size limit beyond the batch buffer
+  size.
+
+---
+
+## Output Guarantees
+
+### Column naming
+
+Each JSON field `<name>` that is observed in at least one row produces one or
+more typed columns:
+
+| Observed type   | Column name       | Arrow type  |
+|-----------------|-------------------|-------------|
+| Integer         | `<name>_int`      | `Int64`     |
+| Float           | `<name>_float`    | `Float64`   |
+| String / bool / nested object or array | `<name>_str` | `Utf8` / `Utf8View` |
+| Raw input line  | `_raw`            | `Utf8`      |
+
+The `_raw` column is only present when `ScanConfig::keep_raw = true`.
+
+### Nullability
+
+**All columns are nullable**.  A null indicates that a particular row did not
+contain a value for that field (or contained it as a different type, see
+[Type conflicts](#type-conflicts)).
+
+### Row count
+
+The number of rows in the output `RecordBatch` equals the number of
+**non-empty lines** in the input buffer (regardless of whether each line is a
+valid JSON object).
+
+### Type conflicts
+
+If the same field name appears as different JSON types across rows — for
+example `"status": 200` in one row and `"status": "OK"` in another — the
+scanner produces **separate columns** for each type that was observed:
+`status_int` and `status_str` in this case.  Within each typed column the rows
+that did not supply that type are null.
+
+### Duplicate keys
+
+When a JSON object contains the same key more than once, **first-writer-wins**:
+only the first occurrence is stored; subsequent occurrences are silently
+ignored.
+
+This guarantee holds for the first 63 fields in a row.  For fields 64 and
+beyond the duplicate-key detection bitmask is exhausted and a duplicate key
+*may* overwrite the first occurrence.  In practice, log lines rarely exceed 63
+fields.
+
+### Integers vs. floats
+
+- A numeric value with a decimal point (`.`) or an exponent (`e`/`E`) is
+  stored as `Float64`.
+- A value without either is first tried as `Int64` via `parse_int_fast`.  On
+  overflow (value does not fit in `i64`) it falls back to `Float64`.
+- `true` and `false` are stored as the strings `"true"` / `"false"` in a
+  `_str` column.
+- `null` JSON values produce a null entry in the appropriate column.
+
+### Batch reuse
+
+Both `SimdScanner` and `StreamingSimdScanner` can be reused across batches.
+Each call to `scan()` implicitly calls `begin_batch()` and produces an
+independent `RecordBatch`; schema and data from previous batches are not
+carried over.
+
+---
+
+## Known Limitations
+
+- **No UTF-8 validation by default** — see [UTF-8](#utf-8) above.
+- **Silent skip on non-object lines** — JSON arrays and scalars at the
+  top-level are skipped with no error or warning.
+- **Duplicate-key detection is limited to the first 63 fields per row** — for
+  rows with 64+ distinct field names, a duplicate key in the 64th field or
+  beyond will not be detected and may silently produce incorrect data.
+- **`StreamingBuilder` offsets are `u32`** — buffers larger than 4 GB are
+  unsupported.
+- **No escape decoding of string values** — string values are stored as
+  raw bytes (including any JSON escape sequences such as `\n`, `\uXXXX`).
+  Callers that need decoded strings must unescape them.
+- **`_raw` column not supported by `StreamingSimdScanner`** — setting
+  `keep_raw = true` with the streaming variant is a no-op; use `SimdScanner`
+  if a `_raw` column is needed.

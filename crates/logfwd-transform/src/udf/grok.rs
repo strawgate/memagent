@@ -23,7 +23,6 @@
 //! URI, TIMESTAMP_ISO8601, DATE, TIME, LOGLEVEL, HOSTNAME, EMAILADDRESS.
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use arrow::array::{Array, ArrayRef, AsArray, StringBuilder, StructArray};
@@ -34,151 +33,36 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
-use regex::Regex;
-
 // ---------------------------------------------------------------------------
-// Built-in grok patterns
+// Grok pattern compilation (via grok crate)
 // ---------------------------------------------------------------------------
 
-/// Core grok patterns. These mirror the Logstash/Elastic defaults.
-fn builtin_patterns() -> HashMap<&'static str, &'static str> {
-    let mut m = HashMap::new();
-
-    // Network
-    m.insert("IPV4", r"\b(?:\d{1,3}\.){3}\d{1,3}\b");
-    m.insert(
-        "IPV6",
-        r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,7}:|:(?::[0-9a-fA-F]{1,4}){1,7}\b",
-    );
-    m.insert(
-        "IP",
-        r"(?:\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b)",
-    );
-    m.insert("MAC", r"\b[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}\b");
-    m.insert("HOSTNAME", r"\b[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\b");
-
-    // Numbers
-    m.insert("INT", r"[+-]?\d+");
-    m.insert("NUMBER", r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?");
-    m.insert("BASE10NUM", r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?");
-    m.insert("BASE16NUM", r"0[xX][0-9a-fA-F]+");
-
-    // Text
-    m.insert("WORD", r"\b\w+\b");
-    m.insert("NOTSPACE", r"\S+");
-    m.insert("SPACE", r"\s+");
-    m.insert("DATA", r".*?");
-    m.insert("GREEDYDATA", r".*");
-    m.insert("QUOTEDSTRING", r#""(?:[^"\\]|\\.)*""#);
-
-    // URIs
-    m.insert("URIPATH", r"/[^\s?#]*");
-    m.insert("URIPATHPARAM", r"/[^\s]*");
-    m.insert("URI", r"\S+://\S+");
-
-    // Identifiers
-    m.insert(
-        "UUID",
-        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-    );
-    m.insert(
-        "EMAILADDRESS",
-        r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b",
-    );
-
-    // Timestamps
-    m.insert(
-        "TIMESTAMP_ISO8601",
-        r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?",
-    );
-    m.insert("DATE", r"\d{4}-\d{2}-\d{2}");
-    m.insert("TIME", r"\d{2}:\d{2}:\d{2}(?:\.\d+)?");
-
-    // Logging
-    m.insert(
-        "LOGLEVEL",
-        r"\b(?:TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL|CRITICAL)\b",
-    );
-    m.insert(
-        "HTTPMETHOD",
-        r"\b(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE)\b",
-    );
-    m.insert("STATUSCODE", r"\b[1-5]\d{2}\b");
-
-    m
-}
-
-// ---------------------------------------------------------------------------
-// Grok pattern compiler
-// ---------------------------------------------------------------------------
-
-/// A compiled grok pattern: the regex and the ordered list of capture group names.
+/// A compiled grok pattern: the grok Pattern for matching + ordered field names
+/// for Arrow schema construction.
 #[derive(Debug)]
 struct CompiledGrok {
-    regex: Regex,
+    pattern: grok::Pattern,
     field_names: Vec<String>,
 }
 
-/// Expand `%{PATTERN:name}` and `%{PATTERN}` references into a regex with
-/// named capture groups. Returns the compiled regex and the list of field names.
+/// Compile a grok pattern using the `grok` crate's built-in pattern library.
 fn compile_grok(pattern: &str) -> Result<CompiledGrok, String> {
-    let patterns = builtin_patterns();
-    let mut regex_str = String::with_capacity(pattern.len() * 2);
-    let mut field_names = Vec::new();
-    let mut chars = pattern.chars().peekable();
+    // alias_only=true: only include user-named captures (%{PATTERN:name}) in match
+    // results, not internal pattern group names. Matches VRL/Tremor usage.
+    let grok = grok::Grok::with_default_patterns();
+    let compiled = grok
+        .compile(pattern, true)
+        .map_err(|e| format!("grok pattern compilation failed: {e}"))?;
 
-    while let Some(c) = chars.next() {
-        if c == '%' && chars.peek() == Some(&'{') {
-            chars.next(); // consume '{'
-            let mut token = String::new();
-            for ch in chars.by_ref() {
-                if ch == '}' {
-                    break;
-                }
-                token.push(ch);
-            }
-            // Parse PATTERN:name or just PATTERN
-            let (pat_name, capture_name) = if let Some(colon_pos) = token.find(':') {
-                (&token[..colon_pos], Some(&token[colon_pos + 1..]))
-            } else {
-                (token.as_str(), None)
-            };
+    // Derive field names from the compiled pattern's capture groups.
+    // With alias_only=true, this returns only user-named captures.
+    // Order is deterministic (alphabetical from BTreeMap internals).
+    let field_names: Vec<String> = compiled.capture_names().map(str::to_owned).collect();
 
-            let pat_regex = patterns
-                .get(pat_name)
-                .ok_or_else(|| format!("unknown grok pattern: {pat_name}"))?;
-
-            if let Some(name) = capture_name {
-                regex_str.push_str(&format!("(?P<{name}>{pat_regex})"));
-                field_names.push(name.to_string());
-            } else {
-                // Unnamed: wrap in non-capturing group
-                regex_str.push_str(&format!("(?:{pat_regex})"));
-            }
-        } else {
-            // Escape regex metacharacters in literal parts
-            match c {
-                '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' => {
-                    regex_str.push('\\');
-                    regex_str.push(c);
-                }
-                '\\' => {
-                    // Pass through escape sequences
-                    regex_str.push('\\');
-                    if let Some(&next) = chars.peek() {
-                        regex_str.push(next);
-                        chars.next();
-                    }
-                }
-                _ => regex_str.push(c),
-            }
-        }
-    }
-
-    let regex = Regex::new(&regex_str)
-        .map_err(|e| format!("grok pattern compiled to invalid regex: {e}"))?;
-
-    Ok(CompiledGrok { regex, field_names })
+    Ok(CompiledGrok {
+        pattern: compiled,
+        field_names,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -314,11 +198,11 @@ impl ScalarUDFImpl for GrokUdf {
                         continue;
                     }
                     let val = str_array.value(row);
-                    match compiled.regex.captures(val) {
-                        Some(caps) => {
+                    match compiled.pattern.match_against(val) {
+                        Some(matches) => {
                             for (i, name) in compiled.field_names.iter().enumerate() {
-                                match caps.name(name) {
-                                    Some(m) => builders[i].append_value(m.as_str()),
+                                match matches.get(name) {
+                                    Some(v) => builders[i].append_value(v),
                                     None => builders[i].append_null(),
                                 }
                             }
@@ -355,46 +239,28 @@ impl ScalarUDFImpl for GrokUdf {
                     .map(|name| Field::new(name, DataType::Utf8, true))
                     .collect();
 
-                match compiled.regex.captures(val) {
-                    Some(caps) => {
-                        let values: Vec<datafusion::common::ScalarValue> = compiled
-                            .field_names
-                            .iter()
-                            .map(|name| match caps.name(name) {
-                                Some(m) => datafusion::common::ScalarValue::Utf8(Some(
-                                    m.as_str().to_string(),
-                                )),
-                                None => datafusion::common::ScalarValue::Utf8(None),
-                            })
-                            .collect();
-                        Ok(ColumnarValue::Scalar(
-                            datafusion::common::ScalarValue::Struct(Arc::new(StructArray::from(
-                                fields
-                                    .into_iter()
-                                    .zip(values)
-                                    .map(|(f, v)| (Arc::new(f), v.to_array().unwrap() as ArrayRef))
-                                    .collect::<Vec<_>>(),
-                            ))),
-                        ))
-                    }
-                    None => {
-                        // Return struct with all NULL fields
-                        let values: Vec<datafusion::common::ScalarValue> = compiled
-                            .field_names
-                            .iter()
-                            .map(|_| datafusion::common::ScalarValue::Utf8(None))
-                            .collect();
-                        Ok(ColumnarValue::Scalar(
-                            datafusion::common::ScalarValue::Struct(Arc::new(StructArray::from(
-                                fields
-                                    .into_iter()
-                                    .zip(values)
-                                    .map(|(f, v)| (Arc::new(f), v.to_array().unwrap() as ArrayRef))
-                                    .collect::<Vec<_>>(),
-                            ))),
-                        ))
-                    }
-                }
+                let matches = compiled.pattern.match_against(val);
+                let values: Vec<datafusion::common::ScalarValue> = compiled
+                    .field_names
+                    .iter()
+                    .map(|name| {
+                        matches
+                            .as_ref()
+                            .and_then(|m| m.get(name))
+                            .map(|v| datafusion::common::ScalarValue::Utf8(Some(v.to_string())))
+                            .unwrap_or(datafusion::common::ScalarValue::Utf8(None))
+                    })
+                    .collect();
+
+                Ok(ColumnarValue::Scalar(
+                    datafusion::common::ScalarValue::Struct(Arc::new(StructArray::from(
+                        fields
+                            .into_iter()
+                            .zip(values)
+                            .map(|(f, v)| (Arc::new(f), v.to_array().unwrap() as ArrayRef))
+                            .collect::<Vec<_>>(),
+                    ))),
+                ))
             }
         }
     }
@@ -440,8 +306,18 @@ mod tests {
     #[test]
     fn test_compile_grok_basic() {
         let compiled = compile_grok("%{WORD:method} %{URIPATH:path} %{NUMBER:status}").unwrap();
+        // capture_names() returns alphabetical order (BTreeMap internals)
         assert_eq!(compiled.field_names, vec!["method", "path", "status"]);
-        assert!(compiled.regex.is_match("GET /api/users 200"));
+        // Verify this is also alphabetical (it happens to match declaration order here)
+        let mut sorted = compiled.field_names.clone();
+        sorted.sort();
+        assert_eq!(compiled.field_names, sorted);
+        assert!(
+            compiled
+                .pattern
+                .match_against("GET /api/users 200")
+                .is_some()
+        );
     }
 
     #[test]
@@ -454,7 +330,6 @@ mod tests {
     fn test_compile_grok_unknown_pattern() {
         let result = compile_grok("%{DOESNOTEXIST:foo}");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown grok pattern"));
     }
 
     #[test]
