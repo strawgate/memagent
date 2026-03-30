@@ -513,6 +513,49 @@ fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String>
 }
 
 // ---------------------------------------------------------------------------
+// Geo-IP database (IP-to-location lookup)
+// ---------------------------------------------------------------------------
+
+/// Result of a geo-IP address lookup.
+///
+/// All fields are optional — not every database contains every field, and
+/// private-range or malformed IPs will produce `None` for all fields.
+#[derive(Debug, Clone, Default)]
+pub struct GeoResult {
+    /// Two-letter ISO 3166-1 country code, e.g. `"US"`.
+    pub country_code: Option<String>,
+    /// Full English country name, e.g. `"United States"`.
+    pub country_name: Option<String>,
+    /// City name, e.g. `"Seattle"`.
+    pub city: Option<String>,
+    /// Region / state / subdivision name, e.g. `"Washington"`.
+    pub region: Option<String>,
+    /// Latitude in decimal degrees.
+    pub latitude: Option<f64>,
+    /// Longitude in decimal degrees.
+    pub longitude: Option<f64>,
+    /// Autonomous System Number.
+    pub asn: Option<i64>,
+    /// Organisation name associated with the ASN.
+    pub org: Option<String>,
+}
+
+/// Pluggable backend for geo-IP lookups.
+///
+/// Implementations wrap a specific database format (MMDB, CSV, IP2Location, …).
+/// The UDF holds an `Arc<dyn GeoDatabase>` so the same reader is shared across
+/// all batch executions without reloading.
+///
+/// Returns `None` for any IP that cannot be resolved — private ranges,
+/// malformed strings, or addresses absent from the database.
+pub trait GeoDatabase: Send + Sync {
+    /// Look up geographic location for an IP address string.
+    ///
+    /// Returns `None` for unresolvable IPs (private ranges, malformed, not in DB).
+    fn lookup(&self, ip: &str) -> Option<GeoResult>;
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use opentelemetry::metrics::Meter;
 
-use logfwd_config::{Format, InputConfig, InputType, PipelineConfig};
+use logfwd_config::{EnrichmentConfig, Format, GeoDatabaseFormat, InputConfig, InputType, PipelineConfig};
 use logfwd_core::diagnostics::{ComponentStats, PipelineMetrics};
 use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_core::input::{FileInput, InputEvent, InputSource};
@@ -56,7 +56,31 @@ impl Pipeline {
     /// Construct a pipeline from parsed YAML config.
     pub fn from_config(name: &str, config: &PipelineConfig, meter: &Meter) -> Result<Self, String> {
         let transform_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
-        let transform = SqlTransform::new(transform_sql)?;
+        let mut transform = SqlTransform::new(transform_sql)?;
+
+        // Wire up enrichment sources.
+        for enrichment in &config.enrichment {
+            match enrichment {
+                EnrichmentConfig::GeoDatabase(geo_cfg) => {
+                    let db: Arc<dyn logfwd_core::enrichment::GeoDatabase> = match geo_cfg.format {
+                        GeoDatabaseFormat::Mmdb => {
+                            let mmdb = logfwd_transform::udf::geo_lookup::MmdbDatabase::open(
+                                &geo_cfg.path,
+                            )
+                            .map_err(|e| {
+                                format!("failed to open geo database '{}': {e}", geo_cfg.path)
+                            })?;
+                            Arc::new(mmdb)
+                        }
+                    };
+                    if geo_cfg.refresh_interval.is_some() {
+                        eprintln!("warn: geo_database refresh_interval is not yet implemented, database will not auto-reload");
+                    }
+                    transform.set_geo_database(db);
+                }
+            }
+        }
+
         let scan_config = transform.scan_config();
         let scanner = Scanner::new(scan_config);
 

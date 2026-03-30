@@ -2,8 +2,10 @@
 //!
 //! These are registered in `SqlTransform::execute()` and available in user SQL.
 
+pub mod geo_lookup;
 pub mod grok;
 pub mod regexp_extract;
 
+pub use geo_lookup::GeoLookupUdf;
 pub use grok::GrokUdf;
 pub use regexp_extract::RegexpExtractUdf;

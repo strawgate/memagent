@@ -143,6 +143,52 @@ pub struct OutputConfig {
 // Pipeline
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Enrichment
+// ---------------------------------------------------------------------------
+
+/// Supported geo-IP database formats.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeoDatabaseFormat {
+    /// MaxMind MMDB format (GeoLite2-City, GeoIP2-City, DB-IP MMDB).
+    Mmdb,
+}
+
+/// Configuration for a geo-IP database used by the `geo_lookup()` UDF.
+///
+/// ```yaml
+/// enrichment:
+///   - type: geo_database
+///     format: mmdb
+///     path: /etc/logfwd/GeoLite2-City.mmdb
+///     refresh_interval: 86400
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct GeoDatabaseConfig {
+    /// Database format.
+    pub format: GeoDatabaseFormat,
+    /// Path to the database file.
+    pub path: String,
+    /// How often to reload the database file, in seconds. Optional.
+    // TODO: not yet implemented — currently ignored at runtime
+    pub refresh_interval: Option<u64>,
+}
+
+/// Enrichment configuration entry.
+///
+/// Each entry in the `enrichment` list specifies one enrichment source.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EnrichmentConfig {
+    /// Geo-IP lookup database for the `geo_lookup()` UDF.
+    GeoDatabase(GeoDatabaseConfig),
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline
+// ---------------------------------------------------------------------------
+
 /// One logical pipeline (inputs -> SQL transform -> outputs).
 #[derive(Debug, Clone, Deserialize)]
 pub struct PipelineConfig {
@@ -151,6 +197,9 @@ pub struct PipelineConfig {
     pub transform: Option<String>,
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
     pub outputs: Vec<OutputConfig>,
+    /// Enrichment sources (e.g. geo-IP databases).
+    #[serde(default)]
+    pub enrichment: Vec<EnrichmentConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +276,7 @@ impl Config {
                     inputs: vec![input],
                     transform: raw.transform,
                     outputs: vec![output],
+                    enrichment: Vec::new(),
                 };
                 let mut map = HashMap::new();
                 map.insert("default".to_string(), pipeline);
