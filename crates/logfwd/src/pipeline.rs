@@ -352,10 +352,9 @@ impl Pipeline {
     /// output sending across different batches.
     ///
     /// Known limitations (acceptable for migration period):
-    /// - Scanner runs inline on the async runtime (~1-5ms per 4MB batch).
-    ///   Should move to spawn_blocking when scanner is made Send.
-    /// - block_in_place on output blocks the tokio worker, preventing
-    ///   flush_interval from firing during slow HTTP sends. Goes away
+    /// - Scanner and output use block_in_place, which tells tokio to
+    ///   temporarily move other tasks off this worker thread. During slow
+    ///   HTTP sends, flush_interval can't fire on this worker. Goes away
     ///   when ureq is replaced with an async HTTP client.
     /// - self.inputs.drain(..) makes this method non-reentrant.
     pub async fn run_async(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
@@ -445,9 +444,10 @@ impl Pipeline {
             return;
         }
 
-        // Scan (fast, inline — 1-5ms per 4MB batch).
+        // Scan (CPU-bound, ~1-5ms per 4MB batch). block_in_place tells
+        // tokio to move other tasks off this worker while scanning.
         let t0 = Instant::now();
-        let batch = match self.scanner.scan(combined.into()) {
+        let batch = match tokio::task::block_in_place(|| self.scanner.scan(combined.into())) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("pipeline: scan error (batch dropped): {e}");

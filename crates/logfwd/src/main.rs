@@ -334,9 +334,7 @@ async fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
     for mut pipeline in pipelines {
         let sd = shutdown.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = pipeline.run_async(&sd).await {
-                eprintln!("pipeline error: {e}");
-            }
+            pipeline.run_async(&sd).await
         }));
     }
 
@@ -344,13 +342,41 @@ async fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
         let result = main_pipe.run_async(&shutdown).await;
         // Always cancel + join siblings, even if main pipeline errored.
         shutdown.cancel();
+        let mut had_sibling_error = false;
         for h in handles {
-            let _ = h.await;
+            match h.await {
+                Ok(Err(e)) => {
+                    eprintln!("pipeline error: {e}");
+                    had_sibling_error = true;
+                }
+                Err(e) => {
+                    eprintln!("pipeline task panicked: {e}");
+                    had_sibling_error = true;
+                }
+                Ok(Ok(())) => {}
+            }
         }
         result?;
+        if had_sibling_error {
+            return Err(io::Error::other("one or more sibling pipelines failed"));
+        }
     } else {
+        let mut had_error = false;
         for h in handles {
-            let _ = h.await;
+            match h.await {
+                Ok(Err(e)) => {
+                    eprintln!("pipeline error: {e}");
+                    had_error = true;
+                }
+                Err(e) => {
+                    eprintln!("pipeline task panicked: {e}");
+                    had_error = true;
+                }
+                Ok(Ok(())) => {}
+            }
+        }
+        if had_error {
+            return Err(io::Error::other("one or more pipelines failed"));
         }
     }
 
