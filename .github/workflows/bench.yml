@@ -48,7 +48,7 @@ jobs:
       # ---------------------------------------------------------------
 
       - name: Install LLVM tools for PGO
-        run: sudo apt-get install -y -qq llvm
+        run: rustup component add llvm-tools
 
       - name: Build logfwd with PGO instrumentation
         env:
@@ -59,19 +59,29 @@ jobs:
         run: >
           just bench-competitive
           --lines 1000000
-          --mode binary --cpus 1 --memory 1g
-          --scenarios passthrough,json_parse,filter
+          --mode binary
+          --scenarios passthrough
         env:
           LOGFWD: ./target/release/logfwd
 
       - name: Merge PGO profile data
-        run: llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw
+        run: |
+          # Use the llvm-profdata that matches rustc's LLVM version.
+          PROFDATA=$(find "$(rustc --print sysroot)" -name llvm-profdata -type f | head -1)
+          if [ -z "$PROFDATA" ]; then
+            echo "warning: llvm-profdata not found, skipping PGO"
+            cp target/release/logfwd target/release/logfwd-pgo
+            exit 0
+          fi
+          "$PROFDATA" merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw
 
       - name: Rebuild logfwd with PGO profile applied
         env:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Cprofile-use=/tmp/pgo-data/merged.profdata"
         run: |
-          cargo build --release -p logfwd
+          if [ -f /tmp/pgo-data/merged.profdata ]; then
+            cargo build --release -p logfwd
+          fi
           cp target/release/logfwd target/release/logfwd-pgo
 
       # ---------------------------------------------------------------
