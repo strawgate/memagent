@@ -314,6 +314,7 @@ mod tests {
             compression: None,
             format: Some(Format::Json),
             path: None,
+            auth: None,
         };
         let sink = build_output_sink("test", &cfg).unwrap();
         assert_eq!(sink.name(), "test");
@@ -329,6 +330,7 @@ mod tests {
             compression: Some("zstd".to_string()),
             format: None,
             path: None,
+            auth: None,
         };
         let sink = build_output_sink("otel", &cfg).unwrap();
         assert_eq!(sink.name(), "otel");
@@ -344,6 +346,7 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            auth: None,
         };
         let sink = build_output_sink("es", &cfg).unwrap();
         assert_eq!(sink.name(), "es");
@@ -359,6 +362,7 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            auth: None,
         };
         let result = build_output_sink("bad", &cfg);
         assert!(result.is_err());
@@ -533,13 +537,7 @@ output:
         );
 
         // At least one transform error must have been counted.
-        let errors = pipeline
-            .metrics
-            .transform_errors
-            .load(Ordering::Relaxed);
-        assert!(
-            errors > 0,
-            "expected transform_errors > 0, got {errors}"
-        );
+        let errors = pipeline.metrics.transform_errors.load(Ordering::Relaxed);
+        assert!(errors > 0, "expected transform_errors > 0, got {errors}");
     }
 }
