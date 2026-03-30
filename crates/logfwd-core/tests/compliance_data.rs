@@ -38,7 +38,8 @@ fn scan_storage_raw(input: &[u8]) -> RecordBatch {
         ..ScanConfig::default()
     };
     let mut s = SimdScanner::new(config);
-    s.scan(input).expect("StorageBuilder scan (keep_raw) failed")
+    s.scan(input)
+        .expect("StorageBuilder scan (keep_raw) failed")
 }
 
 /// Extract a string column value from a RecordBatch.
@@ -127,10 +128,7 @@ where
         .collect();
     s_names.sort();
     st_names.sort();
-    assert_eq!(
-        s_names, st_names,
-        "Column name mismatch between builders"
-    );
+    assert_eq!(s_names, st_names, "Column name mismatch between builders");
 
     check(&sb);
     check(&stb);
@@ -233,10 +231,7 @@ fn compliance_type_conflict() {
 
         // Row 1: status_int=null, status_str="OK"
         assert_null(batch, "status_int", 1);
-        assert_eq!(
-            get_str(batch, "status_str", 1),
-            Some("OK".to_string())
-        );
+        assert_eq!(get_str(batch, "status_str", 1), Some("OK".to_string()));
     });
 }
 
@@ -244,8 +239,8 @@ fn compliance_type_conflict() {
 fn compliance_integer_boundaries() {
     let input = format!(
         "{{\"n\":{}}}\n{{\"n\":{}}}\n{{\"n\":{}}}\n",
-        i64::MAX,  // 9223372036854775807
-        i64::MIN,  // -9223372036854775808
+        i64::MAX,              // 9223372036854775807
+        i64::MIN,              // -9223372036854775808
         "9223372036854775808"  // i64::MAX + 1 -> overflow to float
     );
     assert_both_scanners(input.as_bytes(), |batch| {
@@ -271,7 +266,10 @@ fn compliance_float_precision() {
         assert_eq!(batch.num_rows(), 4);
 
         let v0 = get_float(batch, "f_float", 0).expect("pi");
-        assert!((v0 - std::f64::consts::PI).abs() < 1e-15, "pi mismatch: {v0}");
+        assert!(
+            (v0 - std::f64::consts::PI).abs() < 1e-15,
+            "pi mismatch: {v0}"
+        );
 
         let v1 = get_float(batch, "f_float", 1).expect("1e308");
         assert!((v1 - 1e308).abs() < 1e292, "1e308 mismatch: {v1}");
@@ -433,10 +431,7 @@ fn compliance_non_object_lines() {
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 6);
         // Only the last row should have a non-null value.
-        assert_eq!(
-            get_str(batch, "valid_str", 5),
-            Some("object".to_string())
-        );
+        assert_eq!(get_str(batch, "valid_str", 5), Some("object".to_string()));
         // Rows 0-4 should have null for the valid_str column.
         for row in 0..5 {
             assert_null(batch, "valid_str", row);
@@ -451,10 +446,7 @@ fn compliance_trailing_no_newline() {
     let input = b"{\"a\":\"complete\"}\n{\"b\":\"no newline at end\"}";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(
-            get_str(batch, "a_str", 0),
-            Some("complete".to_string())
-        );
+        assert_eq!(get_str(batch, "a_str", 0), Some("complete".to_string()));
         assert_eq!(
             get_str(batch, "b_str", 1),
             Some("no newline at end".to_string())
@@ -475,10 +467,7 @@ fn compliance_cri_format() {
     // The CRI parser emits the message portion as a line.
     let batch = scan_storage(&json_out);
     assert_eq!(batch.num_rows(), 1);
-    assert_eq!(
-        get_str(&batch, "msg_str", 0),
-        Some("hello".to_string())
-    );
+    assert_eq!(get_str(&batch, "msg_str", 0), Some("hello".to_string()));
 }
 
 #[test]
@@ -490,7 +479,10 @@ fn compliance_cri_partial_lines() {
     let count = parser.process(cri_input, &mut json_out);
 
     // The partial + full should reassemble into one line.
-    assert!(count >= 1, "CRI partial reassembly should emit at least 1 line");
+    assert!(
+        count >= 1,
+        "CRI partial reassembly should emit at least 1 line"
+    );
 
     // The reassembled line contains the combined message.
     let output_str = String::from_utf8_lossy(&json_out);
@@ -593,10 +585,7 @@ fn compliance_numeric_string_not_coerced() {
     let input = b"{\"port\":\"8080\"}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(
-            get_str(batch, "port_str", 0),
-            Some("8080".to_string())
-        );
+        assert_eq!(get_str(batch, "port_str", 0), Some("8080".to_string()));
         // Should NOT appear as an int column.
         assert!(
             batch.column_by_name("port_int").is_none(),
@@ -659,10 +648,7 @@ fn compliance_batch_reuse_isolation() {
     if b2.column_by_name("a_str").is_some() {
         assert_null(&b2, "a_str", 0);
     }
-    assert_eq!(
-        get_str(&b2, "b_str", 0),
-        Some("second".to_string())
-    );
+    assert_eq!(get_str(&b2, "b_str", 0), Some("second".to_string()));
 }
 
 #[test]
