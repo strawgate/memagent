@@ -2,7 +2,7 @@
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-#[cfg(not(feature = "dhat-heap"))]
+#[cfg(all(unix, not(feature = "dhat-heap")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -319,6 +319,7 @@ fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
         for p in &pipelines {
             server.add_pipeline(Arc::clone(p.metrics()));
         }
+        #[cfg(unix)]
         server.set_memory_stats_fn(jemalloc_stats);
         let handle = server.start()?;
         eprintln!("  {}diagnostics{}: http://{addr}", dim(), reset());
@@ -580,6 +581,7 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
 // Allocator memory stats
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 /// Read jemalloc memory stats: resident, allocated, and active bytes.
 ///
 /// Returns `None` if the stats are unavailable (e.g. the epoch refresh fails).

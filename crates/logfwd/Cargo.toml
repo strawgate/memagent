@@ -13,8 +13,6 @@ logfwd-core = { path = "../logfwd-core" }
 logfwd-transform = { path = "../logfwd-transform" }
 logfwd-output = { path = "../logfwd-output" }
 dhat = { version = "0.3", optional = true }
-tikv-jemallocator = { version = "0.6", features = ["stats"] }
-tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 libc = "0.2"
 memchr = "2"
 opentelemetry = { workspace = true }
@@ -23,6 +21,10 @@ opentelemetry-otlp = { workspace = true }
 tiny_http = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
 tokio-util = { version = "0.7" }
+
+[target.'cfg(unix)'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["stats"] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 
 [dev-dependencies]
 arrow = { workspace = true }

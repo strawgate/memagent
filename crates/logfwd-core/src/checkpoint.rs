@@ -124,8 +124,8 @@ impl CheckpointStore for FileCheckpointStore {
         use std::io::Write as _;
 
         let list: Vec<&SourceCheckpoint> = self.checkpoints.values().collect();
-        let json =
-            serde_json::to_vec_pretty(&list).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let json = serde_json::to_vec_pretty(&list)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let tmp = self.tmp_path();
         let final_path = self.checkpoints_path();
@@ -302,7 +302,9 @@ mod tests {
 
         // Simulate crash: "Process 2" opens the store without previous state.
         let store = FileCheckpointStore::open(dir.path()).unwrap();
-        let cp = store.load(42).expect("checkpoint lost after simulated crash");
+        let cp = store
+            .load(42)
+            .expect("checkpoint lost after simulated crash");
         assert_eq!(cp.offset, 8192);
     }
 

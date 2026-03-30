@@ -4,7 +4,7 @@ metadata:
   name: logfwd-config
   namespace: collectors
 data:
-  config.yaml: |
+  pipeline.yaml: |
     pipelines:
       pods:
         inputs:

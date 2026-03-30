@@ -582,9 +582,9 @@ impl SqlTransform {
         ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
         ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
         if let Some(ref db) = self.geo_database {
-            ctx.register_udf(ScalarUDF::from(
-                crate::udf::geo_lookup::GeoLookupUdf::new(Arc::clone(db)),
-            ));
+            ctx.register_udf(ScalarUDF::from(crate::udf::geo_lookup::GeoLookupUdf::new(
+                Arc::clone(db),
+            )));
         }
 
         // Register the batch as a MemTable named "logs".

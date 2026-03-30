@@ -63,6 +63,11 @@ pub struct TailConfig {
     /// How often to re-evaluate glob patterns to discover new files (milliseconds).
     /// Set to 0 to disable periodic glob rescanning.
     pub glob_rescan_interval_ms: u64,
+    /// Maximum number of file descriptors to keep open simultaneously.
+    /// When the limit is exceeded, the least-recently-read files are closed
+    /// until the count is within the limit. Evicted files are re-opened
+    /// automatically on the next poll if they have new data.
+    pub max_open_files: usize,
 }
 
 impl Default for TailConfig {
@@ -73,6 +78,7 @@ impl Default for TailConfig {
             fingerprint_bytes: 1024,
             start_from_end: true,
             glob_rescan_interval_ms: 5000,
+            max_open_files: 1024,
         }
     }
 }
@@ -142,6 +148,10 @@ pub struct FileTailer {
     watcher: notify::RecommendedWatcher,
     /// Directories currently registered with the notify watcher.
     watched_dirs: HashSet<PathBuf>,
+    /// Saved offsets for files evicted from the open-file LRU cache.
+    /// When a file is re-opened after eviction, we seek to the saved offset
+    /// to avoid duplicating or losing data.
+    evicted_offsets: HashMap<PathBuf, u64>,
     /// Channel receiving filesystem events from the watcher.
     fs_events: crossbeam_channel::Receiver<notify::Result<notify::Event>>,
     /// Last time we did a full poll scan.
@@ -186,6 +196,7 @@ impl FileTailer {
             fs_events: rx,
             last_poll: Instant::now(),
             last_glob_rescan: Instant::now(),
+            evicted_offsets: HashMap::new(),
         };
 
         // Open existing files.
@@ -266,11 +277,15 @@ impl FileTailer {
     }
 
     /// Open and start tailing a file. If start_from_end is true, seeks to EOF.
+    /// If the file was previously evicted from the LRU cache, restores the
+    /// saved offset so reads resume where they left off.
     fn open_file(&mut self, path: &Path) -> io::Result<()> {
         let identity = identify_file(path, self.config.fingerprint_bytes)?;
         let mut file = File::open(path)?;
 
-        let offset = if self.config.start_from_end {
+        let offset = if let Some(saved) = self.evicted_offsets.remove(path) {
+            file.seek(SeekFrom::Start(saved))?
+        } else if self.config.start_from_end {
             file.seek(SeekFrom::End(0))?
         } else {
             0
@@ -394,6 +409,57 @@ impl FileTailer {
                 Ok(None) => {} // no new data
                 Err(e) => {
                     eprintln!("warn: error reading {}: {e}", path.display());
+                }
+            }
+        }
+
+        // Remove entries for files that have been unlinked (nlink == 0).
+        // Using nlink instead of !path.exists() avoids data loss: on Unix a
+        // file can be unlinked while the FD is still open, so the path
+        // disappears but unread data remains readable through the FD.
+        let deleted: Vec<PathBuf> = self
+            .files
+            .iter()
+            .filter(|(_, tailed)| {
+                tailed
+                    .file
+                    .metadata()
+                    .map(|m| m.nlink() == 0)
+                    .unwrap_or(true)
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in &deleted {
+            // Drain any remaining data before closing the FD.
+            match self.read_new_data(path) {
+                Ok(Some(data)) => {
+                    events.push(TailEvent::Data {
+                        path: path.clone(),
+                        bytes: data,
+                    });
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("warn: error draining deleted file {}: {e}", path.display());
+                }
+            }
+            self.files.remove(path);
+        }
+
+        // Evict least-recently-read files when over the open-file limit.
+        // Save each evicted file's offset so it can resume from the correct
+        // position when re-opened on a future glob rescan.
+        if self.files.len() > self.config.max_open_files {
+            let mut by_age: Vec<(PathBuf, Instant)> = self
+                .files
+                .iter()
+                .map(|(path, tailed)| (path.clone(), tailed.last_read))
+                .collect();
+            by_age.sort_by_key(|(_, last_read)| *last_read);
+            let to_remove = self.files.len() - self.config.max_open_files;
+            for (path, _) in by_age.into_iter().take(to_remove) {
+                if let Some(evicted) = self.files.remove(&path) {
+                    self.evicted_offsets.insert(path, evicted.offset);
                 }
             }
         }
@@ -936,5 +1002,140 @@ mod tests {
             "watch_paths should not grow after rescan of already-known file"
         );
         assert_eq!(tailer.num_files(), 1, "should still tail exactly one file");
+    }
+
+    /// Verify that when open files exceed `max_open_files`, the least-recently-read
+    /// files are evicted until the count is within the limit.
+    #[test]
+    fn test_eviction_lru() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 10 log files.
+        let mut log_paths = Vec::new();
+        for i in 0..10 {
+            let p = dir.path().join(format!("{i}.log"));
+            {
+                let mut f = File::create(&p).unwrap();
+                writeln!(f, "file {i}").unwrap();
+            }
+            log_paths.push(p);
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 60_000,
+            max_open_files: 5,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // All 10 files discovered at construction — eviction happens during poll.
+        assert_eq!(tailer.num_files(), 10, "all files opened before first poll");
+
+        // Poll — should evict 5 least-recently-read files.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+
+        assert_eq!(
+            tailer.num_files(),
+            5,
+            "should have evicted down to max_open_files=5"
+        );
+    }
+
+    /// Verify that writing to an evicted file causes it to be re-opened on the next
+    /// glob rescan + poll cycle.
+    #[test]
+    fn test_evicted_file_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 3 files; limit to 2 so one will always be evicted.
+        let mut log_paths = Vec::new();
+        for i in 0..3 {
+            let p = dir.path().join(format!("{i}.log"));
+            {
+                let mut f = File::create(&p).unwrap();
+                writeln!(f, "initial {i}").unwrap();
+            }
+            log_paths.push(p);
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 50, // short rescan so the test is fast
+            max_open_files: 2,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // After first poll, eviction brings count to 2.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(tailer.num_files(), 2, "evicted to max_open_files=2");
+
+        // Append data to all files. The evicted file will be re-discovered.
+        for p in &log_paths {
+            let mut f = fs::OpenOptions::new().append(true).open(p).unwrap();
+            writeln!(f, "new data").unwrap();
+        }
+
+        // Wait for glob rescan interval, then poll — evicted file re-opened.
+        std::thread::sleep(Duration::from_millis(150));
+        let events = tailer.poll().unwrap();
+
+        // At least one Data event should arrive (evicted file re-opened + read).
+        let all_data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let s = String::from_utf8_lossy(&all_data);
+        assert!(
+            s.contains("new data"),
+            "should receive data after evicted file is re-opened, got: {s}"
+        );
+    }
+
+    /// Verify that a deleted file is removed from the `files` map on the next poll.
+    #[test]
+    fn test_deleted_file_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("delete_me.log");
+
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "soon gone").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        // Confirm file is being tailed.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(tailer.num_files(), 1, "file should be open before deletion");
+
+        // Delete the file.
+        fs::remove_file(&log_path).unwrap();
+
+        // Next poll must clean up the stale entry.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(
+            tailer.num_files(),
+            0,
+            "deleted file should be removed from the files map"
+        );
     }
 }
