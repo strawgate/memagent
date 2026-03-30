@@ -1,0 +1,27 @@
+{
+  "agents": [
+    "logfwd"
+  ],
+  "commit": "9f3a39116174933a28f5fb6bef967c7c7c0aa352",
+  "date": "2026-03-30T18:22:03Z",
+  "id": "23760306438",
+  "scenario_names": [
+    "passthrough"
+  ],
+  "scenarios": {
+    "passthrough": {
+      "logfwd": {
+        "avg_lps": 500000,
+        "avg_ms": 200,
+        "iterations": 2,
+        "lines_done": 100000,
+        "lps": [
+          500000.0,
+          500000.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 0
+      }
+    }
+  }
+}
