@@ -871,9 +871,9 @@ mod tests {
             true,
         )]));
         let vals: ArrayRef = Arc::new(StringArray::from(vec![
-            Some("3.14"),
+            Some("3.125"),
             Some("not_float"),
-            Some("2.718"),
+            Some("2.625"),
         ]));
         let batch = RecordBatch::try_new(schema, vec![vals]).unwrap();
 
@@ -885,9 +885,9 @@ mod tests {
             .as_any()
             .downcast_ref::<Float64Array>()
             .unwrap();
-        assert!((col.value(0) - 3.14).abs() < 1e-10);
+        assert!((col.value(0) - 3.125).abs() < 1e-10);
         assert!(col.is_null(1));
-        assert!((col.value(2) - 2.718).abs() < 1e-10);
+        assert!((col.value(2) - 2.625).abs() < 1e-10);
     }
 
     #[test]

@@ -151,6 +151,7 @@ pub struct GeoDatabaseConfig {
     /// Path to the database file.
     pub path: String,
     /// How often to reload the database file, in seconds. Optional.
+    // TODO: not yet implemented — currently ignored at runtime
     pub refresh_interval: Option<u64>,
 }
 

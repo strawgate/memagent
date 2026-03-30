@@ -73,6 +73,9 @@ impl Pipeline {
                             Arc::new(mmdb)
                         }
                     };
+                    if geo_cfg.refresh_interval.is_some() {
+                        eprintln!("warn: geo_database refresh_interval is not yet implemented, database will not auto-reload");
+                    }
                     transform.set_geo_database(db);
                 }
             }
