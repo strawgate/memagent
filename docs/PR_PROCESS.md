@@ -183,6 +183,7 @@ mutation {
 - The comment raises an architectural question that needs discussion
 
 **Bulk resolve** — after pushing fixes, resolve all clearly-addressed threads in one pass:
+
 ```bash
 # Get all unresolved thread IDs
 THREADS=$(gh api graphql -f query='
@@ -196,7 +197,11 @@ THREADS=$(gh api graphql -f query='
   }
 }' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id')
 
-# Resolve each one (review the list first!)
+# Review what will be resolved
+echo "Unresolved threads:"
+echo "$THREADS"
+
+# Resolve each one
 for tid in $THREADS; do
   gh api graphql -f query="mutation { resolveReviewThread(input: { threadId: \"$tid\" }) { thread { isResolved } } }"
 done
