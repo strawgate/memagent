@@ -125,12 +125,6 @@ impl StorageBuilder {
         if self.check_dup(idx) {
             return;
         }
-        // StringArray requires valid UTF-8.  JSON is always UTF-8 in production;
-        // for fuzz / corrupted input we skip non-UTF-8 bytes rather than storing
-        // them and triggering UB later in finish_batch.
-        if std::str::from_utf8(value).is_err() {
-            return;
-        }
         let fc = &mut self.fields[idx];
         fc.has_str = true;
         fc.str_values.push((self.row_count, value.to_vec()));

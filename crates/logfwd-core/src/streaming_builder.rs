@@ -159,12 +159,6 @@ impl StreamingBuilder {
             return;
         }
         self.written_bits |= bit;
-        // StringViewArray requires valid UTF-8.  JSON is always UTF-8 in
-        // production; for fuzz / corrupted input we skip non-UTF-8 bytes so
-        // that append_view_unchecked is never called on invalid bytes.
-        if std::str::from_utf8(value).is_err() {
-            return;
-        }
         let offset = self.offset_of(value);
         let fc = &mut self.fields[idx];
         fc.has_str = true;
