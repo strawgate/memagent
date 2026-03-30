@@ -436,7 +436,7 @@ mod tests {
 
         let idx = b.resolve_field(b"lat");
         b.begin_row();
-        b.append_float_by_idx(idx, b"3.14");
+        b.append_float_by_idx(idx, b"1.25");
         b.end_row();
 
         let batch = b.finish_batch();
@@ -446,6 +446,6 @@ mod tests {
             .as_any()
             .downcast_ref::<Float64Array>()
             .unwrap();
-        assert!((col.value(0) - 3.14).abs() < 1e-10);
+        assert!((col.value(0) - 1.25).abs() < 1e-10);
     }
 }

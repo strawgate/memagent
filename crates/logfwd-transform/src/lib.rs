@@ -853,9 +853,9 @@ mod tests {
             true,
         )]));
         let vals: ArrayRef = Arc::new(StringArray::from(vec![
-            Some("3.14"),
+            Some("1.25"),
             Some("not_float"),
-            Some("2.718"),
+            Some("4.56"),
         ]));
         let batch = RecordBatch::try_new(schema, vec![vals]).unwrap();
 
@@ -867,9 +867,9 @@ mod tests {
             .as_any()
             .downcast_ref::<Float64Array>()
             .unwrap();
-        assert!((col.value(0) - 3.14).abs() < 1e-10);
+        assert!((col.value(0) - 1.25).abs() < 1e-10);
         assert!(col.is_null(1));
-        assert!((col.value(2) - 2.718).abs() < 1e-10);
+        assert!((col.value(2) - 4.56).abs() < 1e-10);
     }
 
     #[test]
@@ -910,7 +910,7 @@ mod tests {
             "env",
             &[("environment".to_string(), "production".to_string())],
         ));
-        transform.add_enrichment_table(env_table);
+        let _ = transform.add_enrichment_table(env_table);
 
         let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
@@ -938,7 +938,7 @@ mod tests {
         ));
 
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
-        transform.add_enrichment_table(table);
+        let _ = transform.add_enrichment_table(table);
 
         // Enrichment table registered but not referenced in SQL — should not error.
         let result = transform.execute_blocking(batch).unwrap();
@@ -954,7 +954,7 @@ mod tests {
         // Not loaded — snapshot() returns None.
 
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
-        transform.add_enrichment_table(k8s);
+        let _ = transform.add_enrichment_table(k8s);
 
         // Should not error — empty table just skipped.
         let result = transform.execute_blocking(batch).unwrap();
