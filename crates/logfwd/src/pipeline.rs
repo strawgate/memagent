@@ -350,6 +350,14 @@ impl Pipeline {
     /// Output uses `block_in_place` to avoid blocking the tokio runtime
     /// while ureq sends HTTP requests. This overlaps input reading with
     /// output sending across different batches.
+    ///
+    /// Known limitations (acceptable for migration period):
+    /// - Scanner runs inline on the async runtime (~1-5ms per 4MB batch).
+    ///   Should move to spawn_blocking when scanner is made Send.
+    /// - block_in_place on output blocks the tokio worker, preventing
+    ///   flush_interval from firing during slow HTTP sends. Goes away
+    ///   when ureq is replaced with an async HTTP client.
+    /// - self.inputs.drain(..) makes this method non-reentrant.
     pub async fn run_async(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
         // Spawn input threads. Each polls its source, parses format, and
         // sends accumulated JSON lines through a bounded channel.
@@ -978,7 +986,7 @@ output:
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
 
         // Use devnull output to avoid stdout noise in test.
-        pipeline = pipeline.with_output(Box::new(DevNullSink));
+        pipeline = pipeline.with_output(Box::new(DevNullSink::new()));
 
         pipeline.batch_timeout = Duration::from_millis(50);
 
@@ -1038,7 +1046,7 @@ output:
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
-        pipeline = pipeline.with_output(Box::new(DevNullSink));
+        pipeline = pipeline.with_output(Box::new(DevNullSink::new()));
         pipeline.batch_timeout = Duration::from_millis(20);
 
         let shutdown = CancellationToken::new();
@@ -1064,15 +1072,24 @@ output:
         );
     }
 
-    /// A sink that discards all data. For async tests to avoid stdout noise.
-    struct DevNullSink;
+    /// A sink that discards data but counts rows received.
+    struct DevNullSink {
+        rows_received: u64,
+    }
+
+    impl DevNullSink {
+        fn new() -> Self {
+            Self { rows_received: 0 }
+        }
+    }
 
     impl OutputSink for DevNullSink {
         fn send_batch(
             &mut self,
-            _batch: &arrow::record_batch::RecordBatch,
+            batch: &arrow::record_batch::RecordBatch,
             _metadata: &BatchMetadata,
         ) -> io::Result<()> {
+            self.rows_received += batch.num_rows() as u64;
             Ok(())
         }
         fn flush(&mut self) -> io::Result<()> {
