@@ -271,7 +271,7 @@ fn bench_compress(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(bytes));
         group.bench_with_input(BenchmarkId::new("zstd_level1", n), &data, |b, data| {
-            let mut compressor = ChunkCompressor::new(1);
+            let mut compressor = ChunkCompressor::new(1).unwrap();
             b.iter(|| compressor.compress(data).unwrap())
         });
     }

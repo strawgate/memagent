@@ -43,7 +43,7 @@ impl OtlpSink {
         compression: Compression,
     ) -> Self {
         let compressor = match compression {
-            Compression::Zstd => Some(ChunkCompressor::new(1)),
+            Compression::Zstd => Some(ChunkCompressor::new(1).expect("zstd level 1 is always valid")),
             _ => None,
         };
         let http_agent = ureq::config::Config::builder()

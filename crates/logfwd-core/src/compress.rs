@@ -33,19 +33,19 @@ pub const FLAG_ZSTD: u8 = 0x01;
 
 /// Chunk compressor with reusable zstd context.
 pub struct ChunkCompressor {
-    /// Compression level (1 = fastest, good for logs).
-    level: i32,
+    /// Persistent zstd compressor — reuses the CCtx (~128 KB) across calls.
+    compressor: zstd::bulk::Compressor<'static>,
     /// Pre-allocated output buffer. Sized to worst-case expansion.
     out_buf: Vec<u8>,
 }
 
 impl ChunkCompressor {
-    pub fn new(level: i32) -> Self {
-        ChunkCompressor {
-            level,
+    pub fn new(level: i32) -> io::Result<Self> {
+        Ok(ChunkCompressor {
+            compressor: zstd::bulk::Compressor::new(level)?,
             // Start with 1MB output buffer, will grow if needed.
             out_buf: Vec::with_capacity(1024 * 1024 + HEADER_SIZE),
-        }
+        })
     }
 
     /// Compress a raw chunk into a wire-format message (header + compressed payload).
@@ -64,17 +64,16 @@ impl ChunkCompressor {
         // Reserve space for header (we'll fill it after we know the compressed size).
         self.out_buf.resize(HEADER_SIZE, 0);
 
-        // Compress directly into out_buf after the header.
-        // Use bulk compress with our level — zstd internally reuses thread-local contexts.
-        let payload_start = self.out_buf.len();
-        let compressed_payload = zstd::bulk::compress(raw, self.level).map_err(io::Error::other)?;
-
-        let compressed_size = compressed_payload.len();
-        self.out_buf.extend_from_slice(&compressed_payload);
+        // Compress directly into out_buf after the header via a cursor.
+        // compress_to_buffer reuses the persistent CCtx and writes starting at the
+        // cursor position, so no separate allocation for the compressed payload.
+        let mut cursor = io::Cursor::new(&mut self.out_buf);
+        cursor.set_position(HEADER_SIZE as u64);
+        let compressed_size = self.compressor.compress_to_buffer(raw, &mut cursor)?;
 
         // Compute checksum over the compressed payload.
         let checksum = xxhash_rust::xxh32::xxh32(
-            &self.out_buf[payload_start..payload_start + compressed_size],
+            &self.out_buf[HEADER_SIZE..HEADER_SIZE + compressed_size],
             0,
         );
 
@@ -86,8 +85,15 @@ impl ChunkCompressor {
         self.out_buf[8..12].copy_from_slice(&(raw_size as u32).to_le_bytes());
         self.out_buf[12..16].copy_from_slice(&checksum.to_le_bytes());
 
+        // Swap out_buf to give ownership to the caller without cloning.
+        // The replacement buffer is pre-allocated ready for the next call.
+        let data = std::mem::replace(
+            &mut self.out_buf,
+            Vec::with_capacity(total_needed.max(1024 * 1024 + HEADER_SIZE)),
+        );
+
         Ok(CompressedChunk {
-            data: self.out_buf.clone(), // TODO: avoid this clone in the real pipeline
+            data,
             raw_size: raw_size as u32,
             compressed_size: compressed_size as u32,
         })
@@ -162,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_compress_decompress_roundtrip() {
-        let mut compressor = ChunkCompressor::new(1);
+        let mut compressor = ChunkCompressor::new(1).unwrap();
         let raw = b"2024-01-15T10:30:00Z INFO  service started successfully\n\
                     2024-01-15T10:30:01Z DEBUG processing request id=abc123\n\
                     2024-01-15T10:30:02Z WARN  connection pool running low\n";
@@ -177,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_compression_ratio() {
-        let mut compressor = ChunkCompressor::new(1);
+        let mut compressor = ChunkCompressor::new(1).unwrap();
         // Repetitive log data should compress well.
         let line = "2024-01-15T10:30:00Z INFO  service handled request successfully path=/api/v1/health status=200 duration_ms=3\n";
         let raw: Vec<u8> = line.as_bytes().repeat(1000);
