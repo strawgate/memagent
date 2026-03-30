@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{Agent, Scenario, SetupState};
+use super::{Agent, AgentSample, Scenario, SetupState};
 use crate::download::arch_alt;
 use crate::runner::BenchContext;
 
@@ -87,6 +87,9 @@ setup.template.enabled: false
 path.data: "{data_dir}"
 path.logs: "{logs_dir}"
 logging.level: error
+http.enabled: true
+http.host: "127.0.0.1"
+http.port: 5066
 "#,
             data_file = ctx.data_file.display(),
             processors = processors_section,
@@ -105,6 +108,31 @@ logging.level: error
             .arg(config)
             .arg("--strict.perms=false");
         cmd
+    }
+
+    fn stats_url(&self) -> Option<String> {
+        Some("http://127.0.0.1:5066/stats".to_string())
+    }
+
+    fn parse_stats(&self, body: &str) -> Option<AgentSample> {
+        let v: serde_json::Value = serde_json::from_str(body).ok()?;
+        let get = |keys: &[&str]| -> u64 {
+            let mut cur = &v;
+            for k in keys {
+                match cur.get(*k) {
+                    Some(next) => cur = next,
+                    None => return 0,
+                }
+            }
+            cur.as_u64().unwrap_or(0)
+        };
+        Some(AgentSample {
+            rss_bytes: get(&["beat", "memstats", "rss"]),
+            cpu_user_ms: get(&["beat", "cpu", "total", "ticks"]),
+            events_total: get(&["libbeat", "pipeline", "events", "total"]),
+            errors_total: get(&["libbeat", "output", "events", "failed"]),
+            ..Default::default()
+        })
     }
 
     fn setup(&self, _ctx: &BenchContext) -> Result<SetupState, String> {

@@ -2089,6 +2089,7 @@ dependencies = [
  "csv",
  "gethostname",
  "glob",
+ "libc",
  "memchr",
  "memmap2",
  "notify",

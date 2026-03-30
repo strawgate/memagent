@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use crate::agents::{Agent, Scenario};
+use crate::agents::{Agent, AgentSample, Scenario};
 use crate::blackhole::Blackhole;
 
 /// Everything an agent needs to set up and run.
@@ -41,13 +41,21 @@ impl Default for DockerLimits {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BenchResult {
     pub name: String,
     pub scenario: Scenario,
     pub mode: String,
     pub lines_done: u64,
     pub elapsed_ms: u64,
+    #[serde(default = "default_iteration")]
+    pub iteration: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samples: Vec<AgentSample>,
+}
+
+fn default_iteration() -> usize {
+    1
 }
 
 /// Run a single agent benchmark in binary mode.
@@ -78,9 +86,39 @@ pub fn run_agent(
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", agent.name()))?;
 
+    // Start sampling thread.
+    let pid = child.id();
+    let stats_url = agent.stats_url();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_clone = stop.clone();
+    let sample_start = start;
+    let sample_handle = std::thread::spawn(move || {
+        collect_samples(pid, stats_url.as_deref(), sample_start, &stop_clone)
+    });
+
     let expected = (ctx.lines as f64 * scenario.expected_line_ratio()) as usize;
     let lines_done = wait_blackhole_done(blackhole, expected, Duration::from_secs(120));
     let elapsed = start.elapsed();
+
+    // Stop sampling and merge agent-specific stats.
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let raw_samples = sample_handle.join().unwrap_or_default();
+    let samples: Vec<AgentSample> = raw_samples
+        .into_iter()
+        .map(|mut rs| {
+            if let Some(ref body) = rs.http_body
+                && let Some(parsed) = agent.parse_stats(body)
+            {
+                rs.sample.rss_bytes = rs.sample.rss_bytes.max(parsed.rss_bytes);
+                rs.sample.cpu_user_ms = rs.sample.cpu_user_ms.max(parsed.cpu_user_ms);
+                rs.sample.cpu_sys_ms = rs.sample.cpu_sys_ms.max(parsed.cpu_sys_ms);
+                rs.sample.events_total = parsed.events_total;
+                rs.sample.bytes_total = parsed.bytes_total;
+                rs.sample.errors_total = parsed.errors_total;
+            }
+            rs.sample
+        })
+        .collect();
 
     kill_and_wait(&mut child);
     agent.teardown(setup_state);
@@ -91,6 +129,8 @@ pub fn run_agent(
         mode: "binary".to_string(),
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
+        iteration: 0,
+        samples,
     })
 }
 
@@ -212,6 +252,8 @@ pub fn run_agent_docker(
         mode: "docker".to_string(),
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
+        iteration: 0,
+        samples: Vec::new(), // TODO: Docker sampling
     })
 }
 
@@ -422,6 +464,90 @@ pub fn inferno_available() -> bool {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Per-second sampling during benchmarks
+// ---------------------------------------------------------------------------
+
+struct RawSample {
+    sample: AgentSample,
+    http_body: Option<String>,
+}
+
+/// Collect time-series samples every second until stopped.
+fn collect_samples(
+    pid: u32,
+    stats_url: Option<&str>,
+    start: Instant,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Vec<RawSample> {
+    let mut samples = Vec::new();
+
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_secs(1));
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        let (rss, cpu_user, cpu_sys) = procfs_stats(pid);
+
+        let http_body = stats_url.and_then(|url| {
+            ureq::get(url)
+                .call()
+                .ok()
+                .and_then(|resp| resp.into_body().read_to_string().ok())
+        });
+
+        samples.push(RawSample {
+            sample: AgentSample {
+                elapsed_sec: elapsed,
+                rss_bytes: rss,
+                cpu_user_ms: cpu_user,
+                cpu_sys_ms: cpu_sys,
+                ..Default::default()
+            },
+            http_body,
+        });
+    }
+
+    samples
+}
+
+/// Read RSS and CPU from /proc/{pid} (Linux only).
+fn procfs_stats(pid: u32) -> (u64, u64, u64) {
+    #[cfg(target_os = "linux")]
+    {
+        let rss = std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("VmRSS:"))
+                    .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+                    .map(|kb| kb * 1024)
+            })
+            .unwrap_or(0);
+
+        let (user_ms, sys_ms) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| {
+                let after_comm = s.rfind(')')?.checked_add(2)?;
+                let fields: Vec<&str> = s[after_comm..].split_whitespace().collect();
+                let tps = 100u64;
+                let u = fields.get(11)?.parse::<u64>().ok()? * 1000 / tps;
+                let sy = fields.get(12)?.parse::<u64>().ok()? * 1000 / tps;
+                Some((u, sy))
+            })
+            .unwrap_or((0, 0));
+
+        (rss, user_ms, sys_ms)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        (0, 0, 0)
+    }
+}
 
 /// Poll blackhole stats until lines reach expected count or bytes stabilize.
 fn wait_blackhole_done(blackhole: &Blackhole, expected: usize, timeout: Duration) -> u64 {

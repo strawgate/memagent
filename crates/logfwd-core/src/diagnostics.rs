@@ -372,6 +372,7 @@ impl DiagnosticsServer {
             "/health" => self.serve_health(request),
             "/ready" => self.serve_ready(request),
             "/api/pipelines" => self.serve_pipelines(request),
+            "/api/stats" => self.serve_stats(request),
             // Prometheus /metrics removed — use OTLP metrics push instead.
             // The /api/pipelines endpoint provides the same data as JSON.
             _ => {
@@ -437,6 +438,75 @@ impl DiagnosticsServer {
                 .with_header(header);
             request.respond(resp)?;
         }
+        Ok(())
+    }
+
+    /// Flat JSON endpoint for benchmark polling: process metrics + pipeline summary.
+    fn serve_stats(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
+        let uptime_s = self.start_time.elapsed().as_secs_f64();
+        let (rss_bytes, cpu_user_ms, cpu_sys_ms) = process_metrics();
+
+        // Aggregate pipeline counters.
+        let mut total_input_lines: u64 = 0;
+        let mut total_input_bytes: u64 = 0;
+        let mut total_output_lines: u64 = 0;
+        let mut total_output_bytes: u64 = 0;
+        let mut total_output_errors: u64 = 0;
+        let mut total_batches: u64 = 0;
+        let mut total_scan_ns: u64 = 0;
+        let mut total_transform_ns: u64 = 0;
+        let mut total_output_ns: u64 = 0;
+        let mut total_backpressure: u64 = 0;
+
+        for pm in &self.pipelines {
+            for (_, _, stats) in &pm.inputs {
+                total_input_lines += stats.lines();
+                total_input_bytes += stats.bytes();
+            }
+            for (_, _, stats) in &pm.outputs {
+                total_output_lines += stats.lines();
+                total_output_bytes += stats.bytes();
+                total_output_errors += stats.errors();
+            }
+            total_batches += pm.batches_total.load(Ordering::Relaxed);
+            total_scan_ns += pm.scan_nanos_total.load(Ordering::Relaxed);
+            total_transform_ns += pm.transform_nanos_total.load(Ordering::Relaxed);
+            total_output_ns += pm.output_nanos_total.load(Ordering::Relaxed);
+            total_backpressure += pm.backpressure_stalls.load(Ordering::Relaxed);
+        }
+
+        // Include jemalloc stats if available.
+        let mem_json = match self.memory_stats_fn.and_then(|f| f()) {
+            Some(m) => format!(
+                r#","mem_resident":{},"mem_allocated":{},"mem_active":{}"#,
+                m.resident, m.allocated, m.active,
+            ),
+            None => String::new(),
+        };
+
+        let body = format!(
+            r#"{{"uptime_sec":{:.3},"rss_bytes":{},"cpu_user_ms":{},"cpu_sys_ms":{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{}{}}}"#,
+            uptime_s,
+            rss_bytes,
+            cpu_user_ms,
+            cpu_sys_ms,
+            total_input_lines,
+            total_input_bytes,
+            total_output_lines,
+            total_output_bytes,
+            total_output_errors,
+            total_batches,
+            total_scan_ns as f64 / 1e9,
+            total_transform_ns as f64 / 1e9,
+            total_output_ns as f64 / 1e9,
+            total_backpressure,
+            mem_json,
+        );
+
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        let resp = tiny_http::Response::from_string(body).with_header(header);
+        request.respond(resp)?;
         Ok(())
     }
 
@@ -545,6 +615,81 @@ impl DiagnosticsServer {
             ),
             None => String::new(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Process-level metrics (RSS, CPU)
+// ---------------------------------------------------------------------------
+
+/// Returns (rss_bytes, cpu_user_ms, cpu_sys_ms) for the current process.
+fn process_metrics() -> (u64, u64, u64) {
+    #[cfg(target_os = "linux")]
+    {
+        let rss = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("VmRSS:"))
+                    .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+                    .map(|kb| kb * 1024)
+            })
+            .unwrap_or(0);
+
+        let (user_ms, sys_ms) = std::fs::read_to_string("/proc/self/stat")
+            .ok()
+            .and_then(|s| {
+                let after_comm = s.rfind(')')?.checked_add(2)?;
+                let fields: Vec<&str> = s[after_comm..].split_whitespace().collect();
+                let tps = 100u64;
+                let u = fields.get(11)?.parse::<u64>().ok()? * 1000 / tps;
+                let sy = fields.get(12)?.parse::<u64>().ok()? * 1000 / tps;
+                Some((u, sy))
+            })
+            .unwrap_or((0, 0));
+
+        (rss, user_ms, sys_ms)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::mem;
+
+        let rss = unsafe {
+            #[allow(deprecated)]
+            let task = libc::mach_task_self();
+            let mut info: libc::mach_task_basic_info_data_t = mem::zeroed();
+            let mut count = (mem::size_of::<libc::mach_task_basic_info_data_t>()
+                / mem::size_of::<libc::natural_t>())
+                as libc::mach_msg_type_number_t;
+            let kr = libc::task_info(
+                task,
+                libc::MACH_TASK_BASIC_INFO,
+                &mut info as *mut _ as libc::task_info_t,
+                &mut count,
+            );
+            if kr == libc::KERN_SUCCESS {
+                info.resident_size as u64
+            } else {
+                0
+            }
+        };
+
+        let (user_ms, sys_ms) = unsafe {
+            let mut usage: libc::rusage = mem::zeroed();
+            if libc::getrusage(libc::RUSAGE_SELF, &mut usage) == 0 {
+                let u = usage.ru_utime.tv_sec as u64 * 1000 + usage.ru_utime.tv_usec as u64 / 1000;
+                let s = usage.ru_stime.tv_sec as u64 * 1000 + usage.ru_stime.tv_usec as u64 / 1000;
+                (u, s)
+            } else {
+                (0, 0)
+            }
+        };
+
+        (rss, user_ms, sys_ms)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        (0, 0, 0)
     }
 }
 

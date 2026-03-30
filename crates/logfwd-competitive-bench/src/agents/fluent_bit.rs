@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{Agent, Scenario, SetupState};
+use super::{Agent, AgentSample, Scenario, SetupState};
 use crate::runner::BenchContext;
 
 const VERSION: &str = "4.2.3";
@@ -82,6 +82,9 @@ impl Agent for FluentBit {
             r#"[SERVICE]
     flush        1
     log_level    error
+    HTTP_Server  On
+    HTTP_Listen  127.0.0.1
+    HTTP_Port    2020
 {parsers}
 [INPUT]
     name         tail
@@ -110,6 +113,34 @@ impl Agent for FluentBit {
         let mut cmd = Command::new(binary);
         cmd.arg("-c").arg(config);
         cmd
+    }
+
+    fn stats_url(&self) -> Option<String> {
+        Some("http://127.0.0.1:2020/api/v1/metrics".to_string())
+    }
+
+    fn parse_stats(&self, body: &str) -> Option<AgentSample> {
+        let v: serde_json::Value = serde_json::from_str(body).ok()?;
+        let mut records = 0u64;
+        let mut bytes = 0u64;
+        let mut errors = 0u64;
+        if let Some(inputs) = v.get("input").and_then(|v| v.as_object()) {
+            for plugin in inputs.values() {
+                records += plugin.get("records").and_then(|v| v.as_u64()).unwrap_or(0);
+                bytes += plugin.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+            }
+        }
+        if let Some(outputs) = v.get("output").and_then(|v| v.as_object()) {
+            for plugin in outputs.values() {
+                errors += plugin.get("errors").and_then(|v| v.as_u64()).unwrap_or(0);
+            }
+        }
+        Some(AgentSample {
+            events_total: records,
+            bytes_total: bytes,
+            errors_total: errors,
+            ..Default::default()
+        })
     }
 
     fn setup(&self, _ctx: &BenchContext) -> Result<SetupState, String> {
