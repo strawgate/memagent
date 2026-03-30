@@ -360,7 +360,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut tailer = FileTailer::new(&[log_path.clone()], config).unwrap();
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
 
         // First poll should read existing content.
         std::thread::sleep(Duration::from_millis(50));
@@ -421,7 +421,7 @@ mod tests {
             poll_interval_ms: 10,
             ..Default::default()
         };
-        let mut tailer = FileTailer::new(&[log_path.clone()], config).unwrap();
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
 
         // Read initial data.
         std::thread::sleep(Duration::from_millis(50));
@@ -474,7 +474,7 @@ mod tests {
             poll_interval_ms: 10,
             ..Default::default()
         };
-        let mut tailer = FileTailer::new(&[log_path.clone()], config).unwrap();
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
 
         // Read initial data.
         std::thread::sleep(Duration::from_millis(50));
@@ -531,7 +531,7 @@ mod tests {
             poll_interval_ms: 10,
             ..Default::default()
         };
-        let mut tailer = FileTailer::new(&[log_path.clone()], config).unwrap();
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
 
         // First poll should get no data (started from end).
         std::thread::sleep(Duration::from_millis(50));
