@@ -26,6 +26,7 @@ mod blackhole;
 mod datagen;
 mod download;
 mod fake_k8s;
+mod rate_bench;
 mod runner;
 
 use std::path::PathBuf;
@@ -37,6 +38,14 @@ use crate::agents::{Agent, Scenario, all_agents};
 
 fn main() {
     let args = Args::parse();
+
+    // -----------------------------------------------------------------------
+    // Rate-ingest benchmark: non-competitive, logfwd only.
+    // -----------------------------------------------------------------------
+    if args.rate_bench {
+        run_rate_bench_main(&args);
+        return;
+    }
 
     let needs_docker = args.docker || args.mode == "docker" || args.mode == "both";
     if needs_docker && !runner::docker_available() {
@@ -340,6 +349,96 @@ fn main() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Rate-ingest benchmark dispatch
+// ---------------------------------------------------------------------------
+
+/// Run the low-and-slow rate-ingest benchmark (non-competitive, logfwd only).
+fn run_rate_bench_main(args: &Args) {
+    // Locate logfwd binary via LOGFWD env var or PATH.
+    let logfwd_binary = find_logfwd_binary().unwrap_or_else(|| {
+        eprintln!(
+            "ERROR: logfwd binary not found. \
+             Set the LOGFWD env var or ensure logfwd is on PATH."
+        );
+        process::exit(1);
+    });
+    eprintln!("=== Rate Ingest Benchmark (logfwd only) ===");
+    eprintln!("  binary: {}", logfwd_binary.display());
+    eprintln!();
+
+    let bench_dir = tempfile::tempdir().unwrap_or_else(|e| {
+        eprintln!("ERROR: failed to create temp dir: {e}");
+        process::exit(1);
+    });
+
+    // Use a separate blackhole port to avoid collisions with competitive bench.
+    let blackhole_addr = "127.0.0.1:19878";
+    eprintln!("=== Blackhole sink: http://{blackhole_addr} ===");
+    eprintln!();
+
+    // Keep _blackhole alive for the duration of the benchmark; it runs a
+    // background server thread that is stopped when the value is dropped.
+    let _blackhole = blackhole::Blackhole::start(blackhole_addr).unwrap_or_else(|e| {
+        eprintln!("ERROR: failed to start blackhole: {e}");
+        process::exit(1);
+    });
+
+    // Wait for the blackhole to be ready.
+    for _ in 0..50 {
+        if ureq::get(&format!("http://{blackhole_addr}/stats"))
+            .call()
+            .is_ok()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let results = rate_bench::run_rate_bench(&logfwd_binary, bench_dir.path(), blackhole_addr);
+
+    if results.is_empty() {
+        eprintln!("No results collected.");
+        process::exit(1);
+    }
+
+    // Print results.
+    if args.markdown {
+        rate_bench::print_rate_results_markdown(&results);
+    } else {
+        rate_bench::print_rate_results_table(&results);
+    }
+
+    // Write JSON file.
+    if let Some(ref path) = args.json_file {
+        rate_bench::write_rate_json_file(&results, path);
+    }
+
+    // Write github-action-benchmark JSON.
+    if let Some(ref path) = args.gh_bench_file {
+        rate_bench::write_rate_gh_bench_json(&results, path);
+    }
+}
+
+/// Locate the logfwd binary.  Checks `LOGFWD` env var first, then `PATH`.
+fn find_logfwd_binary() -> Option<PathBuf> {
+    if let Ok(val) = std::env::var("LOGFWD") {
+        let p = PathBuf::from(&val);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(output) = std::process::Command::new("which").arg("logfwd").output()
+        && output.status.success()
+    {
+        let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path_str.is_empty() {
+            return Some(PathBuf::from(path_str));
+        }
+    }
+    None
+}
+
 /// Run a single agent benchmark (binary or Docker) and collect the result.
 #[expect(clippy::too_many_arguments)]
 fn run_one(
@@ -574,7 +673,7 @@ fn build_json_report(results: &[BenchResult], lines: usize, file_size: u64, args
 }
 
 /// Returns current UTC time as ISO 8601 string.
-fn utc_timestamp() -> String {
+pub(crate) fn utc_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -755,6 +854,8 @@ struct Args {
     profile_dir: Option<PathBuf>,
     /// Path to a logfwd binary built with --features dhat-heap.
     dhat_binary: Option<String>,
+    /// Run the low-and-slow rate-ingest benchmark instead of the competitive bench.
+    rate_bench: bool,
 }
 
 impl Args {
@@ -774,6 +875,7 @@ impl Args {
             docker_limits: DockerLimits::default(),
             profile_dir: None,
             dhat_binary: None,
+            rate_bench: false,
         };
 
         let mut i = 1;
@@ -844,6 +946,7 @@ impl Args {
                     i += 1;
                     result.dhat_binary = Some(args[i].clone());
                 }
+                "--rate-bench" => result.rate_bench = true,
                 other => {
                     eprintln!("Unknown argument: {other}");
                     eprintln!("Usage: logfwd-competitive-bench [OPTIONS]");
@@ -867,6 +970,9 @@ impl Args {
                     eprintln!("  --profile DIR        Write CPU/memory profiles to DIR");
                     eprintln!(
                         "  --dhat-binary PATH   logfwd binary built with --features dhat-heap"
+                    );
+                    eprintln!(
+                        "  --rate-bench         Run low-and-slow rate-ingest benchmark (logfwd only)"
                     );
                     process::exit(1);
                 }
