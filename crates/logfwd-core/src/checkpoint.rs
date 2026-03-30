@@ -6,11 +6,10 @@
 //! - `FileCheckpointStore` serialises checkpoints to `{data_dir}/checkpoints.json`
 //!   using an atomic write (write-to-tmp → fsync → rename) so a crash mid-write
 //!   can never corrupt the last good checkpoint.
-//! - `flush` is `async` so it can be called from a Tokio timer task without
-//!   blocking the caller; the underlying I/O is synchronous but small (one JSON
-//!   file, typically a few KB) so it does not meaningfully block the executor.
+//! - `flush` is synchronous; the underlying I/O is small (one JSON file,
+//!   typically a few KB) so it completes quickly.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
 
@@ -71,7 +70,7 @@ pub trait CheckpointStore: Send {
 /// ```
 pub struct FileCheckpointStore {
     data_dir: PathBuf,
-    checkpoints: HashMap<u64, SourceCheckpoint>,
+    checkpoints: BTreeMap<u64, SourceCheckpoint>,
 }
 
 impl FileCheckpointStore {
@@ -90,7 +89,7 @@ impl FileCheckpointStore {
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             list.into_iter().map(|c| (c.source_id, c)).collect()
         } else {
-            HashMap::new()
+            BTreeMap::new()
         };
 
         Ok(Self {
@@ -197,11 +196,13 @@ fn libc_getuid() -> u32 {
     {
         if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
             for line in status.lines() {
-                if let Some(rest) = line.strip_prefix("Uid:")
-                    && let Some(uid_str) = rest.split_whitespace().next()
-                    && let Ok(uid) = uid_str.parse::<u32>()
-                {
-                    return uid;
+                #[allow(clippy::collapsible_if)]
+                if let Some(rest) = line.strip_prefix("Uid:") {
+                    if let Some(uid_str) = rest.split_whitespace().next() {
+                        if let Ok(uid) = uid_str.parse::<u32>() {
+                            return uid;
+                        }
+                    }
                 }
             }
         }

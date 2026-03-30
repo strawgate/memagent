@@ -28,7 +28,6 @@ pprof = { version = "0.14", features = ["flamegraph", "protobuf-codec"] }
 proptest = "1"
 sonic-rs = "0.5"
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt"] }
 
 [features]
 debug_bitmask = []

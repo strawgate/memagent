@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if)]
 //! Scanner conformance test suite.
 //!
 //! Proves the SIMD scanner produces identical Arrow output to the scalar scanner
@@ -46,12 +47,10 @@ fn assert_values_correct(input: &[u8]) {
             let mut seen = std::collections::HashSet::new();
             let mut has_dup = false;
             let iter = unsafe { sonic_rs::to_object_iter_unchecked(s) };
-            for item in iter {
-                if let Ok((key, _)) = item {
-                    if !seen.insert(key.to_string()) {
-                        has_dup = true;
-                        break;
-                    }
+            for (key, _) in iter.flatten() {
+                if !seen.insert(key.to_string()) {
+                    has_dup = true;
+                    break;
                 }
             }
             if has_dup {
@@ -646,7 +645,7 @@ fn no_panic_deeply_nested() {
     for _ in 0..100 {
         input.push_str("{\"x\":");
     }
-    input.push_str("1");
+    input.push('1');
     for _ in 0..100 {
         input.push('}');
     }

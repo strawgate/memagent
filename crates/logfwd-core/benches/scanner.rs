@@ -121,10 +121,10 @@ fn gen_sparse(count: usize) -> Vec<u8> {
             fields.push(format!(r#""user_id":"usr_{:06}""#, i % 100000));
         }
         if i % 7 == 0 {
-            fields.push(format!(r#""region":"us-east-1""#));
+            fields.push(r#""region":"us-east-1""#.to_string());
         }
         if i % 11 == 0 {
-            fields.push(format!(r#""tags":["prod","v2"]"#));
+            fields.push(r#""tags":["prod","v2"]"#.to_string());
         }
         buf.extend_from_slice(format!("{{{}}}", fields.join(",")).as_bytes());
         buf.push(b'\n');
@@ -239,29 +239,29 @@ fn sonic_rs_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
             continue;
         }
         builder.begin_row();
-        if let Ok(val) = sonic_rs::from_slice::<sonic_rs::Value>(line) {
-            if let Some(obj) = val.as_object() {
-                for (key_str, val) in obj.iter() {
-                    let key = key_str.as_bytes();
-                    if let Some(s) = val.as_str() {
-                        builder.append_str(key, s.as_bytes());
-                    } else if val.is_null() {
-                        builder.append_null(key);
-                    } else if let Some(b) = val.as_bool() {
-                        builder.append_str(key, if b { b"true" } else { b"false" });
-                    } else if let Some(n) = val.as_number() {
-                        if n.is_f64() {
-                            if let Some(f) = n.as_f64() {
-                                builder.append_float_val(key, f);
-                            }
-                        } else if let Some(i) = n.as_i64() {
-                            builder.append_int_val(key, i);
-                        }
+        if let Ok(val) = sonic_rs::from_slice::<sonic_rs::Value>(line)
+            && let Some(obj) = val.as_object()
+        {
+            for (key_str, val) in obj.iter() {
+                let key = key_str.as_bytes();
+                let idx = builder.resolve_field(key);
+                if let Some(s) = val.as_str() {
+                    builder.append_str_by_idx(idx, s.as_bytes());
+                } else if val.is_null() {
+                    builder.append_null_by_idx(idx);
+                } else if let Some(b) = val.as_bool() {
+                    builder.append_str_by_idx(idx, if b { b"true" } else { b"false" });
+                } else if let Some(n) = val.as_number() {
+                    let num_str = n.to_string();
+                    if n.is_f64() {
+                        builder.append_float_by_idx(idx, num_str.as_bytes());
                     } else {
-                        // nested object/array → serialize as string
-                        if let Ok(s) = sonic_rs::to_string(val) {
-                            builder.append_str(key, s.as_bytes());
-                        }
+                        builder.append_int_by_idx(idx, num_str.as_bytes());
+                    }
+                } else {
+                    // nested object/array → serialize as string
+                    if let Ok(s) = sonic_rs::to_string(val) {
+                        builder.append_str_by_idx(idx, s.as_bytes());
                     }
                 }
             }
