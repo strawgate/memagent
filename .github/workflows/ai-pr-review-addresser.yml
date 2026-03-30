@@ -3,14 +3,36 @@ on:
   pull_request_review:
     types: [submitted]
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: write
+concurrency:
+  group: pr-address-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   run:
-    if: github.event.review.state == 'changes_requested'
+    if: >-
+      github.event.review.user.type == 'Bot' &&
+      github.event.pull_request.draft == false
     uses: elastic/ai-github-actions/.github/workflows/gh-aw-pr-review-addresser.lock.yml@main
     with:
-      title-prefix: "[review-fix]"
+      allowed-bot-users: "coderabbitai[bot],github-actions[bot]"
+      additional-instructions: |
+        Focus on minor and straightforward fixes only:
+        - Typos, naming, formatting
+        - Missing or incorrect types
+        - Simple logic corrections with obvious fixes
+        - Import cleanup or unused variable removal
+        - Documentation or comment improvements
+
+        Do NOT attempt:
+        - Architectural or design changes
+        - Complex logic rewrites
+        - Performance optimizations needing benchmarks
+        - Changes requiring deep domain knowledge
+
+        When in doubt, reply explaining why you're skipping rather than
+        making a potentially incorrect fix.
     secrets:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}

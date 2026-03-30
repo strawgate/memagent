@@ -2,14 +2,42 @@ name: "AI: Address Merge Conflicts"
 on:
   push:
     branches: [master]
+  workflow_dispatch:
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+  actions: write
+  contents: read
+  issues: read
+  pull-requests: read
+concurrency:
+  group: merge-conflict-addresser-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  run:
-    uses: elastic/ai-github-actions/.github/workflows/gh-aw-pr-conflict-addresser.lock.yml@main
-    with:
-      title-prefix: "[merge-conflict]"
-    secrets:
-      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+  detect-conflicted-prs:
+    runs-on: ubuntu-latest
+    outputs:
+      prs: ${{ steps.detect.outputs.prs }}
+      count: ${{ steps.detect.outputs.count }}
+    steps:
+      - name: Detect open PRs with merge conflicts
+        id: detect
+        uses: elastic/ai-github-actions/.github/actions/get-prs-with-merge-conflicts@46127f22f5181c27e5cdb55beefedae0877cc196
+        with:
+          github-token: ${{ github.token }}
+          settle-seconds: "60"
+  dispatch-conflict-fixers:
+    needs: detect-conflicted-prs
+    if: needs.detect-conflicted-prs.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        pr: ${{ fromJson(needs.detect-conflicted-prs.outputs.prs) }}
+    steps:
+      - name: Dispatch conflict resolution for PR #${{ matrix.pr.number }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ai-pr-conflict-fix.yml \
+            --repo "${{ github.repository }}" \
+            --field pr-number="${{ matrix.pr.number }}"
