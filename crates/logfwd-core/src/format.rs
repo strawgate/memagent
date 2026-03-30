@@ -146,23 +146,42 @@ impl FormatParser for RawParser {
 /// the extracted message as a JSON line.
 pub struct CriParser {
     reassembler: CriReassembler,
+    /// Bytes from the previous chunk that did not end with a newline.
+    partial: Vec<u8>,
 }
 
 impl CriParser {
     pub fn new(max_line_size: usize) -> Self {
         CriParser {
             reassembler: CriReassembler::new(max_line_size),
+            partial: Vec::new(),
         }
     }
 }
 
 impl FormatParser for CriParser {
     fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> usize {
-        cri::process_cri_to_buf(bytes, &mut self.reassembler, None, out)
+        self.partial.extend_from_slice(bytes);
+
+        let Some(last_nl) = memchr::memrchr(b'\n', &self.partial) else {
+            // No complete line yet — keep buffering.
+            return 0;
+        };
+
+        let process_end = last_nl + 1;
+        let count = cri::process_cri_to_buf(
+            &self.partial[..process_end],
+            &mut self.reassembler,
+            None,
+            out,
+        );
+        self.partial.drain(..process_end);
+        count
     }
 
     fn reset(&mut self) {
         self.reassembler.reset();
+        self.partial.clear();
     }
 }
 
@@ -243,5 +262,80 @@ mod tests {
         let n = parser.process(input, &mut out);
         assert_eq!(n, 1);
         assert!(out.ends_with(b"\n"));
+    }
+
+    #[test]
+    fn cri_partial_carry_at_chunk_boundary() {
+        // A CRI line split across two read buffers must be reassembled.
+        let mut parser = CriParser::new(2 * 1024 * 1024);
+        let mut out = Vec::new();
+
+        // First chunk has no newline — nothing should be emitted yet.
+        let chunk1 = b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hel";
+        let n1 = parser.process(chunk1, &mut out);
+        assert_eq!(n1, 0);
+        assert_eq!(out.len(), 0);
+
+        // Second chunk completes the line.
+        let chunk2 = b"lo\"}\n";
+        let n2 = parser.process(chunk2, &mut out);
+        assert_eq!(n2, 1);
+        assert!(out.ends_with(b"\n"));
+        // The reassembled message must contain the full payload.
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("hello"), "got: {s}");
+    }
+
+    #[test]
+    fn cri_partial_carry_multiple_chunks() {
+        // Three chunks, line only complete at end of third.
+        let mut parser = CriParser::new(2 * 1024 * 1024);
+        let mut out = Vec::new();
+
+        assert_eq!(parser.process(b"2024-01-15T10:30:00Z ", &mut out), 0);
+        assert_eq!(parser.process(b"stdout F line_content", &mut out), 0);
+        assert_eq!(out.len(), 0);
+
+        let n = parser.process(b"\n", &mut out);
+        assert_eq!(n, 1);
+        assert!(out.ends_with(b"\n"));
+    }
+
+    #[test]
+    fn cri_partial_remainder_after_newline() {
+        // Chunk contains a complete line followed by a partial one.
+        let mut parser = CriParser::new(2 * 1024 * 1024);
+        let mut out = Vec::new();
+
+        // First chunk: one complete line + start of a second (no trailing newline).
+        let chunk1 =
+            b"2024-01-15T10:30:00Z stdout F {\"n\":1}\n2024-01-15T10:30:01Z stdout F {\"n\":2}";
+        let n1 = parser.process(chunk1, &mut out);
+        assert_eq!(n1, 1);
+
+        // Second chunk: just the closing newline.
+        let n2 = parser.process(b"\n", &mut out);
+        assert_eq!(n2, 1);
+
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("\"n\":1"), "got: {s}");
+        assert!(s.contains("\"n\":2"), "got: {s}");
+    }
+
+    #[test]
+    fn cri_reset_clears_partial() {
+        let mut parser = CriParser::new(2 * 1024 * 1024);
+        let mut out = Vec::new();
+
+        // Feed a partial chunk (no newline) to populate the partial buffer.
+        parser.process(b"2024-01-15T10:30:00Z stdout F incomplete", &mut out);
+        assert_eq!(out.len(), 0);
+
+        // After reset the stale partial is discarded.
+        parser.reset();
+        let n = parser.process(b"2024-01-15T10:30:01Z stdout F {\"fresh\":1}\n", &mut out);
+        assert_eq!(n, 1);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("fresh"), "got: {s}");
     }
 }
