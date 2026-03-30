@@ -59,7 +59,8 @@ fn reset() -> &'static str {
 // Entry point
 // ---------------------------------------------------------------------------
 
-fn main() {
+#[tokio::main]
+async fn main() {
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
 
@@ -490,15 +491,6 @@ fn build_meter_provider(
     if let Some(ref endpoint) = config.server.metrics_endpoint {
         let interval_secs = config.server.metrics_interval_secs.unwrap_or(60);
 
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_time()
-            .enable_io()
-            .build()
-            .map_err(|e| io::Error::other(format!("tokio runtime: {e}")))?;
-
-        let _guard = rt.enter();
-
         let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()
             .with_endpoint(endpoint)
@@ -514,8 +506,6 @@ fn build_meter_provider(
             dim(),
             reset(),
         );
-
-        std::mem::forget(rt);
 
         Ok(SdkMeterProvider::builder().with_reader(reader).build())
     } else {
