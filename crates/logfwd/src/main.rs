@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::WithExportConfig;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -41,9 +43,6 @@ fn green() -> &'static str {
 }
 fn red() -> &'static str {
     style!("31", "1")
-}
-fn yellow() -> &'static str {
-    style!("33", "0")
 }
 fn bold() -> &'static str {
     if use_color() { "\x1b[1m" } else { "" }
@@ -163,6 +162,16 @@ fn cmd_config(args: &[String]) -> io::Result<()> {
         }
     };
 
+    // Initialize structured logging. Respects RUST_LOG env var; falls back to
+    // the `server.log_level` config field (default: "info").
+    let log_level = config.server.log_level.as_deref().unwrap_or("info");
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(log_level));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+
     if validate_only || dry_run {
         // Both --validate and --dry-run build pipelines to catch SQL/wiring errors.
         return validate_pipelines(&config, dry_run);
@@ -236,27 +245,22 @@ fn validate_pipelines(config: &logfwd_config::Config, dry_run: bool) -> io::Resu
     for (name, pipe_cfg) in &config.pipelines {
         match Pipeline::from_config(name, pipe_cfg, &meter) {
             Ok(_) => {
-                eprintln!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
+                info!(pipeline = %name, "pipeline ready");
             }
             Err(e) => {
-                eprintln!("  {}error{}: pipeline '{name}': {e}", red(), reset());
+                error!(pipeline = %name, error = %e, "pipeline error");
                 errors += 1;
             }
         }
     }
 
     if errors > 0 {
-        eprintln!("\n{}validation failed{}: {errors} error(s)", red(), reset(),);
+        error!(errors, "validation failed");
         std::process::exit(EXIT_CONFIG);
     }
 
     let label = if dry_run { "dry run ok" } else { "config ok" };
-    eprintln!(
-        "{}{label}{}: {} pipeline(s)",
-        green(),
-        reset(),
-        config.pipelines.len(),
-    );
+    info!(pipelines = config.pipelines.len(), "{label}");
     Ok(())
 }
 
@@ -299,11 +303,11 @@ fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
     for (name, pipe_cfg) in &config.pipelines {
         match Pipeline::from_config(name, pipe_cfg, &meter) {
             Ok(pipeline) => {
-                eprintln!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
+                info!(pipeline = %name, "pipeline ready");
                 pipelines.push(pipeline);
             }
             Err(e) => {
-                eprintln!("  {}error{}: pipeline '{name}': {e}", red(), reset(),);
+                error!(pipeline = %name, error = %e, "pipeline error");
                 std::process::exit(EXIT_CONFIG);
             }
         }
@@ -315,18 +319,13 @@ fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
             server.add_pipeline(Arc::clone(p.metrics()));
         }
         let handle = server.start()?;
-        eprintln!("  {}diagnostics{}: http://{addr}", dim(), reset());
+        info!(addr = %addr, "diagnostics server started");
         Some(handle)
     } else {
         None
     };
 
-    eprintln!(
-        "{}logfwd running{} ({} pipeline(s))",
-        green(),
-        reset(),
-        pipelines.len(),
-    );
+    info!(pipelines = pipelines.len(), "logfwd running");
 
     let mut handles = Vec::new();
     let main_pipeline = pipelines.pop();
@@ -352,11 +351,7 @@ fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
     }
 
     if let Err(e) = meter_provider.shutdown() {
-        eprintln!(
-            "{}warning{}: meter provider shutdown: {e}",
-            yellow(),
-            reset()
-        );
+        warn!(error = %e, "meter provider shutdown error");
     }
 
     Ok(())
@@ -509,11 +504,7 @@ fn build_meter_provider(
             .with_interval(std::time::Duration::from_secs(interval_secs))
             .build();
 
-        eprintln!(
-            "  {}metrics push{}: {endpoint} (every {interval_secs}s)",
-            dim(),
-            reset(),
-        );
+        info!(endpoint = %endpoint, interval_secs, "metrics push configured");
 
         std::mem::forget(rt);
 

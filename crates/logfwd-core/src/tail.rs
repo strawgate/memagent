@@ -17,6 +17,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use tracing::warn;
+
 /// Identity of a file based on device + inode + content fingerprint.
 /// Survives renames. Detects inode reuse via fingerprint mismatch.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -159,7 +161,7 @@ impl FileTailer {
             if path.exists()
                 && let Err(e) = tailer.open_file(path)
             {
-                eprintln!("warn: could not open {}: {e}", path.display());
+                warn!(path = %path.display(), error = %e, "could not open file");
             }
         }
 
@@ -265,7 +267,7 @@ impl FileTailer {
                 }
                 Ok(None) => {} // no new data
                 Err(e) => {
-                    eprintln!("warn: error reading {}: {e}", path.display());
+                    warn!(path = %path.display(), error = %e, "error reading file");
                 }
             }
         }
