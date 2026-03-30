@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: log-generator-sustained
+  labels:
+    app: log-generator-sustained
+spec:
+  restartPolicy: Never
+  containers:
+    - name: generator
+      image: busybox:1.36
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          # Generate structured JSON logs at ~100 lines/sec for the
+          # configured duration. Each line has a unique seq number
+          # and a marker for filtering.
+          DURATION=${LOG_DURATION:-300}
+          RATE=${LOG_RATE:-100}
+          DELAY=$(awk "BEGIN{printf \"%.4f\", 1/$RATE}")
+          SEQ=0
+          END=$(($(date +%s) + DURATION))
+          echo "log-generator: starting sustained load (${RATE}/sec for ${DURATION}s)"
+          while [ "$(date +%s)" -lt "$END" ]; do
+            SEQ=$((SEQ + 1))
+            echo "{\"message\":\"LOGFWD_STABILITY_MARKER\",\"seq\":$SEQ,\"level\":\"INFO\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+            sleep "$DELAY"
+          done
+          echo "log-generator: finished, emitted $SEQ lines"
+          # Keep pod alive so logs are readable.
+          sleep 3600
+      env:
+        - name: LOG_DURATION
+          value: "300"
+        - name: LOG_RATE
+          value: "100"
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "200m"
+          memory: "64Mi"
