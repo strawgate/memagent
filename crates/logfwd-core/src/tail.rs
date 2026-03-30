@@ -10,7 +10,7 @@
 //! The tailer yields raw byte chunks to the pipeline. It does NOT parse lines —
 //! that's the pipeline's job.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
@@ -60,6 +60,9 @@ pub struct TailConfig {
     /// Whether to start reading from the end of existing files (true)
     /// or from the beginning (false).
     pub start_from_end: bool,
+    /// How often to re-evaluate glob patterns to discover new files (milliseconds).
+    /// Set to 0 to disable periodic glob rescanning.
+    pub glob_rescan_interval_ms: u64,
 }
 
 impl Default for TailConfig {
@@ -69,6 +72,7 @@ impl Default for TailConfig {
             read_buf_size: 256 * 1024,
             fingerprint_bytes: 1024,
             start_from_end: true,
+            glob_rescan_interval_ms: 5000,
         }
     }
 }
@@ -102,21 +106,48 @@ fn identify_file(path: &Path, fingerprint_bytes: usize) -> io::Result<FileIdenti
     })
 }
 
+/// Expand a list of glob patterns into the set of matching `PathBuf` values.
+///
+/// Patterns that match no files are silently skipped. Errors from the glob
+/// iterator (e.g., permission denied on individual entries) are also skipped.
+fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for pattern in patterns {
+        match glob::glob(pattern) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    paths.push(entry);
+                }
+            }
+            Err(e) => {
+                eprintln!("warn: invalid glob pattern {pattern:?}: {e}");
+            }
+        }
+    }
+    paths
+}
+
 /// The file tailer. Watches one or more file paths and yields data as it appears.
 pub struct FileTailer {
     config: TailConfig,
     /// Files we're actively tailing, keyed by canonical path.
     files: HashMap<PathBuf, TailedFile>,
-    /// Paths we've been asked to watch.
+    /// Paths we've been asked to watch (literal paths, including those discovered via globs).
     watch_paths: Vec<PathBuf>,
+    /// Glob patterns to re-evaluate periodically for new file discovery.
+    glob_patterns: Vec<String>,
     /// Read buffer, reused across reads to avoid allocation.
     read_buf: Vec<u8>,
     /// Notify watcher for filesystem events.
-    _watcher: notify::RecommendedWatcher,
+    watcher: notify::RecommendedWatcher,
+    /// Directories currently registered with the notify watcher.
+    watched_dirs: HashSet<PathBuf>,
     /// Channel receiving filesystem events from the watcher.
     fs_events: crossbeam_channel::Receiver<notify::Result<notify::Event>>,
     /// Last time we did a full poll scan.
     last_poll: Instant,
+    /// Last time we re-evaluated glob patterns.
+    last_glob_rescan: Instant,
 }
 
 impl FileTailer {
@@ -132,7 +163,7 @@ impl FileTailer {
         // Watch the parent directories (not the files themselves).
         // This catches file creation, rename, and deletion events
         // that inotify/kqueue on the file itself would miss.
-        let mut watched_dirs = std::collections::HashSet::new();
+        let mut watched_dirs = HashSet::new();
         for path in paths {
             if let Some(parent) = path.parent()
                 && watched_dirs.insert(parent.to_path_buf())
@@ -149,9 +180,12 @@ impl FileTailer {
             config,
             files: HashMap::new(),
             watch_paths: paths.to_vec(),
-            _watcher: watcher,
+            glob_patterns: Vec::new(),
+            watcher,
+            watched_dirs,
             fs_events: rx,
             last_poll: Instant::now(),
+            last_glob_rescan: Instant::now(),
         };
 
         // Open existing files.
@@ -164,6 +198,71 @@ impl FileTailer {
         }
 
         Ok(tailer)
+    }
+
+    /// Create a new tailer from glob patterns.
+    ///
+    /// Each pattern is expanded immediately to find existing files and then
+    /// re-evaluated every [`TailConfig::glob_rescan_interval_ms`] milliseconds
+    /// to pick up files that appear after construction (e.g., new Kubernetes pods).
+    ///
+    /// Patterns that match no files at construction time are silently ignored —
+    /// they will be retried on the next rescan.
+    pub fn new_with_globs(patterns: &[&str], config: TailConfig) -> io::Result<Self> {
+        // Expand patterns to get the initial set of concrete paths.
+        let initial_paths: Vec<PathBuf> = expand_glob_patterns(patterns);
+
+        let mut tailer = Self::new(&initial_paths, config)?;
+        tailer.glob_patterns = patterns.iter().map(|s| s.to_string()).collect();
+        Ok(tailer)
+    }
+
+    /// Register a directory with the notify watcher if it has not been registered yet.
+    fn watch_dir(&mut self, dir: &Path) -> io::Result<()> {
+        if self.watched_dirs.insert(dir.to_path_buf()) {
+            use notify::Watcher;
+            self.watcher
+                .watch(dir, notify::RecursiveMode::NonRecursive)
+                .map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+
+    /// Re-evaluate all stored glob patterns and start tailing any newly-discovered files.
+    ///
+    /// Already-watched paths are skipped to avoid duplicate entries.
+    fn rescan_globs(&mut self) {
+        if self.glob_patterns.is_empty() {
+            return;
+        }
+
+        let pattern_refs: Vec<&str> = self.glob_patterns.iter().map(String::as_str).collect();
+        let candidates = expand_glob_patterns(&pattern_refs);
+
+        let existing: HashSet<&PathBuf> = self.watch_paths.iter().collect();
+        let new_paths: Vec<PathBuf> = candidates
+            .into_iter()
+            .filter(|p| !existing.contains(p))
+            .collect();
+
+        for path in new_paths {
+            // Watch the parent directory for future events.
+            if let Some(parent) = path.parent() {
+                if let Err(e) = self.watch_dir(parent) {
+                    eprintln!("warn: could not watch {}: {e}", parent.display());
+                }
+            }
+
+            // Open the file (new files from glob discovery always read from the beginning).
+            let saved = self.config.start_from_end;
+            self.config.start_from_end = false;
+            if let Err(e) = self.open_file(&path) {
+                eprintln!("warn: could not open {}: {e}", path.display());
+            }
+            self.config.start_from_end = saved;
+
+            self.watch_paths.push(path);
+        }
     }
 
     /// Open and start tailing a file. If start_from_end is true, seeks to EOF.
@@ -195,7 +294,8 @@ impl FileTailer {
     /// Call this in your main loop. It will:
     /// 1. Drain any filesystem notifications (low latency path)
     /// 2. If enough time has passed, do a full poll scan (safety net)
-    /// 3. Read new data from any files that have grown
+    /// 3. If enough time has passed, re-evaluate glob patterns (new file discovery)
+    /// 4. Read new data from any files that have grown
     pub fn poll(&mut self) -> io::Result<Vec<TailEvent>> {
         let mut events = Vec::new();
 
@@ -210,12 +310,22 @@ impl FileTailer {
 
         // Periodic full poll as safety net.
         let poll_interval = Duration::from_millis(self.config.poll_interval_ms);
-        let should_poll = something_changed || self.last_poll.elapsed() >= poll_interval;
+        let glob_rescan_due = self.config.glob_rescan_interval_ms > 0
+            && self.last_glob_rescan.elapsed()
+                >= Duration::from_millis(self.config.glob_rescan_interval_ms);
+        let should_poll =
+            something_changed || self.last_poll.elapsed() >= poll_interval || glob_rescan_due;
 
         if !should_poll {
             return Ok(events);
         }
         self.last_poll = Instant::now();
+
+        // Re-evaluate glob patterns to discover new files.
+        if glob_rescan_due {
+            self.rescan_globs();
+            self.last_glob_rescan = Instant::now();
+        }
 
         // Check for new/rotated files.
         let watch_paths = self.watch_paths.clone();
@@ -697,5 +807,137 @@ mod tests {
             id1.fingerprint, id3.fingerprint,
             "different content should have different fingerprint"
         );
+    }
+
+    /// Verify that `new_with_globs` picks up files that exist at construction time.
+    #[test]
+    fn test_glob_initial_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create two log files upfront.
+        let log_a = dir.path().join("a.log");
+        let log_b = dir.path().join("b.log");
+        {
+            let mut f = File::create(&log_a).unwrap();
+            writeln!(f, "file a").unwrap();
+        }
+        {
+            let mut f = File::create(&log_b).unwrap();
+            writeln!(f, "file b").unwrap();
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 60_000, // long interval — not relevant for this test
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // Both files should have been discovered immediately.
+        assert_eq!(tailer.num_files(), 2, "should tail both initial log files");
+
+        // Poll should return data from both files.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+        let all_data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        let s = String::from_utf8_lossy(&all_data);
+        assert!(s.contains("file a"), "should read file a");
+        assert!(s.contains("file b"), "should read file b");
+    }
+
+    /// Verify that a new file appearing after construction is discovered on the next rescan.
+    #[test]
+    fn test_glob_rescan_discovers_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            // Very short rescan interval so the test doesn't have to wait long.
+            glob_rescan_interval_ms: 50,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // No files exist yet — tailer starts with nothing.
+        assert_eq!(tailer.num_files(), 0, "no files should be tailed initially");
+
+        // Create a new log file (simulating a new Kubernetes pod).
+        let new_log = dir.path().join("pod-xyz.log");
+        {
+            let mut f = File::create(&new_log).unwrap();
+            writeln!(f, "pod xyz line 1").unwrap();
+        }
+
+        // Wait for the glob rescan interval to expire, then poll.
+        std::thread::sleep(Duration::from_millis(150));
+        let events = tailer.poll().unwrap();
+
+        assert_eq!(
+            tailer.num_files(),
+            1,
+            "newly-created file should now be tailed"
+        );
+
+        let all_data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        let s = String::from_utf8_lossy(&all_data);
+        assert!(
+            s.contains("pod xyz line 1"),
+            "should read data from newly-discovered file, got: {s}"
+        );
+    }
+
+    /// Verify that `rescan_globs` does not add the same file twice.
+    #[test]
+    fn test_glob_rescan_no_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("dedup.log");
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "dedup content").unwrap();
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 50,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // File discovered at construction.
+        assert_eq!(tailer.num_files(), 1);
+        let initial_watch_count = tailer.watch_paths.len();
+
+        // Wait for rescan and poll again — file should not be added twice.
+        std::thread::sleep(Duration::from_millis(150));
+        tailer.poll().unwrap();
+
+        assert_eq!(
+            tailer.watch_paths.len(),
+            initial_watch_count,
+            "watch_paths should not grow after rescan of already-known file"
+        );
+        assert_eq!(tailer.num_files(), 1, "should still tail exactly one file");
     }
 }

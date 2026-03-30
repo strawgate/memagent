@@ -2079,6 +2079,7 @@ dependencies = [
  "crossbeam-channel",
  "csv",
  "gethostname",
+ "glob",
  "memchr",
  "memmap2",
  "notify",
