@@ -13,6 +13,23 @@ use std::fmt;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
+// Authentication configuration
+// ---------------------------------------------------------------------------
+
+/// Authentication configuration for output HTTP sinks.
+///
+/// Supports bearer tokens and arbitrary key/value header pairs.
+/// All values support `${ENV_VAR}` expansion at config-load time.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AuthConfig {
+    /// Sets the `Authorization: Bearer <token>` header on every request.
+    pub bearer_token: Option<String>,
+    /// Additional HTTP headers to add to every request (e.g. `X-API-Key`).
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
 // Public error type
 // ---------------------------------------------------------------------------
 
@@ -117,6 +134,55 @@ pub struct OutputConfig {
     pub compression: Option<String>,
     pub format: Option<Format>,
     pub path: Option<String>,
+    /// Optional authentication for HTTP-based outputs.
+    #[serde(default)]
+    pub auth: Option<AuthConfig>,
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Enrichment
+// ---------------------------------------------------------------------------
+
+/// Supported geo-IP database formats.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeoDatabaseFormat {
+    /// MaxMind MMDB format (GeoLite2-City, GeoIP2-City, DB-IP MMDB).
+    Mmdb,
+}
+
+/// Configuration for a geo-IP database used by the `geo_lookup()` UDF.
+///
+/// ```yaml
+/// enrichment:
+///   - type: geo_database
+///     format: mmdb
+///     path: /etc/logfwd/GeoLite2-City.mmdb
+///     refresh_interval: 86400
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct GeoDatabaseConfig {
+    /// Database format.
+    pub format: GeoDatabaseFormat,
+    /// Path to the database file.
+    pub path: String,
+    /// How often to reload the database file, in seconds. Optional.
+    // TODO: not yet implemented — currently ignored at runtime
+    pub refresh_interval: Option<u64>,
+}
+
+/// Enrichment configuration entry.
+///
+/// Each entry in the `enrichment` list specifies one enrichment source.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EnrichmentConfig {
+    /// Geo-IP lookup database for the `geo_lookup()` UDF.
+    GeoDatabase(GeoDatabaseConfig),
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +197,9 @@ pub struct PipelineConfig {
     pub transform: Option<String>,
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
     pub outputs: Vec<OutputConfig>,
+    /// Enrichment sources (e.g. geo-IP databases).
+    #[serde(default)]
+    pub enrichment: Vec<EnrichmentConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +276,7 @@ impl Config {
                     inputs: vec![input],
                     transform: raw.transform,
                     outputs: vec![output],
+                    enrichment: Vec::new(),
                 };
                 let mut map = HashMap::new();
                 map.insert("default".to_string(), pipeline);
@@ -294,11 +364,20 @@ impl Config {
                     .as_deref()
                     .map(String::from)
                     .unwrap_or_else(|| format!("#{i}"));
+
+                // Reject placeholder output types that are not yet implemented.
                 match output.output_type {
-                    OutputType::Otlp
-                    | OutputType::Http
-                    | OutputType::Elasticsearch
-                    | OutputType::Loki => {
+                    OutputType::Elasticsearch | OutputType::Loki | OutputType::Parquet => {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': {} output type is not yet implemented",
+                            output_type_name(&output.output_type),
+                        )));
+                    }
+                    _ => {}
+                }
+
+                match output.output_type {
+                    OutputType::Otlp | OutputType::Http => {
                         if output.endpoint.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
@@ -306,7 +385,7 @@ impl Config {
                             )));
                         }
                     }
-                    OutputType::FileOut | OutputType::Parquet => {
+                    OutputType::FileOut => {
                         if output.path.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'path'",
@@ -315,6 +394,10 @@ impl Config {
                         }
                     }
                     OutputType::Stdout => {}
+                    // Elasticsearch, Loki, Parquet are already rejected above.
+                    OutputType::Elasticsearch | OutputType::Loki | OutputType::Parquet => {
+                        unreachable!("placeholder types are rejected before this match")
+                    }
                 }
             }
         }
@@ -616,20 +699,60 @@ output:
     }
 
     #[test]
+    fn validation_unimplemented_output_type() {
+        // Each placeholder type should be caught by Config::validate() before
+        // pipeline construction, not silently accepted.
+        for otype in ["elasticsearch", "loki", "parquet"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
+            );
+            let result = Config::load_str(&yaml);
+            assert!(
+                result.is_err(),
+                "validation should reject unimplemented type '{otype}'"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("not yet implemented"),
+                "error message should mention 'not yet implemented' for '{otype}': {msg}"
+            );
+            assert!(
+                msg.contains(otype),
+                "error message should include the type name '{otype}': {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn all_output_types() {
+        // Implemented output types should parse and validate successfully.
         for (otype, extra) in [
             ("otlp", "endpoint: x:4317"),
             ("http", "endpoint: http://x"),
-            ("elasticsearch", "endpoint: http://x"),
-            ("loki", "endpoint: http://x"),
             ("stdout", ""),
             ("file_out", "path: /tmp/out.log"),
-            ("parquet", "path: /tmp/out.parquet"),
         ] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  {extra}\n"
             );
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {otype}: {e}"));
+        }
+
+        // Placeholder output types must be rejected at validation time.
+        for otype in ["elasticsearch", "loki", "parquet"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
+            );
+            let result = Config::load_str(&yaml);
+            assert!(
+                result.is_err(),
+                "expected error for unimplemented type {otype}"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("not yet implemented"),
+                "expected 'not yet implemented' for {otype}: {msg}"
+            );
         }
     }
 
@@ -644,5 +767,88 @@ output:
             let yaml = format!("input:\n  type: {itype}\n  {extra}\noutput:\n  type: stdout\n");
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));
         }
+    }
+
+    #[test]
+    fn auth_bearer_token() {
+        let yaml = r#"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: http
+  endpoint: http://localhost:9200
+  auth:
+    bearer_token: "my-secret-token"
+"#;
+        let cfg = Config::load_str(yaml).expect("auth bearer_token");
+        let pipe = &cfg.pipelines["default"];
+        let auth = pipe.outputs[0].auth.as_ref().expect("auth present");
+        assert_eq!(auth.bearer_token.as_deref(), Some("my-secret-token"));
+        assert!(auth.headers.is_empty());
+    }
+
+    #[test]
+    fn auth_custom_headers() {
+        let yaml = r#"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: http
+  endpoint: http://localhost:9200
+  auth:
+    headers:
+      X-API-Key: "supersecret"
+      X-Tenant: "acme"
+"#;
+        let cfg = Config::load_str(yaml).expect("auth custom headers");
+        let pipe = &cfg.pipelines["default"];
+        let auth = pipe.outputs[0].auth.as_ref().expect("auth present");
+        assert_eq!(auth.bearer_token, None);
+        assert_eq!(
+            auth.headers.get("X-API-Key").map(|s| s.as_str()),
+            Some("supersecret")
+        );
+        assert_eq!(
+            auth.headers.get("X-Tenant").map(|s| s.as_str()),
+            Some("acme")
+        );
+    }
+
+    #[test]
+    fn auth_env_var_bearer_token() {
+        // SAFETY: test is not run concurrently with other tests that modify this var.
+        unsafe { std::env::set_var("LOGFWD_TEST_TOKEN", "env-bearer-token") };
+        let yaml = r#"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: http
+  endpoint: http://localhost:9200
+  auth:
+    bearer_token: "${LOGFWD_TEST_TOKEN}"
+"#;
+        let cfg = Config::load_str(yaml).expect("auth env var bearer");
+        let pipe = &cfg.pipelines["default"];
+        let auth = pipe.outputs[0].auth.as_ref().expect("auth present");
+        assert_eq!(auth.bearer_token.as_deref(), Some("env-bearer-token"));
+        unsafe { std::env::remove_var("LOGFWD_TEST_TOKEN") };
+    }
+
+    #[test]
+    fn auth_absent_is_none() {
+        let yaml = r#"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: http
+  endpoint: http://localhost:9200
+"#;
+        let cfg = Config::load_str(yaml).expect("no auth");
+        let pipe = &cfg.pipelines["default"];
+        assert!(pipe.outputs[0].auth.is_none());
     }
 }

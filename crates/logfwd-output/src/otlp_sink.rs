@@ -29,6 +29,7 @@ pub struct OtlpSink {
     endpoint: String,
     protocol: OtlpProtocol,
     compression: Compression,
+    headers: Vec<(String, String)>,
     pub encoder_buf: Vec<u8>,
     compress_buf: Vec<u8>,
     compressor: Option<ChunkCompressor>,
@@ -41,9 +42,12 @@ impl OtlpSink {
         endpoint: String,
         protocol: OtlpProtocol,
         compression: Compression,
+        headers: Vec<(String, String)>,
     ) -> Self {
         let compressor = match compression {
-            Compression::Zstd => Some(ChunkCompressor::new(1).expect("zstd level 1 is always valid")),
+            Compression::Zstd => {
+                Some(ChunkCompressor::new(1).expect("zstd level 1 is always valid"))
+            }
             _ => None,
         };
         let http_agent = ureq::config::Config::builder()
@@ -55,6 +59,7 @@ impl OtlpSink {
             endpoint,
             protocol,
             compression,
+            headers,
             encoder_buf: Vec::with_capacity(64 * 1024),
             compress_buf: Vec::with_capacity(64 * 1024),
             compressor,
@@ -162,6 +167,9 @@ impl OutputSink for OtlpSink {
         };
 
         let mut req = self.http_agent.post(&self.endpoint);
+        for (k, v) in &self.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
         req = req.header("Content-Type", content_type);
         if self.compression == Compression::Zstd {
             req = req.header("Content-Encoding", "zstd");

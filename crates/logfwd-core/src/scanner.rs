@@ -388,13 +388,17 @@ mod tests {
     }
     #[test]
     fn test_type_conflict() {
-        let batch = default_scanner(4).scan(b"{\"s\":200}\n{\"s\":\"OK\"}\n").unwrap();
+        let batch = default_scanner(4)
+            .scan(b"{\"s\":200}\n{\"s\":\"OK\"}\n")
+            .unwrap();
         assert!(batch.column_by_name("s_int").is_some());
         assert!(batch.column_by_name("s_str").is_some());
     }
     #[test]
     fn test_missing_fields() {
-        let batch = default_scanner(4).scan(b"{\"a\":\"hello\"}\n{\"b\":\"world\"}\n").unwrap();
+        let batch = default_scanner(4)
+            .scan(b"{\"a\":\"hello\"}\n{\"b\":\"world\"}\n")
+            .unwrap();
         assert_eq!(batch.num_rows(), 2);
         let a = batch.column_by_name("a_str").unwrap();
         assert!(!a.is_null(0));
@@ -447,7 +451,9 @@ mod tests {
             keep_raw: true,
             validate_utf8: false,
         };
-        let batch = SimdScanner::new(config).scan(b"{\"msg\":\"hi\"}\n").unwrap();
+        let batch = SimdScanner::new(config)
+            .scan(b"{\"msg\":\"hi\"}\n")
+            .unwrap();
         assert!(batch.column_by_name("_raw").is_some());
     }
     #[test]
@@ -459,7 +465,9 @@ mod tests {
     }
     #[test]
     fn test_bool_null() {
-        let batch = default_scanner(4).scan(b"{\"a\":true,\"b\":false,\"c\":null}\n").unwrap();
+        let batch = default_scanner(4)
+            .scan(b"{\"a\":true,\"b\":false,\"c\":null}\n")
+            .unwrap();
         assert_eq!(
             batch
                 .column_by_name("a_str")
@@ -487,7 +495,9 @@ mod tests {
     }
     #[test]
     fn test_i64_overflow() {
-        let batch = default_scanner(4).scan(b"{\"big\":99999999999999999999}\n").unwrap();
+        let batch = default_scanner(4)
+            .scan(b"{\"big\":99999999999999999999}\n")
+            .unwrap();
         assert!(batch.column_by_name("big_float").is_some());
     }
     #[test]
@@ -575,8 +585,12 @@ mod tests {
     #[test]
     fn test_streaming_reuse() {
         let mut s = StreamingSimdScanner::new(ScanConfig::default());
-        let _ = s.scan(bytes::Bytes::from_static(b"{\"x\":\"a\"}\n")).unwrap();
-        let b = s.scan(bytes::Bytes::from_static(b"{\"x\":\"b\"}\n")).unwrap();
+        let _ = s
+            .scan(bytes::Bytes::from_static(b"{\"x\":\"a\"}\n"))
+            .unwrap();
+        let b = s
+            .scan(bytes::Bytes::from_static(b"{\"x\":\"b\"}\n"))
+            .unwrap();
         assert_eq!(b.num_rows(), 1);
     }
 
@@ -587,7 +601,9 @@ mod tests {
             validate_utf8: true,
             ..ScanConfig::default()
         };
-        let batch = SimdScanner::new(config).scan(b"{\"msg\":\"hello\"}\n").unwrap();
+        let batch = SimdScanner::new(config)
+            .scan(b"{\"msg\":\"hello\"}\n")
+            .unwrap();
         assert_eq!(batch.num_rows(), 1);
     }
 
@@ -620,8 +636,8 @@ mod tests {
             validate_utf8: true,
             ..ScanConfig::default()
         };
-        let result =
-            StreamingSimdScanner::new(config).scan(bytes::Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
+        let result = StreamingSimdScanner::new(config)
+            .scan(bytes::Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
         assert!(result.is_err());
     }
 }

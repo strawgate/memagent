@@ -92,57 +92,54 @@ fn assert_values_correct(input: &[u8]) {
             if val.is_str() {
                 let expected = val.as_str().unwrap();
                 let col_name = format!("{}_str", key_str);
-                if let Some(col) = batch.column_by_name(&col_name) {
-                    if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
-                        if !arr.is_null(row) {
-                            let actual = arr.value(row);
-                            // Our scanner preserves escape sequences (raw bytes),
-                            // sonic-rs unescapes them. So we compare the sonic-rs
-                            // unescaped value against our raw bytes — they should
-                            // differ only by escape processing.
-                            // For strings without escapes, they must be identical.
-                            if !actual.contains('\\') {
-                                assert_eq!(
-                                    actual,
-                                    expected,
-                                    "String value mismatch at {col_name}[{row}].\nExpected: {expected:?}\nActual: {actual:?}\nInput: {:?}",
-                                    String::from_utf8_lossy(line)
-                                );
-                            }
-                        }
+                if let Some(col) = batch.column_by_name(&col_name)
+                    && let Some(arr) = col.as_any().downcast_ref::<StringArray>()
+                    && !arr.is_null(row)
+                {
+                    let actual = arr.value(row);
+                    // Our scanner preserves escape sequences (raw bytes),
+                    // sonic-rs unescapes them. So we compare the sonic-rs
+                    // unescaped value against our raw bytes — they should
+                    // differ only by escape processing.
+                    // For strings without escapes, they must be identical.
+                    if !actual.contains('\\') {
+                        assert_eq!(
+                            actual,
+                            expected,
+                            "String value mismatch at {col_name}[{row}].\nExpected: {expected:?}\nActual: {actual:?}\nInput: {:?}",
+                            String::from_utf8_lossy(line)
+                        );
                     }
                 }
             } else if val.is_i64() {
                 let expected = val.as_i64().unwrap();
                 let col_name = format!("{}_int", key_str);
-                if let Some(col) = batch.column_by_name(&col_name) {
-                    if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-                        if !arr.is_null(row) {
-                            assert_eq!(
-                                arr.value(row),
-                                expected,
-                                "Int value mismatch at {col_name}[{row}].\nInput: {:?}",
-                                String::from_utf8_lossy(line)
-                            );
-                        }
-                    }
+                if let Some(col) = batch.column_by_name(&col_name)
+                    && let Some(arr) = col.as_any().downcast_ref::<Int64Array>()
+                    && !arr.is_null(row)
+                {
+                    assert_eq!(
+                        arr.value(row),
+                        expected,
+                        "Int value mismatch at {col_name}[{row}].\nInput: {:?}",
+                        String::from_utf8_lossy(line)
+                    );
                 }
             } else if val.is_f64() {
                 let expected = val.as_f64().unwrap();
                 let col_name = format!("{}_float", key_str);
-                if let Some(col) = batch.column_by_name(&col_name) {
-                    if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
-                        if !arr.is_null(row) {
-                            let actual = arr.value(row);
-                            assert!(
-                                actual == expected
-                                    || (actual - expected).abs() < 1e-6
-                                    || (actual.is_nan() && expected.is_nan()),
-                                "Float value mismatch at {col_name}[{row}]: expected={expected}, actual={actual}.\nInput: {:?}",
-                                String::from_utf8_lossy(line)
-                            );
-                        }
-                    }
+                if let Some(col) = batch.column_by_name(&col_name)
+                    && let Some(arr) = col.as_any().downcast_ref::<Float64Array>()
+                    && !arr.is_null(row)
+                {
+                    let actual = arr.value(row);
+                    assert!(
+                        actual == expected
+                            || (actual - expected).abs() < 1e-6
+                            || (actual.is_nan() && expected.is_nan()),
+                        "Float value mismatch at {col_name}[{row}]: expected={expected}, actual={actual}.\nInput: {:?}",
+                        String::from_utf8_lossy(line)
+                    );
                 }
             }
             // booleans stored as strings, nulls are null — skip for now
@@ -310,7 +307,9 @@ fn assert_builders_consistent(input: &[u8]) {
     let mut streaming = StreamingSimdScanner::new(ScanConfig::default());
 
     let sb = storage.scan(input).expect("scan should succeed");
-    let stb = streaming.scan(bytes::Bytes::from(input.to_vec())).expect("scan should succeed");
+    let stb = streaming
+        .scan(bytes::Bytes::from(input.to_vec()))
+        .expect("scan should succeed");
 
     assert_eq!(
         sb.num_rows(),
@@ -595,21 +594,27 @@ fn edge_duplicate_keys_different_types() {
 fn no_panic_truncated_string() {
     let input = b"{\"a\":\"unterminated\n";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
 fn no_panic_truncated_object() {
     let input = b"{\"a\":1,\"b\"\n";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
 fn no_panic_garbage() {
     let input = b"not json at all\n";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
@@ -621,21 +626,27 @@ fn no_panic_random_bytes() {
         .as_bytes()
         .to_vec();
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(&input).expect("scan should not fail on valid UTF-8");
+    let _batch = simd
+        .scan(&input)
+        .expect("scan should not fail on valid UTF-8");
 }
 
 #[test]
 fn no_panic_only_quotes() {
     let input = b"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
 fn no_panic_only_backslashes() {
     let input = b"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
@@ -651,5 +662,7 @@ fn no_panic_deeply_nested() {
     }
     input.push_str("}\n");
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input.as_bytes()).expect("scan should not fail on valid UTF-8");
+    let _batch = simd
+        .scan(input.as_bytes())
+        .expect("scan should not fail on valid UTF-8");
 }

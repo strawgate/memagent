@@ -27,7 +27,7 @@ use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
-use logfwd_config::{Format, OutputConfig, OutputType};
+use logfwd_config::{AuthConfig, Format, OutputConfig, OutputType};
 
 // ---------------------------------------------------------------------------
 // Trait + metadata
@@ -194,11 +194,34 @@ pub enum Compression {
 }
 
 // ---------------------------------------------------------------------------
+// Auth helpers
+// ---------------------------------------------------------------------------
+
+/// Build a flat list of HTTP headers from an [`AuthConfig`].
+///
+/// - `bearer_token` produces `Authorization: Bearer <token>`.
+/// - `headers` entries are appended as-is.
+fn build_auth_headers(auth: Option<&AuthConfig>) -> Vec<(String, String)> {
+    let Some(auth) = auth else {
+        return Vec::new();
+    };
+    let mut headers: Vec<(String, String)> = Vec::new();
+    if let Some(token) = &auth.bearer_token {
+        headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+    }
+    for (k, v) in &auth.headers {
+        headers.push((k.clone(), v.clone()));
+    }
+    headers
+}
+
+// ---------------------------------------------------------------------------
 // Output construction (factory)
 // ---------------------------------------------------------------------------
 
 /// Build an output sink from configuration.
 pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn OutputSink>, String> {
+    let auth_headers = build_auth_headers(cfg.auth.as_ref());
     match cfg.output_type {
         OutputType::Stdout => {
             let fmt = match cfg.format.as_ref() {
@@ -227,6 +250,7 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
                 endpoint.clone(),
                 protocol,
                 compression,
+                auth_headers,
             )))
         }
         OutputType::Http => {
@@ -237,7 +261,7 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
             Ok(Box::new(JsonLinesSink::new(
                 name.to_string(),
                 endpoint.clone(),
-                vec![],
+                auth_headers,
             )))
         }
         _ => Err(format!(
@@ -409,6 +433,7 @@ mod tests {
             "http://localhost:4318".to_string(),
             OtlpProtocol::Http,
             Compression::None,
+            vec![],
         );
         sink.encode_batch(&batch, &meta);
 
@@ -491,7 +516,7 @@ mod tests {
             DataType::Float64,
             true,
         )]));
-        let dur = Float64Array::from(vec![Some(3.125)]);
+        let dur = Float64Array::from(vec![Some(3.25)]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(dur)]).unwrap();
         let meta = make_metadata();
 
@@ -499,7 +524,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         sink.write_batch_to(&batch, &meta, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
-        assert!(output.contains("\"duration_ms\":3.125"), "got: {}", output);
+        assert!(output.contains("\"duration_ms\":3.25"), "got: {}", output);
     }
 
     #[test]
@@ -512,6 +537,7 @@ mod tests {
             compression: None,
             format: Some(Format::Json),
             path: None,
+            auth: None,
         };
         let sink = build_output_sink("test", &cfg).unwrap();
         assert_eq!(sink.name(), "test");
@@ -527,6 +553,7 @@ mod tests {
             compression: Some("zstd".to_string()),
             format: None,
             path: None,
+            auth: None,
         };
         let sink = build_output_sink("otel", &cfg).unwrap();
         assert_eq!(sink.name(), "otel");
@@ -542,6 +569,7 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            auth: None,
         };
         let sink = build_output_sink("es", &cfg).unwrap();
         assert_eq!(sink.name(), "es");
@@ -557,10 +585,85 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            auth: None,
         };
         let result = build_output_sink("bad", &cfg);
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("endpoint"), "got: {err}");
+    }
+
+    #[test]
+    fn test_build_auth_headers_none() {
+        let headers = build_auth_headers(None);
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn test_build_auth_headers_bearer() {
+        use logfwd_config::AuthConfig;
+        let auth = AuthConfig {
+            bearer_token: Some("tok123".to_string()),
+            headers: std::collections::HashMap::new(),
+        };
+        let headers = build_auth_headers(Some(&auth));
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0, "Authorization");
+        assert_eq!(headers[0].1, "Bearer tok123");
+    }
+
+    #[test]
+    fn test_build_auth_headers_custom() {
+        use logfwd_config::AuthConfig;
+        let mut h = std::collections::HashMap::new();
+        h.insert("X-API-Key".to_string(), "secret".to_string());
+        let auth = AuthConfig {
+            bearer_token: None,
+            headers: h,
+        };
+        let headers = build_auth_headers(Some(&auth));
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0, "X-API-Key");
+        assert_eq!(headers[0].1, "secret");
+    }
+
+    #[test]
+    fn test_build_auth_headers_bearer_and_custom() {
+        use logfwd_config::AuthConfig;
+        let mut h = std::collections::HashMap::new();
+        h.insert("X-Tenant".to_string(), "acme".to_string());
+        let auth = AuthConfig {
+            bearer_token: Some("mytoken".to_string()),
+            headers: h,
+        };
+        let headers = build_auth_headers(Some(&auth));
+        // Bearer first, then custom
+        assert_eq!(headers.len(), 2);
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v == "Bearer mytoken")
+        );
+        assert!(headers.iter().any(|(k, v)| k == "X-Tenant" && v == "acme"));
+    }
+
+    #[test]
+    fn test_build_output_sink_http_with_bearer_auth() {
+        use logfwd_config::AuthConfig;
+        let cfg = OutputConfig {
+            name: Some("auth-sink".to_string()),
+            output_type: OutputType::Http,
+            endpoint: Some("http://localhost:9200".to_string()),
+            protocol: None,
+            compression: None,
+            format: None,
+            path: None,
+            auth: Some(AuthConfig {
+                bearer_token: Some("mytoken".to_string()),
+                headers: std::collections::HashMap::new(),
+            }),
+        };
+        let sink = build_output_sink("auth-sink", &cfg).unwrap();
+        assert_eq!(sink.name(), "auth-sink");
     }
 }
