@@ -216,14 +216,14 @@ fn bench_transform(c: &mut Criterion) {
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("select_star", |b| {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
-        b.iter(|| transform.execute(batch.clone()).unwrap())
+        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
     });
 
     // Filter
     group.bench_function("where_filter", |b| {
         let mut transform =
             SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
-        b.iter(|| transform.execute(batch.clone()).unwrap())
+        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
     });
 
     // Projection + computed column
@@ -232,7 +232,7 @@ fn bench_transform(c: &mut Criterion) {
             "SELECT level_str, message_str, status_int, duration_ms_int FROM logs",
         )
         .unwrap();
-        b.iter(|| transform.execute(batch.clone()).unwrap())
+        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
     });
 
     // regexp_extract
@@ -242,7 +242,7 @@ fn bench_transform(c: &mut Criterion) {
              regexp_extract(message_str, '(GET|POST) (\\S+)', 2) AS path FROM logs",
         )
         .unwrap();
-        b.iter(|| transform.execute(batch.clone()).unwrap())
+        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
     });
 
     // grok
@@ -251,7 +251,7 @@ fn bench_transform(c: &mut Criterion) {
             "SELECT grok(message_str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed FROM logs",
         )
         .unwrap();
-        b.iter(|| transform.execute(batch.clone()).unwrap())
+        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
     });
 
     group.finish();
@@ -323,7 +323,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         b.iter(|| {
             let mut scanner = Scanner::new(ScanConfig::default());
             let batch = scanner.scan(&data);
-            let result = transform.execute(batch).unwrap();
+            let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
         })
     });
@@ -336,7 +336,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         b.iter(|| {
             let mut scanner = Scanner::new(ScanConfig::default());
             let batch = scanner.scan(&data);
-            let result = transform.execute(batch).unwrap();
+            let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
         })
     });
@@ -352,7 +352,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         b.iter(|| {
             let mut scanner = Scanner::new(ScanConfig::default());
             let batch = scanner.scan(&data);
-            let result = transform.execute(batch).unwrap();
+            let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
         })
     });
