@@ -247,10 +247,10 @@ impl FileTailer {
 
         for path in new_paths {
             // Watch the parent directory for future events.
-            if let Some(parent) = path.parent() {
-                if let Err(e) = self.watch_dir(parent) {
-                    eprintln!("warn: could not watch {}: {e}", parent.display());
-                }
+            if let Some(parent) = path.parent()
+                && let Err(e) = self.watch_dir(parent)
+            {
+                eprintln!("warn: could not watch {}: {e}", parent.display());
             }
 
             // Open the file (new files from glob discovery always read from the beginning).

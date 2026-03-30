@@ -104,6 +104,11 @@ pub struct InputConfig {
     pub path: Option<String>,
     pub listen: Option<String>,
     pub format: Option<Format>,
+    /// Per-type additional configuration. The factory function
+    /// (`build_input_state`) deserialises and validates these fields based on
+    /// `input_type`.
+    #[serde(default)]
+    pub extra: Option<serde_json::Value>,
 }
 
 /// A single output destination.
@@ -117,6 +122,11 @@ pub struct OutputConfig {
     pub compression: Option<String>,
     pub format: Option<Format>,
     pub path: Option<String>,
+    /// Per-type additional configuration. The factory function
+    /// (`build_output_sink`) deserialises and validates these fields based on
+    /// `output_type`.
+    #[serde(default)]
+    pub extra: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -644,5 +654,61 @@ output:
             let yaml = format!("input:\n  type: {itype}\n  {extra}\noutput:\n  type: stdout\n");
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));
         }
+    }
+
+    #[test]
+    fn input_extra_field_round_trips() {
+        let yaml = r#"
+input:
+  type: tcp
+  listen: 0.0.0.0:514
+  format: syslog
+  extra:
+    tls: true
+    max_connections: 100
+output:
+  type: stdout
+"#;
+        let cfg = Config::load_str(yaml).expect("should parse input with extra");
+        let pipe = &cfg.pipelines["default"];
+        let extra = pipe.inputs[0].extra.as_ref().expect("extra should be Some");
+        assert_eq!(extra["tls"], serde_json::Value::Bool(true));
+        assert_eq!(extra["max_connections"], serde_json::Value::Number(100.into()));
+    }
+
+    #[test]
+    fn output_extra_field_round_trips() {
+        let yaml = r#"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: loki
+  endpoint: http://loki:3100
+  extra:
+    labels:
+      job: logfwd
+      env: prod
+"#;
+        let cfg = Config::load_str(yaml).expect("should parse output with extra");
+        let pipe = &cfg.pipelines["default"];
+        let extra = pipe.outputs[0].extra.as_ref().expect("extra should be Some");
+        assert_eq!(extra["labels"]["job"], serde_json::Value::String("logfwd".into()));
+        assert_eq!(extra["labels"]["env"], serde_json::Value::String("prod".into()));
+    }
+
+    #[test]
+    fn missing_extra_field_defaults_to_none() {
+        let yaml = r#"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: stdout
+"#;
+        let cfg = Config::load_str(yaml).expect("should parse config without extra");
+        let pipe = &cfg.pipelines["default"];
+        assert!(pipe.inputs[0].extra.is_none());
+        assert!(pipe.outputs[0].extra.is_none());
     }
 }
