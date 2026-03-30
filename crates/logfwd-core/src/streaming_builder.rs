@@ -173,8 +173,8 @@ impl StreamingBuilder {
         }
         self.written_bits |= bit;
         let fc = &mut self.fields[idx];
-        fc.has_int = true;
         if let Some(v) = parse_int_fast(value) {
+            fc.has_int = true;
             fc.int_values.push((self.row_count, v));
         }
     }
@@ -187,8 +187,8 @@ impl StreamingBuilder {
         }
         self.written_bits |= bit;
         let fc = &mut self.fields[idx];
-        fc.has_float = true;
         if let Some(v) = parse_float_fast(value) {
+            fc.has_float = true;
             fc.float_values.push((self.row_count, v));
         }
     }

@@ -15,15 +15,21 @@ pub struct JsonLinesSink {
     url: String,
     headers: Vec<(String, String)>,
     pub batch_buf: Vec<u8>,
+    http_agent: ureq::Agent,
 }
 
 impl JsonLinesSink {
     pub fn new(name: String, url: String, headers: Vec<(String, String)>) -> Self {
+        let http_agent = ureq::config::Config::builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .build()
+            .new_agent();
         JsonLinesSink {
             name,
             url,
             headers,
             batch_buf: Vec::with_capacity(64 * 1024),
+            http_agent,
         }
     }
 
@@ -87,7 +93,7 @@ impl OutputSink for JsonLinesSink {
             return Ok(());
         }
 
-        let mut req = ureq::post(&self.url);
+        let mut req = self.http_agent.post(&self.url);
         for (k, v) in &self.headers {
             req = req.header(k.as_str(), v.as_str());
         }

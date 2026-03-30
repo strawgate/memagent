@@ -108,8 +108,13 @@ impl FormatParser for RawParser {
                     match b {
                         b'"' => out.extend_from_slice(b"\\\""),
                         b'\\' => out.extend_from_slice(b"\\\\"),
+                        b'\n' => out.extend_from_slice(b"\\n"),
                         b'\r' => out.extend_from_slice(b"\\r"),
                         b'\t' => out.extend_from_slice(b"\\t"),
+                        b if b < 0x20 => {
+                            // Escape control characters per RFC 8259.
+                            let _ = std::io::Write::write_fmt(out, format_args!("\\u{:04x}", b));
+                        }
                         _ => out.push(b),
                     }
                 }

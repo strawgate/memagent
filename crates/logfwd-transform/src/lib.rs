@@ -528,22 +528,21 @@ impl SqlTransform {
     }
 
     /// Add an enrichment table that will be registered in each DataFusion
-    /// session alongside the `logs` table. Panics if a table with the same
-    /// name is already registered or if the name conflicts with "logs".
+    /// session alongside the `logs` table. Returns an error if a table with
+    /// the same name is already registered or if the name conflicts with "logs".
     pub fn add_enrichment_table(
         &mut self,
         table: Arc<dyn logfwd_core::enrichment::EnrichmentTable>,
-    ) {
+    ) -> Result<(), String> {
         let name = table.name();
-        assert!(
-            name != "logs",
-            "enrichment table cannot be named 'logs' (reserved)"
-        );
-        assert!(
-            !self.enrichment_tables.iter().any(|t| t.name() == name),
-            "duplicate enrichment table name: '{name}'"
-        );
+        if name == "logs" {
+            return Err("enrichment table cannot be named 'logs' (reserved)".to_string());
+        }
+        if self.enrichment_tables.iter().any(|t| t.name() == name) {
+            return Err(format!("duplicate enrichment table name: '{name}'"));
+        }
         self.enrichment_tables.push(table);
+        Ok(())
     }
 
     /// Execute the SQL transform on a RecordBatch.

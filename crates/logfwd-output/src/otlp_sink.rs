@@ -32,6 +32,7 @@ pub struct OtlpSink {
     pub encoder_buf: Vec<u8>,
     compress_buf: Vec<u8>,
     compressor: Option<ChunkCompressor>,
+    http_agent: ureq::Agent,
 }
 
 impl OtlpSink {
@@ -45,6 +46,10 @@ impl OtlpSink {
             Compression::Zstd => Some(ChunkCompressor::new(1)),
             _ => None,
         };
+        let http_agent = ureq::config::Config::builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .build()
+            .new_agent();
         OtlpSink {
             name,
             endpoint,
@@ -53,6 +58,7 @@ impl OtlpSink {
             encoder_buf: Vec::with_capacity(64 * 1024),
             compress_buf: Vec::with_capacity(64 * 1024),
             compressor,
+            http_agent,
         }
     }
 
@@ -155,7 +161,7 @@ impl OutputSink for OtlpSink {
             OtlpProtocol::Http => "application/x-protobuf",
         };
 
-        let mut req = ureq::post(&self.endpoint);
+        let mut req = self.http_agent.post(&self.endpoint);
         req = req.header("Content-Type", content_type);
         if self.compression == Compression::Zstd {
             req = req.header("Content-Encoding", "zstd");
