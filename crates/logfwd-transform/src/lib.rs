@@ -515,8 +515,6 @@ pub struct SqlTransform {
     schema_hash: u64,
     /// Enrichment tables registered alongside `logs` in each DataFusion session.
     enrichment_tables: Vec<Arc<dyn logfwd_core::enrichment::EnrichmentTable>>,
-    /// Optional geo-IP database for the `geo_lookup()` UDF.
-    geo_database: Option<Arc<dyn logfwd_core::enrichment::GeoDatabase>>,
 }
 
 impl SqlTransform {
@@ -529,17 +527,7 @@ impl SqlTransform {
             analyzer,
             schema_hash: 0,
             enrichment_tables: Vec::new(),
-            geo_database: None,
         })
-    }
-
-    /// Set the geo-IP database used by the `geo_lookup()` UDF.
-    ///
-    /// The database is shared (via `Arc`) across all batch executions without
-    /// reloading. Call this once after construction when a geo database is
-    /// configured. Replaces any previously set database.
-    pub fn set_geo_database(&mut self, db: Arc<dyn logfwd_core::enrichment::GeoDatabase>) {
-        self.geo_database = Some(db);
     }
 
     /// Add an enrichment table that will be registered in each DataFusion
@@ -585,9 +573,6 @@ impl SqlTransform {
         ctx.register_udf(ScalarUDF::from(FloatCastUdf::new()));
         ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
         ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
-        if let Some(db) = &self.geo_database {
-            ctx.register_udf(ScalarUDF::from(crate::udf::GeoLookupUdf::new(Arc::clone(db))));
-        }
 
         // Register the batch as a MemTable named "logs".
         let schema = batch.schema();
@@ -647,15 +632,22 @@ impl SqlTransform {
     }
 
     /// Synchronous wrapper around [`execute`](Self::execute) for callers that
-    /// are not yet async. Creates a short-lived tokio runtime per call.
+    /// are not yet async. When called from within a tokio runtime, uses
+    /// `block_in_place` + the current handle. Otherwise creates a temporary
+    /// runtime.
     ///
     /// When the calling code is made async, switch to `execute().await` directly.
     pub fn execute_blocking(&mut self, batch: RecordBatch) -> Result<RecordBatch, String> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
-        rt.block_on(self.execute(batch))
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(self.execute(batch))),
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
+                rt.block_on(self.execute(batch))
+            }
+        }
     }
 
     /// Get the ScanConfig for field pushdown.
@@ -871,9 +863,9 @@ mod tests {
             true,
         )]));
         let vals: ArrayRef = Arc::new(StringArray::from(vec![
-            Some("3.125"),
+            Some("3.25"),
             Some("not_float"),
-            Some("2.625"),
+            Some("2.125"),
         ]));
         let batch = RecordBatch::try_new(schema, vec![vals]).unwrap();
 
@@ -885,9 +877,9 @@ mod tests {
             .as_any()
             .downcast_ref::<Float64Array>()
             .unwrap();
-        assert!((col.value(0) - 3.125).abs() < 1e-10);
+        assert!((col.value(0) - 3.25).abs() < 1e-10);
         assert!(col.is_null(1));
-        assert!((col.value(2) - 2.625).abs() < 1e-10);
+        assert!((col.value(2) - 2.125).abs() < 1e-10);
     }
 
     #[test]

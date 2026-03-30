@@ -776,8 +776,7 @@ mod tests {
             let expected_bs = scalar_mask(&data, b'\\');
 
             // SSE2 (always available on x86_64)
-            let (q_sse2, bs_sse2) =
-                unsafe { find_quotes_and_backslashes_sse2(&data) };
+            let (q_sse2, bs_sse2) = unsafe { find_quotes_and_backslashes_sse2(&data) };
             assert_eq!(
                 q_sse2, expected_q,
                 "SSE2 quote mismatch at positions {positions:?}"
@@ -789,8 +788,7 @@ mod tests {
 
             // AVX2 (skip at runtime if not available)
             if is_x86_feature_detected!("avx2") {
-                let (q_avx2, bs_avx2) =
-                    unsafe { find_quotes_and_backslashes_avx2(&data) };
+                let (q_avx2, bs_avx2) = unsafe { find_quotes_and_backslashes_avx2(&data) };
                 assert_eq!(
                     q_avx2, expected_q,
                     "AVX2 quote mismatch at positions {positions:?}"
@@ -835,14 +833,12 @@ mod tests {
             let expected_q = scalar_mask(&data, b'"');
             let expected_bs = scalar_mask(&data, b'\\');
 
-            let (q_sse2, bs_sse2) =
-                unsafe { find_quotes_and_backslashes_sse2(&data) };
+            let (q_sse2, bs_sse2) = unsafe { find_quotes_and_backslashes_sse2(&data) };
             assert_eq!(q_sse2, expected_q);
             assert_eq!(bs_sse2, expected_bs);
 
             if is_x86_feature_detected!("avx2") {
-                let (q_avx2, bs_avx2) =
-                    unsafe { find_quotes_and_backslashes_avx2(&data) };
+                let (q_avx2, bs_avx2) = unsafe { find_quotes_and_backslashes_avx2(&data) };
                 assert_eq!(q_avx2, expected_q);
                 assert_eq!(bs_avx2, expected_bs);
             }
@@ -859,7 +855,11 @@ mod tests {
 
                 let data = block_with(&[pos], b'\\');
                 let (_, bs) = super::super::find_quotes_and_backslashes(&data);
-                assert_eq!(bs, 1u64 << pos, "dispatcher backslash mismatch at pos {pos}");
+                assert_eq!(
+                    bs,
+                    1u64 << pos,
+                    "dispatcher backslash mismatch at pos {pos}"
+                );
             }
         }
     }
@@ -912,11 +912,19 @@ mod tests {
             for pos in 0..64usize {
                 let data = block_with(&[pos], b'"');
                 let (q, _) = super::super::find_quotes_and_backslashes(&data);
-                assert_eq!(q, 1u64 << pos, "NEON dispatcher quote mismatch at pos {pos}");
+                assert_eq!(
+                    q,
+                    1u64 << pos,
+                    "NEON dispatcher quote mismatch at pos {pos}"
+                );
 
                 let data = block_with(&[pos], b'\\');
                 let (_, bs) = super::super::find_quotes_and_backslashes(&data);
-                assert_eq!(bs, 1u64 << pos, "NEON dispatcher backslash mismatch at pos {pos}");
+                assert_eq!(
+                    bs,
+                    1u64 << pos,
+                    "NEON dispatcher backslash mismatch at pos {pos}"
+                );
             }
         }
     }

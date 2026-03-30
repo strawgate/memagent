@@ -254,12 +254,12 @@ fn sonic_rs_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
                 } else if let Some(n) = val.as_number() {
                     if n.is_f64() {
                         if let Some(f) = n.as_f64() {
-                            let s = f.to_string();
-                            builder.append_float_by_idx(idx, s.as_bytes());
+                            let buf = f.to_string();
+                            builder.append_float_by_idx(idx, buf.as_bytes());
                         }
                     } else if let Some(i) = n.as_i64() {
-                        let s = i.to_string();
-                        builder.append_int_by_idx(idx, s.as_bytes());
+                        let buf = i.to_string();
+                        builder.append_int_by_idx(idx, buf.as_bytes());
                     }
                 } else {
                     // nested object/array → serialize as string
@@ -287,7 +287,13 @@ macro_rules! bench_scenario {
 
             group.bench_function("SIMD scanner", |b| {
                 let mut scanner = SimdScanner::new($config());
-                b.iter(|| black_box(scanner.scan(black_box(&data)).expect("bench: scan should not fail")))
+                b.iter(|| {
+                    black_box(
+                        scanner
+                            .scan(black_box(&data))
+                            .expect("bench: scan should not fail"),
+                    )
+                })
             });
 
             group.bench_function("sonic-rs DOM", |b| {

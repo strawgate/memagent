@@ -2,3 +2,5 @@
 *.json
 build
 /actionlint
+.claude/worktrees/
+.worktrees/

@@ -72,10 +72,8 @@ impl ChunkCompressor {
         let compressed_size = self.compressor.compress_to_buffer(raw, &mut cursor)?;
 
         // Compute checksum over the compressed payload.
-        let checksum = xxhash_rust::xxh32::xxh32(
-            &self.out_buf[HEADER_SIZE..HEADER_SIZE + compressed_size],
-            0,
-        );
+        let checksum =
+            xxhash_rust::xxh32::xxh32(&self.out_buf[HEADER_SIZE..HEADER_SIZE + compressed_size], 0);
 
         // Fill in the header.
         self.out_buf[0..2].copy_from_slice(&MAGIC.to_le_bytes());

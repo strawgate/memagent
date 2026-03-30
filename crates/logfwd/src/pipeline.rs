@@ -209,7 +209,9 @@ impl Pipeline {
                             Ok(r) => r,
                             Err(e) => {
                                 self.metrics.inc_transform_error();
-                                return Err(io::Error::other(format!("transform error: {e}")));
+                                eprintln!("pipeline: transform error (batch dropped): {e}");
+                                last_flush = Instant::now();
+                                continue;
                             }
                         };
                         let transform_elapsed = t1.elapsed();
@@ -248,6 +250,63 @@ impl Pipeline {
             }
         }
 
+        // Drain any data that accumulated in json_buf since the last periodic
+        // flush so that nothing is silently discarded on shutdown.
+        let mut combined = Vec::new();
+        for input in &mut self.inputs {
+            if !input.json_buf.is_empty() {
+                combined.append(&mut input.json_buf);
+            }
+        }
+
+        if !combined.is_empty() {
+            let t0 = Instant::now();
+            let batch = match self.scanner.scan(combined.into()) {
+                Ok(b) => b,
+                Err(e) => {
+                    return Err(io::Error::other(format!("scan error: {e}")));
+                }
+            };
+            let scan_elapsed = t0.elapsed();
+
+            if batch.num_rows() > 0 {
+                let num_rows = batch.num_rows() as u64;
+                self.metrics.transform_in.inc_lines(num_rows);
+
+                let t1 = Instant::now();
+                match self.transform.execute_blocking(batch) {
+                    Ok(result) => {
+                        let transform_elapsed = t1.elapsed();
+                        self.metrics
+                            .transform_out
+                            .inc_lines(result.num_rows() as u64);
+
+                        let t2 = Instant::now();
+                        let metadata = BatchMetadata {
+                            resource_attrs: vec![],
+                            observed_time_ns: now_nanos(),
+                        };
+                        if let Err(e) = self.output.send_batch(&result, &metadata) {
+                            self.metrics.output_error();
+                            return Err(e);
+                        }
+                        let output_elapsed = t2.elapsed();
+
+                        self.metrics.record_batch(
+                            num_rows,
+                            scan_elapsed.as_nanos() as u64,
+                            transform_elapsed.as_nanos() as u64,
+                            output_elapsed.as_nanos() as u64,
+                        );
+                    }
+                    Err(e) => {
+                        self.metrics.inc_transform_error();
+                        eprintln!("pipeline: transform error (batch dropped): {e}");
+                    }
+                }
+            }
+        }
+
         self.output.flush()?;
         Ok(())
     }
@@ -276,7 +335,6 @@ fn build_input_state(
                 .path
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': file input requires 'path'"))?;
-            let paths = vec![PathBuf::from(path)];
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let tail_config = TailConfig {
                 start_from_end: false,
@@ -284,8 +342,13 @@ fn build_input_state(
                 read_buf_size: 256 * 1024,
                 ..Default::default()
             };
-            let source = FileInput::new(name.to_string(), &paths, tail_config)
-                .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
+            let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
+            let source = if is_glob {
+                FileInput::new_with_globs(name.to_string(), &[path.as_str()], tail_config)
+            } else {
+                FileInput::new(name.to_string(), &[PathBuf::from(path)], tail_config)
+            }
+            .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
 
             Ok(InputState {
                 name: name.to_string(),
@@ -332,6 +395,7 @@ mod tests {
             compression: None,
             format: Some(Format::Json),
             path: None,
+            auth: None,
         };
         let sink = build_output_sink("test", &cfg).unwrap();
         assert_eq!(sink.name(), "test");
@@ -347,6 +411,7 @@ mod tests {
             compression: Some("zstd".to_string()),
             format: None,
             path: None,
+            auth: None,
         };
         let sink = build_output_sink("otel", &cfg).unwrap();
         assert_eq!(sink.name(), "otel");
@@ -362,6 +427,7 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            auth: None,
         };
         let sink = build_output_sink("es", &cfg).unwrap();
         assert_eq!(sink.name(), "es");
@@ -377,6 +443,7 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            auth: None,
         };
         let result = build_output_sink("bad", &cfg);
         assert!(result.is_err());
@@ -491,5 +558,127 @@ output:
             .lines_total
             .load(Ordering::Relaxed);
         assert!(lines_in > 0, "expected transform_in > 0, got {lines_in}");
+    }
+
+    /// Data buffered in `json_buf` at the moment the shutdown token fires must
+    /// not be silently discarded.  The final flush-on-shutdown should process
+    /// any pending data before the pipeline exits.
+    #[test]
+    fn test_pipeline_flush_on_shutdown() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+
+        let mut data = String::new();
+        for i in 0..5 {
+            data.push_str(&format!(r#"{{"level":"INFO","msg":"hello {}"}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+
+        // Set batch_timeout large enough that the normal time-based flush will
+        // never fire during the test — data stays in json_buf until shutdown.
+        pipeline.batch_timeout = Duration::from_secs(60);
+        pipeline.poll_interval = Duration::from_millis(5);
+
+        let shutdown = CancellationToken::new();
+        let sd_clone = shutdown.clone();
+
+        // Cancel after enough time for the file to be polled and data to land
+        // in json_buf, but well before the 60-second batch_timeout would fire.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            sd_clone.cancel();
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(result.is_ok(), "got: {:?}", result.err());
+
+        // The shutdown flush must have forwarded the buffered lines.
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert!(lines_in > 0, "expected transform_in > 0, got {lines_in}");
+    }
+
+    /// A SQL that references a column that does not exist in the batch should
+    /// cause the transform to return an error.  The pipeline must log the error,
+    /// drop that batch, and continue running — it must NOT return `Err`.
+    #[test]
+    fn test_pipeline_transform_error_skips_batch_continues() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+
+        // Write JSON lines that do NOT contain `nonexistent_col`.
+        let mut data = String::new();
+        for i in 0..5 {
+            data.push_str(&format!(r#"{{"level":"INFO","msg":"hello {}"}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        // SQL references a column that will never be present → DataFusion
+        // returns an error at execution time, not at parse / new() time.
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+transform: "SELECT nonexistent_col FROM logs"
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+
+        pipeline.batch_timeout = Duration::from_millis(10);
+        pipeline.poll_interval = Duration::from_millis(5);
+
+        let shutdown = CancellationToken::new();
+        let sd_clone = shutdown.clone();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            sd_clone.cancel();
+        });
+
+        // Pipeline must not return Err even though every batch will fail the
+        // transform step.
+        let result = pipeline.run(&shutdown);
+        assert!(
+            result.is_ok(),
+            "pipeline should survive transform errors but got: {:?}",
+            result.err()
+        );
+
+        // At least one transform error must have been counted.
+        let errors = pipeline.metrics.transform_errors.load(Ordering::Relaxed);
+        assert!(errors > 0, "expected transform_errors > 0, got {errors}");
     }
 }

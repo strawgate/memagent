@@ -306,7 +306,9 @@ fn assert_builders_consistent(input: &[u8]) {
     let mut streaming = StreamingSimdScanner::new(ScanConfig::default());
 
     let sb = storage.scan(input).expect("scan should succeed");
-    let stb = streaming.scan(bytes::Bytes::from(input.to_vec())).expect("scan should succeed");
+    let stb = streaming
+        .scan(bytes::Bytes::from(input.to_vec()))
+        .expect("scan should succeed");
 
     assert_eq!(
         sb.num_rows(),
@@ -591,21 +593,27 @@ fn edge_duplicate_keys_different_types() {
 fn no_panic_truncated_string() {
     let input = b"{\"a\":\"unterminated\n";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
 fn no_panic_truncated_object() {
     let input = b"{\"a\":1,\"b\"\n";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
 fn no_panic_garbage() {
     let input = b"not json at all\n";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
@@ -617,21 +625,27 @@ fn no_panic_random_bytes() {
         .as_bytes()
         .to_vec();
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(&input).expect("scan should not fail on valid UTF-8");
+    let _batch = simd
+        .scan(&input)
+        .expect("scan should not fail on valid UTF-8");
 }
 
 #[test]
 fn no_panic_only_quotes() {
     let input = b"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
 fn no_panic_only_backslashes() {
     let input = b"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\";
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input).expect("scan should not fail on malformed JSON");
+    let _batch = simd
+        .scan(input)
+        .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
@@ -647,5 +661,7 @@ fn no_panic_deeply_nested() {
     }
     input.push_str("}\n");
     let mut simd = SimdScanner::new(ScanConfig::default());
-    let _batch = simd.scan(input.as_bytes()).expect("scan should not fail on valid UTF-8");
+    let _batch = simd
+        .scan(input.as_bytes())
+        .expect("scan should not fail on valid UTF-8");
 }

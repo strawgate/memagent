@@ -1,0 +1,4 @@
+[default.extend-words]
+# Intentional partial strings in test data and example error messages.
+hel = "hel"
+leve = "leve"
