@@ -416,8 +416,13 @@ impl Pipeline {
         // Drain channel messages before joining input threads.
         // This prevents deadlock during shutdown if a producer is blocked in
         // `blocking_send` while the bounded channel is full.
+        // Flush in batch_target_bytes increments to avoid unbounded memory
+        // growth when the channel has many buffered messages.
         while let Some(data) = rx.recv().await {
             json_buf.extend_from_slice(&data);
+            if json_buf.len() >= self.batch_target_bytes {
+                self.flush_batch(&mut json_buf).await;
+            }
         }
 
         // All sender clones have now been dropped, so input threads can be
@@ -439,10 +444,14 @@ impl Pipeline {
 
     /// Scan + transform + output a batch of accumulated JSON lines.
     async fn flush_batch(&mut self, json_buf: &mut Vec<u8>) {
-        let combined = std::mem::take(json_buf);
-        if combined.is_empty() {
+        if json_buf.is_empty() {
             return;
         }
+        // Swap in a pre-allocated buffer to avoid losing the capacity
+        // of the original json_buf (which was created with
+        // Vec::with_capacity(batch_target_bytes)).
+        let mut combined = Vec::with_capacity(self.batch_target_bytes);
+        std::mem::swap(json_buf, &mut combined);
 
         // Scan (CPU-bound, ~1-5ms per 4MB batch). block_in_place tells
         // tokio to move other tasks off this worker while scanning.
@@ -1119,7 +1128,6 @@ output:
         // SlowSink blocks the consumer, causing the channel to fill up.
         pipeline = pipeline.with_output(Box::new(SlowSink {
             delay: Duration::from_millis(50),
-            rows_received: 0,
         }));
         pipeline.batch_target_bytes = 64; // tiny batches → many channel sends
         pipeline.batch_timeout = Duration::from_millis(10);
@@ -1186,7 +1194,6 @@ output:
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
         pipeline = pipeline.with_output(Box::new(SlowSink {
             delay: Duration::from_millis(20),
-            rows_received: 0,
         }));
         pipeline.batch_timeout = Duration::from_millis(30);
 
@@ -1387,7 +1394,6 @@ output:
         pipeline = pipeline.with_output(Box::new(FailingSink {
             fail_count: 3,
             calls: 0,
-            rows_received: 0,
         }));
         pipeline.batch_timeout = Duration::from_millis(20);
 
@@ -1558,7 +1564,6 @@ output:
         let freeze_token = CancellationToken::new();
         pipeline = pipeline.with_output(Box::new(FrozenSink {
             release: freeze_token.clone(),
-            rows_received: 0,
         }));
         pipeline.batch_timeout = Duration::from_millis(20);
 
@@ -1679,17 +1684,15 @@ output:
     /// A sink that sleeps on each send_batch to simulate slow output.
     struct SlowSink {
         delay: Duration,
-        rows_received: u64,
     }
 
     impl OutputSink for SlowSink {
         fn send_batch(
             &mut self,
-            batch: &arrow::record_batch::RecordBatch,
+            _batch: &arrow::record_batch::RecordBatch,
             _metadata: &BatchMetadata,
         ) -> io::Result<()> {
             std::thread::sleep(self.delay);
-            self.rows_received += batch.num_rows() as u64;
             Ok(())
         }
         fn flush(&mut self) -> io::Result<()> {
@@ -1704,13 +1707,12 @@ output:
     /// Simulates a frozen output (hung network connection, deadlock).
     struct FrozenSink {
         release: CancellationToken,
-        rows_received: u64,
     }
 
     impl OutputSink for FrozenSink {
         fn send_batch(
             &mut self,
-            batch: &arrow::record_batch::RecordBatch,
+            _batch: &arrow::record_batch::RecordBatch,
             _metadata: &BatchMetadata,
         ) -> io::Result<()> {
             // Block until released. In a real scenario this would be a
@@ -1718,7 +1720,6 @@ output:
             while !self.release.is_cancelled() {
                 std::thread::sleep(Duration::from_millis(10));
             }
-            self.rows_received += batch.num_rows() as u64;
             Ok(())
         }
         fn flush(&mut self) -> io::Result<()> {
@@ -1733,13 +1734,12 @@ output:
     struct FailingSink {
         fail_count: u32,
         calls: u32,
-        rows_received: u64,
     }
 
     impl OutputSink for FailingSink {
         fn send_batch(
             &mut self,
-            batch: &arrow::record_batch::RecordBatch,
+            _batch: &arrow::record_batch::RecordBatch,
             _metadata: &BatchMetadata,
         ) -> io::Result<()> {
             self.calls += 1;
@@ -1749,7 +1749,6 @@ output:
                     self.calls, self.fail_count
                 )));
             }
-            self.rows_received += batch.num_rows() as u64;
             Ok(())
         }
         fn flush(&mut self) -> io::Result<()> {
