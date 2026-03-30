@@ -182,7 +182,7 @@ fn collect_i64_col(batch: &RecordBatch, name: &str) -> Vec<Option<i64>> {
 fn utf8view_where_equals() {
     let batch = make_utf8view_batch();
     let mut t = SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 2, "expected 2 ERROR rows");
     let levels = collect_string_col(&result, "level_str");
     assert!(
@@ -196,7 +196,7 @@ fn utf8view_where_equals() {
 fn utf8view_where_not_equals() {
     let batch = make_utf8view_batch();
     let mut t = SqlTransform::new("SELECT * FROM logs WHERE level_str != 'ERROR'").unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 2, "expected INFO and DEBUG rows");
     let levels = collect_string_col(&result, "level_str");
     assert!(
@@ -210,7 +210,7 @@ fn utf8view_where_not_equals() {
 fn utf8view_where_like() {
     let batch = make_utf8view_batch();
     let mut t = SqlTransform::new("SELECT msg_str FROM logs WHERE msg_str LIKE '%full%'").unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 1);
     let msgs = collect_string_col(&result, "msg_str");
     assert_eq!(msgs[0], "disk full");
@@ -226,7 +226,7 @@ fn utf8view_group_by_count() {
         "SELECT level_str, COUNT(*) AS cnt FROM logs GROUP BY level_str ORDER BY level_str",
     )
     .unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     // Three distinct levels: DEBUG, ERROR, INFO (ORDER BY level_str ASC)
     assert_eq!(result.num_rows(), 3, "three distinct levels");
     let levels = collect_string_col(&result, "level_str");
@@ -244,7 +244,7 @@ fn utf8view_group_by_sum() {
         "SELECT level_str, SUM(count_int) AS total FROM logs GROUP BY level_str ORDER BY level_str",
     )
     .unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 3);
     let levels = collect_string_col(&result, "level_str");
     let totals = collect_i64_col(&result, "total");
@@ -260,7 +260,7 @@ fn utf8view_group_by_sum() {
 fn utf8view_order_by_asc() {
     let batch = make_utf8view_batch();
     let mut t = SqlTransform::new("SELECT level_str FROM logs ORDER BY level_str ASC").unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 4);
     let levels = collect_string_col(&result, "level_str");
     // Sorted ascending: DEBUG, ERROR, ERROR, INFO
@@ -272,7 +272,7 @@ fn utf8view_order_by_asc() {
 fn utf8view_order_by_desc() {
     let batch = make_utf8view_batch();
     let mut t = SqlTransform::new("SELECT level_str FROM logs ORDER BY level_str DESC").unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 4);
     let levels = collect_string_col(&result, "level_str");
     // Sorted descending: INFO, ERROR, ERROR, DEBUG
@@ -293,9 +293,9 @@ fn utf8view_cross_join_enrichment() {
         "env",
         &[("environment".to_string(), "production".to_string())],
     ));
-    t.add_enrichment_table(env);
+    t.add_enrichment_table(env).unwrap();
 
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 4);
     let envs = collect_string_col(&result, "environment");
     assert!(envs.iter().all(|v| v == "production"));
@@ -338,7 +338,7 @@ fn utf8view_hash_join_on_string_key() {
         "SELECT level_str, msg_str FROM logs WHERE level_str IN ('ERROR', 'DEBUG')",
     )
     .unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 3, "ERROR×2 + DEBUG×1");
     let levels = collect_string_col(&result, "level_str");
     assert!(levels.iter().all(|v| v == "ERROR" || v == "DEBUG"));
@@ -355,7 +355,7 @@ fn utf8view_hash_join_on_string_key() {
 fn dict_utf8_where_equals() {
     let batch = make_dict_utf8_batch();
     let mut t = SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 2, "expected 2 ERROR rows");
     let levels = collect_string_col(&result, "level_str");
     assert!(levels.iter().all(|v| v == "ERROR"));
@@ -368,7 +368,7 @@ fn dict_utf8_where_in() {
     let mut t =
         SqlTransform::new("SELECT level_str FROM logs WHERE level_str IN ('INFO', 'DEBUG')")
             .unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 2, "INFO and DEBUG, one row each");
     let mut levels = collect_string_col(&result, "level_str");
     levels.sort();
@@ -385,7 +385,7 @@ fn dict_utf8_group_by_count() {
         "SELECT level_str, COUNT(*) AS cnt FROM logs GROUP BY level_str ORDER BY level_str",
     )
     .unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 3);
     let levels = collect_string_col(&result, "level_str");
     assert_eq!(levels, ["DEBUG", "ERROR", "INFO"]);
@@ -400,7 +400,7 @@ fn dict_utf8_group_by_count() {
 fn dict_utf8_order_by_asc() {
     let batch = make_dict_utf8_batch();
     let mut t = SqlTransform::new("SELECT level_str FROM logs ORDER BY level_str ASC").unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 4);
     let levels = collect_string_col(&result, "level_str");
     assert_eq!(levels, ["DEBUG", "ERROR", "ERROR", "INFO"]);
@@ -420,7 +420,7 @@ fn dict_utf8_order_by_asc() {
 fn dict_utf8view_where_equals() {
     let batch = make_dict_utf8view_batch();
     let mut t = SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 2, "expected 2 ERROR rows");
     let levels = collect_string_col(&result, "level_str");
     assert!(levels.iter().all(|v| v == "ERROR"));
@@ -443,7 +443,7 @@ fn dict_utf8view_group_by_count() {
     .unwrap();
     // GROUP BY on Dictionary(Int32, Utf8View) is not yet supported.
     // Arrow cannot repack the dictionary with a Utf8View value type.
-    let result = t.execute(batch);
+    let result = t.execute_blocking(batch);
     assert!(
         result.is_err(),
         "GROUP BY on Dictionary(Int32, Utf8View) should fail \
@@ -464,7 +464,7 @@ fn dict_utf8view_group_by_count() {
 fn dict_utf8view_order_by_asc() {
     let batch = make_dict_utf8view_batch();
     let mut t = SqlTransform::new("SELECT level_str FROM logs ORDER BY level_str ASC").unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 4);
     let levels = collect_string_col(&result, "level_str");
     assert_eq!(levels, ["DEBUG", "ERROR", "ERROR", "INFO"]);
@@ -532,7 +532,7 @@ fn streaming_builder_realistic_transform() {
          WHERE level_str = 'ERROR'",
     )
     .unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 1);
 
     let levels = collect_string_col(&result, "level_str");
@@ -571,7 +571,7 @@ fn streaming_builder_group_by_and_order_by() {
          ORDER BY cnt DESC, level_str ASC",
     )
     .unwrap();
-    let result = t.execute(batch).unwrap();
+    let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 3, "three distinct levels");
 
     let levels = collect_string_col(&result, "level_str");

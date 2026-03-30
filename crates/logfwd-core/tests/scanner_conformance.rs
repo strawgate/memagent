@@ -46,12 +46,10 @@ fn assert_values_correct(input: &[u8]) {
             let mut seen = std::collections::HashSet::new();
             let mut has_dup = false;
             let iter = unsafe { sonic_rs::to_object_iter_unchecked(s) };
-            for item in iter {
-                if let Ok((key, _)) = item {
-                    if !seen.insert(key.to_string()) {
-                        has_dup = true;
-                        break;
-                    }
+            for (key, _) in iter.flatten() {
+                if !seen.insert(key.to_string()) {
+                    has_dup = true;
+                    break;
                 }
             }
             if has_dup {
@@ -93,57 +91,54 @@ fn assert_values_correct(input: &[u8]) {
             if val.is_str() {
                 let expected = val.as_str().unwrap();
                 let col_name = format!("{}_str", key_str);
-                if let Some(col) = batch.column_by_name(&col_name) {
-                    if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
-                        if !arr.is_null(row) {
-                            let actual = arr.value(row);
-                            // Our scanner preserves escape sequences (raw bytes),
-                            // sonic-rs unescapes them. So we compare the sonic-rs
-                            // unescaped value against our raw bytes — they should
-                            // differ only by escape processing.
-                            // For strings without escapes, they must be identical.
-                            if !actual.contains('\\') {
-                                assert_eq!(
-                                    actual,
-                                    expected,
-                                    "String value mismatch at {col_name}[{row}].\nExpected: {expected:?}\nActual: {actual:?}\nInput: {:?}",
-                                    String::from_utf8_lossy(line)
-                                );
-                            }
-                        }
+                if let Some(col) = batch.column_by_name(&col_name)
+                    && let Some(arr) = col.as_any().downcast_ref::<StringArray>()
+                    && !arr.is_null(row)
+                {
+                    let actual = arr.value(row);
+                    // Our scanner preserves escape sequences (raw bytes),
+                    // sonic-rs unescapes them. So we compare the sonic-rs
+                    // unescaped value against our raw bytes — they should
+                    // differ only by escape processing.
+                    // For strings without escapes, they must be identical.
+                    if !actual.contains('\\') {
+                        assert_eq!(
+                            actual,
+                            expected,
+                            "String value mismatch at {col_name}[{row}].\nExpected: {expected:?}\nActual: {actual:?}\nInput: {:?}",
+                            String::from_utf8_lossy(line)
+                        );
                     }
                 }
             } else if val.is_i64() {
                 let expected = val.as_i64().unwrap();
                 let col_name = format!("{}_int", key_str);
-                if let Some(col) = batch.column_by_name(&col_name) {
-                    if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-                        if !arr.is_null(row) {
-                            assert_eq!(
-                                arr.value(row),
-                                expected,
-                                "Int value mismatch at {col_name}[{row}].\nInput: {:?}",
-                                String::from_utf8_lossy(line)
-                            );
-                        }
-                    }
+                if let Some(col) = batch.column_by_name(&col_name)
+                    && let Some(arr) = col.as_any().downcast_ref::<Int64Array>()
+                    && !arr.is_null(row)
+                {
+                    assert_eq!(
+                        arr.value(row),
+                        expected,
+                        "Int value mismatch at {col_name}[{row}].\nInput: {:?}",
+                        String::from_utf8_lossy(line)
+                    );
                 }
             } else if val.is_f64() {
                 let expected = val.as_f64().unwrap();
                 let col_name = format!("{}_float", key_str);
-                if let Some(col) = batch.column_by_name(&col_name) {
-                    if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
-                        if !arr.is_null(row) {
-                            let actual = arr.value(row);
-                            assert!(
-                                actual == expected
-                                    || (actual - expected).abs() < 1e-6
-                                    || (actual.is_nan() && expected.is_nan()),
-                                "Float value mismatch at {col_name}[{row}]: expected={expected}, actual={actual}.\nInput: {:?}",
-                                String::from_utf8_lossy(line)
-                            );
-                        }
-                    }
+                if let Some(col) = batch.column_by_name(&col_name)
+                    && let Some(arr) = col.as_any().downcast_ref::<Float64Array>()
+                    && !arr.is_null(row)
+                {
+                    let actual = arr.value(row);
+                    assert!(
+                        actual == expected
+                            || (actual - expected).abs() < 1e-6
+                            || (actual.is_nan() && expected.is_nan()),
+                        "Float value mismatch at {col_name}[{row}]: expected={expected}, actual={actual}.\nInput: {:?}",
+                        String::from_utf8_lossy(line)
+                    );
                 }
             }
             // booleans stored as strings, nulls are null — skip for now
@@ -646,7 +641,7 @@ fn no_panic_deeply_nested() {
     for _ in 0..100 {
         input.push_str("{\"x\":");
     }
-    input.push_str("1");
+    input.push('1');
     for _ in 0..100 {
         input.push('}');
     }
