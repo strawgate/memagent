@@ -185,7 +185,9 @@ impl Pipeline {
                             Ok(r) => r,
                             Err(e) => {
                                 self.metrics.inc_transform_error();
-                                return Err(io::Error::other(format!("transform error: {e}")));
+                                eprintln!("pipeline: transform error (batch dropped): {e}");
+                                last_flush = Instant::now();
+                                continue;
                             }
                         };
                         let transform_elapsed = t1.elapsed();
@@ -467,5 +469,73 @@ output:
             .lines_total
             .load(Ordering::Relaxed);
         assert!(lines_in > 0, "expected transform_in > 0, got {lines_in}");
+    }
+
+    /// A SQL that references a column that does not exist in the batch should
+    /// cause the transform to return an error.  The pipeline must log the error,
+    /// drop that batch, and continue running — it must NOT return `Err`.
+    #[test]
+    fn test_pipeline_transform_error_skips_batch_continues() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+
+        // Write JSON lines that do NOT contain `nonexistent_col`.
+        let mut data = String::new();
+        for i in 0..5 {
+            data.push_str(&format!(r#"{{"level":"INFO","msg":"hello {}"}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        // SQL references a column that will never be present → DataFusion
+        // returns an error at execution time, not at parse / new() time.
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+transform: "SELECT nonexistent_col FROM logs"
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+
+        pipeline.batch_timeout = Duration::from_millis(10);
+        pipeline.poll_interval = Duration::from_millis(5);
+
+        let shutdown = CancellationToken::new();
+        let sd_clone = shutdown.clone();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            sd_clone.cancel();
+        });
+
+        // Pipeline must not return Err even though every batch will fail the
+        // transform step.
+        let result = pipeline.run(&shutdown);
+        assert!(
+            result.is_ok(),
+            "pipeline should survive transform errors but got: {:?}",
+            result.err()
+        );
+
+        // At least one transform error must have been counted.
+        let errors = pipeline
+            .metrics
+            .transform_errors
+            .load(Ordering::Relaxed);
+        assert!(
+            errors > 0,
+            "expected transform_errors > 0, got {errors}"
+        );
     }
 }
