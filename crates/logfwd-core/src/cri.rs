@@ -337,3 +337,59 @@ mod tests {
         reassembler.reset();
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani formal verification proofs
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Prove CriReassembler::feed respects max_line_size.
+    /// Output of a partial + full sequence never exceeds the configured max.
+    /// Uses fixed 8-byte messages — Kani explores all 2^64 byte values.
+    #[kani::proof]
+    fn verify_reassembler_respects_max_size() {
+        let max_size: usize = kani::any();
+        kani::assume(max_size >= 1 && max_size <= 32);
+
+        let mut r = CriReassembler::new(max_size);
+
+        let msg1: [u8; 8] = kani::any();
+        let partial = CriLine {
+            timestamp: b"ts",
+            stream: b"out",
+            is_full: false,
+            message: &msg1,
+        };
+        let _ = r.feed(&partial);
+
+        let msg2: [u8; 8] = kani::any();
+        let full = CriLine {
+            timestamp: b"ts",
+            stream: b"out",
+            is_full: true,
+            message: &msg2,
+        };
+        if let Some(output) = r.feed(&full) {
+            assert!(output.len() <= max_size, "output exceeds max_line_size");
+        }
+    }
+
+    /// Prove CriReassembler::feed produces output only on "F" lines.
+    #[kani::proof]
+    fn verify_reassembler_output_only_on_full() {
+        let mut r = CriReassembler::new(1024);
+
+        let msg: [u8; 8] = kani::any();
+        let partial = CriLine {
+            timestamp: b"ts",
+            stream: b"out",
+            is_full: false,
+            message: &msg,
+        };
+        let result = r.feed(&partial);
+        assert!(result.is_none(), "partial line should not produce output");
+    }
+}
