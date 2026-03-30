@@ -362,6 +362,7 @@ fn build_input_state(
                 start_from_end: false,
                 poll_interval_ms: 50,
                 read_buf_size: 256 * 1024,
+                max_open_files: cfg.max_open_files.unwrap_or(1024),
                 ..Default::default()
             };
             let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
