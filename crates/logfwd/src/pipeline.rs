@@ -559,8 +559,11 @@ fn input_poll_loop(
                 match event {
                     InputEvent::Data { bytes, .. } => {
                         input.stats.inc_bytes(bytes.len() as u64);
-                        let n = input.parser.process(&bytes, &mut input.json_buf);
+                        let (n, parse_err) = input.parser.process(&bytes, &mut input.json_buf);
                         input.stats.inc_lines(n as u64);
+                        if parse_err > 0 {
+                            input.stats.inc_parse_errors(parse_err as u64);
+                        }
                     }
                     InputEvent::Rotated | InputEvent::Truncated => {
                         input.parser.reset();
