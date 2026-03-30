@@ -632,15 +632,24 @@ impl SqlTransform {
     }
 
     /// Synchronous wrapper around [`execute`](Self::execute) for callers that
-    /// are not yet async. Creates a short-lived tokio runtime per call.
+    /// are not yet async. When called from within a tokio runtime, uses
+    /// `block_in_place` + the current handle. Otherwise creates a temporary
+    /// runtime.
     ///
     /// When the calling code is made async, switch to `execute().await` directly.
     pub fn execute_blocking(&mut self, batch: RecordBatch) -> Result<RecordBatch, String> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
-        rt.block_on(self.execute(batch))
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(self.execute(batch)))
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
+                rt.block_on(self.execute(batch))
+            }
+        }
     }
 
     /// Get the ScanConfig for field pushdown.

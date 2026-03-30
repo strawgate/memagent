@@ -39,6 +39,15 @@ impl FileInput {
         let tailer = FileTailer::new(paths, config)?;
         Ok(FileInput { name, tailer })
     }
+
+    /// Create a new `FileInput` from glob patterns.
+    ///
+    /// Patterns are expanded immediately and re-evaluated periodically to
+    /// discover files created after startup (e.g., new Kubernetes pods).
+    pub fn new_with_globs(name: String, patterns: &[&str], config: TailConfig) -> io::Result<Self> {
+        let tailer = FileTailer::new_with_globs(patterns, config)?;
+        Ok(FileInput { name, tailer })
+    }
 }
 
 impl InputSource for FileInput {

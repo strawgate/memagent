@@ -252,7 +252,6 @@ fn build_input_state(
                 .path
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': file input requires 'path'"))?;
-            let paths = vec![PathBuf::from(path)];
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let tail_config = TailConfig {
                 start_from_end: false,
@@ -260,8 +259,13 @@ fn build_input_state(
                 read_buf_size: 256 * 1024,
                 ..Default::default()
             };
-            let source = FileInput::new(name.to_string(), &paths, tail_config)
-                .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
+            let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
+            let source = if is_glob {
+                FileInput::new_with_globs(name.to_string(), &[path.as_str()], tail_config)
+            } else {
+                FileInput::new(name.to_string(), &[PathBuf::from(path)], tail_config)
+            }
+            .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
 
             Ok(InputState {
                 name: name.to_string(),
