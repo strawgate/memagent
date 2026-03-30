@@ -607,7 +607,7 @@ fn compliance_mixed_type_across_rows() {
         // Row 1: float
         let f = get_float(batch, "v_float", 1).expect("v_float row 1");
         #[allow(clippy::approx_constant)]
-        let expected = 3.14_f64;
+        let expected = 3.14;
         assert!((f - expected).abs() < 1e-10);
 
         // Row 2: string "text"

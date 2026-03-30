@@ -19,13 +19,20 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
+        fsGroup: 10001
       containers:
         - name: logfwd
-          image: logfwd:latest
+          image: ghcr.io/strawgate/logfwd:latest
           imagePullPolicy: IfNotPresent
           args:
             - "--config"
-            - "/etc/logfwd/config.yaml"
+            - "/etc/logfwd/pipeline.yaml"
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: diagnostics
               containerPort: 9090
@@ -37,15 +44,15 @@ spec:
             httpGet:
               path: /health
               port: diagnostics
-            initialDelaySeconds: 10
-            periodSeconds: 30
+            initialDelaySeconds: 5
+            periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: diagnostics
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
@@ -53,17 +60,17 @@ spec:
             httpGet:
               path: /health
               port: diagnostics
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            initialDelaySeconds: 2
+            periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 12
           resources:
             requests:
-              cpu: "1"
-              memory: "1Gi"
+              cpu: "250m"
+              memory: "256Mi"
             limits:
               cpu: "1"
-              memory: "1Gi"
+              memory: "512Mi"
           volumeMounts:
             - name: varlog
               mountPath: /var/log
@@ -71,6 +78,8 @@ spec:
             - name: config
               mountPath: /etc/logfwd
               readOnly: true
+            - name: data
+              mountPath: /var/lib/logfwd
       volumes:
         - name: varlog
           hostPath:
@@ -78,9 +87,7 @@ spec:
         - name: config
           configMap:
             name: logfwd-config
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: logfwd
-  namespace: collectors
+        - name: data
+          hostPath:
+            path: /var/lib/logfwd
+            type: DirectoryOrCreate

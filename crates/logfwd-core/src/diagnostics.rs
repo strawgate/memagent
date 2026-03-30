@@ -2,7 +2,7 @@ use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Meter};
@@ -104,6 +104,9 @@ pub struct PipelineMetrics {
     pub scan_nanos_total: AtomicU64,
     pub transform_nanos_total: AtomicU64,
     pub output_nanos_total: AtomicU64,
+    /// Unix timestamp (nanoseconds) of the last successfully processed batch.
+    /// Zero means no batch has been processed yet.
+    pub last_batch_time_ns: AtomicU64,
     // OTel counters (for OTLP push)
     meter: Meter,
     otel_attrs: Vec<KeyValue>,
@@ -145,6 +148,7 @@ impl PipelineMetrics {
             scan_nanos_total: AtomicU64::new(0),
             transform_nanos_total: AtomicU64::new(0),
             output_nanos_total: AtomicU64::new(0),
+            last_batch_time_ns: AtomicU64::new(0),
             otel_transform_errors: meter.u64_counter("logfwd_transform_errors").build(),
             otel_batches: meter.u64_counter("logfwd_batches").build(),
             otel_batch_rows: meter.u64_counter("logfwd_batch_rows").build(),
@@ -232,6 +236,8 @@ impl PipelineMetrics {
             .fetch_add(transform_ns, Ordering::Relaxed);
         self.output_nanos_total
             .fetch_add(output_ns, Ordering::Relaxed);
+        self.last_batch_time_ns
+            .store(now_nanos(), Ordering::Relaxed);
 
         self.otel_batches.add(1, &self.otel_attrs);
         self.otel_batch_rows.add(rows, &self.otel_attrs);
@@ -299,6 +305,7 @@ impl DiagnosticsServer {
         match route {
             "/" => self.serve_dashboard(request),
             "/health" => self.serve_health(request),
+            "/ready" => self.serve_ready(request),
             "/api/pipelines" => self.serve_pipelines(request),
             // Prometheus /metrics removed — use OTLP metrics push instead.
             // The /api/pipelines endpoint provides the same data as JSON.
@@ -339,6 +346,32 @@ impl DiagnosticsServer {
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
         let resp = tiny_http::Response::from_string(body).with_header(header);
         request.respond(resp)?;
+        Ok(())
+    }
+
+    /// Returns 200 `{"status":"ready"}` when every registered pipeline has
+    /// processed a batch within the last 30 seconds, and 503 otherwise.
+    fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
+        const STALENESS_THRESHOLD_NS: u64 = 30_000_000_000; // 30 s in nanoseconds
+
+        let now = now_nanos();
+        let all_ready = self.pipelines.iter().all(|pm| {
+            let last = pm.last_batch_time_ns.load(Ordering::Relaxed);
+            last > 0 && now.saturating_sub(last) <= STALENESS_THRESHOLD_NS
+        });
+
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        if all_ready {
+            let resp =
+                tiny_http::Response::from_string(r#"{"status":"ready"}"#).with_header(header);
+            request.respond(resp)?;
+        } else {
+            let resp = tiny_http::Response::from_string(r#"{"status":"not_ready"}"#)
+                .with_status_code(503)
+                .with_header(header);
+            request.respond(resp)?;
+        }
         Ok(())
     }
 
@@ -448,6 +481,13 @@ fn esc(s: &str) -> String {
         }
     }
     out
+}
+
+fn now_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -614,5 +654,65 @@ mod tests {
 
         let (status, _body) = http_get(port, "/nonexistent");
         assert_eq!(status, 404);
+    }
+
+    #[test]
+    fn test_ready_endpoint_no_batch_returns_503() {
+        // A pipeline that has never processed a batch (last_batch_time_ns == 0)
+        // must cause /ready to return 503.
+        let port = free_port();
+        let meter = opentelemetry::global::meter("test");
+        let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
+        // last_batch_time_ns stays at 0 (never processed).
+
+        let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
+        server.add_pipeline(Arc::new(pm));
+        let _handle = server.start();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/ready");
+        assert_eq!(status, 503, "body: {}", body);
+        assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
+    }
+
+    #[test]
+    fn test_ready_endpoint_recent_batch_returns_200() {
+        // A pipeline whose last batch was just now must return 200.
+        let port = free_port();
+        let meter = opentelemetry::global::meter("test");
+        let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
+        pm.last_batch_time_ns.store(now_nanos(), Ordering::Relaxed);
+
+        let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
+        server.add_pipeline(Arc::new(pm));
+        let _handle = server.start();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/ready");
+        assert_eq!(status, 200, "body: {}", body);
+        assert!(body.contains(r#""status":"ready""#), "body: {}", body);
+    }
+
+    #[test]
+    fn test_ready_endpoint_stale_batch_returns_503() {
+        // A pipeline whose last batch was more than 30s ago must return 503.
+        let port = free_port();
+        let meter = opentelemetry::global::meter("test");
+        let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
+        // Set the timestamp 60 seconds in the past.
+        let stale = now_nanos().saturating_sub(60_000_000_000);
+        pm.last_batch_time_ns.store(stale, Ordering::Relaxed);
+
+        let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
+        server.add_pipeline(Arc::new(pm));
+        let _handle = server.start();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/ready");
+        assert_eq!(status, 503, "body: {}", body);
+        assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
     }
 }
