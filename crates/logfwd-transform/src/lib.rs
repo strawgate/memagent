@@ -20,7 +20,10 @@ use datafusion::prelude::*;
 
 use logfwd_core::scan_config::ScanConfig;
 
+pub mod rewriter;
 pub mod udf;
+
+pub use rewriter::{FieldTypeMap, FieldTypes, field_type_map_from_schema, rewrite_sql};
 
 // Re-export sqlparser through datafusion.
 use datafusion::sql::sqlparser::ast::{
@@ -910,7 +913,7 @@ mod tests {
             "env",
             &[("environment".to_string(), "production".to_string())],
         ));
-        transform.add_enrichment_table(env_table);
+        transform.add_enrichment_table(env_table).unwrap();
 
         let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
@@ -938,7 +941,7 @@ mod tests {
         ));
 
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
-        transform.add_enrichment_table(table);
+        transform.add_enrichment_table(table).unwrap();
 
         // Enrichment table registered but not referenced in SQL — should not error.
         let result = transform.execute_blocking(batch).unwrap();
@@ -954,7 +957,7 @@ mod tests {
         // Not loaded — snapshot() returns None.
 
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
-        transform.add_enrichment_table(k8s);
+        transform.add_enrichment_table(k8s).unwrap();
 
         // Should not error — empty table just skipped.
         let result = transform.execute_blocking(batch).unwrap();

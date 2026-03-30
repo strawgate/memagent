@@ -293,7 +293,7 @@ fn utf8view_cross_join_enrichment() {
         "env",
         &[("environment".to_string(), "production".to_string())],
     ));
-    t.add_enrichment_table(env);
+    t.add_enrichment_table(env).unwrap();
 
     let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 4);
