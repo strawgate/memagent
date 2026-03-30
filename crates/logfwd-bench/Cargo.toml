@@ -14,6 +14,14 @@ memchr = "2"
 serde = { workspace = true }
 serde_json = "1"
 
+[target.'cfg(unix)'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["stats"] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+
 [[bench]]
 name = "pipeline"
 harness = false
+
+[[bin]]
+name = "memory-profile"
+path = "src/bin/memory-profile.rs"

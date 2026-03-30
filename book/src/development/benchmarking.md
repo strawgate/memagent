@@ -23,6 +23,9 @@ just bench-competitive --lines 5000000 --docker --cpus 1 --memory 1g --markdown
 ## Exploratory profiling
 
 ```bash
+# Memory usage analysis across throughput levels (AVAILABLE NOW)
+cargo run -p logfwd-bench --release --bin memory-profile
+
 # Stage-by-stage profile
 cargo run -p logfwd-bench --release --bin e2e-profile
 
@@ -32,6 +35,8 @@ cargo run -p logfwd-bench --release --bin sizes
 # Real RSS measurement
 cargo run -p logfwd-bench --release --bin rss
 ```
+
+**Note**: The `memory-profile` binary is available now and provides comprehensive memory usage analysis at different EPS levels with/without transforms. See [Memory Benchmark Results](../../docs/MEMORY_BENCHMARK_RESULTS.md) for detailed findings. The other binaries (`e2e-profile`, `sizes`, `rss`) are planned for future implementation.
 
 ## Nightly benchmarks
 
