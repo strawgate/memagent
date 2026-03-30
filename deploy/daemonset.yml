@@ -21,11 +21,17 @@ spec:
         runAsGroup: 10001
       containers:
         - name: logfwd
-          image: logfwd:latest
+          image: ghcr.io/strawgate/logfwd:latest
           imagePullPolicy: IfNotPresent
           args:
             - "--config"
-            - "/etc/logfwd/config.yaml"
+            - "/etc/logfwd/pipeline.yaml"
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: diagnostics
               containerPort: 9090
@@ -43,7 +49,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: diagnostics
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -59,11 +65,11 @@ spec:
             failureThreshold: 12
           resources:
             requests:
-              cpu: "1"
-              memory: "1Gi"
+              cpu: "2"
+              memory: "2Gi"
             limits:
-              cpu: "1"
-              memory: "1Gi"
+              cpu: "4"
+              memory: "3Gi"
           volumeMounts:
             - name: varlog
               mountPath: /var/log
@@ -71,6 +77,8 @@ spec:
             - name: config
               mountPath: /etc/logfwd
               readOnly: true
+            - name: data
+              mountPath: /var/lib/logfwd
       volumes:
         - name: varlog
           hostPath:
@@ -78,9 +86,7 @@ spec:
         - name: config
           configMap:
             name: logfwd-config
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: logfwd
-  namespace: collectors
+        - name: data
+          hostPath:
+            path: /var/lib/logfwd
+            type: DirectoryOrCreate
