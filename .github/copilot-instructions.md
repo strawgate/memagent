@@ -52,12 +52,13 @@ just bench     # Criterion micro-benchmarks
 ## Project Structure
 
 ```
-crates/logfwd/           # Binary: CLI entry point
-crates/logfwd-core/      # Core: scanner, compress, CRI, OTLP, tail, diagnostics
-crates/logfwd-config/    # Configuration: YAML parser
-crates/logfwd-output/    # Sinks: OTLP, JSON lines, Elasticsearch, Loki, Parquet, stdout
-crates/logfwd-transform/ # SQL transforms via DataFusion
-crates/logfwd-bench/     # Criterion benchmarks
+crates/logfwd/                    # Binary: CLI entry point
+crates/logfwd-core/               # Core: scanner, compress, CRI, OTLP, tail, diagnostics
+crates/logfwd-config/             # Configuration: YAML parser
+crates/logfwd-output/             # Sinks: OTLP, JSON lines, Elasticsearch, Loki, Parquet, stdout
+crates/logfwd-transform/          # SQL transforms via DataFusion
+crates/logfwd-bench/              # Criterion benchmarks
+crates/logfwd-competitive-bench/  # Comparative benchmarks vs other log agents
 ```
 
 ## What NOT to Do

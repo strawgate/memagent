@@ -21,7 +21,7 @@ Library-specific guides covering non-obvious APIs, gotchas, and patterns. Read t
 
 ## Architecture Spec
 
-[`docs/PIPELINE_ARCHITECTURE.md`](docs/PIPELINE_ARCHITECTURE.md) — formal component spec with traits, data contracts, and migration plan. Read before working on:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — formal component spec with traits, data contracts, and migration plan. Read before working on:
 - Reader/Scanner/DiskQueue/Transform/Sink/Pipeline/Checkpoint components
 - Backpressure, retry, or shutdown behavior
 - Any issue in the Phase 1–4 implementation plan
@@ -32,14 +32,7 @@ Library-specific guides covering non-obvious APIs, gotchas, and patterns. Read t
 
 | Doc | Decision |
 |-----|----------|
-| `SUMMARY.md` | Quick reference for all verdicts |
-| `arrow-ipc-feasibility.md` | DiskQueue uses Arrow IPC FileWriter + zstd + atomic rename |
-| `async-migration.md` | Transform async must precede Pipeline async (nested-runtime panic) |
-| `reader-scanner-separation.md` | Reader produces Lines or Batch; Scanner is pipeline-owned |
-| `simd-scanner-gap.md` | Skip full SIMD rewrite — stage 1 is 1% of pipeline time |
-| `columnar-otlp.md` | Skip OTLP rewrite — extract column roles from per-row loop instead |
-| `io-uring-hyperscan.md` | Skip both — not relevant for our workloads |
-| `string-interning-pgo.md` | PGO first, then FxHashMap if profiling shows need |
+| [`arrow-ipc-feasibility.md`](docs/investigation/arrow-ipc-feasibility.md) | DiskQueue uses Arrow IPC FileWriter + zstd + atomic rename |
 
 ## Issue Labels
 
