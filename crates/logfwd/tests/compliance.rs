@@ -187,10 +187,10 @@ fn verify_batches(
 
         for row in 0..batch.num_rows() {
             // Apply source filter if present.
-            if let Some(ref filter) = source_filter {
-                if !filter[row] {
-                    continue;
-                }
+            if let Some(ref filter) = source_filter
+                && !filter[row]
+            {
+                continue;
             }
 
             if seq_arr.is_null(row) {

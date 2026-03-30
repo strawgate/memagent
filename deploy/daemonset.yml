@@ -19,6 +19,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
+        fsGroup: 10001
       containers:
         - name: logfwd
           image: ghcr.io/strawgate/logfwd:latest
@@ -65,11 +66,11 @@ spec:
             failureThreshold: 12
           resources:
             requests:
-              cpu: "2"
-              memory: "2Gi"
+              cpu: "250m"
+              memory: "256Mi"
             limits:
-              cpu: "4"
-              memory: "3Gi"
+              cpu: "1"
+              memory: "512Mi"
           volumeMounts:
             - name: varlog
               mountPath: /var/log
