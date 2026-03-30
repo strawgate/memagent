@@ -1,9 +1,9 @@
 use std::io;
 
-use arrow::array::{Array, AsArray};
+use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 
-use super::{BatchMetadata, OutputSink, build_col_infos, write_row_json};
+use super::{BatchMetadata, OutputSink, build_col_infos, str_value, write_row_json};
 
 // ---------------------------------------------------------------------------
 // JsonLinesSink
@@ -62,10 +62,11 @@ impl JsonLinesSink {
                 .schema()
                 .index_of("_raw")
                 .expect("_raw column missing");
-            let arr = batch.column(idx).as_string::<i32>();
+            let col = batch.column(idx);
             for row in 0..num_rows {
-                if !arr.is_null(row) {
-                    self.batch_buf.extend_from_slice(arr.value(row).as_bytes());
+                if !col.is_null(row) {
+                    self.batch_buf
+                        .extend_from_slice(str_value(col, row).as_bytes());
                     self.batch_buf.push(b'\n');
                 }
             }

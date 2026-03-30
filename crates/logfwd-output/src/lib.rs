@@ -22,6 +22,7 @@ use stdout::*;
 use std::io::{self, Write};
 
 use arrow::array::{Array, AsArray};
+use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
 use logfwd_config::{Format, OutputConfig, OutputType};
@@ -117,6 +118,18 @@ pub(crate) fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
     infos
 }
 
+/// Read a string value from a column at the given row.
+///
+/// Supports both `Utf8` (StringArray) and `Utf8View` (StringViewArray) columns,
+/// allowing output sinks to work transparently with either scanner.
+pub(crate) fn str_value(col: &dyn Array, row: usize) -> &str {
+    match col.data_type() {
+        DataType::Utf8 => col.as_string::<i32>().value(row),
+        DataType::Utf8View => col.as_string_view().value(row),
+        _ => "",
+    }
+}
+
 /// Write a single row as a JSON object into `out`.
 pub(crate) fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], out: &mut Vec<u8>) {
     out.push(b'{');
@@ -149,9 +162,8 @@ pub(crate) fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], 
                 let _ = Write::write_fmt(out, format_args!("{}", v));
             }
             _ => {
-                // str or untyped — treat as string
-                let arr = arr.as_string::<i32>();
-                let v = arr.value(row);
+                // str or untyped — treat as string (Utf8 or Utf8View)
+                let v = str_value(arr, row);
                 out.push(b'"');
                 // Minimal JSON escape
                 for &b in v.as_bytes() {

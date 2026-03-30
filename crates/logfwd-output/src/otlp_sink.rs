@@ -1,6 +1,6 @@
 use std::io;
 
-use arrow::array::{Array, AsArray, PrimitiveArray, StringArray};
+use arrow::array::{Array, AsArray, PrimitiveArray};
 use arrow::datatypes::{DataType, Float64Type, Int64Type};
 use arrow::record_batch::RecordBatch;
 
@@ -10,7 +10,7 @@ use logfwd_core::otlp::{
     encode_varint_field, parse_severity, parse_timestamp_nanos, varint_len,
 };
 
-use super::{BatchMetadata, Compression, OutputSink, parse_column_name};
+use super::{BatchMetadata, Compression, OutputSink, parse_column_name, str_value};
 
 // ---------------------------------------------------------------------------
 // OtlpSink
@@ -177,7 +177,7 @@ impl OutputSink for OtlpSink {
 
 /// Pre-downcast array variant for an attribute column.
 enum AttrArray<'a> {
-    Str(&'a StringArray),
+    Str(&'a dyn Array),
     Int(&'a PrimitiveArray<Int64Type>),
     Float(&'a PrimitiveArray<Float64Type>),
 }
@@ -187,15 +187,15 @@ enum AttrArray<'a> {
 /// Built once in [`encode_batch`] before the per-row loop to avoid
 /// re-scanning the schema and re-downcasting arrays on every row.
 struct BatchColumns<'a> {
-    /// Downcast string array for the timestamp column (e.g. "2024-01-15T10:30:00Z").
-    timestamp_col: Option<(usize, &'a StringArray)>,
-    /// Downcast string array for the level/severity column (e.g. "ERROR").
-    level_col: Option<(usize, &'a StringArray)>,
-    /// Downcast string array for the primary message/body column.
-    body_col: Option<(usize, &'a StringArray)>,
-    /// Downcast string array for the `_raw` column, used as a per-row body
+    /// Downcast array for the timestamp column (e.g. "2024-01-15T10:30:00Z").
+    timestamp_col: Option<(usize, &'a dyn Array)>,
+    /// Downcast array for the level/severity column (e.g. "ERROR").
+    level_col: Option<(usize, &'a dyn Array)>,
+    /// Downcast array for the primary message/body column.
+    body_col: Option<(usize, &'a dyn Array)>,
+    /// Downcast array for the `_raw` column, used as a per-row body
     /// fallback when `body_col` is null for that row.
-    raw_col: Option<(usize, &'a StringArray)>,
+    raw_col: Option<(usize, &'a dyn Array)>,
     /// Non-special attribute columns: (field_name, pre-downcast array).
     attribute_cols: Vec<(String, AttrArray<'a>)>,
 }
@@ -203,10 +203,10 @@ struct BatchColumns<'a> {
 /// Scan the batch schema once and resolve column roles and downcast arrays.
 fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
     let schema = batch.schema();
-    let mut timestamp_col: Option<(usize, &StringArray)> = None;
-    let mut level_col: Option<(usize, &StringArray)> = None;
-    let mut body_col: Option<(usize, &StringArray)> = None;
-    let mut raw_col: Option<(usize, &StringArray)> = None;
+    let mut timestamp_col: Option<(usize, &dyn Array)> = None;
+    let mut level_col: Option<(usize, &dyn Array)> = None;
+    let mut body_col: Option<(usize, &dyn Array)> = None;
+    let mut raw_col: Option<(usize, &dyn Array)> = None;
     // Indices of columns to exclude from attributes.
     let mut excluded: Vec<usize> = Vec::with_capacity(4);
 
@@ -215,20 +215,26 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         let (field_name, _) = parse_column_name(col_name);
         match field_name {
             "timestamp" | "time" | "ts" => {
-                if timestamp_col.is_none() && matches!(field.data_type(), DataType::Utf8) {
-                    timestamp_col = Some((idx, batch.column(idx).as_string::<i32>()));
+                if timestamp_col.is_none()
+                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                {
+                    timestamp_col = Some((idx, batch.column(idx).as_ref()));
                     excluded.push(idx);
                 }
             }
             "level" | "severity" | "log_level" | "loglevel" | "lvl" => {
-                if level_col.is_none() && matches!(field.data_type(), DataType::Utf8) {
-                    level_col = Some((idx, batch.column(idx).as_string::<i32>()));
+                if level_col.is_none()
+                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                {
+                    level_col = Some((idx, batch.column(idx).as_ref()));
                     excluded.push(idx);
                 }
             }
             "message" | "msg" | "_msg" | "body" => {
-                if body_col.is_none() && matches!(field.data_type(), DataType::Utf8) {
-                    body_col = Some((idx, batch.column(idx).as_string::<i32>()));
+                if body_col.is_none()
+                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                {
+                    body_col = Some((idx, batch.column(idx).as_ref()));
                     excluded.push(idx);
                 }
             }
@@ -236,7 +242,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                 // Always excluded from attributes; used as per-row body fallback.
                 excluded.push(idx);
                 if raw_col.is_none() {
-                    raw_col = Some((idx, batch.column(idx).as_string::<i32>()));
+                    raw_col = Some((idx, batch.column(idx).as_ref()));
                 }
             }
             _ => {}
@@ -253,7 +259,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         let attr = match type_suffix {
             "int" => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
             "float" => AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>()),
-            _ => AttrArray::Str(batch.column(idx).as_string::<i32>()),
+            _ => AttrArray::Str(batch.column(idx).as_ref()),
         };
         attribute_cols.push((field_name.to_string(), attr));
     }
@@ -282,7 +288,7 @@ fn encode_row_as_log_record(
             if arr.is_null(row) {
                 None
             } else {
-                Some(parse_timestamp_nanos(arr.value(row).as_bytes()))
+                Some(parse_timestamp_nanos(str_value(arr, row).as_bytes()))
             }
         })
         .unwrap_or(0);
@@ -293,7 +299,7 @@ fn encode_row_as_log_record(
             if arr.is_null(row) {
                 None
             } else {
-                Some(parse_severity(arr.value(row).as_bytes()))
+                Some(parse_severity(str_value(arr, row).as_bytes()))
             }
         })
         .unwrap_or((Severity::Unspecified, b""));
@@ -304,7 +310,7 @@ fn encode_row_as_log_record(
             if arr.is_null(row) {
                 None
             } else {
-                Some(arr.value(row))
+                Some(str_value(arr, row))
             }
         })
         .or_else(|| {
@@ -312,7 +318,7 @@ fn encode_row_as_log_record(
                 if arr.is_null(row) {
                     None
                 } else {
-                    Some(arr.value(row))
+                    Some(str_value(arr, row))
                 }
             })
         })
@@ -359,7 +365,11 @@ fn encode_row_as_log_record(
             }
             AttrArray::Str(arr) => {
                 if !arr.is_null(row) {
-                    encode_key_value_string(buf, field_name.as_bytes(), arr.value(row).as_bytes());
+                    encode_key_value_string(
+                        buf,
+                        field_name.as_bytes(),
+                        str_value(*arr, row).as_bytes(),
+                    );
                 }
             }
         }

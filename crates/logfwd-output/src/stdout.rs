@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use arrow::array::{Array, AsArray};
 use arrow::record_batch::RecordBatch;
 
-use super::{BatchMetadata, OutputSink, build_col_infos, write_row_json};
+use super::{BatchMetadata, OutputSink, build_col_infos, str_value, write_row_json};
 
 // ---------------------------------------------------------------------------
 // StdoutSink
@@ -60,10 +60,10 @@ impl StdoutSink {
                     .iter()
                     .position(|f| f.name() == "_raw");
                 if let Some(idx) = raw_idx {
-                    let arr = batch.column(idx).as_string::<i32>();
+                    let col = batch.column(idx);
                     for row in 0..num_rows {
-                        if !arr.is_null(row) {
-                            dest.write_all(arr.value(row).as_bytes())?;
+                        if !col.is_null(row) {
+                            dest.write_all(str_value(col, row).as_bytes())?;
                             dest.write_all(b"\n")?;
                         }
                     }
@@ -110,9 +110,9 @@ impl StdoutSink {
 
             // Timestamp (dim).
             if let Some(idx) = ts_idx {
-                let arr = batch.column(idx).as_string::<i32>();
-                if !arr.is_null(row) {
-                    let ts = arr.value(row);
+                let col = batch.column(idx);
+                if !col.is_null(row) {
+                    let ts = str_value(col, row);
                     // Show just the time portion if it's a full ISO timestamp.
                     let short = ts.find('T').map(|i| &ts[i + 1..]).unwrap_or(ts);
                     if self.color {
@@ -128,9 +128,9 @@ impl StdoutSink {
 
             // Level (colored).
             if let Some(idx) = level_idx {
-                let arr = batch.column(idx).as_string::<i32>();
-                if !arr.is_null(row) {
-                    let level = arr.value(row);
+                let col = batch.column(idx);
+                if !col.is_null(row) {
+                    let level = str_value(col, row);
                     if self.color {
                         let color = match level {
                             "ERROR" => "\x1b[1;31m", // bold red
@@ -152,9 +152,9 @@ impl StdoutSink {
 
             // Message.
             if let Some(idx) = msg_idx {
-                let arr = batch.column(idx).as_string::<i32>();
-                if !arr.is_null(row) {
-                    self.buf.extend_from_slice(arr.value(row).as_bytes());
+                let col = batch.column(idx);
+                if !col.is_null(row) {
+                    self.buf.extend_from_slice(str_value(col, row).as_bytes());
                 }
             }
 
@@ -198,8 +198,7 @@ impl StdoutSink {
                         write!(self.buf, "{}", arr.value(row))?;
                     }
                     _ => {
-                        let arr = arr.as_string::<i32>();
-                        self.buf.extend_from_slice(arr.value(row).as_bytes());
+                        self.buf.extend_from_slice(str_value(arr, row).as_bytes());
                     }
                 }
 

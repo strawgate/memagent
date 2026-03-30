@@ -14,7 +14,7 @@ use logfwd_config::{Format, InputConfig, InputType, PipelineConfig};
 use logfwd_core::diagnostics::{ComponentStats, PipelineMetrics};
 use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_core::input::{FileInput, InputEvent, InputSource};
-use logfwd_core::scanner::SimdScanner as Scanner;
+use logfwd_core::scanner::StreamingSimdScanner as Scanner;
 use logfwd_core::tail::TailConfig;
 use logfwd_output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
 use logfwd_transform::SqlTransform;
@@ -167,7 +167,7 @@ impl Pipeline {
                 if !combined.is_empty() {
                     // Scan stage.
                     let t0 = Instant::now();
-                    let batch = self.scanner.scan(&combined);
+                    let batch = self.scanner.scan(combined.into());
                     let scan_elapsed = t0.elapsed();
 
                     if batch.num_rows() > 0 {
