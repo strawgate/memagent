@@ -110,7 +110,7 @@ service:
     }
 
     fn parse_stats(&self, body: &str) -> Option<AgentSample> {
-        let mut heap_bytes = 0u64;
+        let mut rss_bytes = 0u64;
         let mut accepted = 0u64;
         let mut sent = 0u64;
         let mut failed = 0u64;
@@ -118,8 +118,8 @@ service:
             if line.starts_with('#') || line.is_empty() {
                 continue;
             }
-            if let Some(val) = extract_prom_value(line, "process_runtime_go_mem_heap_alloc_bytes") {
-                heap_bytes = val as u64;
+            if let Some(val) = extract_prom_value(line, "process_resident_memory_bytes") {
+                rss_bytes = val as u64;
             } else if let Some(val) =
                 extract_prom_value(line, "otelcol_receiver_accepted_log_records")
             {
@@ -134,7 +134,7 @@ service:
             }
         }
         Some(AgentSample {
-            rss_bytes: heap_bytes,
+            rss_bytes,
             events_total: accepted.max(sent),
             errors_total: failed,
             ..Default::default()

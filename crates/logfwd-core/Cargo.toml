@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 bytes = "1"
+# Used for platform diagnostics APIs (mach task info/getrusage) not in std.
 libc = "0.2"
 arrow = { workspace = true }
 crossbeam-channel = "0.5"
