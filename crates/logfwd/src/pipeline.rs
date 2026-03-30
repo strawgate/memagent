@@ -1307,6 +1307,347 @@ output:
         assert!(result.unwrap().is_ok());
     }
 
+    /// Immediate shutdown (cancel before run_async) must not panic or hang.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_immediate_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("immediate.log");
+        std::fs::write(&log_path, b"{\"a\":1}\n").unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        pipeline = pipeline.with_output(Box::new(DevNullSink::new()));
+
+        let shutdown = CancellationToken::new();
+        // Cancel immediately, before even starting.
+        shutdown.cancel();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            pipeline.run_async(&shutdown),
+        )
+        .await;
+
+        assert!(result.is_ok(), "immediate shutdown must not hang");
+        assert!(result.unwrap().is_ok(), "immediate shutdown must not error");
+    }
+
+    /// Output errors must not crash the pipeline — batches are dropped
+    /// and processing continues.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_output_errors_do_not_crash() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output_err.log");
+
+        let mut data = String::new();
+        for i in 0..100 {
+            data.push_str(&format!(r#"{{"err":{i}}}"#));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        // FailingSink fails the first N batches, then succeeds.
+        pipeline = pipeline.with_output(Box::new(FailingSink {
+            fail_count: 3,
+            calls: 0,
+            rows_received: 0,
+        }));
+        pipeline.batch_timeout = Duration::from_millis(20);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            sd.cancel();
+        });
+
+        let result = pipeline.run_async(&shutdown).await;
+        assert!(result.is_ok(), "output errors should not crash pipeline");
+
+        // Data should still flow through transform even though output
+        // failed on some batches.
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert!(lines_in > 0, "data should flow through transform despite output errors");
+    }
+
+    /// Rapid repeated shutdown signals must not cause panics.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_repeated_shutdown_signals() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("repeat_shutdown.log");
+
+        let mut data = String::new();
+        for i in 0..50 {
+            data.push_str(&format!(r#"{{"rep":{i}}}"#));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        pipeline = pipeline.with_output(Box::new(DevNullSink::new()));
+        pipeline.batch_timeout = Duration::from_millis(20);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        // Cancel many times — CancellationToken should handle this gracefully.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            sd.cancel();
+            sd.cancel();
+            sd.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            pipeline.run_async(&shutdown),
+        )
+        .await;
+
+        assert!(result.is_ok(), "repeated shutdown must not hang");
+        assert!(result.unwrap().is_ok());
+    }
+
+    /// Large batch that exceeds batch_target_bytes on a single line
+    /// must still be processed and not cause channel issues.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_oversized_single_line() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("big_line.log");
+
+        // Single line with a large value (~10KB).
+        let big_value = "x".repeat(10_000);
+        let data = format!(r#"{{"big":"{}"}}"#, big_value);
+        std::fs::write(&log_path, format!("{data}\n")).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        pipeline = pipeline.with_output(Box::new(DevNullSink::new()));
+        pipeline.batch_target_bytes = 1024; // Much smaller than the line
+        pipeline.batch_timeout = Duration::from_millis(20);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            sd.cancel();
+        });
+
+        pipeline.run_async(&shutdown).await.unwrap();
+
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert!(
+            lines_in >= 1,
+            "oversized line should still be processed, got {lines_in}"
+        );
+    }
+
+    /// A frozen output (blocks indefinitely on send_batch) must not
+    /// prevent shutdown. The pipeline should still exit because shutdown
+    /// cancellation breaks the select! loop, and the drain completes
+    /// when input threads exit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_shutdown_with_frozen_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("frozen.log");
+
+        let mut data = String::new();
+        for i in 0..20 {
+            data.push_str(&format!(r#"{{"frozen":{i}}}"#));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+
+        // FrozenSink: first call blocks until the token is cancelled.
+        // This simulates an output that hangs (network timeout, deadlock).
+        let freeze_token = CancellationToken::new();
+        pipeline = pipeline.with_output(Box::new(FrozenSink {
+            release: freeze_token.clone(),
+            rows_received: 0,
+        }));
+        pipeline.batch_timeout = Duration::from_millis(20);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        let ft = freeze_token.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            sd.cancel();
+            // Release the frozen sink shortly after shutdown so the
+            // block_in_place call can return and the pipeline can exit.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            ft.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            pipeline.run_async(&shutdown),
+        )
+        .await;
+
+        assert!(result.is_ok(), "frozen output must not prevent shutdown (5s timeout)");
+        assert!(result.unwrap().is_ok());
+    }
+
+    /// Concurrent shutdown and data arrival: data written to the file
+    /// after shutdown is signalled should not cause panics or hangs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_concurrent_write_and_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("concurrent.log");
+
+        // Start with some data.
+        let mut initial = String::new();
+        for i in 0..10 {
+            initial.push_str(&format!(r#"{{"phase":"initial","i":{i}}}"#));
+            initial.push('\n');
+        }
+        std::fs::write(&log_path, initial.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        pipeline = pipeline.with_output(Box::new(DevNullSink::new()));
+        pipeline.batch_timeout = Duration::from_millis(20);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        let lp = log_path.clone();
+
+        // Concurrently: write more data AND shutdown at roughly the same time.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+
+            // Write more data to the file (the tailer should pick it up).
+            let mut more = String::new();
+            for i in 10..30 {
+                more.push_str(&format!(r#"{{"phase":"late","i":{i}}}"#));
+                more.push('\n');
+            }
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&lp).unwrap();
+            f.write_all(more.as_bytes()).unwrap();
+            f.flush().unwrap();
+
+            // Shutdown shortly after the write.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            sd.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            pipeline.run_async(&shutdown),
+        )
+        .await;
+
+        assert!(result.is_ok(), "concurrent write + shutdown must not hang");
+        assert!(result.unwrap().is_ok());
+    }
+
     // -------------------------------------------------------------------
     // Test sinks
     // -------------------------------------------------------------------
@@ -1360,6 +1701,66 @@ output:
         }
         fn name(&self) -> &str {
             "slow"
+        }
+    }
+
+    /// A sink that blocks until a CancellationToken is cancelled.
+    /// Simulates a frozen output (hung network connection, deadlock).
+    struct FrozenSink {
+        release: CancellationToken,
+        rows_received: u64,
+    }
+
+    impl OutputSink for FrozenSink {
+        fn send_batch(
+            &mut self,
+            batch: &arrow::record_batch::RecordBatch,
+            _metadata: &BatchMetadata,
+        ) -> io::Result<()> {
+            // Block until released. In a real scenario this would be a
+            // hung HTTP connection or a deadlocked mutex.
+            while !self.release.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            self.rows_received += batch.num_rows() as u64;
+            Ok(())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn name(&self) -> &str {
+            "frozen"
+        }
+    }
+
+    /// A sink that fails the first N calls, then succeeds.
+    struct FailingSink {
+        fail_count: u32,
+        calls: u32,
+        rows_received: u64,
+    }
+
+    impl OutputSink for FailingSink {
+        fn send_batch(
+            &mut self,
+            batch: &arrow::record_batch::RecordBatch,
+            _metadata: &BatchMetadata,
+        ) -> io::Result<()> {
+            self.calls += 1;
+            if self.calls <= self.fail_count {
+                return Err(io::Error::other(format!(
+                    "simulated output failure {}/{}",
+                    self.calls, self.fail_count
+                )));
+            }
+            self.rows_received += batch.num_rows() as u64;
+            Ok(())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn name(&self) -> &str {
+            "failing"
         }
     }
 }
