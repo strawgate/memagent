@@ -314,6 +314,7 @@ mod tests {
             compression: None,
             format: Some(Format::Json),
             path: None,
+            tls: Default::default(),
         };
         let sink = build_output_sink("test", &cfg).unwrap();
         assert_eq!(sink.name(), "test");
@@ -324,11 +325,12 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("otel".to_string()),
             output_type: OutputType::Otlp,
-            endpoint: Some("http://localhost:4318".to_string()),
+            endpoint: Some("https://localhost:4318".to_string()),
             protocol: Some("http".to_string()),
             compression: Some("zstd".to_string()),
             format: None,
             path: None,
+            tls: Default::default(),
         };
         let sink = build_output_sink("otel", &cfg).unwrap();
         assert_eq!(sink.name(), "otel");
@@ -339,11 +341,12 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("es".to_string()),
             output_type: OutputType::Http,
-            endpoint: Some("http://localhost:9200".to_string()),
+            endpoint: Some("https://localhost:9200".to_string()),
             protocol: None,
             compression: None,
             format: None,
             path: None,
+            tls: Default::default(),
         };
         let sink = build_output_sink("es", &cfg).unwrap();
         assert_eq!(sink.name(), "es");
@@ -359,6 +362,7 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            tls: Default::default(),
         };
         let result = build_output_sink("bad", &cfg);
         assert!(result.is_err());
@@ -533,13 +537,7 @@ output:
         );
 
         // At least one transform error must have been counted.
-        let errors = pipeline
-            .metrics
-            .transform_errors
-            .load(Ordering::Relaxed);
-        assert!(
-            errors > 0,
-            "expected transform_errors > 0, got {errors}"
-        );
+        let errors = pipeline.metrics.transform_errors.load(Ordering::Relaxed);
+        assert!(errors > 0, "expected transform_errors > 0, got {errors}");
     }
 }

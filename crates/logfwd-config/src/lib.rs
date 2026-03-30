@@ -106,6 +106,17 @@ pub struct InputConfig {
     pub format: Option<Format>,
 }
 
+/// TLS options for output endpoints.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TlsConfig {
+    /// Allow plaintext `http://` endpoints.
+    ///
+    /// **Only set this in development or testing.** Production deployments must
+    /// use `https://` to prevent log data from transiting in cleartext.
+    #[serde(default)]
+    pub insecure: bool,
+}
+
 /// A single output destination.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OutputConfig {
@@ -117,6 +128,10 @@ pub struct OutputConfig {
     pub compression: Option<String>,
     pub format: Option<Format>,
     pub path: Option<String>,
+    /// TLS settings. By default `http://` endpoints are rejected; set
+    /// `tls.insecure: true` to allow plaintext in dev/testing.
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +327,16 @@ impl Config {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
                                 output_type_name(&output.output_type),
+                            )));
+                        }
+                        if let Some(ep) = &output.endpoint
+                            && ep.starts_with("http://")
+                            && !output.tls.insecure
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': endpoint uses http:// \
+                                 (plaintext); use https:// or set tls.insecure: true to allow \
+                                 plaintext in dev/testing"
                             )));
                         }
                     }
@@ -658,7 +683,7 @@ output:
         // Implemented output types should parse and validate successfully.
         for (otype, extra) in [
             ("otlp", "endpoint: x:4317"),
-            ("http", "endpoint: http://x"),
+            ("http", "endpoint: https://x"),
             ("stdout", ""),
             ("file_out", "path: /tmp/out.log"),
         ] {
@@ -696,6 +721,51 @@ output:
         ] {
             let yaml = format!("input:\n  type: {itype}\n  {extra}\noutput:\n  type: stdout\n");
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));
+        }
+    }
+
+    #[test]
+    fn validation_http_endpoint_rejected() {
+        // http:// endpoints must be rejected unless tls.insecure is set.
+        for otype in ["otlp", "http"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://collector:4317\n"
+            );
+            let err = Config::load_str(&yaml).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("http://"),
+                "expected 'http://' in error for {otype}: {msg}"
+            );
+            assert!(
+                msg.contains("tls.insecure"),
+                "expected 'tls.insecure' in error for {otype}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_https_endpoint_accepted() {
+        // https:// endpoints must be accepted without any TLS override.
+        for otype in ["otlp", "http"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: https://collector:4317\n"
+            );
+            Config::load_str(&yaml)
+                .unwrap_or_else(|e| panic!("https:// should be accepted for {otype}: {e}"));
+        }
+    }
+
+    #[test]
+    fn validation_http_endpoint_insecure_override() {
+        // http:// endpoints must be accepted when tls.insecure: true is set.
+        for otype in ["otlp", "http"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://collector:4317\n  tls:\n    insecure: true\n"
+            );
+            Config::load_str(&yaml).unwrap_or_else(|e| {
+                panic!("http:// with tls.insecure:true should be accepted for {otype}: {e}")
+            });
         }
     }
 }

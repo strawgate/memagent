@@ -257,6 +257,8 @@ input:
 output:
   type: http
   endpoint: "http://{addr}/logs"
+  tls:
+    insecure: true
 "#,
         log_path.display()
     );

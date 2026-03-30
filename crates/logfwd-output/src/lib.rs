@@ -199,6 +199,19 @@ pub enum Compression {
 
 /// Build an output sink from configuration.
 pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn OutputSink>, String> {
+    // Second line of defence: config validation should have already caught this,
+    // but guard here too so the factory can never produce a plaintext sink when
+    // the operator has not explicitly opted in.
+    if let Some(ep) = &cfg.endpoint
+        && ep.starts_with("http://")
+        && !cfg.tls.insecure
+    {
+        return Err(format!(
+            "output '{name}': endpoint uses http:// (plaintext); \
+             use https:// or set tls.insecure: true to allow plaintext in dev/testing"
+        ));
+    }
+
     match cfg.output_type {
         OutputType::Stdout => {
             let fmt = match cfg.format.as_ref() {
@@ -293,6 +306,7 @@ mod tests {
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use logfwd_config::TlsConfig;
     use std::sync::Arc;
 
     fn make_test_batch() -> RecordBatch {
@@ -512,6 +526,7 @@ mod tests {
             compression: None,
             format: Some(Format::Json),
             path: None,
+            tls: Default::default(),
         };
         let sink = build_output_sink("test", &cfg).unwrap();
         assert_eq!(sink.name(), "test");
@@ -522,11 +537,12 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("otel".to_string()),
             output_type: OutputType::Otlp,
-            endpoint: Some("http://localhost:4318".to_string()),
+            endpoint: Some("https://localhost:4318".to_string()),
             protocol: Some("http".to_string()),
             compression: Some("zstd".to_string()),
             format: None,
             path: None,
+            tls: Default::default(),
         };
         let sink = build_output_sink("otel", &cfg).unwrap();
         assert_eq!(sink.name(), "otel");
@@ -537,11 +553,12 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("es".to_string()),
             output_type: OutputType::Http,
-            endpoint: Some("http://localhost:9200".to_string()),
+            endpoint: Some("https://localhost:9200".to_string()),
             protocol: None,
             compression: None,
             format: None,
             path: None,
+            tls: Default::default(),
         };
         let sink = build_output_sink("es", &cfg).unwrap();
         assert_eq!(sink.name(), "es");
@@ -557,10 +574,53 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            tls: Default::default(),
         };
         let result = build_output_sink("bad", &cfg);
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("endpoint"), "got: {err}");
+    }
+
+    #[test]
+    fn test_build_output_sink_plaintext_rejected() {
+        // The factory must reject http:// endpoints when tls.insecure is false.
+        for output_type in [OutputType::Otlp, OutputType::Http] {
+            let cfg = OutputConfig {
+                name: Some("sink".to_string()),
+                output_type,
+                endpoint: Some("http://localhost:4317".to_string()),
+                protocol: None,
+                compression: None,
+                format: None,
+                path: None,
+                tls: Default::default(),
+            };
+            let result = build_output_sink("sink", &cfg);
+            assert!(
+                result.is_err(),
+                "expected error for http:// without insecure flag"
+            );
+            let err = result.err().unwrap();
+            assert!(err.contains("http://"), "got: {err}");
+            assert!(err.contains("tls.insecure"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn test_build_output_sink_plaintext_allowed_with_insecure() {
+        // The factory must allow http:// endpoints when tls.insecure is true.
+        let cfg = OutputConfig {
+            name: Some("dev".to_string()),
+            output_type: OutputType::Http,
+            endpoint: Some("http://localhost:9200".to_string()),
+            protocol: None,
+            compression: None,
+            format: None,
+            path: None,
+            tls: TlsConfig { insecure: true },
+        };
+        let sink = build_output_sink("dev", &cfg).unwrap();
+        assert_eq!(sink.name(), "dev");
     }
 }
