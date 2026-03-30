@@ -599,9 +599,7 @@ mod tests {
     fn test_backslash_at_block_boundary() {
         let mut buf = Vec::new();
         buf.push(b'"');
-        for _ in 0..62 {
-            buf.push(b'x');
-        }
+        buf.extend(std::iter::repeat_n(b'x', 62));
         buf.push(b'\\');
         buf.push(b'"');
         buf.extend_from_slice(b"tail\"");
@@ -701,12 +699,12 @@ mod tests {
         let mut pos = av;
         let mut strings = Vec::new();
         while pos < buf.len() {
-            if buf[pos] == b'"' {
-                if let Some((content, after)) = idx.scan_string(buf, pos) {
-                    strings.push((pos, std::str::from_utf8(content).unwrap_or("?").to_string()));
-                    pos = after;
-                    continue;
-                }
+            if buf[pos] == b'"'
+                && let Some((content, after)) = idx.scan_string(buf, pos)
+            {
+                strings.push((pos, std::str::from_utf8(content).unwrap_or("?").to_string()));
+                pos = after;
+                continue;
             }
             pos += 1;
         }
