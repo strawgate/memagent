@@ -1,0 +1,205 @@
+name: Nightly Stability Tests
+
+on:
+  schedule:
+    # Run at 3:00 AM UTC every night
+    - cron: '0 3 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  stability-native:
+    name: Stability (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+
+      - name: Run stability tests
+        run: cargo test -p logfwd --test stability -- --ignored --test-threads=1
+        timeout-minutes: 10
+
+      - name: Run compliance tests
+        run: cargo test -p logfwd --test compliance --test compliance_file -- --test-threads=1
+        timeout-minutes: 5
+
+      - name: Collect results
+        if: always()
+        run: |
+          echo "## Nightly Stability — ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+
+  stability-docker:
+    name: Stability (Docker)
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+
+      - name: Build release binary
+        run: cargo build --release -p logfwd
+
+      - name: Run stability tests in Docker
+        run: |
+          # Build a minimal container with the test binary
+          cat > /tmp/Dockerfile.test <<'DOCKERFILE'
+          FROM debian:bookworm-slim
+          RUN apt-get update && apt-get install -y --no-install-recommends procps lsof && rm -rf /var/lib/apt/lists/*
+          COPY target/release/logfwd /usr/local/bin/logfwd
+          COPY target/debug/deps/stability-* /usr/local/bin/stability-tests
+          DOCKERFILE
+
+          # Build test binary
+          cargo test -p logfwd --test stability --no-run 2>&1 | tail -3
+          TEST_BIN=$(cargo test -p logfwd --test stability --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable) | .executable' | head -1)
+
+          if [ -z "$TEST_BIN" ] || [ ! -f "$TEST_BIN" ]; then
+            echo "Could not find test binary, running natively instead"
+            cargo test -p logfwd --test stability -- --ignored --test-threads=1
+          else
+            cp "$TEST_BIN" /tmp/stability-test-bin
+            cat > /tmp/Dockerfile.test <<DOCKERFILE
+          FROM debian:bookworm-slim
+          RUN apt-get update && apt-get install -y --no-install-recommends procps && rm -rf /var/lib/apt/lists/*
+          COPY stability-test-bin /usr/local/bin/stability-tests
+          DOCKERFILE
+
+            docker build -t logfwd-stability -f /tmp/Dockerfile.test /tmp/
+            docker run --rm \
+              --memory=512m \
+              --cpus=2 \
+              logfwd-stability \
+              /usr/local/bin/stability-tests --ignored --test-threads=1
+          fi
+        timeout-minutes: 15
+
+      - name: Collect results
+        if: always()
+        run: |
+          echo "## Nightly Stability — Docker (512MB, 2 CPU)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+
+  stability-kind:
+    name: Stability (KIND)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KIND
+        run: |
+          KIND_VERSION="v0.24.0"
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Run KIND stability test (quick mode)
+        run: bash tests/e2e/run-stability.sh --quick
+        env:
+          STABILITY_MIN_RATIO: "0.95"
+
+      - name: Collect results
+        if: always()
+        run: |
+          echo "## Nightly Stability — KIND (1min quick)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+
+  stability-kind-restart:
+    name: Stability (KIND + pod restart)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KIND
+        run: |
+          KIND_VERSION="v0.24.0"
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Run KIND stability test with pod restart
+        run: bash tests/e2e/run-stability.sh --quick --with-restart
+        env:
+          # Pod restart causes data loss during the restart window.
+          # Without checkpointing (#44), this is expected. The restart
+          # test documents the current gap — when checkpointing is
+          # implemented, raise this to 0.95+.
+          STABILITY_MIN_RATIO: "0.50"
+
+      - name: Collect results
+        if: always()
+        run: |
+          echo "## Nightly Stability — KIND + pod restart" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+
+  notify-failure:
+    name: Notify on failure
+    runs-on: ubuntu-latest
+    needs: [stability-native, stability-docker, stability-kind, stability-kind-restart]
+    if: failure()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create issue on failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if an open nightly failure issue already exists
+          EXISTING=$(gh issue list --label "nightly-failure" --state open --limit 1 --json number -q '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "Nightly stability tests failed again: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          else
+            gh issue create \
+              --title "Nightly stability tests failed ($(date +%Y-%m-%d))" \
+              --label "bug,nightly-failure" \
+              --body "$(cat <<BODY
+          ## Nightly stability test failure
+
+          **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          **Date**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          Check the run logs for details on which tests failed and why.
+
+          Common failure modes:
+          - Memory growth beyond threshold (possible leak)
+          - File descriptor leak after rotation stress
+          - Metrics monotonicity violation (counter reset)
+          - Timeout / deadlock during shutdown
+          BODY
+          )"
+          fi

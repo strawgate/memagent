@@ -143,6 +143,11 @@ impl Pipeline {
         &self.metrics
     }
 
+    /// Override the batch flush timeout (for testing).
+    pub fn set_batch_timeout(&mut self, timeout: Duration) {
+        self.batch_timeout = timeout;
+    }
+
     /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
     pub fn run(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
         let mut last_flush = Instant::now();
