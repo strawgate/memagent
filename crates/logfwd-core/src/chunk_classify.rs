@@ -6,9 +6,14 @@
 //
 // This is the simdjson "stage 1" algorithm adapted for our use case.
 //
-// All loops are written as plain Rust with no manual SIMD intrinsics.
-// Character detection (find_char_mask) compiles to branchless scalar code;
-// LLVM may auto-vectorize on some targets but this is not guaranteed.
+// Platform-specific SIMD is used for the hot `find_quotes_and_backslashes`
+// function:
+//   - x86_64: AVX2 (2 × 32-byte loads) with SSE2 fallback (4 × 16-byte loads).
+//   - aarch64: NEON (4 × 16-byte loads with vpaddl reduction chain).
+//   - other: portable scalar fallback; LLVM may auto-vectorize.
+//
+// All paths produce the same (quote_bits, bs_bits) u64 bitmask and are
+// covered by the same conformance tests.
 
 /// Pre-computed structural classification for a buffer.
 ///
@@ -54,6 +59,7 @@ impl ChunkIndex {
             let real_q = compute_real_quotes(quote_bits, bs_bits, &mut prev_odd_backslash);
 
             #[cfg(test)]
+            #[allow(unexpected_cfgs)]
             if cfg!(feature = "debug_bitmask") {
                 eprintln!(
                     "block {block_idx}: offset={offset} quotes=0x{quote_bits:016x} bs=0x{bs_bits:016x} real=0x{real_q:016x}"
@@ -320,27 +326,43 @@ fn prefix_xor(mut bitmask: u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Portable character detection
+// Platform-specific SIMD character detection
 // ---------------------------------------------------------------------------
 
 /// Find quote and backslash positions in a 64-byte block.
 ///
-/// Produces a u64 bitmask where bit i indicates the character at
-/// position offset+i is a quote (or backslash, respectively).
+/// Returns `(quote_bits, bs_bits)`: u64 bitmasks where bit i is set if
+/// `data[i]` is a `"` (or `\`, respectively).
 ///
-/// Accepts a `&[u8; 64]` to give the compiler a known trip count.
+/// Dispatches to the best available SIMD implementation for the current
+/// target: AVX2 or SSE2 on x86_64, NEON on aarch64, scalar elsewhere.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn find_quotes_and_backslashes(data: &[u8; 64]) -> (u64, u64) {
+    x86::find_quotes_and_backslashes(data)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn find_quotes_and_backslashes(data: &[u8; 64]) -> (u64, u64) {
+    aarch64_impl::find_quotes_and_backslashes(data)
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline]
 fn find_quotes_and_backslashes(data: &[u8; 64]) -> (u64, u64) {
     (find_char_mask(data, b'"'), find_char_mask(data, b'\\'))
 }
 
-/// Build a u64 bitmask where bit i is set if data[i] == needle.
+/// Portable scalar fallback: build a u64 bitmask where bit i is set if
+/// `data[i] == needle`.
 ///
 /// LLVM auto-vectorizes this when compiled as a standalone function
 /// (verified: pcmpeqb on SSE2, vpcmpeqb on AVX2/512), but thin LTO
 /// inlines it into ChunkIndex::new where LLVM's cost model skips
-/// vectorization, producing branchless scalar code (cmpb+sete) instead.
-/// Still fast enough — character detection is not the bottleneck.
+/// vectorization.  Kept as documentation and as the non-x86/non-aarch64
+/// fallback.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline]
 fn find_char_mask(data: &[u8; 64], needle: u8) -> u64 {
     let mut bits: u64 = 0;
@@ -348,6 +370,167 @@ fn find_char_mask(data: &[u8; 64], needle: u8) -> u64 {
         bits |= ((byte == needle) as u64) << i;
     }
     bits
+}
+
+// ---------------------------------------------------------------------------
+// x86_64 SIMD — AVX2 (2 × 32-byte) with SSE2 fallback (4 × 16-byte)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "x86_64")]
+mod x86 {
+    use std::arch::x86_64::*;
+
+    /// AVX2 path: 2 × 256-bit loads, `_mm256_movemask_epi8` extracts 32-bit
+    /// masks that are combined into a single 64-bit result.
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn find_quotes_and_backslashes_avx2(data: &[u8; 64]) -> (u64, u64) {
+        // SAFETY: intrinsics require AVX2, which is guaranteed by #[target_feature].
+        unsafe {
+            // Load two 32-byte halves.
+            let lo = _mm256_loadu_si256(data.as_ptr() as *const __m256i);
+            let hi = _mm256_loadu_si256(data[32..].as_ptr() as *const __m256i);
+
+            let vq = _mm256_set1_epi8(b'"' as i8);
+            let vbs = _mm256_set1_epi8(b'\\' as i8);
+
+            // movemask returns i32; cast to u32 to avoid sign-extension, then widen.
+            let q0 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(lo, vq)) as u32 as u64;
+            let q1 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(hi, vq)) as u32 as u64;
+            let quote_bits = q0 | (q1 << 32);
+
+            let b0 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(lo, vbs)) as u32 as u64;
+            let b1 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(hi, vbs)) as u32 as u64;
+            let bs_bits = b0 | (b1 << 32);
+
+            (quote_bits, bs_bits)
+        }
+    }
+
+    /// SSE2 path: 4 × 128-bit loads, `_mm_movemask_epi8` extracts 16-bit
+    /// masks that are combined into a single 64-bit result.
+    ///
+    /// SSE2 is always available on x86_64, so this serves as the baseline.
+    #[target_feature(enable = "sse2")]
+    pub(super) unsafe fn find_quotes_and_backslashes_sse2(data: &[u8; 64]) -> (u64, u64) {
+        // SAFETY: intrinsics require SSE2, which is guaranteed by #[target_feature].
+        unsafe {
+            let c0 = _mm_loadu_si128(data.as_ptr() as *const __m128i);
+            let c1 = _mm_loadu_si128(data[16..].as_ptr() as *const __m128i);
+            let c2 = _mm_loadu_si128(data[32..].as_ptr() as *const __m128i);
+            let c3 = _mm_loadu_si128(data[48..].as_ptr() as *const __m128i);
+
+            let vq = _mm_set1_epi8(b'"' as i8);
+            let vbs = _mm_set1_epi8(b'\\' as i8);
+
+            // movemask returns i32 with only the low 16 bits set; cast to u16
+            // to discard the sign-extended upper bits, then widen to u64.
+            let q0 = _mm_movemask_epi8(_mm_cmpeq_epi8(c0, vq)) as u16 as u64;
+            let q1 = _mm_movemask_epi8(_mm_cmpeq_epi8(c1, vq)) as u16 as u64;
+            let q2 = _mm_movemask_epi8(_mm_cmpeq_epi8(c2, vq)) as u16 as u64;
+            let q3 = _mm_movemask_epi8(_mm_cmpeq_epi8(c3, vq)) as u16 as u64;
+            let quote_bits = q0 | (q1 << 16) | (q2 << 32) | (q3 << 48);
+
+            let b0 = _mm_movemask_epi8(_mm_cmpeq_epi8(c0, vbs)) as u16 as u64;
+            let b1 = _mm_movemask_epi8(_mm_cmpeq_epi8(c1, vbs)) as u16 as u64;
+            let b2 = _mm_movemask_epi8(_mm_cmpeq_epi8(c2, vbs)) as u16 as u64;
+            let b3 = _mm_movemask_epi8(_mm_cmpeq_epi8(c3, vbs)) as u16 as u64;
+            let bs_bits = b0 | (b1 << 16) | (b2 << 32) | (b3 << 48);
+
+            (quote_bits, bs_bits)
+        }
+    }
+
+    /// Runtime dispatch: prefer AVX2, fall back to SSE2.
+    ///
+    /// `is_x86_feature_detected!` caches the CPUID result in a static
+    /// atomic, so repeated calls add only a memory load + branch.
+    #[inline]
+    pub(super) fn find_quotes_and_backslashes(data: &[u8; 64]) -> (u64, u64) {
+        if is_x86_feature_detected!("avx2") {
+            // SAFETY: we just verified AVX2 is available.
+            unsafe { find_quotes_and_backslashes_avx2(data) }
+        } else {
+            // SAFETY: SSE2 is always available on x86_64.
+            unsafe { find_quotes_and_backslashes_sse2(data) }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// aarch64 NEON — 4 × 16-byte loads with vpaddl reduction
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "aarch64")]
+mod aarch64_impl {
+    use std::arch::aarch64::*;
+
+    /// Extract a 16-bit movemask from a `vceqq_u8` comparison result.
+    ///
+    /// Each byte of `cmp` is `0xFF` (matched) or `0x00` (not matched).
+    /// The function returns a `u16` where bit `i` is set iff byte `i`
+    /// matched.  This is the NEON equivalent of `_mm_movemask_epi8`.
+    ///
+    /// Algorithm: AND each lane with its positional bit value (1, 2, 4, …,
+    /// 128 for lanes 0-7, same pattern for lanes 8-15), then reduce with
+    /// three pairwise-add steps:
+    ///   u8×16 → u16×8 → u32×4 → u64×2
+    /// The two u64 lanes hold the low and high bytes of the 16-bit mask.
+    #[inline(always)]
+    unsafe fn movemask16(cmp: uint8x16_t) -> u16 {
+        // SAFETY: intrinsics are safe when NEON is available (always on aarch64).
+        unsafe {
+            // Positional bit values for each lane.
+            const MASK: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
+            let mask = vld1q_u8(MASK.as_ptr());
+            // Each lane is now 0 or its positional bit value.
+            let bits = vandq_u8(cmp, mask);
+            // Pairwise-add reduction collapses the 16 values into two bytes.
+            let p16 = vpaddlq_u8(bits); // u8×16 → u16×8
+            let p32 = vpaddlq_u16(p16); // u16×8  → u32×4
+            let p64 = vpaddlq_u32(p32); // u32×4  → u64×2
+            // Lane 0: sum of lanes 0-7  (bits 0-7  of the mask, fits in u8).
+            // Lane 1: sum of lanes 8-15 (bits 8-15 of the mask, fits in u8).
+            let lo = vgetq_lane_u64(p64, 0) as u8;
+            let hi = vgetq_lane_u64(p64, 1) as u8;
+            (lo as u16) | ((hi as u16) << 8)
+        }
+    }
+
+    /// NEON implementation: 4 × 16-byte `vld1q_u8` loads.
+    ///
+    /// NEON is mandatory on all `aarch64` Rust targets, so no runtime
+    /// feature detection is needed.
+    #[target_feature(enable = "neon")]
+    pub(super) unsafe fn find_quotes_and_backslashes_neon(data: &[u8; 64]) -> (u64, u64) {
+        // SAFETY: intrinsics require NEON, which is guaranteed by #[target_feature].
+        unsafe {
+            let c0 = vld1q_u8(data.as_ptr());
+            let c1 = vld1q_u8(data[16..].as_ptr());
+            let c2 = vld1q_u8(data[32..].as_ptr());
+            let c3 = vld1q_u8(data[48..].as_ptr());
+
+            let vq = vdupq_n_u8(b'"');
+            let vbs = vdupq_n_u8(b'\\');
+
+            let quote_bits = (movemask16(vceqq_u8(c0, vq)) as u64)
+                | ((movemask16(vceqq_u8(c1, vq)) as u64) << 16)
+                | ((movemask16(vceqq_u8(c2, vq)) as u64) << 32)
+                | ((movemask16(vceqq_u8(c3, vq)) as u64) << 48);
+
+            let bs_bits = (movemask16(vceqq_u8(c0, vbs)) as u64)
+                | ((movemask16(vceqq_u8(c1, vbs)) as u64) << 16)
+                | ((movemask16(vceqq_u8(c2, vbs)) as u64) << 32)
+                | ((movemask16(vceqq_u8(c3, vbs)) as u64) << 48);
+
+            (quote_bits, bs_bits)
+        }
+    }
+
+    #[inline]
+    pub(super) fn find_quotes_and_backslashes(data: &[u8; 64]) -> (u64, u64) {
+        // SAFETY: NEON is always available on aarch64 Rust targets.
+        unsafe { find_quotes_and_backslashes_neon(data) }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -554,5 +737,189 @@ mod tests {
         let after = idx.skip_nested(buf, 8);
         // Should skip past {"msg":"has } and {"} correctly
         assert_eq!(buf[after], b',');
+    }
+
+    // -----------------------------------------------------------------------
+    // SIMD bitmask extraction tests
+    //
+    // These tests call the low-level SIMD helpers directly to verify that the
+    // movemask-equivalent reduction produces the expected u64 bitmask, and
+    // cross-check against the scalar `find_char_mask` reference.
+    // -----------------------------------------------------------------------
+
+    /// Build the expected bitmask the slow but obviously correct way.
+    fn scalar_mask(data: &[u8; 64], needle: u8) -> u64 {
+        let mut bits: u64 = 0;
+        for (i, &b) in data.iter().enumerate() {
+            bits |= ((b == needle) as u64) << i;
+        }
+        bits
+    }
+
+    /// Build a 64-byte block with `needle` at each position in `positions`.
+    fn block_with(positions: &[usize], needle: u8) -> [u8; 64] {
+        let mut data = [b' '; 64];
+        for &p in positions {
+            data[p] = needle;
+        }
+        data
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    mod x86_tests {
+        use super::*;
+        use crate::chunk_classify::x86::{
+            find_quotes_and_backslashes_avx2, find_quotes_and_backslashes_sse2,
+        };
+
+        fn check(positions: &[usize], needle: u8) {
+            let data = block_with(positions, needle);
+            let expected_q = scalar_mask(&data, b'"');
+            let expected_bs = scalar_mask(&data, b'\\');
+
+            // SSE2 (always available on x86_64)
+            let (q_sse2, bs_sse2) =
+                unsafe { find_quotes_and_backslashes_sse2(&data) };
+            assert_eq!(
+                q_sse2, expected_q,
+                "SSE2 quote mismatch at positions {positions:?}"
+            );
+            assert_eq!(
+                bs_sse2, expected_bs,
+                "SSE2 backslash mismatch at positions {positions:?}"
+            );
+
+            // AVX2 (skip at runtime if not available)
+            if is_x86_feature_detected!("avx2") {
+                let (q_avx2, bs_avx2) =
+                    unsafe { find_quotes_and_backslashes_avx2(&data) };
+                assert_eq!(
+                    q_avx2, expected_q,
+                    "AVX2 quote mismatch at positions {positions:?}"
+                );
+                assert_eq!(
+                    bs_avx2, expected_bs,
+                    "AVX2 backslash mismatch at positions {positions:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn simd_no_special_chars() {
+            check(&[], b'"');
+        }
+
+        #[test]
+        fn simd_all_positions_quote() {
+            let positions: Vec<usize> = (0..64).collect();
+            check(&positions, b'"');
+        }
+
+        #[test]
+        fn simd_all_positions_backslash() {
+            let positions: Vec<usize> = (0..64).collect();
+            check(&positions, b'\\');
+        }
+
+        #[test]
+        fn simd_boundary_positions() {
+            // Test positions at the 16-byte and 32-byte chunk boundaries.
+            check(&[0, 15, 16, 31, 32, 47, 48, 63], b'"');
+        }
+
+        #[test]
+        fn simd_mixed_quote_and_backslash() {
+            let mut data = [b' '; 64];
+            data[0] = b'"';
+            data[31] = b'"';
+            data[32] = b'\\';
+            data[63] = b'"';
+            let expected_q = scalar_mask(&data, b'"');
+            let expected_bs = scalar_mask(&data, b'\\');
+
+            let (q_sse2, bs_sse2) =
+                unsafe { find_quotes_and_backslashes_sse2(&data) };
+            assert_eq!(q_sse2, expected_q);
+            assert_eq!(bs_sse2, expected_bs);
+
+            if is_x86_feature_detected!("avx2") {
+                let (q_avx2, bs_avx2) =
+                    unsafe { find_quotes_and_backslashes_avx2(&data) };
+                assert_eq!(q_avx2, expected_q);
+                assert_eq!(bs_avx2, expected_bs);
+            }
+        }
+
+        #[test]
+        fn simd_dispatcher_matches_scalar() {
+            // The public dispatcher should agree with the scalar reference
+            // for every bit position.
+            for pos in 0..64usize {
+                let data = block_with(&[pos], b'"');
+                let (q, _) = super::super::find_quotes_and_backslashes(&data);
+                assert_eq!(q, 1u64 << pos, "dispatcher quote mismatch at pos {pos}");
+
+                let data = block_with(&[pos], b'\\');
+                let (_, bs) = super::super::find_quotes_and_backslashes(&data);
+                assert_eq!(bs, 1u64 << pos, "dispatcher backslash mismatch at pos {pos}");
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    mod neon_tests {
+        use super::*;
+        use crate::chunk_classify::aarch64_impl::find_quotes_and_backslashes_neon;
+
+        fn check(positions: &[usize], needle: u8) {
+            let data = block_with(positions, needle);
+            let expected_q = scalar_mask(&data, b'"');
+            let expected_bs = scalar_mask(&data, b'\\');
+
+            let (q, bs) = unsafe { find_quotes_and_backslashes_neon(&data) };
+            assert_eq!(
+                q, expected_q,
+                "NEON quote mismatch at positions {positions:?}"
+            );
+            assert_eq!(
+                bs, expected_bs,
+                "NEON backslash mismatch at positions {positions:?}"
+            );
+        }
+
+        #[test]
+        fn neon_no_special_chars() {
+            check(&[], b'"');
+        }
+
+        #[test]
+        fn neon_all_positions_quote() {
+            let positions: Vec<usize> = (0..64).collect();
+            check(&positions, b'"');
+        }
+
+        #[test]
+        fn neon_all_positions_backslash() {
+            let positions: Vec<usize> = (0..64).collect();
+            check(&positions, b'\\');
+        }
+
+        #[test]
+        fn neon_boundary_positions() {
+            check(&[0, 15, 16, 31, 32, 47, 48, 63], b'"');
+        }
+
+        #[test]
+        fn neon_dispatcher_matches_scalar() {
+            for pos in 0..64usize {
+                let data = block_with(&[pos], b'"');
+                let (q, _) = super::super::find_quotes_and_backslashes(&data);
+                assert_eq!(q, 1u64 << pos, "NEON dispatcher quote mismatch at pos {pos}");
+
+                let data = block_with(&[pos], b'\\');
+                let (_, bs) = super::super::find_quotes_and_backslashes(&data);
+                assert_eq!(bs, 1u64 << pos, "NEON dispatcher backslash mismatch at pos {pos}");
+            }
+        }
     }
 }
