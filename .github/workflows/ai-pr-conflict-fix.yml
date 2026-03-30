@@ -1,0 +1,30 @@
+name: "AI: Fix Merge Conflict (single PR)"
+on:
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: "PR number to resolve merge conflicts for"
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+concurrency:
+  group: address-merge-conflict-${{ inputs.pr-number }}
+  cancel-in-progress: true
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-mention-in-pr-by-id.lock.yml@main
+    with:
+      target-pr-number: ${{ inputs.pr-number }}
+      prompt: "Resolve merge conflicts with the current base branch."
+      additional-instructions: |
+        Work only on PR #${{ inputs.pr-number }}.
+        If the PR has merge conflicts, resolve them by merging the latest
+        origin/master into the PR branch and push.
+        If there are no merge conflicts anymore, post a short note and
+        make no code changes.
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}

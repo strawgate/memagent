@@ -110,6 +110,10 @@ impl ScanBuilder for StreamingBuilder {
 
 #[inline(never)]
 fn scan_into<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: &mut B) {
+    debug_assert!(
+        std::str::from_utf8(buf).is_ok(),
+        "Scanner input must be valid UTF-8"
+    );
     let index = ChunkIndex::new(buf);
     builder.begin_batch();
     let mut pos = 0;
@@ -294,6 +298,9 @@ impl SimdScanner {
         }
     }
     pub fn scan(&mut self, buf: &[u8]) -> RecordBatch {
+        if self.config.validate_utf8 {
+            std::str::from_utf8(buf).expect("SimdScanner: input is not valid UTF-8");
+        }
         scan_into(buf, &self.config, &mut self.builder);
         self.builder.finish_batch()
     }
@@ -321,6 +328,9 @@ impl StreamingSimdScanner {
         }
     }
     pub fn scan(&mut self, buf: bytes::Bytes) -> RecordBatch {
+        if self.config.validate_utf8 {
+            std::str::from_utf8(&buf).expect("StreamingSimdScanner: input is not valid UTF-8");
+        }
         self.builder.begin_batch(buf.clone());
         scan_into(&buf, &self.config, &mut self.builder);
         self.builder.finish_batch()
@@ -335,9 +345,9 @@ impl StreamingSimdScanner {
 mod tests {
     use super::*;
     use crate::scan_config::FieldSpec;
-    use arrow::array::{Array, Float64Array, Int64Array, StringArray};
+    use arrow::array::{Array, Int64Array, StringArray};
 
-    fn default_scanner(rows: usize) -> SimdScanner {
+    fn default_scanner(_rows: usize) -> SimdScanner {
         SimdScanner::new(ScanConfig::default())
     }
 
@@ -407,6 +417,7 @@ mod tests {
             }],
             extract_all: false,
             keep_raw: false,
+            validate_utf8: false,
         };
         let batch = SimdScanner::new(config).scan(
             br#"{"a":"1","b":"2","c":"3"}
@@ -421,6 +432,7 @@ mod tests {
             wanted_fields: vec![],
             extract_all: true,
             keep_raw: true,
+            validate_utf8: false,
         };
         let batch = SimdScanner::new(config).scan(b"{\"msg\":\"hi\"}\n");
         assert!(batch.column_by_name("_raw").is_some());
@@ -545,5 +557,48 @@ mod tests {
         let _ = s.scan(bytes::Bytes::from_static(b"{\"x\":\"a\"}\n"));
         let b = s.scan(bytes::Bytes::from_static(b"{\"x\":\"b\"}\n"));
         assert_eq!(b.num_rows(), 1);
+    }
+
+    // --- validate_utf8 option ---
+    #[test]
+    fn test_validate_utf8_accepts_valid_input() {
+        let config = ScanConfig {
+            validate_utf8: true,
+            ..ScanConfig::default()
+        };
+        let batch = SimdScanner::new(config).scan(b"{\"msg\":\"hello\"}\n");
+        assert_eq!(batch.num_rows(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "SimdScanner: input is not valid UTF-8")]
+    fn test_validate_utf8_panics_on_invalid_input() {
+        let config = ScanConfig {
+            validate_utf8: true,
+            ..ScanConfig::default()
+        };
+        // 0xFF is not valid UTF-8
+        SimdScanner::new(config).scan(b"{\"msg\":\"\xFF\"}\n");
+    }
+
+    #[test]
+    fn test_streaming_validate_utf8_accepts_valid_input() {
+        let config = ScanConfig {
+            validate_utf8: true,
+            ..ScanConfig::default()
+        };
+        let batch = StreamingSimdScanner::new(config)
+            .scan(bytes::Bytes::from_static(b"{\"msg\":\"hello\"}\n"));
+        assert_eq!(batch.num_rows(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "StreamingSimdScanner: input is not valid UTF-8")]
+    fn test_streaming_validate_utf8_panics_on_invalid_input() {
+        let config = ScanConfig {
+            validate_utf8: true,
+            ..ScanConfig::default()
+        };
+        StreamingSimdScanner::new(config).scan(bytes::Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
     }
 }

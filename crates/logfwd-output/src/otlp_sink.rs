@@ -1,7 +1,7 @@
 use std::io;
 
-use arrow::array::{Array, AsArray};
-use arrow::datatypes::DataType;
+use arrow::array::{Array, AsArray, PrimitiveArray, StringArray};
+use arrow::datatypes::{DataType, Float64Type, Int64Type};
 use arrow::record_batch::RecordBatch;
 
 use logfwd_core::compress::ChunkCompressor;
@@ -65,13 +65,16 @@ impl OtlpSink {
             return;
         }
 
+        // Resolve column roles and downcast arrays once for the whole batch.
+        let columns = resolve_batch_columns(batch);
+
         // Phase 1: encode all LogRecords into a temp buffer.
         let mut records_buf: Vec<u8> = Vec::with_capacity(num_rows * 128);
         let mut record_ranges: Vec<(usize, usize)> = Vec::with_capacity(num_rows);
 
         for row in 0..num_rows {
             let start = records_buf.len();
-            encode_row_as_log_record(batch, row, metadata, &mut records_buf);
+            encode_row_as_log_record(&columns, row, metadata, &mut records_buf);
             record_ranges.push((start, records_buf.len()));
         }
 
@@ -172,73 +175,149 @@ impl OutputSink for OtlpSink {
     }
 }
 
-/// Encode a single RecordBatch row as an OTLP LogRecord.
-pub fn encode_row_as_log_record(
-    batch: &RecordBatch,
-    row: usize,
-    metadata: &BatchMetadata,
-    buf: &mut Vec<u8>,
-) {
-    let schema = batch.schema();
+/// Pre-downcast array variant for an attribute column.
+enum AttrArray<'a> {
+    Str(&'a StringArray),
+    Int(&'a PrimitiveArray<Int64Type>),
+    Float(&'a PrimitiveArray<Float64Type>),
+}
 
-    // --- Find special columns ---
-    let mut timestamp_ns: u64 = 0;
-    let mut severity_num = Severity::Unspecified;
-    let mut severity_text: &[u8] = b"";
-    let mut body: Option<&str> = None;
-    let mut body_col_idx: Option<usize> = None;
-    let mut timestamp_col_idx: Option<usize> = None;
-    let mut level_col_idx: Option<usize> = None;
+/// Pre-resolved column roles and downcast arrays for one RecordBatch.
+///
+/// Built once in [`encode_batch`] before the per-row loop to avoid
+/// re-scanning the schema and re-downcasting arrays on every row.
+struct BatchColumns<'a> {
+    /// Downcast string array for the timestamp column (e.g. "2024-01-15T10:30:00Z").
+    timestamp_col: Option<(usize, &'a StringArray)>,
+    /// Downcast string array for the level/severity column (e.g. "ERROR").
+    level_col: Option<(usize, &'a StringArray)>,
+    /// Downcast string array for the primary message/body column.
+    body_col: Option<(usize, &'a StringArray)>,
+    /// Downcast string array for the `_raw` column, used as a per-row body
+    /// fallback when `body_col` is null for that row.
+    raw_col: Option<(usize, &'a StringArray)>,
+    /// Non-special attribute columns: (field_name, pre-downcast array).
+    attribute_cols: Vec<(String, AttrArray<'a>)>,
+}
+
+/// Scan the batch schema once and resolve column roles and downcast arrays.
+fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
+    let schema = batch.schema();
+    let mut timestamp_col: Option<(usize, &StringArray)> = None;
+    let mut level_col: Option<(usize, &StringArray)> = None;
+    let mut body_col: Option<(usize, &StringArray)> = None;
+    let mut raw_col: Option<(usize, &StringArray)> = None;
+    // Indices of columns to exclude from attributes.
+    let mut excluded: Vec<usize> = Vec::with_capacity(4);
 
     for (idx, field) in schema.fields().iter().enumerate() {
         let col_name = field.name().as_str();
-        let (field_name, _type_suffix) = parse_column_name(col_name);
-
+        let (field_name, _) = parse_column_name(col_name);
         match field_name {
             "timestamp" | "time" | "ts" => {
-                if timestamp_col_idx.is_none() && !batch.column(idx).is_null(row) {
-                    timestamp_col_idx = Some(idx);
-                    if let DataType::Utf8 = field.data_type() {
-                        let arr = batch.column(idx).as_string::<i32>();
-                        let val = arr.value(row);
-                        timestamp_ns = parse_timestamp_nanos(val.as_bytes());
-                    }
+                if timestamp_col.is_none() && matches!(field.data_type(), DataType::Utf8) {
+                    timestamp_col = Some((idx, batch.column(idx).as_string::<i32>()));
+                    excluded.push(idx);
                 }
             }
             "level" | "severity" | "log_level" | "loglevel" | "lvl" => {
-                if level_col_idx.is_none() && !batch.column(idx).is_null(row) {
-                    level_col_idx = Some(idx);
-                    if let DataType::Utf8 = field.data_type() {
-                        let arr = batch.column(idx).as_string::<i32>();
-                        let val = arr.value(row);
-                        let (sev, text) = parse_severity(val.as_bytes());
-                        severity_num = sev;
-                        severity_text = text;
-                    }
+                if level_col.is_none() && matches!(field.data_type(), DataType::Utf8) {
+                    level_col = Some((idx, batch.column(idx).as_string::<i32>()));
+                    excluded.push(idx);
                 }
             }
             "message" | "msg" | "_msg" | "body" => {
-                if body_col_idx.is_none() && !batch.column(idx).is_null(row) {
-                    body_col_idx = Some(idx);
-                    if let DataType::Utf8 = field.data_type() {
-                        let arr = batch.column(idx).as_string::<i32>();
-                        body = Some(arr.value(row));
-                    }
+                if body_col.is_none() && matches!(field.data_type(), DataType::Utf8) {
+                    body_col = Some((idx, batch.column(idx).as_string::<i32>()));
+                    excluded.push(idx);
                 }
             }
             "_raw" => {
-                // Fallback body source
-                if body_col_idx.is_none() && !batch.column(idx).is_null(row) {
-                    body_col_idx = Some(idx);
-                    let arr = batch.column(idx).as_string::<i32>();
-                    body = Some(arr.value(row));
+                // Always excluded from attributes; used as per-row body fallback.
+                excluded.push(idx);
+                if raw_col.is_none() {
+                    raw_col = Some((idx, batch.column(idx).as_string::<i32>()));
                 }
             }
             _ => {}
         }
     }
 
-    let body_bytes = body.unwrap_or("").as_bytes();
+    let mut attribute_cols: Vec<(String, AttrArray<'_>)> = Vec::new();
+    for (idx, field) in schema.fields().iter().enumerate() {
+        if excluded.contains(&idx) {
+            continue;
+        }
+        let col_name = field.name().as_str();
+        let (field_name, type_suffix) = parse_column_name(col_name);
+        let attr = match type_suffix {
+            "int" => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
+            "float" => AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>()),
+            _ => AttrArray::Str(batch.column(idx).as_string::<i32>()),
+        };
+        attribute_cols.push((field_name.to_string(), attr));
+    }
+
+    BatchColumns {
+        timestamp_col,
+        level_col,
+        body_col,
+        raw_col,
+        attribute_cols,
+    }
+}
+
+/// Encode a single RecordBatch row as an OTLP LogRecord using pre-resolved columns.
+fn encode_row_as_log_record(
+    columns: &BatchColumns<'_>,
+    row: usize,
+    metadata: &BatchMetadata,
+    buf: &mut Vec<u8>,
+) {
+    // --- Read per-row values from pre-resolved columns ---
+
+    let timestamp_ns: u64 = columns
+        .timestamp_col
+        .and_then(|(_, arr)| {
+            if arr.is_null(row) {
+                None
+            } else {
+                Some(parse_timestamp_nanos(arr.value(row).as_bytes()))
+            }
+        })
+        .unwrap_or(0);
+
+    let (severity_num, severity_text): (Severity, &[u8]) = columns
+        .level_col
+        .and_then(|(_, arr)| {
+            if arr.is_null(row) {
+                None
+            } else {
+                Some(parse_severity(arr.value(row).as_bytes()))
+            }
+        })
+        .unwrap_or((Severity::Unspecified, b""));
+
+    let body: &str = columns
+        .body_col
+        .and_then(|(_, arr)| {
+            if arr.is_null(row) {
+                None
+            } else {
+                Some(arr.value(row))
+            }
+        })
+        .or_else(|| {
+            columns.raw_col.and_then(|(_, arr)| {
+                if arr.is_null(row) {
+                    None
+                } else {
+                    Some(arr.value(row))
+                }
+            })
+        })
+        .unwrap_or("");
+    let body_bytes = body.as_bytes();
 
     // --- Write protobuf fields ---
 
@@ -265,40 +344,23 @@ pub fn encode_row_as_log_record(
         encode_bytes_field(buf, 1, body_bytes);
     }
 
-    // field 6: attributes — all remaining columns
-    for (idx, field) in schema.fields().iter().enumerate() {
-        if Some(idx) == timestamp_col_idx || Some(idx) == level_col_idx || Some(idx) == body_col_idx
-        {
-            continue;
-        }
-        let col_name = field.name().as_str();
-        let (field_name, type_suffix) = parse_column_name(col_name);
-        if field_name == "_raw" {
-            continue;
-        }
-        if batch.column(idx).is_null(row) {
-            continue;
-        }
-
-        match type_suffix {
-            "int" => {
-                let arr = batch
-                    .column(idx)
-                    .as_primitive::<arrow::datatypes::Int64Type>();
-                let v = arr.value(row);
-                encode_key_value_int(buf, field_name.as_bytes(), v);
+    // field 6: attributes — pre-resolved attribute columns
+    for (field_name, attr) in &columns.attribute_cols {
+        match attr {
+            AttrArray::Int(arr) => {
+                if !arr.is_null(row) {
+                    encode_key_value_int(buf, field_name.as_bytes(), arr.value(row));
+                }
             }
-            "float" => {
-                let arr = batch
-                    .column(idx)
-                    .as_primitive::<arrow::datatypes::Float64Type>();
-                let v = arr.value(row);
-                encode_key_value_double(buf, field_name.as_bytes(), v);
+            AttrArray::Float(arr) => {
+                if !arr.is_null(row) {
+                    encode_key_value_double(buf, field_name.as_bytes(), arr.value(row));
+                }
             }
-            _ => {
-                let arr = batch.column(idx).as_string::<i32>();
-                let v = arr.value(row);
-                encode_key_value_string(buf, field_name.as_bytes(), v.as_bytes());
+            AttrArray::Str(arr) => {
+                if !arr.is_null(row) {
+                    encode_key_value_string(buf, field_name.as_bytes(), arr.value(row).as_bytes());
+                }
             }
         }
     }

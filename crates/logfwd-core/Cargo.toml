@@ -6,7 +6,6 @@ publish = false
 
 [dependencies]
 bytes = "1"
-sonic-simd = "0.1"
 arrow = { workspace = true }
 crossbeam-channel = "0.5"
 csv = "1"
@@ -23,6 +22,7 @@ zstd = "0.13"
 [dev-dependencies]
 arrow-json = "54"
 criterion = { version = "0.5", features = ["html_reports"] }
+memmap2 = "0.9"
 pprof = { version = "0.14", features = ["flamegraph", "protobuf-codec"] }
 proptest = "1"
 sonic-rs = "0.5"

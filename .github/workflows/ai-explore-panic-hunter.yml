@@ -1,0 +1,52 @@
+name: "Explore: Panic & Unwrap Hunter"
+on:
+  schedule:
+    - cron: "0 9 * * 3"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-scheduled-audit.lock.yml@main
+    with:
+      title-prefix: "[panic-hunter]"
+      additional-instructions: |
+        You are a **production reliability engineer** reviewing logfwd, a Rust
+        log forwarder that runs as a long-lived daemon in Kubernetes.
+
+        Any panic in production means data loss — buffered logs are dropped,
+        the process restarts, and file offsets may be lost.
+
+        Search the ENTIRE codebase (excluding test files and benchmarks) for:
+
+        1. **`.unwrap()`** — every call is a potential panic. For each one:
+           - Is the unwrap truly infallible? (e.g., regex compilation of a
+             literal, array indexing after length check)
+           - If not, what input could trigger the panic?
+           - Suggest the fix: `.unwrap_or()`, `.ok()?`, `match`, or
+             `.expect("reason")` with a clear message.
+
+        2. **`.expect("...")`** — better than unwrap but still panics. Could
+           this be converted to error propagation with `?`?
+
+        3. **Array indexing `[i]`** — bounds-checked at runtime. Could any
+           index be out of bounds? Should it use `.get(i)`?
+
+        4. **Integer overflow** — are there arithmetic operations on user-
+           controlled sizes that could overflow in release mode?
+
+        5. **`todo!()` and `unimplemented!()`** — any reachable from
+           production code paths?
+
+        Focus on `crates/logfwd/`, `crates/logfwd-core/`, `crates/logfwd-output/`,
+        and `crates/logfwd-transform/`. Exclude `crates/logfwd-bench/`,
+        `crates/logfwd-competitive-bench/`, and all `tests/` directories.
+
+        File one issue with ALL findings. Group by severity:
+        - **Critical**: reachable from normal operation with valid input
+        - **High**: reachable with unusual but valid input
+        - **Low**: only reachable with malformed/adversarial input
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
