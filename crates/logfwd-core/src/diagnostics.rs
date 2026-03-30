@@ -5,7 +5,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use opentelemetry::KeyValue;
-use opentelemetry::metrics::{Counter, Meter};
+use opentelemetry::metrics::{Counter, Gauge, Meter};
 
 // ---------------------------------------------------------------------------
 // Atomic stats structures (lock-free, hot-path friendly)
@@ -104,6 +104,17 @@ pub struct PipelineMetrics {
     pub scan_nanos_total: AtomicU64,
     pub transform_nanos_total: AtomicU64,
     pub output_nanos_total: AtomicU64,
+    // Failure / drop metrics
+    pub batches_dropped: AtomicU64,
+    pub rows_dropped: AtomicU64,
+    pub scan_errors: AtomicU64,
+    pub input_parse_errors: AtomicU64,
+    pub file_rotations: AtomicU64,
+    // Buffer pressure metrics (gauges — current value, not cumulative)
+    pub buffer_bytes: AtomicU64,
+    pub buffer_peak_bytes: AtomicU64,
+    // Open file count (gauge)
+    pub open_files: AtomicU64,
     // OTel counters (for OTLP push)
     meter: Meter,
     otel_attrs: Vec<KeyValue>,
@@ -116,6 +127,14 @@ pub struct PipelineMetrics {
     otel_transform_nanos: Counter<u64>,
     otel_output_nanos: Counter<u64>,
     otel_backpressure_stalls: Counter<u64>,
+    otel_batches_dropped: Counter<u64>,
+    otel_rows_dropped: Counter<u64>,
+    otel_scan_errors: Counter<u64>,
+    otel_input_parse_errors: Counter<u64>,
+    otel_file_rotations: Counter<u64>,
+    otel_buffer_bytes: Gauge<u64>,
+    otel_buffer_peak_bytes: Gauge<u64>,
+    otel_open_files: Gauge<u64>,
 }
 
 impl PipelineMetrics {
@@ -145,6 +164,14 @@ impl PipelineMetrics {
             scan_nanos_total: AtomicU64::new(0),
             transform_nanos_total: AtomicU64::new(0),
             output_nanos_total: AtomicU64::new(0),
+            batches_dropped: AtomicU64::new(0),
+            rows_dropped: AtomicU64::new(0),
+            scan_errors: AtomicU64::new(0),
+            input_parse_errors: AtomicU64::new(0),
+            file_rotations: AtomicU64::new(0),
+            buffer_bytes: AtomicU64::new(0),
+            buffer_peak_bytes: AtomicU64::new(0),
+            open_files: AtomicU64::new(0),
             otel_transform_errors: meter.u64_counter("logfwd_transform_errors").build(),
             otel_batches: meter.u64_counter("logfwd_batches").build(),
             otel_batch_rows: meter.u64_counter("logfwd_batch_rows").build(),
@@ -154,6 +181,14 @@ impl PipelineMetrics {
             otel_transform_nanos: meter.u64_counter("logfwd_stage_transform_nanos").build(),
             otel_output_nanos: meter.u64_counter("logfwd_stage_output_nanos").build(),
             otel_backpressure_stalls: meter.u64_counter("logfwd_backpressure_stalls").build(),
+            otel_batches_dropped: meter.u64_counter("logfwd_batches_dropped").build(),
+            otel_rows_dropped: meter.u64_counter("logfwd_rows_dropped").build(),
+            otel_scan_errors: meter.u64_counter("logfwd_scan_errors").build(),
+            otel_input_parse_errors: meter.u64_counter("logfwd_input_parse_errors").build(),
+            otel_file_rotations: meter.u64_counter("logfwd_file_rotations").build(),
+            otel_buffer_bytes: meter.u64_gauge("logfwd_buffer_bytes").build(),
+            otel_buffer_peak_bytes: meter.u64_gauge("logfwd_buffer_peak_bytes").build(),
+            otel_open_files: meter.u64_gauge("logfwd_open_files").build(),
             meter: meter.clone(),
             otel_attrs: attrs,
             name,
@@ -244,6 +279,62 @@ impl PipelineMetrics {
     pub fn inc_backpressure_stall(&self) {
         self.backpressure_stalls.fetch_add(1, Ordering::Relaxed);
         self.otel_backpressure_stalls.add(1, &self.otel_attrs);
+    }
+
+    /// Record a dropped batch (output or transform error). `rows` is the
+    /// number of rows in the batch that was discarded.
+    pub fn inc_batches_dropped(&self, rows: u64) {
+        self.batches_dropped.fetch_add(1, Ordering::Relaxed);
+        self.rows_dropped.fetch_add(rows, Ordering::Relaxed);
+        self.otel_batches_dropped.add(1, &self.otel_attrs);
+        self.otel_rows_dropped.add(rows, &self.otel_attrs);
+    }
+
+    /// Record a scanner failure (the batch was dropped with unknown row count).
+    pub fn inc_scan_errors(&self) {
+        self.scan_errors.fetch_add(1, Ordering::Relaxed);
+        self.otel_scan_errors.add(1, &self.otel_attrs);
+    }
+
+    /// Record `n` input parse errors (e.g., malformed CRI lines).
+    pub fn inc_input_parse_errors(&self, n: u64) {
+        self.input_parse_errors.fetch_add(n, Ordering::Relaxed);
+        self.otel_input_parse_errors.add(n, &self.otel_attrs);
+    }
+
+    /// Record a file rotation event.
+    pub fn inc_file_rotations(&self) {
+        self.file_rotations.fetch_add(1, Ordering::Relaxed);
+        self.otel_file_rotations.add(1, &self.otel_attrs);
+    }
+
+    /// Update the buffer size gauge and advance the peak high-water mark.
+    pub fn set_buffer_bytes(&self, n: u64) {
+        self.buffer_bytes.store(n, Ordering::Relaxed);
+        self.otel_buffer_bytes.record(n, &self.otel_attrs);
+
+        // Atomically advance the peak (compare-and-swap loop).
+        let mut current = self.buffer_peak_bytes.load(Ordering::Relaxed);
+        while n > current {
+            match self.buffer_peak_bytes.compare_exchange_weak(
+                current,
+                n,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    self.otel_buffer_peak_bytes.record(n, &self.otel_attrs);
+                    break;
+                }
+                Err(prev) => current = prev,
+            }
+        }
+    }
+
+    /// Update the open-files gauge.
+    pub fn set_open_files(&self, n: u64) {
+        self.open_files.store(n, Ordering::Relaxed);
+        self.otel_open_files.record(n, &self.otel_attrs);
     }
 }
 
@@ -400,7 +491,16 @@ impl DiagnosticsServer {
             let output_s = pm.output_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
 
             pipelines_json.push(format!(
-                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6}}}}}"#,
+                concat!(
+                    r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"#,
+                    r#""outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{}}},"#,
+                    r#""stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6}}},"#,
+                    r#""dropped":{{"batches":{},"rows":{}}},"#,
+                    r#""errors":{{"scan":{},"input_parse":{}}},"#,
+                    r#""file_rotations":{},"#,
+                    r#""buffer":{{"current_bytes":{},"peak_bytes":{}}},"#,
+                    r#""open_files":{}}}"#,
+                ),
                 esc(&pm.name),
                 inputs_json.join(","),
                 esc(&pm.transform_sql),
@@ -416,6 +516,14 @@ impl DiagnosticsServer {
                 scan_s,
                 transform_s,
                 output_s,
+                pm.batches_dropped.load(Ordering::Relaxed),
+                pm.rows_dropped.load(Ordering::Relaxed),
+                pm.scan_errors.load(Ordering::Relaxed),
+                pm.input_parse_errors.load(Ordering::Relaxed),
+                pm.file_rotations.load(Ordering::Relaxed),
+                pm.buffer_bytes.load(Ordering::Relaxed),
+                pm.buffer_peak_bytes.load(Ordering::Relaxed),
+                pm.open_files.load(Ordering::Relaxed),
             ));
         }
 
@@ -498,6 +606,16 @@ mod tests {
             .store(500_000_000, Ordering::Relaxed); // 0.5s
         pm.output_nanos_total.store(200_000_000, Ordering::Relaxed); // 0.2s
         pm.transform_errors.store(3, Ordering::Relaxed);
+
+        // New failure / drop metrics.
+        pm.batches_dropped.store(5, Ordering::Relaxed);
+        pm.rows_dropped.store(250, Ordering::Relaxed);
+        pm.scan_errors.store(2, Ordering::Relaxed);
+        pm.input_parse_errors.store(10, Ordering::Relaxed);
+        pm.file_rotations.store(3, Ordering::Relaxed);
+        pm.buffer_bytes.store(16384, Ordering::Relaxed);
+        pm.buffer_peak_bytes.store(65536, Ordering::Relaxed);
+        pm.open_files.store(4, Ordering::Relaxed);
 
         let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
         server.add_pipeline(Arc::new(pm));
@@ -597,11 +715,63 @@ mod tests {
         assert!(body.contains(r#""avg_rows":90.0"#), "body: {}", body);
         assert!(body.contains(r#""flush_by_size":30"#), "body: {}", body);
         assert!(body.contains(r#""flush_by_timeout":20"#), "body: {}", body);
+        // New failure / drop metrics.
+        assert!(body.contains(r#""batches":5"#), "body: {}", body);
+        assert!(body.contains(r#""rows":250"#), "body: {}", body);
+        assert!(body.contains(r#""scan":2"#), "body: {}", body);
+        assert!(body.contains(r#""input_parse":10"#), "body: {}", body);
+        assert!(body.contains(r#""file_rotations":3"#), "body: {}", body);
+        assert!(body.contains(r#""current_bytes":16384"#), "body: {}", body);
+        assert!(body.contains(r#""peak_bytes":65536"#), "body: {}", body);
+        assert!(body.contains(r#""open_files":4"#), "body: {}", body);
         assert!(
             body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))),
             "body: {}",
             body
         );
+    }
+
+    #[test]
+    fn test_pipeline_metrics_helpers() {
+        let meter = opentelemetry::global::meter("test");
+        let pm = PipelineMetrics::new("test_pipe", "SELECT * FROM logs", &meter);
+
+        // batches_dropped / rows_dropped
+        pm.inc_batches_dropped(100);
+        pm.inc_batches_dropped(50);
+        assert_eq!(pm.batches_dropped.load(Ordering::Relaxed), 2);
+        assert_eq!(pm.rows_dropped.load(Ordering::Relaxed), 150);
+
+        // scan_errors
+        pm.inc_scan_errors();
+        pm.inc_scan_errors();
+        assert_eq!(pm.scan_errors.load(Ordering::Relaxed), 2);
+
+        // input_parse_errors
+        pm.inc_input_parse_errors(7);
+        pm.inc_input_parse_errors(3);
+        assert_eq!(pm.input_parse_errors.load(Ordering::Relaxed), 10);
+
+        // file_rotations
+        pm.inc_file_rotations();
+        assert_eq!(pm.file_rotations.load(Ordering::Relaxed), 1);
+
+        // buffer bytes / peak
+        pm.set_buffer_bytes(1000);
+        assert_eq!(pm.buffer_bytes.load(Ordering::Relaxed), 1000);
+        assert_eq!(pm.buffer_peak_bytes.load(Ordering::Relaxed), 1000);
+        pm.set_buffer_bytes(500);
+        assert_eq!(pm.buffer_bytes.load(Ordering::Relaxed), 500);
+        // Peak should not decrease.
+        assert_eq!(pm.buffer_peak_bytes.load(Ordering::Relaxed), 1000);
+        pm.set_buffer_bytes(2000);
+        assert_eq!(pm.buffer_peak_bytes.load(Ordering::Relaxed), 2000);
+
+        // open_files
+        pm.set_open_files(8);
+        assert_eq!(pm.open_files.load(Ordering::Relaxed), 8);
+        pm.set_open_files(3);
+        assert_eq!(pm.open_files.load(Ordering::Relaxed), 3);
     }
 
     #[test]

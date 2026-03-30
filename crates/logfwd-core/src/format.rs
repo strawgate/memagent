@@ -16,8 +16,10 @@ use crate::cri::{self, CriReassembler};
 /// All methods are called from a single thread — no `Sync` required.
 pub trait FormatParser: Send {
     /// Process a chunk of raw bytes, appending complete newline-delimited
-    /// JSON lines to `out`. Returns the number of lines produced.
-    fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> usize;
+    /// JSON lines to `out`. Returns `(lines_produced, parse_errors)` where
+    /// `parse_errors` counts input lines that could not be parsed (e.g.,
+    /// malformed CRI format).
+    fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> (usize, usize);
 
     /// Reset internal state (partial line buffers, CRI reassembly).
     /// Called on file rotation or truncation.
@@ -41,7 +43,7 @@ impl JsonParser {
 }
 
 impl FormatParser for JsonParser {
-    fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> usize {
+    fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> (usize, usize) {
         let mut count = 0;
         let mut start = 0;
         for pos in memchr::memchr_iter(b'\n', bytes) {
@@ -66,7 +68,7 @@ impl FormatParser for JsonParser {
         if start < bytes.len() {
             self.partial.extend_from_slice(&bytes[start..]);
         }
-        count
+        (count, 0)
     }
 
     fn reset(&mut self) {
@@ -91,7 +93,7 @@ impl RawParser {
 }
 
 impl FormatParser for RawParser {
-    fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> usize {
+    fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> (usize, usize) {
         let mut count = 0;
         let mut start = 0;
         for pos in memchr::memchr_iter(b'\n', bytes) {
@@ -130,7 +132,7 @@ impl FormatParser for RawParser {
         if start < bytes.len() {
             self.partial.extend_from_slice(&bytes[start..]);
         }
-        count
+        (count, 0)
     }
 
     fn reset(&mut self) {
@@ -160,23 +162,23 @@ impl CriParser {
 }
 
 impl FormatParser for CriParser {
-    fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> usize {
+    fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> (usize, usize) {
         self.partial.extend_from_slice(bytes);
 
         let Some(last_nl) = memchr::memrchr(b'\n', &self.partial) else {
             // No complete line yet — keep buffering.
-            return 0;
+            return (0, 0);
         };
 
         let process_end = last_nl + 1;
-        let count = cri::process_cri_to_buf(
+        let (count, errors) = cri::process_cri_to_buf(
             &self.partial[..process_end],
             &mut self.reassembler,
             None,
             out,
         );
         self.partial.drain(..process_end);
-        count
+        (count, errors)
     }
 
     fn reset(&mut self) {
@@ -197,8 +199,9 @@ mod tests {
     fn json_basic() {
         let mut parser = JsonParser::new();
         let mut out = Vec::new();
-        let n = parser.process(b"{\"a\":1}\n{\"b\":2}\n", &mut out);
-        assert_eq!(n, 2);
+        let (lines, errors) = parser.process(b"{\"a\":1}\n{\"b\":2}\n", &mut out);
+        assert_eq!(lines, 2);
+        assert_eq!(errors, 0);
         assert_eq!(out, b"{\"a\":1}\n{\"b\":2}\n");
     }
 
@@ -207,10 +210,10 @@ mod tests {
         let mut parser = JsonParser::new();
         let mut out = Vec::new();
 
-        let n1 = parser.process(b"{\"a\":1}\n{\"b\":", &mut out);
+        let (n1, _) = parser.process(b"{\"a\":1}\n{\"b\":", &mut out);
         assert_eq!(n1, 1);
 
-        let n2 = parser.process(b"2}\n", &mut out);
+        let (n2, _) = parser.process(b"2}\n", &mut out);
         assert_eq!(n2, 1);
 
         assert_eq!(out, b"{\"a\":1}\n{\"b\":2}\n");
@@ -225,8 +228,9 @@ mod tests {
         assert_eq!(out.len(), 0);
 
         parser.reset();
-        let n = parser.process(b"{\"fresh\":1}\n", &mut out);
+        let (n, errors) = parser.process(b"{\"fresh\":1}\n", &mut out);
         assert_eq!(n, 1);
+        assert_eq!(errors, 0);
         assert_eq!(out, b"{\"fresh\":1}\n");
     }
 
@@ -234,8 +238,9 @@ mod tests {
     fn raw_basic() {
         let mut parser = RawParser::new();
         let mut out = Vec::new();
-        let n = parser.process(b"plain line\nanother\n", &mut out);
-        assert_eq!(n, 2);
+        let (lines, errors) = parser.process(b"plain line\nanother\n", &mut out);
+        assert_eq!(lines, 2);
+        assert_eq!(errors, 0);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("{\"_raw\":\"plain line\"}\n"));
         assert!(s.contains("{\"_raw\":\"another\"}\n"));
@@ -245,8 +250,9 @@ mod tests {
     fn raw_escaping() {
         let mut parser = RawParser::new();
         let mut out = Vec::new();
-        let n = parser.process(b"has \"quotes\" and \\backslash\n", &mut out);
-        assert_eq!(n, 1);
+        let (lines, errors) = parser.process(b"has \"quotes\" and \\backslash\n", &mut out);
+        assert_eq!(lines, 1);
+        assert_eq!(errors, 0);
         let s = String::from_utf8(out).unwrap();
         assert!(
             s.contains(r#"{"_raw":"has \"quotes\" and \\backslash"}"#),
@@ -259,8 +265,9 @@ mod tests {
         let mut parser = CriParser::new(2 * 1024 * 1024);
         let mut out = Vec::new();
         let input = b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hello\"}\n";
-        let n = parser.process(input, &mut out);
-        assert_eq!(n, 1);
+        let (lines, errors) = parser.process(input, &mut out);
+        assert_eq!(lines, 1);
+        assert_eq!(errors, 0);
         assert!(out.ends_with(b"\n"));
     }
 
@@ -272,13 +279,13 @@ mod tests {
 
         // First chunk has no newline — nothing should be emitted yet.
         let chunk1 = b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hel";
-        let n1 = parser.process(chunk1, &mut out);
+        let (n1, _) = parser.process(chunk1, &mut out);
         assert_eq!(n1, 0);
         assert_eq!(out.len(), 0);
 
         // Second chunk completes the line.
         let chunk2 = b"lo\"}\n";
-        let n2 = parser.process(chunk2, &mut out);
+        let (n2, _) = parser.process(chunk2, &mut out);
         assert_eq!(n2, 1);
         assert!(out.ends_with(b"\n"));
         // The reassembled message must contain the full payload.
@@ -292,11 +299,11 @@ mod tests {
         let mut parser = CriParser::new(2 * 1024 * 1024);
         let mut out = Vec::new();
 
-        assert_eq!(parser.process(b"2024-01-15T10:30:00Z ", &mut out), 0);
-        assert_eq!(parser.process(b"stdout F line_content", &mut out), 0);
+        assert_eq!(parser.process(b"2024-01-15T10:30:00Z ", &mut out).0, 0);
+        assert_eq!(parser.process(b"stdout F line_content", &mut out).0, 0);
         assert_eq!(out.len(), 0);
 
-        let n = parser.process(b"\n", &mut out);
+        let (n, _) = parser.process(b"\n", &mut out);
         assert_eq!(n, 1);
         assert!(out.ends_with(b"\n"));
     }
@@ -310,11 +317,11 @@ mod tests {
         // First chunk: one complete line + start of a second (no trailing newline).
         let chunk1 =
             b"2024-01-15T10:30:00Z stdout F {\"n\":1}\n2024-01-15T10:30:01Z stdout F {\"n\":2}";
-        let n1 = parser.process(chunk1, &mut out);
+        let (n1, _) = parser.process(chunk1, &mut out);
         assert_eq!(n1, 1);
 
         // Second chunk: just the closing newline.
-        let n2 = parser.process(b"\n", &mut out);
+        let (n2, _) = parser.process(b"\n", &mut out);
         assert_eq!(n2, 1);
 
         let s = String::from_utf8(out).unwrap();
@@ -333,9 +340,25 @@ mod tests {
 
         // After reset the stale partial is discarded.
         parser.reset();
-        let n = parser.process(b"2024-01-15T10:30:01Z stdout F {\"fresh\":1}\n", &mut out);
+        let (n, errors) = parser.process(b"2024-01-15T10:30:01Z stdout F {\"fresh\":1}\n", &mut out);
         assert_eq!(n, 1);
+        assert_eq!(errors, 0);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("fresh"), "got: {s}");
+    }
+
+    #[test]
+    fn cri_parse_errors_counted() {
+        // Lines that do not match CRI format should be counted as parse errors.
+        let mut parser = CriParser::new(2 * 1024 * 1024);
+        let mut out = Vec::new();
+
+        // Two malformed lines (missing required CRI fields) + one valid line.
+        let input = b"not-cri-format\n\
+                      also-not-cri\n\
+                      2024-01-15T10:30:00Z stdout F {\"msg\":\"ok\"}\n";
+        let (lines, errors) = parser.process(input, &mut out);
+        assert_eq!(lines, 1, "only one valid CRI line");
+        assert_eq!(errors, 2, "two malformed lines");
     }
 }

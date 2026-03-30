@@ -165,14 +165,16 @@ where
 ///   Example: `Some(b"\"kubernetes.pod_name\":\"my-pod\",")` turns
 ///   `{"msg":"hi"}` into `{"kubernetes.pod_name":"my-pod","msg":"hi"}`
 ///
-/// Returns the number of complete lines written.
+/// Returns `(lines_written, parse_errors)` where `parse_errors` is the count
+/// of non-empty lines that could not be parsed as valid CRI format.
 pub fn process_cri_to_buf(
     chunk: &[u8],
     reassembler: &mut CriReassembler,
     json_prefix: Option<&[u8]>,
     out: &mut Vec<u8>,
-) -> usize {
+) -> (usize, usize) {
     let mut count = 0;
+    let mut errors = 0;
     let mut line_start = 0;
 
     for pos in memchr::memchr_iter(b'\n', chunk) {
@@ -183,16 +185,21 @@ pub fn process_cri_to_buf(
             continue;
         }
 
-        if let Some(cri) = parse_cri_line(line)
-            && let Some(complete_msg) = reassembler.feed(&cri)
-        {
-            write_json_line(complete_msg, json_prefix, out);
-            count += 1;
-            reassembler.reset();
+        match parse_cri_line(line) {
+            Some(cri) => {
+                if let Some(complete_msg) = reassembler.feed(&cri) {
+                    write_json_line(complete_msg, json_prefix, out);
+                    count += 1;
+                    reassembler.reset();
+                }
+            }
+            None => {
+                errors += 1;
+            }
         }
     }
 
-    count
+    (count, errors)
 }
 
 /// Write a single message into the output buffer with optional JSON prefix injection.

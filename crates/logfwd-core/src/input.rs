@@ -21,6 +21,12 @@ pub trait InputSource: Send {
     /// Name of this input (from config).
     fn name(&self) -> &str;
 
+    /// Number of files currently open and being tailed.
+    /// Returns 0 for non-file sources.
+    fn open_file_count(&self) -> usize {
+        0
+    }
+
     /// Apply filter hints for predicate pushdown. Inputs that support
     /// pushdown use these to skip data early (e.g., XDP severity filtering).
     /// Default implementation ignores hints — correct but slower.
@@ -72,5 +78,9 @@ impl InputSource for FileInput {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn open_file_count(&self) -> usize {
+        self.tailer.num_files()
     }
 }

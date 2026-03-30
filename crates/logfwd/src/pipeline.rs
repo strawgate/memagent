@@ -171,10 +171,17 @@ impl Pipeline {
                     match event {
                         InputEvent::Data { bytes, .. } => {
                             input.stats.inc_bytes(bytes.len() as u64);
-                            let n = input.parser.process(&bytes, &mut input.json_buf);
+                            let (n, errs) = input.parser.process(&bytes, &mut input.json_buf);
                             input.stats.inc_lines(n as u64);
+                            if errs > 0 {
+                                self.metrics.inc_input_parse_errors(errs as u64);
+                            }
                         }
-                        InputEvent::Rotated | InputEvent::Truncated => {
+                        InputEvent::Rotated => {
+                            self.metrics.inc_file_rotations();
+                            input.parser.reset();
+                        }
+                        InputEvent::Truncated => {
                             input.parser.reset();
                         }
                     }
@@ -210,6 +217,7 @@ impl Pipeline {
                     let batch = match self.scanner.scan(combined.into()) {
                         Ok(b) => b,
                         Err(e) => {
+                            self.metrics.inc_scan_errors();
                             eprintln!("pipeline: scan error (batch dropped): {e}");
                             last_flush = Instant::now();
                             continue;
@@ -227,6 +235,7 @@ impl Pipeline {
                             Ok(r) => r,
                             Err(e) => {
                                 self.metrics.inc_transform_error();
+                                self.metrics.inc_batches_dropped(num_rows);
                                 eprintln!("pipeline: transform error (batch dropped): {e}");
                                 last_flush = Instant::now();
                                 continue;
@@ -246,6 +255,7 @@ impl Pipeline {
                         };
                         if let Err(e) = self.output.send_batch(&result, &metadata) {
                             self.metrics.output_error();
+                            self.metrics.inc_batches_dropped(result.num_rows() as u64);
                             eprintln!("pipeline: output error (batch dropped): {e}");
                             last_flush = Instant::now();
                             continue;
@@ -264,6 +274,16 @@ impl Pipeline {
 
                 last_flush = Instant::now();
             }
+
+            // Update buffer and open-files gauges once per loop iteration.
+            let total_buf: u64 = self.inputs.iter().map(|i| i.json_buf.len() as u64).sum();
+            self.metrics.set_buffer_bytes(total_buf);
+            let total_files: u64 = self
+                .inputs
+                .iter()
+                .map(|i| i.source.open_file_count() as u64)
+                .sum();
+            self.metrics.set_open_files(total_files);
 
             if !had_data {
                 std::thread::sleep(self.poll_interval);
@@ -284,6 +304,7 @@ impl Pipeline {
             let batch = match self.scanner.scan(combined.into()) {
                 Ok(b) => b,
                 Err(e) => {
+                    self.metrics.inc_scan_errors();
                     eprintln!("pipeline: scan error on shutdown flush (batch dropped): {e}");
                     return Ok(());
                 }
@@ -309,6 +330,7 @@ impl Pipeline {
                         };
                         if let Err(e) = self.output.send_batch(&result, &metadata) {
                             self.metrics.output_error();
+                            self.metrics.inc_batches_dropped(result.num_rows() as u64);
                             eprintln!("pipeline: output error on shutdown flush: {e}");
                             return Ok(());
                         }
@@ -323,6 +345,7 @@ impl Pipeline {
                     }
                     Err(e) => {
                         self.metrics.inc_transform_error();
+                        self.metrics.inc_batches_dropped(num_rows);
                         eprintln!("pipeline: transform error (batch dropped): {e}");
                     }
                 }
