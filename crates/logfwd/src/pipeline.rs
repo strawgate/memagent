@@ -10,7 +10,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use opentelemetry::metrics::Meter;
 
-use logfwd_config::{EnrichmentConfig, Format, GeoDatabaseFormat, InputConfig, InputType, PipelineConfig};
+use logfwd_config::{
+    EnrichmentConfig, Format, GeoDatabaseFormat, InputConfig, InputType, PipelineConfig,
+};
 use logfwd_core::diagnostics::{ComponentStats, PipelineMetrics};
 use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_core::input::{FileInput, InputEvent, InputSource};
@@ -74,7 +76,9 @@ impl Pipeline {
                         }
                     };
                     if geo_cfg.refresh_interval.is_some() {
-                        eprintln!("warn: geo_database refresh_interval is not yet implemented, database will not auto-reload");
+                        eprintln!(
+                            "warn: geo_database refresh_interval is not yet implemented, database will not auto-reload"
+                        );
                     }
                     transform.set_geo_database(db);
                 }
@@ -151,7 +155,13 @@ impl Pipeline {
             let mut had_data = false;
 
             for input in &mut self.inputs {
-                let events = input.source.poll()?;
+                let events = match input.source.poll() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("pipeline: input poll error (skipping this cycle): {e}");
+                        continue;
+                    }
+                };
                 if events.is_empty() {
                     continue;
                 }
@@ -200,7 +210,9 @@ impl Pipeline {
                     let batch = match self.scanner.scan(combined.into()) {
                         Ok(b) => b,
                         Err(e) => {
-                            return Err(io::Error::other(format!("scan error: {e}")));
+                            eprintln!("pipeline: scan error (batch dropped): {e}");
+                            last_flush = Instant::now();
+                            continue;
                         }
                     };
                     let scan_elapsed = t0.elapsed();
@@ -234,7 +246,9 @@ impl Pipeline {
                         };
                         if let Err(e) = self.output.send_batch(&result, &metadata) {
                             self.metrics.output_error();
-                            return Err(e);
+                            eprintln!("pipeline: output error (batch dropped): {e}");
+                            last_flush = Instant::now();
+                            continue;
                         }
                         let output_elapsed = t2.elapsed();
 
@@ -270,7 +284,8 @@ impl Pipeline {
             let batch = match self.scanner.scan(combined.into()) {
                 Ok(b) => b,
                 Err(e) => {
-                    return Err(io::Error::other(format!("scan error: {e}")));
+                    eprintln!("pipeline: scan error on shutdown flush (batch dropped): {e}");
+                    return Ok(());
                 }
             };
             let scan_elapsed = t0.elapsed();
@@ -294,7 +309,8 @@ impl Pipeline {
                         };
                         if let Err(e) = self.output.send_batch(&result, &metadata) {
                             self.metrics.output_error();
-                            return Err(e);
+                            eprintln!("pipeline: output error on shutdown flush: {e}");
+                            return Ok(());
                         }
                         let output_elapsed = t2.elapsed();
 
