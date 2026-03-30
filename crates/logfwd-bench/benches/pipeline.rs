@@ -10,6 +10,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use logfwd_core::compress::ChunkCompressor;
 use logfwd_core::cri::{CriReassembler, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
+use logfwd_core::scanner::SimdScanner;
 use logfwd_output::{BatchMetadata, OutputSink};
 use logfwd_transform::SqlTransform;
 
@@ -106,7 +107,7 @@ fn bench_scanner(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(bytes));
         group.bench_with_input(BenchmarkId::new("scan_all_fields", n), &data, |b, data| {
             b.iter(|| {
-                let mut scanner = Scanner::new(ScanConfig::default());
+                let mut scanner = SimdScanner::new(ScanConfig::default());
                 scanner.scan(data).expect("bench: scan should not fail")
             })
         });
@@ -133,7 +134,7 @@ fn bench_scanner(c: &mut Criterion) {
                     keep_raw: false,
                     validate_utf8: false,
                 };
-                let mut scanner = Scanner::new(config);
+                let mut scanner = SimdScanner::new(config);
                 scanner.scan(data).expect("bench: scan should not fail")
             })
         });
@@ -209,7 +210,7 @@ fn bench_transform(c: &mut Criterion) {
 
     let n = 10_000;
     let data = gen_json_lines(n);
-    let mut scanner = Scanner::new(ScanConfig::default());
+    let mut scanner = SimdScanner::new(ScanConfig::default());
     let batch = scanner.scan(&data).expect("bench: scan should not fail");
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("select_star", |b| {
@@ -287,7 +288,7 @@ fn bench_output(c: &mut Criterion) {
 
     let n = 10_000;
     let data = gen_json_lines(n);
-    let mut scanner = Scanner::new(ScanConfig::default());
+    let mut scanner = SimdScanner::new(ScanConfig::default());
     let batch = scanner.scan(&data).expect("bench: scan should not fail");
     let meta = make_metadata();
 
@@ -319,7 +320,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let mut scanner = Scanner::new(ScanConfig::default());
+            let mut scanner = SimdScanner::new(ScanConfig::default());
             let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
@@ -332,7 +333,7 @@ fn bench_end_to_end(c: &mut Criterion) {
             SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let mut scanner = Scanner::new(ScanConfig::default());
+            let mut scanner = SimdScanner::new(ScanConfig::default());
             let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
@@ -348,7 +349,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         .unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let mut scanner = Scanner::new(ScanConfig::default());
+            let mut scanner = SimdScanner::new(ScanConfig::default());
             let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();

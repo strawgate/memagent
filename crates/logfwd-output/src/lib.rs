@@ -516,7 +516,7 @@ mod tests {
             DataType::Float64,
             true,
         )]));
-        let dur = Float64Array::from(vec![Some(3.14)]);
+        let dur = Float64Array::from(vec![Some(3.25)]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(dur)]).unwrap();
         let meta = make_metadata();
 
@@ -524,7 +524,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         sink.write_batch_to(&batch, &meta, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
-        assert!(output.contains("\"duration_ms\":3.14"), "got: {}", output);
+        assert!(output.contains("\"duration_ms\":3.25"), "got: {}", output);
     }
 
     #[test]

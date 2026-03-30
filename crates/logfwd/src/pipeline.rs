@@ -226,6 +226,63 @@ impl Pipeline {
             }
         }
 
+        // Drain any data that accumulated in json_buf since the last periodic
+        // flush so that nothing is silently discarded on shutdown.
+        let mut combined = Vec::new();
+        for input in &mut self.inputs {
+            if !input.json_buf.is_empty() {
+                combined.append(&mut input.json_buf);
+            }
+        }
+
+        if !combined.is_empty() {
+            let t0 = Instant::now();
+            let batch = match self.scanner.scan(combined.into()) {
+                Ok(b) => b,
+                Err(e) => {
+                    return Err(io::Error::other(format!("scan error: {e}")));
+                }
+            };
+            let scan_elapsed = t0.elapsed();
+
+            if batch.num_rows() > 0 {
+                let num_rows = batch.num_rows() as u64;
+                self.metrics.transform_in.inc_lines(num_rows);
+
+                let t1 = Instant::now();
+                match self.transform.execute_blocking(batch) {
+                    Ok(result) => {
+                        let transform_elapsed = t1.elapsed();
+                        self.metrics
+                            .transform_out
+                            .inc_lines(result.num_rows() as u64);
+
+                        let t2 = Instant::now();
+                        let metadata = BatchMetadata {
+                            resource_attrs: vec![],
+                            observed_time_ns: now_nanos(),
+                        };
+                        if let Err(e) = self.output.send_batch(&result, &metadata) {
+                            self.metrics.output_error();
+                            return Err(e);
+                        }
+                        let output_elapsed = t2.elapsed();
+
+                        self.metrics.record_batch(
+                            num_rows,
+                            scan_elapsed.as_nanos() as u64,
+                            transform_elapsed.as_nanos() as u64,
+                            output_elapsed.as_nanos() as u64,
+                        );
+                    }
+                    Err(e) => {
+                        self.metrics.inc_transform_error();
+                        eprintln!("pipeline: transform error (batch dropped): {e}");
+                    }
+                }
+            }
+        }
+
         self.output.flush()?;
         Ok(())
     }
@@ -471,6 +528,66 @@ output:
         assert!(result.is_ok(), "got: {:?}", result.err());
 
         // Verify metrics show data was processed.
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert!(lines_in > 0, "expected transform_in > 0, got {lines_in}");
+    }
+
+    /// Data buffered in `json_buf` at the moment the shutdown token fires must
+    /// not be silently discarded.  The final flush-on-shutdown should process
+    /// any pending data before the pipeline exits.
+    #[test]
+    fn test_pipeline_flush_on_shutdown() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+
+        let mut data = String::new();
+        for i in 0..5 {
+            data.push_str(&format!(r#"{{"level":"INFO","msg":"hello {}"}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+
+        // Set batch_timeout large enough that the normal time-based flush will
+        // never fire during the test — data stays in json_buf until shutdown.
+        pipeline.batch_timeout = Duration::from_secs(60);
+        pipeline.poll_interval = Duration::from_millis(5);
+
+        let shutdown = CancellationToken::new();
+        let sd_clone = shutdown.clone();
+
+        // Cancel after enough time for the file to be polled and data to land
+        // in json_buf, but well before the 60-second batch_timeout would fire.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            sd_clone.cancel();
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(result.is_ok(), "got: {:?}", result.err());
+
+        // The shutdown flush must have forwarded the buffered lines.
         let lines_in = pipeline
             .metrics
             .transform_in
