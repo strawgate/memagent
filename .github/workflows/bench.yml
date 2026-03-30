@@ -65,10 +65,18 @@ jobs:
       - name: Build PGO variant
         run: |
           rustup component add llvm-tools
+
+          # Step 1: Build instrumented logfwd (profile-generate).
           RUSTFLAGS="-Ctarget-cpu=x86-64-v3 -Cprofile-generate=/tmp/pgo-data" \
             cargo build --release -p logfwd
-          LOGFWD=./target/release/logfwd cargo run -p logfwd-competitive-bench --release -- \
-            --lines 500000 --agents logfwd --mode binary --scenarios passthrough --no-download
+
+          # Step 2: Run training workload with instrumented binary.
+          # Use the already-compiled bench harness (not cargo run, which would recompile).
+          LOGFWD=./target/release/logfwd \
+            ./target/release/logfwd-competitive-bench \
+            --lines 500000 --agents logfwd --scenarios passthrough --no-download
+
+          # Step 3: Merge profiles and rebuild with PGO.
           PROFDATA=$(find "$(rustc --print sysroot)" -name llvm-profdata -type f | head -1)
           if [ -n "$PROFDATA" ] && "$PROFDATA" merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null; then
             RUSTFLAGS="-Ctarget-cpu=x86-64-v3 -Cprofile-use=/tmp/pgo-data/merged.profdata" \
