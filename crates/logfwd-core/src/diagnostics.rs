@@ -251,7 +251,7 @@ impl PipelineMetrics {
 // Diagnostics HTTP server
 // ---------------------------------------------------------------------------
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
 /// Lightweight diagnostics HTTP server. Runs on a dedicated thread, reads
@@ -574,7 +574,7 @@ mod tests {
         let (status, body) = http_get(port, "/health");
         assert_eq!(status, 200);
         assert!(body.contains(r#""status":"ok""#), "body: {}", body);
-        assert!(body.contains(r#""version":"0.2.0""#), "body: {}", body);
+        assert!(body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))), "body: {}", body);
         assert!(body.contains(r#""uptime_seconds":"#), "body: {}", body);
     }
 
@@ -597,7 +597,7 @@ mod tests {
         assert!(body.contains(r#""avg_rows":90.0"#), "body: {}", body);
         assert!(body.contains(r#""flush_by_size":30"#), "body: {}", body);
         assert!(body.contains(r#""flush_by_timeout":20"#), "body: {}", body);
-        assert!(body.contains(r#""version":"0.2.0""#), "body: {}", body);
+        assert!(body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))), "body: {}", body);
     }
 
     #[test]
