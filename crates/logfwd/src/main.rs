@@ -245,22 +245,31 @@ fn validate_pipelines(config: &logfwd_config::Config, dry_run: bool) -> io::Resu
     for (name, pipe_cfg) in &config.pipelines {
         match Pipeline::from_config(name, pipe_cfg, &meter) {
             Ok(_) => {
-                info!(pipeline = %name, "pipeline ready");
+                eprintln!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
             }
             Err(e) => {
-                error!(pipeline = %name, error = %e, "pipeline error");
+                eprintln!("  {}error{}: pipeline '{name}': {e}", red(), reset());
                 errors += 1;
             }
         }
     }
 
     if errors > 0 {
-        error!(errors, "validation failed");
+        eprintln!(
+            "\n{}validation failed{}: {errors} error(s)",
+            red(),
+            reset(),
+        );
         std::process::exit(EXIT_CONFIG);
     }
 
     let label = if dry_run { "dry run ok" } else { "config ok" };
-    info!(pipelines = config.pipelines.len(), "{label}");
+    eprintln!(
+        "{}{label}{}: {} pipeline(s)",
+        green(),
+        reset(),
+        config.pipelines.len(),
+    );
     Ok(())
 }
 
