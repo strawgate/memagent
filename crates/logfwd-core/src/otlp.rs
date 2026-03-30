@@ -901,4 +901,54 @@ mod verification {
             "bytes_field_size disagrees with encode_bytes_field"
         );
     }
+
+    // NOTE: parse_timestamp_nanos proofs deferred — Kani has trouble with
+    // div_euclid/rem_euclid in days_from_civil and large u64 multiplications
+    // (nanos *= 1_000_000_000). The timestamp functions are better verified
+    // with proptest oracle against chrono. Tracked in #268.
+
+    /// Prove parse_severity never panics for any 8-byte input and
+    /// returns correct severity for known level strings.
+    #[kani::proof]
+    fn verify_parse_severity_no_panic() {
+        let bytes: [u8; 8] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= 8);
+        let _ = parse_severity(&bytes[..len]);
+    }
+
+    /// Prove parse_severity correctly classifies all standard level strings.
+    #[kani::proof]
+    fn verify_parse_severity_known_values() {
+        // Uppercase
+        assert!(matches!(parse_severity(b"INFO").0, Severity::Info));
+        assert!(matches!(parse_severity(b"WARN").0, Severity::Warn));
+        assert!(matches!(parse_severity(b"ERROR").0, Severity::Error));
+        assert!(matches!(parse_severity(b"DEBUG").0, Severity::Debug));
+        assert!(matches!(parse_severity(b"TRACE").0, Severity::Trace));
+        assert!(matches!(parse_severity(b"FATAL").0, Severity::Fatal));
+
+        // Lowercase
+        assert!(matches!(parse_severity(b"info").0, Severity::Info));
+        assert!(matches!(parse_severity(b"warn").0, Severity::Warn));
+        assert!(matches!(parse_severity(b"error").0, Severity::Error));
+        assert!(matches!(parse_severity(b"debug").0, Severity::Debug));
+        assert!(matches!(parse_severity(b"trace").0, Severity::Trace));
+        assert!(matches!(parse_severity(b"fatal").0, Severity::Fatal));
+
+        // Empty / unknown
+        assert!(matches!(parse_severity(b"").0, Severity::Unspecified));
+        assert!(matches!(parse_severity(b"X").0, Severity::Unspecified));
+    }
+
+    /// Prove parse_2digits and parse_4digits never panic for any input.
+    #[kani::proof]
+    fn verify_digit_parsers_no_panic() {
+        let bytes: [u8; 8] = kani::any();
+        let off: usize = kani::any();
+        kani::assume(off <= 6);
+
+        let _ = parse_2digits(&bytes, off);
+        let _ = parse_4digits(&bytes, off);
+    }
 }
