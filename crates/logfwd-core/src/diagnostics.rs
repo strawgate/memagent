@@ -260,12 +260,30 @@ impl PipelineMetrics {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
+/// Snapshot of allocator memory statistics in bytes.
+///
+/// Populated by the jemalloc stats reader in the binary crate and surfaced on
+/// `/api/pipelines` under `system.memory`.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryStats {
+    /// Total memory mapped by the allocator that is still mapped to resident
+    /// physical pages (closest to OS RSS).
+    pub resident: usize,
+    /// Total memory currently allocated by the application.
+    pub allocated: usize,
+    /// Total memory in active jemalloc extents (resident + metadata).
+    pub active: usize,
+}
+
 /// Lightweight diagnostics HTTP server. Runs on a dedicated thread, reads
 /// atomic counters — no locking on the hot path.
 pub struct DiagnosticsServer {
     pipelines: Vec<Arc<PipelineMetrics>>,
     start_time: Instant,
     bind_addr: String,
+    /// Optional callback that returns a snapshot of allocator memory stats.
+    /// Set this to expose jemalloc (or any allocator) metrics on `/api/pipelines`.
+    memory_stats_fn: Option<fn() -> Option<MemoryStats>>,
 }
 
 impl DiagnosticsServer {
@@ -274,11 +292,21 @@ impl DiagnosticsServer {
             pipelines: Vec::new(),
             start_time: Instant::now(),
             bind_addr: bind_addr.to_string(),
+            memory_stats_fn: None,
         }
     }
 
     pub fn add_pipeline(&mut self, metrics: Arc<PipelineMetrics>) {
         self.pipelines.push(metrics);
+    }
+
+    /// Register a callback that returns allocator memory statistics.
+    ///
+    /// When set, the `/api/pipelines` endpoint includes a `memory` object in
+    /// the `system` section with `resident`, `allocated`, and `active` fields
+    /// (all in bytes).
+    pub fn set_memory_stats_fn(&mut self, f: fn() -> Option<MemoryStats>) {
+        self.memory_stats_fn = Some(f);
     }
 
     /// Spawn the server on a background thread. Binds synchronously before
@@ -453,10 +481,11 @@ impl DiagnosticsServer {
         }
 
         let body = format!(
-            r#"{{"pipelines":[{}],"system":{{"uptime_seconds":{},"version":"{}"}}}}"#,
+            r#"{{"pipelines":[{}],"system":{{"uptime_seconds":{},"version":"{}"{}}}}}"#,
             pipelines_json.join(","),
             uptime,
             VERSION,
+            self.memory_json(),
         );
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
@@ -464,6 +493,18 @@ impl DiagnosticsServer {
         let resp = tiny_http::Response::from_string(body).with_header(header);
         request.respond(resp)?;
         Ok(())
+    }
+
+    /// Returns a JSON fragment (starting with a comma) for allocator memory
+    /// stats, or an empty string if no stats function is registered.
+    fn memory_json(&self) -> String {
+        match self.memory_stats_fn.and_then(|f| f()) {
+            Some(m) => format!(
+                r#","memory":{{"resident":{},"allocated":{},"active":{}}}"#,
+                m.resident, m.allocated, m.active,
+            ),
+            None => String::new(),
+        }
     }
 }
 
@@ -654,6 +695,50 @@ mod tests {
 
         let (status, _body) = http_get(port, "/nonexistent");
         assert_eq!(status, 404);
+    }
+
+    #[test]
+    fn test_pipelines_endpoint_no_memory_stats() {
+        // Without a memory_stats_fn set, the system section must NOT contain
+        // a "memory" key — no partial or null fields.
+        let port = free_port();
+        let server = server_with_test_pipeline(port);
+        let _handle = server.start();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/api/pipelines");
+        assert_eq!(status, 200);
+        assert!(
+            !body.contains(r#""memory""#),
+            "unexpected memory key: {}",
+            body
+        );
+    }
+
+    #[test]
+    fn test_pipelines_endpoint_with_memory_stats() {
+        // With a memory_stats_fn set, the system section must include
+        // "memory" with resident/allocated/active fields.
+        let port = free_port();
+        let mut server = server_with_test_pipeline(port);
+        server.set_memory_stats_fn(|| {
+            Some(MemoryStats {
+                resident: 1_000_000,
+                allocated: 800_000,
+                active: 900_000,
+            })
+        });
+        let _handle = server.start();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/api/pipelines");
+        assert_eq!(status, 200);
+        assert!(body.contains(r#""memory""#), "missing memory key: {}", body);
+        assert!(body.contains(r#""resident":1000000"#), "body: {}", body);
+        assert!(body.contains(r#""allocated":800000"#), "body: {}", body);
+        assert!(body.contains(r#""active":900000"#), "body: {}", body);
     }
 
     #[test]

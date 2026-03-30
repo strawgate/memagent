@@ -2,6 +2,10 @@
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
+#[cfg(all(unix, not(feature = "dhat-heap")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::env;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -315,6 +319,8 @@ fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
         for p in &pipelines {
             server.add_pipeline(Arc::clone(p.metrics()));
         }
+        #[cfg(unix)]
+        server.set_memory_stats_fn(jemalloc_stats);
         let handle = server.start()?;
         eprintln!("  {}diagnostics{}: http://{addr}", dim(), reset());
         Some(handle)
@@ -569,4 +575,31 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
         size as f64 / num_lines as f64,
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Allocator memory stats
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+/// Read jemalloc memory stats: resident, allocated, and active bytes.
+///
+/// Returns `None` if the stats are unavailable (e.g. the epoch refresh fails).
+/// This function is passed to [`DiagnosticsServer`] so the `/api/pipelines`
+/// endpoint can expose live allocator metrics.
+fn jemalloc_stats() -> Option<logfwd_core::diagnostics::MemoryStats> {
+    use tikv_jemalloc_ctl::{epoch, stats};
+
+    // Refresh the epoch so subsequent reads reflect current allocator state.
+    epoch::mib().ok()?.advance().ok()?;
+
+    let resident = stats::resident::mib().ok()?.read().ok()?;
+    let allocated = stats::allocated::mib().ok()?.read().ok()?;
+    let active = stats::active::mib().ok()?.read().ok()?;
+
+    Some(logfwd_core::diagnostics::MemoryStats {
+        resident,
+        allocated,
+        active,
+    })
 }
