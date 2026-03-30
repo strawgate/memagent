@@ -89,6 +89,11 @@ bench-docker:
 bench-report:
     cargo run -p logfwd-bench
 
+# Run low-and-slow rate-ingest benchmark (logfwd only, measures memory and CPU at each eps)
+bench-rate *ARGS:
+    cargo build --release -p logfwd
+    LOGFWD=./target/release/logfwd cargo run -p logfwd-competitive-bench --release -- --rate-bench {{ARGS}}
+
 # Install development tools
 install-tools:
     cargo install taplo-cli cargo-deny
