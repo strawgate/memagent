@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - "book/**"
+      - "bench/dashboard/**"
       - "crates/**"
       - "docs/**"
       - "README.md"
@@ -47,6 +48,14 @@ jobs:
             -p logfwd-output \
             -p logfwd-transform
           cp -r target/doc book/book/api
+
+      - name: Include benchmark dashboard
+        run: |
+          mkdir -p book/book/bench
+          cp -r bench/dashboard/* book/book/bench/ 2>/dev/null || true
+          # Create empty data dirs so the dashboard loads without errors.
+          mkdir -p book/book/bench/data/runs book/book/bench/data/rate-runs book/book/bench/data/criterion-runs
+          echo '{"runs":[]}' > book/book/bench/data/index.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
