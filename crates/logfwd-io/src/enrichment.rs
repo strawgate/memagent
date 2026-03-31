@@ -35,7 +35,6 @@ pub trait EnrichmentTable: Send + Sync {
 /// A one-row table with fixed key-value pairs from the YAML config.
 ///
 /// SQL: `SELECT logs.*, e.* FROM logs CROSS JOIN env AS e`
-#[derive(Debug)]
 pub struct StaticTable {
     table_name: String,
     batch: RecordBatch,
@@ -673,7 +672,7 @@ mod tests {
     #[test]
     fn static_table_empty_labels_returns_error() {
         let result = StaticTable::new("t", &[]);
-        let err = result.expect_err("empty labels should return Err");
+        let err = result.err().expect("empty labels should return Err");
         assert_eq!(
             err, "StaticTable requires at least one label",
             "error message must identify the cause"
