@@ -72,6 +72,46 @@ jobs:
             target/release/logfwd-competitive-bench
           retention-days: 1
 
+  # -------------------------------------------------------------------
+  # PGO build + bench (fully parallel, doesn't block anything)
+  # -------------------------------------------------------------------
+  pgo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build + benchmark PGO variant
+        run: |
+          RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release -p logfwd -p logfwd-competitive-bench
+
+          rustup component add llvm-tools
+          RUSTFLAGS="-Ctarget-cpu=x86-64-v3 -Cprofile-generate=/tmp/pgo-data" \
+            cargo build --release -p logfwd
+
+          LOGFWD=./target/release/logfwd ./target/release/logfwd-competitive-bench \
+            --lines 500000 --agents logfwd --scenarios passthrough --no-download
+
+          PROFDATA=$(find "$(rustc --print sysroot)" -name llvm-profdata -type f | head -1)
+          if [ -n "$PROFDATA" ] && "$PROFDATA" merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null; then
+            RUSTFLAGS="-Ctarget-cpu=x86-64-v3 -Cprofile-use=/tmp/pgo-data/merged.profdata" \
+              cargo build --release -p logfwd
+          fi
+
+          LOGFWD=./target/release/logfwd ./target/release/logfwd-competitive-bench \
+            --lines ${{ env.LINES }} --agents logfwd \
+            --scenarios ${{ env.SCENARIOS }} --iterations ${{ env.ITERATIONS }} \
+            --results-file pgo-results.jsonl --no-download
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgo-results
+          path: pgo-results.jsonl
+          retention-days: 7
 
   # -------------------------------------------------------------------
   # PGO build + bench (fully parallel, doesn't block anything)
