@@ -75,6 +75,35 @@ is optimized for wire efficiency, not queryability.
 **OTAP compatibility:** Convert at the boundary. Star-to-flat for
 receiving, flat-to-star for sending.
 
+## Two-stage architecture: SIMD detects, scalar consumes
+
+**Decision:** Stage 1 (SIMD character detection) and Stage 2
+(parsing/field extraction) are separate. SIMD produces bitmasks.
+A sequential scanner consumes them. They never mix.
+
+**Why:** SIMD is embarrassingly parallel WITHIN a 64-byte block —
+every byte compared independently against 10 needles. But parsing
+is inherently sequential — the meaning of a comma depends on
+whether we're inside a string. These are fundamentally different
+parallelism profiles.
+
+**How it works:**
+- Stage 1 runs SIMD on the whole buffer (or per-block streaming),
+  producing u64 bitmasks. Cross-block state: only 2 u64 values
+  (escape carry, string interior carry).
+- Stage 2 walks through structural positions sequentially using
+  `trailing_zeros` + clear-lowest-bit. The scanner state machine
+  tracks "what token am I expecting next?" Parser state carries
+  across blocks but has no effect on SIMD.
+
+**No SIMD is lost by going sequential.** The current scanner is
+already sequential — it calls `next_quote(pos)` one token at a
+time. Sequential bitmask iteration just replaces the stored-vector
+lookup with a stack-local `trailing_zeros` operation.
+
+**This is the proven simdjson architecture.** Stage 1 (SIMD) +
+Stage 2 (sequential scalar) achieves >2 GB/s in simdjson.
+
 ## Scalar SIMD fallback in core (SIMD in logfwd-arrow)
 
 **Decision:** Core has a safe scalar `find_char_mask`. SIMD impls
