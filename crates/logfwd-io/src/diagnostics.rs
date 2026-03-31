@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -444,7 +445,13 @@ impl DiagnosticsServer {
     /// Flat JSON endpoint for benchmark polling: process metrics + pipeline summary.
     fn serve_stats(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let uptime_s = self.start_time.elapsed().as_secs_f64();
-        let (rss_bytes, cpu_user_ms, cpu_sys_ms) = process_metrics();
+        let process_json = match process_metrics() {
+            Some((rss_bytes, cpu_user_ms, cpu_sys_ms)) => format!(
+                r#","rss_bytes":{},"cpu_user_ms":{},"cpu_sys_ms":{}"#,
+                rss_bytes, cpu_user_ms, cpu_sys_ms
+            ),
+            None => String::from(r#","rss_bytes":null,"cpu_user_ms":null,"cpu_sys_ms":null"#),
+        };
 
         // Aggregate pipeline counters.
         let mut total_input_lines: u64 = 0;
@@ -485,11 +492,9 @@ impl DiagnosticsServer {
         };
 
         let body = format!(
-            r#"{{"uptime_sec":{:.3},"rss_bytes":{},"cpu_user_ms":{},"cpu_sys_ms":{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{}{}}}"#,
+            r#"{{"uptime_sec":{:.3}{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{}{}}}"#,
             uptime_s,
-            rss_bytes,
-            cpu_user_ms,
-            cpu_sys_ms,
+            process_json,
             total_input_lines,
             total_input_bytes,
             total_output_lines,
@@ -622,26 +627,82 @@ impl DiagnosticsServer {
 // Process-level metrics (RSS, CPU)
 // ---------------------------------------------------------------------------
 
-/// Returns (rss_bytes, uptime_ms, 0) for the current process.
-///
-/// Note: `uptime_ms` is wall-clock uptime, not CPU time. sysinfo doesn't
-/// expose raw CPU milliseconds; `run_time()` returns seconds since launch.
-fn process_metrics() -> (u64, u64, u64) {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
+/// Returns (rss_bytes, cpu_user_ms, cpu_sys_ms) for the current process.
+fn process_metrics() -> Option<(u64, u64, u64)> {
+    get_process_metrics()
+}
 
-    let pid = Pid::from_u32(std::process::id());
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+/// Reads /proc/self/stat to get RSS, utime and stime.
+fn get_process_metrics() -> Option<(u64, u64, u64)> {
+    use std::fs;
 
-    match sys.process(pid) {
-        Some(proc) => {
-            let rss = proc.memory();
-            // sysinfo doesn't expose raw CPU time; run_time is wall-clock uptime.
-            let uptime_ms = proc.run_time() * 1000;
-            (rss, uptime_ms, 0)
-        }
-        None => (0, 0, 0),
+    // Read only the first 4KB of /proc/self/stat, which is plenty for our needs.
+    // procfs files don't have a reliable size in metadata, so we read into a buffer.
+    use std::io::Read;
+    let mut f = fs::File::open("/proc/self/stat").ok()?;
+    let mut buf = Vec::with_capacity(4096);
+    f.by_ref().take(4096).read_to_end(&mut buf).ok()?;
+    let stat = String::from_utf8_lossy(&buf);
+    parse_proc_stat(&stat)
+}
+
+/// Parses `/proc/self/stat` content and returns `(rss_bytes, user_ms, sys_ms)`.
+fn parse_proc_stat(stat: &str) -> Option<(u64, u64, u64)> {
+    // Field 14 is utime, field 15 is stime, field 24 is rss (in pages).
+    // They are space-separated, but the second field (comm) can contain spaces
+    // and is enclosed in parentheses.
+    let last_paren = stat.rfind(')')?;
+    let after_comm = &stat[last_paren + 1..];
+    let mut parts = after_comm.split_whitespace();
+
+    // The fields in /proc/self/stat are:
+    // 1: pid
+    // 2: (comm)
+    // -- after_comm starts here --
+    // 3: state (parts[0])
+    // 4: ppid (parts[1])
+    // ...
+    // 14: utime (parts[11])
+    // 15: stime (parts[12])
+    // ...
+    // 24: rss (parts[21])
+    let utime_ticks: u64 = parts.nth(11)?.parse().ok()?;
+    let stime_ticks: u64 = parts.next()?.parse().ok()?;
+
+    // Skip to field 24 (index 21 after_comm).
+    // parts is now at index 13 (after stime).
+    // To get to index 21, we need to skip 8 elements.
+    let rss_pages: u64 = parts.nth(8)?.parse().ok()?;
+
+    let ticks_per_sec = get_ticks_per_sec()?;
+    let page_size = get_page_size()?;
+
+    let user_ms = (utime_ticks * 1000) / ticks_per_sec;
+    let sys_ms = (stime_ticks * 1000) / ticks_per_sec;
+    let rss_bytes = rss_pages * page_size;
+
+    Some((rss_bytes, user_ms, sys_ms))
+}
+
+fn get_ticks_per_sec() -> Option<u64> {
+    static CLK_TCK: OnceLock<Option<u64>> = OnceLock::new();
+    *CLK_TCK.get_or_init(|| getconf_u64("CLK_TCK"))
+}
+
+fn get_page_size() -> Option<u64> {
+    static PAGE_SIZE: OnceLock<Option<u64>> = OnceLock::new();
+    *PAGE_SIZE.get_or_init(|| getconf_u64("PAGESIZE"))
+}
+
+fn getconf_u64(name: &str) -> Option<u64> {
+    let output = std::process::Command::new("getconf")
+        .arg(name)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
+    std::str::from_utf8(&output.stdout).ok()?.trim().parse().ok()
 }
 
 /// Minimal JSON-string escaping (backslash, double-quote, control chars).
@@ -867,6 +928,30 @@ mod tests {
         assert!(body.contains(r#""mem_resident":1000000"#), "body: {}", body);
         assert!(body.contains(r#""mem_allocated":800000"#), "body: {}", body);
         assert!(body.contains(r#""mem_active":900000"#), "body: {}", body);
+    }
+
+    #[test]
+    fn parse_stat_with_space_in_comm_returns_expected_metrics() {
+        // We only rely on fields 14 (utime), 15 (stime), and 24 (rss).
+        // This synthetic line keeps earlier fields simple while preserving
+        // the comm-with-spaces shape: `pid (comm with spaces) ...`.
+        let stat_line =
+            "12345 (my process name) R 1 2 3 4 5 6 7 8 9 10 300 200 13 14 15 16 17 18 19 20 5 999 23";
+        let parsed = parse_proc_stat(stat_line);
+        assert!(parsed.is_some());
+
+        let (rss_bytes, user_ms, sys_ms) = parsed.expect("synthetic stat line should parse");
+        let ticks_per_sec = get_ticks_per_sec().expect("CLK_TCK should be available");
+        let page_size = get_page_size().expect("PAGESIZE should be available");
+
+        assert_eq!(user_ms, (300 * 1000) / ticks_per_sec);
+        assert_eq!(sys_ms, (200 * 1000) / ticks_per_sec);
+        assert_eq!(rss_bytes, 5 * page_size);
+    }
+
+    #[test]
+    fn parse_stat_empty_input_returns_none() {
+        assert_eq!(parse_proc_stat(""), None);
     }
 
     #[test]

@@ -11,12 +11,12 @@ crossbeam-channel = "0.5"
 csv = "1"
 gethostname = "1"
 glob = "0.3"
+libc = "0.2"
 memchr = "2"
 notify = "7"
 opentelemetry = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
-sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 tiny_http = "0.12"
 zstd = "0.13"
 xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
