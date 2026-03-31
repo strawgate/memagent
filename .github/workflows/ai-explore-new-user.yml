@@ -36,7 +36,7 @@ jobs:
            configs in the repo?
 
         4. **SQL transforms**: The killer feature is SQL transforms. Is it
-           clear how to write one? Is the `level_str` vs `level` naming
+           clear how to write one? Is the `level$str` vs `level` naming
            explained anywhere? Would a new user know they need type suffixes?
 
         5. **Diagnostics**: If `server.diagnostics` is configured, can you

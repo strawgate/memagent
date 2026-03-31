@@ -154,13 +154,13 @@ This design:
 
 | Prefix | Purpose | Example |
 |--------|---------|---------|
-| `{field}_str` | String value from JSON | `message_str` |
-| `{field}_int` | Integer value from JSON | `status_int` |
-| `{field}_float` | Float value from JSON | `latency_float` |
+| `{field}$str` | String value from JSON | `message$str` |
+| `{field}$int` | Integer value from JSON | `status$int` |
+| `{field}$float` | Float value from JSON | `latency$float` |
 | `_raw` | Raw input line (optional) | `_raw` |
 | `_resource_*` | Source/resource metadata | `_resource_k8s_pod_name` |
 
-Type conflicts produce separate columns: `status_int` and `status_str`
+Type conflicts produce separate columns: `status$int` and `status$str`
 can coexist.
 
 ## Arrow IPC segment format

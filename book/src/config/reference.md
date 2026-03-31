@@ -22,7 +22,7 @@ input:
   path: /var/log/app/*.log
   format: json
 
-transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level$str, msg$str, status$int FROM logs WHERE status$int >= 400
 
 output:
   type: otlp
@@ -44,7 +44,7 @@ pipelines:
         type: file
         path: /var/log/pods/**/*.log
         format: cri
-    transform: SELECT * FROM logs WHERE level_str = 'ERROR'
+    transform: SELECT * FROM logs WHERE level$str = 'ERROR'
     outputs:
       - type: otlp
         endpoint: otel-collector:4317
@@ -153,7 +153,7 @@ The `format` field controls how raw bytes from the input are parsed into log rec
 | `auto` | Auto-detect (default). Tries CRI first, then JSON, then raw. |
 | `cri` | CRI container log format (`<timestamp> <stream> <flags> <message>`). Multi-line log reassembly via the `P` partial flag is supported. |
 | `json` | Newline-delimited JSON. Each line must be a single JSON object. |
-| `raw` | Treat each line as an opaque string stored in `_raw_str`. |
+| `raw` | Treat each line as an opaque string stored in `_raw$str`. |
 | `logfmt` | Key=value pairs (e.g. `level=info msg="hello"`). *Not yet implemented.* |
 | `syslog` | RFC 5424 syslog. *Not yet implemented.* |
 | `console` | Human-readable coloured output for interactive debugging. Output mode only. |
@@ -273,7 +273,7 @@ The optional `transform` field contains a DataFusion SQL query that is applied t
 Arrow `RecordBatch` produced by the scanner. The source table is always named `logs`.
 
 ```yaml
-transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level$str, msg$str, status$int FROM logs WHERE status$int >= 400
 ```
 
 Multi-line SQL is supported with YAML block scalars:
@@ -281,13 +281,13 @@ Multi-line SQL is supported with YAML block scalars:
 ```yaml
 transform: |
   SELECT
-    level_str,
-    msg_str,
-    regexp_extract(msg_str, 'request_id=([a-f0-9-]+)', 1) AS request_id_str,
-    status_int
+    level$str,
+    msg$str,
+    regexp_extract(msg$str, 'request_id=([a-f0-9-]+)', 1) AS request_id$str,
+    status$int
   FROM logs
-  WHERE level_str IN ('ERROR', 'WARN')
-    AND status_int >= 400
+  WHERE level$str IN ('ERROR', 'WARN')
+    AND status$int >= 400
 ```
 
 ### Column naming convention
@@ -297,24 +297,24 @@ The scanner maps each JSON field to one or more typed Arrow columns following th
 
 | JSON value type | Arrow column type | Column name pattern | Example |
 |-----------------|-------------------|---------------------|---------|
-| String | StringArray | `{field}_str` | `level_str` |
-| Integer | Int64Array | `{field}_int` | `status_int` |
-| Float | Float64Array | `{field}_float` | `latency_ms_float` |
-| Boolean | StringArray (`"true"`/`"false"`) | `{field}_str` | `enabled_str` |
+| String | StringArray | `{field}$str` | `level$str` |
+| Integer | Int64Array | `{field}$int` | `status$int` |
+| Float | Float64Array | `{field}$float` | `latency_ms$float` |
+| Boolean | StringArray (`"true"`/`"false"`) | `{field}$str` | `enabled$str` |
 | Null | null in all type columns | — | — |
-| Object / Array | StringArray (raw JSON) | `{field}_str` | `metadata_str` |
+| Object / Array | StringArray (raw JSON) | `{field}$str` | `metadata$str` |
 
 When a field contains mixed types across rows, separate columns are emitted:
-`status_int` and `status_str` can coexist in the same batch.
+`status$int` and `status$str` can coexist in the same batch.
 
 Special columns added by the scanner:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `_file_str` | string | Absolute path of the source file (file inputs only). |
-| `_raw_str` | string | Original JSON line (only when `keep_raw: true`). |
-| `_time_ns_int` | int64 | Timestamp from CRI header in nanoseconds (CRI inputs only). |
-| `_stream_str` | string | CRI stream name (`stdout`/`stderr`). |
+| `_file$str` | string | Absolute path of the source file (file inputs only). |
+| `_raw$str` | string | Original JSON line (only when `keep_raw: true`). |
+| `_time_ns$int` | int64 | Timestamp from CRI header in nanoseconds (CRI inputs only). |
+| `$stream$str` | string | CRI stream name (`stdout`/`stderr`). |
 
 ### Built-in UDFs
 
@@ -329,16 +329,16 @@ Examples:
 
 ```sql
 -- Cast a string column to int
-SELECT int(status_str) AS status_int FROM logs
+SELECT int(status$str) AS status$int FROM logs
 
 -- Extract a field with Grok
-SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', msg_str) AS parsed_str FROM logs
+SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', msg$str) AS parsed$str FROM logs
 
 -- Extract a named group with regex
-SELECT regexp_extract(msg_str, 'user=([a-z]+)', 1) AS user_str FROM logs
+SELECT regexp_extract(msg$str, 'user=([a-z]+)', 1) AS user$str FROM logs
 
 -- Type-cast from environment-injected string
-SELECT float(duration_str) AS duration_ms_float FROM logs
+SELECT float(duration$str) AS duration_ms$float FROM logs
 ```
 
 ---
@@ -369,9 +369,9 @@ Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
 
 ```sql
-SELECT l.level_str, l.msg_str, k.namespace, k.pod_name, k.container_name
+SELECT l.level$str, l.msg$str, k.namespace, k.pod_name, k.container_name
 FROM logs l
-JOIN k8s k ON l._file_str = k.log_path_prefix
+JOIN k8s k ON l._file$str = k.log_path_prefix
 ```
 
 Columns exposed by `k8s`:
@@ -422,14 +422,14 @@ The optional `server` block controls the diagnostics server and observability se
 | `diagnostics` | string | none | `host:port` to listen for HTTP diagnostics. Exposes `/metrics` and `/api/pipelines`. |
 | `log_level` | string | `info` | Log verbosity. One of `error`, `warn`, `info`, `debug`, `trace`. |
 | `metrics_endpoint` | string | none | OTLP endpoint for periodic metrics push, e.g. `http://otel-collector:4318`. |
-| `metrics_interval_secs` | integer | `60` | Push interval for OTLP metrics in seconds. |
+| `metrics$interval_secs` | integer | `60` | Push interval for OTLP metrics in seconds. |
 
 ```yaml
 server:
   diagnostics: 0.0.0.0:9090
   log_level: info
   metrics_endpoint: http://otel-collector:4318
-  metrics_interval_secs: 30
+  metrics$interval_secs: 30
 ```
 
 ---
@@ -479,18 +479,18 @@ pipelines:
         format: cri
     transform: |
       SELECT
-        l.level_str,
-        l.msg_str,
-        l.status_int,
+        l.level$str,
+        l.msg$str,
+        l.status$int,
         k.namespace,
         k.pod_name,
         k.container_name,
         lbl.environment
       FROM logs l
-      LEFT JOIN k8s k ON l._file_str = k.log_path_prefix
+      LEFT JOIN k8s k ON l._file$str = k.log_path_prefix
       CROSS JOIN labels lbl
-      WHERE l.level_str IN ('ERROR', 'WARN')
-        OR l.status_int >= 500
+      WHERE l.level$str IN ('ERROR', 'WARN')
+        OR l.status$int >= 500
     outputs:
       - name: collector
         type: otlp
@@ -514,7 +514,7 @@ server:
   diagnostics: 0.0.0.0:9090
   log_level: info
   metrics_endpoint: ${OTEL_ENDPOINT}
-  metrics_interval_secs: 60
+  metrics$interval_secs: 60
 
 storage:
   data_dir: /var/lib/logfwd

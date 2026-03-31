@@ -102,12 +102,12 @@ data:
 
     transform: |
       SELECT
-        level_str,
-        msg_str,
-        _time_ns_int,
-        _stream_str
+        level$str,
+        msg$str,
+        _time_ns$int,
+        $stream$str
       FROM logs
-      WHERE level_str != 'DEBUG'
+      WHERE level$str != 'DEBUG'
 
     output:
       type: otlp
@@ -193,13 +193,13 @@ enrichment:
 
 transform: |
   SELECT
-    l.level_str,
-    l.msg_str,
+    l.level$str,
+    l.msg$str,
     k.namespace,
     k.pod_name,
     k.container_name
   FROM logs l
-  LEFT JOIN k8s k ON l._file_str = k.log_path_prefix
+  LEFT JOIN k8s k ON l._file$str = k.log_path_prefix
 ```
 
 ### Namespace filtering
@@ -210,7 +210,7 @@ To collect logs only from specific namespaces, filter in the transform:
 transform: |
   SELECT l.*, k.namespace, k.pod_name, k.container_name
   FROM logs l
-  LEFT JOIN k8s k ON l._file_str = k.log_path_prefix
+  LEFT JOIN k8s k ON l._file$str = k.log_path_prefix
   WHERE k.namespace IN ('production', 'staging')
 ```
 

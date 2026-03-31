@@ -739,7 +739,7 @@ input:
   type: file
   path: {}
   format: json
-transform: "SELECT * FROM logs WHERE level_str = 'ERROR'"
+transform: "SELECT * FROM logs WHERE level$str = 'ERROR'"
 output:
   type: stdout
   format: json

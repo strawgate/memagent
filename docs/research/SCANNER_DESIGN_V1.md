@@ -45,63 +45,63 @@ Each JSON field produces 1-3 Arrow columns based on observed value types:
 
 | JSON value | Column created | Arrow type |
 |-----------|---------------|------------|
-| `"hello"` | `message_str` | Utf8 |
-| `42` | `status_int` | Int64 |
-| `3.14` | `rate_float` | Float64 |
-| `true`/`false` | `flag_str` | Utf8 ("true"/"false") |
+| `"hello"` | `message$str` | Utf8 |
+| `42` | `status$int` | Int64 |
+| `3.14` | `rate$float` | Float64 |
+| `true`/`false` | `flag$str` | Utf8 ("true"/"false") |
 | `null` | (NULL in all typed columns) | - |
-| `{...}` / `[...]` | `payload_str` | Utf8 (JSON string) |
+| `{...}` / `[...]` | `payload$str` | Utf8 (JSON string) |
 
 When a field has consistent types across a batch: one column.
-When types conflict (e.g., `status=500` then `status="error"`): both `status_int`
-and `status_str`, with NULLs in non-matching rows.
+When types conflict (e.g., `status=500` then `status="error"`): both `status$int`
+and `status$str`, with NULLs in non-matching rows.
 
 Memory overhead of multi-typed columns: 1.03x (measured). Null bitmaps are 1 bit/row.
 
 ## SQL Rewriter (NOT YET BUILT)
 
 Translates user-facing SQL to internal typed-column SQL. Required because users
-write `level` but the RecordBatch has `level_str`.
+write `level` but the RecordBatch has `level$str`.
 
 ### Rewrite Rules
 
 ```
 1. Bare column in SELECT:
-   duration_ms → COALESCE(CAST(duration_ms_int AS VARCHAR),
-                          CAST(duration_ms_float AS VARCHAR),
-                          duration_ms_str) AS duration_ms
-   level → level_str AS level  (single type, no coalesce)
+   duration_ms → COALESCE(CAST(duration_ms$int AS VARCHAR),
+                          CAST(duration_ms$float AS VARCHAR),
+                          duration_ms$str) AS duration_ms
+   level → level$str AS level  (single type, no coalesce)
 
 2. Bare column in WHERE with string literal:
-   WHERE level = 'ERROR' → WHERE level_str = 'ERROR'
+   WHERE level = 'ERROR' → WHERE level$str = 'ERROR'
 
 3. Bare column in WHERE with numeric literal:
-   WHERE status > 400 → WHERE status_int > 400
+   WHERE status > 400 → WHERE status$int > 400
    (string rows get NULL → correctly excluded)
 
 4. int() function:
-   int(duration_ms) → COALESCE(duration_ms_int,
-                               CAST(duration_ms_float AS BIGINT),
-                               TRY_CAST(duration_ms_str AS BIGINT))
+   int(duration_ms) → COALESCE(duration_ms$int,
+                               CAST(duration_ms$float AS BIGINT),
+                               TRY_CAST(duration_ms$str AS BIGINT))
 
 5. float() function:
-   float(duration_ms) → COALESCE(CAST(duration_ms_int AS DOUBLE),
-                                 duration_ms_float,
-                                 TRY_CAST(duration_ms_str AS DOUBLE))
+   float(duration_ms) → COALESCE(CAST(duration_ms$int AS DOUBLE),
+                                 duration_ms$float,
+                                 TRY_CAST(duration_ms$str AS DOUBLE))
 
 6. EXCEPT:
-   EXCEPT (duration_ms) → EXCEPT (duration_ms_int, duration_ms_str, duration_ms_float)
+   EXCEPT (duration_ms) → EXCEPT (duration_ms$int, duration_ms$str, duration_ms$float)
 
 7. SELECT *:
    Expand to all fields with coalesced aliases.
 
 8. ORDER BY bare column:
-   ORDER BY duration_ms → ORDER BY duration_ms_str
+   ORDER BY duration_ms → ORDER BY duration_ms$str
    (string ordering by default; use int(duration_ms) for numeric)
 
 9. Aggregation:
    AVG(duration_ms) → error: "use AVG(float(duration_ms))"
-   COUNT(duration_ms) → COUNT(duration_ms_str)  (counts non-null)
+   COUNT(duration_ms) → COUNT(duration_ms$str)  (counts non-null)
 ```
 
 ### Implementation
@@ -125,11 +125,11 @@ Populated from BatchBuilder's discovered fields after `finish_batch()`.
 
 Outputs read typed columns for correct serialization:
 
-- `status_int` non-null → OTLP `int_value: 500`, JSON `"status": 500`
-- `rate_float` non-null → OTLP `double_value: 0.95`, JSON `"rate": 0.95`
-- `level_str` non-null → OTLP `string_value: "ERROR"`, JSON `"level": "ERROR"`
+- `status$int` non-null → OTLP `int_value: 500`, JSON `"status": 500`
+- `rate$float` non-null → OTLP `double_value: 0.95`, JSON `"rate": 0.95`
+- `level$str` non-null → OTLP `string_value: "ERROR"`, JSON `"level": "ERROR"`
 
-When both `status_int` and `status_str` exist for a row, prefer: int > float > str.
+When both `status$int` and `status$str` exist for a row, prefer: int > float > str.
 The `parse_column_name()` helper strips the type suffix for output field names.
 
 For JSON output with `_raw` column: if no transform modified fields, memcpy the

@@ -39,7 +39,7 @@ input:
   path: /var/log/app/*.log
   format: json
 
-transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level$str, msg$str, status$int FROM logs WHERE status$int >= 400
 
 output:
   type: otlp
@@ -55,7 +55,7 @@ pipelines:
       type: file
       path: /var/log/pods/**/*.log
       format: cri
-    transform: SELECT * FROM logs WHERE level_str = 'ERROR'
+    transform: SELECT * FROM logs WHERE level$str = 'ERROR'
     output:
       type: otlp
       endpoint: otel-collector:4317
@@ -96,16 +96,16 @@ Transforms use DataFusion SQL. Column names follow the pattern `{field}_{type}`:
 
 ```sql
 -- Filter by level
-SELECT * FROM logs WHERE level_str = 'ERROR'
+SELECT * FROM logs WHERE level$str = 'ERROR'
 
 -- Extract fields
-SELECT level_str, status_int, duration_ms_float FROM logs
+SELECT level$str, status$int, duration_ms$float FROM logs
 
 -- Type casting
-SELECT int(status_str) AS status_int FROM logs
+SELECT int(status$str) AS status$int FROM logs
 
 -- Pattern matching
-SELECT grok('%{IP:client_ip} %{WORD:method}', msg_str) FROM logs
+SELECT grok('%{IP:client_ip} %{WORD:method}', msg$str) FROM logs
 ```
 
 Available UDFs: `int()`, `float()`, `grok()`, `regexp_extract()`.
@@ -128,7 +128,7 @@ enrichment:
 
 ```sql
 SELECT l.*, k.namespace, k.pod_name
-FROM logs l JOIN k8s k ON l._file_str = k.log_path_prefix
+FROM logs l JOIN k8s k ON l._file$str = k.log_path_prefix
 ```
 
 ## CLI

@@ -73,11 +73,11 @@ The YAML is malformed. Common causes:
 
 ```yaml
 # Wrong — colon in SQL breaks YAML
-transform: SELECT level_str FROM logs WHERE level_str = 'ERROR'
+transform: SELECT level$str FROM logs WHERE level$str = 'ERROR'
 
 # Fixed — use block scalar
 transform: |
-  SELECT level_str FROM logs WHERE level_str = 'ERROR'
+  SELECT level$str FROM logs WHERE level$str = 'ERROR'
 ```
 
 ### `error sending to OTLP endpoint: connection refused`
@@ -121,7 +121,7 @@ nothing:
 
 ```sql
 -- Typo — 'error' vs 'ERROR'
-WHERE level_str = 'error'
+WHERE level$str = 'error'
 ```
 
 Fix: adjust the WHERE clause or remove it temporarily to confirm records are flowing.
@@ -220,7 +220,7 @@ curl -s http://localhost:9090/api/pipelines | jq .
         }
       ],
       "transform": {
-        "sql": "SELECT * FROM logs WHERE level_str = 'ERROR'",
+        "sql": "SELECT * FROM logs WHERE level$str = 'ERROR'",
         "lines_in": 1024000,
         "lines_out": 2048,
         "errors": 0,
@@ -337,7 +337,7 @@ Use `--dry-run` to catch SQL syntax errors:
 
 ```bash
 logfwd --config config.yaml --dry-run
-# error: SQL error: Execution error: column "leve_str" not found
+# error: SQL error: Execution error: column "leve$str" not found
 ```
 
 Test your SQL against a sample file using the `stdout` output:
@@ -349,7 +349,7 @@ input:
   format: json
 
 transform: |
-  SELECT level_str, msg_str FROM logs WHERE status_int >= 500
+  SELECT level$str, msg$str FROM logs WHERE status$int >= 500
 
 output:
   type: stdout

@@ -278,7 +278,7 @@ tokio::task::block_in_place(|| handle.block_on(async { ctx.sql(&sql).await }))
 
 ```sql
 SELECT hostname FROM logs
--- Error: Schema error: No field named hostname. Valid fields are: level_str, msg_str.
+-- Error: Schema error: No field named hostname. Valid fields are: level$str, msg$str.
 ```
 
 DataFusion fails at **planning time** (during `ctx.sql()`), not at execution.
@@ -304,7 +304,7 @@ mask bugs where you forgot to deregister.
 
 ### SQL is case-insensitive for identifiers
 
-`SELECT Level_Str FROM logs` resolves to column `level_str`. Column names in Arrow
+`SELECT Level_Str FROM logs` resolves to column `level$str`. Column names in Arrow
 schemas are **case-sensitive**, but DataFusion's SQL planner lowercases unquoted
 identifiers. If your schema has `Level_Str`, query it as `"Level_Str"` (quoted).
 
@@ -379,7 +379,7 @@ impl SqlTransform {
             ctx.register_udf(udf);
         }
 
-        Ok(Self { ctx, rt, user_sql: sql.to_string() })
+        Ok(Self { ctx, rt, user_sql: sql.to$string() })
     }
 
     pub fn execute(&self, batch: RecordBatch) -> Result<RecordBatch, String> {

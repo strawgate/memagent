@@ -292,7 +292,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         let (field_name, _) = parse_column_name(col_name);
         // Dispatch on the actual Arrow DataType, not the column name suffix.
         // A SQL transform may produce a column whose name suffix disagrees with
-        // its real type (e.g. `SELECT level_str AS count_int`); using
+        // its real type (e.g. `SELECT level$str AS count$int`); using
         // `field.data_type()` avoids an `as_primitive` panic in that case.
         let attr = match field.data_type() {
             DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),

@@ -6,15 +6,15 @@ line becomes a row in a virtual `logs` table.
 ## Column naming
 
 The JSON scanner creates typed columns with suffixes:
-- `field_str` — string value (Utf8)
-- `field_int` — integer value (Int64)
-- `field_float` — float value (Float64)
+- `field$str` — string value (Utf8)
+- `field$int` — integer value (Int64)
+- `field$float` — float value (Float64)
 
 The SQL rewriter automatically translates bare column names, so you can write:
 
 ```sql
 SELECT * FROM logs WHERE level = 'ERROR'
--- automatically becomes: WHERE level_str = 'ERROR'
+-- automatically becomes: WHERE level$str = 'ERROR'
 ```
 
 ## Examples

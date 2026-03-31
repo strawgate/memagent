@@ -113,12 +113,12 @@ For proofs that use Kani-specific features like `kani::assume` or `kani::proof_f
 mod verification {
     use super::*;
 
-    #[kani::proof_for_contract(parse_int_fast)]
-    fn verify_parse_int_fast() {
+    #[kani::proof_for_contract(parse$int_fast)]
+    fn verify_parse$int_fast() {
         let bytes: [u8; 8] = kani::any();
         let len: usize = kani::any();
         kani::assume(len <= 8);
-        parse_int_fast(&bytes[..len]);
+        parse$int_fast(&bytes[..len]);
     }
 }
 ```
@@ -307,7 +307,7 @@ memchr = "2"
 serde = { version = "1", features = ["derive"] }
 ```
 
-**PR 1 — Scaffold and utility functions.** Create the workspace structure and empty `logfwd-core` crate. Move `parse_int_fast` and `parse_float_fast` from `scan_config.rs`. Add `pub use logfwd_kernel::{parse_int_fast, parse_float_fast}` in logfwd-core. This is the lowest-risk PR that establishes the build infrastructure, lint configuration, and Kani pipeline. All existing tests pass unchanged.
+**PR 1 — Scaffold and utility functions.** Create the workspace structure and empty `logfwd-core` crate. Move `parse$int_fast` and `parse$float_fast` from `scan_config.rs`. Add `pub use logfwd_kernel::{parse$int_fast, parse$float_fast}` in logfwd-core. This is the lowest-risk PR that establishes the build infrastructure, lint configuration, and Kani pipeline. All existing tests pass unchanged.
 
 **PR 2 — Pure types and classification.** Move `format.rs` and `chunk_classify.rs` entirely. These are data types and byte-pattern classification — inherently pure. Re-export with `pub use logfwd_kernel::format::*` and `pub use logfwd_kernel::chunk_classify::*` in logfwd-core. Other modules that depend on these types continue working through re-exports.
 

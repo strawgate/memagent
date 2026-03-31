@@ -30,7 +30,7 @@ You can try `logfwd` locally using its built-in test data generator and "blackho
      format: json
 
    transform: |
-     SELECT * FROM logs WHERE duration_ms_int > 50
+     SELECT * FROM logs WHERE duration_ms$int > 50
 
    output:
      type: otlp
@@ -54,7 +54,7 @@ input:
   path: /var/log/app/*.log
   format: json
 
-transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level$str, msg$str, status$int FROM logs WHERE status$int >= 400
 
 output:
   type: otlp
@@ -69,7 +69,7 @@ pipelines:
       type: file
       path: /var/log/pods/**/*.log
       format: cri
-    transform: SELECT * FROM logs WHERE level_str = 'ERROR'
+    transform: SELECT * FROM logs WHERE level$str = 'ERROR'
     output:
       type: otlp
       endpoint: http://otel-collector:4318
@@ -90,10 +90,10 @@ All JSON fields are automatically suffixed with their type (`$str`, `$int`, `$fl
 
 ```sql
 -- Filter by level
-SELECT * FROM logs WHERE level_str = 'ERROR'
+SELECT * FROM logs WHERE level$str = 'ERROR'
 
 -- Extract integer fields
-SELECT status_int, duration_ms_int FROM logs
+SELECT status$int, duration_ms$int FROM logs
 ```
 
 For more details, see [docs/COLUMN_NAMING.md](docs/COLUMN_NAMING.md).

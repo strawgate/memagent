@@ -221,14 +221,14 @@ fn bench_transform(c: &mut Criterion) {
     // Filter
     group.bench_function("where_filter", |b| {
         let mut transform =
-            SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
+            SqlTransform::new("SELECT * FROM logs WHERE level$str = 'ERROR'").unwrap();
         b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
     });
 
     // Projection + computed column
     group.bench_function("projection_computed", |b| {
         let mut transform = SqlTransform::new(
-            "SELECT level_str, message_str, status_int, duration_ms_int FROM logs",
+            "SELECT level$str, message$str, status$int, duration_ms$int FROM logs",
         )
         .unwrap();
         b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
@@ -237,8 +237,8 @@ fn bench_transform(c: &mut Criterion) {
     // regexp_extract
     group.bench_function("regexp_extract", |b| {
         let mut transform = SqlTransform::new(
-            "SELECT regexp_extract(message_str, '(GET|POST) (\\S+)', 1) AS method, \
-             regexp_extract(message_str, '(GET|POST) (\\S+)', 2) AS path FROM logs",
+            "SELECT regexp_extract(message$str, '(GET|POST) (\\S+)', 1) AS method, \
+             regexp_extract(message$str, '(GET|POST) (\\S+)', 2) AS path FROM logs",
         )
         .unwrap();
         b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
@@ -247,7 +247,7 @@ fn bench_transform(c: &mut Criterion) {
     // grok
     group.bench_function("grok_parse", |b| {
         let mut transform = SqlTransform::new(
-            "SELECT grok(message_str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed FROM logs",
+            "SELECT grok(message$str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed FROM logs",
         )
         .unwrap();
         b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
@@ -330,7 +330,7 @@ fn bench_end_to_end(c: &mut Criterion) {
     // Full pipeline: scan → filter → capture sink
     group.bench_function("scan_filter_capture", |b| {
         let mut transform =
-            SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
+            SqlTransform::new("SELECT * FROM logs WHERE level$str = 'ERROR'").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
             let mut scanner = SimdScanner::new(ScanConfig::default());
@@ -343,8 +343,8 @@ fn bench_end_to_end(c: &mut Criterion) {
     // Full pipeline: scan → grok + filter → capture sink
     group.bench_function("scan_grok_filter_capture", |b| {
         let mut transform = SqlTransform::new(
-            "SELECT grok(message_str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed \
-             FROM logs WHERE level_str != 'DEBUG'",
+            "SELECT grok(message$str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed \
+             FROM logs WHERE level$str != 'DEBUG'",
         )
         .unwrap();
         let mut sink = NullSink;

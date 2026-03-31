@@ -69,8 +69,8 @@ Memory: 1.01x — essentially identical.
 
 ```
 Memory overhead vs all-Utf8: 1.03x (essentially zero)
-Filter on typed column (WHERE duration_ms_int > 1000): 5.29ms
-Numeric average (AVG(duration_ms_int)): 17.74ms
+Filter on typed column (WHERE duration_ms$int > 1000): 5.29ms
+Numeric average (AVG(duration_ms$int)): 17.74ms
 ```
 
 Sparse null bitmaps: 1 bit/row per column. 80% null columns cost almost nothing.

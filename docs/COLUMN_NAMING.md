@@ -8,9 +8,9 @@ When you write a SQL transform, reference your JSON fields using these suffixes:
 
 | Suffix | JSON Type | DataFusion Type | Example |
 |--------|-----------|-----------------|---------|
-| `_str` | String | `Utf8` or `Utf8View` | `level_str` |
-| `_int` | Integer | `Int64` | `status_int` |
-| `_float` | Float | `Float64` | `duration_ms_float` |
+| `$str` | String | `Utf8` or `Utf8View` | `level$str` |
+| `$int` | Integer | `Int64` | `status$int` |
+| `$float` | Float | `Float64` | `duration_ms$float` |
 
 ## Why Suffixes?
 
@@ -27,17 +27,17 @@ Given this JSON:
 ```
 
 The available columns in your SQL `SELECT` will be:
-- `timestamp_str`
-- `level_str`
-- `status_int` (and `status_str` if it looks like a string elsewhere)
-- `duration_float` (and `duration_str`)
+- `timestamp$str`
+- `level$str`
+- `status$int` (and `status$str` if it looks like a string elsewhere)
+- `duration$float` (and `duration$str`)
 
 ## Automatic "Smart" Coalesce
 
 If you want to handle fields that might be either `int` or `str` gracefully, you can use `COALESCE`:
 
 ```sql
-SELECT COALESCE(CAST(status_int AS VARCHAR), status_str) AS status FROM logs
+SELECT COALESCE(CAST(status$int AS VARCHAR), status$str) AS status FROM logs
 ```
 
 ## Special Columns
@@ -45,5 +45,5 @@ SELECT COALESCE(CAST(status_int AS VARCHAR), status_str) AS status FROM logs
 | Column | Description |
 |--------|-------------|
 | `_raw` | The original raw byte line (unparsed) |
-| `_file_str` | The absolute path of the file being tailed |
+| `_file$str` | The absolute path of the file being tailed |
 | `_time` | The internal timestamp assigned to the log line |

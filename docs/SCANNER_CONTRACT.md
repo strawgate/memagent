@@ -15,7 +15,7 @@ The scanner assumes that **all input bytes are valid UTF-8**.
 - Field names and string values are converted to `&str` with
   `from_utf8_unchecked` during `finish_batch()`.  Passing non-UTF-8 bytes is
   **undefined behaviour**.
-- A `debug_assert!` at the `scan_into` entry point fires in debug builds if
+- A `debug_assert!` at the `scan$into` entry point fires in debug builds if
   the buffer is not valid UTF-8.
 - For production validation set `ScanConfig::validate_utf8 = true`.  This
   performs a safe `from_utf8` check before scanning and panics with a
@@ -59,9 +59,9 @@ more typed columns:
 
 | Observed type   | Column name       | Arrow type  |
 |-----------------|-------------------|-------------|
-| Integer         | `<name>_int`      | `Int64`     |
-| Float           | `<name>_float`    | `Float64`   |
-| String / bool / nested object or array | `<name>_str` | `Utf8` / `Utf8View` |
+| Integer         | `<name>$int`      | `Int64`     |
+| Float           | `<name>$float`    | `Float64`   |
+| String / bool / nested object or array | `<name>$str` | `Utf8` / `Utf8View` |
 | Raw input line  | `_raw`            | `Utf8`      |
 
 The `_raw` column is only present when `ScanConfig::keep_raw = true`.
@@ -83,7 +83,7 @@ valid JSON object).
 If the same field name appears as different JSON types across rows — for
 example `"status": 200` in one row and `"status": "OK"` in another — the
 scanner produces **separate columns** for each type that was observed:
-`status_int` and `status_str` in this case.  Within each typed column the rows
+`status$int` and `status$str` in this case.  Within each typed column the rows
 that did not supply that type are null.
 
 ### Duplicate keys
@@ -101,10 +101,10 @@ fields.
 
 - A numeric value with a decimal point (`.`) or an exponent (`e`/`E`) is
   stored as `Float64`.
-- A value without either is first tried as `Int64` via `parse_int_fast`.  On
+- A value without either is first tried as `Int64` via `parse$int_fast`.  On
   overflow (value does not fit in `i64`) it falls back to `Float64`.
 - `true` and `false` are stored as the strings `"true"` / `"false"` in a
-  `_str` column.
+  `$str` column.
 - `null` JSON values produce a null entry in the appropriate column.
 
 ### Batch reuse

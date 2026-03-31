@@ -809,11 +809,11 @@ mod tests {
     fn test_int_udf() {
         let batch = make_test_batch();
         let mut transform =
-            SqlTransform::new("SELECT int(status$str) AS status_int FROM logs").unwrap();
+            SqlTransform::new("SELECT int(status$str) AS status$int FROM logs").unwrap();
         let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
         let status = result
-            .column_by_name("status_int")
+            .column_by_name("status$int")
             .unwrap()
             .as_any()
             .downcast_ref::<Int64Array>()

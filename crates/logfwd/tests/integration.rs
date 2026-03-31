@@ -452,7 +452,7 @@ fn test_enrichment_join() {
     // CSV columns use plain names (no `_str` suffix); scanner columns use the
     // `{field}_{type}` convention.  The alias brings the enriched column into
     // the logfwd naming scheme for downstream compatibility.
-    let sql = "SELECT l.service$str, l.message$str, t.team AS team_str \
+    let sql = "SELECT l.service$str, l.message$str, t.team AS team$str \
                FROM logs l \
                JOIN teams t ON l.service$str = t.service";
     let mut transform = SqlTransform::new(sql).expect("SQL parse failed");
@@ -467,30 +467,30 @@ fn test_enrichment_join() {
     // All 3 log rows have a matching service in the CSV.
     assert_eq!(result.num_rows(), 3, "expected 3 enriched rows");
 
-    // The output must contain the `team_str` column from the CSV.
+    // The output must contain the `team$str` column from the CSV.
     let schema = result.schema();
     assert!(
-        schema.field_with_name("team_str").is_ok(),
-        "expected 'team_str' column in enriched output; schema: {schema:?}"
+        schema.field_with_name("team$str").is_ok(),
+        "expected 'team$str' column in enriched output; schema: {schema:?}"
     );
 
     // Spot-check values: both "auth" rows should map to "platform".
     let team_col = result
-        .column_by_name("team_str")
-        .expect("team_str column missing");
+        .column_by_name("team$str")
+        .expect("team$str column missing");
     use arrow::array::StringArray;
     // The CSV enrichment table stores columns as DataType::Utf8 (StringArray).
     let team_arr = team_col
         .as_any()
         .downcast_ref::<StringArray>()
-        .expect("team_str column should be DataType::Utf8");
+        .expect("team$str column should be DataType::Utf8");
     let teams: Vec<&str> = team_arr.iter().map(|v| v.unwrap_or("")).collect();
     assert!(
         teams.contains(&"platform"),
-        "expected 'platform' in team_str column; got {teams:?}"
+        "expected 'platform' in team$str column; got {teams:?}"
     );
     assert!(
         teams.contains(&"commerce"),
-        "expected 'commerce' in team_str column; got {teams:?}"
+        "expected 'commerce' in team$str column; got {teams:?}"
     );
 }

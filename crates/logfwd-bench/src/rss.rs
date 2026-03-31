@@ -30,7 +30,7 @@ fn rss_mb() -> f64 {
     }
     #[cfg(target_os = "linux")]
     {
-        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Ok(status) = std::fs::read_to$string("/proc/self/status") {
             for line in status.lines() {
                 if line.starts_with("VmRSS:") {
                     let kb: f64 = line.split_whitespace().nth(1)
@@ -110,7 +110,7 @@ fn main() {
         let mid = rss_mb();
         let mut streaming_scanner = StreamingSimdScanner::new(ScanConfig::default());
         let batch = streaming_scanner.scan(bytes::Bytes::from(data)).unwrap();
-        let after_streaming = rss_mb();
+        let after$streaming = rss_mb();
         let streaming_cols = batch.num_columns();
         let streaming_reported = batch.get_array_memory_size() as f64 / 1_048_576.0;
         drop(batch);
@@ -120,10 +120,10 @@ fn main() {
         println!("  StorageBuilder:   RSS +{:.1} MB  (reported {:.1} MB)  {} cols",
             after_storage - before, storage_reported, storage_cols);
         println!("  StreamingBuilder: RSS +{:.1} MB  (reported {:.1} MB)  {} cols",
-            after_streaming - mid, streaming_reported, streaming_cols);
+            after$streaming - mid, streaming_reported, streaming_cols);
         println!("  Savings:          {:.1} MB ({:.0}% less RSS)",
-            (after_storage - before) - (after_streaming - mid),
-            100.0 * (1.0 - (after_streaming - mid) / (after_storage - before)));
+            (after_storage - before) - (after$streaming - mid),
+            100.0 * (1.0 - (after$streaming - mid) / (after_storage - before)));
         println!();
     }
 
@@ -151,7 +151,7 @@ fn main() {
 
     // SELECT 2 fields (pushdown)
     {
-        let mut transform = SqlTransform::new("SELECT timestamp_str, level_str FROM logs").unwrap();
+        let mut transform = SqlTransform::new("SELECT timestamp$str, level$str FROM logs").unwrap();
         let config = transform.scan_config();
         let mut scanner = StreamingSimdScanner::new(config);
         let batch = scanner.scan(bytes::Bytes::from(data.clone())).unwrap();

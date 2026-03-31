@@ -3,15 +3,15 @@
 //
 // The scanner produces columns named `{field}_str`, `{field}_int`, and
 // `{field}_float`. Users naturally write `level = 'ERROR'` or `status > 400`,
-// but DataFusion needs `level_str = 'ERROR'` or `status_int > 400`.
+// but DataFusion needs `level$str = 'ERROR'` or `status$int > 400`.
 //
 // Rewrite rules:
 //  1. Bare column in SELECT: `duration_ms`
 //     → `COALESCE(CAST(duration_ms_int AS VARCHAR), duration_ms_str) AS duration_ms`
 //  2. Bare column in WHERE with string literal: `level = 'ERROR'`
-//     → `level_str = 'ERROR'`
+//     → `level$str = 'ERROR'`
 //  3. Bare column in WHERE with numeric literal: `status > 400`
-//     → `status_int > 400`
+//     → `status$int > 400`
 //  4. `int(x)` call where `x` is a known field:
 //     → `COALESCE(x_int, TRY_CAST(x_str AS BIGINT))`
 
@@ -96,10 +96,10 @@ pub fn field_type_map_from_schema(schema: &Schema) -> FieldTypeMap {
 ///    becomes `SELECT COALESCE(CAST(duration_ms_int AS VARCHAR), duration_ms_str) AS duration_ms FROM logs`
 ///
 /// 2. **String comparison in WHERE** — e.g. `WHERE level = 'ERROR'`
-///    becomes `WHERE level_str = 'ERROR'` (uses `_str` variant)
+///    becomes `WHERE level$str = 'ERROR'` (uses `_str` variant)
 ///
 /// 3. **Numeric comparison in WHERE** — e.g. `WHERE status > 400`
-///    becomes `WHERE status_int > 400` (uses `_int` variant, or `_float` if
+///    becomes `WHERE status$int > 400` (uses `_int` variant, or `_float` if
 ///    only float exists)
 ///
 /// 4. **`int(x)` call** — e.g. `int(duration_ms)` becomes
@@ -264,7 +264,7 @@ fn rewrite_expr(expr: SqlExpr, fields: &FieldTypeMap) -> SqlExpr {
             }
         }
 
-        // IN list: `level IN ('ERROR', 'WARN')` → `level_str IN ('ERROR', 'WARN')`
+        // IN list: `level IN ('ERROR', 'WARN')` → `level$str IN ('ERROR', 'WARN')`
         SqlExpr::InList {
             expr,
             list,

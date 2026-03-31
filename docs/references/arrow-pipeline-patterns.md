@@ -91,7 +91,7 @@ well.
 
 **Flat (single-table):** All fields as columns in one RecordBatch.
 Resource metadata as `_resource_*` prefixed columns. Type conflicts
-produce separate columns (`status_int`, `status_str`).
+produce separate columns (`status$int`, `status$str`).
 
 - Pro: Directly queryable by SQL engines (DuckDB, DataFusion, Polars)
 - Pro: Simple to implement, simple to reason about

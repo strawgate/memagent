@@ -37,17 +37,17 @@ fn main() {
     let data_100k = generate_simple(100_000);
     let queries = [
         "SELECT * FROM logs",
-        "SELECT timestamp_str, level_str, message_str FROM logs",
-        "SELECT * FROM logs WHERE level_str = 'ERROR'",
-        "SELECT * FROM logs WHERE level_str IN ('ERROR', 'WARN')",
-        "SELECT * FROM logs WHERE duration_ms_int > 100",
-        "SELECT * FROM logs WHERE level_str = 'ERROR' AND duration_ms_int > 200",
-        "SELECT level_str, COUNT(*) as cnt FROM logs GROUP BY level_str",
-        "SELECT service_str, level_str, COUNT(*) FROM logs GROUP BY service_str, level_str",
-        "SELECT level_str, AVG(duration_ms_int) as avg_dur, MAX(duration_ms_int) as max_dur FROM logs GROUP BY level_str",
-        "SELECT *, CASE WHEN duration_ms_int > 200 THEN 'slow' ELSE 'fast' END as speed FROM logs",
-        "SELECT * FROM logs WHERE message_str LIKE '%users%'",
-        "SELECT * FROM logs ORDER BY duration_ms_int DESC LIMIT 100",
+        "SELECT timestamp$str, level$str, message$str FROM logs",
+        "SELECT * FROM logs WHERE level$str = 'ERROR'",
+        "SELECT * FROM logs WHERE level$str IN ('ERROR', 'WARN')",
+        "SELECT * FROM logs WHERE duration_ms$int > 100",
+        "SELECT * FROM logs WHERE level$str = 'ERROR' AND duration_ms$int > 200",
+        "SELECT level$str, COUNT(*) as cnt FROM logs GROUP BY level$str",
+        "SELECT service$str, level$str, COUNT(*) FROM logs GROUP BY service$str, level$str",
+        "SELECT level$str, AVG(duration_ms$int) as avg_dur, MAX(duration_ms$int) as max_dur FROM logs GROUP BY level$str",
+        "SELECT *, CASE WHEN duration_ms$int > 200 THEN 'slow' ELSE 'fast' END as speed FROM logs",
+        "SELECT * FROM logs WHERE message$str LIKE '%users%'",
+        "SELECT * FROM logs ORDER BY duration_ms$int DESC LIMIT 100",
     ];
     for q in &queries {
         bench("simple", 100_000, 6, q, &data_100k);
@@ -64,26 +64,26 @@ fn main() {
     // === Dimension 4: Projection pushdown on wide data ===
     eprintln!("\n=== Dimension 4: Projection Pushdown (wide 20-field, 100K) ===");
     bench("wide", 100_000, 20, "SELECT * FROM logs", &data_wide);
-    bench("wide", 100_000, 20, "SELECT timestamp_str, level_str FROM logs", &data_wide);
-    bench("wide", 100_000, 20, "SELECT timestamp_str, level_str, message_str, duration_ms_int FROM logs", &data_wide);
-    bench("wide", 100_000, 20, "SELECT * FROM logs WHERE level_str = 'ERROR'", &data_wide);
-    bench("wide", 100_000, 20, "SELECT level_str FROM logs WHERE status_code_int > 400", &data_wide);
+    bench("wide", 100_000, 20, "SELECT timestamp$str, level$str FROM logs", &data_wide);
+    bench("wide", 100_000, 20, "SELECT timestamp$str, level$str, message$str, duration_ms$int FROM logs", &data_wide);
+    bench("wide", 100_000, 20, "SELECT * FROM logs WHERE level$str = 'ERROR'", &data_wide);
+    bench("wide", 100_000, 20, "SELECT level$str FROM logs WHERE status_code$int > 400", &data_wide);
 
     // === Dimension 5: Aggregations ===
     eprintln!("\n=== Dimension 5: Aggregations (100K) ===");
     bench("simple", 100_000, 6, "SELECT COUNT(*) FROM logs", &data_100k);
-    bench("simple", 100_000, 6, "SELECT level_str, COUNT(*) FROM logs GROUP BY level_str", &data_100k);
-    bench("simple", 100_000, 6, "SELECT level_str, AVG(duration_ms_int), MIN(duration_ms_int), MAX(duration_ms_int) FROM logs GROUP BY level_str", &data_100k);
-    bench("wide", 100_000, 20, "SELECT region_str, namespace_str, COUNT(*) FROM logs GROUP BY region_str, namespace_str", &data_wide);
-    bench("wide", 100_000, 20, "SELECT method_str, AVG(duration_ms_int), COUNT(*) FROM logs GROUP BY method_str", &data_wide);
+    bench("simple", 100_000, 6, "SELECT level$str, COUNT(*) FROM logs GROUP BY level$str", &data_100k);
+    bench("simple", 100_000, 6, "SELECT level$str, AVG(duration_ms$int), MIN(duration_ms$int), MAX(duration_ms$int) FROM logs GROUP BY level$str", &data_100k);
+    bench("wide", 100_000, 20, "SELECT region$str, namespace$str, COUNT(*) FROM logs GROUP BY region$str, namespace$str", &data_wide);
+    bench("wide", 100_000, 20, "SELECT method$str, AVG(duration_ms$int), COUNT(*) FROM logs GROUP BY method$str", &data_wide);
 
     // === Dimension 6: String operations ===
     eprintln!("\n=== Dimension 6: String Operations (100K) ===");
-    bench("simple", 100_000, 6, "SELECT *, UPPER(level_str) as level_upper FROM logs", &data_100k);
-    bench("simple", 100_000, 6, "SELECT *, LENGTH(message_str) as msg_len FROM logs", &data_100k);
-    bench("simple", 100_000, 6, "SELECT *, CONCAT(level_str, ':', service_str) as tag FROM logs", &data_100k);
-    bench("simple", 100_000, 6, "SELECT * FROM logs WHERE message_str LIKE '%orders%'", &data_100k);
-    bench("simple", 100_000, 6, "SELECT * FROM logs WHERE LOWER(level_str) = 'error'", &data_100k);
+    bench("simple", 100_000, 6, "SELECT *, UPPER(level$str) as level_upper FROM logs", &data_100k);
+    bench("simple", 100_000, 6, "SELECT *, LENGTH(message$str) as msg_len FROM logs", &data_100k);
+    bench("simple", 100_000, 6, "SELECT *, CONCAT(level$str, ':', service$str) as tag FROM logs", &data_100k);
+    bench("simple", 100_000, 6, "SELECT * FROM logs WHERE message$str LIKE '%orders%'", &data_100k);
+    bench("simple", 100_000, 6, "SELECT * FROM logs WHERE LOWER(level$str) = 'error'", &data_100k);
 
     // === Dimension 7: Scan-only (no transform overhead) ===
     eprintln!("\n=== Dimension 7: Scan-Only (no SQL) ===");
@@ -106,11 +106,11 @@ fn main() {
             let lines = memchr::memchr_iter(b'\n', &data).count();
             bench_scan_only(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, &data);
             bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT * FROM logs", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT time_str, remote_ip_str, request_str, response_int FROM logs", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT * FROM logs WHERE response_int >= 400", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT remote_ip_str, COUNT(*) as cnt FROM logs GROUP BY remote_ip_str ORDER BY cnt DESC LIMIT 10", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT response_int, COUNT(*) FROM logs GROUP BY response_int", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT * FROM logs WHERE request_str LIKE '%product_1%'", &data);
+            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT time$str, remote_ip$str, request$str, response$int FROM logs", &data);
+            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT * FROM logs WHERE response$int >= 400", &data);
+            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT remote_ip$str, COUNT(*) as cnt FROM logs GROUP BY remote_ip$str ORDER BY cnt DESC LIMIT 10", &data);
+            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT response$int, COUNT(*) FROM logs GROUP BY response$int", &data);
+            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT * FROM logs WHERE request$str LIKE '%product_1%'", &data);
         } else {
             eprintln!("  Skipping {} (not found). Run: curl -o {} <url>", path, path);
         }
@@ -122,8 +122,8 @@ fn main() {
         let data_1m = generate_simple(1_000_000);
         bench_scan_only("simple", 1_000_000, 6, &data_1m);
         bench("simple", 1_000_000, 6, "SELECT * FROM logs", &data_1m);
-        bench("simple", 1_000_000, 6, "SELECT * FROM logs WHERE level_str = 'ERROR'", &data_1m);
-        bench("simple", 1_000_000, 6, "SELECT level_str, COUNT(*) FROM logs GROUP BY level_str", &data_1m);
+        bench("simple", 1_000_000, 6, "SELECT * FROM logs WHERE level$str = 'ERROR'", &data_1m);
+        bench("simple", 1_000_000, 6, "SELECT level$str, COUNT(*) FROM logs GROUP BY level$str", &data_1m);
     }
 
     eprintln!("\nDone.");

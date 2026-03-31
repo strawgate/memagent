@@ -4,8 +4,8 @@
 //! index (1-based), or the full match if index is 0. Returns NULL on no match.
 //!
 //! ```sql
-//! SELECT regexp_extract(message_str, 'status=(\d+)', 1) AS status FROM logs
-//! SELECT regexp_extract(message_str, 'duration=(\d+)ms', 1) AS duration FROM logs
+//! SELECT regexp_extract(message$str, 'status=(\d+)', 1) AS status FROM logs
+//! SELECT regexp_extract(message$str, 'duration=(\d+)ms', 1) AS duration FROM logs
 //! ```
 
 use std::any::Any;

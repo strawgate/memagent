@@ -48,8 +48,8 @@
 <script>
 const SCENARIO_NAMES = {
   'passthrough': { title: 'Passthrough (No Transforms)', config: 'transform: "SELECT * FROM logs"' },
-  'json_parse': { title: 'JSON Parsing & Extraction', config: 'transform: "SELECT timestamp_str, level_str, message_str, duration_ms_int AS latency_ms, request_id_str, service_str FROM logs"' },
-  'filter': { title: 'Filtering (ERROR/WARN only)', config: 'transform: "SELECT * FROM logs WHERE level_str IN (\'WARN\', \'ERROR\')"' }
+  'json_parse': { title: 'JSON Parsing & Extraction', config: 'transform: "SELECT timestamp$str, level$str, message$str, duration_ms$int AS latency_ms, request_id$str, service$str FROM logs"' },
+  'filter': { title: 'Filtering (ERROR/WARN only)', config: 'transform: "SELECT * FROM logs WHERE level$str IN (\'WARN\', \'ERROR\')"' }
 };
 function formatScenario(sn) {
   const info = SCENARIO_NAMES[sn] || { title: sn, config: '' };

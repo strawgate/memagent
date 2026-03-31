@@ -43,8 +43,8 @@ jobs:
            Are there any leaked references to large buffers? Is the
            `StringViewArray` zero-copy path used where possible?
 
-        6. **Column naming**: The project uses `{field}_str`, `{field}_int`,
-           `{field}_float` suffixes. Is this handled consistently? Are
+        6. **Column naming**: The project uses `{field}$str`, `{field}$int`,
+           `{field}$float` suffixes. Is this handled consistently? Are
            there edge cases where suffix stripping fails?
 
         File one issue with all findings, numbered. Include file paths and

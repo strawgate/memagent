@@ -6,15 +6,15 @@
 //!
 //! ```sql
 //! -- Extract structured fields from access logs
-//! SELECT grok(message_str, '%{WORD:method} %{URIPATH:path} %{NUMBER:status}')
+//! SELECT grok(message$str, '%{WORD:method} %{URIPATH:path} %{NUMBER:status}')
 //! FROM logs
 //!
 //! -- Access individual fields
-//! SELECT grok(message_str, '%{IP:client} %{NUMBER:duration}').client AS client_ip
+//! SELECT grok(message$str, '%{IP:client} %{NUMBER:duration}').client AS client_ip
 //! FROM logs
 //!
 //! -- Compose with int()/float() for type conversion
-//! SELECT int(grok(message_str, '%{WORD:method} %{URIPATH:path} %{NUMBER:status}').status) AS code
+//! SELECT int(grok(message$str, '%{WORD:method} %{URIPATH:path} %{NUMBER:status}').status) AS code
 //! FROM logs
 //! ```
 //!

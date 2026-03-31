@@ -24,7 +24,7 @@ dashboard — things you notice.
 | aggregator.rs | CRI partial line reassembly (P/F merging) | Kani exhaustive (3 proofs) |
 | byte_search.rs | Proven byte search (find_byte, rfind_byte) | Kani exhaustive + oracle (2 proofs) |
 | scan.rs | JSON field extraction (generic over ScanBuilder trait) | Kani bounded + proptest oracle |
-| scan_config.rs | parse_int_fast, parse_float_fast, ScanConfig | Kani exhaustive (2 proofs) |
+| scan_config.rs | parse$int_fast, parse$float_fast, ScanConfig | Kani exhaustive (2 proofs) |
 | cri.rs | CRI log parsing + partial line reassembly | Kani exhaustive (4 proofs) |
 | otlp.rs | Protobuf wire format + OTLP encoding | Kani exhaustive (14 proofs) |
 | format.rs | Legacy parsers (being replaced by framer + aggregator) | proptest state-machine |
@@ -55,7 +55,7 @@ dashboard — things you notice.
 
 **Tier 1 — Exhaustive (Kani proves for ALL inputs):**
 - u64 bitmask operations (compute_real_quotes, prefix_xor)
-- Integer parsing (parse_int_fast, all ≤20 byte inputs)
+- Integer parsing (parse$int_fast, all ≤20 byte inputs)
 - Varint encode/decode roundtrip (all u64 values)
 - Pipeline state machine (all State×Event pairs)
 
@@ -129,9 +129,9 @@ pub trait FieldSink {
     fn begin_row(&mut self);
     fn end_row(&mut self);
     fn resolve_field(&mut self, key: &[u8]) -> usize;
-    fn field_str(&mut self, idx: usize, value: &[u8]);
-    fn field_int(&mut self, idx: usize, value: &[u8]);
-    fn field_float(&mut self, idx: usize, value: &[u8]);
+    fn field$str(&mut self, idx: usize, value: &[u8]);
+    fn field$int(&mut self, idx: usize, value: &[u8]);
+    fn field$float(&mut self, idx: usize, value: &[u8]);
     fn field_null(&mut self, idx: usize);
 }
 ```

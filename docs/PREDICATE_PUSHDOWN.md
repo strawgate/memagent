@@ -115,8 +115,8 @@ JSON keys that aren't in the wanted set.
 ### Layer 4: Arrow Column Builder
 **What it can push down:** type selection
 
-If the query only references `severity_int`, don't build `severity_str`
-or `severity_float` columns. Already partially implemented via the
+If the query only references `severity$int`, don't build `severity$str`
+or `severity$float` columns. Already partially implemented via the
 typed column model.
 
 ### Layer 5: DataFusion Transform
