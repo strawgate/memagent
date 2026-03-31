@@ -1109,3 +1109,37 @@ mod tests {
         assert_eq!(h.facilities, Some(vec![4])); // intersection
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani formal verification proofs
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Prove strip_type_suffix correctly removes known suffixes or returns
+    /// the original string if no suffix matches or base would be empty.
+    #[kani::proof]
+    fn verify_strip_type_suffix() {
+        let bytes: [u8; 16] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= 16);
+        let s = match std::str::from_utf8(&bytes[..len]) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        let stripped = strip_type_suffix(s);
+
+        if s.ends_with("_str") && s.len() > 4 {
+            assert_eq!(stripped, &s[..s.len() - 4]);
+        } else if s.ends_with("_int") && s.len() > 4 {
+            assert_eq!(stripped, &s[..s.len() - 4]);
+        } else if s.ends_with("_float") && s.len() > 6 {
+            assert_eq!(stripped, &s[..s.len() - 6]);
+        } else {
+            assert_eq!(stripped, s);
+        }
+    }
+}

@@ -1023,4 +1023,68 @@ mod verification {
         let expected_carry: u64 = if prev_was_unescaped_bs { 1 } else { 0 };
         assert!(carry == expected_carry, "carry mismatch");
     }
+
+    /// Prove next_quote correctly finds the first unescaped quote at or after pos.
+    #[kani::proof]
+    #[kani::unwind(65)]
+    fn verify_next_quote_behavior() {
+        let buf: [u8; 64] = kani::any();
+        let idx = ChunkIndex::new(&buf);
+        let pos: usize = kani::any();
+        kani::assume(pos < 64);
+
+        let result = idx.next_quote(pos);
+
+        if let Some(q) = result {
+            assert!(q >= pos && q < 64);
+            // Verify it's a real quote
+            let block = q >> 6;
+            let bit = q & 63;
+            assert!((idx.real_quotes[block] >> bit) & 1 == 1);
+            // Verify it's the FIRST one at or after pos
+            for i in pos..q {
+                let b = i >> 6;
+                let bt = i & 63;
+                assert!((idx.real_quotes[b] >> bt) & 1 == 0);
+            }
+        } else {
+            // Verify no real quotes exist at or after pos
+            for i in pos..64 {
+                let b = i >> 6;
+                let bt = i & 63;
+                assert!((idx.real_quotes[b] >> bt) & 1 == 0);
+            }
+        }
+    }
+
+    /// Prove is_in_string correctly tracks the "inside a JSON string" state
+    /// toggled by unescaped quotes.
+    #[kani::proof]
+    #[kani::unwind(65)]
+    fn verify_is_in_string_behavior() {
+        let buf: [u8; 64] = kani::any();
+        let idx = ChunkIndex::new(&buf);
+        let pos: usize = kani::any();
+        kani::assume(pos < 64);
+
+        let in_string = idx.is_in_string(pos);
+
+        // Property: in_string is true iff we've seen an odd number of real
+        // quotes before this position, and THIS position is not a quote.
+        let mut quote_count = 0;
+        for i in 0..pos {
+            let b = i >> 6;
+            let bt = i & 63;
+            if (idx.real_quotes[b] >> bt) & 1 == 1 {
+                quote_count += 1;
+            }
+        }
+
+        let is_quote = (idx.real_quotes[pos >> 6] >> (pos & 63)) & 1 == 1;
+        let expected = (quote_count % 2 == 1) && !is_quote;
+        assert_eq!(
+            in_string, expected,
+            "is_in_string disagrees with quote parity"
+        );
+    }
 }

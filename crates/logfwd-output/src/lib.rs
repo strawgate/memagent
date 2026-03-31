@@ -665,4 +665,24 @@ mod tests {
         let sink = build_output_sink("auth-sink", &cfg).unwrap();
         assert_eq!(sink.name(), "auth-sink");
     }
+
+    #[test]
+    fn test_otlp_sink_no_panic_on_type_mismatch() {
+        use crate::otlp_sink::resolve_batch_columns;
+        // Define a schema with a column named "val_int" but with type Utf8 (String)
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("val_int", DataType::Utf8, true),
+        ]));
+
+        // Create a batch with a StringArray for the "val_int" column
+        let array = Arc::new(StringArray::from(vec!["not an int"]));
+        let batch = RecordBatch::try_new(schema, vec![array]).unwrap();
+
+        // This should NOT panic now.
+        let columns = resolve_batch_columns(&batch);
+        
+        // It should have fallen back to a Str column because "int" downcast failed.
+        let found = columns.attribute_cols.iter().any(|(name, _)| name == "val");
+        assert!(found);
+    }
 }

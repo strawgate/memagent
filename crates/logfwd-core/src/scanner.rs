@@ -244,3 +244,42 @@ fn skip_ws(buf: &[u8], mut pos: usize, end: usize) -> usize {
     }
     pos
 }
+
+// ---------------------------------------------------------------------------
+// Kani formal verification proofs
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Prove skip_ws correctly skips all whitespace characters and stops
+    /// at the first non-whitespace byte or the end of the range.
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn verify_skip_ws() {
+        let buf: [u8; 16] = kani::any();
+        let start: usize = kani::any();
+        let end: usize = kani::any();
+        kani::assume(start <= end && end <= 16);
+
+        let result = skip_ws(&buf, start, end);
+
+        // Property 1: Resulting position is within [start, end]
+        assert!(result >= start && result <= end);
+
+        // Property 2: All bytes between start and result are whitespace
+        let mut i = start;
+        while i < result {
+            let b = buf[i];
+            assert!(b == b' ' || b == b'\t' || b == b'\r' || b == b'\n');
+            i += 1;
+        }
+
+        // Property 3: If we haven't reached the end, the byte at result is NOT whitespace
+        if result < end {
+            let b = buf[result];
+            assert!(b != b' ' && b != b'\t' && b != b'\r' && b != b'\n');
+        }
+    }
+}
