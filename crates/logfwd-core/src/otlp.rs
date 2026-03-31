@@ -274,6 +274,63 @@ mod tests {
             Severity::Unspecified
         ));
     }
+
+    #[test]
+    fn wire_format_varint_known_values() {
+        let mut buf = Vec::new();
+        encode_varint(&mut buf, 0);
+        assert_eq!(buf, [0x00]);
+
+        buf.clear();
+        encode_varint(&mut buf, 1);
+        assert_eq!(buf, [0x01]);
+
+        buf.clear();
+        encode_varint(&mut buf, 300);
+        assert_eq!(buf, [0xAC, 0x02]); // protobuf varint for 300
+
+        buf.clear();
+        encode_varint(&mut buf, u64::MAX);
+        assert_eq!(buf.len(), 10); // max varint is 10 bytes
+    }
+
+    #[test]
+    fn wire_format_tag_encoding() {
+        let mut buf = Vec::new();
+        // field 1, wire type 0 (varint) = (1 << 3) | 0 = 8
+        encode_tag(&mut buf, 1, 0);
+        assert_eq!(buf, [0x08]);
+
+        buf.clear();
+        // field 2, wire type 2 (length-delimited) = (2 << 3) | 2 = 18
+        encode_tag(&mut buf, 2, 2);
+        assert_eq!(buf, [0x12]);
+    }
+
+    #[test]
+    fn wire_format_bytes_field() {
+        let mut buf = Vec::new();
+        encode_bytes_field(&mut buf, 1, b"hello");
+        // tag(field 1, wire 2) = 0x0A, length = 5, data = "hello"
+        assert_eq!(&buf[0..1], &[0x0A]);
+        assert_eq!(&buf[1..2], &[0x05]);
+        assert_eq!(&buf[2..], b"hello");
+    }
+
+    #[test]
+    fn parse_timestamp_epoch_returns_zero() {
+        // Unix epoch (1970-01-01T00:00:00Z) returns 0, which is also
+        // the sentinel for "parse failed". This is a known limitation
+        // documented in the audit — callers use observed_time as fallback.
+        assert_eq!(parse_timestamp_nanos(b"1970-01-01T00:00:00Z"), 0);
+    }
+
+    #[test]
+    fn parse_timestamp_invalid_returns_zero() {
+        assert_eq!(parse_timestamp_nanos(b"not a timestamp"), 0);
+        assert_eq!(parse_timestamp_nanos(b""), 0);
+        assert_eq!(parse_timestamp_nanos(b"2024"), 0);
+    }
 }
 
 // ---------------------------------------------------------------------------
