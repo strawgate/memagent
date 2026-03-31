@@ -48,6 +48,9 @@ pub struct BenchResult {
     pub mode: String,
     pub lines_done: u64,
     pub elapsed_ms: u64,
+    /// True if the run hit the timeout before completing.
+    #[serde(default)]
+    pub timed_out: bool,
     /// Iteration index for repeated runs; defaults to `1` when omitted in input JSON.
     #[serde(default = "default_iteration")]
     pub iteration: usize,
@@ -103,7 +106,8 @@ pub fn run_agent(
     });
 
     let expected = (ctx.lines as f64 * scenario.expected_line_ratio()) as usize;
-    let lines_done = wait_blackhole_done(blackhole, expected, Duration::from_secs(120));
+    let (lines_done, timed_out) =
+        wait_blackhole_done(blackhole, expected, Duration::from_secs(120));
     let elapsed = start.elapsed();
 
     // Stop sampling and merge agent-specific stats.
@@ -135,6 +139,7 @@ pub fn run_agent(
         mode: "binary".to_string(),
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
+        timed_out,
         iteration,
         samples,
     })
@@ -240,7 +245,8 @@ pub fn run_agent_docker(
         .map_err(|e| format!("failed to start docker container for {}: {e}", agent.name()))?;
 
     let expected = (ctx.lines as f64 * scenario.expected_line_ratio()) as usize;
-    let lines_done = wait_blackhole_done(blackhole, expected, Duration::from_secs(180));
+    let (lines_done, timed_out) =
+        wait_blackhole_done(blackhole, expected, Duration::from_secs(180));
     let elapsed = start.elapsed();
 
     // Stop the container.
@@ -259,6 +265,7 @@ pub fn run_agent_docker(
         mode: "docker".to_string(),
         lines_done,
         elapsed_ms: elapsed.as_millis() as u64,
+        timed_out,
         iteration,
         samples: Vec::new(), // TODO: Docker sampling
     })
@@ -333,7 +340,8 @@ pub fn run_agent_perf(
         .spawn()
         .map_err(|e| format!("failed to spawn perf record: {e}"))?;
 
-    let _lines_done = wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(120));
+    let (_lines_done, _timed_out) =
+        wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(120));
     let elapsed = start.elapsed();
 
     kill_and_wait(&mut child);
@@ -420,7 +428,8 @@ pub fn run_agent_dhat(
         .spawn()
         .map_err(|e| format!("failed to spawn dhat binary: {e}"))?;
 
-    let _lines_done = wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(120));
+    let (_lines_done, _timed_out) =
+        wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(120));
     let elapsed = start.elapsed();
 
     // dhat writes its output on clean exit, so send SIGTERM first.
@@ -588,7 +597,8 @@ fn clock_ticks_per_second() -> u64 {
 }
 
 /// Poll blackhole stats until lines reach expected count or bytes stabilize.
-fn wait_blackhole_done(blackhole: &Blackhole, expected: usize, timeout: Duration) -> u64 {
+/// Returns (lines_done, timed_out).
+fn wait_blackhole_done(blackhole: &Blackhole, expected: usize, timeout: Duration) -> (u64, bool) {
     let start = Instant::now();
     let mut prev_bytes = 0u64;
     let mut stable_count = 0u32;
@@ -596,22 +606,20 @@ fn wait_blackhole_done(blackhole: &Blackhole, expected: usize, timeout: Duration
     loop {
         if start.elapsed() > timeout {
             let (lines, _) = blackhole.stats();
-            return lines;
+            return (lines, true);
         }
 
         std::thread::sleep(Duration::from_millis(100));
         let (lines, bytes) = blackhole.stats();
 
-        // Fast path: line count reached expected.
         if lines >= expected as u64 {
-            return lines;
+            return (lines, false);
         }
 
-        // Slow path: bytes stopped flowing for 3s.
         if bytes == prev_bytes && bytes > 0 {
             stable_count += 1;
             if stable_count >= 30 {
-                return lines;
+                return (lines, false);
             }
         } else {
             stable_count = 0;

@@ -16,6 +16,10 @@ struct AggResult {
 }
 
 impl AggResult {
+    fn any_timed_out(&self) -> bool {
+        self.runs.iter().any(|r| r.timed_out)
+    }
+
     fn avg_elapsed_ms(&self) -> u64 {
         let valid: Vec<u64> = self
             .runs
@@ -80,9 +84,15 @@ impl AggResult {
     fn individual_elapsed(&self) -> String {
         self.runs
             .iter()
-            .map(|r| r.elapsed_ms.to_string())
+            .map(|r| {
+                if r.timed_out {
+                    format!("{}ms(TIMEOUT)", r.elapsed_ms)
+                } else {
+                    format!("{}ms", r.elapsed_ms)
+                }
+            })
             .collect::<Vec<_>>()
-            .join("|")
+            .join(" | ")
     }
 }
 
@@ -218,7 +228,6 @@ fn print_markdown(groups: &[AggResult], scenarios: &[String]) {
         println!("|-------|------|--------:|---------:|-----------:|------|");
         for g in &sg {
             let avg_ms = g.avg_elapsed_ms();
-            let rate = fmt_rate(g.avg_lines_done(), avg_ms);
             if avg_ms == 0 {
                 println!(
                     "| {} | {} | FAILED | - | - | {} |",
@@ -226,7 +235,22 @@ fn print_markdown(groups: &[AggResult], scenarios: &[String]) {
                     g.mode,
                     g.individual_elapsed()
                 );
+            } else if g.any_timed_out() {
+                println!(
+                    "| {} | {} | **TIMEOUT** ({}ms) | {:.0}ms | {} | {} |",
+                    g.name,
+                    g.mode,
+                    avg_ms,
+                    g.stddev_elapsed_ms(),
+                    if g.avg_lines_done() == 0 {
+                        "0 lines (timed out)".to_string()
+                    } else {
+                        fmt_rate(g.avg_lines_done(), avg_ms)
+                    },
+                    g.individual_elapsed(),
+                );
             } else {
+                let rate = fmt_rate(g.avg_lines_done(), avg_ms);
                 println!(
                     "| {} | {} | {}ms | {:.0}ms | {} | {} |",
                     g.name,
@@ -238,27 +262,30 @@ fn print_markdown(groups: &[AggResult], scenarios: &[String]) {
                 );
             }
         }
-        if sg.len() > 1 {
-            let base = sg
+        // Only compare agents that completed without timeout.
+        let completed: Vec<&&AggResult> = sg
+            .iter()
+            .filter(|g| !g.any_timed_out() && g.avg_elapsed_ms() > 0)
+            .collect();
+        if completed.len() > 1 {
+            let base = completed
                 .iter()
                 .max_by_key(|g| g.avg_elapsed_ms())
                 .copied()
-                .unwrap_or(sg[0]);
+                .unwrap();
             let base_ms = base.avg_elapsed_ms();
-            if base_ms > 0 {
-                println!();
-                for g in &sg {
-                    if g.name == base.name && g.mode == base.mode {
-                        continue;
-                    }
-                    let g_ms = g.avg_elapsed_ms();
-                    if g_ms > 0 {
-                        let ratio = base_ms as f64 / g_ms as f64;
-                        println!(
-                            "> **{}** is **{:.1}x faster** than {}",
-                            g.name, ratio, base.name
-                        );
-                    }
+            println!();
+            for g in &completed {
+                if g.name == base.name && g.mode == base.mode {
+                    continue;
+                }
+                let g_ms = g.avg_elapsed_ms();
+                if g_ms > 0 {
+                    let ratio = base_ms as f64 / g_ms as f64;
+                    println!(
+                        "> **{}** is **{:.1}x faster** than {}",
+                        g.name, ratio, base.name
+                    );
                 }
             }
         }
