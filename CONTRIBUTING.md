@@ -8,7 +8,13 @@
 
 ## Pre-Commit Checklist
 
-Run these before every commit:
+We use [pre-commit](https://pre-commit.com/) to automatically run fast checks (formatting and linting) before every commit. 
+
+To set it up:
+1. Install pre-commit: `pip install pre-commit` (or your preferred manager)
+2. Install the hooks: `pre-commit install`
+
+If you prefer manual checks, run these before every commit:
 
 ```bash
 # Format code
@@ -26,7 +32,7 @@ just ci
 
 ## Pre-Push Checklist
 
-Before pushing to a branch or creating a PR:
+Before pushing to a branch or creating a PR, you **MUST** ensure the full CI suite passes locally:
 
 ```bash
 # Full CI suite (format + clippy + TOML + deny + test)
