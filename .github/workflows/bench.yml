@@ -46,13 +46,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check binary cache
+        id: bin-cache
+        uses: actions/cache@v4
+        with:
+          path: cached-binaries
+          key: bench-binaries-${{ hashFiles('Cargo.lock', 'crates/*/src/**', 'crates/*/Cargo.toml') }}
+
       - uses: mozilla-actions/sccache-action@v0.0.7
+        if: steps.bin-cache.outputs.cache-hit != 'true'
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.bin-cache.outputs.cache-hit != 'true'
       - uses: Swatinem/rust-cache@v2
+        if: steps.bin-cache.outputs.cache-hit != 'true'
         with:
           cache-on-failure: true
 
       - name: Build release + bench harness
+        if: steps.bin-cache.outputs.cache-hit != 'true'
         env:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: |
@@ -61,15 +73,16 @@ jobs:
           cargo build --release --features dhat-heap -p logfwd
           cp target/release/logfwd target/release/logfwd-dhat
           cargo build --release -p logfwd
+          mkdir -p cached-binaries
+          cp target/release/logfwd cached-binaries/
+          cp target/release/logfwd-dhat cached-binaries/
+          cp target/release/logfwd-competitive-bench cached-binaries/
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
           name: bench-binaries
-          path: |
-            target/release/logfwd
-            target/release/logfwd-dhat
-            target/release/logfwd-competitive-bench
+          path: cached-binaries/
           retention-days: 1
 
   # -------------------------------------------------------------------
