@@ -10,9 +10,9 @@
 //
 // Cross-block state: only 2 u64 values (escape carry, string carry).
 //
-// The scalar `find_structural_chars_scalar` is the Kani-provable
-// specification. SIMD backends (NEON, AVX2, SSE2) in logfwd-arrow
-// produce identical output, verified by proptest.
+// SIMD is provided by the `wide` crate (portable across NEON, AVX2,
+// SSE2, WASM). The scalar `find_structural_chars_scalar` is the
+// Kani-provable specification.
 
 use crate::chunk_classify::{compute_real_quotes, prefix_xor};
 
@@ -198,173 +198,46 @@ pub fn find_char_mask(block: &[u8; 64], needle: u8) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// SIMD detection — platform-specific backends
+// SIMD detection via `wide` — portable across NEON, AVX2, SSE2, WASM
 // ---------------------------------------------------------------------------
 
-/// Detect all 10 structural characters using the best available SIMD.
+use wide::u8x16;
+
+/// Extract a u64 bitmask for one needle across a 64-byte block.
 ///
-/// Dispatches to NEON (aarch64), AVX2/SSE2 (x86_64), or the scalar
-/// fallback. All backends produce identical [`RawBlockMasks`].
+/// Uses `wide::u8x16` (16 bytes per vector) — 4 loads per block.
+/// On aarch64 this maps to NEON, on x86_64 to SSE2. Portable across
+/// all platforms `wide` supports (NEON, AVX2, SSE2, WASM, scalar).
+#[inline(always)]
+fn mask64(block: &[u8; 64], needle: u8) -> u64 {
+    let n = u8x16::splat(needle);
+    let c0 = u8x16::new(block[0..16].try_into().unwrap());
+    let c1 = u8x16::new(block[16..32].try_into().unwrap());
+    let c2 = u8x16::new(block[32..48].try_into().unwrap());
+    let c3 = u8x16::new(block[48..64].try_into().unwrap());
+    (c0.simd_eq(n).to_bitmask() as u64)
+        | ((c1.simd_eq(n).to_bitmask() as u64) << 16)
+        | ((c2.simd_eq(n).to_bitmask() as u64) << 32)
+        | ((c3.simd_eq(n).to_bitmask() as u64) << 48)
+}
+
+/// Detect all 10 structural characters using portable SIMD.
+///
+/// Loads the 64-byte block once (4 × 16-byte SIMD loads), then runs
+/// 10 comparisons against the loaded data. All platforms (NEON, AVX2,
+/// SSE2, WASM, scalar) use the same code.
 pub fn find_structural_chars(block: &[u8; 64]) -> RawBlockMasks {
-    #[cfg(target_arch = "aarch64")]
-    {
-        unsafe { simd_neon::find_structural_chars_neon(block) }
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") {
-            unsafe { simd_avx2::find_structural_chars_avx2(block) }
-        } else {
-            unsafe { simd_sse2::find_structural_chars_sse2(block) }
-        }
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        find_structural_chars_scalar(block)
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-mod simd_neon {
-    use super::RawBlockMasks;
-    use std::arch::aarch64::*;
-
-    #[inline(always)]
-    unsafe fn movemask16(cmp: uint8x16_t) -> u16 {
-        unsafe {
-            const MASK: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
-            let mask = vld1q_u8(MASK.as_ptr());
-            let bits = vandq_u8(cmp, mask);
-            let p16 = vpaddlq_u8(bits);
-            let p32 = vpaddlq_u16(p16);
-            let p64 = vpaddlq_u32(p32);
-            let lo = vgetq_lane_u64(p64, 0) as u8;
-            let hi = vgetq_lane_u64(p64, 1) as u8;
-            (lo as u16) | ((hi as u16) << 8)
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn extract_mask(
-        c0: uint8x16_t,
-        c1: uint8x16_t,
-        c2: uint8x16_t,
-        c3: uint8x16_t,
-        needle: uint8x16_t,
-    ) -> u64 {
-        unsafe {
-            (movemask16(vceqq_u8(c0, needle)) as u64)
-                | ((movemask16(vceqq_u8(c1, needle)) as u64) << 16)
-                | ((movemask16(vceqq_u8(c2, needle)) as u64) << 32)
-                | ((movemask16(vceqq_u8(c3, needle)) as u64) << 48)
-        }
-    }
-
-    #[target_feature(enable = "neon")]
-    pub(super) unsafe fn find_structural_chars_neon(data: &[u8; 64]) -> RawBlockMasks {
-        unsafe {
-            let c0 = vld1q_u8(data.as_ptr());
-            let c1 = vld1q_u8(data[16..].as_ptr());
-            let c2 = vld1q_u8(data[32..].as_ptr());
-            let c3 = vld1q_u8(data[48..].as_ptr());
-
-            RawBlockMasks {
-                newline: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'\n')),
-                space: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b' ')),
-                quote: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'"')),
-                backslash: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'\\')),
-                comma: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b',')),
-                colon: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b':')),
-                open_brace: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'{')),
-                close_brace: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'}')),
-                open_bracket: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'[')),
-                close_bracket: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b']')),
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-mod simd_avx2 {
-    use super::RawBlockMasks;
-    use std::arch::x86_64::*;
-
-    #[inline(always)]
-    unsafe fn extract_mask(lo: __m256i, hi: __m256i, needle: __m256i) -> u64 {
-        unsafe {
-            let m0 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(lo, needle)) as u32 as u64;
-            let m1 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(hi, needle)) as u32 as u64;
-            m0 | (m1 << 32)
-        }
-    }
-
-    #[target_feature(enable = "avx2")]
-    pub(super) unsafe fn find_structural_chars_avx2(data: &[u8; 64]) -> RawBlockMasks {
-        unsafe {
-            let lo = _mm256_loadu_si256(data.as_ptr() as *const __m256i);
-            let hi = _mm256_loadu_si256(data[32..].as_ptr() as *const __m256i);
-
-            RawBlockMasks {
-                newline: extract_mask(lo, hi, _mm256_set1_epi8(b'\n' as i8)),
-                space: extract_mask(lo, hi, _mm256_set1_epi8(b' ' as i8)),
-                quote: extract_mask(lo, hi, _mm256_set1_epi8(b'"' as i8)),
-                backslash: extract_mask(lo, hi, _mm256_set1_epi8(b'\\' as i8)),
-                comma: extract_mask(lo, hi, _mm256_set1_epi8(b',' as i8)),
-                colon: extract_mask(lo, hi, _mm256_set1_epi8(b':' as i8)),
-                open_brace: extract_mask(lo, hi, _mm256_set1_epi8(b'{' as i8)),
-                close_brace: extract_mask(lo, hi, _mm256_set1_epi8(b'}' as i8)),
-                open_bracket: extract_mask(lo, hi, _mm256_set1_epi8(b'[' as i8)),
-                close_bracket: extract_mask(lo, hi, _mm256_set1_epi8(b']' as i8)),
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-mod simd_sse2 {
-    use super::RawBlockMasks;
-    use std::arch::x86_64::*;
-
-    #[inline(always)]
-    unsafe fn extract_mask(
-        c0: __m128i,
-        c1: __m128i,
-        c2: __m128i,
-        c3: __m128i,
-        needle: __m128i,
-    ) -> u64 {
-        unsafe {
-            let m0 = _mm_movemask_epi8(_mm_cmpeq_epi8(c0, needle)) as u16 as u64;
-            let m1 = _mm_movemask_epi8(_mm_cmpeq_epi8(c1, needle)) as u16 as u64;
-            let m2 = _mm_movemask_epi8(_mm_cmpeq_epi8(c2, needle)) as u16 as u64;
-            let m3 = _mm_movemask_epi8(_mm_cmpeq_epi8(c3, needle)) as u16 as u64;
-            m0 | (m1 << 16) | (m2 << 32) | (m3 << 48)
-        }
-    }
-
-    #[target_feature(enable = "sse2")]
-    pub(super) unsafe fn find_structural_chars_sse2(data: &[u8; 64]) -> RawBlockMasks {
-        unsafe {
-            let c0 = _mm_loadu_si128(data.as_ptr() as *const __m128i);
-            let c1 = _mm_loadu_si128(data[16..].as_ptr() as *const __m128i);
-            let c2 = _mm_loadu_si128(data[32..].as_ptr() as *const __m128i);
-            let c3 = _mm_loadu_si128(data[48..].as_ptr() as *const __m128i);
-
-            let n = |b: u8| _mm_set1_epi8(b as i8);
-
-            RawBlockMasks {
-                newline: extract_mask(c0, c1, c2, c3, n(b'\n')),
-                space: extract_mask(c0, c1, c2, c3, n(b' ')),
-                quote: extract_mask(c0, c1, c2, c3, n(b'"')),
-                backslash: extract_mask(c0, c1, c2, c3, n(b'\\')),
-                comma: extract_mask(c0, c1, c2, c3, n(b',')),
-                colon: extract_mask(c0, c1, c2, c3, n(b':')),
-                open_brace: extract_mask(c0, c1, c2, c3, n(b'{')),
-                close_brace: extract_mask(c0, c1, c2, c3, n(b'}')),
-                open_bracket: extract_mask(c0, c1, c2, c3, n(b'[')),
-                close_bracket: extract_mask(c0, c1, c2, c3, n(b']')),
-            }
-        }
+    RawBlockMasks {
+        newline: mask64(block, b'\n'),
+        space: mask64(block, b' '),
+        quote: mask64(block, b'"'),
+        backslash: mask64(block, b'\\'),
+        comma: mask64(block, b','),
+        colon: mask64(block, b':'),
+        open_brace: mask64(block, b'{'),
+        close_brace: mask64(block, b'}'),
+        open_bracket: mask64(block, b'['),
+        close_bracket: mask64(block, b']'),
     }
 }
 
