@@ -30,15 +30,9 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Install tools
-        run: |
-          curl -sSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gunzip > /usr/local/bin/taplo && chmod +x /usr/local/bin/taplo
-          DENY_URL=$(curl -sSL -o /dev/null -w '%{url_effective}' https://github.com/EmbarkStudios/cargo-deny/releases/latest) && \
-            DENY_VER=$(basename "$DENY_URL") && \
-            curl -sSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${DENY_VER}/cargo-deny-${DENY_VER}-x86_64-unknown-linux-musl.tar.gz" | tar xz -C /tmp && \
-            mv /tmp/cargo-deny-*/cargo-deny /usr/local/bin/
-
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+
+      - uses: uncenter/setup-taplo@4f203fdb4f3b1e289c8382cf90d8397d2338df2e # v1.0.8
 
       - name: Format check
         run: just fmt-check
@@ -49,8 +43,8 @@ jobs:
       - name: TOML check
         run: just toml-check
 
-      - name: Dependency audit
-        run: just deny
+      - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2
+        name: Dependency audit
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -147,8 +141,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install actionlint
-        run: bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-
-      - name: Run actionlint
-        run: ./actionlint
+      - uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2
+        name: Run actionlint
