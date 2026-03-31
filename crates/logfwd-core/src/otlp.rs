@@ -823,7 +823,7 @@ mod verification {
         // 2024-01-15T10:30:00Z = 1705314600 seconds
         let ts = b"2024-01-15T10:30:00Z____extra___";
         let nanos = parse_timestamp_nanos(&ts[..20]);
-        assert!(nanos == 1_705_314_600_000_000_000);
+        assert!(nanos == Some(1_705_314_600_000_000_000));
 
         // Unix epoch returns 0 (sentinel — documented limitation)
         let epoch = b"1970-01-01T00:00:00Z____________";
@@ -904,7 +904,9 @@ mod verification {
 
         // If it parsed successfully, the result must be bounded
         if let Some(nanos) = result {
-            assert!(nanos <= 2554 * 366 * 86400 * 1_000_000_000u64);
+            // Year 2554 upper bound: force u64 to avoid intermediate overflow.
+            const MAX_NANOS: u64 = 80_763_609_600_000_000_000;
+            assert!(nanos <= MAX_NANOS);
         }
     }
 

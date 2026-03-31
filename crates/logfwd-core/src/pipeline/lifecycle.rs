@@ -242,15 +242,31 @@ fn record_ack_and_advance(
     let batch_id = receipt.batch_id;
     let old_offset = committed.get(&source).copied().unwrap_or(0);
 
-    // Remove from in-flight by exact BatchId (O(log n), no scan needed)
-    if let Some(source_flights) = in_flight.get_mut(&source)
-        && let Some(expected_end_offset) = source_flights.remove(&batch_id)
-    {
-        debug_assert_eq!(expected_end_offset, receipt.end_offset);
-        pending_acks
-            .entry(source)
-            .or_default()
-            .insert(batch_id, expected_end_offset);
+    // Remove from in-flight by exact BatchId (O(log n), no scan needed).
+    // If the batch_id isn't found, this is a spurious/duplicate ack —
+    // return early without mutating committed state.
+    let removed = if let Some(source_flights) = in_flight.get_mut(&source) {
+        if let Some(expected_end_offset) = source_flights.remove(&batch_id) {
+            debug_assert_eq!(expected_end_offset, receipt.end_offset);
+            pending_acks
+                .entry(source)
+                .or_default()
+                .insert(batch_id, expected_end_offset);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !removed {
+        // Spurious ack — no matching in-flight batch. Don't touch committed.
+        return CommitAdvance {
+            source,
+            old_offset,
+            new_offset: old_offset,
+        };
     }
 
     // Try to advance committed offset
