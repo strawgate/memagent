@@ -214,6 +214,23 @@ fn record_ack_and_advance<C: Clone>(
         }
     }
 
+    // Clean up empty inner maps to avoid unbounded accumulation
+    // with many ephemeral sources (short-lived file tails, etc.).
+    if in_flight
+        .get(&source)
+        .map(|m| m.is_empty())
+        .unwrap_or(false)
+    {
+        in_flight.remove(&source);
+    }
+    if pending_acks
+        .get(&source)
+        .map(|m| m.is_empty())
+        .unwrap_or(false)
+    {
+        pending_acks.remove(&source);
+    }
+
     CommitAdvance {
         source,
         advanced,
@@ -253,8 +270,8 @@ impl<C: Clone> PipelineMachine<Draining, C> {
         Ok(PipelineMachine {
             next_batch_id: self.next_batch_id,
             committed: self.committed,
-            in_flight: BTreeMap::new(),
-            pending_acks: BTreeMap::new(),
+            in_flight: self.in_flight, // guaranteed empty by is_drained()
+            pending_acks: self.pending_acks, // guaranteed empty by is_drained()
             _state: PhantomData,
         })
     }
@@ -557,7 +574,7 @@ mod tests {
 mod verification {
     use super::*;
 
-    /// Ordered ACK: checkpoint advances monotonically by batch order.
+    /// Ordered ACK: after all batches acked, committed checkpoint equals the last batch's.
     #[kani::proof]
     #[kani::unwind(4)]
     fn verify_ordered_ack() {

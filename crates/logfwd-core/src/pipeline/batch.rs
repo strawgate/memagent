@@ -95,7 +95,11 @@ impl<C> AckReceipt<C> {
     pub fn source(&self) -> SourceId {
         self.source
     }
-    /// The checkpoint to commit (opaque to the pipeline).
+    /// The checkpoint value for this batch.
+    ///
+    /// Informational for the caller — [`PipelineMachine::apply_ack`] commits
+    /// the checkpoint recorded at [`PipelineMachine::create_batch`] time,
+    /// not this value.
     pub fn checkpoint(&self) -> &C {
         &self.checkpoint
     }
