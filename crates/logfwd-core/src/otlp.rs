@@ -634,4 +634,74 @@ mod verification {
         let val_len = varint_len(value);
         assert!(buf.len() == tag_len + val_len, "varint_field size wrong");
     }
+
+    /// Prove parse_timestamp_nanos never panics for any 32-byte input.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn verify_parse_timestamp_no_panic() {
+        let bytes: [u8; 32] = kani::any();
+        let len: usize = kani::any_where(|&l: &usize| l <= 32);
+        let _ = parse_timestamp_nanos(&bytes[..len]);
+    }
+
+    /// Prove parse_timestamp_nanos returns correct values for known dates.
+    #[kani::proof]
+    fn verify_parse_timestamp_known_dates() {
+        // 2024-01-15T10:30:00Z = 1705314600 seconds
+        let ts = b"2024-01-15T10:30:00Z____extra___";
+        let nanos = parse_timestamp_nanos(&ts[..20]);
+        assert!(nanos == 1_705_314_600_000_000_000);
+
+        // Unix epoch returns 0 (sentinel — documented limitation)
+        let epoch = b"1970-01-01T00:00:00Z____________";
+        assert!(parse_timestamp_nanos(&epoch[..20]) == 0);
+
+        // Pre-epoch returns 0
+        let pre = b"1969-12-31T23:59:59Z____________";
+        assert!(parse_timestamp_nanos(&pre[..20]) == 0);
+    }
+
+    /// Prove encode_bytes_field content correctness: tag + length + exact data.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn verify_encode_bytes_field_content() {
+        let field_number: u32 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 100);
+        let data_len: usize = kani::any_where(|&l: &usize| l <= 8);
+        let data: [u8; 8] = kani::any();
+
+        let mut buf = Vec::new();
+        encode_bytes_field(&mut buf, field_number, &data[..data_len]);
+
+        // Size must match prediction
+        assert!(buf.len() == bytes_field_size(field_number, data_len));
+
+        // Last data_len bytes must be the exact input data
+        let payload = &buf[buf.len() - data_len..];
+        let mut i = 0;
+        while i < data_len {
+            assert!(payload[i] == data[i], "data mismatch at byte");
+            i += 1;
+        }
+    }
+
+    /// Prove parse_timestamp_nanos validates month/day ranges.
+    #[kani::proof]
+    fn verify_parse_timestamp_rejects_invalid_dates() {
+        // Month 0
+        let ts = b"2024-00-15T10:30:00Z";
+        assert!(parse_timestamp_nanos(ts) == 0);
+
+        // Month 13
+        let ts = b"2024-13-15T10:30:00Z";
+        assert!(parse_timestamp_nanos(ts) == 0);
+
+        // Day 0
+        let ts = b"2024-01-00T10:30:00Z";
+        assert!(parse_timestamp_nanos(ts) == 0);
+
+        // Day 32
+        let ts = b"2024-01-32T10:30:00Z";
+        assert!(parse_timestamp_nanos(ts) == 0);
+    }
 }
