@@ -203,3 +203,73 @@ pub enum InputState { Active, Paused, Shutdown, Done }
 This matches how Vector (EventStatus per event), OTel Collector
 (dispatched items list), and Fluentd (stage/queue/dequeued pools)
 all separate batch tracking from pipeline lifecycle.
+
+## Final Design Decision (2026-03-31)
+
+### Per-Batch Tracking, Not Per-Event
+
+Per-event tracking (Vector's approach) costs ~65ns/event = 6.5% CPU
+at 1M/sec. Per-batch costs ~60ns/batch (negligible). Per-event is
+only needed for fan-out + partial batch success + event-merging
+transforms — none of which logfwd does.
+
+Even with future Kafka/OTLP inputs, per-batch is sufficient:
+- Kafka: commit offset = batch granularity
+- OTLP: HTTP 200 = batch granularity
+- File: advance offset = batch granularity
+
+### Typestate Pattern for Correct-by-Construction
+
+Instead of verifying state transitions after the fact, make illegal
+transitions unrepresentable:
+
+```rust
+struct Queued<B>(B);
+struct Sending<B>(B);
+struct Acked;
+
+impl<B> Queued<B> {
+    fn begin_send(self) -> Sending<B> { ... }  // consumes self
+}
+impl<B> Sending<B> {
+    fn ack(self) -> Acked { ... }              // consumes self
+    fn fail(self) -> Queued<B> { ... }         // back to queue
+}
+```
+
+Cannot ACK twice (self consumed). Cannot drop without transitioning
+(#[must_use]). Cannot send a Queued batch without consuming it.
+The Rust compiler proves state transition correctness.
+
+### Ordered Batch Acknowledgement
+
+For a given file, offsets committed in order:
+  committed_offset[f] = max(end_offset for ACKED batch
+    where all prior batches are also ACKED)
+
+This matches Filebeat's registrar pattern and OTel's persistent queue.
+
+### Retry Opaque to Pipeline
+
+Retry logic lives inside the sink. The pipeline sees only:
+- BatchAction::Send(batch_id)
+- SinkResult::Success
+- SinkResult::TransientFailure { retry_after }
+- SinkResult::PermanentFailure
+
+The sink handles backoff internally (OTel retrySender pattern).
+This keeps the pipeline state machine small enough for Kani/TLA+.
+
+### What to Verify Where
+
+| Property | Tool | How |
+|----------|------|-----|
+| State transitions valid | Rust compiler | Typestate pattern |
+| No double-ACK | Rust compiler | Self consumed on transition |
+| Offsets monotonically increase | Kani | Bounded model check |
+| No batch silently dropped | Kani | All paths reach Acked or requeue |
+| All data eventually delivered | TLA+ | Liveness with fairness |
+| Shutdown drains all batches | TLA+ | Liveness |
+| No deadlock under backpressure | TLA+ | Safety |
+| Retry eventually succeeds or rejects | TLA+ | Liveness |
+| Network failures handled | Turmoil | Deterministic simulation |
