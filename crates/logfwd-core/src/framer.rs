@@ -14,7 +14,6 @@
 //! it correct. LLVM auto-vectorizes the byte scan loop, so performance is
 //! comparable to hand-written SIMD.
 
-
 /// Maximum number of lines per frame operation.
 ///
 /// This bounds the output array size. 4096 lines handles typical batch
@@ -173,7 +172,6 @@ mod tests {
         assert_eq!(&input[output.line_range(0).0..output.line_range(0).1], b"a");
         assert_eq!(&input[output.line_range(1).0..output.line_range(1).1], b"b");
     }
-
 }
 
 #[cfg(kani)]
