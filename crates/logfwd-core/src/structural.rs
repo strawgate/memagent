@@ -825,6 +825,74 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// Oracle proof: prefix_xor matches naive bit-by-bit running XOR
+    /// for ALL u64 inputs. Exhaustive — no gap.
+    #[kani::proof]
+    fn verify_prefix_xor() {
+        let input: u64 = kani::any();
+        let result = prefix_xor(input);
+
+        let mut expected: u64 = 0;
+        let mut running = false;
+        let mut i = 0u32;
+        while i < 64 {
+            if (input >> i) & 1 == 1 {
+                running = !running;
+            }
+            if running {
+                expected |= 1u64 << i;
+            }
+            i += 1;
+        }
+        assert!(result == expected, "prefix_xor mismatch");
+    }
+
+    /// Oracle proof: compute_real_quotes matches naive byte-by-byte
+    /// escape oracle for ALL (quote_bits, bs_bits, carry) triples.
+    /// Three properties: submask, oracle match, carry correctness.
+    ///
+    /// Most critical proof in the codebase — if escape detection is
+    /// wrong, the scanner silently misparses every JSON string with
+    /// backslashes.
+    #[kani::proof]
+    #[kani::unwind(65)]
+    #[kani::solver(kissat)]
+    fn verify_compute_real_quotes() {
+        let quote_bits: u64 = kani::any();
+        let bs_bits: u64 = kani::any();
+        let prev_carry: u64 = kani::any();
+        kani::assume(prev_carry <= 1);
+
+        let mut carry = prev_carry;
+        let result = compute_real_quotes(quote_bits, bs_bits, &mut carry);
+
+        // Result only contains quote positions
+        assert!(result & !quote_bits == 0);
+
+        // Matches naive escape oracle
+        let mut escaped_naive: u64 = 0;
+        let mut prev_was_unescaped_bs = prev_carry == 1;
+        let mut pos = 0u32;
+        while pos < 64 {
+            let is_bs = (bs_bits >> pos) & 1 == 1;
+            if prev_was_unescaped_bs {
+                escaped_naive |= 1u64 << pos;
+                prev_was_unescaped_bs = false;
+            } else if is_bs {
+                prev_was_unescaped_bs = true;
+            } else {
+                prev_was_unescaped_bs = false;
+            }
+            pos += 1;
+        }
+        let expected = quote_bits & !escaped_naive;
+        assert!(result == expected, "disagrees with naive oracle");
+
+        // Carry is correct
+        let expected_carry: u64 = if prev_was_unescaped_bs { 1 } else { 0 };
+        assert!(carry == expected_carry, "carry mismatch");
+    }
+
     /// Correctness: bit i is set iff block[i] == needle, for any
     /// 64-byte block and any needle. Checks one arbitrary position per
     /// run — the function is a simple loop so correctness at one
