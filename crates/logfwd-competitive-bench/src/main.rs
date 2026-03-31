@@ -537,6 +537,7 @@ fn run_one(
                 mode: mode_label.to_string(),
                 lines_done: 0,
                 elapsed_ms: 0,
+                timed_out: false,
                 iteration,
                 samples: Vec::new(),
             });
