@@ -8,7 +8,7 @@ logfwd is a high-performance log forwarder written in Rust. It reads logs from m
 
 ## Tech Stack
 
-- **Language:** Rust (stable toolchain, no unsafe)
+- **Language:** Rust (stable toolchain, unsafe only in SIMD layer)
 - **Data format:** Apache Arrow RecordBatches
 - **SQL engine:** Apache DataFusion
 - **Serialization:** Hand-rolled protobuf (OTLP), serde (JSON/YAML)

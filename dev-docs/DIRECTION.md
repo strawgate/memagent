@@ -17,7 +17,7 @@ adapter.
 logfwd-core         Proven pure logic. #![no_std], #![forbid(unsafe_code)]
                     Parsing, encoding, pipeline state machine.
                     StructuralIndex consumers (framer, CRI, scanner).
-                    Only dependency: memchr.
+                    Dependencies: memchr, wide (portable SIMD).
                     Every public function has a Kani proof or proptest.
 
 logfwd-arrow        Arrow integration. Implements core's FieldSink trait.

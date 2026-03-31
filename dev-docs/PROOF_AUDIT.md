@@ -3,23 +3,23 @@
 33 proofs as of 2026-03-30. For each: what it proves, what it
 DOESN'T prove, and the gap between proof and real usage.
 
-## chunk_classify.rs (2 proofs)
+## structural.rs (2 proofs)
 
 ### verify_prefix_xor
 **Proves:** Output matches naive running-XOR oracle for ALL u64 inputs.
-**Doesn't prove:** How prefix_xor is composed into ChunkIndex::new().
+**Doesn't prove:** How prefix_xor is composed into StreamingClassifier::process_block().
 **Gap:** None for the function itself. The composition with
 compute_real_quotes is proven separately. The composition of both
-into ChunkIndex::new (multi-block chaining) is NOT proven.
+into StreamingClassifier::process_block (multi-block chaining) is NOT proven.
 
 ### verify_compute_real_quotes
 **Proves:** Matches naive byte-by-byte escape oracle for ALL
 (quote_bits, bs_bits, carry) triples. Three properties: submask,
 oracle match, carry correctness.
 **Doesn't prove:** Multi-block chaining (carry propagation across
-multiple calls to compute_real_quotes). That's the ChunkIndex::new
+multiple calls to compute_real_quotes). That's the StreamingClassifier::process_block
 composition, which is tested by proptest but not Kani-proven.
-**Gap:** A bug in how ChunkIndex::new calls compute_real_quotes
+**Gap:** A bug in how StreamingClassifier::process_block calls compute_real_quotes
 in a loop would not be caught. The function itself is exhaustively
 correct.
 
@@ -224,7 +224,7 @@ caught a real bug (F fast path wasn't enforcing max_line_size).
 ## Summary of gaps
 
 ### GAPS THAT MATTER:
-1. **ChunkIndex multi-block composition** — we prove each function
+1. **StructuralIndex multi-block composition** — we prove each function
    but not the loop that chains them. proptest covers this.
 2. **days_from_civil absolute correctness** — we prove structural
    properties but not "day N is actually correct." Need chrono oracle.

@@ -73,24 +73,23 @@ never abandoned) and fairness (no input starved).
 
 ## Phase 8: Tighten logfwd-core (#267)
 
-After all IO/Arrow/SIMD code moved out:
-- `#![no_std]` + `extern crate alloc`
-- `#![forbid(unsafe_code)]`
-- SIMD backends in logfwd-arrow, scalar fallback in core
+- `#![no_std]` + `#![forbid(unsafe_code)]`
+- SIMD via `wide` crate (safe), scalar fallback for Kani
 - CI: `cargo build --target thumbv6m-none-eabi`
+
+## Phase 9: Allocation-free kernel (#358)
+
+Remove `extern crate alloc` entirely. No Vec, String, Box in core.
+All buffers stack-local or caller-provided. Mathematically impossible
+to OOM. Requires fully sequential scanner (no stored bitmask vecs).
 
 ## Parallel work
 
 | Issue | What | Status |
 |-------|------|--------|
-| #273 | Fix offset_of u32 truncation | Copilot assigned |
-| #274 | Fix row_count u32 overflow | Copilot assigned |
+| #357 | Decommission shadow JSON parser in otlp.rs | Open |
+| #359 | proptest: SQL pushdown integrity | Open |
 | #275 | Fix CRI silent truncation | Open |
-| #285 | Fix OTLP type suffix assumption | Copilot assigned |
-| #287 | Fix dup key detection >64 fields | Copilot assigned |
-| #288 | Fix RawParser non-UTF-8 | Copilot assigned |
-| #304 | Dead code cleanup | Copilot assigned |
-| #305 | Multi-file SIMD benchmark | After #313 |
-| #278 | Safe indexing benchmark | After #313 |
 | #279 | Arrow version upgrade | Open |
 | #308 | Rethink _raw column | Open |
+| #337-346 | Codebase audit (10 issues) | Copilot assigned |

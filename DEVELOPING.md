@@ -64,7 +64,7 @@ The deferred pattern is correct by construction: each column is built independen
 We tried three approaches:
 1. **Per-line SIMD**: load 16 bytes, compare for `"` and `\`. Slower than scalar on short strings.
 2. **sonic-rs DOM**: SIMD JSON parser builds a DOM per line. The DOM allocation is the bottleneck.
-3. **Chunk-level classification** (`ChunkIndex`): one NEON/SSE pass over the entire buffer at ~16 GiB/s, pre-computes all quote positions. Then `scan_string` is a single `trailing_zeros` bit-scan.
+3. **Chunk-level classification** (`StructuralIndex`): one NEON/SSE pass over the entire buffer at ~16 GiB/s, pre-computes all quote positions. Then `scan_string` is a single `trailing_zeros` bit-scan.
 
 Approach 3 wins everywhere because classification is amortized across all strings and per-string lookup is O(1).
 
