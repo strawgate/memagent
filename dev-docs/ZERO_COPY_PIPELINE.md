@@ -1,5 +1,8 @@
 # Zero-Copy Pipeline Design
 
+> **See `ARCHITECTURE.md` for the current high-level pipeline overview.**
+> This document is the deep-dive research behind the zero-copy design.
+
 Based on research of Vector, Fluent Bit, OTel Collector, simdjson,
 and simd-json. See issue #302 for the original discussion.
 
