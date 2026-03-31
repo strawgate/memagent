@@ -194,6 +194,7 @@ jobs:
       - run: chmod +x bin/*
 
       - name: Run benchmark cell
+        continue-on-error: true
         run: |
           bin/logfwd-competitive-bench \
             --lines ${{ env.LINES }} \
@@ -206,6 +207,7 @@ jobs:
           LOGFWD: ./bin/logfwd
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: results-${{ matrix.agent }}-${{ matrix.scenario }}
           path: results.jsonl
