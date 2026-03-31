@@ -115,7 +115,8 @@ impl OutputSink for JsonLinesSink {
         // This is acceptable as a temporary measure until SinkDriver (#319).
         const MAX_RETRIES: u32 = 3;
         let mut delay_ms: u64 = 100;
-        for attempt in 0..=MAX_RETRIES {
+        let mut attempt: u32 = 0;
+        loop {
             let mut req = self.http_agent.post(&self.url);
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
@@ -126,11 +127,11 @@ impl OutputSink for JsonLinesSink {
                 Err(e) if attempt < MAX_RETRIES && is_transient_error(&e) => {
                     std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                     delay_ms *= 2;
+                    attempt += 1;
                 }
                 Err(e) => return Err(io::Error::other(e.to_string())),
             }
         }
-        Err(io::Error::other("JSON lines send failed after max retries"))
     }
 
     fn flush(&mut self) -> io::Result<()> {
