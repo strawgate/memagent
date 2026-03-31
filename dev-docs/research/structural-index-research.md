@@ -81,7 +81,7 @@ is viable BUT needs careful design:
 
 **Recommended architecture:**
 
-```
+```text
 logfwd-arrow (has SIMD, produces StructuralIndex)
   StructuralIndex::new(buf) → runs SIMD, produces bitmask data
   StructuralIndex is a plain struct (no trait, no vtable)
@@ -195,7 +195,35 @@ Benchmark on Apple M-series (NEON), ~760KB NDJSON, 4096 lines.
 - This means the scalar fallback is genuinely ~10x slower than SIMD
   at runtime, confirming the SIMD path matters for production.
 
-## 5. Open Questions Resolved
+## 5. Block Size and Buffer Size (2026-03-30)
+
+### SIMD block size: 64 bytes is optimal
+
+simdjson explored 256-byte blocks (u256 bitmasks) in issue #261 and
+abandoned it. `trailing_zeros` on u64 is a single TZCNT instruction;
+u128 requires two u64 ops with a branch. No hardware u128 TZCNT.
+
+Our benchmark confirmed: batch size (256B to 760KB) has zero effect
+on throughput — all produce 2.93 GiB/s. The SIMD inner loop dominates.
+
+Incremental optimization: STEP_SIZE=128 (process two 64-byte blocks
+per loop iteration, like simdjson's AVX2 path) reduces loop overhead.
+
+### Read buffer: 256KB per file is well-positioned
+
+- Fits in L2 cache (M1: 12MB shared). L1 is 128KB — 64KB buffer
+  would be fully L1-resident but the L1→L2 gap is only ~8 cycles.
+- simdjson throughput peaks at tens-of-KB to low-MB, drops at ~10MB.
+- Vector uses 2KB (for fairness, not perf). Fluent Bit uses 32KB.
+
+### Multi-file shared buffer: not worth it
+
+Benchmark: concatenating 100×500B files is 29% faster than per-file
+(tail-block padding overhead). But no established log processor does
+this — complexity of file boundaries and breaking zero-copy Bytes
+model isn't justified. In practice, K8s logs produce multi-KB writes.
+
+## 6. Open Questions Resolved
 
 ### Missing `]` in 9-char set
 Yes, we need `]` for bracket matching. That's 10 chars, adding ~28µs.
@@ -211,7 +239,7 @@ Cheap — one AND + NOT per bitmask per block (~7 operations for 7
 non-quote/backslash chars). Confirmed by benchmark: Stage 4 adds
 only ~12µs total for all masking + line extraction combined.
 
-## 6. Recommendations
+## 7. Recommendations
 
 1. **Use streaming per-block processing** (like simdjson). Don't
    materialize all bitmask vectors. Zero heap allocation for bitmasks.

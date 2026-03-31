@@ -4,3 +4,5 @@ build
 /actionlint
 .claude/worktrees/
 .worktrees/
+book/book/
+.DS_Store

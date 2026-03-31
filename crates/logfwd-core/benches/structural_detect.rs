@@ -78,7 +78,7 @@ struct UnifiedBlock {
 }
 
 /// Scalar unified scan: find all 5 characters in one pass over a 64-byte block.
-/// LLVM will auto-vectorize this on most targets.
+/// Byte-at-a-time reference implementation (not auto-vectorized).
 fn unified_scan_scalar(data: &[u8; 64]) -> UnifiedBlock {
     let mut newline_bits: u64 = 0;
     let mut space_bits: u64 = 0;
@@ -354,7 +354,7 @@ fn simd_unified_scan_buffer(buf: &[u8]) -> Vec<SimdUnifiedBlock> {
 // ===========================================================================
 
 /// 9-character structural scan: newline, space, quote, backslash, comma,
-/// colon, open brace, close brace, open bracket, close bracket.
+/// colon, open brace, close brace, open bracket.
 /// Covers everything needed for multiline JSON + CSV + CRI.
 #[allow(dead_code)]
 struct Simd9Block {
@@ -485,6 +485,19 @@ fn simd_9char_scan_buffer(buf: &[u8]) -> Vec<Simd9Block> {
         #[cfg(target_arch = "x86_64")]
         if is_x86_feature_detected!("avx2") {
             results.push(unsafe { simd_9char::find_9chars_avx2(&block) });
+        } else {
+            let s = unified_scan_scalar(&block);
+            results.push(Simd9Block {
+                newline_bits: s.newline_bits,
+                space_bits: s.space_bits,
+                quote_bits: s.quote_bits,
+                backslash_bits: s.backslash_bits,
+                comma_bits: s.comma_bits,
+                colon_bits: 0,
+                open_brace_bits: 0,
+                close_brace_bits: 0,
+                open_bracket_bits: 0,
+            });
         }
     }
     results
@@ -665,6 +678,139 @@ fn bench_char_count_scaling(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark: does processing batch size affect SIMD throughput?
+/// Processes the same ~760KB NDJSON buffer in varying batch sizes.
+fn bench_batch_size(c: &mut Criterion) {
+    #[cfg(target_arch = "x86_64")]
+    if !is_x86_feature_detected!("avx2") {
+        eprintln!("Skipping batch_size_simd9: AVX2 not available");
+        return;
+    }
+
+    let ndjson = gen_ndjson(4096);
+    let total_bytes = ndjson.len();
+
+    let mut group = c.benchmark_group("batch_size_simd9");
+    group.throughput(Throughput::Bytes(total_bytes as u64));
+
+    for &batch_bytes in &[256usize, 1024, 4096, 16384, 65536, total_bytes] {
+        let label = if batch_bytes < 1024 {
+            format!("{batch_bytes}B")
+        } else if batch_bytes < total_bytes {
+            format!("{}KB", batch_bytes / 1024)
+        } else {
+            "760KB_full".to_string()
+        };
+
+        group.bench_function(&label, |b| {
+            b.iter(|| {
+                let mut offset = 0;
+                let mut total = 0u64;
+                while offset < total_bytes {
+                    let end = (offset + batch_bytes).min(total_bytes);
+                    let batch = &ndjson[offset..end];
+                    let num_blocks = batch.len().div_ceil(64);
+                    for bi in 0..num_blocks {
+                        let bo = bi * 64;
+                        let rem = batch.len() - bo;
+                        let block: [u8; 64] = if rem >= 64 {
+                            batch[bo..bo + 64].try_into().unwrap()
+                        } else {
+                            let mut p = [b' '; 64];
+                            p[..rem].copy_from_slice(&batch[bo..]);
+                            p
+                        };
+                        #[cfg(target_arch = "aarch64")]
+                        let raw = unsafe { simd_9char::find_9chars_neon(&block) };
+                        #[cfg(target_arch = "x86_64")]
+                        let raw = unsafe { simd_9char::find_9chars_avx2(&block) };
+                        total += raw.newline_bits.count_ones() as u64;
+                    }
+                    offset = end;
+                }
+                black_box(total)
+            })
+        });
+    }
+    group.finish();
+}
+
+/// Benchmark: per-file SIMD vs concatenated buffer (100 files × ~500B).
+fn bench_multi_file(c: &mut Criterion) {
+    #[cfg(target_arch = "x86_64")]
+    if !is_x86_feature_detected!("avx2") {
+        eprintln!("Skipping multi_file_100x500B: AVX2 not available");
+        return;
+    }
+
+    let mut files: Vec<Vec<u8>> = Vec::new();
+    for i in 0..100 {
+        let mut buf = Vec::new();
+        for j in 0..3 {
+            buf.extend_from_slice(
+                format!(r#"{{"level":"INFO","msg":"pod-{i} req {j}","status":200}}"#).as_bytes(),
+            );
+            buf.push(b'\n');
+        }
+        files.push(buf);
+    }
+    let total: usize = files.iter().map(|f| f.len()).sum();
+    let concat: Vec<u8> = files.iter().flat_map(|f| f.iter().copied()).collect();
+
+    let mut group = c.benchmark_group("multi_file_100x500B");
+    group.throughput(Throughput::Bytes(total as u64));
+
+    group.bench_function("per_file", |b| {
+        b.iter(|| {
+            let mut t = 0u64;
+            for f in &files {
+                for bi in 0..f.len().div_ceil(64) {
+                    let bo = bi * 64;
+                    let rem = f.len() - bo;
+                    let block: [u8; 64] = if rem >= 64 {
+                        f[bo..bo + 64].try_into().unwrap()
+                    } else {
+                        let mut p = [b' '; 64];
+                        p[..rem].copy_from_slice(&f[bo..]);
+                        p
+                    };
+                    #[cfg(target_arch = "aarch64")]
+                    let r = unsafe { simd_9char::find_9chars_neon(&block) };
+                    #[cfg(target_arch = "x86_64")]
+                    let r = unsafe { simd_9char::find_9chars_avx2(&block) };
+                    t += r.newline_bits.count_ones() as u64;
+                }
+            }
+            black_box(t)
+        })
+    });
+
+    group.bench_function("concatenated", |b| {
+        b.iter(|| {
+            let mut t = 0u64;
+            for bi in 0..concat.len().div_ceil(64) {
+                let bo = bi * 64;
+                let rem = concat.len() - bo;
+                let block: [u8; 64] = if rem >= 64 {
+                    concat[bo..bo + 64].try_into().unwrap()
+                } else {
+                    let mut p = [b' '; 64];
+                    p[..rem].copy_from_slice(&concat[bo..]);
+                    p
+                };
+                #[cfg(target_arch = "aarch64")]
+                let r = unsafe { simd_9char::find_9chars_neon(&block) };
+                #[cfg(target_arch = "x86_64")]
+                let r = unsafe { simd_9char::find_9chars_avx2(&block) };
+                t += r.newline_bits.count_ones() as u64;
+            }
+            black_box(t)
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_separate_passes,
@@ -672,5 +818,7 @@ criterion_group!(
     bench_hybrid_pass,
     bench_comparison,
     bench_char_count_scaling,
+    bench_batch_size,
+    bench_multi_file,
 );
 criterion_main!(benches);
