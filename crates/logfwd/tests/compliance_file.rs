@@ -35,7 +35,7 @@ fn generate_lines(start: usize, count: usize) -> String {
 fn build_pipeline(yaml: &str) -> Pipeline {
     let config = Config::load_str(yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
-    Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap()
+    Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap()
 }
 
 /// Build a simple pipeline config YAML for a single file input.

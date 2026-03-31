@@ -56,7 +56,12 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// Construct a pipeline from parsed YAML config.
-    pub fn from_config(name: &str, config: &PipelineConfig, meter: &Meter) -> Result<Self, String> {
+    pub fn from_config(
+        name: &str,
+        config: &PipelineConfig,
+        meter: &Meter,
+        base_path: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
         let transform_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
         let mut transform = SqlTransform::new(transform_sql)?;
 
@@ -64,14 +69,17 @@ impl Pipeline {
         for enrichment in &config.enrichment {
             match enrichment {
                 EnrichmentConfig::GeoDatabase(geo_cfg) => {
+                    let mut path = std::path::PathBuf::from(&geo_cfg.path);
+                    if path.is_relative() && let Some(base) = base_path {
+                        path = base.join(path);
+                    }
+
                     let db: Arc<dyn logfwd_core::enrichment::GeoDatabase> = match geo_cfg.format {
                         GeoDatabaseFormat::Mmdb => {
-                            let mmdb = logfwd_transform::udf::geo_lookup::MmdbDatabase::open(
-                                &geo_cfg.path,
-                            )
-                            .map_err(|e| {
-                                format!("failed to open geo database '{}': {e}", geo_cfg.path)
-                            })?;
+                            let mmdb = logfwd_transform::udf::geo_lookup::MmdbDatabase::open(&path)
+                                .map_err(|e| {
+                                    format!("failed to open geo database '{}': {e}", path.display())
+                                })?;
                             Arc::new(mmdb)
                         }
                     };
@@ -93,13 +101,29 @@ impl Pipeline {
         // Build inputs (file only for now).
         let mut inputs = Vec::new();
         for (i, input_cfg) in config.inputs.iter().enumerate() {
+            let mut resolved_cfg = input_cfg.clone();
+            if let Some(path_str) = &input_cfg.path {
+                let mut path = std::path::PathBuf::from(path_str);
+                if path.is_relative() {
+                    if let Some(base) = base_path {
+                        path = base.join(path);
+                    }
+                }
+                // Try to canonicalize for better error reporting/stability, but don't fail if it doesn't exist yet (glob)
+                if let Ok(abs_path) = std::fs::canonicalize(&path) {
+                    resolved_cfg.path = Some(abs_path.to_string_lossy().to_string());
+                } else {
+                    resolved_cfg.path = Some(path.to_string_lossy().to_string());
+                }
+            }
+
             let input_name = input_cfg
                 .name
                 .clone()
                 .unwrap_or_else(|| format!("input_{i}"));
             let input_type_str = format!("{:?}", input_cfg.input_type).to_lowercase();
             let input_stats = metrics.add_input(&input_name, &input_type_str);
-            inputs.push(build_input_state(&input_name, input_cfg, input_stats)?);
+            inputs.push(build_input_state(&input_name, &resolved_cfg, input_stats)?);
         }
 
         // Build outputs.
@@ -763,7 +787,7 @@ output:
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter());
+        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None);
         assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
     }
 
@@ -788,7 +812,7 @@ output:
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter());
+        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None);
         assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
     }
 
@@ -825,7 +849,7 @@ output:
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
         // Use a very short batch timeout so the test flushes quickly.
         pipeline.batch_timeout = Duration::from_millis(10);
@@ -882,7 +906,7 @@ output:
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
         // Set batch_timeout large enough that the normal time-based flush will
         // never fire during the test — data stays in json_buf until shutdown.
@@ -946,7 +970,7 @@ output:
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
         pipeline.batch_timeout = Duration::from_millis(10);
         pipeline.poll_interval = Duration::from_millis(5);
@@ -1018,7 +1042,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
         // Use devnull output to avoid stdout noise in test.
         pipeline = pipeline.with_output(Box::new(DevNullSink));
@@ -1080,7 +1104,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
         pipeline = pipeline.with_output(Box::new(DevNullSink));
         pipeline.batch_timeout = Duration::from_millis(20);
 
@@ -1144,7 +1168,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
         // SlowSink blocks the consumer, causing the channel to fill up.
         pipeline = pipeline.with_output(Box::new(SlowSink {
@@ -1209,7 +1233,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
         pipeline = pipeline.with_output(Box::new(SlowSink {
             delay: Duration::from_millis(20),
         }));
@@ -1268,7 +1292,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
         pipeline = pipeline.with_output(Box::new(DevNullSink));
         pipeline.batch_timeout = Duration::from_millis(20);
 
@@ -1316,7 +1340,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
         pipeline = pipeline.with_output(Box::new(DevNullSink));
 
         let shutdown = CancellationToken::new();
@@ -1356,7 +1380,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
         pipeline = pipeline.with_output(Box::new(DevNullSink));
 
         let shutdown = CancellationToken::new();
@@ -1401,7 +1425,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
         // FailingSink fails the first N batches, then succeeds.
         pipeline = pipeline.with_output(Box::new(FailingSink {
             fail_count: 3,
@@ -1461,7 +1485,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
         pipeline = pipeline.with_output(Box::new(DevNullSink));
         pipeline.batch_timeout = Duration::from_millis(20);
 
@@ -1512,7 +1536,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
         pipeline = pipeline.with_output(Box::new(DevNullSink));
         pipeline.batch_target_bytes = 1024; // Much smaller than the line
         pipeline.batch_timeout = Duration::from_millis(20);
@@ -1569,7 +1593,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
         // FrozenSink: first call blocks until the token is cancelled.
         // This simulates an output that hangs (network timeout, deadlock).
@@ -1632,7 +1656,7 @@ output:
 
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
         pipeline = pipeline.with_output(Box::new(DevNullSink));
         pipeline.batch_timeout = Duration::from_millis(20);
 

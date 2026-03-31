@@ -168,9 +168,11 @@ async fn cmd_config(args: &[String]) -> io::Result<()> {
         }
     };
 
+    let base_path = std::path::Path::new(config_path).parent();
+
     if validate_only || dry_run {
         // Both --validate and --dry-run build pipelines to catch SQL/wiring errors.
-        return validate_pipelines(&config, dry_run);
+        return validate_pipelines(&config, dry_run, base_path);
     }
 
     // Startup summary.
@@ -193,7 +195,7 @@ async fn cmd_config(args: &[String]) -> io::Result<()> {
         );
     }
 
-    run_pipelines(config).await
+    run_pipelines(config, base_path).await
 }
 
 fn cmd_blackhole(args: &[String]) -> io::Result<()> {
@@ -230,7 +232,11 @@ fn cmd_generate_json(args: &[String]) -> io::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Validate config by building all pipelines. Used by --validate and --dry-run.
-fn validate_pipelines(config: &logfwd_config::Config, dry_run: bool) -> io::Result<()> {
+fn validate_pipelines(
+    config: &logfwd_config::Config,
+    dry_run: bool,
+    base_path: Option<&std::path::Path>,
+) -> io::Result<()> {
     use logfwd::pipeline::Pipeline;
 
     // Build a no-op meter for validation (no OTel export needed).
@@ -239,7 +245,7 @@ fn validate_pipelines(config: &logfwd_config::Config, dry_run: bool) -> io::Resu
 
     let mut errors = 0;
     for (name, pipe_cfg) in &config.pipelines {
-        match Pipeline::from_config(name, pipe_cfg, &meter) {
+        match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
             Ok(_) => {
                 eprintln!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
             }
@@ -265,7 +271,10 @@ fn validate_pipelines(config: &logfwd_config::Config, dry_run: bool) -> io::Resu
     Ok(())
 }
 
-async fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
+async fn run_pipelines(
+    config: logfwd_config::Config,
+    base_path: Option<&std::path::Path>,
+) -> io::Result<()> {
     use logfwd::pipeline::Pipeline;
     use logfwd_core::diagnostics::DiagnosticsServer;
     let shutdown = CancellationToken::new();
@@ -295,7 +304,7 @@ async fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
 
     let mut pipelines = Vec::new();
     for (name, pipe_cfg) in &config.pipelines {
-        match Pipeline::from_config(name, pipe_cfg, &meter) {
+        match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
             Ok(pipeline) => {
                 eprintln!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
                 pipelines.push(pipeline);
