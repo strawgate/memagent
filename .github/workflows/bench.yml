@@ -324,9 +324,10 @@ jobs:
             --agents logfwd \
             --scenarios passthrough \
             --mode binary \
+            --profile . \
             --dhat-binary ./bin/logfwd-prof
         env:
-          LOGFWD: ./bin/logfwd
+          LOGFWD: ./bin/logfwd-prof
 
       - uses: actions/upload-artifact@v4
         if: always()
