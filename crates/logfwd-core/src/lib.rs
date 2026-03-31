@@ -25,3 +25,5 @@ pub mod scan_config;
 pub mod scanner;
 /// Streaming SIMD structural character detection.
 pub mod structural;
+/// Pipeline state machine — typestate batch lifecycle + ordered offset tracking.
+pub mod pipeline;

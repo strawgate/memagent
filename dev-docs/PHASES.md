@@ -55,11 +55,28 @@ Benchmark proved viability (2026-03-30):
 Rename ScanBuilder → FieldSink. Ensure scan loop works in no_std.
 Add bounded Kani proof for scan_line. proptest oracle vs serde_json.
 
-## Phase 5: Pipeline state machine + BatchToken (#270)
+## Phase 5: Pipeline state machine + BatchToken (#270) ← IN PROGRESS
 
 Extract run_async decisions into pure state machine in core.
-Kani exhaustive single-step. proptest random event sequences.
-BatchToken #[must_use] linear type. Wire into run_async.
+
+```
+5a: Typestate BatchTicket               ✅ DONE
+    Queued → Sending → Acked/Rejected
+    #[must_use] linear type, compile-time enforcement
+    5 Kani proofs, 3 unit tests
+
+5b: PipelineMachine lifecycle           ✅ DONE
+    Starting → Running → Draining → Stopped
+    Ordered ACK offset tracking (Filebeat registrar pattern)
+    4 Kani proofs (monotonic offset, final offset, drain→stop,
+    multi-source independence), 6 unit tests
+
+5c: Wire into pipeline.rs              → TODO
+    Replace ad-hoc offset tracking with PipelineMachine
+    BatchTicket replaces implicit batch lifecycle
+
+5d: proptest random event sequences    → TODO
+```
 
 ## Phase 6: proptest state machines + CI hardening (#271)
 
@@ -69,7 +86,15 @@ Proof coverage enforcement. cargo-mutants weekly. cargo-vet.
 ## Phase 7: TLA+ pipeline specification (#272)
 
 Model batching/timeout/shutdown protocol. Prove liveness (data is
-never abandoned) and fairness (no input starved).
+never abandoned) and fairness (no input starved). Requires Phase 5
+completion (pure state machine extraction).
+
+```
+7a: PipelineBatch.tla — N inputs, bounded channel, consumer
+7b: Prove NoDataAbandoned (every batch eventually acked or rejected)
+7c: Prove ShutdownCompletes (drain terminates)
+7d: Turmoil simulation tests (requires async sink migration)
+```
 
 ## Phase 8: Tighten logfwd-core (#267)
 
