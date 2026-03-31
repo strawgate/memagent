@@ -113,3 +113,21 @@ live in logfwd-arrow behind a `CharDetector` trait.
 unsafe. Kani proves the scalar path. proptest verifies SIMD matches
 scalar. Performance comes from SIMD at runtime; correctness is proven
 on the scalar path.
+
+## Pipeline state machine over linear BatchToken
+
+**Decision:** Prove pipeline correctness via a pure state machine
+in core (Kani single-step + TLA+ liveness), not a linear type.
+
+**Why:** Strictly linear `BatchToken` is impossible with async
+cancellation. Tokio can cancel a future at any `.await` point,
+which means a `#[must_use]` token can be dropped without being
+consumed. The type system cannot prevent this.
+
+**Strategy:** The state machine in core is proven correct: no state
+exists where a batch is "forgotten." The async shell handles
+best-effort delivery (At-Least-Once) using the Arrow IPC segment
+store for durability. Logic correctness is proven; delivery
+guarantees are operational.
+
+**Related:** #270 (pipeline state machine), #272 (TLA+ liveness).

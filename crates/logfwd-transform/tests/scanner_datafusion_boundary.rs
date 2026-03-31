@@ -284,15 +284,18 @@ fn utf8view_order_by_desc() {
 /// CROSS JOIN between a Utf8View-column table and a static enrichment table.
 #[test]
 fn utf8view_cross_join_enrichment() {
-    use logfwd_core::enrichment::StaticTable;
+    use logfwd_io::enrichment::StaticTable;
 
     let batch = make_utf8view_batch();
     let mut t =
         SqlTransform::new("SELECT logs.*, env.environment FROM logs CROSS JOIN env").unwrap();
-    let env = Arc::new(StaticTable::new(
-        "env",
-        &[("environment".to_string(), "production".to_string())],
-    ));
+    let env = Arc::new(
+        StaticTable::new(
+            "env",
+            &[("environment".to_string(), "production".to_string())],
+        )
+        .expect("valid labels"),
+    );
     t.add_enrichment_table(env).unwrap();
 
     let result = t.execute_blocking(batch).unwrap();

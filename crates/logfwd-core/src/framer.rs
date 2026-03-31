@@ -231,7 +231,7 @@ mod verification {
 
     /// Prove NewlineFramer produces correct line content — each returned
     /// range contains no newlines, and boundaries align with actual \n bytes.
-    /// This is the ORACLE proof that closes the gap identified in PROOF_AUDIT.md.
+    /// This is the oracle proof — verifies the framer produces the same lines as naive split-on-newline.
     #[kani::proof]
     #[kani::unwind(18)]
     fn verify_newline_framer_content_correct() {

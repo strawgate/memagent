@@ -8,9 +8,9 @@ use std::fmt::Write;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::scanner::SimdScanner;
-use logfwd_core::compress::ChunkCompressor;
 use logfwd_core::cri::{CriReassembler, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
+use logfwd_io::compress::ChunkCompressor;
 use logfwd_output::{BatchMetadata, OutputSink};
 use logfwd_transform::SqlTransform;
 

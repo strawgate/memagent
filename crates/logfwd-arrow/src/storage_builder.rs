@@ -74,8 +74,9 @@ pub struct StorageBuilder {
     raw_values: Vec<Vec<u8>>,
     row_count: u32,
     keep_raw: bool,
+    /// Tracks which fields (by index) were written in the current row.
+    /// Only covers the first 64 fields (indices 0–63); see `check_dup_bits`.
     written_bits: u64,
-    written_overflow_bits: Vec<u64>,
 }
 
 impl StorageBuilder {
@@ -87,7 +88,6 @@ impl StorageBuilder {
             row_count: 0,
             keep_raw,
             written_bits: 0,
-            written_overflow_bits: Vec::new(),
         }
     }
 
@@ -102,7 +102,6 @@ impl StorageBuilder {
     #[inline(always)]
     pub fn begin_row(&mut self) {
         self.written_bits = 0;
-        self.written_overflow_bits.clear();
     }
 
     #[inline(always)]
@@ -126,7 +125,7 @@ impl StorageBuilder {
 
     #[inline(always)]
     fn check_dup(&mut self, idx: usize) -> bool {
-        check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx)
+        check_dup_bits(&mut self.written_bits, idx)
     }
 
     #[inline(always)]
@@ -406,5 +405,35 @@ mod tests {
         b.begin_batch();
         let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 0);
+    }
+
+    /// Fields beyond index 63 do not get duplicate-key detection (the bitmask
+    /// only covers 64 entries). This test verifies that writing to such fields
+    /// does not panic and that the batch still builds correctly.
+    #[test]
+    fn test_no_panic_with_65_fields_duplicate_key() {
+        let mut b = StorageBuilder::new(false);
+        b.begin_batch();
+
+        // Resolve 65 fields so the 65th field has index 64 (>= 64).
+        let mut indices = Vec::new();
+        for i in 0..65u8 {
+            let name = format!("field{}", i);
+            indices.push(b.resolve_field(name.as_bytes()));
+        }
+        let idx_65 = indices[64]; // index 64 — first field outside the bitmask
+
+        b.begin_row();
+        // Write the 65th field twice. Duplicate-key detection is not active for
+        // idx >= 64, so both writes go through without panic. The documented
+        // first-writer-wins guarantee only holds for fields 0–63.
+        b.append_int_by_idx(idx_65, b"1");
+        b.append_int_by_idx(idx_65, b"2");
+        b.end_row();
+
+        // Must not panic and must produce a valid batch.
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert!(batch.column_by_name("field64_int").is_some());
     }
 }

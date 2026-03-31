@@ -17,8 +17,8 @@ use std::time::Duration;
 use logfwd::pipeline::Pipeline;
 use logfwd_arrow::scanner::SimdScanner;
 use logfwd_config::Config;
-use logfwd_core::enrichment::CsvFileTable;
 use logfwd_core::scan_config::ScanConfig;
+use logfwd_io::enrichment::CsvFileTable;
 use logfwd_test_utils::test_meter;
 use logfwd_transform::SqlTransform;
 use tokio_util::sync::CancellationToken;
@@ -80,7 +80,7 @@ output:
     );
     let config = Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
-    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
     let pipeline = run_for(pipeline, 600);
 
@@ -132,7 +132,7 @@ output:
     );
     let config = Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
-    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
     let pipeline = run_for(pipeline, 600);
 
@@ -182,7 +182,7 @@ output:
     );
     let config = Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
-    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
     let pipeline = run_for(pipeline, 600);
 
@@ -258,7 +258,7 @@ output:
     );
     let config = Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
-    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
     run_for(pipeline, 600);
 
@@ -302,7 +302,7 @@ output:
     );
     let config = Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
-    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter()).unwrap();
+    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
     let shutdown = CancellationToken::new();
     let sd_run = shutdown.clone();

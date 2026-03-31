@@ -231,7 +231,7 @@ fn verify_batches(
 fn run_compliance_pipeline(yaml: &str, timeout: Duration) -> Vec<RecordBatch> {
     let config = Config::load_str(yaml).expect("failed to parse YAML config");
     let pipe_cfg = &config.pipelines["default"];
-    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter())
+    let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None)
         .expect("failed to build pipeline");
 
     let (sink, captured) = CaptureSink::new("compliance-capture");

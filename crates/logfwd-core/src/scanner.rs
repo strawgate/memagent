@@ -4,10 +4,9 @@
 // Arrow-specific scanner types (SimdScanner, StreamingSimdScanner) live
 // in the logfwd-arrow crate.
 
-use crate::chunk_classify::ChunkIndex;
 use crate::scan_config::ScanConfig;
 use crate::scan_config::parse_int_fast;
-use memchr::memchr;
+use crate::structural::StructuralIndex;
 
 // ---------------------------------------------------------------------------
 // ScanBuilder trait — shared interface for both builders
@@ -66,7 +65,8 @@ pub trait ScanBuilder {
 /// Scan an NDJSON buffer, extracting fields into a `ScanBuilder`.
 ///
 /// Processes the buffer in two stages:
-/// 1. SIMD chunk classification (`ChunkIndex`) identifies structural positions
+/// 1. SIMD structural detection (`StructuralIndex`) identifies all structural
+///    character positions and newline boundaries in one pass
 /// 2. Scalar field extraction walks JSON objects and dispatches to the builder
 ///
 /// # Preconditions
@@ -79,22 +79,13 @@ pub trait ScanBuilder {
 #[inline(never)]
 pub fn scan_into<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: &mut B) {
     debug_assert!(
-        std::str::from_utf8(buf).is_ok(),
+        core::str::from_utf8(buf).is_ok(),
         "Scanner input must be valid UTF-8"
     );
-    let index = ChunkIndex::new(buf);
+    let (index, line_ranges) = StructuralIndex::new(buf);
     builder.begin_batch();
-    let mut pos = 0;
-    let len = buf.len();
-    while pos < len {
-        let eol = match memchr(b'\n', &buf[pos..]) {
-            Some(o) => pos + o,
-            None => len,
-        };
-        if pos < eol {
-            scan_line(buf, pos, eol, &index, config, builder);
-        }
-        pos = eol + 1;
+    for (start, end) in line_ranges {
+        scan_line(buf, start, end, &index, config, builder);
     }
 }
 
@@ -103,7 +94,7 @@ fn scan_line<B: ScanBuilder>(
     buf: &[u8],
     start: usize,
     end: usize,
-    index: &ChunkIndex,
+    index: &StructuralIndex,
     config: &ScanConfig,
     builder: &mut B,
 ) {
@@ -127,7 +118,7 @@ fn scan_line<B: ScanBuilder>(
         if buf[pos] != b'"' {
             break;
         }
-        let (key, after_key) = match index.scan_string(buf, pos) {
+        let (key, after_key) = match index.scan_string(buf, pos, end) {
             Some(r) => r,
             None => break,
         };
@@ -145,7 +136,7 @@ fn scan_line<B: ScanBuilder>(
         let wanted = config.is_wanted(key);
         match buf[pos] {
             b'"' => {
-                let (val, after) = match index.scan_string(buf, pos) {
+                let (val, after) = match index.scan_string(buf, pos, end) {
                     Some(r) => r,
                     None => break,
                 };
@@ -157,7 +148,7 @@ fn scan_line<B: ScanBuilder>(
             }
             b'{' | b'[' => {
                 let s = pos;
-                pos = index.skip_nested(buf, pos).min(end);
+                pos = index.skip_nested(buf, pos, end);
                 if wanted {
                     let idx = builder.resolve_field(key);
                     builder.append_str_by_idx(idx, &buf[s..pos]);
@@ -243,4 +234,38 @@ fn skip_ws(buf: &[u8], mut pos: usize, end: usize) -> usize {
         }
     }
     pos
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Correctness: skip_ws returns the first non-whitespace position
+    /// within [start, end], or end if all bytes are whitespace.
+    /// Verifies: result in range, all skipped bytes are whitespace,
+    /// byte at result (if < end) is NOT whitespace.
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn verify_skip_ws() {
+        let buf: [u8; 16] = kani::any();
+        let start: usize = kani::any();
+        let end: usize = kani::any();
+        kani::assume(start <= end && end <= 16);
+
+        let result = skip_ws(&buf, start, end);
+
+        assert!(result >= start && result <= end);
+
+        let mut i = start;
+        while i < result {
+            let b = buf[i];
+            assert!(b == b' ' || b == b'\t' || b == b'\r' || b == b'\n');
+            i += 1;
+        }
+
+        if result < end {
+            let b = buf[result];
+            assert!(b != b' ' && b != b'\t' && b != b'\r' && b != b'\n');
+        }
+    }
 }

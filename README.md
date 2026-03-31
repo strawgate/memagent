@@ -2,37 +2,52 @@
 
 A high-performance log forwarder. Tails log files, parses JSON and CRI container format, transforms with SQL, and ships to OTLP, HTTP, or stdout.
 
-## Quick start
+## Quick Start (Interactive Benchmark)
 
-```bash
-cargo build --release -p logfwd
-```
+You can try `logfwd` locally using its built-in test data generator and "blackhole" collector.
 
-Create `config.yaml`:
+1. **Build the binary**:
+   ```bash
+   cargo build --release -p logfwd
+   ```
 
-```yaml
-input:
-  type: file
-  path: /var/log/pods/**/*.log
-  format: cri
+2. **Generate test logs**:
+   ```bash
+   ./target/release/logfwd --generate-json 100000 logs.json
+   ```
 
-output:
-  type: stdout
-  format: json
-```
+3. **Start the OTLP blackhole** (collector that discards data):
+   ```bash
+   ./target/release/logfwd --blackhole &
+   ```
 
-Run:
+4. **Run a filtered pipeline**:
+   Create `config.yaml`:
+   ```yaml
+   input:
+     type: file
+     path: logs.json  # paths may be relative to this config file
+     format: json
 
-```bash
-./target/release/logfwd --config config.yaml
-```
+   transform: |
+     SELECT * FROM logs WHERE duration_ms_int > 50
+
+   output:
+     type: otlp
+     endpoint: http://127.0.0.1:4318
+     compression: zstd
+   ```
+
+   Run the forwarder:
+   ```bash
+   ./target/release/logfwd --config config.yaml
+   ```
 
 ## Configuration
 
 logfwd uses YAML configuration with two modes:
 
 **Simple** (single pipeline):
-
 ```yaml
 input:
   type: file
@@ -43,11 +58,10 @@ transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 4
 
 output:
   type: otlp
-  endpoint: otel-collector:4317
+  endpoint: http://otel-collector:4318
 ```
 
 **Advanced** (multiple pipelines):
-
 ```yaml
 pipelines:
   errors:
@@ -58,7 +72,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level_str = 'ERROR'
     output:
       type: otlp
-      endpoint: otel-collector:4317
+      endpoint: http://otel-collector:4318
 
   all-logs:
     input:
@@ -70,73 +84,25 @@ pipelines:
       format: json
 ```
 
-### Input types
+## SQL Column Naming
 
-| Type | Description | Status |
-|------|-------------|--------|
-| `file` | Tail log files by glob pattern | Implemented |
-| `tcp` | TCP listener | Not yet |
-| `udp` | UDP listener | Not yet |
-| `otlp` | Receive OTLP logs | Not yet |
-
-### Output types
-
-| Type | Description | Status |
-|------|-------------|--------|
-| `otlp` | OTLP protobuf over HTTP/gRPC | Implemented |
-| `http` | JSON lines over HTTP | Implemented |
-| `stdout` | Print to stdout (json or text) | Implemented |
-| `elasticsearch` | Elasticsearch bulk API | Stub |
-| `loki` | Grafana Loki push API | Stub |
-| `parquet` | Parquet files | Stub |
-
-### SQL transforms
-
-Transforms use DataFusion SQL. Column names follow the pattern `{field}_{type}`:
+All JSON fields are automatically suffixed with their type (`_str`, `_int`, `_float`) to ensure schema stability. 
 
 ```sql
 -- Filter by level
 SELECT * FROM logs WHERE level_str = 'ERROR'
 
--- Extract fields
-SELECT level_str, status_int, duration_ms_float FROM logs
-
--- Type casting
-SELECT int(status_str) AS status_int FROM logs
-
--- Pattern matching
-SELECT grok('%{IP:client_ip} %{WORD:method}', msg_str) FROM logs
+-- Extract integer fields
+SELECT status_int, duration_ms_int FROM logs
 ```
 
-Available UDFs: `int()`, `float()`, `grok()`, `regexp_extract()`.
-
-### Enrichment
-
-Enrichment tables are available as DataFusion tables for SQL JOINs:
-
-```yaml
-enrichment:
-  static_labels:
-    type: static
-    fields:
-      environment: production
-      cluster: us-east-1
-
-  k8s:
-    type: k8s_path
-```
-
-```sql
-SELECT l.*, k.namespace, k.pod_name
-FROM logs l JOIN k8s k ON l._file_str = k.log_path_prefix
-```
+For more details, see [docs/COLUMN_NAMING.md](docs/COLUMN_NAMING.md).
 
 ## CLI
 
 ```
 logfwd --config <config.yaml>        Run pipeline
-logfwd --config <config.yaml> --validate   Validate config without running
-logfwd --config <config.yaml> --dry-run    Build pipelines, don't start
+logfwd --config <config.yaml> --check      Validate config without running
 logfwd --blackhole [bind_addr]       OTLP collector for benchmarks
 logfwd --generate-json <n> <file>    Generate synthetic test data
 logfwd --version                     Print version
@@ -147,7 +113,8 @@ logfwd --version                     Print version
 | Guide | Description |
 |-------|-------------|
 | [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
+| [docs/COLUMN_NAMING.md](docs/COLUMN_NAMING.md) | How JSON fields map to SQL columns (suffixes) |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, Kubernetes DaemonSet, resource sizing, OTLP integration |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common errors, diagnosing dropped data, /api/pipelines, debug mode |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common errors, absolute paths, /api/pipelines, debug mode |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Pipeline data flow, crate map, scanner internals |
 | [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands; hard-won implementation notes |

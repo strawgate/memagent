@@ -355,10 +355,22 @@ impl FileTailer {
             };
 
             // Check for rotation or new file — borrow released before any mutation.
+            //
+            // We only consider it a rotation if the device/inode changed.
+            // We ignore fingerprint changes for already-open files because
+            // the fingerprint can change if the file was very small (<fingerprint_bytes)
+            // and then grew. The open FD we hold is still valid for the same
+            // logical file.
+            //
+            // Actual copytruncate rotation is handled separately via the size
+            // check in `read_new_data`.
             let is_rotated = self
                 .files
                 .get(path)
-                .map(|tailed| tailed.identity != current_identity)
+                .map(|tailed| {
+                    tailed.identity.device != current_identity.device
+                        || tailed.identity.inode != current_identity.inode
+                })
                 .unwrap_or(false);
             let is_new = !self.files.contains_key(path);
 
@@ -385,13 +397,20 @@ impl FileTailer {
                 let _ = self.files.remove(path);
                 let saved_start_from_end = self.config.start_from_end;
                 self.config.start_from_end = false; // read new file from beginning
-                let _ = self.open_file(path);
+                if let Err(e) = self.open_file(path) {
+                    eprintln!(
+                        "warn: could not open {} after rotation: {e}",
+                        path.display()
+                    );
+                }
                 self.config.start_from_end = saved_start_from_end;
             } else if is_new {
                 // New file appeared.
                 let saved = self.config.start_from_end;
                 self.config.start_from_end = false; // new files read from beginning
-                let _ = self.open_file(path);
+                if let Err(e) = self.open_file(path) {
+                    eprintln!("warn: could not open new file {}: {e}", path.display());
+                }
                 self.config.start_from_end = saved;
             }
         }
@@ -1104,6 +1123,64 @@ mod tests {
     }
 
     /// Verify that a deleted file is removed from the `files` map on the next poll.
+    #[test]
+    fn test_tail_growing_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("growing.log");
+
+        // Create file with small content.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            f.write_all(&[b'a'; 100]).unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            fingerprint_bytes: 500,
+            ..Default::default()
+        };
+
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        // Initial poll reads the 100 'a's.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+        assert!(events.iter().any(|e| matches!(e, TailEvent::Data { .. })));
+
+        // Grow file past fingerprint_bytes.
+        {
+            let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
+            f.write_all(&[b'b'; 1000]).unwrap();
+        }
+
+        // Poll again.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+
+        // If the bug exists, this will contain a Rotated event because the
+        // fingerprint grew from 100 bytes to 500 bytes.
+        let rotated = events
+            .iter()
+            .any(|e| matches!(e, TailEvent::Rotated { .. }));
+        assert!(
+            !rotated,
+            "should not trigger rotation just because fingerprint grew"
+        );
+
+        // Should have received only the new 'b's.
+        let data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(data.len(), 1000);
+        assert!(data.iter().all(|&b| b == b'b'));
+    }
+
     #[test]
     fn test_deleted_file_cleanup() {
         let dir = tempfile::tempdir().unwrap();

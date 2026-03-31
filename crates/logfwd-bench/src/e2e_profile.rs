@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_core::scanner::StreamingSimdScanner;
-use logfwd_core::compress::ChunkCompressor;
+use logfwd_io::compress::ChunkCompressor;
 use logfwd_transform::SqlTransform;
 use logfwd_output::BatchMetadata;
 

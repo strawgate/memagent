@@ -1,16 +1,27 @@
+//! Proven pure-logic kernel for logfwd.
+//!
+//! `#![no_std]` + `#![forbid(unsafe_code)]` — the compiler enforces
+//! no IO, no filesystem, no threads, no unsafe. All parsing, encoding,
+//! and structural detection logic lives here with Kani proofs.
+#![no_std]
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+extern crate alloc;
+
+/// CRI partial line aggregator (P/F reassembly).
 pub mod aggregator;
+/// Proven byte search (alternative to memchr for Kani).
 pub mod byte_search;
-pub mod checkpoint;
-pub mod chunk_classify;
-pub mod compress;
+/// CRI log format parsing.
 pub mod cri;
-pub mod diagnostics;
-pub mod enrichment;
-pub mod filter_hints;
-pub mod format;
+/// Newline framing (Kani-proven).
 pub mod framer;
-pub mod input;
+/// OTLP protobuf encoding helpers and parsers.
 pub mod otlp;
+/// Scanner configuration and field selection.
 pub mod scan_config;
+/// JSON-to-columnar scan loop.
 pub mod scanner;
-pub mod tail;
+/// Streaming SIMD structural character detection.
+pub mod structural;

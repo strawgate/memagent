@@ -145,8 +145,8 @@ impl QueryAnalyzer {
     /// columns (severity, facility) that can be pushed to input sources.
     /// Only predicates in top-level AND chains are extracted — OR'd predicates
     /// are left for DataFusion since pushing them could miss matching rows.
-    pub fn filter_hints(&self) -> logfwd_core::filter_hints::FilterHints {
-        let mut hints = logfwd_core::filter_hints::FilterHints::default();
+    pub fn filter_hints(&self) -> logfwd_io::filter_hints::FilterHints {
+        let mut hints = logfwd_io::filter_hints::FilterHints::default();
 
         if let Some(ref where_expr) = self.where_clause {
             extract_pushable_predicates(where_expr, &mut hints);
@@ -169,7 +169,7 @@ impl QueryAnalyzer {
 
 /// Walk a WHERE clause AST and extract predicates that can be pushed down.
 /// Only extracts from top-level AND chains (not OR branches).
-fn extract_pushable_predicates(expr: &SqlExpr, hints: &mut logfwd_core::filter_hints::FilterHints) {
+fn extract_pushable_predicates(expr: &SqlExpr, hints: &mut logfwd_io::filter_hints::FilterHints) {
     match expr {
         // AND: recurse into both sides
         SqlExpr::BinaryOp {
@@ -514,9 +514,9 @@ pub struct SqlTransform {
     /// Schema fingerprint for cache invalidation.
     schema_hash: u64,
     /// Enrichment tables registered alongside `logs` in each DataFusion session.
-    enrichment_tables: Vec<Arc<dyn logfwd_core::enrichment::EnrichmentTable>>,
+    enrichment_tables: Vec<Arc<dyn logfwd_io::enrichment::EnrichmentTable>>,
     /// Optional geo-IP database for the `geo_lookup()` UDF.
-    geo_database: Option<Arc<dyn logfwd_core::enrichment::GeoDatabase>>,
+    geo_database: Option<Arc<dyn logfwd_io::enrichment::GeoDatabase>>,
 }
 
 impl SqlTransform {
@@ -534,7 +534,7 @@ impl SqlTransform {
     }
 
     /// Set the geo-IP database for the `geo_lookup()` UDF.
-    pub fn set_geo_database(&mut self, db: Arc<dyn logfwd_core::enrichment::GeoDatabase>) {
+    pub fn set_geo_database(&mut self, db: Arc<dyn logfwd_io::enrichment::GeoDatabase>) {
         self.geo_database = Some(db);
     }
 
@@ -543,7 +543,7 @@ impl SqlTransform {
     /// the same name is already registered or if the name conflicts with "logs".
     pub fn add_enrichment_table(
         &mut self,
-        table: Arc<dyn logfwd_core::enrichment::EnrichmentTable>,
+        table: Arc<dyn logfwd_io::enrichment::EnrichmentTable>,
     ) -> Result<(), String> {
         let name = table.name();
         if name == "logs" {
@@ -922,17 +922,20 @@ mod tests {
 
     #[test]
     fn test_enrichment_cross_join() {
-        use logfwd_core::enrichment::StaticTable;
+        use logfwd_io::enrichment::StaticTable;
 
         let batch = make_test_batch();
         let mut transform =
             SqlTransform::new("SELECT logs.*, env.environment FROM logs CROSS JOIN env").unwrap();
 
         // Add a static enrichment table.
-        let env_table = Arc::new(StaticTable::new(
-            "env",
-            &[("environment".to_string(), "production".to_string())],
-        ));
+        let env_table = Arc::new(
+            StaticTable::new(
+                "env",
+                &[("environment".to_string(), "production".to_string())],
+            )
+            .expect("valid labels"),
+        );
         transform.add_enrichment_table(env_table).unwrap();
 
         let result = transform.execute_blocking(batch).unwrap();
@@ -952,13 +955,13 @@ mod tests {
 
     #[test]
     fn test_enrichment_unused_table_no_error() {
-        use logfwd_core::enrichment::StaticTable;
+        use logfwd_io::enrichment::StaticTable;
 
         let batch = make_test_batch();
-        let table = Arc::new(StaticTable::new(
-            "unused",
-            &[("key".to_string(), "val".to_string())],
-        ));
+        let table = Arc::new(
+            StaticTable::new("unused", &[("key".to_string(), "val".to_string())])
+                .expect("valid labels"),
+        );
 
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         transform.add_enrichment_table(table).unwrap();
@@ -970,7 +973,7 @@ mod tests {
 
     #[test]
     fn test_enrichment_empty_table_skipped() {
-        use logfwd_core::enrichment::K8sPathTable;
+        use logfwd_io::enrichment::K8sPathTable;
 
         let batch = make_test_batch();
         let k8s = Arc::new(K8sPathTable::new("k8s_pods"));

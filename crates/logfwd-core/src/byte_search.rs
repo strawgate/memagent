@@ -80,6 +80,7 @@ impl Iterator for FindByteIter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::{vec, vec::Vec};
 
     #[test]
     fn find_byte_basic() {
@@ -119,8 +120,11 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
+    use alloc::{vec, vec::Vec};
 
     /// Prove find_byte returns the FIRST match and never panics.
+    /// Tested on 16-byte inputs — function is a trivial loop, so
+    /// correctness does not depend on buffer size.
     #[kani::proof]
     #[kani::unwind(18)]
     fn verify_find_byte_correct() {
@@ -154,6 +158,7 @@ mod verification {
     }
 
     /// Prove rfind_byte returns the LAST match and never panics.
+    /// Tested on 16-byte inputs — same trivial loop, size-independent.
     #[kani::proof]
     #[kani::unwind(18)]
     fn verify_rfind_byte_correct() {

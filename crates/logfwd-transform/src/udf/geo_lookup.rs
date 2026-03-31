@@ -31,7 +31,7 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
-use logfwd_core::enrichment::{GeoDatabase, GeoResult};
+use logfwd_io::enrichment::{GeoDatabase, GeoResult};
 
 // ---------------------------------------------------------------------------
 // Schema helper
@@ -314,7 +314,7 @@ fn geo_result_to_scalar(result: Option<&GeoResult>) -> DfResult<datafusion::comm
 /// The database is loaded into memory once at construction time.
 ///
 /// ```rust,no_run
-/// use logfwd_core::enrichment::GeoDatabase as _;
+/// use logfwd_io::enrichment::GeoDatabase as _;
 /// use logfwd_transform::udf::geo_lookup::MmdbDatabase;
 ///
 /// let db = MmdbDatabase::open("/etc/logfwd/GeoLite2-City.mmdb").unwrap();

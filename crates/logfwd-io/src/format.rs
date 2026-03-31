@@ -4,7 +4,7 @@
 //! The pipeline feeds raw bytes in and gets back newline-terminated JSON
 //! lines suitable for the SIMD scanner.
 
-use crate::cri::{self, CriReassembler};
+use logfwd_core::cri::{self, CriReassembler};
 
 // ---------------------------------------------------------------------------
 // Trait

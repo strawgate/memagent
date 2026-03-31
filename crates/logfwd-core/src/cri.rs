@@ -13,7 +13,9 @@
 //! until an "F" chunk arrives, then emit the combined line.
 
 /// Parsed CRI log line. References point into the original byte slice (zero-copy).
+use alloc::vec::Vec;
 #[derive(Debug)]
+/// Parsed CRI log line fields.
 pub struct CriLine<'a> {
     /// The RFC3339Nano timestamp bytes.
     pub timestamp: &'a [u8],
@@ -94,6 +96,7 @@ pub struct CriReassembler {
 }
 
 impl CriReassembler {
+    /// Create a new reassembler with the given max line size.
     pub fn new(max_line_size: usize) -> Self {
         CriReassembler {
             partial_buf: Vec::new(),
@@ -476,7 +479,8 @@ mod verification {
         }
     }
 
-    /// Prove CriReassembler::feed respects max_line_size for F-only lines
+    /// Prove CriReassembler::feed respects max_line_size for F-only lines.
+    /// This proof caught a real bug: the F fast path was not enforcing max_line_size.
     /// (the fast path where no partials are pending).
     #[kani::proof]
     fn verify_reassembler_respects_max_size_f_only() {

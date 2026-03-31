@@ -5,44 +5,27 @@ edition = "2024"
 publish = false
 
 [dependencies]
-bytes = "1"
-sysinfo = { version = "0.35", default-features = false, features = ["system"] }
-arrow = { workspace = true }
-crossbeam-channel = "0.5"
-glob = "0.3"
-csv = "1"
-gethostname = "1"
-opentelemetry = { workspace = true }
-memchr = "2"
-notify = "7"
-serde = { workspace = true }
-serde_json = "1"
-tiny_http = "0.12"
-xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
-zstd = "0.13"
+memchr = { version = "2", default-features = false }
+wide = { version = "1.2.0", default-features = false }
 
 [dev-dependencies]
 logfwd-arrow = { path = "../logfwd-arrow" }
 logfwd-test-utils = { path = "../logfwd-test-utils" }
+arrow = { workspace = true }
 arrow-json = "54"
+bytes = "1"
+chrono = { version = "0.4.44", default-features = false }
 criterion = { version = "0.5", features = ["html_reports"] }
 memmap2 = "0.9"
-pprof = { version = "0.14", features = ["flamegraph", "protobuf-codec"] }
 proptest = "1"
 sonic-rs = "0.5"
 tempfile = "3"
+logfwd-io = { path = "../logfwd-io" }
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
 check-cfg = ['cfg(kani)']
 
-[features]
-debug_bitmask = []
-
 [[bench]]
 name = "scanner"
-harness = false
-
-[[bench]]
-name = "structural_detect"
 harness = false

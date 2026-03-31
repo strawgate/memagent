@@ -5,6 +5,7 @@ members = [
     "crates/logfwd-core",
     "crates/logfwd-arrow",
     "crates/logfwd-transform",
+    "crates/logfwd-io",
     "crates/logfwd-output",
     "crates/logfwd",
     "crates/logfwd-bench",

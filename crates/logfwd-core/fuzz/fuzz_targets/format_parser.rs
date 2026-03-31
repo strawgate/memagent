@@ -2,7 +2,7 @@
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
+use logfwd_io::format::{CriParser, FormatParser, JsonParser, RawParser};
 
 fn check_output_size(out: &[u8], input_len: usize, parser_name: &str) {
     assert!(

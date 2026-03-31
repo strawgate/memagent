@@ -17,6 +17,7 @@ grok = { version = "2.4", default-features = false, features = ["fancy-regex"] }
 maxminddb = "0.27"
 regex = "1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 
 [dev-dependencies]
 logfwd-arrow = { path = "../logfwd-arrow" }

@@ -4,6 +4,7 @@
 //! Each provider produces an Arrow RecordBatch representing a lookup table.
 //! The SqlTransform registers these as MemTables so users can JOIN against them.
 
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -40,12 +41,20 @@ pub struct StaticTable {
 }
 
 impl StaticTable {
-    /// Create from key-value pairs. Panics if `labels` is empty.
-    pub fn new(table_name: impl Into<String>, labels: &[(String, String)]) -> Self {
-        assert!(
-            !labels.is_empty(),
-            "StaticTable requires at least one label"
-        );
+    /// Create from key-value pairs.
+    ///
+    /// Returns an error if `labels` is empty (a table with no columns is
+    /// meaningless) or if building the Arrow batch fails (e.g. schema/column
+    /// count mismatch).  Both schema and columns are derived from the same
+    /// `labels` slice, so the batch error path is not expected to trigger in
+    /// practice, but the error is propagated for defensive correctness.
+    ///
+    /// The error type is `String` for consistency with the rest of this module
+    /// (all enrichment loaders use `Result<_, String>`).
+    pub fn new(table_name: impl Into<String>, labels: &[(String, String)]) -> Result<Self, String> {
+        if labels.is_empty() {
+            return Err("StaticTable requires at least one label".to_string());
+        }
         let fields: Vec<Field> = labels
             .iter()
             .map(|(k, _)| Field::new(k, DataType::Utf8, false))
@@ -55,11 +64,12 @@ impl StaticTable {
             .iter()
             .map(|(_, v)| Arc::new(StringArray::from(vec![v.as_str()])) as _)
             .collect();
-        let batch = RecordBatch::try_new(schema, columns).expect("static table schema mismatch");
-        StaticTable {
+        let batch =
+            RecordBatch::try_new(schema, columns).map_err(|e| format!("Arrow batch error: {e}"))?;
+        Ok(StaticTable {
             table_name: table_name.into(),
             batch,
-        }
+        })
     }
 }
 
@@ -355,9 +365,19 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
         return Err("CSV has no columns".to_string());
     }
 
+    let mut seen = HashSet::with_capacity(headers.len());
+    for h in &headers {
+        if h.is_empty() {
+            return Err("CSV has an empty header name".to_string());
+        }
+        if !seen.insert(h) {
+            return Err(format!("CSV has duplicate header name: {h}"));
+        }
+    }
+
     // Read all rows into column-oriented vecs.
     let num_cols = headers.len();
-    let mut columns: Vec<Vec<String>> = vec![Vec::new(); num_cols];
+    let mut columns: Vec<Vec<Option<String>>> = vec![Vec::new(); num_cols];
 
     for (row_idx, result) in csv_reader.records().enumerate() {
         let record = result.map_err(|e| format!("CSV parse error: {e}"))?;
@@ -370,11 +390,11 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
             ));
         }
         for (i, field) in record.iter().enumerate() {
-            columns[i].push(field.to_string());
+            columns[i].push(Some(field.to_string()));
         }
-        // Pad missing columns with empty string.
+        // Pad missing columns with NULL.
         for col in columns.iter_mut().skip(record.len()) {
-            col.push(String::new());
+            col.push(None);
         }
     }
 
@@ -387,7 +407,7 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
     let arrays: Vec<Arc<dyn arrow::array::Array>> = columns
         .iter()
         .map(|col| {
-            let arr: StringArray = col.iter().map(|s| Some(s.as_str())).collect();
+            let arr: StringArray = col.iter().map(|s| s.as_deref()).collect();
             Arc::new(arr) as _
         })
         .collect();
@@ -625,7 +645,8 @@ mod tests {
                 ("environment".to_string(), "production".to_string()),
                 ("cluster".to_string(), "us-east-1".to_string()),
             ],
-        );
+        )
+        .expect("valid labels");
         assert_eq!(table.name(), "env");
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 1);
@@ -641,10 +662,21 @@ mod tests {
 
     #[test]
     fn static_table_single_label() {
-        let table = StaticTable::new("t", &[("key".to_string(), "value".to_string())]);
+        let table =
+            StaticTable::new("t", &[("key".to_string(), "value".to_string())]).expect("valid");
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 1);
+    }
+
+    #[test]
+    fn static_table_empty_labels_returns_error() {
+        let result = StaticTable::new("t", &[]);
+        let err = result.err().expect("empty labels should return Err");
+        assert_eq!(
+            err, "StaticTable requires at least one label",
+            "error message must identify the cause"
+        );
     }
 
     // -- Host info ----------------------------------------------------------
@@ -787,7 +819,7 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(c.value(0), "3");
-        assert_eq!(c.value(1), ""); // padded with empty
+        assert!(c.is_null(1)); // padded with NULL
     }
 
     #[test]
@@ -795,6 +827,24 @@ mod tests {
         let table = CsvFileTable::new("t", "/fake");
         let result = table.load_from_reader(&b""[..]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn csv_empty_header_fails() {
+        let csv_data = b"host,,team\nweb-1,alice,platform\n";
+        let table = CsvFileTable::new("t", "/fake");
+        let result = table.load_from_reader(&csv_data[..]);
+        let err = result.expect_err("empty header should return Err");
+        assert!(err.contains("empty header name"));
+    }
+
+    #[test]
+    fn csv_duplicate_header_fails() {
+        let csv_data = b"host,host\nweb-1,web-2\n";
+        let table = CsvFileTable::new("t", "/fake");
+        let result = table.load_from_reader(&csv_data[..]);
+        let err = result.expect_err("duplicate header should return Err");
+        assert!(err.contains("duplicate header name"));
     }
 
     #[test]
@@ -927,10 +977,10 @@ mod tests {
     #[test]
     fn trait_object_dispatch() {
         let tables: Vec<Box<dyn EnrichmentTable>> = vec![
-            Box::new(StaticTable::new(
-                "env",
-                &[("k".to_string(), "v".to_string())],
-            )),
+            Box::new(
+                StaticTable::new("env", &[("k".to_string(), "v".to_string())])
+                    .expect("valid labels"),
+            ),
             Box::new(HostInfoTable::new()),
             Box::new(K8sPathTable::new("k8s_pods")),
         ];

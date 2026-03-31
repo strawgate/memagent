@@ -1,6 +1,6 @@
 // vectorization_canary.rs — Verify that key functions are auto-vectorized by LLVM.
 //
-// Extracts find_char_mask from the actual chunk_classify.rs source, wraps it
+// Extracts find_char_mask from the actual structural.rs source, wraps it
 // in a standalone .rs file, compiles with LLVM vectorization remarks enabled,
 // and asserts that LLVM reports "vectorized loop".
 //
@@ -13,16 +13,16 @@
 
 use std::process::Command;
 
-/// Extract the body of `find_char_mask` from chunk_classify.rs source.
+/// Extract the body of `find_char_mask` from structural.rs source.
 ///
 /// Looks for `fn find_char_mask(` and captures everything through the
 /// matching closing brace. Returns a standalone .rs file that rustc can compile.
 fn build_canary_source() -> String {
-    let src = include_str!("../src/chunk_classify.rs");
+    let src = include_str!("../src/structural.rs");
 
     let fn_start = src
         .find("fn find_char_mask(")
-        .expect("find_char_mask not found in chunk_classify.rs");
+        .expect("find_char_mask not found in structural.rs");
 
     // Walk forward from fn_start to find the matching closing brace.
     let body = &src[fn_start..];

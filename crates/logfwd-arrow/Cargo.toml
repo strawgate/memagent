@@ -8,11 +8,6 @@ publish = false
 logfwd-core = { path = "../logfwd-core" }
 arrow = { workspace = true }
 bytes = "1"
-
-[dev-dependencies]
-proptest = "1"
-tempfile = "3"
-
 [lints.rust.unexpected_cfgs]
 level = "warn"
 check-cfg = ['cfg(kani)']

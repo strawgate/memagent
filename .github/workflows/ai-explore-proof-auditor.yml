@@ -23,18 +23,18 @@ jobs:
 
         ## Before you start
 
-        Read `dev-docs/PROOF_AUDIT.md` thoroughly. This documents ALL known
+        Read the doc comments on every `#[kani::proof]` harness in `crates/logfwd-core/src/`.
         proof gaps, which ones have been closed, and what to add next.
 
-        **Do NOT report findings that are already documented in PROOF_AUDIT.md.**
+        **Do NOT report findings that are already documented in proof doc comments.**
         If a gap is listed under "GAPS THAT MATTER" or "WHAT TO ADD NEXT",
         it's already known — skip it. Only report:
-        - NEW findings not covered by PROOF_AUDIT.md
-        - Gaps marked as "closed" in PROOF_AUDIT.md that actually aren't
-        - Issues more severe than PROOF_AUDIT.md describes
+        - NEW findings not covered by existing proof doc comments
+        - Proofs documented as complete that actually aren't
+        - Issues more severe than doc comments describe
 
         In your output, include a section "Known gaps verified" listing which
-        PROOF_AUDIT.md gaps you checked and confirmed are still accurate.
+        proof doc comments you checked and confirmed are still accurate.
 
         ## What to audit
 
@@ -81,7 +81,7 @@ jobs:
 
         ## Output
 
-        File one issue listing ALL NEW findings (not in PROOF_AUDIT.md),
+        File one issue listing ALL NEW findings (not already documented in proof comments),
         categorized by severity:
         - **CRITICAL**: Proof is wrong (passes but shouldn't, or proves nothing)
         - **HIGH**: Proof is incomplete (misses important cases)
@@ -96,10 +96,10 @@ jobs:
 
         At the end, include:
         ### Known gaps verified
-        List which PROOF_AUDIT.md entries you checked and whether they are
+        List which proof comments you checked and whether they are
         still accurate. This helps us track audit coverage over time.
 
-        If you find NO new issues beyond what PROOF_AUDIT.md documents,
+        If you find NO new issues beyond what the proof comments document,
         say so explicitly — a clean audit is valuable information.
     secrets:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}

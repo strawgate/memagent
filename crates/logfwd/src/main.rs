@@ -168,9 +168,11 @@ async fn cmd_config(args: &[String]) -> io::Result<()> {
         }
     };
 
+    let base_path = std::path::Path::new(config_path).parent();
+
     if validate_only || dry_run {
         // Both --validate and --dry-run build pipelines to catch SQL/wiring errors.
-        return validate_pipelines(&config, dry_run);
+        return validate_pipelines(&config, dry_run, base_path);
     }
 
     // Startup summary.
@@ -193,7 +195,7 @@ async fn cmd_config(args: &[String]) -> io::Result<()> {
         );
     }
 
-    run_pipelines(config).await
+    run_pipelines(config, base_path).await
 }
 
 fn cmd_blackhole(args: &[String]) -> io::Result<()> {
@@ -230,7 +232,11 @@ fn cmd_generate_json(args: &[String]) -> io::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Validate config by building all pipelines. Used by --validate and --dry-run.
-fn validate_pipelines(config: &logfwd_config::Config, dry_run: bool) -> io::Result<()> {
+fn validate_pipelines(
+    config: &logfwd_config::Config,
+    dry_run: bool,
+    base_path: Option<&std::path::Path>,
+) -> io::Result<()> {
     use logfwd::pipeline::Pipeline;
 
     // Build a no-op meter for validation (no OTel export needed).
@@ -239,7 +245,7 @@ fn validate_pipelines(config: &logfwd_config::Config, dry_run: bool) -> io::Resu
 
     let mut errors = 0;
     for (name, pipe_cfg) in &config.pipelines {
-        match Pipeline::from_config(name, pipe_cfg, &meter) {
+        match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
             Ok(_) => {
                 eprintln!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
             }
@@ -265,9 +271,12 @@ fn validate_pipelines(config: &logfwd_config::Config, dry_run: bool) -> io::Resu
     Ok(())
 }
 
-async fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
+async fn run_pipelines(
+    config: logfwd_config::Config,
+    base_path: Option<&std::path::Path>,
+) -> io::Result<()> {
     use logfwd::pipeline::Pipeline;
-    use logfwd_core::diagnostics::DiagnosticsServer;
+    use logfwd_io::diagnostics::DiagnosticsServer;
     let shutdown = CancellationToken::new();
 
     // Listen for SIGINT (Ctrl-C) and SIGTERM to trigger graceful shutdown.
@@ -295,7 +304,7 @@ async fn run_pipelines(config: logfwd_config::Config) -> io::Result<()> {
 
     let mut pipelines = Vec::new();
     for (name, pipe_cfg) in &config.pipelines {
-        match Pipeline::from_config(name, pipe_cfg, &meter) {
+        match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
             Ok(pipeline) => {
                 eprintln!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
                 pipelines.push(pipeline);
@@ -607,7 +616,7 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
 /// Returns `None` if the stats are unavailable (e.g. the epoch refresh fails).
 /// This function is passed to [`DiagnosticsServer`] so the `/api/pipelines`
 /// endpoint can expose live allocator metrics.
-fn jemalloc_stats() -> Option<logfwd_core::diagnostics::MemoryStats> {
+fn jemalloc_stats() -> Option<logfwd_io::diagnostics::MemoryStats> {
     use tikv_jemalloc_ctl::{epoch, stats};
 
     // Refresh the epoch so subsequent reads reflect current allocator state.
@@ -617,7 +626,7 @@ fn jemalloc_stats() -> Option<logfwd_core::diagnostics::MemoryStats> {
     let allocated = stats::allocated::mib().ok()?.read().ok()?;
     let active = stats::active::mib().ok()?.read().ok()?;
 
-    Some(logfwd_core::diagnostics::MemoryStats {
+    Some(logfwd_io::diagnostics::MemoryStats {
         resident,
         allocated,
         active,

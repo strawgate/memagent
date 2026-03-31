@@ -17,12 +17,11 @@ adapter.
 logfwd-core         Proven pure logic. #![no_std], #![forbid(unsafe_code)]
                     Parsing, encoding, pipeline state machine.
                     StructuralIndex consumers (framer, CRI, scanner).
-                    Only dependency: memchr.
+                    Dependencies: memchr, wide (portable SIMD).
                     Every public function has a Kani proof or proptest.
 
 logfwd-arrow        Arrow integration. Implements core's FieldSink trait.
                     StreamingBuilder, StorageBuilder.
-                    StructuralIndex SIMD backends (NEON, AVX2, SSE2).
                     Bridge between parsed fields and RecordBatch.
 
 logfwd-input        Produces RecordBatch from external sources.
@@ -78,8 +77,9 @@ Benchmark (2026-03-30, NEON, ~760KB NDJSON):
 Scaling is linear at ~28µs per character. Adding new format support
 (CSV, TSV, syslog) is nearly free — just add a comparison instruction.
 
-The scalar fallback lives in logfwd-core (Kani-provable). SIMD backends
-(NEON, AVX2, SSE2) live in logfwd-arrow. Both produce identical bitmasks.
+Portable SIMD via the `wide` crate lives in logfwd-core. The scalar
+`find_structural_chars_scalar` is the Kani-provable specification.
+proptest verifies SIMD output matches scalar for random inputs.
 
 ## Arrow-native ecosystem
 

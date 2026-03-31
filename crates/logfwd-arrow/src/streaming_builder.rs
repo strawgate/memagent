@@ -84,9 +84,8 @@ pub struct StreamingBuilder {
     field_index: HashMap<Vec<u8>, usize>,
     row_count: u32,
     /// Tracks which fields (by index) were written in the current row.
-    /// Uses an inline u64 plus overflow words for fields at index >= 64.
+    /// Only covers the first 64 fields (indices 0–63); see `check_dup_bits`.
     written_bits: u64,
-    written_overflow_bits: Vec<u64>,
     /// Reference-counted buffer. Stored here to compute offsets safely
     /// and shared with Arrow StringViewArrays in finish_batch.
     buf: bytes::Bytes,
@@ -105,7 +104,6 @@ impl StreamingBuilder {
             field_index: HashMap::with_capacity(32),
             row_count: 0,
             written_bits: 0,
-            written_overflow_bits: Vec::new(),
             buf: bytes::Bytes::new(),
         }
     }
@@ -133,7 +131,6 @@ impl StreamingBuilder {
     #[inline(always)]
     pub fn begin_row(&mut self) {
         self.written_bits = 0;
-        self.written_overflow_bits.clear();
     }
 
     #[inline(always)]
@@ -184,7 +181,7 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_str_by_idx(&mut self, idx: usize, value: &[u8]) {
-        if check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx) {
+        if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
         // StringViewArray requires valid UTF-8.  JSON is always UTF-8 in
@@ -202,7 +199,7 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_int_by_idx(&mut self, idx: usize, value: &[u8]) {
-        if check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx) {
+        if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
         let fc = &mut self.fields[idx];
@@ -214,7 +211,7 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_float_by_idx(&mut self, idx: usize, value: &[u8]) {
-        if check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx) {
+        if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
         let fc = &mut self.fields[idx];
@@ -228,7 +225,7 @@ impl StreamingBuilder {
     pub fn append_null_by_idx(&mut self, idx: usize) {
         // Nulls are represented by gaps — no value record needed.
         // But mark as written for duplicate-key detection.
-        let _ = check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx);
+        let _ = check_dup_bits(&mut self.written_bits, idx);
     }
 
     /// No-op: StreamingBuilder does not support _raw column.
@@ -476,5 +473,39 @@ mod tests {
             .downcast_ref::<Float64Array>()
             .unwrap();
         assert!((col.value(0) - 3.25).abs() < 1e-10);
+    }
+
+    /// Fields beyond index 63 do not get duplicate-key detection (the bitmask
+    /// only covers 64 entries). This test verifies that writing to such fields
+    /// does not panic and that the batch still builds correctly.
+    #[test]
+    fn test_no_panic_with_65_fields_duplicate_key() {
+        // Build a buffer large enough to hold all the "val" strings we'll write.
+        let payload = b"aabbccdd";
+        let buf = bytes::Bytes::from(payload.to_vec());
+        let mut b = StreamingBuilder::new();
+        b.begin_batch(buf.clone());
+
+        // Resolve 65 fields so the 65th field has index 64 (>= 64).
+        let mut indices = Vec::new();
+        for i in 0..65u8 {
+            let name = format!("field{}", i);
+            indices.push(b.resolve_field(name.as_bytes()));
+        }
+        let idx_65 = indices[64]; // index 64 — first field outside the bitmask
+
+        b.begin_row();
+        // Write the 65th field twice. Duplicate-key detection is not active for
+        // idx >= 64, so both writes go through without panic. The second write
+        // overwrites the first in the (row, offset, len) list, but that is the
+        // documented behaviour for fields beyond the bitmask range.
+        b.append_str_by_idx(idx_65, &buf[0..2]);
+        b.append_str_by_idx(idx_65, &buf[2..4]);
+        b.end_row();
+
+        // Must not panic and must produce a valid batch.
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert!(batch.column_by_name("field64_str").is_some());
     }
 }

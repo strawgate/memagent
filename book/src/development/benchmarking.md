@@ -36,4 +36,4 @@ cargo run -p logfwd-bench --release --bin rss
 ## Nightly benchmarks
 
 Results are published to GitHub Pages automatically via the nightly benchmark
-workflow. View at: [strawgate.github.io/memagent/dev/bench/](https://strawgate.github.io/memagent/dev/bench/)
+workflow. View at: [strawgate.github.io/memagent/bench/](https://strawgate.github.io/memagent/bench/)
