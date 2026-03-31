@@ -198,8 +198,8 @@ async function main() {
     if (rateRuns.length > 1) {
       document.getElementById('rate-trend-section').style.display = '';
       const trendLabels = rateRuns.map(r => r.id || '');
-      const rss100k = rateRuns.map(r => r.rates?.[100000]?.rss_mb ?? null);
-      const cpu100k = rateRuns.map(r => r.rates?.[100000]?.cpu_pct ?? null);
+      const rss100k = rateRuns.map(r => r.rates?.["100000"]?.rss_mb ?? null);
+      const cpu100k = rateRuns.map(r => r.rates?.["100000"]?.cpu_pct ?? null);
 
       new Chart(document.getElementById('chart-rss-trend'), {
         type: 'line',

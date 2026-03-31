@@ -74,7 +74,7 @@ function formatNs(ns) {
   if (ns >= 1e9) return (ns / 1e9).toFixed(2) + 's';
   if (ns >= 1e6) return (ns / 1e6).toFixed(2) + 'ms';
   if (ns >= 1e3) return (ns / 1e3).toFixed(1) + 'us';
-  return ns + 'ns';
+  return Math.round(ns) + 'ns';
 }
 
 function isDark() {
@@ -181,8 +181,8 @@ async function main() {
 
   // Card 3: RSS at 100K eps
   let rss100k = null;
-  if (latestRate && latestRate.rates?.[100000]) {
-    rss100k = latestRate.rates[100000].rss_mb;
+  if (latestRate && latestRate.rates?.["100000"]) {
+    rss100k = latestRate.rates["100000"].rss_mb;
   }
   cardsEl.innerHTML += `
     <div class="tracking-card">

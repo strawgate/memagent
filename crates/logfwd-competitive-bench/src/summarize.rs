@@ -163,11 +163,10 @@ fn fmt_rate(lines: u64, ms: u64) -> String {
     }
 }
 
-/// Aggregate benchmark result JSONL files and emit summary reports.
+/// Aggregate JSONL results from matrix benchmark cells and produce reports.
 ///
-/// Reads all `*.jsonl` files under `results_dir`, groups rows by
-/// `(agent, scenario, mode)`, prints either markdown or text summaries,
-/// and optionally writes `gh-bench` plus dashboard JSON artifacts.
+/// Reads `.jsonl` files from `results_dir`, groups by agent/scenario/mode,
+/// and outputs markdown summary (stdout), gh-bench JSON, and dashboard JSON.
 pub fn run(
     results_dir: &Path,
     markdown: bool,
