@@ -32,12 +32,13 @@ jobs:
 
       - name: Install tools
         run: |
-          curl -sSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
           curl -sSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gunzip > /usr/local/bin/taplo && chmod +x /usr/local/bin/taplo
           DENY_URL=$(curl -sSL -o /dev/null -w '%{url_effective}' https://github.com/EmbarkStudios/cargo-deny/releases/latest) && \
             DENY_VER=$(basename "$DENY_URL") && \
             curl -sSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${DENY_VER}/cargo-deny-${DENY_VER}-x86_64-unknown-linux-musl.tar.gz" | tar xz -C /tmp && \
             mv /tmp/cargo-deny-*/cargo-deny /usr/local/bin/
+
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
 
       - name: Format check
         run: just fmt-check
@@ -74,8 +75,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Install just
-        run: curl -sSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
 
       - name: Tests
         run: just test
