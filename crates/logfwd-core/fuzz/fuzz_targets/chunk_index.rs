@@ -1,6 +1,6 @@
 //! Targeted fuzz target for `StructuralIndex` escape-detection logic.
 //!
-//! `StructuralIndex` uses NEON intrinsics (aarch64) and `prefix_xor`-based bitmask
+//! `StructuralIndex` uses portable SIMD (via `wide` crate) and `prefix_xor`-based bitmask
 //! operations to locate unescaped quote positions. The escape-detection
 //! algorithm has known subtle behaviour at 64-byte block boundaries (e.g. a
 //! backslash at byte 63 must carry over into the next block).
