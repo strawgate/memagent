@@ -152,6 +152,165 @@ impl Default for StreamingClassifier {
 }
 
 // ---------------------------------------------------------------------------
+// StructuralIndex — whole-buffer classification (replaces ChunkIndex)
+// ---------------------------------------------------------------------------
+
+/// Pre-computed structural classification for a buffer.
+///
+/// Built by running `StreamingClassifier` + `find_structural_chars` over
+/// the entire buffer. Stores only `real_quotes` and `in_string` bitmasks
+/// (needed for random-access by the scanner). Newline positions are
+/// extracted during construction and returned separately.
+///
+/// This replaces `ChunkIndex` with identical API but uses `wide`-based
+/// portable SIMD instead of hand-rolled platform intrinsics.
+pub struct StructuralIndex {
+    real_quotes: Vec<u64>,
+    in_string: Vec<u64>,
+    buf_len: usize,
+}
+
+impl StructuralIndex {
+    /// Classify an entire buffer in one SIMD pass.
+    ///
+    /// Returns `(index, line_ranges)`:
+    /// - `index`: stored quote/in_string bitmasks for scanner random access
+    /// - `line_ranges`: newline-delimited line boundaries extracted during the pass
+    pub fn new(buf: &[u8]) -> (Self, Vec<(usize, usize)>) {
+        let len = buf.len();
+        let num_blocks = len.div_ceil(64);
+        let mut real_quotes = Vec::with_capacity(num_blocks);
+        let mut in_string_vec = Vec::with_capacity(num_blocks);
+        let mut line_ranges = Vec::new();
+        let mut line_start = 0;
+
+        let mut classifier = StreamingClassifier::new();
+
+        for block_idx in 0..num_blocks {
+            let offset = block_idx * 64;
+            let remaining = len - offset;
+            let block_len = remaining.min(64);
+
+            let block: [u8; 64] = if remaining >= 64 {
+                buf[offset..offset + 64].try_into().unwrap()
+            } else {
+                let mut padded = [b' '; 64];
+                padded[..remaining].copy_from_slice(&buf[offset..]);
+                padded
+            };
+
+            let raw = find_structural_chars(&block);
+            let processed = classifier.process_block(&raw, block_len);
+
+            real_quotes.push(processed.real_quotes);
+            in_string_vec.push(processed.in_string);
+
+            // Extract line ranges from newline bitmask
+            let mut nl = processed.newline;
+            while nl != 0 {
+                let bit_pos = nl.trailing_zeros() as usize;
+                let abs_pos = offset + bit_pos;
+                if abs_pos > line_start {
+                    line_ranges.push((line_start, abs_pos));
+                }
+                line_start = abs_pos + 1;
+                nl &= nl - 1;
+            }
+        }
+
+        // Trailing content after last newline
+        if line_start < len {
+            line_ranges.push((line_start, len));
+        }
+
+        (
+            Self {
+                real_quotes,
+                in_string: in_string_vec,
+                buf_len: len,
+            },
+            line_ranges,
+        )
+    }
+
+    /// Find the next unescaped quote at or after `pos`.
+    #[inline(always)]
+    pub fn next_quote(&self, pos: usize) -> Option<usize> {
+        if pos >= self.buf_len {
+            return None;
+        }
+        let block = pos >> 6;
+        let bit = pos & 63;
+        let mask = self.real_quotes[block] >> bit;
+        if mask != 0 {
+            return Some(pos + mask.trailing_zeros() as usize);
+        }
+        for b in (block + 1)..self.real_quotes.len() {
+            let bits = self.real_quotes[b];
+            if bits != 0 {
+                return Some((b << 6) + bits.trailing_zeros() as usize);
+            }
+        }
+        None
+    }
+
+    /// Check if a position is inside a JSON string.
+    #[inline(always)]
+    pub fn is_in_string(&self, pos: usize) -> bool {
+        if pos >= self.buf_len {
+            return false;
+        }
+        let block = pos >> 6;
+        let bit = pos & 63;
+        (self.in_string[block] >> bit) & 1 == 1
+    }
+
+    /// Scan a JSON string starting at `pos` (pointing to opening `"`).
+    #[inline(always)]
+    pub fn scan_string<'a>(&self, buf: &'a [u8], pos: usize) -> Option<(&'a [u8], usize)> {
+        debug_assert!(pos < buf.len() && buf[pos] == b'"');
+        let start = pos + 1;
+        if let Some(close) = self.next_quote(start) {
+            Some((&buf[start..close], close + 1))
+        } else {
+            None
+        }
+    }
+
+    /// Skip a nested JSON object/array starting at `pos`.
+    #[inline]
+    pub fn skip_nested(&self, buf: &[u8], mut pos: usize) -> usize {
+        let len = buf.len();
+        let mut depth: u32 = 0;
+        while pos < len {
+            let b = buf[pos];
+            match b {
+                b'{' | b'[' if !self.is_in_string(pos) => {
+                    depth += 1;
+                    pos += 1;
+                }
+                b'}' | b']' if !self.is_in_string(pos) => {
+                    if depth == 0 {
+                        return pos;
+                    }
+                    depth -= 1;
+                    pos += 1;
+                    if depth == 0 {
+                        return pos;
+                    }
+                }
+                b'"' if !self.is_in_string(pos) => match self.scan_string(buf, pos) {
+                    Some((_, after)) => pos = after,
+                    None => return len,
+                },
+                _ => pos += 1,
+            }
+        }
+        pos
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Scalar detection — Kani-provable specification
 // ---------------------------------------------------------------------------
 

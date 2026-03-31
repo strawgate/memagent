@@ -4,10 +4,9 @@
 // Arrow-specific scanner types (SimdScanner, StreamingSimdScanner) live
 // in the logfwd-arrow crate.
 
-use crate::chunk_classify::ChunkIndex;
 use crate::scan_config::ScanConfig;
 use crate::scan_config::parse_int_fast;
-use memchr::memchr;
+use crate::structural::StructuralIndex;
 
 // ---------------------------------------------------------------------------
 // ScanBuilder trait — shared interface for both builders
@@ -66,7 +65,8 @@ pub trait ScanBuilder {
 /// Scan an NDJSON buffer, extracting fields into a `ScanBuilder`.
 ///
 /// Processes the buffer in two stages:
-/// 1. SIMD chunk classification (`ChunkIndex`) identifies structural positions
+/// 1. SIMD structural detection (`StructuralIndex`) identifies all structural
+///    character positions and newline boundaries in one pass
 /// 2. Scalar field extraction walks JSON objects and dispatches to the builder
 ///
 /// # Preconditions
@@ -82,19 +82,10 @@ pub fn scan_into<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: &mut 
         std::str::from_utf8(buf).is_ok(),
         "Scanner input must be valid UTF-8"
     );
-    let index = ChunkIndex::new(buf);
+    let (index, line_ranges) = StructuralIndex::new(buf);
     builder.begin_batch();
-    let mut pos = 0;
-    let len = buf.len();
-    while pos < len {
-        let eol = match memchr(b'\n', &buf[pos..]) {
-            Some(o) => pos + o,
-            None => len,
-        };
-        if pos < eol {
-            scan_line(buf, pos, eol, &index, config, builder);
-        }
-        pos = eol + 1;
+    for (start, end) in line_ranges {
+        scan_line(buf, start, end, &index, config, builder);
     }
 }
 
@@ -103,7 +94,7 @@ fn scan_line<B: ScanBuilder>(
     buf: &[u8],
     start: usize,
     end: usize,
-    index: &ChunkIndex,
+    index: &StructuralIndex,
     config: &ScanConfig,
     builder: &mut B,
 ) {
