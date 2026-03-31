@@ -385,13 +385,20 @@ impl FileTailer {
                 let _ = self.files.remove(path);
                 let saved_start_from_end = self.config.start_from_end;
                 self.config.start_from_end = false; // read new file from beginning
-                let _ = self.open_file(path);
+                if let Err(e) = self.open_file(path) {
+                    eprintln!(
+                        "warn: could not open {} after rotation: {e}",
+                        path.display()
+                    );
+                }
                 self.config.start_from_end = saved_start_from_end;
             } else if is_new {
                 // New file appeared.
                 let saved = self.config.start_from_end;
                 self.config.start_from_end = false; // new files read from beginning
-                let _ = self.open_file(path);
+                if let Err(e) = self.open_file(path) {
+                    eprintln!("warn: could not open new file {}: {e}", path.display());
+                }
                 self.config.start_from_end = saved;
             }
         }

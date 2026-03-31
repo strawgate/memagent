@@ -929,10 +929,13 @@ mod tests {
             SqlTransform::new("SELECT logs.*, env.environment FROM logs CROSS JOIN env").unwrap();
 
         // Add a static enrichment table.
-        let env_table = Arc::new(StaticTable::new(
-            "env",
-            &[("environment".to_string(), "production".to_string())],
-        ));
+        let env_table = Arc::new(
+            StaticTable::new(
+                "env",
+                &[("environment".to_string(), "production".to_string())],
+            )
+            .expect("valid labels"),
+        );
         transform.add_enrichment_table(env_table).unwrap();
 
         let result = transform.execute_blocking(batch).unwrap();
@@ -955,10 +958,10 @@ mod tests {
         use logfwd_core::enrichment::StaticTable;
 
         let batch = make_test_batch();
-        let table = Arc::new(StaticTable::new(
-            "unused",
-            &[("key".to_string(), "val".to_string())],
-        ));
+        let table = Arc::new(
+            StaticTable::new("unused", &[("key".to_string(), "val".to_string())])
+                .expect("valid labels"),
+        );
 
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         transform.add_enrichment_table(table).unwrap();
