@@ -7,7 +7,7 @@ on:
     inputs:
       lines:
         description: "Log lines per competitive benchmark"
-        default: "5000000"
+        default: "20000000"
         type: string
       iterations:
         description: "Iterations per agent/scenario cell"
@@ -33,7 +33,7 @@ permissions:
   id-token: write
 
 env:
-  LINES: ${{ inputs.lines || '5000000' }}
+  LINES: ${{ inputs.lines || '20000000' }}
   ITERATIONS: ${{ inputs.iterations || '3' }}
   SCENARIOS: ${{ inputs.scenarios || 'passthrough,json_parse,filter' }}
   AGENTS_INPUT: ${{ inputs.agents || '' }}

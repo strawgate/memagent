@@ -71,19 +71,19 @@ function formatLPS(n) {
   return Math.round(n).toString();
 }
 
+function formatBytes(b) {
+  if (b >= 1024 * 1024 * 1024) return (b / (1024 * 1024 * 1024)).toFixed(1) + 'GB';
+  if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + 'MB';
+  if (b >= 1024) return (b / 1024).toFixed(1) + 'KB';
+  return b + 'B';
+}
+
 function isDark() { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
 
 function chartColors() {
   const dark = isDark();
   Chart.defaults.color = dark ? '#8b949e' : '#656d76';
   Chart.defaults.borderColor = dark ? '#30363d' : '#d0d7de';
-}
-
-const DATA_BASE = 'https://raw.githubusercontent.com/strawgate/memagent/bench-data';
-
-function runId(entry) {
-  if (entry && typeof entry === 'object') return entry.id;
-  return entry;
 }
 
 async function loadJSON(url) {
@@ -93,20 +93,19 @@ async function loadJSON(url) {
 
 async function main() {
   chartColors();
-  const index = await loadJSON(DATA_BASE + '/index.json');
+  const index = await loadJSON('data/index.json');
   if (!index) {
-    document.getElementById('loading').textContent = 'No data found.';
+    document.getElementById('loading').textContent = 'No data/index.json found.';
     return;
   }
 
-  // bench-data index is newest-first; reverse to oldest->newest for downstream logic
-  const runIds = (index.competitive_runs || index.runs || []).map(runId).filter(Boolean).map(String).reverse();
+  const runIds = index.competitive_runs || index.runs || [];
   if (runIds.length === 0) {
     document.getElementById('loading').textContent = 'No competitive runs found.';
     return;
   }
 
-  const allRuns = (await Promise.all(runIds.map(id => loadJSON(DATA_BASE + '/runs/' + id + '.json')))).filter(Boolean);
+  const allRuns = (await Promise.all(runIds.map(id => loadJSON('data/runs/' + id + '.json')))).filter(Boolean);
   if (allRuns.length === 0) {
     document.getElementById('loading').textContent = 'Could not load any run data.';
     return;
@@ -209,7 +208,7 @@ async function main() {
   // Build header: Run | Scenario | agent1 lps | agent1 stddev | ...
   let headerHtml = '<tr><th>Run</th><th>Scenario</th>';
   for (const a of agents) {
-    headerHtml += `<th class="numeric">${a} LPS</th>`;
+    headerHtml += `<th class="numeric">${a} LPS</th><th class="numeric">${a} Memory</th>`;
   }
   headerHtml += '</tr>';
   thead.innerHTML = headerHtml;
@@ -235,9 +234,10 @@ async function main() {
         const cls = isWinner ? 'numeric winner' : 'numeric';
         if (d) {
           const lpsStr = d.lps ? d.lps.map(formatLPS).join(', ') : formatLPS(d.avg_lps);
-          row += `<td class="${cls}">${lpsStr}</td>`;
+          const rssStr = d.avg_max_rss ? formatBytes(d.avg_max_rss) : '--';
+          row += `<td class="${cls}">${lpsStr}</td><td class="numeric">${rssStr}</td>`;
         } else {
-          row += `<td class="numeric">--</td>`;
+          row += `<td class="numeric">--</td><td class="numeric">--</td>`;
         }
       }
       rowsHtml += `<tr>${row}</tr>`;
