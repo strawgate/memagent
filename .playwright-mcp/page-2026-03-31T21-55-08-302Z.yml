@@ -1,0 +1,103 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - heading "logfwd" [level=1] [ref=e3]
+    - generic [ref=e4]:
+      - generic [ref=e5] [cursor=pointer]: Overview
+      - generic [ref=e6] [cursor=pointer]: Pipelines
+      - generic [ref=e7] [cursor=pointer]: Config
+    - generic [ref=e10]: live
+  - generic [ref=e11]:
+    - generic [ref=e12]:
+      - text: Uptime
+      - generic [ref=e13]: 2s
+    - generic [ref=e14]:
+      - text: Version
+      - generic [ref=e15]: 0.2.0
+    - generic [ref=e16]:
+      - text: CPU
+      - generic [ref=e17]: 0.9%
+    - generic [ref=e18]:
+      - text: RSS
+      - generic [ref=e19]: 41.0 MB
+      - generic [ref=e20]: / 32.0 GB
+    - generic [ref=e21]:
+      - text: FDs
+      - generic [ref=e22]: "14"
+      - generic [ref=e23]: / 1.05 M
+    - generic [ref=e24]:
+      - text: PID
+      - generic [ref=e25]: "35699"
+    - generic [ref=e26]:
+      - text: Pipelines
+      - generic [ref=e27]: "1"
+    - generic [ref=e28]:
+      - text: Total lines
+      - generic [ref=e29]: "500"
+  - generic [ref=e30]:
+    - generic [ref=e32]:
+      - generic [ref=e33]: System Information
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - generic [ref=e36]: Hostname
+          - generic [ref=e37]: Mac.ad.weaston.org
+        - generic [ref=e38]:
+          - generic [ref=e39]: OS
+          - generic [ref=e40]: macOS 26.3.1
+        - generic [ref=e41]:
+          - generic [ref=e42]: Architecture
+          - generic [ref=e43]: aarch64
+        - generic [ref=e44]:
+          - generic [ref=e45]: CPU Cores
+          - generic [ref=e46]: "10"
+        - generic [ref=e47]:
+          - generic [ref=e48]: Total Memory
+          - generic [ref=e49]: 32.0 GB
+        - generic [ref=e50]:
+          - generic [ref=e51]: FD Limit
+          - generic [ref=e52]: 1.05 M
+        - generic [ref=e53]:
+          - generic [ref=e54]: PID
+          - generic [ref=e55]: "35699"
+        - generic [ref=e56]:
+          - generic [ref=e57]: Version
+          - generic [ref=e58]: 0.2.0
+    - generic [ref=e59]:
+      - generic [ref=e61]:
+        - generic [ref=e62]: Lines / sec
+        - generic [ref=e63]: "-"
+      - generic [ref=e66]:
+        - generic [ref=e67]: Throughput
+        - generic [ref=e68]: "-"
+      - generic [ref=e71]:
+        - generic [ref=e72]: Errors / sec
+        - generic [ref=e73]: "-"
+      - generic [ref=e76]:
+        - generic [ref=e77]: Process CPU
+        - generic [ref=e78]: 0.9%
+      - generic [ref=e81]:
+        - generic [ref=e82]: Memory (RSS)
+        - generic [ref=e83]: 41.0 MB / 32.0 GB
+      - generic [ref=e86]:
+        - generic [ref=e87]: Open FDs
+        - generic [ref=e88]: 14 / 1.05 M
+    - generic [ref=e91]:
+      - generic [ref=e92]:
+        - text: default
+        - generic [ref=e93]: 1 in / 1 out
+      - generic [ref=e94]:
+        - generic [ref=e95]:
+          - generic [ref=e96]: input
+          - generic [ref=e97]: input_0
+          - generic [ref=e98]: 500 lines
+        - generic [ref=e99]: →
+        - generic [ref=e100]:
+          - generic [ref=e101]: transform
+          - generic [ref=e102]: SQL
+          - generic [ref=e103]: 500 → 500
+          - generic [ref=e104]: drop 0.0%
+        - generic [ref=e105]: →
+        - generic [ref=e106]:
+          - generic [ref=e107]: output
+          - generic [ref=e108]: output_0
+          - generic [ref=e109]: 0 lines
+      - generic [ref=e110]: SELECT * FROM logs WHERE level_str != 'DEBUG'

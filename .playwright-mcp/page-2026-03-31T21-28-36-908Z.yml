@@ -1,0 +1,71 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - heading "logfwd" [level=1] [ref=e3]
+    - generic [ref=e4]:
+      - generic [ref=e5] [cursor=pointer]: Overview
+      - generic [ref=e6] [cursor=pointer]: Pipelines
+      - generic [ref=e7] [cursor=pointer]: Config
+    - generic [ref=e10]: live
+  - generic [ref=e11]:
+    - generic [ref=e12]:
+      - text: Uptime
+      - generic [ref=e13]: 4m 50s
+    - generic [ref=e14]:
+      - text: Version
+      - generic [ref=e15]: 0.2.0
+    - generic [ref=e16]:
+      - text: CPU
+      - generic [ref=e17]: 0.8%
+    - generic [ref=e18]:
+      - text: RSS
+      - generic [ref=e19]: 42.1 MB
+    - generic [ref=e20]:
+      - text: PID
+      - generic [ref=e21]: "28735"
+    - generic [ref=e22]:
+      - text: Pipelines
+      - generic [ref=e23]: "1"
+    - generic [ref=e24]:
+      - text: Total lines
+      - generic [ref=e25]: 27.5 K
+  - generic [ref=e26]:
+    - generic [ref=e27]:
+      - generic [ref=e29]:
+        - generic [ref=e30]: Lines / sec
+        - generic [ref=e31]: "-"
+      - generic [ref=e34]:
+        - generic [ref=e35]: Bytes / sec
+        - generic [ref=e36]: "-"
+      - generic [ref=e39]:
+        - generic [ref=e40]: Errors / sec
+        - generic [ref=e41]: "-"
+      - generic [ref=e44]:
+        - generic [ref=e45]: CPU
+        - generic [ref=e46]: 0.8%
+      - generic [ref=e49]:
+        - generic [ref=e50]: Memory (RSS)
+        - generic [ref=e51]: 42.1 MB
+      - generic [ref=e54]:
+        - generic [ref=e55]: Disk Read / sec
+        - generic [ref=e56]: "-"
+    - generic [ref=e59]:
+      - generic [ref=e60]:
+        - text: default
+        - generic [ref=e61]: 1 in / 1 out
+      - generic [ref=e62]:
+        - generic [ref=e63]:
+          - generic [ref=e64]: input
+          - generic [ref=e65]: input_0
+          - generic [ref=e66]: 27.5 K lines
+        - generic [ref=e67]: →
+        - generic [ref=e68]:
+          - generic [ref=e69]: transform
+          - generic [ref=e70]: SQL
+          - generic [ref=e71]: 27.5 K → 27.3 K
+          - generic [ref=e72]: drop 0.9%
+        - generic [ref=e73]: →
+        - generic [ref=e74]:
+          - generic [ref=e75]: output
+          - generic [ref=e76]: output_0
+          - generic [ref=e77]: 0 lines
+      - generic [ref=e78]: SELECT * FROM logs WHERE level_str != 'DEBUG'

@@ -1,0 +1,35 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - heading "logfwd" [level=1] [ref=e3]
+    - generic [ref=e4]:
+      - generic [ref=e5] [cursor=pointer]: Overview
+      - generic [ref=e6] [cursor=pointer]: Pipelines
+      - generic [ref=e7] [cursor=pointer]: Config
+    - generic [ref=e10]: live
+  - generic [ref=e11]:
+    - generic [ref=e245]:
+      - text: Uptime
+      - generic [ref=e246]: 5m 14s
+    - generic [ref=e247]:
+      - text: Version
+      - generic [ref=e248]: 0.2.0
+    - generic [ref=e249]:
+      - text: CPU
+      - generic [ref=e250]: 1.1%
+    - generic [ref=e251]:
+      - text: RSS
+      - generic [ref=e252]: 42.1 MB
+    - generic [ref=e253]:
+      - text: PID
+      - generic [ref=e254]: "28735"
+    - generic [ref=e255]:
+      - text: Pipelines
+      - generic [ref=e256]: "1"
+    - generic [ref=e257]:
+      - text: Total lines
+      - generic [ref=e258]: 29.8 K
+  - generic [ref=e260]:
+    - generic [ref=e261]: Configuration
+    - generic [ref=e262]:
+      - generic [ref=e263]: "Source: /tmp/logfwd-test.yaml"
+      - generic [ref=e264]: "input: type: file path: /tmp/logfwd-demo.log format: json transform: | SELECT * FROM logs WHERE level_str != 'DEBUG' output: type: stdout format: json server: diagnostics: 127.0.0.1:9090"

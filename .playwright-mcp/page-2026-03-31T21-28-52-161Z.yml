@@ -1,0 +1,81 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - heading "logfwd" [level=1] [ref=e3]
+    - generic [ref=e4]:
+      - generic [ref=e5] [cursor=pointer]: Overview
+      - generic [ref=e6] [cursor=pointer]: Pipelines
+      - generic [ref=e7] [cursor=pointer]: Config
+    - generic [ref=e10]: live
+  - generic [ref=e11]:
+    - generic [ref=e113]:
+      - text: Uptime
+      - generic [ref=e114]: 5m 4s
+    - generic [ref=e115]:
+      - text: Version
+      - generic [ref=e116]: 0.2.0
+    - generic [ref=e117]:
+      - text: CPU
+      - generic [ref=e118]: 1.0%
+    - generic [ref=e119]:
+      - text: RSS
+      - generic [ref=e120]: 42.1 MB
+    - generic [ref=e121]:
+      - text: PID
+      - generic [ref=e122]: "28735"
+    - generic [ref=e123]:
+      - text: Pipelines
+      - generic [ref=e124]: "1"
+    - generic [ref=e125]:
+      - text: Total lines
+      - generic [ref=e126]: 28.8 K
+  - generic [ref=e129]:
+    - generic [ref=e130]: default
+    - generic [ref=e131]:
+      - generic [ref=e132]: Inputs
+      - table [ref=e133]:
+        - rowgroup [ref=e134]:
+          - row "Name Type Lines Bytes Rate Errors" [ref=e135]:
+            - columnheader "Name" [ref=e136]
+            - columnheader "Type" [ref=e137]
+            - columnheader "Lines" [ref=e138]
+            - columnheader "Bytes" [ref=e139]
+            - columnheader "Rate" [ref=e140]
+            - columnheader "Errors" [ref=e141]
+          - row "input_0 file 28.8 K 3.9 MB 100/s 0" [ref=e142]:
+            - cell "input_0" [ref=e143]
+            - cell "file" [ref=e144]
+            - cell "28.8 K" [ref=e145]
+            - cell "3.9 MB" [ref=e146]
+            - cell "100/s" [ref=e147]
+            - cell "0" [ref=e148]
+    - generic [ref=e149]:
+      - generic [ref=e150]: Transform
+      - generic [ref=e151]: SELECT * FROM logs WHERE level_str != 'DEBUG'
+      - table [ref=e152]:
+        - rowgroup [ref=e153]:
+          - row "Lines In Lines Out Drop Rate" [ref=e154]:
+            - columnheader "Lines In" [ref=e155]
+            - columnheader "Lines Out" [ref=e156]
+            - columnheader "Drop Rate" [ref=e157]
+          - row "28.8 K 28.6 K 0.9%" [ref=e158]:
+            - cell "28.8 K" [ref=e159]
+            - cell "28.6 K" [ref=e160]
+            - cell "0.9%" [ref=e161]
+    - generic [ref=e162]:
+      - generic [ref=e163]: Outputs
+      - table [ref=e164]:
+        - rowgroup [ref=e165]:
+          - row "Name Type Lines Bytes Rate Errors" [ref=e166]:
+            - columnheader "Name" [ref=e167]
+            - columnheader "Type" [ref=e168]
+            - columnheader "Lines" [ref=e169]
+            - columnheader "Bytes" [ref=e170]
+            - columnheader "Rate" [ref=e171]
+            - columnheader "Errors" [ref=e172]
+          - row "output_0 stdout 0 0 B 0/s 0" [ref=e173]:
+            - cell "output_0" [ref=e174]
+            - cell "stdout" [ref=e175]
+            - cell "0" [ref=e176]
+            - cell "0 B" [ref=e177]
+            - cell "0/s" [ref=e178]
+            - cell "0" [ref=e179]

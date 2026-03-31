@@ -1,0 +1,101 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]: logfwd
+    - generic [ref=e6]: healthy
+    - generic [ref=e7]:
+      - generic [ref=e8]: "-"
+      - text: /s in
+    - generic [ref=e9]:
+      - generic [ref=e10]: 0.5%
+      - text: cpu
+    - generic [ref=e11]:
+      - generic [ref=e12]: 41.1 MB
+      - text: rss
+    - generic [ref=e13]: 3s
+  - main [ref=e14]:
+    - generic [ref=e15]:
+      - generic [ref=e16]: "Pipeline: default"
+      - generic [ref=e17]:
+        - generic [ref=e19] [cursor=pointer]:
+          - generic [ref=e20]: Input
+          - generic [ref=e21]: input_0
+          - generic [ref=e22]:
+            - generic [ref=e23]:
+              - generic [ref=e24]: lines
+              - generic [ref=e25]: "500"
+            - generic [ref=e26]:
+              - generic [ref=e27]: bytes
+              - generic [ref=e28]: 64.9 KB
+            - generic [ref=e29]:
+              - generic [ref=e30]: rate
+              - generic [ref=e31]: "-"
+        - img [ref=e33]
+        - generic [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]: Transform
+          - generic [ref=e37]: SQL
+          - generic [ref=e38]:
+            - generic [ref=e39]:
+              - generic [ref=e40]: in
+              - generic [ref=e41]: "500"
+            - generic [ref=e42]:
+              - generic [ref=e43]: out
+              - generic [ref=e44]: "500"
+            - generic [ref=e45]:
+              - generic [ref=e46]: drop
+              - generic [ref=e47]: 0.0%
+        - img [ref=e49]
+        - generic [ref=e52] [cursor=pointer]:
+          - generic [ref=e53]: Output
+          - generic [ref=e54]: output_0
+          - generic [ref=e55]:
+            - generic [ref=e56]:
+              - generic [ref=e57]: lines
+              - generic [ref=e58]: "0"
+            - generic [ref=e59]:
+              - generic [ref=e60]: bytes
+              - generic [ref=e61]: "-"
+            - generic [ref=e62]:
+              - generic [ref=e63]: errors
+              - generic [ref=e64]: "0"
+    - generic [ref=e65]:
+      - generic [ref=e66]: Metrics
+      - generic [ref=e67]:
+        - generic [ref=e68] [cursor=pointer]:
+          - generic [ref=e69]: Lines/sec
+          - generic [ref=e70]:
+            - generic [ref=e71]: "-"
+            - generic [ref=e72]: /s
+        - generic [ref=e74] [cursor=pointer]:
+          - generic [ref=e75]: Throughput
+          - generic [ref=e76]:
+            - generic [ref=e77]: "-"
+            - generic [ref=e78]: /s
+        - generic [ref=e80] [cursor=pointer]:
+          - generic [ref=e81]: Errors/sec
+          - generic [ref=e82]:
+            - generic [ref=e83]: "-"
+            - generic [ref=e84]: /s
+        - generic [ref=e86] [cursor=pointer]:
+          - generic [ref=e87]: CPU
+          - generic [ref=e88]:
+            - generic [ref=e89]: "0.5"
+            - generic [ref=e90]: "%"
+            - generic [ref=e91]: / 10 cores
+        - generic [ref=e93] [cursor=pointer]:
+          - generic [ref=e94]: Memory
+          - generic [ref=e95]:
+            - generic [ref=e96]: 41.1 MB
+            - generic [ref=e97]: / 32.0 GB
+        - generic [ref=e99] [cursor=pointer]:
+          - generic [ref=e100]: File Descriptors
+          - generic [ref=e101]:
+            - generic [ref=e102]: "18"
+            - generic [ref=e103]: / 1.05M
+    - group [ref=e105]:
+      - generic "▸ System Mac.ad.weaston.org · macOS 26.3.1 · aarch64 · 10 cores · 32.0 GB" [ref=e106] [cursor=pointer]:
+        - text: ▸ System
+        - generic [ref=e107]: Mac.ad.weaston.org · macOS 26.3.1 · aarch64 · 10 cores · 32.0 GB
+    - group [ref=e108]:
+      - generic "▸ Config /tmp/logfwd-test.yaml" [ref=e109] [cursor=pointer]:
+        - text: ▸ Config
+        - generic [ref=e110]: /tmp/logfwd-test.yaml
