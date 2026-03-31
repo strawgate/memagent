@@ -631,7 +631,13 @@ fn process_metrics() -> (u64, u64, u64) {
 fn get_process_metrics() -> Option<(u64, u64, u64)> {
     use std::fs;
 
-    let stat = fs::read_to_string("/proc/self/stat").ok()?;
+    // Read only the first 4KB of /proc/self/stat, which is plenty for our needs.
+    // procfs files don't have a reliable size in metadata, so we read into a buffer.
+    use std::io::Read;
+    let mut f = fs::File::open("/proc/self/stat").ok()?;
+    let mut buf = Vec::with_capacity(4096);
+    f.by_ref().take(4096).read_to_end(&mut buf).ok()?;
+    let stat = String::from_utf8_lossy(&buf);
     // Field 14 is utime, field 15 is stime, field 24 is rss (in pages).
     // They are space-separated, but the second field (comm) can contain spaces
     // and is enclosed in parentheses.
@@ -655,19 +661,19 @@ fn get_process_metrics() -> Option<(u64, u64, u64)> {
 
     // Skip to field 24 (index 21 after_comm).
     // parts is now at index 13 (after stime).
-    // To get to index 21, we need to skip 21 - 13 = 8 fields.
-    let rss_pages: u64 = parts.nth(7)?.parse().ok()?;
+    // To get to index 21, we need to skip 8 elements.
+    let rss_pages: u64 = parts.nth(8)?.parse().ok()?;
 
     let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
 
-    if ticks_per_sec <= 0 || page_size <= 0 {
-        return None;
-    }
+    // Fallback to defaults if sysconf fails.
+    let ticks_per_sec = if ticks_per_sec > 0 { ticks_per_sec as u64 } else { 100 };
+    let page_size = if page_size > 0 { page_size as u64 } else { 4096 };
 
-    let user_ms = (utime_ticks * 1000) / ticks_per_sec as u64;
-    let sys_ms = (stime_ticks * 1000) / ticks_per_sec as u64;
-    let rss_bytes = rss_pages * page_size as u64;
+    let user_ms = (utime_ticks * 1000) / ticks_per_sec;
+    let sys_ms = (stime_ticks * 1000) / ticks_per_sec;
+    let rss_bytes = rss_pages * page_size;
 
     Some((rss_bytes, user_ms, sys_ms))
 }
