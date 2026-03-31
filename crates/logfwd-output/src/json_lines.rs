@@ -109,7 +109,7 @@ impl OutputSink for JsonLinesSink {
         }
 
         // Retry with exponential backoff for transient failures.
-        // Attempts: initial + up to 3 retries, delays: 100ms → 200ms → 400ms.
+        // 4 total attempts: 1 initial + 3 retries; delays: 100ms → 200ms → 400ms.
         // Note: `self.batch_buf` is re-sent as `&[u8]` on each attempt — no
         // allocation, but the full NDJSON payload is retransmitted each time.
         // This is acceptable as a temporary measure until SinkDriver (#319).
