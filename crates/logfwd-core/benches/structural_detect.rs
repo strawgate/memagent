@@ -69,6 +69,7 @@ fn classify_chunk_index(buf: &[u8]) -> ChunkIndex {
 // ===========================================================================
 
 /// Result of a unified structural scan over a 64-byte block.
+#[allow(dead_code)]
 struct UnifiedBlock {
     newline_bits: u64,
     space_bits: u64,
@@ -86,8 +87,8 @@ fn unified_scan_scalar(data: &[u8; 64]) -> UnifiedBlock {
     let mut backslash_bits: u64 = 0;
     let mut comma_bits: u64 = 0;
 
-    for i in 0..64 {
-        let b = data[i];
+    for (i, b) in data.iter().enumerate().take(64) {
+        let b = *b;
         let bit = 1u64 << i;
         if b == b'\n' {
             newline_bits |= bit;
@@ -146,8 +147,8 @@ fn framing_scan_scalar(data: &[u8; 64]) -> (u64, u64) {
     let mut newline_bits: u64 = 0;
     let mut space_bits: u64 = 0;
 
-    for i in 0..64 {
-        let b = data[i];
+    for (i, b) in data.iter().enumerate().take(64) {
+        let b = *b;
         let bit = 1u64 << i;
         if b == b'\n' {
             newline_bits |= bit;
@@ -164,8 +165,8 @@ fn classify_scan_scalar(data: &[u8; 64]) -> (u64, u64) {
     let mut quote_bits: u64 = 0;
     let mut backslash_bits: u64 = 0;
 
-    for i in 0..64 {
-        let b = data[i];
+    for (i, b) in data.iter().enumerate().take(64) {
+        let b = *b;
         let bit = 1u64 << i;
         if b == b'"' {
             quote_bits |= bit;
@@ -177,6 +178,7 @@ fn classify_scan_scalar(data: &[u8; 64]) -> (u64, u64) {
     (quote_bits, backslash_bits)
 }
 
+#[allow(clippy::type_complexity)]
 fn hybrid_scan_buffer(buf: &[u8]) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
     let num_blocks = buf.len().div_ceil(64);
     let mut framing = Vec::with_capacity(num_blocks);
@@ -205,6 +207,7 @@ fn hybrid_scan_buffer(buf: &[u8]) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
 // ===========================================================================
 
 /// Unified SIMD scan result for a 64-byte block.
+#[allow(dead_code)]
 struct SimdUnifiedBlock {
     newline_bits: u64,
     space_bits: u64,
