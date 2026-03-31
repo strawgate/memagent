@@ -35,6 +35,7 @@ pub trait EnrichmentTable: Send + Sync {
 /// A one-row table with fixed key-value pairs from the YAML config.
 ///
 /// SQL: `SELECT logs.*, e.* FROM logs CROSS JOIN env AS e`
+#[derive(Debug)]
 pub struct StaticTable {
     table_name: String,
     batch: RecordBatch,
@@ -672,7 +673,7 @@ mod tests {
     #[test]
     fn static_table_empty_labels_returns_error() {
         let result = StaticTable::new("t", &[]);
-        let err = result.err().expect("empty labels should return Err");
+        let err = result.expect_err("empty labels should return Err");
         assert_eq!(
             err, "StaticTable requires at least one label",
             "error message must identify the cause"
@@ -834,7 +835,7 @@ mod tests {
         let csv_data = b"host,,team\nweb-1,alice,platform\n";
         let table = CsvFileTable::new("t", "/fake");
         let result = table.load_from_reader(&csv_data[..]);
-        let err = result.err().expect("empty header should return Err");
+        let err = result.expect_err("empty header should return Err");
         assert!(err.contains("empty header name"));
     }
 
@@ -843,7 +844,7 @@ mod tests {
         let csv_data = b"host,host\nweb-1,web-2\n";
         let table = CsvFileTable::new("t", "/fake");
         let result = table.load_from_reader(&csv_data[..]);
-        let err = result.err().expect("duplicate header should return Err");
+        let err = result.expect_err("duplicate header should return Err");
         assert!(err.contains("duplicate header name"));
     }
 
