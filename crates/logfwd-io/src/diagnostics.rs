@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -702,7 +702,11 @@ fn getconf_u64(name: &str) -> Option<u64> {
     if !output.status.success() {
         return None;
     }
-    std::str::from_utf8(&output.stdout).ok()?.trim().parse().ok()
+    std::str::from_utf8(&output.stdout)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Minimal JSON-string escaping (backslash, double-quote, control chars).
@@ -939,8 +943,7 @@ mod tests {
         // We only rely on fields 14 (utime), 15 (stime), and 24 (rss).
         // This synthetic line keeps earlier fields simple while preserving
         // the comm-with-spaces shape: `pid (comm with spaces) ...`.
-        let stat_line =
-            "12345 (my process name) R 1 2 3 4 5 6 7 8 9 10 300 200 13 14 15 16 17 18 19 20 5 999 23";
+        let stat_line = "12345 (my process name) R 1 2 3 4 5 6 7 8 9 10 300 200 13 14 15 16 17 18 19 20 5 999 23";
         let parsed = parse_proc_stat(stat_line);
         assert!(parsed.is_some());
 

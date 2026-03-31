@@ -377,7 +377,7 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
 
     // Read all rows into column-oriented vecs.
     let num_cols = headers.len();
-    let mut columns: Vec<Vec<String>> = vec![Vec::new(); num_cols];
+    let mut columns: Vec<Vec<Option<String>>> = vec![Vec::new(); num_cols];
 
     for (row_idx, result) in csv_reader.records().enumerate() {
         let record = result.map_err(|e| format!("CSV parse error: {e}"))?;
@@ -390,11 +390,11 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
             ));
         }
         for (i, field) in record.iter().enumerate() {
-            columns[i].push(field.to_string());
+            columns[i].push(Some(field.to_string()));
         }
-        // Pad missing columns with empty string.
+        // Pad missing columns with NULL.
         for col in columns.iter_mut().skip(record.len()) {
-            col.push(String::new());
+            col.push(None);
         }
     }
 
@@ -407,7 +407,7 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
     let arrays: Vec<Arc<dyn arrow::array::Array>> = columns
         .iter()
         .map(|col| {
-            let arr: StringArray = col.iter().map(|s| Some(s.as_str())).collect();
+            let arr: StringArray = col.iter().map(|s| s.as_deref()).collect();
             Arc::new(arr) as _
         })
         .collect();
@@ -819,7 +819,7 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(c.value(0), "3");
-        assert_eq!(c.value(1), ""); // padded with empty
+        assert!(c.is_null(1)); // padded with NULL
     }
 
     #[test]
@@ -834,7 +834,7 @@ mod tests {
         let csv_data = b"host,,team\nweb-1,alice,platform\n";
         let table = CsvFileTable::new("t", "/fake");
         let result = table.load_from_reader(&csv_data[..]);
-        let err = result.err().expect("empty header should return Err");
+        let err = result.expect_err("empty header should return Err");
         assert!(err.contains("empty header name"));
     }
 
@@ -843,7 +843,7 @@ mod tests {
         let csv_data = b"host,host\nweb-1,web-2\n";
         let table = CsvFileTable::new("t", "/fake");
         let result = table.load_from_reader(&csv_data[..]);
-        let err = result.err().expect("duplicate header should return Err");
+        let err = result.expect_err("duplicate header should return Err");
         assert!(err.contains("duplicate header name"));
     }
 
