@@ -96,6 +96,22 @@ The pipeline state machine should:
 The pipeline's job is: "when batch N for source S is durably delivered,
 persist checkpoint C for source S." It doesn't need to know what C means.
 
+## When does tracking begin?
+
+Additional research into when shippers enter the "must be acked" state:
+
+| System | Tracking entry point | Pre-tracking safe to drop? |
+|--------|---------------------|---------------------------|
+| Filebeat | `eventListener.AddEvent()` inside `client.Publish()` | Yes — harvester read to Publish is untracked |
+| Vector | `BatchNotifier::apply_to()` attaches finalizers | Yes — event creation to notifier is untracked |
+| OTel Collector | `ConsumeLogs()` call entry (synchronous) | Essentially no pre-tracking window |
+| Fluentd | `chunk.commit` inside `buffer.write()` | Yes — emit to commit is untracked |
+
+**Pattern:** Tracking begins at the point of ownership transfer to the
+pipeline, not at creation. This directly informed our design: `create_batch`
+returns a lightweight token (no tracking), `begin_send` registers in
+the machine's in-flight set. Dropping a Queued ticket is safe.
+
 ## References
 
 - Filebeat registry: `filebeat/input/file/state.go`
