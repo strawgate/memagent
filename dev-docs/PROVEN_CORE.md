@@ -19,12 +19,15 @@ dashboard — things you notice.
 
 | Module | What it does | Verification |
 |--------|-------------|-------------|
-| classify.rs | Escape detection, quote classification (u64 bitmask ops) | Kani exhaustive |
-| scan.rs | JSON field extraction (generic over FieldSink trait) | Kani bounded + proptest oracle |
-| scan_config.rs | parse_int_fast, parse_float_fast, ScanConfig | Kani exhaustive |
-| format.rs | Line boundary detection (JsonParser, RawParser, CriParser) | proptest state-machine |
-| cri.rs | CRI log parsing + partial line reassembly | proptest state-machine |
-| otlp.rs | Protobuf wire format + OTLP encoding | Kani exhaustive (wire) + proptest |
+| classify.rs | Escape detection, quote classification (u64 bitmask ops) | Kani exhaustive (2 proofs) |
+| framer.rs | Newline framing, line boundary detection | Kani exhaustive + oracle (4 proofs) |
+| aggregator.rs | CRI partial line reassembly (P/F merging) | Kani exhaustive (3 proofs) |
+| byte_search.rs | Proven byte search (find_byte, rfind_byte) | Kani exhaustive + oracle (2 proofs) |
+| scan.rs | JSON field extraction (generic over ScanBuilder trait) | Kani bounded + proptest oracle |
+| scan_config.rs | parse_int_fast, parse_float_fast, ScanConfig | Kani exhaustive (2 proofs) |
+| cri.rs | CRI log parsing + partial line reassembly | Kani exhaustive (4 proofs) |
+| otlp.rs | Protobuf wire format + OTLP encoding | Kani exhaustive (14 proofs) |
+| format.rs | Legacy parsers (being replaced by framer + aggregator) | proptest state-machine |
 | pipeline/state.rs | Pipeline state machine (flush, drain, shutdown) | Kani exhaustive + TLA+ |
 | pipeline/token.rs | BatchToken linear type (ack/nack) | compile-time |
 | sink.rs | FieldSink trait definition | trait contract |

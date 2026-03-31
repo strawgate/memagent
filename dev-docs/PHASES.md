@@ -2,64 +2,95 @@
 
 Current work tracked in GitHub epic #262.
 
-## Phase 0: Kani prototype — GO/NO-GO (#263)
+## Phase 0: Kani prototype ✅ DONE
 
-Add Kani to workspace. Prove `prefix_xor` and `compute_real_quotes`
-exhaustively. Validate tooling works, CI works, developer experience
-is acceptable.
+Kani added to workspace. `prefix_xor` and `compute_real_quotes` proved
+exhaustively. Tooling validated, CI working, 31 proofs total.
 
-**If Kani fails:** fall back to proptest-only. Still do the crate
-restructuring for discipline benefits.
-
-## Phase 1: Crate restructuring (#264, #265, #266, #267)
+## Phase 1: Crate restructuring (partial)
 
 Split logfwd-core into proven core + satellite crates.
 
 ```
-1a: Create logfwd-arrow     (move builders + SIMD)      → Copilot
-1b: Create logfwd-input     (move file tailer + IO)     → Copilot
-1c: Move remaining impure   (enrichment, compress, etc) → Copilot
-1d: Tighten core to no_std  (forbid unsafe, strict CI)  → Us
+1a: Create logfwd-arrow     ✅ DONE (PR #307)
+1b: Create logfwd-input     → Copilot (#265)
+1c: Move remaining impure   → Copilot (#266)
+1d: Tighten core to no_std  (#267) — after 1b+1c
 ```
 
-1a and 1b run in parallel. 1c depends on both. 1d depends on all.
+## Phase 1.5: Framer + Aggregator + Proofs ✅ DONE (PR #311)
 
-## Phase 2: Kani Tier 1 proofs (#268)
+- NewlineFramer: fixed-size output, no heap, 4 Kani proofs (oracle)
+- CriAggregator: zero-copy F path, max_message_size, 3 Kani proofs
+- byte_search module: proven alternatives to memchr, 2 Kani proofs
+- 31 Kani proofs total across core modules
 
-Exhaustive proofs for all bitmask operations, varint roundtrip,
-parse_int_fast, pipeline state machine single-step. Function
-contracts for compositional verification. Proof coverage CI.
+## Phase 2: Unified StructuralIndex (#313) ← NEXT
 
-## Phase 3: Scanner restructure + FieldSink (#269)
+Extend ChunkIndex into StructuralIndex: one SIMD pass detecting 9
+structural characters (\n, space, ", \, comma, colon, {, }, [).
+
+Benchmark proved viability (2026-03-30):
+- 9 chars at 3 GiB/s (NEON) — 11x headroom over target
+- Scaling linear at ~28µs per character per 760KB
+
+```
+2a: Extend ChunkIndex → StructuralIndex (NEON + AVX2 + SSE2 + scalar)
+2b: NewlineFramer consumes newline bitmask (replaces byte loop)
+2c: CRI field extraction from space bitmask (replaces per-line parsing)
+2d: Scanner consumes full bitmask set
+2e: Kani proofs for scalar fallback
+```
+
+## Phase 3: Zero-copy Bytes pipeline (#303)
+
+```
+3a: Bytes-based Reader (BytesMut → freeze → Bytes)
+3b: Connect StructuralIndex to Bytes pipeline
+3c: StreamingBuilder receives Bytes directly
+```
+
+## Phase 4: Scanner restructure + FieldSink (#269)
 
 Rename ScanBuilder → FieldSink. Ensure scan loop works in no_std.
 Add bounded Kani proof for scan_line. proptest oracle vs serde_json.
 
-## Phase 4: Pipeline state machine + BatchToken (#270)
+## Phase 5: Pipeline state machine + BatchToken (#270)
 
 Extract run_async decisions into pure state machine in core.
 Kani exhaustive single-step. proptest random event sequences.
 BatchToken #[must_use] linear type. Wire into run_async.
 
-## Phase 5: proptest state machines + CI hardening (#271)
+## Phase 6: proptest state machines + CI hardening (#271)
 
-proptest-state-machine for FormatParser and CriReassembler.
+proptest-state-machine for stateful components.
 Proof coverage enforcement. cargo-mutants weekly. cargo-vet.
 
-## Phase 6: TLA+ pipeline specification (#272)
+## Phase 7: TLA+ pipeline specification (#272)
 
 Model batching/timeout/shutdown protocol. Prove liveness (data is
-never abandoned) and fairness (no input starved). Design-level
-artifact, separate from code.
+never abandoned) and fairness (no input starved).
 
-## Parallel work (not blocked by phases)
+## Phase 8: Tighten logfwd-core (#267)
 
-| Issue | What | Assignee |
-|-------|------|----------|
-| #273 | Fix offset_of u32 truncation | Copilot |
-| #274 | Fix row_count u32 overflow | Copilot |
-| #275 | Fix CRI silent truncation | Design needed |
-| #285 | Fix OTLP type suffix assumption | Copilot |
-| #279 | Arrow version upgrade | Us |
-| #252 | Async HTTP client (reqwest) | After #221 merges |
-| #205 | UTF-8 validate once | Independent |
+After all IO/Arrow/SIMD code moved out:
+- `#![no_std]` + `extern crate alloc`
+- `#![forbid(unsafe_code)]`
+- SIMD backends in logfwd-arrow, scalar fallback in core
+- CI: `cargo build --target thumbv6m-none-eabi`
+
+## Parallel work
+
+| Issue | What | Status |
+|-------|------|--------|
+| #273 | Fix offset_of u32 truncation | Copilot assigned |
+| #274 | Fix row_count u32 overflow | Copilot assigned |
+| #275 | Fix CRI silent truncation | Open |
+| #285 | Fix OTLP type suffix assumption | Copilot assigned |
+| #287 | Fix dup key detection >64 fields | Copilot assigned |
+| #288 | Fix RawParser non-UTF-8 | Copilot assigned |
+| #304 | Dead code cleanup | Copilot assigned |
+| #305 | Multi-file SIMD benchmark | After #313 |
+| #278 | Safe indexing benchmark | After #313 |
+| #279 | Arrow version upgrade | Open |
+| #308 | Rethink _raw column | Open |

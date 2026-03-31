@@ -41,3 +41,7 @@ debug_bitmask = []
 [[bench]]
 name = "scanner"
 harness = false
+
+[[bench]]
+name = "structural_detect"
+harness = false

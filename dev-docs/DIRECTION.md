@@ -16,11 +16,13 @@ adapter.
 ```
 logfwd-core         Proven pure logic. #![no_std], #![forbid(unsafe_code)]
                     Parsing, encoding, pipeline state machine.
+                    StructuralIndex consumers (framer, CRI, scanner).
                     Only dependency: memchr.
                     Every public function has a Kani proof or proptest.
 
 logfwd-arrow        Arrow integration. Implements core's FieldSink trait.
-                    StreamingBuilder, StorageBuilder, SIMD character detection.
+                    StreamingBuilder, StorageBuilder.
+                    StructuralIndex SIMD backends (NEON, AVX2, SSE2).
                     Bridge between parsed fields and RecordBatch.
 
 logfwd-input        Produces RecordBatch from external sources.
@@ -49,6 +51,35 @@ logfwd-core is being restructured into a formally verified crate:
 - CI enforces: every public function needs a proof or test
 
 This is the s2n-quic/rustls pattern. See `dev-docs/PROVEN_CORE.md`.
+
+## Unified SIMD structural scanning
+
+One SIMD pass over the entire buffer detects ALL structural characters
+and produces bitmasks. Every downstream consumer (framer, CRI parser,
+JSON scanner, future CSV parser) queries pre-computed bitmasks via O(1)
+bit operations instead of scanning bytes.
+
+```
+Reader → Bytes → StructuralIndex::new(buf) [ONE SIMD pass]
+  → newline bitmask   → Framer (line boundaries)
+  → space bitmask     → CRI field extraction
+  → quote bitmask     → String boundary detection
+  → backslash bitmask → Escape handling
+  → comma bitmask     → CSV/JSON field delimiters
+  → colon bitmask     → JSON key-value pairs
+  → brace bitmasks    → Nesting depth tracking
+```
+
+Benchmark (2026-03-30, NEON, ~760KB NDJSON):
+- 2 chars (current ChunkIndex): 63µs / 12 GiB/s
+- 5 chars (unified): 141µs / 5.4 GiB/s
+- 9 chars (full structural): 256µs / 3.0 GiB/s
+
+Scaling is linear at ~28µs per character. Adding new format support
+(CSV, TSV, syslog) is nearly free — just add a comparison instruction.
+
+The scalar fallback lives in logfwd-core (Kani-provable). SIMD backends
+(NEON, AVX2, SSE2) live in logfwd-arrow. Both produce identical bitmasks.
 
 ## Arrow-native ecosystem
 
