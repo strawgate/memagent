@@ -343,7 +343,142 @@ fn simd_unified_scan_buffer(buf: &[u8]) -> Vec<SimdUnifiedBlock> {
 }
 
 // ===========================================================================
-// Approach 5: Plain byte_search newline scan (what NewlineFramer uses)
+// Approach 5: SIMD 9-char — full multiline JSON structural set
+// ===========================================================================
+
+/// 9-character structural scan: newline, space, quote, backslash, comma,
+/// colon, open brace, close brace, open bracket, close bracket.
+/// Covers everything needed for multiline JSON + CSV + CRI.
+#[allow(dead_code)]
+struct Simd9Block {
+    newline_bits: u64,
+    space_bits: u64,
+    quote_bits: u64,
+    backslash_bits: u64,
+    comma_bits: u64,
+    colon_bits: u64,
+    open_brace_bits: u64,
+    close_brace_bits: u64,
+    open_bracket_bits: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+mod simd_9char {
+    use super::Simd9Block;
+    use std::arch::aarch64::*;
+
+    #[inline(always)]
+    unsafe fn movemask16(cmp: uint8x16_t) -> u16 {
+        unsafe {
+            const MASK: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
+            let mask = vld1q_u8(MASK.as_ptr());
+            let bits = vandq_u8(cmp, mask);
+            let p16 = vpaddlq_u8(bits);
+            let p32 = vpaddlq_u16(p16);
+            let p64 = vpaddlq_u32(p32);
+            let lo = vgetq_lane_u64(p64, 0) as u8;
+            let hi = vgetq_lane_u64(p64, 1) as u8;
+            (lo as u16) | ((hi as u16) << 8)
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn extract_mask(c0: uint8x16_t, c1: uint8x16_t, c2: uint8x16_t, c3: uint8x16_t, needle: uint8x16_t) -> u64 {
+        unsafe {
+            (movemask16(vceqq_u8(c0, needle)) as u64)
+                | ((movemask16(vceqq_u8(c1, needle)) as u64) << 16)
+                | ((movemask16(vceqq_u8(c2, needle)) as u64) << 32)
+                | ((movemask16(vceqq_u8(c3, needle)) as u64) << 48)
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    pub unsafe fn find_9chars_neon(data: &[u8; 64]) -> Simd9Block {
+        unsafe {
+            let c0 = vld1q_u8(data.as_ptr());
+            let c1 = vld1q_u8(data[16..].as_ptr());
+            let c2 = vld1q_u8(data[32..].as_ptr());
+            let c3 = vld1q_u8(data[48..].as_ptr());
+
+            Simd9Block {
+                newline_bits: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'\n')),
+                space_bits: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b' ')),
+                quote_bits: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'"')),
+                backslash_bits: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'\\')),
+                comma_bits: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b',')),
+                colon_bits: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b':')),
+                open_brace_bits: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'{')),
+                close_brace_bits: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'}')),
+                open_bracket_bits: extract_mask(c0, c1, c2, c3, vdupq_n_u8(b'[')),
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+mod simd_9char {
+    use super::Simd9Block;
+    use std::arch::x86_64::*;
+
+    #[inline(always)]
+    unsafe fn extract_mask_avx2(lo: __m256i, hi: __m256i, needle: __m256i) -> u64 {
+        unsafe {
+            let q0 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(lo, needle)) as u32 as u64;
+            let q1 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(hi, needle)) as u32 as u64;
+            q0 | (q1 << 32)
+        }
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn find_9chars_avx2(data: &[u8; 64]) -> Simd9Block {
+        unsafe {
+            let lo = _mm256_loadu_si256(data.as_ptr() as *const __m256i);
+            let hi = _mm256_loadu_si256(data[32..].as_ptr() as *const __m256i);
+
+            Simd9Block {
+                newline_bits: extract_mask_avx2(lo, hi, _mm256_set1_epi8(b'\n' as i8)),
+                space_bits: extract_mask_avx2(lo, hi, _mm256_set1_epi8(b' ' as i8)),
+                quote_bits: extract_mask_avx2(lo, hi, _mm256_set1_epi8(b'"' as i8)),
+                backslash_bits: extract_mask_avx2(lo, hi, _mm256_set1_epi8(b'\\' as i8)),
+                comma_bits: extract_mask_avx2(lo, hi, _mm256_set1_epi8(b',' as i8)),
+                colon_bits: extract_mask_avx2(lo, hi, _mm256_set1_epi8(b':' as i8)),
+                open_brace_bits: extract_mask_avx2(lo, hi, _mm256_set1_epi8(b'{' as i8)),
+                close_brace_bits: extract_mask_avx2(lo, hi, _mm256_set1_epi8(b'}' as i8)),
+                open_bracket_bits: extract_mask_avx2(lo, hi, _mm256_set1_epi8(b'[' as i8)),
+            }
+        }
+    }
+}
+
+fn simd_9char_scan_buffer(buf: &[u8]) -> Vec<Simd9Block> {
+    let num_blocks = buf.len().div_ceil(64);
+    let mut results = Vec::with_capacity(num_blocks);
+
+    for block_idx in 0..num_blocks {
+        let offset = block_idx * 64;
+        let remaining = buf.len() - offset;
+
+        let block: [u8; 64] = if remaining >= 64 {
+            buf[offset..offset + 64].try_into().unwrap()
+        } else {
+            let mut padded = [b' '; 64];
+            padded[..remaining].copy_from_slice(&buf[offset..]);
+            padded
+        };
+
+        #[cfg(target_arch = "aarch64")]
+        results.push(unsafe { simd_9char::find_9chars_neon(&block) });
+
+        #[cfg(target_arch = "x86_64")]
+        if is_x86_feature_detected!("avx2") {
+            results.push(unsafe { simd_9char::find_9chars_avx2(&block) });
+        }
+    }
+    results
+}
+
+// ===========================================================================
+// Approach 6: Plain byte_search newline scan (what NewlineFramer uses)
 // ===========================================================================
 
 fn find_newlines_plain_loop(buf: &[u8]) -> Vec<usize> {
@@ -473,6 +608,11 @@ fn bench_comparison(c: &mut Criterion) {
         b.iter(|| black_box(simd_unified_scan_buffer(black_box(&ndjson))))
     });
 
+    // Unified SIMD 9 chars: one pass, full multiline JSON structural set
+    group.bench_function("unified_9char_simd", |b| {
+        b.iter(|| black_box(simd_9char_scan_buffer(black_box(&ndjson))))
+    });
+
     // Hybrid: scalar framing + scalar classify (2 passes, auto-vectorized)
     group.bench_function("hybrid_2pass", |b| {
         b.iter(|| black_box(hybrid_scan_buffer(black_box(&ndjson))))
@@ -497,6 +637,11 @@ fn bench_char_count_scaling(c: &mut Criterion) {
     // 5 chars: unified SIMD (newline + space + quote + backslash + comma)
     group.bench_function("5_chars_simd", |b| {
         b.iter(|| black_box(simd_unified_scan_buffer(black_box(&ndjson))))
+    });
+
+    // 9 chars: full structural set (+ colon, braces, bracket)
+    group.bench_function("9_chars_simd", |b| {
+        b.iter(|| black_box(simd_9char_scan_buffer(black_box(&ndjson))))
     });
 
     // memchr (best-in-class single char SIMD)
