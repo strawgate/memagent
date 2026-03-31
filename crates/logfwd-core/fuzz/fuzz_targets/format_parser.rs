@@ -16,7 +16,7 @@ fuzz_target!(|data: &[u8]| {
     let mut out = Vec::with_capacity(data.len() * 2);
 
     // JsonParser
-    let mut json = JsonParser::new();
+    let mut json = JsonParser::new(64 * 1024);
     out.clear();
     let _ = json.process(data, &mut out);
     check_output_size(&out, data.len(), "JsonParser(1)");
@@ -29,7 +29,7 @@ fuzz_target!(|data: &[u8]| {
     check_output_size(&out, data.len(), "JsonParser(reset)");
 
     // RawParser
-    let mut raw = RawParser::new();
+    let mut raw = RawParser::new(64 * 1024);
     out.clear();
     let _ = raw.process(data, &mut out);
     check_output_size(&out, data.len(), "RawParser(1)");

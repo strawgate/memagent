@@ -31,14 +31,17 @@ pub trait FormatParser: Send {
 // ---------------------------------------------------------------------------
 
 /// Passes through newline-delimited JSON, carrying partial lines across calls.
-#[derive(Default)]
 pub struct JsonParser {
     partial: Vec<u8>,
+    max_line_size: usize,
 }
 
 impl JsonParser {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(max_line_size: usize) -> Self {
+        Self {
+            partial: Vec::new(),
+            max_line_size,
+        }
     }
 }
 
@@ -47,15 +50,18 @@ impl FormatParser for JsonParser {
         let mut count = 0;
         let mut start = 0;
         for pos in memchr::memchr_iter(b'\n', bytes) {
+            let chunk = &bytes[start..pos];
             if self.partial.is_empty() {
-                let line = &bytes[start..pos];
-                if !line.is_empty() {
-                    out.extend_from_slice(line);
+                let to_add = chunk.len().min(self.max_line_size);
+                if to_add > 0 {
+                    out.extend_from_slice(&chunk[..to_add]);
                     out.push(b'\n');
                     count += 1;
                 }
             } else {
-                self.partial.extend_from_slice(&bytes[start..pos]);
+                let remaining = self.max_line_size.saturating_sub(self.partial.len());
+                let to_add = chunk.len().min(remaining);
+                self.partial.extend_from_slice(&chunk[..to_add]);
                 if !self.partial.is_empty() {
                     out.extend_from_slice(&self.partial);
                     out.push(b'\n');
@@ -66,7 +72,9 @@ impl FormatParser for JsonParser {
             start = pos + 1;
         }
         if start < bytes.len() {
-            self.partial.extend_from_slice(&bytes[start..]);
+            let remaining = self.max_line_size.saturating_sub(self.partial.len());
+            let to_add = bytes[start..].len().min(remaining);
+            self.partial.extend_from_slice(&bytes[start..start + to_add]);
         }
         (count, 0)
     }
@@ -81,14 +89,17 @@ impl FormatParser for JsonParser {
 // ---------------------------------------------------------------------------
 
 /// Wraps each line as `{"_raw":"<escaped>"}\n`.
-#[derive(Default)]
 pub struct RawParser {
     partial: Vec<u8>,
+    max_line_size: usize,
 }
 
 impl RawParser {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(max_line_size: usize) -> Self {
+        Self {
+            partial: Vec::new(),
+            max_line_size,
+        }
     }
 }
 
@@ -97,10 +108,14 @@ impl FormatParser for RawParser {
         let mut count = 0;
         let mut start = 0;
         for pos in memchr::memchr_iter(b'\n', bytes) {
+            let chunk = &bytes[start..pos];
             let line = if self.partial.is_empty() {
-                &bytes[start..pos]
+                let to_add = chunk.len().min(self.max_line_size);
+                &chunk[..to_add]
             } else {
-                self.partial.extend_from_slice(&bytes[start..pos]);
+                let remaining = self.max_line_size.saturating_sub(self.partial.len());
+                let to_add = chunk.len().min(remaining);
+                self.partial.extend_from_slice(&chunk[..to_add]);
                 self.partial.as_slice()
             };
 
@@ -130,7 +145,9 @@ impl FormatParser for RawParser {
             start = pos + 1;
         }
         if start < bytes.len() {
-            self.partial.extend_from_slice(&bytes[start..]);
+            let remaining = self.max_line_size.saturating_sub(self.partial.len());
+            let to_add = bytes[start..].len().min(remaining);
+            self.partial.extend_from_slice(&bytes[start..start + to_add]);
         }
         (count, 0)
     }
@@ -150,6 +167,10 @@ pub struct CriParser {
     reassembler: CriReassembler,
     /// Bytes from the previous chunk that did not end with a newline.
     partial: Vec<u8>,
+    /// Max line size for both reassembler and the outer partial buffer.
+    /// Outer buffer limit is slightly larger to account for CRI envelope
+    /// overhead (timestamp, stream, flags).
+    max_line_size: usize,
 }
 
 impl CriParser {
@@ -157,28 +178,48 @@ impl CriParser {
         CriParser {
             reassembler: CriReassembler::new(max_line_size),
             partial: Vec::new(),
+            max_line_size,
         }
     }
 }
 
 impl FormatParser for CriParser {
     fn process(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> (usize, usize) {
-        self.partial.extend_from_slice(bytes);
+        // Enforce max_line_size on outer partial buffer too.
+        // A CRI line is typically: <timestamp> <stream> <flag> <message>\n
+        // Timestamp is ~30 bytes, stream is ~7, flag is 1, plus spaces.
+        // 128 bytes of overhead is plenty.
+        let limit = self.max_line_size.saturating_add(128);
 
-        let Some(last_nl) = memchr::memrchr(b'\n', &self.partial) else {
-            // No complete line yet — keep buffering.
-            return (0, 0);
-        };
+        let mut start = 0;
+        let mut total_lines = 0;
+        let mut total_errors = 0;
 
-        let process_end = last_nl + 1;
-        let result = cri::process_cri_to_buf(
-            &self.partial[..process_end],
-            &mut self.reassembler,
-            None,
-            out,
-        );
-        self.partial.drain(..process_end);
-        result
+        for pos in memchr::memchr_iter(b'\n', bytes) {
+            let chunk = &bytes[start..pos + 1];
+            let (n, err) = if self.partial.is_empty() {
+                cri::process_cri_to_buf(chunk, &mut self.reassembler, None, out)
+            } else {
+                let remaining = limit.saturating_sub(self.partial.len());
+                let to_add = chunk.len().min(remaining);
+                self.partial.extend_from_slice(&chunk[..to_add]);
+                let (n, err) =
+                    cri::process_cri_to_buf(&self.partial, &mut self.reassembler, None, out);
+                self.partial.clear();
+                (n, err)
+            };
+            total_lines += n;
+            total_errors += err;
+            start = pos + 1;
+        }
+
+        if start < bytes.len() {
+            let remaining = limit.saturating_sub(self.partial.len());
+            let to_add = bytes[start..].len().min(remaining);
+            self.partial.extend_from_slice(&bytes[start..start + to_add]);
+        }
+
+        (total_lines, total_errors)
     }
 
     fn reset(&mut self) {
@@ -197,7 +238,7 @@ mod tests {
 
     #[test]
     fn json_basic() {
-        let mut parser = JsonParser::new();
+        let mut parser = JsonParser::new(1024);
         let mut out = Vec::new();
         let (n, errors) = parser.process(b"{\"a\":1}\n{\"b\":2}\n", &mut out);
         assert_eq!(n, 2);
@@ -207,7 +248,7 @@ mod tests {
 
     #[test]
     fn json_partial_carry() {
-        let mut parser = JsonParser::new();
+        let mut parser = JsonParser::new(1024);
         let mut out = Vec::new();
 
         let (n1, _) = parser.process(b"{\"a\":1}\n{\"b\":", &mut out);
@@ -221,7 +262,7 @@ mod tests {
 
     #[test]
     fn json_reset_clears_partial() {
-        let mut parser = JsonParser::new();
+        let mut parser = JsonParser::new(1024);
         let mut out = Vec::new();
 
         parser.process(b"{\"partial\":", &mut out);
@@ -235,7 +276,7 @@ mod tests {
 
     #[test]
     fn raw_basic() {
-        let mut parser = RawParser::new();
+        let mut parser = RawParser::new(1024);
         let mut out = Vec::new();
         let (n, errors) = parser.process(b"plain line\nanother\n", &mut out);
         assert_eq!(n, 2);
@@ -247,7 +288,7 @@ mod tests {
 
     #[test]
     fn raw_escaping() {
-        let mut parser = RawParser::new();
+        let mut parser = RawParser::new(1024);
         let mut out = Vec::new();
         let (n, _) = parser.process(b"has \"quotes\" and \\backslash\n", &mut out);
         assert_eq!(n, 1);
@@ -355,5 +396,34 @@ mod tests {
         assert_eq!(n, 1);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("fresh"), "got: {s}");
+    }
+
+    #[test]
+    fn json_unbounded_partial_growth() {
+        let mut parser = JsonParser::new(1024);
+        let mut out = Vec::new();
+        let large_data = vec![b'a'; 10 * 1024 * 1024];
+        parser.process(&large_data, &mut out);
+        // Capped at 1024
+        assert_eq!(parser.partial.len(), 1024);
+    }
+
+    #[test]
+    fn raw_unbounded_partial_growth() {
+        let mut parser = RawParser::new(1024);
+        let mut out = Vec::new();
+        let large_data = vec![b'a'; 10 * 1024 * 1024];
+        parser.process(&large_data, &mut out);
+        assert_eq!(parser.partial.len(), 1024);
+    }
+
+    #[test]
+    fn cri_unbounded_outer_partial_growth() {
+        let mut parser = CriParser::new(1024);
+        let mut out = Vec::new();
+        let large_data = vec![b'a'; 10 * 1024 * 1024];
+        parser.process(&large_data, &mut out);
+        // Outer partial buffer must be capped.
+        assert!(parser.partial.len() <= 1024 + 128);
     }
 }

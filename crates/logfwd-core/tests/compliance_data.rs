@@ -496,7 +496,7 @@ fn compliance_cri_partial_lines() {
 fn compliance_raw_format() {
     // Non-JSON lines with RawParser — wraps each line as {"_raw":"<escaped>"}.
     let raw_input = b"This is a plain text log line\n";
-    let mut parser = RawParser::new();
+    let mut parser = RawParser::new(2 * 1024 * 1024);
     let mut json_out = Vec::new();
     let (count, _) = parser.process(raw_input, &mut json_out);
     assert_eq!(count, 1, "RawParser should emit 1 line");

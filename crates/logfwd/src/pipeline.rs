@@ -637,8 +637,8 @@ fn input_poll_loop(
 fn build_format_parser(format: &Format) -> Box<dyn FormatParser> {
     match format {
         Format::Cri => Box::new(CriParser::new(2 * 1024 * 1024)),
-        Format::Raw => Box::new(RawParser::new()),
-        _ => Box::new(JsonParser::new()),
+        Format::Raw => Box::new(RawParser::new(2 * 1024 * 1024)),
+        _ => Box::new(JsonParser::new(2 * 1024 * 1024)),
     }
 }
 
