@@ -67,6 +67,11 @@ function chartColors() {
 
 const DATA_BASE = 'https://raw.githubusercontent.com/strawgate/memagent/bench-data';
 
+function runId(entry) {
+  if (entry && typeof entry === 'object') return entry.id;
+  return entry;
+}
+
 async function loadJSON(url) {
   try { const r = await fetch(url); if (!r.ok) return null; return r.json(); }
   catch { return null; }
@@ -80,7 +85,7 @@ async function main() {
     return;
   }
 
-  const runIds = index.competitive_runs || index.runs || [];
+  const runIds = (index.competitive_runs || index.runs || []).map(runId).filter(Boolean).map(String);
   if (runIds.length === 0) {
     document.getElementById('loading').textContent = 'No competitive runs found.';
     return;
