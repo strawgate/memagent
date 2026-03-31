@@ -1,9 +1,9 @@
 # Kani Proof Audit
 
-36 proofs as of 2026-03-31 (14→13 in otlp.rs after shadow parser removal, +1 mixed-case severity). For each: what it proves, what it
-DOESN'T prove, and the gap between proof and real usage.
+46 proof harnesses as of 2026-03-31. Includes 4 compositional proofs
+using function contracts (`proof_for_contract` + `stub_verified`).
 
-## structural.rs (7 proofs)
+## structural.rs (7 proofs + 1 contract proof)
 
 ### verify_prefix_xor
 **Proves:** Output matches naive running-XOR oracle for ALL u64 inputs.
@@ -47,6 +47,20 @@ with block_len < 64.
 **Gap:** Correctness of the tail masking only. Doesn't verify the
 bitmask content is correct.
 
+### verify_compute_real_quotes_contract (contract proof)
+**Proves:** Result is always a submask of `quote_bits` — compute_real_quotes
+can only remove quotes (escaped ones), never add them.
+**Used by:** verify_process_block_compositional via stub_verified.
+
+### verify_process_block_compositional (compositional proof)
+**Proves:** process_block with compute_real_quotes replaced by its
+proven contract. Verifies: (1) real_quotes submask of raw quotes,
+(2) structural chars don't overlap in_string, (3) tail masking correct.
+All with arbitrary u64 bitmask inputs and arbitrary block_len.
+**Gap:** Depends on compute_real_quotes contract (submask only).
+The full correctness of escape handling is proven by
+verify_compute_real_quotes (exhaustive oracle).
+
 ### verify_in_string_exclusion
 **Proves:** Structural characters (space, comma, colon, braces) never
 overlap with in_string mask when there are no escapes.
@@ -74,7 +88,7 @@ so 20 bytes IS exhaustive for valid integers).
 **Warning:** Takes ~4 minutes. The i128 oracle adds significant
 solver complexity.
 
-## otlp.rs (13 proofs)
+## otlp.rs (19 proofs + 3 contract proofs)
 
 ### verify_varint_len_matches_encode
 **Proves:** varint_len(v) == encode_varint(v).len() for ALL u64.
@@ -139,6 +153,47 @@ by the no-panic proof.
 ### verify_parse_4digits_correct
 **Proves:** Correct value for all valid 4-digit quads.
 **Gap:** None for valid inputs.
+
+### verify_parse_timestamp_no_panic
+**Proves:** No panics for any input up to 32 bytes.
+**Gap:** None for crash-freedom.
+
+### verify_parse_timestamp_known_dates
+**Proves:** Correct nanosecond value for 2024-01-15T10:30:00Z.
+Also verifies epoch returns 0 and pre-epoch returns 0.
+**Gap:** Only checks 3 specific dates. Compositional proof below
+covers arbitrary dates.
+
+### verify_parse_timestamp_rejects_invalid_dates
+**Proves:** Month 0/13 and day 0/32 all return 0.
+**Gap:** None for these specific validation checks.
+
+### verify_parse_4digits_contract (contract proof)
+**Proves:** parse_4digits always returns ≤ 9999.
+**Used by:** verify_parse_timestamp_compositional via stub_verified.
+
+### verify_parse_2digits_contract (contract proof)
+**Proves:** parse_2digits always returns ≤ 99.
+**Used by:** verify_parse_timestamp_compositional via stub_verified.
+
+### verify_days_from_civil_contract (contract proof)
+**Proves:** For year ≥ 1970, result ≥ -366.
+**Used by:** verify_parse_timestamp_compositional via stub_verified.
+
+### verify_parse_timestamp_compositional (compositional proof)
+**Proves:** parse_timestamp_nanos with digit parsers and calendar
+arithmetic replaced by their proven contracts. Kani trusts sub-function
+correctness and focuses on the composition: field extraction, month/day
+validation, and nanosecond arithmetic. This is the first compositional
+proof in the codebase.
+**Gap:** Depends on contract strength. Contracts guarantee bounds
+(digits ≤ 9999/99, days ≥ -366) but not exact values. The known_dates
+proof covers exact correctness for specific inputs.
+
+### verify_encode_bytes_field_content
+**Proves:** Tag + length + exact data bytes for field ≤ 100 and
+data ≤ 8 bytes. Verifies the last data_len bytes match the input.
+**Gap:** Small data sizes. The encoding is simple concatenation.
 
 ### verify_encode_fixed64
 **Proves:** Tag + 8 LE bytes for all inputs with field ≤ 1000.

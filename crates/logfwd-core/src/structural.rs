@@ -23,7 +23,11 @@
 /// Iterates through backslash bits (O(num_backslashes), typically very small)
 /// to identify which quotes are escaped. Carries state between blocks via
 /// `prev_odd_backslash`.
+///
+/// Contract: result is always a submask of `quote_bits` (can only remove
+/// quotes, never add them).
 #[inline]
+#[cfg_attr(kani, kani::ensures(|result: &u64| *result & !quote_bits == 0))]
 pub fn compute_real_quotes(quote_bits: u64, bs_bits: u64, prev_odd_backslash: &mut u64) -> u64 {
     if bs_bits == 0 && *prev_odd_backslash == 0 {
         return quote_bits;
@@ -922,5 +926,62 @@ mod verification {
         assert_eq!(p.colon & p.in_string, 0);
         assert_eq!(p.open_brace & p.in_string, 0);
         assert_eq!(p.close_brace & p.in_string, 0);
+    }
+
+    /// Verify compute_real_quotes contract: result is submask of quote_bits.
+    #[kani::proof_for_contract(compute_real_quotes)]
+    fn verify_compute_real_quotes_contract() {
+        let quote_bits: u64 = kani::any();
+        let bs_bits: u64 = kani::any();
+        let mut carry: u64 = kani::any_where(|&c: &u64| c <= 1);
+        compute_real_quotes(quote_bits, bs_bits, &mut carry);
+    }
+
+    /// Compositional proof: process_block using proven compute_real_quotes.
+    /// Kani trusts the compute_real_quotes contract (submask property)
+    /// and verifies process_block's composition logic:
+    /// - real_quotes is a submask of raw quotes (from contract)
+    /// - in_string is derived correctly via prefix_xor
+    /// - structural chars are masked by !in_string
+    /// - tail mask clears bits beyond block_len
+    #[kani::proof]
+    #[kani::stub_verified(compute_real_quotes)]
+    fn verify_process_block_compositional() {
+        let raw = RawBlockMasks {
+            newline: kani::any(),
+            space: kani::any(),
+            quote: kani::any(),
+            backslash: kani::any(),
+            comma: kani::any(),
+            colon: kani::any(),
+            open_brace: kani::any(),
+            close_brace: kani::any(),
+            open_bracket: kani::any(),
+            close_bracket: kani::any(),
+        };
+        let block_len: usize = kani::any_where(|&l: &usize| l <= 64);
+
+        let mut classifier = StreamingClassifier::new();
+        let p = classifier.process_block(&raw, block_len);
+
+        // real_quotes must be submask of raw quotes (from contract)
+        assert_eq!(
+            p.real_quotes & !raw.quote,
+            0,
+            "real_quotes not submask of quotes"
+        );
+
+        // Structural chars must not overlap with in_string
+        assert_eq!(p.space & p.in_string, 0);
+        assert_eq!(p.comma & p.in_string, 0);
+        assert_eq!(p.colon & p.in_string, 0);
+
+        // Tail masking: no bits beyond block_len
+        if block_len < 64 {
+            let tail = !((1u64 << block_len) - 1);
+            assert_eq!(p.newline & tail, 0);
+            assert_eq!(p.real_quotes & tail, 0);
+            assert_eq!(p.comma & tail, 0);
+        }
     }
 }
