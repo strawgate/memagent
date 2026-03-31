@@ -1,95 +1,69 @@
 # Implementation Phases
 
-Current work tracked in GitHub epic #262.
+## Completed
 
-## Phase 0: Kani prototype ✅ DONE
+- **Phase 0**: Kani prototype ✅ (52 proofs, compositional verification)
+- **Phase 1a**: logfwd-arrow crate ✅ (PR #307)
+- **Phase 1.5**: Framer + Aggregator ✅ (PR #311)
+- **Phase 2**: StructuralIndex + wide SIMD ✅ (PR #360)
+- **Phase 3**: Shadow parser decommissioned ✅ (PR #370)
+- **Phase 4**: no_std + forbid(unsafe_code) ✅ (PR #375)
+- **Phase 5**: Pipeline bypasses format.rs ✅ (PR #399)
+- **Audit**: Dead code, test coverage, proofs, robustness ✅ (PR #416)
 
-Kani added to workspace. `prefix_xor` and `compute_real_quotes` proved
-exhaustively. Tooling validated, CI working, 31 proofs total.
+## Current: Pipeline Verification (#270, #272, #423)
 
-## Phase 1: Crate restructuring (partial)
+Three-layer verification of the pipeline protocol.
 
-Split logfwd-core into proven core + satellite crates.
+### Layer 1: Pure State Machine (Kani) — #270
+Extract `FlushMachine` into `logfwd-core/src/pipeline/state.rs`.
+Pure function: `step(state, event) → (state, action)`.
+Kani proves: no panic, no double-flush, done is terminal,
+buffer cleared after flush, no data abandoned after shutdown.
 
-```
-1a: Create logfwd-arrow     ✅ DONE (PR #307)
-1b: Create logfwd-input     → Copilot (#265)
-1c: Move remaining impure   → Copilot (#266)
-1d: Tighten core to no_std  (#267) — after 1b+1c
-```
+The async driver calls `machine.step()` and performs the
+requested action — it cannot make incorrect decisions.
 
-## Phase 1.5: Framer + Aggregator + Proofs ✅ DONE (PR #311)
+### Layer 2: Multi-Process Model (TLA+) — #272
+Model N inputs + bounded channel + consumer in TLA+.
+TLC proves: NoDataAbandoned, ShutdownCompletes, InputProgress,
+no deadlock under backpressure.
 
-- NewlineFramer: fixed-size output, no heap, 4 Kani proofs (oracle)
-- CriAggregator: zero-copy F path, max_message_size, 3 Kani proofs
-- byte_search module: proven alternatives to memchr, 2 Kani proofs
-- 31 Kani proofs total across core modules
+### Layer 3: Deterministic Simulation (Turmoil) — #423
+Test the async IO layer with simulated network.
+Chaos suite: partition recovery, slow consumer, crash recovery,
+deterministic retry backoff.
 
-## Phase 2: Unified StructuralIndex (#313) ← NEXT
+Prerequisites: async sinks, async HTTP client (reqwest).
 
-Extend ChunkIndex into StructuralIndex: one SIMD pass detecting 9
-structural characters (\n, space, ", \, comma, colon, {, }, [).
+## Future
 
-Benchmark proved viability (2026-03-30):
-- 9 chars at 3 GiB/s (NEON) — 11x headroom over target
-- Scaling linear at ~28µs per character per 760KB
+### Allocation-free kernel (#358)
+Remove `extern crate alloc` from logfwd-core. Requires fully
+sequential scanner (no stored bitmask Vecs).
 
-```
-2a: Extend ChunkIndex → StructuralIndex (NEON + AVX2 + SSE2 + scalar)
-2b: NewlineFramer consumes newline bitmask (replaces byte loop)
-2c: CRI field extraction from space bitmask (replaces per-line parsing)
-2d: Scanner consumes full bitmask set
-2e: Kani proofs for scalar fallback
-```
+### AsyncFanout (#319)
+Independent sink tasks with retry, circuit breaker, per-sink
+isolation. Depends on async sink migration.
 
-## Phase 3: Zero-copy Bytes pipeline (#303)
-
-```
-3a: Bytes-based Reader (BytesMut → freeze → Bytes)
-3b: Connect StructuralIndex to Bytes pipeline
-3c: StreamingBuilder receives Bytes directly
-```
-
-## Phase 4: Scanner restructure + FieldSink (#269)
-
-Rename ScanBuilder → FieldSink. Ensure scan loop works in no_std.
-Add bounded Kani proof for scan_line. proptest oracle vs serde_json.
-
-## Phase 5: Pipeline state machine + BatchToken (#270)
-
-Extract run_async decisions into pure state machine in core.
-Kani exhaustive single-step. proptest random event sequences.
-BatchToken #[must_use] linear type. Wire into run_async.
-
-## Phase 6: proptest state machines + CI hardening (#271)
-
-proptest-state-machine for stateful components.
-Proof coverage enforcement. cargo-mutants weekly. cargo-vet.
-
-## Phase 7: TLA+ pipeline specification (#272)
-
-Model batching/timeout/shutdown protocol. Prove liveness (data is
-never abandoned) and fairness (no input starved).
-
-## Phase 8: Tighten logfwd-core (#267)
-
-- `#![no_std]` + `#![forbid(unsafe_code)]`
-- SIMD via `wide` crate (safe), scalar fallback for Kani
-- CI: `cargo build --target thumbv6m-none-eabi`
-
-## Phase 9: Allocation-free kernel (#358)
-
-Remove `extern crate alloc` entirely. No Vec, String, Box in core.
-All buffers stack-local or caller-provided. Mathematically impossible
-to OOM. Requires fully sequential scanner (no stored bitmask vecs).
+### Async sink migration
+Migrate OutputSink from sync to async. Replace ureq with reqwest.
+Unblocks Turmoil and AsyncFanout.
 
 ## Parallel work
 
 | Issue | What | Status |
 |-------|------|--------|
-| #357 | Decommission shadow JSON parser in otlp.rs | Open |
-| #359 | proptest: SQL pushdown integrity | Open |
-| #275 | Fix CRI silent truncation | Open |
+| #404 | i64 overflow data corruption | Jules |
+| #407 | Field suffix stripping bugs | Jules |
+| #410 | Double-escaped unicode | Jules |
+| #411-414 | Config validation bugs | Jules |
+| #340 | Test coverage gaps | Detailed findings, needs impl |
+| #341 | Missing doc comments (86 items) | Detailed findings, needs impl |
+| #343 | Error handling consistency | Detailed findings, needs impl |
+| #344 | Kani proof expansion (5 new proofs) | Detailed findings, needs impl |
+| #346 | Pipeline robustness | Findings complete, one fix merged |
+| #275 | CRI silent truncation | Open |
 | #279 | Arrow version upgrade | Open |
 | #308 | Rethink _raw column | Open |
-| #337-346 | Codebase audit (10 issues) | Copilot assigned |
+| #415 | SQL rewriter missing arms | Open |
