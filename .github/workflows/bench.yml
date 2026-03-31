@@ -490,7 +490,7 @@ jobs:
             RATE="---
 
           ### Rate-Ingest Benchmark
-          See [development dashboard](https://strawgate.com/memagent/bench/development.html) for full results."
+          See [development dashboard](https://strawgate.github.io/memagent/bench/development.html) for full results."
           fi
 
           TITLE="Benchmark results ${DATE} (${COMMIT})"
@@ -500,7 +500,7 @@ jobs:
           **Commit:** \`${COMMIT}\` on \`master\`
           **Runner:** \`ubuntu-latest\` (matrix: agent x scenario)
           **Iterations:** ${{ env.ITERATIONS }} per cell
-          **Dashboard:** https://strawgate.com/memagent/bench/
+          **Dashboard:** https://strawgate.github.io/memagent/bench/
 
           ---
 

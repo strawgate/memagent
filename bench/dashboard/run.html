@@ -38,6 +38,20 @@
 </div>
 
 <script>
+const SCENARIO_NAMES = {
+  'passthrough': { title: 'Passthrough (No Transforms)', config: 'transform: "SELECT * FROM logs"' },
+  'json_parse': { title: 'JSON Parsing & Extraction', config: 'transform: "SELECT timestamp_str, level_str, message_str, duration_ms_int AS latency_ms, request_id_str, service_str FROM logs"' },
+  'filter': { title: 'Filtering (ERROR/WARN only)', config: 'transform: "SELECT * FROM logs WHERE level_str IN (\'WARN\', \'ERROR\')"' }
+};
+function formatScenario(sn) {
+  const info = SCENARIO_NAMES[sn] || { title: sn, config: '' };
+  if (!info.config) return `<span class="scenario-title">${info.title}</span>`;
+  return `<span class="scenario-title">${info.title}</span><code class="scenario-code">${info.config.replace(/</g, '&lt;')}</code>`;
+}
+function getScenarioTitle(sn) {
+  return SCENARIO_NAMES[sn] ? SCENARIO_NAMES[sn].title : sn;
+}
+
 const AGENT_COLORS = {
   'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
   'filebeat': '#d97706', 'otelcol': '#dc2626', 'vlagent': '#64748b'
@@ -113,7 +127,7 @@ async function main() {
     const cardDiv = document.createElement('div');
     cardDiv.className = 'card';
     const canvasId = 'chart-' + sn.replace(/[^a-zA-Z0-9]/g, '_');
-    cardDiv.innerHTML = `<h3>${sn}</h3><canvas id="${canvasId}"></canvas>`;
+    cardDiv.innerHTML = `<h3>${formatScenario(sn)}</h3><canvas id="${canvasId}"></canvas>`;
     chartsEl.appendChild(cardDiv);
 
     const labels = [];
@@ -153,7 +167,7 @@ async function main() {
 
   let headerHtml = '<tr><th>Scenario</th>';
   for (const a of agents) {
-    headerHtml += `<th class="numeric">${a} LPS</th><th class="numeric">Avg ms</th><th class="numeric">Stddev</th><th class="numeric">Iters</th>`;
+    headerHtml += `<th class="numeric">${a} LPS</th><th class="numeric">Avg ms</th><th class="numeric">Iters</th>`;
   }
   headerHtml += '</tr>';
   thead.innerHTML = headerHtml;
@@ -168,7 +182,7 @@ async function main() {
       if (sc[a]?.avg_lps > bestLps) { bestLps = sc[a].avg_lps; bestAgent = a; }
     }
 
-    let row = `<td>${sn}</td>`;
+    let row = `<td>${getScenarioTitle(sn)}</td>`;
     for (const a of agents) {
       const d = sc[a];
       const isWinner = a === bestAgent;
@@ -177,10 +191,9 @@ async function main() {
         const lpsCls = isWinner ? 'numeric winner' : 'numeric';
         row += `<td class="${lpsCls}">${lpsStr}</td>`;
         row += `<td class="numeric">${d.avg_ms != null ? d.avg_ms.toLocaleString() : '--'}</td>`;
-        row += `<td class="numeric">${d.stddev_ms != null ? d.stddev_ms + 'ms' : '--'}</td>`;
         row += `<td class="numeric">${d.iterations ?? '--'}</td>`;
       } else {
-        row += '<td class="numeric">--</td><td class="numeric">--</td><td class="numeric">--</td><td class="numeric">--</td>';
+        row += '<td class="numeric">--</td><td class="numeric">--</td><td class="numeric">--</td>';
       }
     }
     rowsHtml += `<tr>${row}</tr>`;

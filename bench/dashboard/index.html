@@ -59,6 +59,15 @@
 </div>
 
 <script>
+const SCENARIO_NAMES = {
+  'passthrough': { title: 'Passthrough (No Transforms)', config: 'transform: "SELECT * FROM logs"' },
+  'json_parse': { title: 'JSON Parsing & Extraction', config: 'transform: "SELECT timestamp_str, level_str, message_str, duration_ms_int AS latency_ms, request_id_str, service_str FROM logs"' },
+  'filter': { title: 'Filtering (ERROR/WARN only)', config: 'transform: "SELECT * FROM logs WHERE level_str IN (\'WARN\', \'ERROR\')"' }
+};
+function getScenarioTitle(sn) {
+  return SCENARIO_NAMES[sn] ? SCENARIO_NAMES[sn].title : sn;
+}
+
 const AGENT_COLORS = {
   'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
   'filebeat': '#d97706', 'otelcol': '#dc2626', 'vlagent': '#64748b'
@@ -154,7 +163,7 @@ async function main() {
     <div class="tracking-card">
       <span class="label">logfwd Throughput</span>
       <span class="value">${logfwdLps ? formatLPS(logfwdLps) : '--'}</span>
-      <span class="subtitle">lines/sec (${latestRun?.scenario_names?.[0] || 'primary'})</span>
+      <span class="subtitle">lines/sec (${getScenarioTitle(latestRun?.scenario_names?.[0]) || 'primary'})</span>
       <canvas class="sparkline" id="spark-lps" width="120" height="36"></canvas>
     </div>`;
 
@@ -176,7 +185,7 @@ async function main() {
     <div class="tracking-card">
       <span class="label">Best Competitive Ratio</span>
       <span class="value">${bestRatio ? bestRatio.value.toFixed(1) + 'x' : '--'}</span>
-      <span class="subtitle">${bestRatio ? 'vs ' + bestRatio.vs + ' (' + bestRatio.scenario + ')' : 'no data'}</span>
+      <span class="subtitle">${bestRatio ? 'vs ' + bestRatio.vs + ' (' + getScenarioTitle(bestRatio.scenario) + ')' : 'no data'}</span>
     </div>`;
 
   // Card 3: RSS at 100K eps
@@ -210,7 +219,7 @@ async function main() {
       let bestAgent = null, bestLps = 0;
       agents.forEach(a => { if (sc?.[a]?.avg_lps > bestLps) { bestLps = sc[a].avg_lps; bestAgent = a; } });
 
-      let row = `<td><a href="competitive.html">${sn}</a></td>`;
+      let row = `<td><a href="competitive.html">${getScenarioTitle(sn)}</a></td>`;
       agents.forEach(a => {
         const lps = sc?.[a]?.avg_lps;
         const cls = a === bestAgent ? 'numeric winner' : 'numeric';
