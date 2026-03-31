@@ -59,7 +59,16 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
     } else {
         line.len()
     }];
-    let is_full = flags == b"F";
+
+    // CRI spec: flags must be exactly "F" (full) or "P" (partial).
+    // Reject anything else as invalid format.
+    let is_full = if flags == b"F" {
+        true
+    } else if flags == b"P" {
+        false
+    } else {
+        return None;
+    };
 
     let message = if msg_start < line.len() {
         &line[msg_start..]
@@ -323,6 +332,29 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_flag_rejected() {
+        assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdout X bad").is_none());
+        assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdout FULL message").is_none());
+        assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdout f message").is_none());
+        assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdout p message").is_none());
+        assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdout  message").is_none());
+    }
+
+    #[test]
+    fn test_invalid_flag_counted_as_parse_error() {
+        let chunk = b"2024-01-15T10:30:00Z stdout X bad\n\
+                       2024-01-15T10:30:00Z stdout F valid\n";
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut lines = Vec::new();
+        let (count, errors) = process_cri_chunk(chunk, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!(count, 1);
+        assert_eq!(errors, 1);
+        assert_eq!(lines[0], b"valid");
+    }
+
+    #[test]
     fn test_max_line_size() {
         let mut reassembler = CriReassembler::new(20);
 
@@ -356,9 +388,63 @@ mod verification {
         let _ = parse_cri_line(&input);
     }
 
-    // NOTE: Proofs for parse_cri_line field validity and flag detection
-    // deferred — Kani's pointer model can't handle slice_ref comparisons.
-    // The no-panic proof above covers the most critical property.
+    /// Prove parse_cri_line semantic correctness: if it returns Some,
+    /// the flag is valid (F or P) and is_full matches the flag byte.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    fn verify_parse_cri_line_semantics() {
+        let input: [u8; 32] = kani::any();
+        if let Some(cri) = parse_cri_line(&input) {
+            assert!(!cri.timestamp.is_empty(), "empty timestamp");
+            assert!(!cri.stream.is_empty(), "empty stream");
+
+            // Verify is_full matches the actual flag byte in the input.
+            let ts_len = cri.timestamp.len();
+            let stream_len = cri.stream.len();
+            let flag_start = ts_len + 1 + stream_len + 1;
+            assert!(flag_start < input.len(), "flag start out of bounds");
+
+            let flag_byte = input[flag_start];
+            if cri.is_full {
+                assert!(flag_byte == b'F', "is_full=true but flag is not F");
+            } else {
+                assert!(flag_byte == b'P', "is_full=false but flag is not P");
+            }
+        }
+    }
+
+    /// Prove parse_cri_line rejects invalid single-byte flags.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    fn verify_parse_cri_line_rejects_invalid_flags() {
+        let input: [u8; 32] = kani::any();
+
+        // Find the three space positions
+        let mut spaces: [usize; 3] = [0; 3];
+        let mut space_count = 0u8;
+        let mut i: usize = 0;
+        while i < 32 && space_count < 3 {
+            if input[i] == b' ' {
+                spaces[space_count as usize] = i;
+                space_count += 1;
+            }
+            i += 1;
+        }
+
+        // If we have 3+ spaces and the flag is a single non-F/non-P byte
+        if space_count >= 3 {
+            let sp2 = spaces[1];
+            let sp3 = spaces[2];
+            // Single-byte flag: sp3 == sp2 + 2
+            if sp3 == sp2 + 2 {
+                let flag_byte = input[sp2 + 1];
+                if flag_byte != b'F' && flag_byte != b'P' {
+                    let result = parse_cri_line(&input);
+                    assert!(result.is_none(), "invalid flag accepted");
+                }
+            }
+        }
+    }
 
     /// Prove CriReassembler::feed respects max_line_size for P+F sequences.
     /// Uses fixed 8-byte messages — Kani explores all 2^64 byte values.
