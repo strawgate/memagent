@@ -6,6 +6,11 @@
 //! - Send a batch without first queuing it
 //! - Drop a batch without explicitly acking or rejecting it
 //!
+//! The checkpoint type `C` is opaque to the pipeline — each input source
+//! defines what a checkpoint means (byte offset for files, partition offset
+//! for Kafka, cursor string for journald, etc.). The pipeline stores and
+//! forwards checkpoints without interpreting them.
+//!
 //! The Rust compiler proves these properties — no runtime checks needed.
 
 use core::marker::PhantomData;
@@ -26,9 +31,6 @@ pub struct BatchId(pub u64);
 pub struct Queued;
 /// Batch is being sent to output sinks.
 pub struct Sending;
-// Note: Delivered/Rejected are not typestate markers — ack()/reject()
-// return AckReceipt (a proof value), consuming the Sending ticket.
-// The state machine has only two ticket states: Queued and Sending.
 
 /// A batch ticket tracking the lifecycle of a data batch.
 ///
@@ -36,23 +38,26 @@ pub struct Sending;
 /// operations are available. Transitions consume `self` and return a
 /// new ticket in the target state.
 ///
+/// The type parameter `C` is the checkpoint type — opaque to the pipeline.
+/// For file inputs this is typically `u64` (byte offset). For Kafka it
+/// might be `i64` (partition offset). For push sources it can be `()`.
+///
 /// ```text
-/// BatchTicket<Queued>  →  begin_send()  →  BatchTicket<Sending>
-/// BatchTicket<Sending> →  ack()         →  AckReceipt
-/// BatchTicket<Sending> →  fail()        →  BatchTicket<Queued>  (retry)
-/// BatchTicket<Sending> →  reject()      →  AckReceipt          (permanent failure)
+/// BatchTicket<Queued, C>  →  begin_send()  →  BatchTicket<Sending, C>
+/// BatchTicket<Sending, C> →  ack()         →  AckReceipt<C>
+/// BatchTicket<Sending, C> →  fail()        →  BatchTicket<Queued, C>  (retry)
+/// BatchTicket<Sending, C> →  reject()      →  AckReceipt<C>          (permanent failure)
 /// ```
 #[must_use = "batch tickets must be explicitly acked, rejected, or requeued — dropping loses data"]
-pub struct BatchTicket<S> {
+pub struct BatchTicket<S, C> {
     id: BatchId,
     source: SourceId,
-    start_offset: u64,
-    end_offset: u64,
+    checkpoint: C,
     attempts: u32,
     _state: PhantomData<S>,
 }
 
-impl<S> BatchTicket<S> {
+impl<S, C> BatchTicket<S, C> {
     /// Unique batch ID.
     pub fn id(&self) -> BatchId {
         self.id
@@ -61,13 +66,9 @@ impl<S> BatchTicket<S> {
     pub fn source(&self) -> SourceId {
         self.source
     }
-    /// Byte offset where this batch starts in the source.
-    pub fn start_offset(&self) -> u64 {
-        self.start_offset
-    }
-    /// Byte offset where this batch ends in the source.
-    pub fn end_offset(&self) -> u64 {
-        self.end_offset
+    /// The checkpoint value for this batch (opaque to the pipeline).
+    pub fn checkpoint(&self) -> &C {
+        &self.checkpoint
     }
     /// Number of send attempts (starts at 0, incremented on fail→requeue).
     pub fn attempts(&self) -> u32 {
@@ -77,15 +78,15 @@ impl<S> BatchTicket<S> {
 
 /// Proof that a batch was acknowledged. Returned by `ack()` and `reject()`.
 /// Fields are crate-private to prevent fabrication of receipts.
-#[must_use = "AckReceipt must be passed to apply_ack to advance the committed offset"]
-pub struct AckReceipt {
+#[must_use = "AckReceipt must be passed to apply_ack to advance the committed checkpoint"]
+pub struct AckReceipt<C> {
     pub(crate) batch_id: BatchId,
     pub(crate) source: SourceId,
-    pub(crate) end_offset: u64,
+    pub(crate) checkpoint: C,
     pub(crate) delivered: bool,
 }
 
-impl AckReceipt {
+impl<C> AckReceipt<C> {
     /// Which batch was acked.
     pub fn batch_id(&self) -> BatchId {
         self.batch_id
@@ -94,9 +95,9 @@ impl AckReceipt {
     pub fn source(&self) -> SourceId {
         self.source
     }
-    /// Offset to commit (end_offset of the acked batch).
-    pub fn end_offset(&self) -> u64 {
-        self.end_offset
+    /// The checkpoint to commit (opaque to the pipeline).
+    pub fn checkpoint(&self) -> &C {
+        &self.checkpoint
     }
     /// Whether this was a successful delivery or a permanent rejection.
     pub fn delivered(&self) -> bool {
@@ -108,16 +109,15 @@ impl AckReceipt {
 // State transitions
 // ---------------------------------------------------------------------------
 
-impl BatchTicket<Queued> {
-    /// Create a new batch ticket from a source read.
+impl<C> BatchTicket<Queued, C> {
+    /// Create a new batch ticket.
     ///
     /// Crate-private: only `PipelineMachine::create_batch` should call this.
-    pub(crate) fn new(id: BatchId, source: SourceId, start_offset: u64, end_offset: u64) -> Self {
+    pub(crate) fn new(id: BatchId, source: SourceId, checkpoint: C) -> Self {
         BatchTicket {
             id,
             source,
-            start_offset,
-            end_offset,
+            checkpoint,
             attempts: 0,
             _state: PhantomData,
         }
@@ -125,45 +125,40 @@ impl BatchTicket<Queued> {
 
     /// Begin sending this batch to output sinks.
     /// Consumes the Queued ticket, returns a Sending ticket.
-    pub fn begin_send(self) -> BatchTicket<Sending> {
+    pub fn begin_send(self) -> BatchTicket<Sending, C> {
         BatchTicket {
             id: self.id,
             source: self.source,
-            start_offset: self.start_offset,
-            end_offset: self.end_offset,
+            checkpoint: self.checkpoint,
             attempts: self.attempts,
             _state: PhantomData,
         }
     }
 }
 
-impl BatchTicket<Sending> {
+impl<C> BatchTicket<Sending, C> {
     /// Batch was successfully delivered to all sinks.
     /// Consumes the Sending ticket, returns an AckReceipt.
-    pub fn ack(self) -> AckReceipt {
+    pub fn ack(self) -> AckReceipt<C> {
         AckReceipt {
             batch_id: self.id,
             source: self.source,
-            end_offset: self.end_offset,
+            checkpoint: self.checkpoint,
             delivered: true,
         }
     }
 
     /// Batch delivery failed with a transient error (will retry).
-    /// Consumes the `BatchTicket<Sending>`, returns `BatchTicket<Queued>` for requeue.
+    /// Consumes the `BatchTicket<Sending, C>`, returns `BatchTicket<Queued, C>` for requeue.
     ///
     /// Retry correlation is preserved: `BatchId` is unchanged, so `PipelineMachine`
     /// continues tracking the same logical batch in `in_flight`. Only `attempts`
     /// is incremented for each fail→requeue transition.
-    ///
-    /// There is currently no built-in maximum attempt limit in `BatchTicket::fail`;
-    /// retry termination policy is intentionally left to upstream runtime logic.
-    pub fn fail(self) -> BatchTicket<Queued> {
+    pub fn fail(self) -> BatchTicket<Queued, C> {
         BatchTicket {
             id: self.id,
             source: self.source,
-            start_offset: self.start_offset,
-            end_offset: self.end_offset,
+            checkpoint: self.checkpoint,
             attempts: self.attempts + 1,
             _state: PhantomData,
         }
@@ -171,13 +166,13 @@ impl BatchTicket<Sending> {
 
     /// Batch permanently rejected (non-retriable error).
     /// Consumes the Sending ticket, returns an AckReceipt.
-    /// The offset is still advanced — we accept data loss for malformed data
-    /// rather than retrying forever.
-    pub fn reject(self) -> AckReceipt {
+    /// The checkpoint is still committed — we accept data loss for malformed
+    /// data rather than retrying forever.
+    pub fn reject(self) -> AckReceipt<C> {
         AckReceipt {
             batch_id: self.id,
             source: self.source,
-            end_offset: self.end_offset,
+            checkpoint: self.checkpoint,
             delivered: false,
         }
     }
@@ -193,20 +188,20 @@ mod tests {
 
     #[test]
     fn basic_lifecycle_queued_to_acked() {
-        let ticket = BatchTicket::new(BatchId(1), SourceId(0), 0, 1000);
+        let ticket = BatchTicket::new(BatchId(1), SourceId(0), 1000u64);
         assert_eq!(ticket.attempts, 0);
 
         let sending = ticket.begin_send();
         let receipt = sending.ack();
 
         assert_eq!(receipt.source, SourceId(0));
-        assert_eq!(receipt.end_offset, 1000);
+        assert_eq!(receipt.checkpoint, 1000u64);
         assert!(receipt.delivered);
     }
 
     #[test]
     fn fail_increments_attempts() {
-        let ticket = BatchTicket::new(BatchId(1), SourceId(0), 0, 1000);
+        let ticket = BatchTicket::new(BatchId(1), SourceId(0), 1000u64);
         let sending = ticket.begin_send();
         let requeued = sending.fail();
         assert_eq!(requeued.attempts, 1);
@@ -223,18 +218,33 @@ mod tests {
 
     #[test]
     fn reject_returns_receipt_with_delivered_false() {
-        let ticket = BatchTicket::new(BatchId(1), SourceId(0), 500, 1500);
+        let ticket = BatchTicket::new(BatchId(1), SourceId(0), 1500u64);
         let sending = ticket.begin_send();
         let receipt = sending.reject();
 
         assert!(!receipt.delivered);
-        assert_eq!(receipt.end_offset, 1500);
+        assert_eq!(receipt.checkpoint, 1500u64);
     }
 
-    // Compile-time tests (these would fail to compile if uncommented):
-    // fn double_ack() { let t = BatchTicket::new(...); let s = t.begin_send(); s.ack(); s.ack(); }
-    // fn send_without_queue() { let s: BatchTicket<Sending> = ...; } // can't construct directly
-    // fn drop_without_ack() { let t = BatchTicket::new(...); let s = t.begin_send(); } // #[must_use] warning
+    #[test]
+    fn unit_checkpoint_for_push_sources() {
+        // Push sources (OTLP, syslog) have no checkpoint — use ()
+        let ticket = BatchTicket::new(BatchId(1), SourceId(0), ());
+        let sending = ticket.begin_send();
+        let receipt = sending.ack();
+        assert_eq!(receipt.checkpoint, ());
+        assert!(receipt.delivered);
+    }
+
+    #[test]
+    fn string_checkpoint_for_journald() {
+        // Journald uses opaque cursor strings
+        let cursor = "s=abc;i=42;b=def;m=100;t=200;x=300";
+        let ticket = BatchTicket::new(BatchId(1), SourceId(0), cursor);
+        let sending = ticket.begin_send();
+        let receipt = sending.ack();
+        assert_eq!(*receipt.checkpoint(), cursor);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -250,36 +260,31 @@ mod verification {
     fn verify_queued_to_sending() {
         let id = BatchId(kani::any());
         let source = SourceId(kani::any());
-        let start: u64 = kani::any();
-        let end: u64 = kani::any();
-        kani::assume(end >= start);
+        let checkpoint: u64 = kani::any();
 
-        let ticket = BatchTicket::new(id, source, start, end);
+        let ticket = BatchTicket::new(id, source, checkpoint);
         let sending = ticket.begin_send();
 
         assert_eq!(sending.id, id);
         assert_eq!(sending.source, source);
-        assert_eq!(sending.start_offset, start);
-        assert_eq!(sending.end_offset, end);
+        assert_eq!(sending.checkpoint, checkpoint);
         assert_eq!(sending.attempts, 0);
     }
 
-    /// Ack produces a receipt with correct source and offset.
+    /// Ack produces a receipt with correct source and checkpoint.
     #[kani::proof]
     fn verify_ack_receipt() {
         let id = BatchId(kani::any());
         let source = SourceId(kani::any());
-        let start: u64 = kani::any();
-        let end: u64 = kani::any();
-        kani::assume(end >= start);
+        let checkpoint: u64 = kani::any();
 
-        let ticket = BatchTicket::new(id, source, start, end);
+        let ticket = BatchTicket::new(id, source, checkpoint);
         let sending = ticket.begin_send();
         let receipt = sending.ack();
 
         assert_eq!(receipt.batch_id, id);
         assert_eq!(receipt.source, source);
-        assert_eq!(receipt.end_offset, end);
+        assert_eq!(receipt.checkpoint, checkpoint);
         assert!(receipt.delivered);
     }
 
@@ -288,18 +293,15 @@ mod verification {
     fn verify_fail_preserves_fields() {
         let id = BatchId(kani::any());
         let source = SourceId(kani::any());
-        let start: u64 = kani::any();
-        let end: u64 = kani::any();
-        kani::assume(end >= start);
+        let checkpoint: u64 = kani::any();
 
-        let ticket = BatchTicket::new(id, source, start, end);
+        let ticket = BatchTicket::new(id, source, checkpoint);
         let sending = ticket.begin_send();
         let requeued = sending.fail();
 
         assert_eq!(requeued.id, id);
         assert_eq!(requeued.source, source);
-        assert_eq!(requeued.start_offset, start);
-        assert_eq!(requeued.end_offset, end);
+        assert_eq!(requeued.checkpoint, checkpoint);
         assert_eq!(requeued.attempts, 1);
     }
 
@@ -308,17 +310,15 @@ mod verification {
     fn verify_reject_receipt() {
         let id = BatchId(kani::any());
         let source = SourceId(kani::any());
-        let start: u64 = kani::any();
-        let end: u64 = kani::any();
-        kani::assume(end >= start);
+        let checkpoint: u64 = kani::any();
 
-        let ticket = BatchTicket::new(id, source, start, end);
+        let ticket = BatchTicket::new(id, source, checkpoint);
         let sending = ticket.begin_send();
         let receipt = sending.reject();
 
         assert_eq!(receipt.batch_id, id);
         assert!(!receipt.delivered);
-        assert_eq!(receipt.end_offset, end);
+        assert_eq!(receipt.checkpoint, checkpoint);
     }
 
     /// Multiple fail→retry cycles preserve identity and increment attempts.
@@ -327,12 +327,10 @@ mod verification {
     fn verify_retry_sequence() {
         let id = BatchId(kani::any());
         let source = SourceId(kani::any());
-        let start: u64 = kani::any();
-        let end: u64 = kani::any();
-        kani::assume(end >= start);
+        let checkpoint: u64 = kani::any();
         let max_retries: u32 = kani::any_where(|&r: &u32| r <= 5);
 
-        let mut ticket = BatchTicket::new(id, source, start, end);
+        let mut ticket = BatchTicket::new(id, source, checkpoint);
         let mut i = 0u32;
         while i < max_retries {
             let sending = ticket.begin_send();

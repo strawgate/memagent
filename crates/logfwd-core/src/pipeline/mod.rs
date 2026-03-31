@@ -2,20 +2,26 @@
 //!
 //! Separates pipeline decision logic from IO/async. The Rust compiler
 //! enforces state transitions via typestate pattern (illegal transitions
-//! are compile errors). Kani proves business invariants (11 proofs).
-//! TLA+ liveness modeling is planned in Phase 7.
+//! are compile errors). Kani proves business invariants.
 //!
 //! # Architecture
 //!
-//! Two typestate machines:
+//! Two typestate machines, generic over checkpoint type `C`:
 //!
-//! - [`BatchTicket`]`<S>`: Per-batch lifecycle (Queued → Sending → Acked/Rejected).
+//! - [`BatchTicket`]`<S, C>`: Per-batch lifecycle (Queued → Sending → Acked/Rejected).
 //!   `#[must_use]` + self-consuming transitions prevent double-ack and silent drops.
 //!   Fields are private; only [`PipelineMachine`] can create tickets.
 //!
-//! - [`PipelineMachine`]`<S>`: Pipeline lifecycle (Starting → Running → Draining → Stopped)
-//!   with ordered ACK offset tracking. Committed offset advances only when ALL
-//!   prior batches for a source are acked (Filebeat registrar pattern).
+//! - [`PipelineMachine`]`<S, C>`: Pipeline lifecycle (Starting → Running → Draining → Stopped).
+//!   Ordered ACK: committed checkpoint advances only when ALL prior batches
+//!   for a source are acked (Filebeat registrar pattern).
+//!
+//! The checkpoint type `C` is **opaque** to the pipeline. Each input source
+//! defines what a checkpoint means:
+//! - File tail: `u64` byte offset
+//! - Kafka: `i64` partition offset
+//! - Journald: `String` cursor
+//! - Push sources (OTLP, syslog): `()` (no checkpoint)
 
 mod batch;
 mod lifecycle;
@@ -24,6 +30,4 @@ mod lifecycle;
 pub use batch::{AckReceipt, BatchId, BatchTicket, Queued, Sending, SourceId};
 
 // Pipeline lifecycle types
-pub use lifecycle::{
-    CommitAdvance, CreateBatchError, Draining, PipelineMachine, Running, Starting, Stopped,
-};
+pub use lifecycle::{CommitAdvance, Draining, PipelineMachine, Running, Starting, Stopped};
