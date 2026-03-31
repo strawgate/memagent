@@ -1,17 +1,17 @@
-//! Targeted fuzz target for `ChunkIndex` escape-detection logic.
+//! Targeted fuzz target for `StructuralIndex` escape-detection logic.
 //!
-//! `ChunkIndex` uses NEON intrinsics (aarch64) and `prefix_xor`-based bitmask
+//! `StructuralIndex` uses NEON intrinsics (aarch64) and `prefix_xor`-based bitmask
 //! operations to locate unescaped quote positions. The escape-detection
 //! algorithm has known subtle behaviour at 64-byte block boundaries (e.g. a
 //! backslash at byte 63 must carry over into the next block).
 //!
 //! This target:
-//! 1. Constructs a `ChunkIndex` from arbitrary bytes.
+//! 1. Constructs a `StructuralIndex` from arbitrary bytes.
 //! 2. Exercises all public query methods (`is_in_string`, `next_quote`,
 //!    `scan_string`, `skip_nested`) at every byte position to ensure no
 //!    out-of-bounds access or panic.
 //! 3. Passes the same bytes through `SimdScanner` to exercise the full
-//!    scanner pipeline built on top of `ChunkIndex`.
+//!    scanner pipeline built on top of `StructuralIndex`.
 //!
 //! The corpus should include inputs with dense backslash runs near multiples
 //! of 64 bytes (e.g. 63 × `\` followed by `"`) to stress the cross-block
@@ -19,13 +19,13 @@
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use logfwd_core::chunk_classify::ChunkIndex;
+use logfwd_core::structural::StructuralIndex;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_arrow::scanner::SimdScanner;
 
 fuzz_target!(|data: &[u8]| {
-    // --- Direct ChunkIndex API exercise ---
-    let index = ChunkIndex::new(data);
+    // --- Direct StructuralIndex API exercise ---
+    let (index, _line_ranges) = StructuralIndex::new(data);
 
     for i in 0..data.len() {
         // is_in_string must not panic for any valid byte position.
@@ -55,7 +55,7 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // --- Full scanner pipeline (uses ChunkIndex internally) ---
+    // --- Full scanner pipeline (uses StructuralIndex internally) ---
     let mut scanner = SimdScanner::new(ScanConfig::default());
     let Ok(batch) = scanner.scan(data) else { return; };
     let num_rows = batch.num_rows();

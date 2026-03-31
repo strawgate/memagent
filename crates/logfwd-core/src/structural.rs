@@ -14,7 +14,58 @@
 // SSE2, WASM). The scalar `find_structural_chars_scalar` is the
 // Kani-provable specification.
 
-use crate::chunk_classify::{compute_real_quotes, prefix_xor};
+// ---------------------------------------------------------------------------
+// Escape detection (simdjson prefix_xor algorithm)
+// ---------------------------------------------------------------------------
+
+/// Compute unescaped quote positions from quote and backslash bitmasks.
+///
+/// Iterates through backslash bits (O(num_backslashes), typically very small)
+/// to identify which quotes are escaped. Carries state between blocks via
+/// `prev_odd_backslash`.
+#[inline]
+pub fn compute_real_quotes(quote_bits: u64, bs_bits: u64, prev_odd_backslash: &mut u64) -> u64 {
+    if bs_bits == 0 && *prev_odd_backslash == 0 {
+        return quote_bits;
+    }
+
+    let mut escaped: u64 = 0;
+    let mut b = bs_bits;
+
+    if *prev_odd_backslash != 0 {
+        escaped |= 1;
+        b &= !1;
+    }
+
+    while b != 0 {
+        let pos = b.trailing_zeros() as u64;
+        b &= !(1u64 << pos);
+        let next_pos = pos + 1;
+        if next_pos < 64 {
+            escaped |= 1u64 << next_pos;
+            b &= !(1u64 << next_pos);
+        }
+    }
+
+    let last_is_bs = (bs_bits >> 63) & 1 == 1;
+    let last_is_escaped = (escaped >> 63) & 1 == 1;
+    *prev_odd_backslash = if last_is_bs && !last_is_escaped { 1 } else { 0 };
+
+    quote_bits & !escaped
+}
+
+/// Running XOR that toggles at each set bit. Used to compute string
+/// interior mask from quote positions.
+#[inline(always)]
+pub fn prefix_xor(mut bitmask: u64) -> u64 {
+    bitmask ^= bitmask << 1;
+    bitmask ^= bitmask << 2;
+    bitmask ^= bitmask << 4;
+    bitmask ^= bitmask << 8;
+    bitmask ^= bitmask << 16;
+    bitmask ^= bitmask << 32;
+    bitmask
+}
 
 /// Raw character bitmasks from a single 64-byte block.
 ///

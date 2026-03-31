@@ -1,7 +1,6 @@
 pub mod aggregator;
 pub mod byte_search;
 pub mod checkpoint;
-pub mod chunk_classify;
 pub mod compress;
 pub mod cri;
 pub mod diagnostics;
