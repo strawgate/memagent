@@ -163,26 +163,17 @@ fn record_ack_and_advance(
     receipt: AckReceipt,
 ) -> CommitAdvance {
     let source = receipt.source;
+    let batch_id = receipt.batch_id;
     let old_offset = committed.get(&source).copied().unwrap_or(0);
 
-    // Find which batch this ack corresponds to
-    let batch_id = in_flight
-        .get(&source)
-        .and_then(|flights| {
-            flights
-                .iter()
-                .find(|&(_, &off)| off == receipt.end_offset)
-                .map(|(&bid, _)| bid)
-        });
-
-    if let Some(bid) = batch_id {
-        if let Some(source_flights) = in_flight.get_mut(&source) {
-            source_flights.remove(&bid);
-        }
+    // Remove from in-flight by exact BatchId (O(log n), no scan needed)
+    if let Some(source_flights) = in_flight.get_mut(&source)
+        && source_flights.remove(&batch_id).is_some()
+    {
         pending_acks
             .entry(source)
             .or_default()
-            .insert(bid, receipt.end_offset);
+            .insert(batch_id, receipt.end_offset);
     }
 
     // Try to advance committed offset
@@ -408,6 +399,73 @@ mod tests {
         // Reject — offset still advances (we accept data loss for malformed data)
         let advance = running.apply_ack(s1.reject());
         assert_eq!(advance.new_offset, 1000);
+    }
+
+    #[test]
+    fn mixed_ack_and_reject() {
+        let machine = PipelineMachine::new();
+        let mut running = machine.start();
+        let src = SourceId(0);
+
+        let t1 = running.create_batch(src, 0, 1000);
+        let t2 = running.create_batch(src, 1000, 2000);
+        let t3 = running.create_batch(src, 2000, 3000);
+
+        let s1 = t1.begin_send();
+        let s2 = t2.begin_send();
+        let s3 = t3.begin_send();
+
+        // Reject batch 2 (malformed), ack 3, then ack 1
+        running.apply_ack(s2.reject());
+        running.apply_ack(s3.ack());
+        let advance = running.apply_ack(s1.ack());
+
+        // All three resolved — offset should be at 3000
+        assert_eq!(advance.new_offset, 3000);
+        assert_eq!(running.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn no_batches_drain_immediate() {
+        let machine = PipelineMachine::new();
+        let running = machine.start();
+
+        // Drain with nothing in flight
+        let draining = running.begin_drain();
+        assert!(draining.is_drained());
+        let _stopped = draining.stop();
+    }
+
+    #[test]
+    fn default_impl() {
+        let machine: PipelineMachine<Starting> = PipelineMachine::default();
+        let running = machine.start();
+        assert_eq!(running.in_flight_count(), 0);
+        assert_eq!(running.committed_offset(SourceId(0)), 0);
+    }
+
+    #[test]
+    fn high_batch_count_single_source() {
+        let machine = PipelineMachine::new();
+        let mut running = machine.start();
+        let src = SourceId(0);
+
+        // Create 100 batches
+        let mut sending = alloc::vec::Vec::new();
+        for i in 0..100u64 {
+            let t = running.create_batch(src, i * 100, (i + 1) * 100);
+            sending.push(t.begin_send());
+        }
+        assert_eq!(running.in_flight_count(), 100);
+
+        // Ack in reverse order — offset should not advance until batch 0 is acked
+        for s in sending.into_iter().rev() {
+            running.apply_ack(s.ack());
+        }
+
+        // After all acked, offset should be at 10000
+        assert_eq!(running.committed_offset(src), 10000);
+        assert_eq!(running.in_flight_count(), 0);
     }
 }
 

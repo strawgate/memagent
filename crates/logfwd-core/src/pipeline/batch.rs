@@ -62,6 +62,8 @@ pub struct BatchTicket<S> {
 /// Proof that a batch was acknowledged. Returned by `ack()` and `reject()`.
 /// The pipeline uses this to advance the source's committed offset.
 pub struct AckReceipt {
+    /// Which batch was acked (used for in-flight tracking lookup).
+    pub batch_id: BatchId,
     /// Which source to advance.
     pub source: SourceId,
     /// Offset to commit (end_offset of the acked batch).
@@ -111,6 +113,7 @@ impl BatchTicket<Sending> {
     /// Consumes the Sending ticket, returns an AckReceipt.
     pub fn ack(self) -> AckReceipt {
         AckReceipt {
+            batch_id: self.id,
             source: self.source,
             end_offset: self.end_offset,
             delivered: true,
@@ -136,6 +139,7 @@ impl BatchTicket<Sending> {
     /// rather than retrying forever.
     pub fn reject(self) -> AckReceipt {
         AckReceipt {
+            batch_id: self.id,
             source: self.source,
             end_offset: self.end_offset,
             delivered: false,
