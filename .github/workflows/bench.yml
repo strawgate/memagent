@@ -153,6 +153,7 @@ jobs:
       - run: chmod +x bin/*
 
       - name: Run benchmark cell
+        continue-on-error: true
         run: |
           bin/logfwd-competitive-bench \
             --lines ${{ env.LINES }} \
@@ -165,6 +166,7 @@ jobs:
           LOGFWD: ./bin/logfwd
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: results-${{ matrix.agent }}-${{ matrix.scenario }}
           path: results.jsonl
@@ -323,7 +325,7 @@ jobs:
   summarize:
     runs-on: ubuntu-latest
     needs: [build, bench, rate-bench, micro, pgo]
-    if: always() && needs.build.result == 'success' && needs.bench.result == 'success'
+    if: always() && needs.build.result == 'success' && needs.bench.result != 'cancelled'
     steps:
       - uses: actions/checkout@v4
 

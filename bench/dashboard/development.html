@@ -108,7 +108,7 @@ function drawSparkline(canvas, data, color) {
 }
 
 async function loadJSON(url) {
-  try { const r = await fetch(url); if (!r.ok) return null; return r.json(); }
+  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
   catch { return null; }
 }
 

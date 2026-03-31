@@ -30,10 +30,12 @@ impl AggResult {
     }
 
     fn avg_lines_done(&self) -> u64 {
+        // Filter on elapsed_ms > 0 (not lines_done > 0) to stay consistent
+        // with avg_elapsed_ms() -- both aggregates use the same subset of runs.
         let valid: Vec<u64> = self
             .runs
             .iter()
-            .filter(|r| r.lines_done > 0)
+            .filter(|r| r.elapsed_ms > 0)
             .map(|r| r.lines_done)
             .collect();
         if valid.is_empty() {
@@ -407,6 +409,10 @@ fn write_dashboard_json(groups: &[AggResult], scenarios: &[String], path: &Path)
             "iterations": g.runs.len(),
             "mode": g.mode,
         });
+        // NOTE: if the same agent appears in both binary and docker mode,
+        // the second insert overwrites the first. This is acceptable while
+        // CI only runs binary mode, but would need a (mode, agent) key to
+        // support both modes simultaneously.
         if let Value::Object(map) = scenario_entry {
             map.insert(g.name.clone(), agent_data);
         }

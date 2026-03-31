@@ -60,7 +60,7 @@ function chartColors() {
 function gridColor() { return isDark() ? '#30363d' : '#e5e7eb'; }
 
 async function loadJSON(url) {
-  try { const r = await fetch(url); if (!r.ok) return null; return r.json(); }
+  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
   catch { return null; }
 }
 

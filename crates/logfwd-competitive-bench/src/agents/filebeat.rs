@@ -137,6 +137,8 @@ http.port: 5066
         let cpu_sys_ms = get_any(&[&["beat", "cpu", "system", "time", "ms"]]);
         let cpu_total_ms = get_any(&[&["beat", "cpu", "total", "time", "ms"]]);
         // Some Filebeat versions report ticks instead of ms; convert with HZ=100.
+        // Filebeat reports Go runtime CPU ticks; dividing by 100 is a
+        // reasonable approximation (Go uses CLOCK_THREAD_CPUTIME_ID).
         let cpu_user_ms = if cpu_user_ms > 0 {
             cpu_user_ms
         } else {

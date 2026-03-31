@@ -622,7 +622,10 @@ impl DiagnosticsServer {
 // Process-level metrics (RSS, CPU)
 // ---------------------------------------------------------------------------
 
-/// Returns (rss_bytes, cpu_user_ms, cpu_sys_ms) for the current process.
+/// Returns (rss_bytes, uptime_ms, 0) for the current process.
+///
+/// Note: `uptime_ms` is wall-clock uptime, not CPU time. sysinfo doesn't
+/// expose raw CPU milliseconds; `run_time()` returns seconds since launch.
 fn process_metrics() -> (u64, u64, u64) {
     use sysinfo::{Pid, ProcessesToUpdate, System};
 
@@ -633,9 +636,9 @@ fn process_metrics() -> (u64, u64, u64) {
     match sys.process(pid) {
         Some(proc) => {
             let rss = proc.memory();
-            // sysinfo reports cumulative CPU time in seconds as f32.
-            let cpu_ms = proc.run_time() * 1000;
-            (rss, cpu_ms, 0)
+            // sysinfo doesn't expose raw CPU time; run_time is wall-clock uptime.
+            let uptime_ms = proc.run_time() * 1000;
+            (rss, uptime_ms, 0)
         }
         None => (0, 0, 0),
     }
