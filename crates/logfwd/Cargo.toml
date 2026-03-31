@@ -31,5 +31,6 @@ tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 [dev-dependencies]
 arrow = { workspace = true }
 logfwd-test-utils = { path = "../logfwd-test-utils" }
+proptest = "1.11.0"
 tempfile = "3"
 tiny_http = "0.12"

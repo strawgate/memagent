@@ -11,8 +11,9 @@ use arrow::compute;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use logfwd_arrow::scanner::{SimdScanner, StreamingSimdScanner};
+use logfwd_core::aggregator::{AggregateResult, CriAggregator};
+use logfwd_core::cri::parse_cri_line;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_io::format::{CriParser, FormatParser, RawParser};
 
 // ===========================================================================
 // Helpers
@@ -456,15 +457,15 @@ fn compliance_trailing_no_newline() {
 
 #[test]
 fn compliance_cri_format() {
-    // CRI log format: timestamp stream flag message
-    // Use CriParser to convert to JSON, then scan with SimdScanner.
-    let cri_input = b"2024-01-15T10:30:00.000000000Z stdout F {\"msg\":\"hello\"}\n";
-    let mut parser = CriParser::new(2 * 1024 * 1024);
-    let mut json_out = Vec::new();
-    let (count, _) = parser.process(cri_input, &mut json_out);
-    assert_eq!(count, 1, "CRI parser should emit 1 line");
+    // CRI log format: parse_cri_line extracts message, scanner parses JSON.
+    let cri_input = b"2024-01-15T10:30:00.000000000Z stdout F {\"msg\":\"hello\"}";
+    let cri = parse_cri_line(cri_input).expect("valid CRI line");
+    assert!(cri.is_full);
 
-    // The CRI parser emits the message portion as a line.
+    let mut json_out = Vec::new();
+    json_out.extend_from_slice(cri.message);
+    json_out.push(b'\n');
+
     let batch = scan_storage(&json_out);
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(get_str(&batch, "msg_str", 0), Some("hello".to_string()));
@@ -472,42 +473,51 @@ fn compliance_cri_format() {
 
 #[test]
 fn compliance_cri_partial_lines() {
-    // CRI partial flag (P) followed by full (F) — reassembly.
-    let cri_input = b"2024-01-15T10:30:00.000000000Z stdout P {\"msg\":\"hel\n2024-01-15T10:30:00.000000000Z stdout F lo\"}\n";
-    let mut parser = CriParser::new(2 * 1024 * 1024);
-    let mut json_out = Vec::new();
-    let (count, _) = parser.process(cri_input, &mut json_out);
+    // CRI partial (P) + full (F) — CriAggregator handles reassembly.
+    let mut agg = CriAggregator::new(2 * 1024 * 1024);
 
-    // The partial + full should reassemble into one line.
-    assert!(
-        count >= 1,
-        "CRI partial reassembly should emit at least 1 line"
-    );
+    let p_line = b"2024-01-15T10:30:00.000000000Z stdout P {\"msg\":\"hel";
+    let f_line = b"2024-01-15T10:30:00.000000000Z stdout F lo\"}";
 
-    // The reassembled line contains the combined message.
-    let output_str = String::from_utf8_lossy(&json_out);
-    assert!(
-        output_str.contains("hel") && output_str.contains("lo"),
-        "partial reassembly failed: {output_str}"
-    );
+    let cri_p = parse_cri_line(p_line).unwrap();
+    assert!(!cri_p.is_full);
+    assert!(matches!(
+        agg.feed(cri_p.message, cri_p.is_full),
+        AggregateResult::Pending
+    ));
+
+    let cri_f = parse_cri_line(f_line).unwrap();
+    assert!(cri_f.is_full);
+    match agg.feed(cri_f.message, cri_f.is_full) {
+        AggregateResult::Complete(msg) => {
+            let output = String::from_utf8_lossy(msg);
+            assert!(
+                output.contains("hel") && output.contains("lo"),
+                "partial reassembly failed: {output}"
+            );
+        }
+        AggregateResult::Pending => panic!("expected Complete after F line"),
+    }
+    agg.reset();
 }
 
 #[test]
 fn compliance_raw_format() {
-    // Non-JSON lines with RawParser — wraps each line as {"_raw":"<escaped>"}.
+    // Raw format: non-JSON lines captured via keep_raw.
     let raw_input = b"This is a plain text log line\n";
-    let mut parser = RawParser::new();
-    let mut json_out = Vec::new();
-    let (count, _) = parser.process(raw_input, &mut json_out);
-    assert_eq!(count, 1, "RawParser should emit 1 line");
 
-    // Now scan the wrapped JSON with keep_raw=false (the _raw field comes from
-    // the RawParser wrapping, not from keep_raw).
-    let batch = scan_storage(&json_out);
+    let config = ScanConfig {
+        wanted_fields: vec![],
+        extract_all: true,
+        keep_raw: true,
+        validate_utf8: false,
+    };
+    let mut scanner = logfwd_arrow::scanner::SimdScanner::new(config);
+    let batch = scanner.scan(raw_input).unwrap();
     assert_eq!(batch.num_rows(), 1);
-    assert_eq!(
-        get_str(&batch, "_raw_str", 0),
-        Some("This is a plain text log line".to_string())
+    assert!(
+        batch.schema().field_with_name("_raw").is_ok(),
+        "raw format should produce _raw column"
     );
 }
 

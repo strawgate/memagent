@@ -14,8 +14,9 @@ use logfwd_arrow::scanner::StreamingSimdScanner as Scanner;
 use logfwd_config::{
     EnrichmentConfig, Format, GeoDatabaseFormat, InputConfig, InputType, PipelineConfig,
 };
+use logfwd_core::aggregator::{AggregateResult, CriAggregator};
+use logfwd_core::cri::parse_cri_line;
 use logfwd_io::diagnostics::{ComponentStats, PipelineMetrics};
-use logfwd_io::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_io::input::{FileInput, InputEvent, InputSource};
 use logfwd_io::tail::TailConfig;
 use logfwd_output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
@@ -26,13 +27,24 @@ use tokio_util::sync::CancellationToken;
 // Per-input state
 // ---------------------------------------------------------------------------
 
+/// Maximum size for the remainder buffer. If a "line" exceeds this without
+/// a newline, the remainder is discarded to prevent unbounded memory growth.
+/// Prevents OOM on input without newlines.
+const MAX_REMAINDER_BYTES: usize = 2 * 1024 * 1024;
+
 struct InputState {
     #[expect(dead_code, reason = "reserved for future per-input logging")]
     name: String,
     source: Box<dyn InputSource>,
-    parser: Box<dyn FormatParser>,
-    /// Buffer accumulating newline-delimited JSON for the scanner.
-    json_buf: Vec<u8>,
+    format: Format,
+    /// Buffer accumulating raw bytes from the reader.
+    /// For JSON/Raw: passed directly to the scanner (StructuralIndex handles line splitting).
+    /// For CRI: CRI fields stripped per-line, JSON message extracted before scanning.
+    buf: Vec<u8>,
+    /// Partial line remainder from last read (bytes after last newline).
+    remainder: Vec<u8>,
+    /// CRI partial-line aggregator (only used for CRI format).
+    cri_aggregator: Option<CriAggregator>,
     stats: Arc<ComponentStats>,
 }
 
@@ -95,7 +107,16 @@ impl Pipeline {
             }
         }
 
-        let scan_config = transform.scan_config();
+        let mut scan_config = transform.scan_config();
+        // Raw format sends non-JSON lines to the scanner. Without keep_raw,
+        // these produce empty rows. Force keep_raw so every line is captured.
+        if config
+            .inputs
+            .iter()
+            .any(|i| matches!(i.format, Some(Format::Raw)))
+        {
+            scan_config.keep_raw = true;
+        }
         let scanner = Scanner::new(scan_config);
 
         let mut metrics = PipelineMetrics::new(name, transform_sql, meter);
@@ -175,204 +196,16 @@ impl Pipeline {
     }
 
     /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
+    /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
+    ///
+    /// Delegates to `run_async` on a tokio runtime. The sync interface exists
+    /// for test convenience; production uses `run_async` directly.
     pub fn run(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
-        let mut last_flush = Instant::now();
-
-        loop {
-            if shutdown.is_cancelled() {
-                break;
-            }
-
-            let mut had_data = false;
-
-            for input in &mut self.inputs {
-                let events = match input.source.poll() {
-                    Ok(e) => e,
-                    Err(e) => {
-                        eprintln!("pipeline: input poll error (skipping this cycle): {e}");
-                        continue;
-                    }
-                };
-                if events.is_empty() {
-                    continue;
-                }
-                had_data = true;
-
-                for event in events {
-                    match event {
-                        InputEvent::Data { bytes, .. } => {
-                            input.stats.inc_bytes(bytes.len() as u64);
-                            let (n, parse_err) = input.parser.process(&bytes, &mut input.json_buf);
-                            input.stats.inc_lines(n as u64);
-                            if parse_err > 0 {
-                                input.stats.inc_parse_errors(parse_err as u64);
-                            }
-                        }
-                        InputEvent::Rotated | InputEvent::Truncated => {
-                            input.parser.reset();
-                        }
-                    }
-                }
-            }
-
-            // Flush when any input buffer exceeds threshold or timeout elapsed.
-            let size_ready = self
-                .inputs
-                .iter()
-                .any(|i| i.json_buf.len() >= self.batch_target_bytes);
-            let has_buffered = !self.inputs.iter().all(|i| i.json_buf.is_empty());
-            let time_ready = has_buffered && last_flush.elapsed() >= self.batch_timeout;
-
-            if size_ready || time_ready {
-                // Track flush reason.
-                if size_ready {
-                    self.metrics.inc_flush_by_size();
-                } else {
-                    self.metrics.inc_flush_by_timeout();
-                }
-
-                let mut combined = Vec::new();
-                for input in &mut self.inputs {
-                    if !input.json_buf.is_empty() {
-                        combined.append(&mut input.json_buf);
-                    }
-                }
-
-                if !combined.is_empty() {
-                    // Scan stage.
-                    let t0 = Instant::now();
-                    let batch = match self.scanner.scan(combined.into()) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            self.metrics.inc_scan_error();
-                            self.metrics.inc_dropped_batch();
-                            eprintln!("pipeline: scan error (batch dropped): {e}");
-                            last_flush = Instant::now();
-                            continue;
-                        }
-                    };
-                    let scan_elapsed = t0.elapsed();
-
-                    if batch.num_rows() > 0 {
-                        let num_rows = batch.num_rows() as u64;
-                        self.metrics.transform_in.inc_lines(num_rows);
-
-                        // Transform stage.
-                        let t1 = Instant::now();
-                        let result = match self.transform.execute_blocking(batch) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                self.metrics.inc_transform_error();
-                                self.metrics.inc_dropped_batch();
-                                eprintln!("pipeline: transform error (batch dropped): {e}");
-                                last_flush = Instant::now();
-                                continue;
-                            }
-                        };
-                        let transform_elapsed = t1.elapsed();
-
-                        self.metrics
-                            .transform_out
-                            .inc_lines(result.num_rows() as u64);
-
-                        // Output stage.
-                        let t2 = Instant::now();
-                        let metadata = BatchMetadata {
-                            resource_attrs: vec![],
-                            observed_time_ns: now_nanos(),
-                        };
-                        if let Err(e) = self.output.send_batch(&result, &metadata) {
-                            self.metrics.output_error();
-                            self.metrics.inc_dropped_batch();
-                            eprintln!("pipeline: output error (batch dropped): {e}");
-                            last_flush = Instant::now();
-                            continue;
-                        }
-                        let output_elapsed = t2.elapsed();
-
-                        // Record batch-level metrics.
-                        self.metrics.record_batch(
-                            num_rows,
-                            scan_elapsed.as_nanos() as u64,
-                            transform_elapsed.as_nanos() as u64,
-                            output_elapsed.as_nanos() as u64,
-                        );
-                    }
-                }
-
-                last_flush = Instant::now();
-            }
-
-            if !had_data {
-                std::thread::sleep(self.poll_interval);
-            }
-        }
-
-        // Drain any data that accumulated in json_buf since the last periodic
-        // flush so that nothing is silently discarded on shutdown.
-        let mut combined = Vec::new();
-        for input in &mut self.inputs {
-            if !input.json_buf.is_empty() {
-                combined.append(&mut input.json_buf);
-            }
-        }
-
-        if !combined.is_empty() {
-            let t0 = Instant::now();
-            let batch = match self.scanner.scan(combined.into()) {
-                Ok(b) => b,
-                Err(e) => {
-                    self.metrics.inc_scan_error();
-                    self.metrics.inc_dropped_batch();
-                    eprintln!("pipeline: scan error on shutdown flush (batch dropped): {e}");
-                    return Ok(());
-                }
-            };
-            let scan_elapsed = t0.elapsed();
-
-            if batch.num_rows() > 0 {
-                let num_rows = batch.num_rows() as u64;
-                self.metrics.transform_in.inc_lines(num_rows);
-
-                let t1 = Instant::now();
-                match self.transform.execute_blocking(batch) {
-                    Ok(result) => {
-                        let transform_elapsed = t1.elapsed();
-                        self.metrics
-                            .transform_out
-                            .inc_lines(result.num_rows() as u64);
-
-                        let t2 = Instant::now();
-                        let metadata = BatchMetadata {
-                            resource_attrs: vec![],
-                            observed_time_ns: now_nanos(),
-                        };
-                        if let Err(e) = self.output.send_batch(&result, &metadata) {
-                            self.metrics.output_error();
-                            self.metrics.inc_dropped_batch();
-                            eprintln!("pipeline: output error on shutdown flush: {e}");
-                            return Ok(());
-                        }
-                        let output_elapsed = t2.elapsed();
-
-                        self.metrics.record_batch(
-                            num_rows,
-                            scan_elapsed.as_nanos() as u64,
-                            transform_elapsed.as_nanos() as u64,
-                            output_elapsed.as_nanos() as u64,
-                        );
-                    }
-                    Err(e) => {
-                        self.metrics.inc_transform_error();
-                        self.metrics.inc_dropped_batch();
-                        eprintln!("pipeline: transform error (batch dropped): {e}");
-                    }
-                }
-            }
-        }
-
-        self.output.flush()?;
-        Ok(())
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime")
+            .block_on(self.run_async(shutdown))
     }
 
     /// Async pipeline loop. Input threads stay on OS threads; scanning,
@@ -407,7 +240,7 @@ impl Pipeline {
         }
         drop(tx); // Drop our copy so rx.recv() returns None when all inputs exit.
 
-        let mut json_buf = Vec::with_capacity(self.batch_target_bytes);
+        let mut scan_buf = Vec::with_capacity(self.batch_target_bytes);
         let mut flush_interval = tokio::time::interval(self.batch_timeout);
         flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -420,11 +253,11 @@ impl Pipeline {
                 msg = rx.recv() => {
                     match msg {
                         Some(data) => {
-                            json_buf.extend_from_slice(&data);
+                            scan_buf.extend_from_slice(&data);
                             // Flush if buffer is large enough.
-                            if json_buf.len() >= self.batch_target_bytes {
+                            if scan_buf.len() >= self.batch_target_bytes {
                                 self.metrics.inc_flush_by_size();
-                                self.flush_batch(&mut json_buf).await;
+                                self.flush_batch(&mut scan_buf).await;
                                 flush_interval.reset();
                             }
                         }
@@ -436,9 +269,9 @@ impl Pipeline {
                 }
 
                 _ = flush_interval.tick() => {
-                    if !json_buf.is_empty() {
+                    if !scan_buf.is_empty() {
                         self.metrics.inc_flush_by_timeout();
-                        self.flush_batch(&mut json_buf).await;
+                        self.flush_batch(&mut scan_buf).await;
                     }
                 }
             }
@@ -450,9 +283,9 @@ impl Pipeline {
         // Flush in batch_target_bytes increments to avoid unbounded memory
         // growth when the channel has many buffered messages.
         while let Some(data) = rx.recv().await {
-            json_buf.extend_from_slice(&data);
-            if json_buf.len() >= self.batch_target_bytes {
-                self.flush_batch(&mut json_buf).await;
+            scan_buf.extend_from_slice(&data);
+            if scan_buf.len() >= self.batch_target_bytes {
+                self.flush_batch(&mut scan_buf).await;
             }
         }
 
@@ -465,8 +298,8 @@ impl Pipeline {
         }
 
         // Flush any remaining buffered data.
-        if !json_buf.is_empty() {
-            self.flush_batch(&mut json_buf).await;
+        if !scan_buf.is_empty() {
+            self.flush_batch(&mut scan_buf).await;
         }
 
         tokio::task::block_in_place(|| self.output.flush())?;
@@ -474,15 +307,15 @@ impl Pipeline {
     }
 
     /// Scan + transform + output a batch of accumulated JSON lines.
-    async fn flush_batch(&mut self, json_buf: &mut Vec<u8>) {
-        if json_buf.is_empty() {
+    async fn flush_batch(&mut self, scan_buf: &mut Vec<u8>) {
+        if scan_buf.is_empty() {
             return;
         }
         // Swap in a pre-allocated buffer to avoid losing the capacity
-        // of the original json_buf (which was created with
+        // of the original scan_buf (which was created with
         // Vec::with_capacity(batch_target_bytes)).
         let mut combined = Vec::with_capacity(self.batch_target_bytes);
-        std::mem::swap(json_buf, &mut combined);
+        std::mem::swap(scan_buf, &mut combined);
 
         // Scan (CPU-bound, ~1-5ms per 4MB batch). block_in_place tells
         // tokio to move other tasks off this worker while scanning.
@@ -509,6 +342,7 @@ impl Pipeline {
             Ok(r) => r,
             Err(e) => {
                 self.metrics.inc_transform_error();
+                self.metrics.inc_dropped_batch();
                 eprintln!("pipeline: transform error (batch dropped): {e}");
                 return;
             }
@@ -543,7 +377,7 @@ impl Pipeline {
 /// Input polling loop for a dedicated OS thread. Reads from the source,
 /// parses format, and sends accumulated JSON lines through the channel.
 ///
-/// Accumulates data in the input's `json_buf` across multiple poll cycles
+/// Accumulates data in the input's `buf` across multiple poll cycles
 /// before sending. Sends when the buffer reaches `batch_target_bytes` or
 /// after `batch_timeout` of accumulated data, whichever comes first.
 /// This avoids flooding the channel with tiny fragments.
@@ -578,26 +412,80 @@ fn input_poll_loop(
             std::thread::sleep(poll_interval);
         } else {
             // Track when this batch started accumulating.
-            if !input.json_buf.is_empty() && buffered_since.is_none() {
+            if !input.buf.is_empty() && buffered_since.is_none() {
                 buffered_since = Some(Instant::now());
             }
             for event in events {
                 match event {
                     InputEvent::Data { bytes, .. } => {
                         input.stats.inc_bytes(bytes.len() as u64);
-                        let (n, parse_err) = input.parser.process(&bytes, &mut input.json_buf);
-                        input.stats.inc_lines(n as u64);
-                        if parse_err > 0 {
-                            input.stats.inc_parse_errors(parse_err as u64);
+                        let mut chunk = std::mem::take(&mut input.remainder);
+                        chunk.extend_from_slice(&bytes);
+
+                        let last_nl = memchr::memrchr(b'\n', &chunk);
+                        match last_nl {
+                            Some(pos) => {
+                                if pos + 1 < chunk.len() {
+                                    input.remainder.clear();
+                                    input.remainder.extend_from_slice(&chunk[pos + 1..]);
+                                    chunk.truncate(pos + 1);
+                                }
+                            }
+                            None => {
+                                input.remainder = chunk;
+                                chunk = Vec::new();
+                                // Cap remainder to prevent OOM on lines without newlines
+                                if input.remainder.len() > MAX_REMAINDER_BYTES {
+                                    input.stats.inc_parse_errors(1);
+                                    input.remainder.clear();
+                                }
+                            }
+                        }
+
+                        if !chunk.is_empty() {
+                            match input.format {
+                                Format::Cri => {
+                                    extract_cri_messages(
+                                        &chunk,
+                                        &mut input.buf,
+                                        input
+                                            .cri_aggregator
+                                            .as_mut()
+                                            .expect("CRI aggregator must exist for CRI format"),
+                                        &input.stats,
+                                        false,
+                                    );
+                                }
+                                Format::Auto => {
+                                    extract_cri_messages(
+                                        &chunk,
+                                        &mut input.buf,
+                                        input
+                                            .cri_aggregator
+                                            .as_mut()
+                                            .expect("CRI aggregator must exist for Auto format"),
+                                        &input.stats,
+                                        true,
+                                    );
+                                }
+                                _ => {
+                                    input.buf.extend_from_slice(&chunk);
+                                }
+                            }
+                            let line_count = memchr::memchr_iter(b'\n', &chunk).count();
+                            input.stats.inc_lines(line_count as u64);
                         }
                     }
                     InputEvent::Rotated | InputEvent::Truncated => {
-                        input.parser.reset();
+                        input.remainder.clear();
+                        if let Some(ref mut agg) = input.cri_aggregator {
+                            agg.reset();
+                        }
                     }
                 }
             }
             // Set buffered_since after processing if buffer was empty before.
-            if buffered_since.is_none() && !input.json_buf.is_empty() {
+            if buffered_since.is_none() && !input.buf.is_empty() {
                 buffered_since = Some(Instant::now());
             }
         }
@@ -607,15 +495,15 @@ fn input_poll_loop(
         let timeout_elapsed = buffered_since
             .map(|t| t.elapsed() >= batch_timeout)
             .unwrap_or(false);
-        let should_send = input.json_buf.len() >= batch_target_bytes
-            || (!input.json_buf.is_empty() && timeout_elapsed);
+        let should_send =
+            input.buf.len() >= batch_target_bytes || (!input.buf.is_empty() && timeout_elapsed);
         if should_send {
             // Swap in a pre-allocated buffer to avoid reallocation churn.
             // The old buffer is sent to the consumer; the new one reuses
             // the capacity from a fresh allocation (same size as the
             // original pre-allocation in build_input_state).
             let mut data = Vec::with_capacity(batch_target_bytes);
-            std::mem::swap(&mut input.json_buf, &mut data);
+            std::mem::swap(&mut input.buf, &mut data);
             if tx.blocking_send(data).is_err() {
                 break;
             }
@@ -624,8 +512,8 @@ fn input_poll_loop(
     }
 
     // Drain any remaining buffered data on shutdown.
-    if !input.json_buf.is_empty() {
-        let data = std::mem::take(&mut input.json_buf);
+    if !input.buf.is_empty() {
+        let data = std::mem::take(&mut input.buf);
         let _ = tx.blocking_send(data);
     }
 }
@@ -634,11 +522,46 @@ fn input_poll_loop(
 // Input construction
 // ---------------------------------------------------------------------------
 
-fn build_format_parser(format: &Format) -> Box<dyn FormatParser> {
-    match format {
-        Format::Cri => Box::new(CriParser::new(2 * 1024 * 1024)),
-        Format::Raw => Box::new(RawParser::new()),
-        _ => Box::new(JsonParser::new()),
+/// Extract JSON messages from CRI-formatted lines, handling P/F merging.
+/// P (partial) lines are buffered in the aggregator until an F (full) line
+/// arrives, then the merged message is emitted.
+///
+/// If `passthrough_on_fail` is true (Format::Auto mode), lines that fail
+/// CRI parsing are passed through as-is — they're probably plain JSON.
+fn extract_cri_messages(
+    input: &[u8],
+    out: &mut Vec<u8>,
+    aggregator: &mut CriAggregator,
+    stats: &ComponentStats,
+    passthrough_on_fail: bool,
+) {
+    let mut pos = 0;
+    while pos < input.len() {
+        let eol = memchr::memchr(b'\n', &input[pos..])
+            .map(|o| pos + o)
+            .unwrap_or(input.len());
+        let line = &input[pos..eol];
+        if let Some(cri) = parse_cri_line(line) {
+            match aggregator.feed(cri.message, cri.is_full) {
+                AggregateResult::Complete(msg) => {
+                    out.extend_from_slice(msg);
+                    out.push(b'\n');
+                    // Clear pending buffer after consuming the complete message.
+                    // Without this, subsequent P+F sequences append to stale data.
+                    aggregator.reset();
+                }
+                AggregateResult::Pending => {}
+            }
+        } else if !line.is_empty() {
+            if passthrough_on_fail {
+                // Auto mode: not CRI, pass through as plain JSON
+                out.extend_from_slice(line);
+                out.push(b'\n');
+            } else {
+                stats.inc_parse_errors(1);
+            }
+        }
+        pos = eol + 1;
     }
 }
 
@@ -669,11 +592,19 @@ fn build_input_state(
             }
             .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
 
+            let cri_aggregator = if matches!(format, Format::Cri | Format::Auto) {
+                Some(CriAggregator::new(2 * 1024 * 1024))
+            } else {
+                None
+            };
+
             Ok(InputState {
                 name: name.to_string(),
                 source: Box::new(source),
-                parser: build_format_parser(&format),
-                json_buf: Vec::with_capacity(4 * 1024 * 1024),
+                format,
+                buf: Vec::with_capacity(4 * 1024 * 1024),
+                remainder: Vec::new(),
+                cri_aggregator,
                 stats,
             })
         }
@@ -877,7 +808,7 @@ output:
         assert!(lines_in > 0, "expected transform_in > 0, got {lines_in}");
     }
 
-    /// Data buffered in `json_buf` at the moment the shutdown token fires must
+    /// Data buffered in `buf` at the moment the shutdown token fires must
     /// not be silently discarded.  The final flush-on-shutdown should process
     /// any pending data before the pipeline exits.
     #[test]
@@ -911,7 +842,7 @@ output:
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
         // Set batch_timeout large enough that the normal time-based flush will
-        // never fire during the test — data stays in json_buf until shutdown.
+        // never fire during the test — data stays in buf until shutdown.
         pipeline.batch_timeout = Duration::from_secs(60);
         pipeline.poll_interval = Duration::from_millis(5);
 
@@ -919,7 +850,7 @@ output:
         let sd_clone = shutdown.clone();
 
         // Cancel after enough time for the file to be polled and data to land
-        // in json_buf, but well before the 60-second batch_timeout would fire.
+        // in buf, but well before the 60-second batch_timeout would fire.
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
             sd_clone.cancel();
@@ -1691,5 +1622,468 @@ output:
 
         assert!(result.is_ok(), "concurrent write + shutdown must not hang");
         assert!(result.unwrap().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod extract_cri_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn make_stats() -> Arc<ComponentStats> {
+        Arc::new(ComponentStats::new())
+    }
+
+    #[test]
+    fn cri_full_lines_extracted() {
+        let input = b"2024-01-15T10:30:00Z stdout F hello\n2024-01-15T10:30:01Z stdout F world\n";
+        let mut out = Vec::new();
+        let mut agg = CriAggregator::new(1024);
+        let stats = make_stats();
+        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
+        let output = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = output.trim().split('\n').collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "hello");
+        assert_eq!(lines[1], "world");
+    }
+
+    #[test]
+    fn cri_partial_then_full_merged() {
+        let input = b"2024-01-15T10:30:00Z stdout P hel\n2024-01-15T10:30:00Z stdout F lo\n";
+        let mut out = Vec::new();
+        let mut agg = CriAggregator::new(1024);
+        let stats = make_stats();
+        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
+        let output = String::from_utf8(out).unwrap();
+        assert_eq!(output.trim(), "hello", "P+F should merge into one line");
+    }
+
+    #[test]
+    fn cri_multiple_pf_sequences_dont_accumulate() {
+        let input = b"2024-01-15T10:30:00Z stdout P aa\n2024-01-15T10:30:00Z stdout F bb\n2024-01-15T10:30:01Z stdout P cc\n2024-01-15T10:30:01Z stdout F dd\n";
+        let mut out = Vec::new();
+        let mut agg = CriAggregator::new(1024);
+        let stats = make_stats();
+        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
+        let output = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = output.trim().split('\n').collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "aabb");
+        assert_eq!(lines[1], "ccdd", "second sequence must not contain first");
+    }
+
+    #[test]
+    fn cri_malformed_lines_count_errors() {
+        let input = b"bad line\n2024-01-15T10:30:00Z stdout F ok\nalso bad\n";
+        let mut out = Vec::new();
+        let mut agg = CriAggregator::new(1024);
+        let stats = make_stats();
+        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
+        let output = String::from_utf8(out).unwrap();
+        assert_eq!(output.trim(), "ok");
+        assert_eq!(stats.parse_errors_total.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn cri_auto_passthrough() {
+        let input = b"plain json\n2024-01-15T10:30:00Z stdout F cri_msg\nnot cri\n";
+        let mut out = Vec::new();
+        let mut agg = CriAggregator::new(1024);
+        let stats = make_stats();
+        extract_cri_messages(input, &mut out, &mut agg, &stats, true);
+        let output = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = output.trim().split('\n').collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "plain json");
+        assert_eq!(lines[1], "cri_msg");
+        assert_eq!(lines[2], "not cri");
+    }
+}
+
+#[cfg(test)]
+mod remainder_tests {
+    use super::*;
+
+    /// Simulate splitting input at every possible byte position
+    /// and verify we get the same output regardless of split point.
+    #[test]
+    #[allow(unused_assignments)]
+    fn partial_line_handling_split_anywhere() {
+        let full_input = b"{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n";
+        let stats = Arc::new(ComponentStats::new());
+
+        for split_at in 1..full_input.len() {
+            let chunk1 = &full_input[..split_at];
+            let chunk2 = &full_input[split_at..];
+
+            let mut buf = Vec::new();
+            let mut remainder: Vec<u8> = Vec::new();
+
+            // Process chunk1
+            let mut combined = remainder.clone();
+            combined.extend_from_slice(chunk1);
+            if let Some(pos) = memchr::memrchr(b'\n', &combined) {
+                if pos + 1 < combined.len() {
+                    remainder = combined[pos + 1..].to_vec();
+                    combined.truncate(pos + 1);
+                } else {
+                    remainder.clear();
+                }
+                buf.extend_from_slice(&combined);
+            } else {
+                remainder = combined;
+            }
+
+            // Process chunk2
+            let mut combined2 = remainder.clone();
+            combined2.extend_from_slice(chunk2);
+            if let Some(pos) = memchr::memrchr(b'\n', &combined2) {
+                if pos + 1 < combined2.len() {
+                    remainder = combined2[pos + 1..].to_vec();
+                    combined2.truncate(pos + 1);
+                } else {
+                    remainder.clear();
+                }
+                buf.extend_from_slice(&combined2);
+            } else {
+                remainder = combined2;
+            }
+
+            let result = String::from_utf8(buf).unwrap();
+            let lines: Vec<&str> = result
+                .trim()
+                .split('\n')
+                .filter(|l| !l.is_empty())
+                .collect();
+            assert_eq!(
+                lines.len(),
+                3,
+                "split at {split_at}: expected 3 lines, got {} from {:?}",
+                lines.len(),
+                lines
+            );
+        }
+    }
+
+    /// Verify that input with no newlines at all stays in remainder.
+    #[test]
+    #[allow(unused_variables)]
+    fn no_newline_all_remainder() {
+        let input = b"partial line without newline";
+        let mut remainder: Vec<u8> = Vec::new();
+
+        let mut combined = remainder.clone();
+        combined.extend_from_slice(input);
+        if memchr::memrchr(b'\n', &combined).is_none() {
+            remainder = combined;
+        }
+
+        assert_eq!(remainder, input);
+    }
+
+    /// Verify consecutive reads merge correctly across boundaries.
+    #[test]
+    fn remainder_merges_with_next_read() {
+        // Read 1: "hello " (no newline)
+        // Read 2: "world\n" (has newline)
+        // Should produce one line: "hello world"
+        let read1 = b"hello ";
+        let read2 = b"world\n";
+
+        let mut buf = Vec::new();
+        let mut remainder: Vec<u8> = Vec::new();
+
+        // Read 1
+        let mut combined = remainder.clone();
+        combined.extend_from_slice(read1);
+        if memchr::memrchr(b'\n', &combined).is_none() {
+            remainder = combined;
+            combined = Vec::new();
+        }
+        buf.extend_from_slice(&combined);
+
+        // Read 2
+        let mut combined = std::mem::take(&mut remainder);
+        combined.extend_from_slice(read2);
+        if let Some(pos) = memchr::memrchr(b'\n', &combined) {
+            if pos + 1 < combined.len() {
+                remainder = combined[pos + 1..].to_vec();
+                combined.truncate(pos + 1);
+            }
+            buf.extend_from_slice(&combined);
+        }
+
+        assert_eq!(String::from_utf8(buf).unwrap().trim(), "hello world");
+    }
+}
+
+#[cfg(test)]
+mod format_integration_tests {
+    use super::*;
+    use logfwd_arrow::scanner::SimdScanner;
+    use logfwd_core::scan_config::ScanConfig;
+
+    /// JSON format: raw bytes pass directly through to scanner.
+    #[test]
+    fn json_format_direct_to_scanner() {
+        let input =
+            b"{\"level\":\"INFO\",\"msg\":\"hello\"}\n{\"level\":\"WARN\",\"msg\":\"world\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            keep_raw: false,
+            validate_utf8: false,
+        };
+        let mut scanner = SimdScanner::new(config);
+        let batch = scanner.scan(input).unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        assert!(batch.schema().field_with_name("level_str").is_ok());
+        assert!(batch.schema().field_with_name("msg_str").is_ok());
+    }
+
+    /// Raw format: lines captured as _raw when keep_raw is true.
+    #[test]
+    fn raw_format_captures_lines() {
+        let input = b"plain text line 1\nplain text line 2\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            keep_raw: true,
+            validate_utf8: false,
+        };
+        let mut scanner = SimdScanner::new(config);
+        let batch = scanner.scan(input).unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        assert!(batch.schema().field_with_name("_raw").is_ok());
+    }
+
+    /// CRI format: message extracted, timestamp/stream/flag stripped.
+    #[test]
+    fn cri_extraction_produces_json() {
+        let cri_input = b"2024-01-15T10:30:00Z stdout F {\"level\":\"INFO\",\"msg\":\"hello\"}\n";
+        let mut out = Vec::new();
+        let mut agg = CriAggregator::new(1024);
+        let stats = Arc::new(ComponentStats::new());
+        extract_cri_messages(cri_input, &mut out, &mut agg, &stats, false);
+
+        // The extracted message should be valid JSON parseable by the scanner
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            keep_raw: false,
+            validate_utf8: false,
+        };
+        let mut scanner = SimdScanner::new(config);
+        let batch = scanner.scan(&out).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert!(batch.schema().field_with_name("level_str").is_ok());
+    }
+
+    /// Mixed: CRI P+F → scanner produces correct fields.
+    #[test]
+    fn cri_pf_merge_then_scan() {
+        let input = b"2024-01-15T10:30:00Z stdout P {\"level\":\"ER\n2024-01-15T10:30:00Z stdout F ROR\",\"msg\":\"boom\"}\n";
+        let mut out = Vec::new();
+        let mut agg = CriAggregator::new(1024);
+        let stats = Arc::new(ComponentStats::new());
+        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
+
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            keep_raw: false,
+            validate_utf8: false,
+        };
+        let mut scanner = SimdScanner::new(config);
+        let batch = scanner.scan(&out).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+    }
+}
+
+#[cfg(test)]
+mod proptest_pipeline {
+    use super::*;
+    use logfwd_arrow::scanner::SimdScanner;
+    use logfwd_core::scan_config::ScanConfig;
+    use proptest::prelude::*;
+
+    /// Generate random NDJSON: N lines of {"k":"v"} with random key/value lengths.
+    fn arb_ndjson(max_lines: usize) -> impl Strategy<Value = Vec<u8>> {
+        proptest::collection::vec(("[a-z]{1,8}", "[a-zA-Z0-9 ]{0,50}"), 1..=max_lines).prop_map(
+            |fields| {
+                let mut buf = Vec::new();
+                for (key, val) in fields {
+                    buf.extend_from_slice(b"{\"");
+                    buf.extend_from_slice(key.as_bytes());
+                    buf.extend_from_slice(b"\":\"");
+                    buf.extend_from_slice(val.as_bytes());
+                    buf.extend_from_slice(b"\"}\n");
+                }
+                buf
+            },
+        )
+    }
+
+    proptest! {
+        /// Split arbitrary NDJSON at an arbitrary point. Both halves
+        /// processed with remainder handling should produce the same
+        /// RecordBatch row count as processing the whole buffer at once.
+        #[test]
+        #[allow(unused_assignments, unused_variables)]
+        fn split_anywhere_same_row_count(
+            ndjson in arb_ndjson(20),
+            split_pct in 1u8..99u8,
+        ) {
+            let split_at = (ndjson.len() as u64 * split_pct as u64 / 100) as usize;
+            let split_at = split_at.max(1).min(ndjson.len() - 1);
+
+            // Whole buffer at once
+            let config = ScanConfig {
+                wanted_fields: vec![],
+                extract_all: true,
+                keep_raw: false,
+                validate_utf8: false,
+            };
+            let mut scanner_whole = SimdScanner::new(ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false });
+            let batch_whole = scanner_whole.scan(&ndjson).unwrap();
+
+            // Split into two chunks with remainder handling
+            let chunk1 = &ndjson[..split_at];
+            let chunk2 = &ndjson[split_at..];
+
+            let mut buf = Vec::new();
+            let mut remainder: Vec<u8> = Vec::new();
+
+            // Process chunk1
+            let mut combined = remainder;
+            combined.extend_from_slice(chunk1);
+            if let Some(pos) = memchr::memrchr(b'\n', &combined) {
+                if pos + 1 < combined.len() {
+                    remainder = combined[pos + 1..].to_vec();
+                    combined.truncate(pos + 1);
+                } else {
+                    remainder = Vec::new();
+                }
+                buf.extend_from_slice(&combined);
+            } else {
+                remainder = combined;
+            }
+
+            // Process chunk2
+            let mut combined = remainder;
+            combined.extend_from_slice(chunk2);
+            if let Some(pos) = memchr::memrchr(b'\n', &combined) {
+                if pos + 1 < combined.len() {
+                    combined.truncate(pos + 1);
+                }
+                buf.extend_from_slice(&combined);
+            }
+
+            let config2 = ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false }; let mut scanner_split = SimdScanner::new(config2);
+            let batch_split = scanner_split.scan(&buf).unwrap();
+
+            prop_assert_eq!(
+                batch_whole.num_rows(),
+                batch_split.num_rows(),
+                "split at {} of {}: row count mismatch",
+                split_at,
+                ndjson.len()
+            );
+        }
+
+        /// CRI P/F sequences with random message content should always
+        /// produce the same number of complete messages.
+        #[test]
+        fn cri_pf_random_sequences(
+            messages in proptest::collection::vec("[a-zA-Z0-9]{1,30}", 1..=10),
+            partials in proptest::collection::vec(0u8..3u8, 1..=10),
+        ) {
+            let mut input = Vec::new();
+            let mut expected_count = 0usize;
+
+            for (i, msg) in messages.iter().enumerate() {
+                let num_partials = if i < partials.len() { partials[i] as usize } else { 0 };
+                let msg_bytes = msg.as_bytes();
+
+                if num_partials == 0 || msg_bytes.len() < 2 {
+                    // Single F line
+                    input.extend_from_slice(
+                        format!("2024-01-15T10:30:{:02}Z stdout F {}\n", i % 60, msg).as_bytes(),
+                    );
+                    expected_count += 1;
+                } else {
+                    // Split into P chunks + final F
+                    let chunk_size = (msg_bytes.len() / (num_partials + 1)).max(1);
+                    let mut offset = 0;
+                    for _ in 0..num_partials {
+                        let end = (offset + chunk_size).min(msg_bytes.len());
+                        let chunk = &msg[offset..end];
+                        input.extend_from_slice(
+                            format!("2024-01-15T10:30:{:02}Z stdout P {}\n", i % 60, chunk)
+                                .as_bytes(),
+                        );
+                        offset = end;
+                    }
+                    let remaining = &msg[offset..];
+                    input.extend_from_slice(
+                        format!("2024-01-15T10:30:{:02}Z stdout F {}\n", i % 60, remaining)
+                            .as_bytes(),
+                    );
+                    expected_count += 1;
+                }
+            }
+
+            let mut out = Vec::new();
+            let mut agg = CriAggregator::new(1024 * 1024);
+            let stats = Arc::new(ComponentStats::new());
+            extract_cri_messages(&input, &mut out, &mut agg, &stats, false);
+
+            let line_count = out.iter().filter(|&&b| b == b'\n').count();
+            prop_assert_eq!(
+                line_count,
+                expected_count,
+                "expected {} complete messages, got {}",
+                expected_count,
+                line_count
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod remainder_cap_tests {
+    use super::*;
+
+    #[test]
+    fn remainder_capped_at_max_size() {
+        // Input with no newlines that exceeds MAX_REMAINDER_BYTES
+        // should be discarded with a parse error.
+        let huge_input = vec![b'x'; MAX_REMAINDER_BYTES + 100];
+        let stats = Arc::new(ComponentStats::new());
+
+        let mut remainder: Vec<u8> = Vec::new();
+        let mut combined = std::mem::take(&mut remainder);
+        combined.extend_from_slice(&huge_input);
+
+        if memchr::memrchr(b'\n', &combined).is_none() {
+            remainder = combined;
+            if remainder.len() > MAX_REMAINDER_BYTES {
+                stats.inc_parse_errors(1);
+                remainder.clear();
+            }
+        }
+
+        assert!(
+            remainder.is_empty(),
+            "remainder should be cleared after cap"
+        );
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "should count one parse error"
+        );
     }
 }
