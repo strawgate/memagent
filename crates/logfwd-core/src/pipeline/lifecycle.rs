@@ -244,12 +244,13 @@ fn record_ack_and_advance(
 
     // Remove from in-flight by exact BatchId (O(log n), no scan needed)
     if let Some(source_flights) = in_flight.get_mut(&source)
-        && source_flights.remove(&batch_id).is_some()
+        && let Some(expected_end_offset) = source_flights.remove(&batch_id)
     {
+        debug_assert_eq!(expected_end_offset, receipt.end_offset);
         pending_acks
             .entry(source)
             .or_default()
-            .insert(batch_id, receipt.end_offset);
+            .insert(batch_id, expected_end_offset);
     }
 
     // Try to advance committed offset

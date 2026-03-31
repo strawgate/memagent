@@ -236,6 +236,7 @@ mod verification {
         let sending = ticket.begin_send();
         let receipt = sending.ack();
 
+        assert_eq!(receipt.batch_id, id);
         assert_eq!(receipt.source, source);
         assert_eq!(receipt.end_offset, end);
         assert!(receipt.delivered);
@@ -274,6 +275,7 @@ mod verification {
         let sending = ticket.begin_send();
         let receipt = sending.reject();
 
+        assert_eq!(receipt.batch_id, id);
         assert!(!receipt.delivered);
         assert_eq!(receipt.end_offset, end);
     }

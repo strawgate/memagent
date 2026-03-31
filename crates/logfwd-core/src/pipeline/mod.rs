@@ -2,13 +2,13 @@
 //!
 //! Separates pipeline decision logic from IO/async. The Rust compiler
 //! enforces state transitions via typestate pattern (illegal transitions
-//! are compile errors). Kani proves business invariants. TLA+ proves
-//! liveness.
+//! are compile errors). Kani proves business invariants; TLA+ liveness
+//! modeling is planned in Phase 7.
 //!
 //! # Architecture
 //!
 //! Two components:
-//! - [`BatchTicket`]: Per-batch lifecycle via typestate (Queued → Sending → Acked)
+//! - [`BatchTicket`]: Per-batch lifecycle via typestate (Queued → Sending → Acked/Rejected)
 //! - [`PipelineMachine`]: Pipeline lifecycle + ordered offset tracking
 
 mod batch;

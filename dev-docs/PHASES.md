@@ -68,16 +68,17 @@ Extract run_async decisions into pure state machine in core.
 5b: PipelineMachine lifecycle           ✅ DONE
     Starting → Running → Draining → Stopped
     Ordered ACK offset tracking (Filebeat registrar pattern)
-    4 Kani proofs (monotonic offset, final offset, drain→stop,
-    multi-source independence), 6 unit tests
+    6 Kani proofs (monotonic offset, final offset, drain→stop,
+    multi-source independence, receipt validation, duplicate ack handling),
+    13 unit tests
 
 5c: Wire into pipeline.rs              → TODO
     Replace ad-hoc offset tracking with PipelineMachine
     BatchTicket replaces implicit batch lifecycle
 
 5d: proptest random event sequences    ✅ DONE
-    3 property tests: offset monotonicity, final offset,
-    drain completion — random action sequences
+    4 property tests: offset monotonicity, final offset,
+    drain completion, multi-source simulation — random action sequences
 ```
 
 ## Phase 6: proptest state machines + CI hardening (#271)
