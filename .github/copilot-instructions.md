@@ -4,7 +4,7 @@ Read `AGENTS.md` in the repository root for full project context, crate structur
 
 ## Quick Reference
 
-- **Language:** Rust (stable toolchain, unsafe only in SIMD layer)
+- **Language:** Rust (stable toolchain, no hand-written unsafe — SIMD via wide crate)
 - **Performance target:** 1.7M lines/sec CRI parsing + OTLP encoding, single-core ARM64
 - **Build:** `just ci` (lint + test — run before any PR)
 - **Test:** `just test`

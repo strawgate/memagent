@@ -175,7 +175,7 @@ Since we target both x86_64 and aarch64, `wide` is strictly better.
 ## Comparison: before and after
 
 ### Before (hand-rolled, ~150 lines unsafe)
-```
+```text
 structural.rs:
   mod simd_neon     — 55 lines, unsafe, NEON intrinsics
   mod simd_avx2     — 30 lines, unsafe, AVX2 intrinsics
@@ -189,7 +189,7 @@ chunk_classify.rs:
 ```
 
 ### After (wide, ~25 lines safe)
-```
+```text
 structural.rs:
   fn mask64()       — 6 lines, safe
   fn find_structural_chars() — 15 lines, safe, all platforms

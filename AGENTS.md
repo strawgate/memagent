@@ -72,7 +72,7 @@ Key decisions:
 ## Code Quality
 
 - `just ci` must pass before submitting
-- No per-line heap allocations in the hot path (scanner, builders, OTLP encoder)
+- No per-line heap allocations in the hot path (scanner, format parser, CRI parser, builders, OTLP encoder, compress)
 - No `.unwrap()` in production code paths — use `?` or `.expect("reason")`
 - No new dependencies without justification
 - Public functions need doc comments
