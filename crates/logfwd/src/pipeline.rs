@@ -362,6 +362,7 @@ impl Pipeline {
         };
         if let Err(e) = tokio::task::block_in_place(|| self.output.send_batch(&result, &metadata)) {
             self.metrics.output_error();
+            self.metrics.inc_dropped_batch();
             eprintln!("pipeline: output error (batch dropped): {e}");
             return;
         }
