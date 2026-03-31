@@ -796,11 +796,22 @@ mod tests {
     fn http_get(port: u16, path: &str) -> (u16, String) {
         use std::io::Write;
         use std::net::TcpStream;
+        use std::time::Duration;
 
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect failed");
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .ok();
+        let addr = format!("127.0.0.1:{}", port);
+        let mut stream = None;
+
+        // Retry connection a few times to handle slow server bind on CI.
+        for _ in 0..20 {
+            if let Ok(s) = TcpStream::connect(&addr) {
+                stream = Some(s);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let mut stream = stream.expect("connect failed after retries");
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
         let req = format!(
             "GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
             path
