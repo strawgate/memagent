@@ -12,5 +12,6 @@ pub mod input;
 pub mod otlp;
 pub mod scan_config;
 pub mod scanner;
+/// Streaming SIMD structural character detection (replaces chunk_classify).
 pub mod structural;
 pub mod tail;

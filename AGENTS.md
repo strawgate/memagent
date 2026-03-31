@@ -9,7 +9,7 @@ Read these project docs first:
 
 ## Crate Structure
 
-```
+```text
 logfwd-core         Parsing, structural SIMD detection, pipeline logic
   structural.rs     Streaming 10-char SIMD detection via `wide` crate
   scanner.rs        JSON field extraction using StructuralIndex bitmasks
@@ -43,7 +43,7 @@ Library-specific guides — read the relevant ones before working on related cod
 
 Key decisions:
 - Two-stage architecture: SIMD detects (parallel), scanner consumes (sequential)
-- Streaming per-block: no stored bitmask vectors (simdjson pattern)
+- Streaming per-block: quote/in_string bitmasks stored, others consumed immediately (moving toward zero stored)
 - Portable SIMD via `wide` crate: no hand-rolled platform backends
 - Three-layer verification: Kani (scalar) → proptest (SIMD ≡ scalar) → Kani (consumers)
 - Pipeline state machine over linear BatchToken (async cancellation prevents linear types)

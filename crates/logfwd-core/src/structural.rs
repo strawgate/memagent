@@ -150,6 +150,10 @@ impl StreamingClassifier {
     ///
     /// `block_len` is the number of valid bytes in this block (64 for full
     /// blocks, less for the tail block). Bits beyond `block_len` are masked out.
+    ///
+    /// **Assumes NDJSON input**: newlines are not string-masked because NDJSON
+    /// cannot contain literal newlines inside JSON strings (they must be `\n`
+    /// escape sequences). Do not use this for pretty-printed/multiline JSON.
     pub fn process_block(&mut self, raw: &RawBlockMasks, block_len: usize) -> ProcessedBlock {
         let real_q = compute_real_quotes(raw.quote, raw.backslash, &mut self.prev_odd_backslash);
         let raw_string_bits = prefix_xor(real_q) ^ self.prev_in_string;
@@ -405,19 +409,10 @@ pub fn find_char_mask(block: &[u8; 64], needle: u8) -> u64 {
 
 use wide::u8x16;
 
-/// Extract a u64 bitmask for one needle across a 64-byte block.
-///
-/// Uses `wide::u8x16` (4 × 16-byte loads) because u8x16 maps to a single
-/// native register on both NEON (128-bit) and SSE2 (128-bit). u8x32 would
-/// silently degrade to 2× u8x16 on aarch64 since NEON has no 256-bit ops.
-/// The `wide` crate handles platform dispatch at compile time.
+/// Compare one needle against 4 pre-loaded SIMD chunks, return u64 bitmask.
 #[inline(always)]
-fn mask64(block: &[u8; 64], needle: u8) -> u64 {
+fn cmp4(c0: u8x16, c1: u8x16, c2: u8x16, c3: u8x16, needle: u8) -> u64 {
     let n = u8x16::splat(needle);
-    let c0 = u8x16::new(block[0..16].try_into().unwrap());
-    let c1 = u8x16::new(block[16..32].try_into().unwrap());
-    let c2 = u8x16::new(block[32..48].try_into().unwrap());
-    let c3 = u8x16::new(block[48..64].try_into().unwrap());
     (c0.simd_eq(n).to_bitmask() as u64)
         | ((c1.simd_eq(n).to_bitmask() as u64) << 16)
         | ((c2.simd_eq(n).to_bitmask() as u64) << 32)
@@ -426,21 +421,27 @@ fn mask64(block: &[u8; 64], needle: u8) -> u64 {
 
 /// Detect all 10 structural characters using portable SIMD.
 ///
-/// Loads the 64-byte block once (4 × 16-byte SIMD loads), then runs
-/// 10 comparisons against the loaded data. All platforms (NEON, AVX2,
-/// SSE2, WASM, scalar) use the same code.
+/// Loads the 64-byte block once (4 × 16-byte SIMD loads via `wide::u8x16`),
+/// then runs 10 comparisons against the loaded data. u8x16 maps to a single
+/// native register on both NEON (128-bit) and SSE2 (128-bit). The `wide`
+/// crate handles platform dispatch at compile time.
 pub fn find_structural_chars(block: &[u8; 64]) -> RawBlockMasks {
+    let c0 = u8x16::new(block[0..16].try_into().unwrap());
+    let c1 = u8x16::new(block[16..32].try_into().unwrap());
+    let c2 = u8x16::new(block[32..48].try_into().unwrap());
+    let c3 = u8x16::new(block[48..64].try_into().unwrap());
+
     RawBlockMasks {
-        newline: mask64(block, b'\n'),
-        space: mask64(block, b' '),
-        quote: mask64(block, b'"'),
-        backslash: mask64(block, b'\\'),
-        comma: mask64(block, b','),
-        colon: mask64(block, b':'),
-        open_brace: mask64(block, b'{'),
-        close_brace: mask64(block, b'}'),
-        open_bracket: mask64(block, b'['),
-        close_bracket: mask64(block, b']'),
+        newline: cmp4(c0, c1, c2, c3, b'\n'),
+        space: cmp4(c0, c1, c2, c3, b' '),
+        quote: cmp4(c0, c1, c2, c3, b'"'),
+        backslash: cmp4(c0, c1, c2, c3, b'\\'),
+        comma: cmp4(c0, c1, c2, c3, b','),
+        colon: cmp4(c0, c1, c2, c3, b':'),
+        open_brace: cmp4(c0, c1, c2, c3, b'{'),
+        close_brace: cmp4(c0, c1, c2, c3, b'}'),
+        open_bracket: cmp4(c0, c1, c2, c3, b'['),
+        close_bracket: cmp4(c0, c1, c2, c3, b']'),
     }
 }
 
@@ -534,9 +535,9 @@ mod tests {
 
     #[test]
     fn classifier_handles_escapes() {
-        // {"k":"val\"ues"}  — escaped quote should not close the string
+        // {"k":"value\"s"}  — escaped quote should not close the string
         let mut buf = [b' '; 64];
-        let json = br#"{"k":"val\"ues"}"#;
+        let json = br#"{"k":"value\"s"}"#;
         buf[..json.len()].copy_from_slice(json);
         let block: &[u8; 64] = &buf;
 
@@ -769,7 +770,11 @@ mod tests {
 
                 // Subtract colons/commas that are AFTER the newline in this block
                 // (they belong to the next line)
-                let after_nl_mask = !((1u64 << (bit_pos + 1)) - 1);
+                let after_nl_mask = if bit_pos >= 63 {
+                    0
+                } else {
+                    !((1u64 << (bit_pos + 1)) - 1)
+                };
                 let colons_after = (processed.colon & after_nl_mask).count_ones();
                 let commas_after = (processed.comma & after_nl_mask).count_ones();
 
