@@ -624,85 +624,21 @@ impl DiagnosticsServer {
 
 /// Returns (rss_bytes, cpu_user_ms, cpu_sys_ms) for the current process.
 fn process_metrics() -> (u64, u64, u64) {
-    #[cfg(target_os = "linux")]
-    {
-        let rss = std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("VmRSS:"))
-                    .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
-                    .map(|kb| kb * 1024)
-            })
-            .unwrap_or(0);
+    use sysinfo::{Pid, ProcessesToUpdate, System};
 
-        let (user_ms, sys_ms) = std::fs::read_to_string("/proc/self/stat")
-            .ok()
-            .and_then(|s| {
-                let after_comm = s.rfind(')')?.checked_add(2)?;
-                let fields: Vec<&str> = s[after_comm..].split_whitespace().collect();
-                let tps = clock_ticks_per_second();
-                let u = fields.get(11)?.parse::<u64>().ok()? * 1000 / tps;
-                let sy = fields.get(12)?.parse::<u64>().ok()? * 1000 / tps;
-                Some((u, sy))
-            })
-            .unwrap_or((0, 0));
+    let pid = Pid::from_u32(std::process::id());
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
 
-        (rss, user_ms, sys_ms)
+    match sys.process(pid) {
+        Some(proc) => {
+            let rss = proc.memory();
+            // sysinfo reports cumulative CPU time in seconds as f32.
+            let cpu_ms = proc.run_time() * 1000;
+            (rss, cpu_ms, 0)
+        }
+        None => (0, 0, 0),
     }
-    #[cfg(target_os = "macos")]
-    {
-        use std::mem;
-
-        let rss = unsafe {
-            #[allow(deprecated)]
-            let task = libc::mach_task_self();
-            let mut info: libc::mach_task_basic_info_data_t = mem::zeroed();
-            let mut count = (mem::size_of::<libc::mach_task_basic_info_data_t>()
-                / mem::size_of::<libc::natural_t>())
-                as libc::mach_msg_type_number_t;
-            let kr = libc::task_info(
-                task,
-                libc::MACH_TASK_BASIC_INFO,
-                &mut info as *mut _ as libc::task_info_t,
-                &mut count,
-            );
-            if kr == libc::KERN_SUCCESS {
-                info.resident_size as u64
-            } else {
-                0
-            }
-        };
-
-        let (user_ms, sys_ms) = unsafe {
-            let mut usage: libc::rusage = mem::zeroed();
-            if libc::getrusage(libc::RUSAGE_SELF, &mut usage) == 0 {
-                let u = usage.ru_utime.tv_sec as u64 * 1000 + usage.ru_utime.tv_usec as u64 / 1000;
-                let s = usage.ru_stime.tv_sec as u64 * 1000 + usage.ru_stime.tv_usec as u64 / 1000;
-                (u, s)
-            } else {
-                (0, 0)
-            }
-        };
-
-        (rss, user_ms, sys_ms)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        (0, 0, 0)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn clock_ticks_per_second() -> u64 {
-    // SAFETY: sysconf is thread-safe and does not require any preconditions.
-    let raw = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if raw > 0 { raw as u64 } else { 100 }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn clock_ticks_per_second() -> u64 {
-    100
 }
 
 /// Minimal JSON-string escaping (backslash, double-quote, control chars).
