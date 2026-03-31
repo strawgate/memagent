@@ -70,10 +70,10 @@ impl Pipeline {
             match enrichment {
                 EnrichmentConfig::GeoDatabase(geo_cfg) => {
                     let mut path = std::path::PathBuf::from(&geo_cfg.path);
-                    if path.is_relative() {
-                        if let Some(base) = base_path {
-                            path = base.join(path);
-                        }
+                    if path.is_relative()
+                        && let Some(base) = base_path
+                    {
+                        path = base.join(path);
                     }
 
                     let db: Arc<dyn logfwd_io::enrichment::GeoDatabase> = match geo_cfg.format {
@@ -106,10 +106,10 @@ impl Pipeline {
             let mut resolved_cfg = input_cfg.clone();
             if let Some(path_str) = &input_cfg.path {
                 let mut path = std::path::PathBuf::from(path_str);
-                if path.is_relative() {
-                    if let Some(base) = base_path {
-                        path = base.join(path);
-                    }
+                if path.is_relative()
+                    && let Some(base) = base_path
+                {
+                    path = base.join(path);
                 }
                 // Try to canonicalize for better error reporting/stability, but don't fail if it doesn't exist yet (glob)
                 if let Ok(abs_path) = std::fs::canonicalize(&path) {

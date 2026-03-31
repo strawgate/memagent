@@ -519,8 +519,8 @@ mod tests {
     fn scalar_matches_find_char_mask() {
         let block: [u8; 64] = {
             let mut b = [0u8; 64];
-            for i in 0..64 {
-                b[i] = (i as u8).wrapping_mul(7).wrapping_add(20);
+            for (i, item) in b.iter_mut().enumerate() {
+                *item = (i as u8).wrapping_mul(7).wrapping_add(20);
             }
             b
         };
@@ -670,8 +670,8 @@ mod tests {
         for seed in 0..100u8 {
             let block: [u8; 64] = {
                 let mut b = [0u8; 64];
-                for i in 0..64 {
-                    b[i] = (i as u8)
+                for (i, item) in b.iter_mut().enumerate() {
+                    *item = (i as u8)
                         .wrapping_mul(seed.wrapping_add(7))
                         .wrapping_add(seed.wrapping_mul(13));
                 }

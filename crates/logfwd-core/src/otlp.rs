@@ -383,7 +383,7 @@ mod tests {
             let our_days = days_from_civil(y, m, d);
             let chrono_days = (NaiveDate::from_ymd_opt(y as i32, m, d).unwrap() - epoch).num_days();
             assert_eq!(
-                our_days, chrono_days as i64,
+                our_days, chrono_days,
                 "mismatch for {y}-{m:02}-{d:02}: ours={our_days}, chrono={chrono_days}"
             );
         }
