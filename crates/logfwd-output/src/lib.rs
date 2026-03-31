@@ -29,6 +29,25 @@ use arrow::record_batch::RecordBatch;
 use logfwd_config::{AuthConfig, Format, OutputConfig, OutputType};
 
 // ---------------------------------------------------------------------------
+// HTTP retry helper
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if the ureq error is transient and worth retrying.
+///
+/// Transient errors are: HTTP 429 Too Many Requests, 5xx server errors, and
+/// network/transport failures (I/O, host not found, connection failed, timeout).
+pub(crate) fn is_transient_error(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::StatusCode(status) => *status == 429 || *status >= 500,
+        ureq::Error::Io(_)
+        | ureq::Error::HostNotFound
+        | ureq::Error::ConnectionFailed
+        | ureq::Error::Timeout(_) => true,
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Trait + metadata
 // ---------------------------------------------------------------------------
 
@@ -664,5 +683,120 @@ mod tests {
         };
         let sink = build_output_sink("auth-sink", &cfg).unwrap();
         assert_eq!(sink.name(), "auth-sink");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for issue #285/#316: OTLP type dispatch uses actual DataType
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_otlp_type_mismatch_no_panic() {
+        // Column named "count_int" but actually contains strings.
+        // Before the fix this would panic in as_primitive::<Int64Type>().
+        // After the fix it falls through to AttrArray::Str.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("count_int", DataType::Utf8, true),
+            Field::new("message_str", DataType::Utf8, true),
+        ]));
+        let count = StringArray::from(vec![Some("high")]);
+        let msg = StringArray::from(vec![Some("something happened")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(count), Arc::new(msg)]).unwrap();
+        let meta = BatchMetadata {
+            resource_attrs: vec![],
+            observed_time_ns: 1_700_000_000_000_000_000,
+        };
+        let mut sink = OtlpSink::new(
+            "test-otlp".to_string(),
+            "http://localhost:4318".to_string(),
+            OtlpProtocol::Http,
+            Compression::None,
+            vec![],
+        );
+        // Must not panic.
+        sink.encode_batch(&batch, &meta);
+        assert!(!sink.encoder_buf.is_empty());
+    }
+
+    #[test]
+    fn test_otlp_real_int_column_encoded() {
+        // Column named "status_str" but actually Int64: should be encoded as int attr.
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "status_str",
+            DataType::Int64,
+            true,
+        )]));
+        let status = Int64Array::from(vec![Some(200i64)]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(status)]).unwrap();
+        let meta = BatchMetadata {
+            resource_attrs: vec![],
+            observed_time_ns: 1_700_000_000_000_000_000,
+        };
+        let mut sink = OtlpSink::new(
+            "test-otlp".to_string(),
+            "http://localhost:4318".to_string(),
+            OtlpProtocol::Http,
+            Compression::None,
+            vec![],
+        );
+        // Must not panic, and should produce non-empty output.
+        sink.encode_batch(&batch, &meta);
+        assert!(!sink.encoder_buf.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for issue #317: JSON Lines schema lookup panic paths removed
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_json_lines_raw_passthrough_no_panic() {
+        // A batch that satisfies is_raw_passthrough but has no other null columns.
+        let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+        let raw = StringArray::from(vec![Some(r#"{"x":1}"#)]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(raw)]).unwrap();
+        let mut sink = JsonLinesSink::new(
+            "test-jsonl".to_string(),
+            "http://localhost:9200".to_string(),
+            vec![],
+        );
+        // Must not panic.
+        sink.serialize_batch(&batch);
+        let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
+        assert_eq!(output.trim(), r#"{"x":1}"#);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for issue #318: is_transient_error classification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_transient_error_5xx() {
+        assert!(is_transient_error(&ureq::Error::StatusCode(500)));
+        assert!(is_transient_error(&ureq::Error::StatusCode(502)));
+        assert!(is_transient_error(&ureq::Error::StatusCode(503)));
+        assert!(is_transient_error(&ureq::Error::StatusCode(599)));
+    }
+
+    #[test]
+    fn test_is_transient_error_429() {
+        assert!(is_transient_error(&ureq::Error::StatusCode(429)));
+    }
+
+    #[test]
+    fn test_is_transient_error_4xx_not_transient() {
+        assert!(!is_transient_error(&ureq::Error::StatusCode(400)));
+        assert!(!is_transient_error(&ureq::Error::StatusCode(401)));
+        assert!(!is_transient_error(&ureq::Error::StatusCode(403)));
+        assert!(!is_transient_error(&ureq::Error::StatusCode(404)));
+    }
+
+    #[test]
+    fn test_is_transient_error_network() {
+        assert!(is_transient_error(&ureq::Error::HostNotFound));
+        assert!(is_transient_error(&ureq::Error::ConnectionFailed));
+    }
+
+    #[test]
+    fn test_is_transient_error_non_retryable() {
+        assert!(!is_transient_error(&ureq::Error::BadUri("bad".to_string())));
     }
 }

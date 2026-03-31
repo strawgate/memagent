@@ -10,7 +10,9 @@ use logfwd_core::otlp::{
     encode_varint_field, parse_severity, parse_timestamp_nanos, varint_len,
 };
 
-use super::{BatchMetadata, Compression, OutputSink, parse_column_name, str_value};
+use super::{
+    BatchMetadata, Compression, OutputSink, is_transient_error, parse_column_name, str_value,
+};
 
 // ---------------------------------------------------------------------------
 // OtlpSink
@@ -166,18 +168,32 @@ impl OutputSink for OtlpSink {
             OtlpProtocol::Http => "application/x-protobuf",
         };
 
-        let mut req = self.http_agent.post(&self.endpoint);
-        for (k, v) in &self.headers {
-            req = req.header(k.as_str(), v.as_str());
+        // Retry with exponential backoff for transient failures.
+        // Attempts: initial + up to 3 retries, delays: 100ms → 200ms → 400ms.
+        // Note: the full encoded payload is retransmitted on each attempt.
+        // For large batches this multiplies bandwidth; this is acceptable as a
+        // temporary measure until SinkDriver (#319) handles retries externally.
+        const MAX_RETRIES: u32 = 3;
+        let mut delay_ms: u64 = 100;
+        for attempt in 0..=MAX_RETRIES {
+            let mut req = self.http_agent.post(&self.endpoint);
+            for (k, v) in &self.headers {
+                req = req.header(k.as_str(), v.as_str());
+            }
+            req = req.header("Content-Type", content_type);
+            if self.compression == Compression::Zstd {
+                req = req.header("Content-Encoding", "zstd");
+            }
+            match req.send(payload) {
+                Ok(_) => return Ok(()),
+                Err(e) if attempt < MAX_RETRIES && is_transient_error(&e) => {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    delay_ms *= 2;
+                }
+                Err(e) => return Err(io::Error::other(e.to_string())),
+            }
         }
-        req = req.header("Content-Type", content_type);
-        if self.compression == Compression::Zstd {
-            req = req.header("Content-Encoding", "zstd");
-        }
-
-        req.send(payload)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        Ok(())
+        Err(io::Error::other("OTLP send failed after max retries"))
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -269,10 +285,14 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
             continue;
         }
         let col_name = field.name().as_str();
-        let (field_name, type_suffix) = parse_column_name(col_name);
-        let attr = match type_suffix {
-            "int" => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
-            "float" => AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>()),
+        let (field_name, _) = parse_column_name(col_name);
+        // Dispatch on the actual Arrow DataType, not the column name suffix.
+        // A SQL transform may produce a column whose name suffix disagrees with
+        // its real type (e.g. `SELECT level_str AS count_int`); using
+        // `field.data_type()` avoids an `as_primitive` panic in that case.
+        let attr = match field.data_type() {
+            DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
+            DataType::Float64 => AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>()),
             _ => AttrArray::Str(batch.column(idx).as_ref()),
         };
         attribute_cols.push((field_name.to_string(), attr));

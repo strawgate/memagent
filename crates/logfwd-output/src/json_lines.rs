@@ -3,7 +3,9 @@ use std::io;
 use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 
-use super::{BatchMetadata, OutputSink, build_col_infos, str_value, write_row_json};
+use super::{
+    BatchMetadata, OutputSink, build_col_infos, is_transient_error, str_value, write_row_json,
+};
 
 // ---------------------------------------------------------------------------
 // JsonLinesSink
@@ -42,11 +44,12 @@ impl JsonLinesSink {
             return false;
         }
         // Simple heuristic: if the only non-null column is _raw, passthrough.
-        for field in schema.fields().iter() {
+        // Use enumerated iteration to avoid `index_of` which could panic on
+        // schema inconsistency (issue #317).
+        for (idx, field) in schema.fields().iter().enumerate() {
             if field.name() == "_raw" {
                 continue;
             }
-            let idx = schema.index_of(field.name()).unwrap();
             if batch.column(idx).null_count() < batch.num_rows() {
                 return false;
             }
@@ -64,15 +67,27 @@ impl JsonLinesSink {
 
         if Self::is_raw_passthrough(batch) {
             // Fast path: memcpy _raw values directly.
-            let idx = batch
+            // Use `position` instead of `index_of().expect(...)` to avoid panicking
+            // if the schema is unexpectedly inconsistent (issue #317).
+            let raw_idx = batch
                 .schema()
-                .index_of("_raw")
-                .expect("_raw column missing");
-            let col = batch.column(idx);
-            for row in 0..num_rows {
-                if !col.is_null(row) {
-                    self.batch_buf
-                        .extend_from_slice(str_value(col, row).as_bytes());
+                .fields()
+                .iter()
+                .position(|f| f.name() == "_raw");
+            if let Some(idx) = raw_idx {
+                let col = batch.column(idx);
+                for row in 0..num_rows {
+                    if !col.is_null(row) {
+                        self.batch_buf
+                            .extend_from_slice(str_value(col, row).as_bytes());
+                        self.batch_buf.push(b'\n');
+                    }
+                }
+            } else {
+                // _raw absent despite passthrough check; fall back to JSON serialization.
+                let cols = build_col_infos(batch);
+                for row in 0..num_rows {
+                    write_row_json(batch, row, &cols, &mut self.batch_buf);
                     self.batch_buf.push(b'\n');
                 }
             }
@@ -93,15 +108,29 @@ impl OutputSink for JsonLinesSink {
             return Ok(());
         }
 
-        let mut req = self.http_agent.post(&self.url);
-        for (k, v) in &self.headers {
-            req = req.header(k.as_str(), v.as_str());
+        // Retry with exponential backoff for transient failures.
+        // Attempts: initial + up to 3 retries, delays: 100ms → 200ms → 400ms.
+        // Note: `self.batch_buf` is re-sent as `&[u8]` on each attempt — no
+        // allocation, but the full NDJSON payload is retransmitted each time.
+        // This is acceptable as a temporary measure until SinkDriver (#319).
+        const MAX_RETRIES: u32 = 3;
+        let mut delay_ms: u64 = 100;
+        for attempt in 0..=MAX_RETRIES {
+            let mut req = self.http_agent.post(&self.url);
+            for (k, v) in &self.headers {
+                req = req.header(k.as_str(), v.as_str());
+            }
+            req = req.header("Content-Type", "application/x-ndjson");
+            match req.send(&self.batch_buf) {
+                Ok(_) => return Ok(()),
+                Err(e) if attempt < MAX_RETRIES && is_transient_error(&e) => {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    delay_ms *= 2;
+                }
+                Err(e) => return Err(io::Error::other(e.to_string())),
+            }
         }
-        req = req.header("Content-Type", "application/x-ndjson");
-
-        req.send(&self.batch_buf)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        Ok(())
+        Err(io::Error::other("JSON lines send failed after max retries"))
     }
 
     fn flush(&mut self) -> io::Result<()> {
