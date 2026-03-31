@@ -366,7 +366,7 @@ jobs:
   summarize:
     runs-on: ubuntu-latest
     needs: [build, bench, rate-bench, micro, pgo]
-    if: always() && needs.build.result == 'success' && needs.bench.result == 'success'
+    if: always() && needs.build.result == 'success' && needs.bench.result != 'cancelled'
     steps:
       - uses: actions/checkout@v4
 
