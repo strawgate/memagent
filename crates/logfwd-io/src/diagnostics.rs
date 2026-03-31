@@ -624,30 +624,15 @@ impl DiagnosticsServer {
 
 /// Returns (rss_bytes, cpu_user_ms, cpu_sys_ms) for the current process.
 fn process_metrics() -> (u64, u64, u64) {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
-
-    let pid = Pid::from_u32(std::process::id());
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-
-    let rss = match sys.process(pid) {
-        Some(proc) => proc.memory(),
-        None => 0,
-    };
-
-    let (cpu_user_ms, cpu_sys_ms) = get_cpu_times().unwrap_or((0, 0));
-
-    (rss, cpu_user_ms, cpu_sys_ms)
+    get_process_metrics().unwrap_or((0, 0, 0))
 }
 
-/// Reads `/proc/self/stat` and returns `(user_ms, sys_ms)` CPU times in milliseconds.
-/// Returns `None` if `/proc` is unavailable (for example on non-Linux platforms)
-/// or if the stat payload cannot be parsed.
-fn get_cpu_times() -> Option<(u64, u64)> {
+/// Reads /proc/self/stat to get RSS, utime and stime.
+fn get_process_metrics() -> Option<(u64, u64, u64)> {
     use std::fs;
 
     let stat = fs::read_to_string("/proc/self/stat").ok()?;
-    // Field 14 is utime, field 15 is stime.
+    // Field 14 is utime, field 15 is stime, field 24 is rss (in pages).
     // They are space-separated, but the second field (comm) can contain spaces
     // and is enclosed in parentheses.
     let last_paren = stat.rfind(')')?;
@@ -663,19 +648,28 @@ fn get_cpu_times() -> Option<(u64, u64)> {
     // ...
     // 14: utime (parts[11])
     // 15: stime (parts[12])
+    // ...
+    // 24: rss (parts[21])
     let utime_ticks: u64 = parts.nth(11)?.parse().ok()?;
     let stime_ticks: u64 = parts.next()?.parse().ok()?;
 
+    // Skip to field 24 (index 21 after_comm).
+    // parts is now at index 13 (after stime).
+    // To get to index 21, we need to skip 21 - 13 = 8 fields.
+    let rss_pages: u64 = parts.nth(7)?.parse().ok()?;
+
     let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if ticks_per_sec <= 0 {
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+
+    if ticks_per_sec <= 0 || page_size <= 0 {
         return None;
     }
-    let ticks_per_sec = ticks_per_sec as u64;
 
-    let user_ms = (utime_ticks * 1000) / ticks_per_sec;
-    let sys_ms = (stime_ticks * 1000) / ticks_per_sec;
+    let user_ms = (utime_ticks * 1000) / ticks_per_sec as u64;
+    let sys_ms = (stime_ticks * 1000) / ticks_per_sec as u64;
+    let rss_bytes = rss_pages * page_size as u64;
 
-    Some((user_ms, sys_ms))
+    Some((rss_bytes, user_ms, sys_ms))
 }
 
 /// Minimal JSON-string escaping (backslash, double-quote, control chars).
