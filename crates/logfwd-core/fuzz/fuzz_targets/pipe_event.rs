@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
         let safe_data = &event.data[..captured];
         // Try to interpret as UTF-8 (common operation in log processing).
         let _text = std::str::from_utf8(safe_data);
-        // Try to find newlines (common in FormatParser).
+        // Try to find newlines.
         let _newlines = safe_data.iter().filter(|&&b| b == b'\n').count();
     }
 

@@ -20,7 +20,6 @@ memmap2 = "0.9"
 proptest = "1"
 sonic-rs = "0.5"
 tempfile = "3"
-logfwd-io = { path = "../logfwd-io" }
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

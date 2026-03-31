@@ -558,11 +558,27 @@ mod tests {
         let output = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = output.trim().split('\n').collect();
         assert_eq!(lines.len(), 4);
-        assert!(lines[0].contains("\"duration_ms\":3.25"), "got: {}", lines[0]);
+        assert!(
+            lines[0].contains("\"duration_ms\":3.25"),
+            "got: {}",
+            lines[0]
+        );
         // Non-finite values (inf, -inf, nan) must be emitted as null to be valid JSON.
-        assert!(lines[1].contains("\"duration_ms\":null"), "got: {}", lines[1]);
-        assert!(lines[2].contains("\"duration_ms\":null"), "got: {}", lines[2]);
-        assert!(lines[3].contains("\"duration_ms\":null"), "got: {}", lines[3]);
+        assert!(
+            lines[1].contains("\"duration_ms\":null"),
+            "got: {}",
+            lines[1]
+        );
+        assert!(
+            lines[2].contains("\"duration_ms\":null"),
+            "got: {}",
+            lines[2]
+        );
+        assert!(
+            lines[3].contains("\"duration_ms\":null"),
+            "got: {}",
+            lines[3]
+        );
     }
 
     #[test]

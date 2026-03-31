@@ -10,7 +10,6 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 logfwd-core = { path = ".." }
-logfwd-io = { path = "../../logfwd-io" }
 logfwd-arrow = { path = "../../logfwd-arrow" }
 logfwd-transform = { path = "../../logfwd-transform" }
 logfwd-output = { path = "../../logfwd-output" }
@@ -18,11 +17,6 @@ arrow = { version = "54", default-features = false }
 bytes = "1"
 
 [workspace]
-
-[[bin]]
-name = "fuzz_format_parser"
-path = "fuzz_targets/format_parser.rs"
-doc = false
 
 [[bin]]
 name = "fuzz_scanner"
