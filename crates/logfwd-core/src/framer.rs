@@ -10,11 +10,10 @@
 //!
 //! # Provability
 //!
-//! The framer uses `byte_search::find_byte` (plain byte loops, no memchr,
-//! no Vec) so Kani can prove it correct. LLVM auto-vectorizes the byte
-//! scan loop, so performance is comparable to hand-written SIMD.
+//! The framer uses plain byte loops (no memchr, no Vec) so Kani can prove
+//! it correct. LLVM auto-vectorizes the byte scan loop, so performance is
+//! comparable to hand-written SIMD.
 
-use crate::byte_search::find_byte;
 
 /// Maximum number of lines per frame operation.
 ///
@@ -92,7 +91,12 @@ impl NewlineFramer {
         let mut i = 0;
         while i < input.len() {
             if input[i] == b'\n' {
-                if i > start && output.count < MAX_LINES_PER_FRAME {
+                if output.count >= MAX_LINES_PER_FRAME {
+                    // Output full — stop here. Remainder starts at `start`
+                    // (the beginning of the current unprocessed line).
+                    break;
+                }
+                if i > start {
                     output.line_ranges[output.count] = (start, i);
                     output.count += 1;
                 }
@@ -105,109 +109,8 @@ impl NewlineFramer {
     }
 }
 
-/// CRI framer. Splits on `\n` and extracts CRI field ranges.
-///
-/// CRI format: `TIMESTAMP STREAM FLAGS MESSAGE\n`
-///
-/// Returns `CriFrameOutput` with per-line field ranges pointing into
-/// the original input buffer (zero-copy).
-pub struct CriFramer;
-
-/// Information extracted from a single CRI line. All ranges point into
-/// the original input buffer.
-pub struct CriLineInfo {
-    /// Byte range of the timestamp field.
-    pub timestamp: (usize, usize),
-    /// Byte range of the stream field (stdout/stderr).
-    pub stream: (usize, usize),
-    /// Whether this is a full line (F) or partial (P).
-    pub is_full: bool,
-    /// Byte range of the message content.
-    pub message: (usize, usize),
-}
-
-/// Maximum CRI lines per frame operation.
-pub const MAX_CRI_LINES_PER_FRAME: usize = 4096;
-
-/// Output of CRI framing. Fixed-size, no heap allocation for line storage.
-pub struct CriFrameOutput {
-    lines: Vec<CriLineInfo>, // CriLineInfo is non-Copy (contains ranges), use Vec
-    /// Byte offset of the first unprocessed byte.
-    pub remainder_offset: usize,
-}
-
-impl CriFrameOutput {
-    /// Number of parsed CRI lines.
-    pub fn len(&self) -> usize {
-        self.lines.len()
-    }
-
-    /// Whether no CRI lines were found.
-    pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-
-    /// Get a reference to the parsed CRI lines.
-    pub fn lines(&self) -> &[CriLineInfo] {
-        &self.lines
-    }
-}
-
-impl CriFramer {
-    /// Frame a buffer of CRI-formatted log data.
-    ///
-    /// Uses the NewlineFramer for line splitting, then parses each line's
-    /// CRI fields. Invalid CRI lines are silently skipped.
-    pub fn frame(&self, input: &[u8]) -> CriFrameOutput {
-        let newlines = NewlineFramer.frame(input);
-        let mut lines = Vec::with_capacity(newlines.len());
-
-        for (start, end) in newlines.iter() {
-            if let Some(info) = parse_cri_ranges(input, start, end) {
-                lines.push(info);
-            }
-        }
-
-        CriFrameOutput {
-            lines,
-            remainder_offset: newlines.remainder_offset,
-        }
-    }
-}
-
-/// Parse CRI field ranges from a line within the input buffer.
-/// Returns byte ranges into `buf` for zero-copy downstream use.
-fn parse_cri_ranges(buf: &[u8], line_start: usize, line_end: usize) -> Option<CriLineInfo> {
-    let line = &buf[line_start..line_end];
-
-    // Find three space delimiters: TIMESTAMP STREAM FLAGS MESSAGE
-    let sp1 = find_byte(line, b' ', 0)?;
-    if sp1 + 1 >= line.len() {
-        return None;
-    }
-
-    let sp2 = find_byte(line, b' ', sp1 + 1)?;
-    if sp2 + 1 >= line.len() {
-        return None;
-    }
-
-    let flags_start = sp2 + 1;
-    let (is_full, msg_offset) = if let Some(sp3) = find_byte(line, b' ', flags_start) {
-        (line[flags_start] == b'F', sp3 + 1)
-    } else {
-        (line.get(flags_start) == Some(&b'F'), line.len())
-    };
-
-    let msg_start = line_start + msg_offset;
-    let msg_end = line_end;
-
-    Some(CriLineInfo {
-        timestamp: (line_start, line_start + sp1),
-        stream: (line_start + sp1 + 1, line_start + sp2),
-        is_full,
-        message: (msg_start, msg_end),
-    })
-}
+// CRI framing deferred to #313 (unified SIMD structural character detection).
+// CRI line parsing lives in cri.rs (parse_cri_line + CriReassembler).
 
 #[cfg(test)]
 mod tests {
@@ -271,41 +174,6 @@ mod tests {
         assert_eq!(&input[output.line_range(1).0..output.line_range(1).1], b"b");
     }
 
-    #[test]
-    fn cri_framer_basic() {
-        let input = b"2024-01-15T10:30:00Z stdout F hello world\n";
-        let output = CriFramer.frame(input);
-        assert_eq!(output.len(), 1);
-        let line = &output.lines()[0];
-        assert!(line.is_full);
-        assert_eq!(
-            &input[line.timestamp.0..line.timestamp.1],
-            b"2024-01-15T10:30:00Z"
-        );
-        assert_eq!(&input[line.stream.0..line.stream.1], b"stdout");
-        assert_eq!(&input[line.message.0..line.message.1], b"hello world");
-    }
-
-    #[test]
-    fn cri_framer_partial_flag() {
-        let input = b"2024-01-15T10:30:00Z stderr P partial content\n";
-        let output = CriFramer.frame(input);
-        assert_eq!(output.len(), 1);
-        assert!(!output.lines()[0].is_full);
-        assert_eq!(
-            &input[output.lines()[0].message.0..output.lines()[0].message.1],
-            b"partial content"
-        );
-    }
-
-    #[test]
-    fn cri_framer_multiple_lines() {
-        let input = b"2024-01-15T10:30:00Z stdout P first\n2024-01-15T10:30:00Z stdout F second\n";
-        let output = CriFramer.frame(input);
-        assert_eq!(output.len(), 2);
-        assert!(!output.lines()[0].is_full);
-        assert!(output.lines()[1].is_full);
-    }
 }
 
 #[cfg(kani)]

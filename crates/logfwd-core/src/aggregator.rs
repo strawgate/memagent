@@ -24,10 +24,10 @@
 /// # Lifecycle
 ///
 /// ```text
-/// P "hello "  → None (buffered)
-/// P "world"   → None (buffered)
-/// F "!"       → Some("hello world!")
-/// F "simple"  → Some("simple")  // zero-copy fast path
+/// P "hello "  → Pending (buffered)
+/// P "world"   → Pending (buffered)
+/// F "!"       → Complete("hello world!")
+/// F "simple"  → Complete("simple")  // zero-copy fast path
 /// ```
 pub struct CriAggregator {
     pending: Vec<u8>,

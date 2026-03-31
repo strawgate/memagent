@@ -1,6 +1,6 @@
 # Kani Proof Audit
 
-30 proofs as of 2026-03-31. For each: what it proves, what it
+31 proofs as of 2026-03-30. For each: what it proves, what it
 DOESN'T prove, and the gap between proof and real usage.
 
 ## chunk_classify.rs (2 proofs)
@@ -139,27 +139,36 @@ buffer size. But Kani only verifies the logic for ≤ 16 bytes.
 completeness as find_byte but in reverse.
 **Gap:** Same as find_byte.
 
-## framer.rs (3 proofs)
+## framer.rs (4 proofs)
 
 ### verify_newline_framer_no_panic
 **Proves:** No panics for any 32-byte input.
 **Gap:** Doesn't verify correctness — only crash-freedom. The
-ranges_valid and remainder_correct proofs cover correctness.
+ranges_valid, remainder_correct, and content_correct proofs cover
+correctness.
 
 ### verify_newline_framer_ranges_valid
 **Proves:** All returned ranges are valid sub-ranges of input
 (start ≤ end ≤ len) for 32-byte inputs.
 **Doesn't prove:** That the ranges correspond to ACTUAL lines
-(i.e., the bytes between newlines). A buggy framer could return
-random valid ranges and pass this proof.
-**Gap:** MEDIUM. We need an oracle comparison (e.g., split on \n
-and compare) to prove correctness, not just validity.
+(i.e., the bytes between newlines). The content_correct proof
+closes this gap.
+**Gap:** None — content_correct provides the oracle comparison.
 
 ### verify_newline_framer_remainder_correct
 **Proves:** No newlines exist in the remainder for 16-byte inputs
 (unless output is full).
 **Gap:** 16-byte inputs (smaller than ranges_valid's 32). This is
 a meaningful property — proves the framer didn't miss any newlines.
+
+### verify_newline_framer_content_correct
+**Proves:** Oracle proof for 16-byte inputs. Verifies: (1) no
+newlines inside line ranges, (2) each line terminated by \n,
+(3) no empty lines emitted, (4) every newline in the processed
+region either terminates a line or is part of an empty line
+(consecutive \n or leading \n).
+**Gap:** 16-byte inputs. The logic is a simple loop so correctness
+at 16 bytes implies correctness at larger sizes.
 
 ## cri.rs (4 proofs)
 
@@ -205,8 +214,7 @@ caught a real bug (F fast path wasn't enforcing max_line_size).
    but not the loop that chains them. proptest covers this.
 2. **days_from_civil absolute correctness** — we prove structural
    properties but not "day N is actually correct." Need chrono oracle.
-3. **NewlineFramer correctness** — ranges_valid proves bounds, not
-   that ranges correspond to actual line boundaries. Need oracle.
+3. ~~NewlineFramer correctness~~ — CLOSED by content_correct proof.
 4. **parse_cri_line field correctness** — no-panic only. Need
    oracle proving fields match expected positions.
 
@@ -219,7 +227,7 @@ caught a real bug (F fast path wasn't enforcing max_line_size).
    proofs. Kept as quick smoke checks (~0.1s each).
 
 ### WHAT TO ADD NEXT:
-1. Oracle proof for NewlineFramer (compare against naive split-on-\n)
+1. ~~Oracle proof for NewlineFramer~~ — DONE (content_correct)
 2. Oracle proof for days_from_civil (compare against known date table)
 3. Oracle proof for parse_cri_line (compare against manual space-finding)
 4. Proptest state-machine for FormatParser (random chunk sequences)
