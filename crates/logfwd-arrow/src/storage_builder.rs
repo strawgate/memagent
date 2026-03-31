@@ -19,9 +19,45 @@ use logfwd_core::scan_config::{parse_float_fast, parse_int_fast};
 
 use crate::check_dup_bits;
 
+/// Stores string values as (offset, length) references into a shared buffer.
+/// Eliminates per-string allocations.
+struct StringArena {
+    buffer: Vec<u8>,
+}
+
+impl StringArena {
+    fn with_capacity(capacity: usize) -> Self {
+        StringArena {
+            buffer: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Push a byte slice and return its (offset, length).
+    #[inline(always)]
+    fn push(&mut self, bytes: &[u8]) -> (u32, u32) {
+        let offset = self.buffer.len() as u32;
+        let len = bytes.len() as u32;
+        self.buffer.extend_from_slice(bytes);
+        (offset, len)
+    }
+
+    /// Get a slice by (offset, length).
+    #[inline(always)]
+    fn get(&self, offset: u32, len: u32) -> &[u8] {
+        let start = offset as usize;
+        let end = start + len as usize;
+        &self.buffer[start..end]
+    }
+
+    fn clear(&mut self) {
+        self.buffer.clear();
+    }
+}
+
 struct FieldCollector {
-    name: Vec<u8>,
-    str_values: Vec<(u32, Vec<u8>)>,
+    name_offset: u32,
+    name_len: u32,
+    str_values: Vec<(u32, u32, u32)>,  // (row, offset, len)
     int_values: Vec<(u32, i64)>,
     float_values: Vec<(u32, f64)>,
     has_str: bool,
@@ -30,9 +66,10 @@ struct FieldCollector {
 }
 
 impl FieldCollector {
-    fn new(name: &[u8]) -> Self {
+    fn new(name_offset: u32, name_len: u32) -> Self {
         FieldCollector {
-            name: name.to_vec(),
+            name_offset,
+            name_len,
             str_values: Vec::with_capacity(256),
             int_values: Vec::with_capacity(256),
             float_values: Vec::with_capacity(256),
@@ -70,8 +107,9 @@ impl FieldCollector {
 /// ```
 pub struct StorageBuilder {
     fields: Vec<FieldCollector>,
-    field_index: HashMap<Vec<u8>, usize>,
-    raw_values: Vec<Vec<u8>>,
+    field_index: HashMap<(u32, u32), usize>,  // (offset, len) -> field index
+    arena: StringArena,  // Shared buffer for field names and string values
+    raw_values: Vec<(u32, u32)>,  // (offset, len) into arena
     row_count: u32,
     keep_raw: bool,
     /// Tracks which fields (by index) were written in the current row.
@@ -84,6 +122,7 @@ impl StorageBuilder {
         StorageBuilder {
             fields: Vec::with_capacity(32),
             field_index: HashMap::with_capacity(32),
+            arena: StringArena::with_capacity(64 * 1024),  // 64KB initial capacity
             raw_values: Vec::new(),
             row_count: 0,
             keep_raw,
@@ -97,6 +136,7 @@ impl StorageBuilder {
             fc.clear();
         }
         self.raw_values.clear();
+        self.arena.clear();
     }
 
     #[inline(always)]
@@ -114,12 +154,19 @@ impl StorageBuilder {
 
     #[inline]
     pub fn resolve_field(&mut self, key: &[u8]) -> usize {
-        if let Some(&idx) = self.field_index.get(key) {
-            return idx;
+        // Try to find existing field by comparing the key bytes
+        // We need to look up by bytes, but store (offset, len) to avoid allocating
+        for (&(offset, len), &idx) in &self.field_index {
+            if self.arena.get(offset, len) == key {
+                return idx;
+            }
         }
+
+        // New field - push to arena and create collector
         let idx = self.fields.len();
-        self.fields.push(FieldCollector::new(key));
-        self.field_index.insert(key.to_vec(), idx);
+        let (offset, len) = self.arena.push(key);
+        self.fields.push(FieldCollector::new(offset, len));
+        self.field_index.insert((offset, len), idx);
         idx
     }
 
@@ -141,7 +188,8 @@ impl StorageBuilder {
         }
         let fc = &mut self.fields[idx];
         fc.has_str = true;
-        fc.str_values.push((self.row_count, value.to_vec()));
+        let (offset, len) = self.arena.push(value);
+        fc.str_values.push((self.row_count, offset, len));
     }
 
     #[inline(always)]
