@@ -366,7 +366,8 @@ impl StructuralIndex {
                         return pos;
                     }
                     depth -= 1;
-                    // Check delimiter match
+                    // Depths >= 32 are untracked; skip mismatch check to avoid
+                    // reading uninitialized stack slots.
                     if depth < 32 {
                         let expected_close = if opener_stack[depth] == b'{' {
                             b'}'
@@ -1175,5 +1176,37 @@ mod verification {
         let is_quote = (idx.real_quotes[pos >> 6] >> (pos & 63)) & 1 == 1;
         let expected = (quote_count % 2 == 1) && !is_quote;
         assert_eq!(in_string, expected);
+    }
+
+    #[test]
+    fn scan_string_rejects_cross_line() {
+        // Two NDJSON lines; string on line 1 is unterminated
+        let buf = b"\"unclosed\n\"closed\"";
+        let (idx, lines) = StructuralIndex::new(buf);
+        // Line 0: \"unclosed — no closing quote before \n
+        let (start, end) = lines[0];
+        assert_eq!(idx.scan_string(buf, start, end), None);
+        // Line 1: \"closed\" — should parse normally
+        let (start1, end1) = lines[1];
+        let result = idx.scan_string(buf, start1, end1);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn skip_nested_mismatched_delimiter_bails_to_end() {
+        let buf = b"{\"k\":[1,2}]"; // { closed by }, but [ closed by } first
+        let (idx, _) = StructuralIndex::new(buf);
+        let end = buf.len();
+        let result = idx.skip_nested(buf, 0, end);
+        // Mismatch { vs ] — should return end, not a position inside the buffer
+        assert_eq!(result, end);
+    }
+
+    #[test]
+    fn skip_nested_matched_delimiters_returns_correct_pos() {
+        let buf = b"{\"k\":[1,2]}x";
+        let (idx, _) = StructuralIndex::new(buf);
+        let result = idx.skip_nested(buf, 0, buf.len());
+        assert_eq!(result, 11); // past the closing }
     }
 }
