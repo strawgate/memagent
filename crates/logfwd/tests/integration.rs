@@ -15,10 +15,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use logfwd::pipeline::Pipeline;
+use logfwd_arrow::scanner::SimdScanner;
 use logfwd_config::Config;
 use logfwd_core::enrichment::CsvFileTable;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::SimdScanner;
 use logfwd_transform::SqlTransform;
 use tokio_util::sync::CancellationToken;
 

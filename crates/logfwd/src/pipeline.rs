@@ -10,13 +10,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use opentelemetry::metrics::Meter;
 
+use logfwd_arrow::scanner::StreamingSimdScanner as Scanner;
 use logfwd_config::{
     EnrichmentConfig, Format, GeoDatabaseFormat, InputConfig, InputType, PipelineConfig,
 };
 use logfwd_core::diagnostics::{ComponentStats, PipelineMetrics};
 use logfwd_core::format::{CriParser, FormatParser, JsonParser, RawParser};
 use logfwd_core::input::{FileInput, InputEvent, InputSource};
-use logfwd_core::scanner::StreamingSimdScanner as Scanner;
 use logfwd_core::tail::TailConfig;
 use logfwd_output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
 use logfwd_transform::SqlTransform;

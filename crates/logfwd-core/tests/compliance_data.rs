@@ -10,9 +10,9 @@ use arrow::array::{Array, Float64Array, Int64Array, StringArray};
 use arrow::compute;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
+use logfwd_arrow::scanner::{SimdScanner, StreamingSimdScanner};
 use logfwd_core::format::{CriParser, FormatParser, RawParser};
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::{SimdScanner, StreamingSimdScanner};
 
 // ===========================================================================
 // Helpers

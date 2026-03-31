@@ -11,7 +11,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::StreamingSimdScanner;
+use logfwd_arrow::scanner::StreamingSimdScanner;
 
 fn validate_batch(batch: &arrow::record_batch::RecordBatch, label: &str) {
     let num_rows = batch.num_rows();

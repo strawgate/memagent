@@ -14,8 +14,8 @@
 //!   cargo test --features simd-scanner -p logfwd-core --test scanner_conformance -- --nocapture
 
 use arrow::array::{Array, Float64Array, Int64Array, StringArray};
+use logfwd_arrow::scanner::SimdScanner;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::SimdScanner;
 use proptest::prelude::*;
 
 // ===========================================================================
@@ -301,7 +301,7 @@ proptest! {
 /// Verify both scanners produce the same row count and the same non-null
 /// values for the same input. Accounts for StringArray vs StringViewArray.
 fn assert_builders_consistent(input: &[u8]) {
-    use logfwd_core::scanner::StreamingSimdScanner;
+    use logfwd_arrow::scanner::StreamingSimdScanner;
 
     let mut storage = SimdScanner::new(ScanConfig::default());
     let mut streaming = StreamingSimdScanner::new(ScanConfig::default());

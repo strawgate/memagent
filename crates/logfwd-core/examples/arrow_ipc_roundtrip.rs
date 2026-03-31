@@ -22,7 +22,7 @@ use std::time::Instant;
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow::record_batch::RecordBatch;
-use logfwd_core::storage_builder::StorageBuilder;
+use logfwd_arrow::storage_builder::StorageBuilder;
 use memmap2::Mmap;
 use tempfile::NamedTempFile;
 

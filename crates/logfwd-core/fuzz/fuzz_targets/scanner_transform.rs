@@ -18,7 +18,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::SimdScanner;
+use logfwd_arrow::scanner::SimdScanner;
 use logfwd_transform::SqlTransform;
 
 fuzz_target!(|data: &[u8]| {

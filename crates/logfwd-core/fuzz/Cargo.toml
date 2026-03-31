@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 logfwd-core = { path = ".." }
+logfwd-arrow = { path = "../../logfwd-arrow" }
 logfwd-transform = { path = "../../logfwd-transform" }
 logfwd-output = { path = "../../logfwd-output" }
 arrow = { version = "54", default-features = false }

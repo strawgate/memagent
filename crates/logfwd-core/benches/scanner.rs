@@ -1,6 +1,6 @@
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use logfwd_arrow::scanner::SimdScanner;
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
-use logfwd_core::scanner::SimdScanner;
 
 // ===========================================================================
 // Data generators
@@ -228,7 +228,7 @@ fn arrow_json_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
 // ===========================================================================
 
 fn sonic_rs_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
-    use logfwd_core::storage_builder::StorageBuilder;
+    use logfwd_arrow::storage_builder::StorageBuilder;
     use sonic_rs::{JsonContainerTrait, JsonNumberTrait, JsonValueTrait};
 
     let mut builder = StorageBuilder::new(false);

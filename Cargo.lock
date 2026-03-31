@@ -2024,6 +2024,7 @@ dependencies = [
  "arrow",
  "dhat",
  "libc",
+ "logfwd-arrow",
  "logfwd-config",
  "logfwd-core",
  "logfwd-output",
@@ -2041,11 +2042,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "logfwd-arrow"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "bytes",
+ "logfwd-core",
+ "proptest",
+ "tempfile",
+]
+
+[[package]]
 name = "logfwd-bench"
 version = "0.1.0"
 dependencies = [
  "arrow",
  "criterion",
+ "logfwd-arrow",
  "logfwd-core",
  "logfwd-output",
  "logfwd-transform",
@@ -2089,6 +2102,7 @@ dependencies = [
  "csv",
  "gethostname",
  "glob",
+ "logfwd-arrow",
  "memchr",
  "memmap2",
  "notify",
@@ -2123,6 +2137,7 @@ dependencies = [
  "bytes",
  "datafusion",
  "grok",
+ "logfwd-arrow",
  "logfwd-core",
  "maxminddb",
  "regex",

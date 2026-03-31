@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 logfwd-core = { path = "../logfwd-core" }
+logfwd-arrow = { path = "../logfwd-arrow" }
 logfwd-transform = { path = "../logfwd-transform" }
 logfwd-output = { path = "../logfwd-output" }
 arrow = { workspace = true }

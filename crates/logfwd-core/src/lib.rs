@@ -10,6 +10,4 @@ pub mod input;
 pub mod otlp;
 pub mod scan_config;
 pub mod scanner;
-pub mod storage_builder;
-pub mod streaming_builder;
 pub mod tail;

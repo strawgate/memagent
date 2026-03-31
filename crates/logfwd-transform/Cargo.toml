@@ -19,4 +19,5 @@ regex = "1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 
 [dev-dependencies]
+logfwd-arrow = { path = "../logfwd-arrow" }
 bytes = "1"

@@ -1,0 +1,18 @@
+[package]
+name = "logfwd-arrow"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+logfwd-core = { path = "../logfwd-core" }
+arrow = { workspace = true }
+bytes = "1"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(kani)']

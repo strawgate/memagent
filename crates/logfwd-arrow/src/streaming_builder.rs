@@ -16,7 +16,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
-use crate::scan_config::{parse_float_fast, parse_int_fast};
+use logfwd_core::scan_config::{parse_float_fast, parse_int_fast};
 
 // ---------------------------------------------------------------------------
 // Per-field state

@@ -10,6 +10,7 @@ dhat-heap = ["dhat"]
 [dependencies]
 logfwd-config = { path = "../logfwd-config" }
 logfwd-core = { path = "../logfwd-core" }
+logfwd-arrow = { path = "../logfwd-arrow" }
 logfwd-transform = { path = "../logfwd-transform" }
 logfwd-output = { path = "../logfwd-output" }
 dhat = { version = "0.3", optional = true }

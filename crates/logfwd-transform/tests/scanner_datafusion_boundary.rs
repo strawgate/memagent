@@ -478,7 +478,7 @@ fn dict_utf8view_order_by_asc() {
 /// and Int64/Float64 numeric columns.  Verify a realistic SQL transform works.
 #[test]
 fn streaming_builder_realistic_transform() {
-    use logfwd_core::streaming_builder::StreamingBuilder;
+    use logfwd_arrow::streaming_builder::StreamingBuilder;
 
     // Construct a batch that mirrors what the scanner would build for:
     //   {"level":"INFO","status":200,"latency_ms":12.5}
@@ -545,7 +545,7 @@ fn streaming_builder_realistic_transform() {
 /// GROUP BY on a real StreamingBuilder Utf8View column with a numeric aggregate.
 #[test]
 fn streaming_builder_group_by_and_order_by() {
-    use logfwd_core::streaming_builder::StreamingBuilder;
+    use logfwd_arrow::streaming_builder::StreamingBuilder;
 
     let json = b"INFO ERROR DEBUG ERROR INFO";
     let buf = bytes::Bytes::from(json.to_vec());

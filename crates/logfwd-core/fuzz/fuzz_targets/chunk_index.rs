@@ -21,7 +21,7 @@
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::chunk_classify::ChunkIndex;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::SimdScanner;
+use logfwd_arrow::scanner::SimdScanner;
 
 fuzz_target!(|data: &[u8]| {
     // --- Direct ChunkIndex API exercise ---

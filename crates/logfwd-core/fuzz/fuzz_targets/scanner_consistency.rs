@@ -12,7 +12,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::{SimdScanner, StreamingSimdScanner};
+use logfwd_arrow::scanner::{SimdScanner, StreamingSimdScanner};
 
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
