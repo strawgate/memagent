@@ -1025,9 +1025,14 @@ mod tests {
         let (status, body) = http_get(port, "/api/pipelines");
         assert_eq!(status, 200);
         // The name should be escaped as "pipe\u0001line".
-        assert!(body.contains(r#""name":"pipe\u0001line""#), "body: {}", body);
+        assert!(
+            body.contains(r#""name":"pipe\u0001line""#),
+            "body: {}",
+            body
+        );
 
         // Check that the overall JSON is valid (can be parsed).
-        let _v: serde_json::Value = serde_json::from_str(&body).expect("invalid JSON output from /api/pipelines");
+        let _v: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON output from /api/pipelines");
     }
 }
