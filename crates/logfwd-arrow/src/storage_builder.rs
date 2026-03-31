@@ -17,6 +17,8 @@ use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
 use logfwd_core::scan_config::{parse_float_fast, parse_int_fast};
 
+use crate::check_dup_bits;
+
 struct FieldCollector {
     name: Vec<u8>,
     str_values: Vec<(u32, Vec<u8>)>,
@@ -56,6 +58,16 @@ impl FieldCollector {
 /// null padding, correct by construction.
 ///
 /// Use for: scan → build → compress → disk queue.
+///
+/// # Usage
+/// ```ignore
+/// let mut builder = StorageBuilder::new(true);
+/// builder.begin_batch();
+/// // ... scan fields, call append_*_by_idx ...
+/// let batch = builder.finish_batch()?;
+/// // ... write/compress `batch` ...
+/// # Ok::<(), arrow::error::ArrowError>(())
+/// ```
 pub struct StorageBuilder {
     fields: Vec<FieldCollector>,
     field_index: HashMap<Vec<u8>, usize>,
@@ -63,6 +75,7 @@ pub struct StorageBuilder {
     row_count: u32,
     keep_raw: bool,
     written_bits: u64,
+    written_overflow_bits: Vec<u64>,
 }
 
 impl StorageBuilder {
@@ -74,6 +87,7 @@ impl StorageBuilder {
             row_count: 0,
             keep_raw,
             written_bits: 0,
+            written_overflow_bits: Vec::new(),
         }
     }
 
@@ -88,6 +102,7 @@ impl StorageBuilder {
     #[inline(always)]
     pub fn begin_row(&mut self) {
         self.written_bits = 0;
+        self.written_overflow_bits.clear();
     }
 
     #[inline(always)]
@@ -108,16 +123,7 @@ impl StorageBuilder {
 
     #[inline(always)]
     fn check_dup(&mut self, idx: usize) -> bool {
-        if idx < 64 {
-            let bit = 1u64 << idx;
-            if self.written_bits & bit != 0 {
-                return true;
-            }
-            self.written_bits |= bit;
-            false
-        } else {
-            false
-        }
+        check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx)
     }
 
     #[inline(always)]

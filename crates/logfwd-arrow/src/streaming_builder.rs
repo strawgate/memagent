@@ -18,6 +18,8 @@ use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
 use logfwd_core::scan_config::{parse_float_fast, parse_int_fast};
 
+use crate::check_dup_bits;
+
 // ---------------------------------------------------------------------------
 // Per-field state
 // ---------------------------------------------------------------------------
@@ -82,9 +84,9 @@ pub struct StreamingBuilder {
     field_index: HashMap<Vec<u8>, usize>,
     row_count: u32,
     /// Tracks which fields (by index) were written in the current row.
-    /// Supports up to 64 fields for O(1) duplicate detection;
-    /// fields 64+ work correctly but without duplicate-key protection.
+    /// Uses an inline u64 plus overflow words for fields at index >= 64.
     written_bits: u64,
+    written_overflow_bits: Vec<u64>,
     /// Reference-counted buffer. Stored here to compute offsets safely
     /// and shared with Arrow StringViewArrays in finish_batch.
     buf: bytes::Bytes,
@@ -103,6 +105,7 @@ impl StreamingBuilder {
             field_index: HashMap::with_capacity(32),
             row_count: 0,
             written_bits: 0,
+            written_overflow_bits: Vec::new(),
             buf: bytes::Bytes::new(),
         }
     }
@@ -120,6 +123,7 @@ impl StreamingBuilder {
     #[inline(always)]
     pub fn begin_row(&mut self) {
         self.written_bits = 0;
+        self.written_overflow_bits.clear();
     }
 
     #[inline(always)]
@@ -139,8 +143,14 @@ impl StreamingBuilder {
         idx
     }
 
-    /// Compute offset of a value slice within the buffer.
-    /// Safe: uses pointer arithmetic without `offset_from` UB preconditions.
+    /// Compute the byte offset of `value` within `self.buf`.
+    ///
+    /// `value` must be a subslice of `self.buf`; i.e. both its pointer and
+    /// length lie within `self.buf` bounds. We use `usize` subtraction rather
+    /// than `offset_from` to avoid that API's stricter UB preconditions.
+    ///
+    /// # Panics (debug builds)
+    /// Debug-asserts that `value` lies entirely within `self.buf`.
     #[inline(always)]
     fn offset_of(&self, value: &[u8]) -> u32 {
         let base = self.buf.as_ptr() as usize;
@@ -154,11 +164,9 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_str_by_idx(&mut self, idx: usize, value: &[u8]) {
-        let bit = if idx < 64 { 1u64 << idx } else { 0 };
-        if self.written_bits & bit != 0 {
+        if check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx) {
             return;
         }
-        self.written_bits |= bit;
         // StringViewArray requires valid UTF-8.  JSON is always UTF-8 in
         // production; for fuzz / corrupted input we skip non-UTF-8 bytes so
         // that append_view_unchecked is never called on invalid bytes.
@@ -174,11 +182,9 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_int_by_idx(&mut self, idx: usize, value: &[u8]) {
-        let bit = if idx < 64 { 1u64 << idx } else { 0 };
-        if self.written_bits & bit != 0 {
+        if check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx) {
             return;
         }
-        self.written_bits |= bit;
         let fc = &mut self.fields[idx];
         if let Some(v) = parse_int_fast(value) {
             fc.has_int = true;
@@ -188,11 +194,9 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_float_by_idx(&mut self, idx: usize, value: &[u8]) {
-        let bit = if idx < 64 { 1u64 << idx } else { 0 };
-        if self.written_bits & bit != 0 {
+        if check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx) {
             return;
         }
-        self.written_bits |= bit;
         let fc = &mut self.fields[idx];
         if let Some(v) = parse_float_fast(value) {
             fc.has_float = true;
@@ -204,8 +208,7 @@ impl StreamingBuilder {
     pub fn append_null_by_idx(&mut self, idx: usize) {
         // Nulls are represented by gaps — no value record needed.
         // But mark as written for duplicate-key detection.
-        let bit = if idx < 64 { 1u64 << idx } else { 0 };
-        self.written_bits |= bit;
+        let _ = check_dup_bits(&mut self.written_bits, &mut self.written_overflow_bits, idx);
     }
 
     /// No-op: StreamingBuilder does not support _raw column.
@@ -274,11 +277,9 @@ impl StreamingBuilder {
                 for row in 0..num_rows as u32 {
                     if vi < fc.str_views.len() && fc.str_views[vi].0 == row {
                         let (_, offset, len) = fc.str_views[vi];
-                        // SAFETY: offset and len were computed from valid subslices
-                        // of self.buf during scanning via offset_of().
-                        unsafe {
-                            builder.append_view_unchecked(block, offset, len);
-                        }
+                        builder
+                            .try_append_view(block, offset, len)
+                            .expect("offset/len pre-validated by offset_of and UTF-8 check");
                         vi += 1;
                     } else {
                         builder.append_null();
