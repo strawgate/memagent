@@ -60,25 +60,28 @@ Add bounded Kani proof for scan_line. proptest oracle vs serde_json.
 Extract run_async decisions into pure state machine in core.
 
 ```text
-5a: Typestate BatchTicket               ✅ DONE
+5a: Typestate BatchTicket<S, C>         ✅ DONE
+    Generic over checkpoint type C (opaque to pipeline)
     Queued → Sending → Acked/Rejected
-    #[must_use] linear type, compile-time enforcement
-    5 Kani proofs, 3 unit tests
+    #[must_use], private fields, 5 Kani proofs, 5 unit tests
 
-5b: PipelineMachine lifecycle           ✅ DONE
+5b: PipelineMachine<S, C> lifecycle    ✅ DONE
     Starting → Running → Draining → Stopped
-    Ordered ACK offset tracking (Filebeat registrar pattern)
-    6 Kani proofs (monotonic offset, final offset, drain→stop,
-    multi-source independence, receipt validation, duplicate ack handling),
-    13 unit tests
+    Ordered ACK via BatchId (not checkpoint values)
+    6 Kani proofs, 14 unit tests
 
 5c: Wire into pipeline.rs              → TODO
-    Replace ad-hoc offset tracking with PipelineMachine
-    BatchTicket replaces implicit batch lifecycle
+    PipelineMachine<_, u64> for file byte offsets
+    Checkpoint persistence (fingerprint → offset map)
 
 5d: proptest random event sequences    ✅ DONE
-    4 property tests: offset monotonicity, final offset,
-    drain completion, multi-source simulation — random action sequences
+    4 property tests: in-flight consistency, final checkpoint,
+    drain completion, multi-source simulation
+
+5e: Research: offset semantics          ✅ DONE
+    dev-docs/research/offset-checkpoint-research.md
+    Filebeat, Vector, Fluent Bit, OTel Collector analysis
+    Decision: checkpoint is opaque to pipeline
 ```
 
 ## Phase 6: proptest state machines + CI hardening (#271)

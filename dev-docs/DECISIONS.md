@@ -131,3 +131,31 @@ store for durability. Logic correctness is proven; delivery
 guarantees are operational.
 
 **Related:** #270 (pipeline state machine), #272 (TLA+ liveness).
+
+## Opaque checkpoints (not u64 offsets)
+
+**Decision:** `BatchTicket<S, C>` and `PipelineMachine<S, C>` are generic
+over checkpoint type `C`. The pipeline stores and forwards checkpoints
+without interpreting them.
+
+**Why:** Research across Filebeat, Vector, Fluent Bit, and OTel Collector
+shows that "offset" means fundamentally different things per input:
+- File tail: `u64` byte position (contiguous)
+- Kafka: `i64` partition offset (gaps from compaction/txn aborts)
+- Journald: opaque cursor string
+- Windows Event Log: opaque bookmark XML
+- Push sources (OTLP, syslog): no checkpoint at all
+
+A `u64` offset with contiguity enforcement would only work for file
+inputs. Making the pipeline generic lets each input own its checkpoint
+semantics while the pipeline provides ordering guarantees via `BatchId`.
+
+**Cost:** `C: Clone` bound on `PipelineMachine` methods. Generic type
+parameter propagates to `AckReceipt<C>`, `CommitAdvance<C>`.
+
+**Benefit:** Pipeline works for all input types without adaptation.
+Checkpoint validation (contiguity for files, gap tolerance for Kafka)
+stays in the input plugin where it belongs.
+
+**Research:** `dev-docs/research/offset-checkpoint-research.md`
+**Related:** #270 (pipeline state machine).
