@@ -1,6 +1,6 @@
 # Kani Proof Audit
 
-31 proofs as of 2026-03-30. For each: what it proves, what it
+33 proofs as of 2026-03-30. For each: what it proves, what it
 DOESN'T prove, and the gap between proof and real usage.
 
 ## chunk_classify.rs (2 proofs)
@@ -170,12 +170,26 @@ region either terminates a line or is part of an empty line
 **Gap:** 16-byte inputs. The logic is a simple loop so correctness
 at 16 bytes implies correctness at larger sizes.
 
-## cri.rs (4 proofs)
+## cri.rs (6 proofs)
 
 ### verify_parse_cri_line_no_panic
 **Proves:** No panics for any 32-byte input.
-**Gap:** Doesn't verify field extraction correctness. Existing
-unit tests cover known-good inputs but not all possible inputs.
+**Gap:** None — semantic correctness now covered by the two
+proofs below.
+
+### verify_parse_cri_line_semantics
+**Proves:** If parse_cri_line returns Some, then: (1) timestamp
+is non-empty, (2) stream is non-empty, (3) is_full matches the
+actual flag byte in the input (F→true, P→false), (4) the flag
+byte at the expected position equals b'F' or b'P'.
+**Gap:** 32-byte inputs. Doesn't verify message content positioning.
+
+### verify_parse_cri_line_rejects_invalid_flags
+**Proves:** For any 32-byte input where the flag field is a single
+byte that is neither 'F' nor 'P', parse_cri_line returns None.
+**Gap:** Only checks single-byte flag case (the most common).
+Multi-byte flags (e.g., "FULL") are also rejected by the
+implementation but not explicitly proven for all patterns.
 
 ### verify_reassembler_respects_max_size_pf
 **Proves:** P+F sequence output ≤ max_message_size for any
@@ -215,8 +229,9 @@ caught a real bug (F fast path wasn't enforcing max_line_size).
 2. **days_from_civil absolute correctness** — we prove structural
    properties but not "day N is actually correct." Need chrono oracle.
 3. ~~NewlineFramer correctness~~ — CLOSED by content_correct proof.
-4. **parse_cri_line field correctness** — no-panic only. Need
-   oracle proving fields match expected positions.
+4. ~~parse_cri_line field correctness~~ — CLOSED. Semantic proof
+   verifies flag domain (F/P only), is_full matches flag byte,
+   and non-empty timestamp/stream. Invalid flags now rejected.
 
 ### GAPS THAT DON'T MATTER:
 1. **Fixed-size inputs** — functions are simple loops. Correctness

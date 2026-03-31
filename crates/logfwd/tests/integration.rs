@@ -19,17 +19,13 @@ use logfwd_arrow::scanner::SimdScanner;
 use logfwd_config::Config;
 use logfwd_core::enrichment::CsvFileTable;
 use logfwd_core::scan_config::ScanConfig;
+use logfwd_test_utils::test_meter;
 use logfwd_transform::SqlTransform;
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
-
-/// Return a no-op OpenTelemetry `Meter` suitable for use in tests.
-fn test_meter() -> opentelemetry::metrics::Meter {
-    opentelemetry::global::meter("integration-test")
-}
 
 /// Run `pipeline` until `timeout_ms` elapses, then return it so callers can
 /// inspect metrics.

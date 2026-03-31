@@ -14,7 +14,6 @@
 
 use std::collections::HashSet;
 use std::io;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,25 +23,8 @@ use arrow::record_batch::RecordBatch;
 use logfwd::pipeline::Pipeline;
 use logfwd_config::Config;
 use logfwd_output::{BatchMetadata, OutputSink};
+use logfwd_test_utils::{generate_json_lines, test_meter};
 use tokio_util::sync::CancellationToken;
-
-// ---------------------------------------------------------------------------
-// Generator
-// ---------------------------------------------------------------------------
-
-/// Write `count` NDJSON lines to `path`, each with a monotonically increasing
-/// `sequence_id` (starting from 0) and the given `source_id`.
-fn generate_json_lines(path: &Path, count: usize, source_id: &str) {
-    let mut data = String::with_capacity(count * 120);
-    for i in 0..count {
-        let level = if i % 2 == 0 { "INFO" } else { "ERROR" };
-        data.push_str(&format!(
-            r#"{{"sequence_id":{i},"source_id":"{source_id}","level":"{level}","message":"test line {i}","generated_at":"2024-01-01T00:00:00Z"}}"#,
-        ));
-        data.push('\n');
-    }
-    std::fs::write(path, data.as_bytes()).expect("failed to write test data");
-}
 
 // ---------------------------------------------------------------------------
 // CaptureSink (thread-safe, usable from integration tests)
@@ -243,11 +225,6 @@ fn verify_batches(
 // ---------------------------------------------------------------------------
 // Pipeline helper
 // ---------------------------------------------------------------------------
-
-/// Return a no-op OpenTelemetry Meter for tests.
-fn test_meter() -> opentelemetry::metrics::Meter {
-    opentelemetry::global::meter("compliance-test")
-}
 
 /// Build a pipeline from YAML config, inject a CaptureSink, run for the
 /// specified duration, and return the captured RecordBatches.

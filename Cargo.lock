@@ -2028,6 +2028,7 @@ dependencies = [
  "logfwd-config",
  "logfwd-core",
  "logfwd-output",
+ "logfwd-test-utils",
  "logfwd-transform",
  "memchr",
  "opentelemetry",
@@ -2103,6 +2104,7 @@ dependencies = [
  "gethostname",
  "glob",
  "logfwd-arrow",
+ "logfwd-test-utils",
  "memchr",
  "memmap2",
  "notify",
@@ -2128,6 +2130,17 @@ dependencies = [
  "logfwd-config",
  "logfwd-core",
  "ureq",
+]
+
+[[package]]
+name = "logfwd-test-utils"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "logfwd-output",
+ "opentelemetry",
+ "proptest",
+ "tokio-util",
 ]
 
 [[package]]

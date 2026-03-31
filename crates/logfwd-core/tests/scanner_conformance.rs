@@ -16,6 +16,7 @@
 use arrow::array::{Array, Float64Array, Int64Array, StringArray};
 use logfwd_arrow::scanner::SimdScanner;
 use logfwd_core::scan_config::ScanConfig;
+use logfwd_test_utils::json::{arb_flat_object, arb_json_string, arb_ndjson_buffer};
 use proptest::prelude::*;
 
 // ===========================================================================
@@ -150,75 +151,8 @@ fn assert_values_correct(input: &[u8]) {
 }
 
 // ===========================================================================
-// proptest generators — random valid JSON
+// proptest generators — shared from logfwd-test-utils
 // ===========================================================================
-
-/// Generate a safe JSON string value (ASCII, with optional escapes).
-fn arb_json_string() -> impl Strategy<Value = String> {
-    prop::collection::vec(
-        prop_oneof![
-            // Plain ASCII (most common)
-            "[a-zA-Z0-9_ /:.-]".prop_map(|s| s),
-            // Escape sequences
-            Just("\\\"".to_string()),
-            Just("\\\\".to_string()),
-            Just("\\n".to_string()),
-            Just("\\t".to_string()),
-            Just("\\r".to_string()),
-        ],
-        0..20,
-    )
-    .prop_map(|parts| parts.join(""))
-}
-
-/// Generate a simple JSON value (no nested objects — avoids recursive types).
-fn arb_json_value_simple() -> impl Strategy<Value = String> {
-    prop_oneof![
-        40 => arb_json_string().prop_map(|s| format!("\"{}\"", s)),
-        20 => (-1_000_000i64..1_000_000).prop_map(|n| n.to_string()),
-        10 => (-1.0e6f64..1.0e6).prop_filter("finite", |f| f.is_finite())
-            .prop_map(|f| format!("{f}")),
-        10 => prop::bool::ANY.prop_map(|b| b.to_string()),
-        5 => Just("null".to_string()),
-        15 => prop::collection::vec(
-            prop_oneof![
-                arb_json_string().prop_map(|s| format!("\"{}\"", s)),
-                (-100i64..100).prop_map(|n| n.to_string()),
-                Just("null".to_string()),
-            ],
-            0..5,
-        ).prop_map(|elems| format!("[{}]", elems.join(","))),
-    ]
-}
-
-/// Generate a flat JSON object with N fields.
-fn arb_flat_object(
-    field_count: impl Into<prop::collection::SizeRange>,
-) -> impl Strategy<Value = String> {
-    prop::collection::vec(
-        ("[a-zA-Z_][a-zA-Z0-9_]{0,12}", arb_json_value_simple()),
-        field_count,
-    )
-    .prop_map(|fields| {
-        let pairs: Vec<String> = fields
-            .into_iter()
-            .map(|(k, v)| format!("\"{}\":{}", k, v))
-            .collect();
-        format!("{{{}}}", pairs.join(","))
-    })
-}
-
-/// Generate a multi-line NDJSON buffer.
-fn arb_ndjson_buffer() -> impl Strategy<Value = Vec<u8>> {
-    prop::collection::vec(arb_flat_object(1..15), 1..20).prop_map(|lines| {
-        let mut buf = Vec::new();
-        for line in lines {
-            buf.extend_from_slice(line.as_bytes());
-            buf.push(b'\n');
-        }
-        buf
-    })
-}
 
 // ===========================================================================
 // proptest: ground-truth oracle (values verified against sonic-rs)

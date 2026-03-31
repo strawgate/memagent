@@ -13,16 +13,12 @@ use std::time::Duration;
 
 use logfwd::pipeline::Pipeline;
 use logfwd_config::Config;
+use logfwd_test_utils::test_meter;
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Return a no-op OpenTelemetry `Meter` suitable for use in tests.
-fn test_meter() -> opentelemetry::metrics::Meter {
-    opentelemetry::global::meter("compliance-file-test")
-}
 
 /// Generate `count` JSON log lines starting at sequence number `start`.
 /// Each line: {"seq":<n>,"msg":"line <n>"}

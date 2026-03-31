@@ -1,0 +1,12 @@
+[package]
+name = "logfwd-test-utils"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+arrow = { workspace = true }
+logfwd-output = { path = "../logfwd-output" }
+opentelemetry = { workspace = true }
+proptest = "1"
+tokio-util = "0.7"

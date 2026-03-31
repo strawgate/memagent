@@ -23,6 +23,7 @@ zstd = "0.13"
 
 [dev-dependencies]
 logfwd-arrow = { path = "../logfwd-arrow" }
+logfwd-test-utils = { path = "../logfwd-test-utils" }
 arrow-json = "54"
 criterion = { version = "0.5", features = ["html_reports"] }
 memmap2 = "0.9"

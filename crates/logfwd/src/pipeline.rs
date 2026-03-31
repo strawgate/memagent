@@ -673,10 +673,8 @@ fn now_nanos() -> u64 {
 mod tests {
     use super::*;
     use logfwd_config::{Format, OutputConfig, OutputType};
-
-    fn test_meter() -> Meter {
-        opentelemetry::global::meter("test")
-    }
+    use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
+    use logfwd_test_utils::test_meter;
 
     #[test]
     fn test_build_output_sink_stdout() {
@@ -1667,106 +1665,5 @@ output:
 
         assert!(result.is_ok(), "concurrent write + shutdown must not hang");
         assert!(result.unwrap().is_ok());
-    }
-
-    // -------------------------------------------------------------------
-    // Test sinks
-    // -------------------------------------------------------------------
-
-    /// A sink that discards all data.
-    struct DevNullSink;
-
-    impl OutputSink for DevNullSink {
-        fn send_batch(
-            &mut self,
-            _batch: &arrow::record_batch::RecordBatch,
-            _metadata: &BatchMetadata,
-        ) -> io::Result<()> {
-            Ok(())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-        fn name(&self) -> &str {
-            "devnull"
-        }
-    }
-
-    /// A sink that sleeps on each send_batch to simulate slow output.
-    struct SlowSink {
-        delay: Duration,
-    }
-
-    impl OutputSink for SlowSink {
-        fn send_batch(
-            &mut self,
-            _batch: &arrow::record_batch::RecordBatch,
-            _metadata: &BatchMetadata,
-        ) -> io::Result<()> {
-            std::thread::sleep(self.delay);
-            Ok(())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-        fn name(&self) -> &str {
-            "slow"
-        }
-    }
-
-    /// A sink that blocks until a CancellationToken is cancelled.
-    /// Simulates a frozen output (hung network connection, deadlock).
-    struct FrozenSink {
-        release: CancellationToken,
-    }
-
-    impl OutputSink for FrozenSink {
-        fn send_batch(
-            &mut self,
-            _batch: &arrow::record_batch::RecordBatch,
-            _metadata: &BatchMetadata,
-        ) -> io::Result<()> {
-            // Block until released. In a real scenario this would be a
-            // hung HTTP connection or a deadlocked mutex.
-            while !self.release.is_cancelled() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Ok(())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-        fn name(&self) -> &str {
-            "frozen"
-        }
-    }
-
-    /// A sink that fails the first N calls, then succeeds.
-    struct FailingSink {
-        fail_count: u32,
-        calls: u32,
-    }
-
-    impl OutputSink for FailingSink {
-        fn send_batch(
-            &mut self,
-            _batch: &arrow::record_batch::RecordBatch,
-            _metadata: &BatchMetadata,
-        ) -> io::Result<()> {
-            self.calls += 1;
-            if self.calls <= self.fail_count {
-                return Err(io::Error::other(format!(
-                    "simulated output failure {}/{}",
-                    self.calls, self.fail_count
-                )));
-            }
-            Ok(())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-        fn name(&self) -> &str {
-            "failing"
-        }
     }
 }
