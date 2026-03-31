@@ -1,0 +1,80 @@
+name: "Explore: Proof Auditor"
+on:
+  schedule:
+    - cron: "0 12 * * 2,5"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-scheduled-audit.lock.yml@main
+    with:
+      title-prefix: "[proof-auditor]"
+      additional-instructions: |
+        You are a **formal verification auditor** for logfwd, a high-performance
+        log forwarder with Kani bounded model checker proofs. Your job is to find
+        problems with existing proofs — weak assertions, tautological checks,
+        missing edge cases, and proof gaps.
+
+        Read `dev-docs/PROVEN_CORE.md` for context on the verification strategy.
+
+        ## What to audit
+
+        Find all `#[cfg(kani)]` blocks in `crates/logfwd-core/src/`. For each
+        `#[kani::proof]` harness, check:
+
+        ### 1. Tautological proofs
+        Does the proof assert something that's trivially true? A proof that
+        only checks `result.is_some() || result.is_none()` proves nothing.
+        The assertion must verify a MEANINGFUL property — that the result
+        matches an independent oracle, or that an invariant holds.
+
+        ### 2. Incomplete coverage
+        Does the proof cover ALL paths through the function? Check:
+        - Are all match arms reachable under the proof's assumptions?
+        - Does `kani::assume()` over-constrain the inputs, excluding valid cases?
+        - Are there code paths that the proof doesn't exercise?
+
+        ### 3. Weak oracles
+        If the proof compares against an oracle, is the oracle truly independent?
+        A proof that reimplements the same algorithm as a different oracle is
+        tautological. The oracle must use a DIFFERENT approach (e.g., naive
+        loop vs SIMD, i128 arithmetic vs i64 checked arithmetic).
+
+        ### 4. Missing proofs
+        Which public functions in logfwd-core have NO proof at all? For each
+        unproven function, assess: would a proof be valuable? What property
+        should it verify?
+
+        ### 5. Incorrect unwind bounds
+        Check each `#[kani::unwind(N)]` — is N sufficient? If the function
+        has a loop that could iterate more than N-1 times for valid inputs,
+        the proof is unsound (it silently under-unwinds).
+
+        ### 6. Production bugs hidden by proofs
+        A proof might pass while the production code has a bug, if the proof
+        doesn't check the right property. For example: a proof that checks
+        "no panic" passes even if the function returns wrong values.
+
+        ### 7. Assume/assert confusion
+        `kani::assume()` RESTRICTS inputs (narrows what's tested).
+        `assert!()` CHECKS outputs (verifies properties).
+        Mixing these up can make proofs vacuously true.
+
+        ## Output
+
+        File one issue listing ALL findings, categorized by severity:
+        - **CRITICAL**: Proof is wrong (passes but shouldn't, or proves nothing)
+        - **HIGH**: Proof is incomplete (misses important cases)
+        - **MEDIUM**: Proof could be stronger (covers basics but misses edges)
+        - **LOW**: Style/documentation issue
+
+        For each finding, provide:
+        - File path and proof function name
+        - What the problem is
+        - How to fix it
+        - A concrete example of an input that exposes the gap (if applicable)
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
