@@ -21,6 +21,21 @@ jobs:
 
         Read `dev-docs/PROVEN_CORE.md` for context on the verification strategy.
 
+        ## Before you start
+
+        Read `dev-docs/PROOF_AUDIT.md` thoroughly. This documents ALL known
+        proof gaps, which ones have been closed, and what to add next.
+
+        **Do NOT report findings that are already documented in PROOF_AUDIT.md.**
+        If a gap is listed under "GAPS THAT MATTER" or "WHAT TO ADD NEXT",
+        it's already known — skip it. Only report:
+        - NEW findings not covered by PROOF_AUDIT.md
+        - Gaps marked as "closed" in PROOF_AUDIT.md that actually aren't
+        - Issues more severe than PROOF_AUDIT.md describes
+
+        In your output, include a section "Known gaps verified" listing which
+        PROOF_AUDIT.md gaps you checked and confirmed are still accurate.
+
         ## What to audit
 
         Find all `#[cfg(kani)]` blocks in `crates/logfwd-core/src/`. For each
@@ -66,16 +81,25 @@ jobs:
 
         ## Output
 
-        File one issue listing ALL findings, categorized by severity:
+        File one issue listing ALL NEW findings (not in PROOF_AUDIT.md),
+        categorized by severity:
         - **CRITICAL**: Proof is wrong (passes but shouldn't, or proves nothing)
         - **HIGH**: Proof is incomplete (misses important cases)
         - **MEDIUM**: Proof could be stronger (covers basics but misses edges)
         - **LOW**: Style/documentation issue
 
         For each finding, provide:
-        - File path and proof function name
-        - What the problem is
-        - How to fix it
-        - A concrete example of an input that exposes the gap (if applicable)
+        - File path and proof function name (with line number)
+        - What the problem is, with evidence from the actual code
+        - A concrete example input that exposes the gap
+        - How to fix it (specific code changes, not vague suggestions)
+
+        At the end, include:
+        ### Known gaps verified
+        List which PROOF_AUDIT.md entries you checked and whether they are
+        still accurate. This helps us track audit coverage over time.
+
+        If you find NO new issues beyond what PROOF_AUDIT.md documents,
+        say so explicitly — a clean audit is valuable information.
     secrets:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
