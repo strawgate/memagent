@@ -1,6 +1,6 @@
 # Kani Proof Audit
 
-36 proofs as of 2026-03-31. For each: what it proves, what it
+36 proofs as of 2026-03-31 (14→13 in otlp.rs after shadow parser removal, +1 mixed-case severity). For each: what it proves, what it
 DOESN'T prove, and the gap between proof and real usage.
 
 ## structural.rs (7 proofs)
@@ -74,7 +74,7 @@ so 20 bytes IS exhaustive for valid integers).
 **Warning:** Takes ~4 minutes. The i128 oracle adds significant
 solver complexity.
 
-## otlp.rs (14 proofs)
+## otlp.rs (13 proofs)
 
 ### verify_varint_len_matches_encode
 **Proves:** varint_len(v) == encode_varint(v).len() for ALL u64.
@@ -118,9 +118,13 @@ is simple arithmetic.
 ### verify_parse_severity_known_values
 **Proves:** All 12 standard level strings (6 upper + 6 lower) map
 to correct enum values. Empty/unknown returns Unspecified.
-**Gap:** Doesn't test mixed case ("Info", "wArN") or non-ASCII.
-The function uses |0x20 which handles these correctly for ASCII
-letters, but this isn't proven.
+**Gap:** Closed by verify_parse_severity_mixed_case below.
+
+### verify_parse_severity_mixed_case
+**Proves:** Mixed-case variants ("Info", "Warn", "Error", etc.)
+correctly match via |0x20 case-folding. Also verifies the returned
+severity text slice has the correct length.
+**Gap:** None for ASCII severity strings.
 
 ### verify_digit_parsers_no_panic
 **Proves:** parse_2digits and parse_4digits never panic for any
@@ -135,16 +139,6 @@ by the no-panic proof.
 ### verify_parse_4digits_correct
 **Proves:** Correct value for all valid 4-digit quads.
 **Gap:** None for valid inputs.
-
-### verify_key_eq_ignore_case_ascii_letters
-**Proves:** Matches to_ascii_lowercase for all ASCII letter pairs.
-**Gap:** Only tests ASCII letters. The function is USED on JSON keys
-which may contain digits, underscores, etc. For non-letter bytes,
-|0x20 behaves differently from to_ascii_lowercase (e.g., '@' |0x20
-= '`'). This is fine because JSON key comparison with known keys
-("timestamp", "level", "message") only involves letters.
-**Risk:** If someone adds a key with non-letter chars to the lookup
-table, the comparison might fail. LOW risk.
 
 ### verify_encode_fixed64
 **Proves:** Tag + 8 LE bytes for all inputs with field ≤ 1000.

@@ -1,8 +1,9 @@
-//! Zero-allocation OTLP protobuf encoder for log records.
+//! OTLP protobuf encoding helpers and log-field parsers.
 //!
-//! Transcodes JSON log lines directly to OTLP protobuf LogRecords
-//! without intermediate Rust structs. Scans JSON for field positions
-//! using memchr, writes protobuf bytes directly from those byte ranges.
+//! Provides protobuf wire format primitives (`encode_varint`, `encode_tag`,
+//! etc.), severity parsing, and timestamp parsing. The actual OTLP
+//! LogRecord encoding from RecordBatch columns lives in
+//! `crates/logfwd-output/src/otlp_sink.rs`.
 //!
 //! The OTLP LogRecord protobuf layout (field numbers from opentelemetry/proto/logs/v1/logs.proto):
 //!   1: time_unix_nano (fixed64)
@@ -228,13 +229,9 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
-// --- OTLP LogRecord encoder ---
-
-/// Encode a log line as an OTLP LogRecord with the raw line as body.
-/// No JSON parsing — just wraps the bytes in protobuf. Maximum speed.
-// Raw-line OTLP encoding (encode_log_record, encode_log_record_raw,
-// encode_batch, BatchEncoder) removed — production uses otlp_sink.rs
-// which encodes from RecordBatch columns. See #357.
+// OTLP LogRecord encoding from RecordBatch columns lives in
+// crates/logfwd-output/src/otlp_sink.rs. Raw-line encoding was
+// removed in #357.
 
 #[cfg(test)]
 mod tests {
@@ -484,6 +481,22 @@ mod verification {
         assert!(matches!(parse_severity(b"X").0, Severity::Unspecified));
     }
 
+    /// Prove parse_severity handles mixed case via |0x20 on first two bytes.
+    #[kani::proof]
+    fn verify_parse_severity_mixed_case() {
+        // Mixed case should match (|0x20 folds to lowercase)
+        assert!(matches!(parse_severity(b"Info").0, Severity::Info));
+        assert!(matches!(parse_severity(b"Warn").0, Severity::Warn));
+        assert!(matches!(parse_severity(b"Error").0, Severity::Error));
+        assert!(matches!(parse_severity(b"Debug").0, Severity::Debug));
+        assert!(matches!(parse_severity(b"Trace").0, Severity::Trace));
+        assert!(matches!(parse_severity(b"Fatal").0, Severity::Fatal));
+
+        // Severity text slice should be the correct length
+        assert_eq!(parse_severity(b"INFO extra").1, b"INFO");
+        assert_eq!(parse_severity(b"error stuff").1, b"error");
+    }
+
     /// Prove parse_2digits and parse_4digits never panic for any input.
     #[kani::proof]
     fn verify_digit_parsers_no_panic() {
@@ -528,11 +541,6 @@ mod verification {
         assert!(result == expected, "parse_4digits value mismatch");
     }
 
-    /// Prove key_eq_ignore_case matches to_ascii_lowercase for ASCII letter
-    /// inputs. The function uses |0x20 which is a fast approximation of
-    /// case-folding that's correct for ASCII letters but NOT for arbitrary
-    /// bytes (e.g., '@' |0x20 = '`', not '@'). Since JSON field keys are
-    /// ASCII alphanumeric, this is correct for our use case.
     /// Prove encode_fixed64 produces exactly tag + 8 LE bytes.
     #[kani::proof]
     #[kani::unwind(12)]
