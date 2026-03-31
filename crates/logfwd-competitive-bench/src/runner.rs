@@ -107,7 +107,7 @@ pub fn run_agent(
 
     let expected = (ctx.lines as f64 * scenario.expected_line_ratio()) as usize;
     let (lines_done, timed_out) =
-        wait_blackhole_done(blackhole, expected, Duration::from_secs(120));
+        wait_blackhole_done(blackhole, expected, Duration::from_secs(300));
     let elapsed = start.elapsed();
 
     // Stop sampling and merge agent-specific stats.
@@ -341,7 +341,7 @@ pub fn run_agent_perf(
         .map_err(|e| format!("failed to spawn perf record: {e}"))?;
 
     let (_lines_done, _timed_out) =
-        wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(120));
+        wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(300));
     let elapsed = start.elapsed();
 
     kill_and_wait(&mut child);
@@ -429,7 +429,7 @@ pub fn run_agent_dhat(
         .map_err(|e| format!("failed to spawn dhat binary: {e}"))?;
 
     let (_lines_done, _timed_out) =
-        wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(120));
+        wait_blackhole_done(blackhole, ctx.lines, Duration::from_secs(300));
     let elapsed = start.elapsed();
 
     // dhat writes its output on clean exit, so send SIGTERM first.

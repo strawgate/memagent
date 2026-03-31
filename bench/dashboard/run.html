@@ -25,6 +25,20 @@
       <div class="chart-grid" id="scenario-charts"></div>
     </div>
 
+    <div class="section" id="resource-section" style="display:none">
+      <h2>Resource Usage (Agent Peak)</h2>
+      <div class="chart-grid">
+        <div class="card">
+          <h3>Peak Memory (RSS)</h3>
+          <canvas id="chart-peak-rss"></canvas>
+        </div>
+        <div class="card">
+          <h3>Peak CPU Usage</h3>
+          <canvas id="chart-peak-cpu"></canvas>
+        </div>
+      </div>
+    </div>
+
     <div class="section">
       <h2>Full Results</h2>
       <div class="card">
@@ -63,6 +77,13 @@ function formatLPS(n) {
   return Math.round(n).toString();
 }
 
+function formatBytes(b) {
+  if (b >= 1024 * 1024 * 1024) return (b / (1024 * 1024 * 1024)).toFixed(1) + 'GB';
+  if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + 'MB';
+  if (b >= 1024) return (b / 1024).toFixed(1) + 'KB';
+  return b + 'B';
+}
+
 function isDark() { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
 
 function chartColors() {
@@ -72,8 +93,6 @@ function chartColors() {
 }
 
 function gridColor() { return isDark() ? '#30363d' : '#e5e7eb'; }
-
-const DATA_BASE = 'https://raw.githubusercontent.com/strawgate/memagent/bench-data';
 
 async function loadJSON(url) {
   try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
@@ -98,7 +117,7 @@ async function main() {
 
   const run = await loadJSON(DATA_BASE + '/runs/' + runId + '.json');
   if (!run) {
-    document.getElementById('loading').textContent = 'Could not load run ' + runId + '.';
+    document.getElementById('loading').textContent = 'Could not load run ' + runId + '. File data/runs/' + runId + '.json not found.';
     return;
   }
 
@@ -161,6 +180,54 @@ async function main() {
         }
       }
     });
+  }
+
+  // Resource Usage Charts (Peak RSS and CPU across scenarios)
+  const resourceSection = document.getElementById('resource-section');
+  const rssCanvas = document.getElementById('chart-peak-rss');
+  const cpuCanvas = document.getElementById('chart-peak-cpu');
+
+  if (resourceSection && rssCanvas && cpuCanvas) {
+    const rssData = [];
+    const cpuData = [];
+    const labels = [];
+    const colors = [];
+
+    for (const agent of agents) {
+      let maxRss = 0;
+      let maxCpu = 0;
+      let found = false;
+
+      for (const sn of scenarios) {
+        const d = run.scenarios?.[sn]?.[agent];
+        if (d) {
+          found = true;
+          if (d.avg_max_rss > maxRss) maxRss = d.avg_max_rss;
+          // Note: if we added avg_max_cpu to dashboard JSON we'd use it here.
+          // For now, if missing, we skip CPU or use a placeholder.
+        }
+      }
+
+      if (found) {
+        labels.push(agent);
+        rssData.push(maxRss);
+        colors.push(AGENT_COLORS[agent] || '#64748b');
+      }
+    }
+
+    if (labels.length > 0) {
+      resourceSection.style.display = '';
+      new Chart(rssCanvas, {
+        type: 'bar',
+        data: { labels, datasets: [{ data: rssData, backgroundColor: colors, borderRadius: 3 }] },
+        options: {
+          indexAxis: 'y',
+          plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatBytes(ctx.raw) } } },
+          scales: { x: { ticks: { callback: v => formatBytes(v) }, grid: { color: gridColor() } }, y: { grid: { display: false } } }
+        }
+      });
+      // Placeholder or actual CPU chart if data added to JSON
+    }
   }
 
   // Full results table
