@@ -28,25 +28,27 @@ pub struct CriLine<'a> {
 /// Parse a single CRI log line. Returns None if the format is invalid.
 ///
 /// This is zero-copy — all returned slices point into the input `line`.
-/// The only work is finding the 3 space delimiters.
+/// Uses `byte_search::find_byte` (Kani-proven) instead of memchr.
 #[inline]
 pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
+    use crate::byte_search::find_byte;
+
     // Format: "TIMESTAMP STREAM FLAGS MESSAGE"
     // Find first space (after timestamp).
-    let sp1 = memchr::memchr(b' ', line)?;
+    let sp1 = find_byte(line, b' ', 0)?;
     if sp1 + 1 >= line.len() {
         return None;
     }
 
     // Find second space (after stream).
-    let sp2 = memchr::memchr(b' ', &line[sp1 + 1..])? + sp1 + 1;
+    let sp2 = find_byte(line, b' ', sp1 + 1)?;
     if sp2 + 1 >= line.len() {
         return None;
     }
 
     // Find third space (after flags).
-    let msg_start = if let Some(sp3) = memchr::memchr(b' ', &line[sp2 + 1..]) {
-        sp2 + 1 + sp3 + 1
+    let msg_start = if let Some(sp3) = find_byte(line, b' ', sp2 + 1) {
+        sp3 + 1
     } else {
         // No message content (just flags, no trailing space) — empty message.
         line.len()
@@ -345,6 +347,18 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
+
+    /// Prove parse_cri_line never panics for any 32-byte input.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    fn verify_parse_cri_line_no_panic() {
+        let input: [u8; 32] = kani::any();
+        let _ = parse_cri_line(&input);
+    }
+
+    // NOTE: Proofs for parse_cri_line field validity and flag detection
+    // deferred — Kani's pointer model can't handle slice_ref comparisons.
+    // The no-panic proof above covers the most critical property.
 
     /// Prove CriReassembler::feed respects max_line_size for P+F sequences.
     /// Uses fixed 8-byte messages — Kani explores all 2^64 byte values.

@@ -1,3 +1,5 @@
+pub mod aggregator;
+pub mod byte_search;
 pub mod checkpoint;
 pub mod chunk_classify;
 pub mod compress;
@@ -6,6 +8,7 @@ pub mod diagnostics;
 pub mod enrichment;
 pub mod filter_hints;
 pub mod format;
+pub mod framer;
 pub mod input;
 pub mod otlp;
 pub mod scan_config;
