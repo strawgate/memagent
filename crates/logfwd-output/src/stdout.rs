@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 
 use arrow::array::{Array, AsArray};
+use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
 use super::{BatchMetadata, OutputSink, build_col_infos, str_value, write_row_json};
@@ -72,7 +73,7 @@ impl StdoutSink {
                     let cols = build_col_infos(batch);
                     for row in 0..num_rows {
                         self.buf.clear();
-                        write_row_json(batch, row, &cols, &mut self.buf);
+                        write_row_json(batch, row, &cols, &mut self.buf)?;
                         self.buf.push(b'\n');
                         dest.write_all(&self.buf)?;
                     }
@@ -82,7 +83,7 @@ impl StdoutSink {
                 let cols = build_col_infos(batch);
                 for row in 0..num_rows {
                     self.buf.clear();
-                    write_row_json(batch, row, &cols, &mut self.buf);
+                    write_row_json(batch, row, &cols, &mut self.buf)?;
                     self.buf.push(b'\n');
                     dest.write_all(&self.buf)?;
                 }
@@ -109,7 +110,9 @@ impl StdoutSink {
             self.buf.clear();
 
             // Timestamp (dim).
-            if let Some(idx) = ts_idx {
+            if let Some((idx, _)) =
+                best_variant_for_well_known(&cols, "timestamp", row, batch, ts_idx)
+            {
                 let col = batch.column(idx);
                 if !col.is_null(row) {
                     let ts = str_value(col, row);
@@ -127,7 +130,9 @@ impl StdoutSink {
             }
 
             // Level (colored).
-            if let Some(idx) = level_idx {
+            if let Some((idx, _)) =
+                best_variant_for_well_known(&cols, "level", row, batch, level_idx)
+            {
                 let col = batch.column(idx);
                 if !col.is_null(row) {
                     let level = str_value(col, row);
@@ -151,7 +156,10 @@ impl StdoutSink {
             }
 
             // Message.
-            if let Some(idx) = msg_idx {
+            if let Some((idx, _)) =
+                best_variant_for_well_known(&cols, "message", row, batch, msg_idx)
+                    .or_else(|| best_variant_for_well_known(&cols, "msg", row, batch, msg_idx))
+            {
                 let col = batch.column(idx);
                 if !col.is_null(row) {
                     self.buf.extend_from_slice(str_value(col, row).as_bytes());
@@ -196,19 +204,7 @@ impl StdoutSink {
                 self.buf.push(b'=');
 
                 let arr = batch.column(idx);
-                match suffix {
-                    "int" => {
-                        let arr = arr.as_primitive::<arrow::datatypes::Int64Type>();
-                        write!(self.buf, "{}", arr.value(row))?;
-                    }
-                    "float" => {
-                        let arr = arr.as_primitive::<arrow::datatypes::Float64Type>();
-                        write!(self.buf, "{}", arr.value(row))?;
-                    }
-                    _ => {
-                        self.buf.extend_from_slice(str_value(arr, row).as_bytes());
-                    }
-                }
+                write_console_value(&mut self.buf, arr, row, suffix)?;
 
                 if self.color {
                     self.buf.extend_from_slice(b"\x1b[0m");
@@ -219,6 +215,53 @@ impl StdoutSink {
             dest.write_all(&self.buf)?;
         }
         Ok(())
+    }
+}
+
+fn write_console_value(
+    out: &mut Vec<u8>,
+    arr: &dyn Array,
+    row: usize,
+    _suffix: &str,
+) -> io::Result<()> {
+    match arr.data_type() {
+        DataType::Int64 => {
+            let arr = arr.as_primitive::<arrow::datatypes::Int64Type>();
+            write!(out, "{}", arr.value(row))?;
+        }
+        DataType::Float64 => {
+            let arr = arr.as_primitive::<arrow::datatypes::Float64Type>();
+            write!(out, "{}", arr.value(row))?;
+        }
+        _ => {
+            out.extend_from_slice(str_value(arr, row).as_bytes());
+        }
+    }
+    Ok(())
+}
+
+fn best_variant_for_well_known<'a>(
+    cols: &'a [super::ColInfo],
+    field_name: &str,
+    row: usize,
+    batch: &RecordBatch,
+    fallback_idx: Option<usize>,
+) -> Option<(usize, &'a str)> {
+    if let Some(col) = cols.iter().find(|c| c.field_name == field_name) {
+        for (idx, suffix) in &col.variants {
+            if !batch.column(*idx).is_null(row) {
+                return Some((*idx, suffix.as_str()));
+            }
+        }
+        return None;
+    }
+
+    let idx = fallback_idx?;
+    let arr = batch.column(idx);
+    if arr.is_null(row) {
+        None
+    } else {
+        Some((idx, ""))
     }
 }
 

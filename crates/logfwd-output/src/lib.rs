@@ -106,6 +106,30 @@ pub(crate) struct ColInfo {
     min_idx: usize,
 }
 
+fn is_string_like_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8 | DataType::Utf8View => true,
+        DataType::Dictionary(_, value_type) => is_string_like_type(value_type),
+        _ => false,
+    }
+}
+
+fn parse_output_column_name<'a>(col_name: &'a str, data_type: &DataType) -> (&'a str, &'a str) {
+    if let Some(pos) = col_name.rfind('$') {
+        let suffix = &col_name[pos + 1..];
+        let is_typed_match = match suffix {
+            "str" => is_string_like_type(data_type),
+            "int" => matches!(data_type, DataType::Int64),
+            "float" => matches!(data_type, DataType::Float64),
+            _ => false,
+        };
+        if is_typed_match {
+            return (&col_name[..pos], suffix);
+        }
+    }
+    (col_name, "")
+}
+
 /// Build a grouped list of columns for JSON output.
 /// When the same field_name appears multiple times (e.g. status$int and
 /// status$str), they are grouped under the same logical field.
@@ -118,7 +142,7 @@ pub(crate) fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
 
     for (idx, field) in schema.fields().iter().enumerate() {
         let name = field.name().as_str();
-        let (field_name, type_suffix) = parse_column_name(name);
+        let (field_name, type_suffix) = parse_output_column_name(name, field.data_type());
         groups
             .entry(field_name.to_string())
             .or_default()
@@ -171,42 +195,23 @@ pub(crate) fn str_value(col: &dyn Array, row: usize) -> &str {
 }
 
 /// Write a single row as a JSON object into `out`.
-pub(crate) fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], out: &mut Vec<u8>) {
-    out.push(b'{');
-    let mut first = true;
-    for col in cols {
-        // Find the first variant (by priority) that is not null for this row.
-        let mut best_variant = None;
-        for (idx, suffix) in &col.variants {
-            if !batch.column(*idx).is_null(row) {
-                best_variant = Some((*idx, suffix.as_str()));
-                break;
-            }
-        }
-
-        let Some((idx, suffix)) = best_variant else {
-            continue;
-        };
-
-        if !first {
-            out.push(b',');
-        }
-        first = false;
-        // Key
-        out.push(b'"');
-        out.extend_from_slice(col.field_name.as_bytes());
-        out.push(b'"');
-        out.push(b':');
-        // Value — type-aware
-        let arr = batch.column(idx);
-        match suffix {
-            "int" => {
+pub(crate) fn write_row_json(
+    batch: &RecordBatch,
+    row: usize,
+    cols: &[ColInfo],
+    out: &mut Vec<u8>,
+) -> io::Result<()> {
+    fn write_json_value(
+        out: &mut Vec<u8>,
+        arr: &dyn Array,
+        row: usize,
+    ) -> io::Result<()> {
+        match arr.data_type() {
+            DataType::Int64 => {
                 let arr = arr.as_primitive::<arrow::datatypes::Int64Type>();
-                let v = arr.value(row);
-                // Write integer directly; no quotes in JSON.
-                let _ = Write::write_fmt(out, format_args!("{}", v));
+                write!(out, "{}", arr.value(row))?;
             }
-            "float" => {
+            DataType::Float64 => {
                 let arr = arr.as_primitive::<arrow::datatypes::Float64Type>();
                 let v = arr.value(row);
                 // RFC 8259: JSON numbers cannot be inf, -inf, or NaN.
@@ -239,8 +244,40 @@ pub(crate) fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], 
                 out.push(b'"');
             }
         }
+        Ok(())
+    }
+
+    out.push(b'{');
+    let mut first = true;
+    for col in cols {
+        // Find the first variant (by priority) that is not null for this row.
+        let mut best_variant = None;
+        for (idx, suffix) in &col.variants {
+            if !batch.column(*idx).is_null(row) {
+                best_variant = Some((*idx, suffix.as_str()));
+                break;
+            }
+        }
+
+        let Some((idx, _suffix)) = best_variant else {
+            continue;
+        };
+
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+        // Key
+        out.push(b'"');
+        out.extend_from_slice(col.field_name.as_bytes());
+        out.push(b'"');
+        out.push(b':');
+        // Value — type-aware
+        let arr = batch.column(idx);
+        write_json_value(out, arr, row)?;
     }
     out.push(b'}');
+    Ok(())
 }
 
 /// Compression algorithm.
@@ -565,6 +602,49 @@ mod tests {
         assert!(output.contains("\"status\":500"), "got: {}", output);
         // Should NOT have the string version
         assert!(!output.contains("\"status\":\"500\""), "got: {}", output);
+    }
+
+    #[test]
+    fn test_untyped_numeric_column_json() {
+        let schema = Arc::new(Schema::new(vec![Field::new("cnt", DataType::Int64, true)]));
+        let cnt = Int64Array::from(vec![Some(3)]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(cnt)]).unwrap();
+        let meta = make_metadata();
+
+        let mut sink = StdoutSink::new("test".to_string(), StdoutFormat::Json);
+        let mut out: Vec<u8> = Vec::new();
+        sink.write_batch_to(&batch, &meta, &mut out).unwrap();
+        let output = String::from_utf8(out).unwrap();
+
+        assert!(output.contains("\"cnt\":3"), "got: {}", output);
+    }
+
+    #[test]
+    fn test_literal_typed_suffix_field_name_is_preserved() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("cost$int", DataType::Utf8, true),
+            Field::new("cost", DataType::Utf8, true),
+        ]));
+        let cost_suffix = StringArray::from(vec![Some("literal"), None]);
+        let cost = StringArray::from(vec![Some("base"), Some("base2")]);
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(cost_suffix), Arc::new(cost)]).unwrap();
+        let meta = make_metadata();
+
+        let mut sink = StdoutSink::new("test".to_string(), StdoutFormat::Json);
+        let mut out: Vec<u8> = Vec::new();
+        sink.write_batch_to(&batch, &meta, &mut out).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = output.trim().split('\n').collect();
+
+        assert!(
+            lines[0].contains("\"cost$int\":\"literal\""),
+            "got: {}",
+            lines[0]
+        );
+        assert!(lines[0].contains("\"cost\":\"base\""), "got: {}", lines[0]);
+        assert!(lines[1].contains("\"cost\":\"base2\""), "got: {}", lines[1]);
+        assert!(!lines[1].contains("\"cost$int\""), "got: {}", lines[1]);
     }
 
     #[test]

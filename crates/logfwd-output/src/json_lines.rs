@@ -96,7 +96,7 @@ impl JsonLinesSink {
         } else {
             let cols = build_col_infos(batch);
             for row in 0..num_rows {
-                write_row_json(batch, row, &cols, &mut self.batch_buf);
+                write_row_json(batch, row, &cols, &mut self.batch_buf)?;
                 self.batch_buf.push(b'\n');
             }
         }
