@@ -18,6 +18,7 @@ Library-specific guides covering non-obvious APIs, gotchas, and patterns. Read t
 | [`docs/references/tokio-async-patterns.md`](docs/references/tokio-async-patterns.md) | Runtime vs Handle, bounded mpsc channels for backpressure, CancellationToken + ordered shutdown, select! cancellation safety, sync↔async migration |
 | [`docs/references/opentelemetry-otlp.md`](docs/references/opentelemetry-otlp.md) | MeterProvider + PeriodicReader setup, OTLP protobuf message nesting and field numbers, dual-write metrics pattern, HTTP vs gRPC conventions |
 | [`docs/references/notify-memchr-zstd.md`](docs/references/notify-memchr-zstd.md) | File watcher event model and debouncing, SIMD string search with memchr/memmem, zstd streaming compression and dictionary training |
+| [`docs/references/kani-verification.md`](docs/references/kani-verification.md) | Kani proof harnesses, `kani::any()` symbolic values, unwind bounds, function contracts (requires/ensures/stub_verified), loop contracts, Bolero integration, solver selection, practical verification bounds, CI setup |
 
 ## Architecture Spec
 
