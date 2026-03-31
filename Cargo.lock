@@ -2059,6 +2059,7 @@ dependencies = [
  "logfwd-config",
  "logfwd-core",
  "logfwd-io",
+ "serde_json",
  "ureq",
 ]
 

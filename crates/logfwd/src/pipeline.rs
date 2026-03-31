@@ -323,6 +323,8 @@ impl Pipeline {
         let batch = match tokio::task::block_in_place(|| self.scanner.scan(combined.into())) {
             Ok(b) => b,
             Err(e) => {
+                self.metrics.inc_scan_error();
+                self.metrics.inc_dropped_batch();
                 eprintln!("pipeline: scan error (batch dropped): {e}");
                 return;
             }
@@ -360,6 +362,7 @@ impl Pipeline {
         };
         if let Err(e) = tokio::task::block_in_place(|| self.output.send_batch(&result, &metadata)) {
             self.metrics.output_error();
+            self.metrics.inc_dropped_batch();
             eprintln!("pipeline: output error (batch dropped): {e}");
             return;
         }
