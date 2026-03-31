@@ -13,4 +13,5 @@ pub mod input;
 pub mod otlp;
 pub mod scan_config;
 pub mod scanner;
+pub mod structural;
 pub mod tail;

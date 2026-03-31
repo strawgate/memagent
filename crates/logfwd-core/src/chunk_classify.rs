@@ -191,7 +191,7 @@ impl ChunkIndex {
 
 #[inline]
 #[allow(dead_code)]
-fn compute_real_quotes(quote_bits: u64, bs_bits: u64, prev_odd_backslash: &mut u64) -> u64 {
+pub fn compute_real_quotes(quote_bits: u64, bs_bits: u64, prev_odd_backslash: &mut u64) -> u64 {
     if bs_bits == 0 && *prev_odd_backslash == 0 {
         return quote_bits;
     }
@@ -315,7 +315,7 @@ fn compute_real_quotes(quote_bits: u64, bs_bits: u64, prev_odd_backslash: &mut u
 
 #[inline(always)]
 #[allow(dead_code)]
-fn prefix_xor(mut bitmask: u64) -> u64 {
+pub fn prefix_xor(mut bitmask: u64) -> u64 {
     bitmask ^= bitmask << 1;
     bitmask ^= bitmask << 2;
     bitmask ^= bitmask << 4;
