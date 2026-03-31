@@ -34,7 +34,7 @@ Then read every source file in the module(s) you'll modify — including tests.
 - Run `just ci` before considering any change complete
 - Zero clippy warnings, all tests pass, `cargo fmt` clean
 - No `.unwrap()` in production code — use `?` or `.expect("reason")`
-- No per-line heap allocations in hot paths (scanner, OTLP encoder, CRI parser)
+- No per-line heap allocations in hot paths (scanner, format parser, CRI parser, OTLP encoder, compress)
 - No new dependencies without justification
 - No unnecessary abstractions — write the simplest correct code
 - Doc comments on public APIs

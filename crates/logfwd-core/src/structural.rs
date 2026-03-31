@@ -241,7 +241,7 @@ impl StructuralIndex {
             let block_len = remaining.min(64);
 
             let block: [u8; 64] = if remaining >= 64 {
-                buf[offset..offset + 64].try_into().unwrap()
+                buf[offset..offset + 64].try_into().expect("offset aligned to 64-byte block")
             } else {
                 let mut padded = [b' '; 64];
                 padded[..remaining].copy_from_slice(&buf[offset..]);
@@ -426,10 +426,10 @@ fn cmp4(c0: u8x16, c1: u8x16, c2: u8x16, c3: u8x16, needle: u8) -> u64 {
 /// native register on both NEON (128-bit) and SSE2 (128-bit). The `wide`
 /// crate handles platform dispatch at compile time.
 pub fn find_structural_chars(block: &[u8; 64]) -> RawBlockMasks {
-    let c0 = u8x16::new(block[0..16].try_into().unwrap());
-    let c1 = u8x16::new(block[16..32].try_into().unwrap());
-    let c2 = u8x16::new(block[32..48].try_into().unwrap());
-    let c3 = u8x16::new(block[48..64].try_into().unwrap());
+    let c0 = u8x16::new(block[0..16].try_into().expect("block is 64 bytes"));
+    let c1 = u8x16::new(block[16..32].try_into().expect("block is 64 bytes"));
+    let c2 = u8x16::new(block[32..48].try_into().expect("block is 64 bytes"));
+    let c3 = u8x16::new(block[48..64].try_into().expect("block is 64 bytes"));
 
     RawBlockMasks {
         newline: cmp4(c0, c1, c2, c3, b'\n'),
