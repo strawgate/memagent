@@ -170,7 +170,8 @@ mod verification {
     ///   return None
     ///
     /// This is a full behavioral equivalence proof, not just overflow
-    /// detection.
+    /// detection. WARNING: takes ~4 minutes (i128 oracle adds solver
+    /// complexity).
     #[kani::proof]
     #[kani::unwind(22)]
     #[kani::solver(kissat)]

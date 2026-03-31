@@ -306,7 +306,7 @@ Each layer has appropriate verification:
 | Pipeline state machine | Temporal properties | TLA+ (planned) |
 | End-to-end | Roundtrip (scan → encode → decode) | proptest |
 
-See `dev-docs/PROOF_AUDIT.md` for detailed audit of all 31 proofs.
+Proof gap analysis lives in doc comments on each `#[kani::proof]` harness.
 See `dev-docs/PROVEN_CORE.md` for verification tier definitions.
 
 ## Related documents
@@ -316,4 +316,3 @@ See `dev-docs/PROVEN_CORE.md` for verification tier definitions.
 - `CRATE_RULES.md` — per-crate enforcement rules
 - `PHASES.md` — implementation roadmap with issue references
 - `PROVEN_CORE.md` — verification tiers, proof mechanics
-- `PROOF_AUDIT.md` — audit of all Kani proofs

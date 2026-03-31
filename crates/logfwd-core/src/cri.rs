@@ -476,7 +476,8 @@ mod verification {
         }
     }
 
-    /// Prove CriReassembler::feed respects max_line_size for F-only lines
+    /// Prove CriReassembler::feed respects max_line_size for F-only lines.
+    /// This proof caught a real bug: the F fast path was not enforcing max_line_size.
     /// (the fast path where no partials are pending).
     #[kani::proof]
     fn verify_reassembler_respects_max_size_f_only() {

@@ -2013,6 +2013,7 @@ dependencies = [
  "arrow",
  "arrow-json",
  "bytes",
+ "chrono",
  "criterion",
  "crossbeam-channel",
  "csv",

@@ -326,7 +326,7 @@ fn encode_row_as_log_record(
             if arr.is_null(row) {
                 None
             } else {
-                Some(parse_timestamp_nanos(str_value(arr, row).as_bytes()))
+                parse_timestamp_nanos(str_value(arr, row).as_bytes())
             }
         })
         .unwrap_or(0);

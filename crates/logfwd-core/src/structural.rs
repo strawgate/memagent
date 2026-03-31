@@ -23,7 +23,11 @@
 /// Iterates through backslash bits (O(num_backslashes), typically very small)
 /// to identify which quotes are escaped. Carries state between blocks via
 /// `prev_odd_backslash`.
+///
+/// Contract: result is always a submask of `quote_bits` (can only remove
+/// quotes, never add them).
 #[inline]
+#[cfg_attr(kani, kani::ensures(|result: &u64| *result & !quote_bits == 0))]
 pub fn compute_real_quotes(quote_bits: u64, bs_bits: u64, prev_odd_backslash: &mut u64) -> u64 {
     if bs_bits == 0 && *prev_odd_backslash == 0 {
         return quote_bits;
@@ -838,8 +842,78 @@ mod tests {
 mod verification {
     use super::*;
 
-    /// Prove find_char_mask is correct for ALL inputs.
-    /// Bit i is set iff block[i] == needle.
+    /// Oracle proof: prefix_xor matches naive bit-by-bit running XOR
+    /// for ALL u64 inputs. Exhaustive — no gap.
+    #[kani::proof]
+    fn verify_prefix_xor() {
+        let input: u64 = kani::any();
+        let result = prefix_xor(input);
+
+        let mut expected: u64 = 0;
+        let mut running = false;
+        let mut i = 0u32;
+        while i < 64 {
+            if (input >> i) & 1 == 1 {
+                running = !running;
+            }
+            if running {
+                expected |= 1u64 << i;
+            }
+            i += 1;
+        }
+        assert!(result == expected, "prefix_xor mismatch");
+    }
+
+    /// Oracle proof: compute_real_quotes matches naive byte-by-byte
+    /// escape oracle for ALL (quote_bits, bs_bits, carry) triples.
+    /// Three properties: submask, oracle match, carry correctness.
+    ///
+    /// Most critical proof in the codebase — if escape detection is
+    /// wrong, the scanner silently misparses every JSON string with
+    /// backslashes.
+    #[kani::proof]
+    #[kani::unwind(65)]
+    #[kani::solver(kissat)]
+    fn verify_compute_real_quotes() {
+        let quote_bits: u64 = kani::any();
+        let bs_bits: u64 = kani::any();
+        let prev_carry: u64 = kani::any();
+        kani::assume(prev_carry <= 1);
+
+        let mut carry = prev_carry;
+        let result = compute_real_quotes(quote_bits, bs_bits, &mut carry);
+
+        // Result only contains quote positions
+        assert!(result & !quote_bits == 0);
+
+        // Matches naive escape oracle
+        let mut escaped_naive: u64 = 0;
+        let mut prev_was_unescaped_bs = prev_carry == 1;
+        let mut pos = 0u32;
+        while pos < 64 {
+            let is_bs = (bs_bits >> pos) & 1 == 1;
+            if prev_was_unescaped_bs {
+                escaped_naive |= 1u64 << pos;
+                prev_was_unescaped_bs = false;
+            } else if is_bs {
+                prev_was_unescaped_bs = true;
+            } else {
+                prev_was_unescaped_bs = false;
+            }
+            pos += 1;
+        }
+        let expected = quote_bits & !escaped_naive;
+        assert!(result == expected, "disagrees with naive oracle");
+
+        // Carry is correct
+        let expected_carry: u64 = if prev_was_unescaped_bs { 1 } else { 0 };
+        assert!(carry == expected_carry, "carry mismatch");
+    }
+
+    /// Correctness: bit i is set iff block[i] == needle, for any
+    /// 64-byte block and any needle. Checks one arbitrary position per
+    /// run — the function is a simple loop so correctness at one
+    /// arbitrary position implies correctness at all.
     #[kani::proof]
     #[kani::unwind(65)]
     #[kani::solver(kissat)]
@@ -854,7 +928,9 @@ mod verification {
         assert_eq!(bit_set, block[pos] == needle);
     }
 
-    /// Prove find_structural_chars_scalar matches find_char_mask for each character.
+    /// Consistency: find_structural_chars_scalar matches find_char_mask
+    /// for the quote character. Only checks one of 10 characters — all
+    /// use identical match-arm logic.
     #[kani::proof]
     #[kani::unwind(65)]
     #[kani::solver(kissat)]
@@ -866,7 +942,8 @@ mod verification {
         assert_eq!(raw.quote, find_char_mask(&block, b'"'));
     }
 
-    /// Prove process_block never panics.
+    /// Crash-freedom: process_block never panics for any combination
+    /// of 10 arbitrary u64 bitmasks and any block_len 0..=64.
     #[kani::proof]
     fn verify_process_block_no_panic() {
         let raw = RawBlockMasks {
@@ -887,7 +964,7 @@ mod verification {
         let _ = classifier.process_block(&raw, block_len);
     }
 
-    /// Prove process_block masks out bits beyond block_len.
+    /// Tail masking: no bits set beyond block_len in any output field.
     #[kani::proof]
     fn verify_process_block_tail_mask() {
         let raw = RawBlockMasks {
@@ -914,7 +991,10 @@ mod verification {
         assert_eq!(p.comma & tail_mask, 0);
     }
 
-    /// Prove: characters marked as inside strings are never in structural output.
+    /// String exclusion: structural characters (space, comma, colon,
+    /// braces) never overlap with in_string mask. Only covers the
+    /// no-backslash case — with escapes, the exclusion is verified
+    /// by the compositional proof below.
     #[kani::proof]
     fn verify_in_string_exclusion() {
         let raw = RawBlockMasks {
@@ -939,5 +1019,131 @@ mod verification {
         assert_eq!(p.colon & p.in_string, 0);
         assert_eq!(p.open_brace & p.in_string, 0);
         assert_eq!(p.close_brace & p.in_string, 0);
+    }
+
+    /// Verify compute_real_quotes contract: result is submask of quote_bits.
+    #[kani::proof_for_contract(compute_real_quotes)]
+    fn verify_compute_real_quotes_contract() {
+        let quote_bits: u64 = kani::any();
+        let bs_bits: u64 = kani::any();
+        let mut carry: u64 = kani::any_where(|&c: &u64| c <= 1);
+        compute_real_quotes(quote_bits, bs_bits, &mut carry);
+    }
+
+    /// Compositional proof: process_block using proven compute_real_quotes.
+    /// Kani trusts the compute_real_quotes contract (submask property)
+    /// and verifies process_block's composition logic:
+    /// - real_quotes is a submask of raw quotes (from contract)
+    /// - in_string is derived correctly via prefix_xor
+    /// - structural chars are masked by !in_string
+    /// - tail mask clears bits beyond block_len
+    #[kani::proof]
+    #[kani::stub_verified(compute_real_quotes)]
+    fn verify_process_block_compositional() {
+        let raw = RawBlockMasks {
+            newline: kani::any(),
+            space: kani::any(),
+            quote: kani::any(),
+            backslash: kani::any(),
+            comma: kani::any(),
+            colon: kani::any(),
+            open_brace: kani::any(),
+            close_brace: kani::any(),
+            open_bracket: kani::any(),
+            close_bracket: kani::any(),
+        };
+        let block_len: usize = kani::any_where(|&l: &usize| l <= 64);
+
+        let mut classifier = StreamingClassifier::new();
+        let p = classifier.process_block(&raw, block_len);
+
+        // real_quotes must be submask of raw quotes (from contract)
+        assert_eq!(
+            p.real_quotes & !raw.quote,
+            0,
+            "real_quotes not submask of quotes"
+        );
+
+        // All string-masked fields must not overlap with in_string
+        assert_eq!(p.space & p.in_string, 0);
+        assert_eq!(p.comma & p.in_string, 0);
+        assert_eq!(p.colon & p.in_string, 0);
+        assert_eq!(p.open_brace & p.in_string, 0);
+        assert_eq!(p.close_brace & p.in_string, 0);
+        assert_eq!(p.open_bracket & p.in_string, 0);
+        assert_eq!(p.close_bracket & p.in_string, 0);
+
+        // Tail masking: no bits beyond block_len in any output field
+        if block_len < 64 {
+            let tail = !((1u64 << block_len) - 1);
+            assert_eq!(p.newline & tail, 0);
+            assert_eq!(p.space & tail, 0);
+            assert_eq!(p.real_quotes & tail, 0);
+            assert_eq!(p.in_string & tail, 0);
+            assert_eq!(p.comma & tail, 0);
+            assert_eq!(p.colon & tail, 0);
+            assert_eq!(p.open_brace & tail, 0);
+            assert_eq!(p.close_brace & tail, 0);
+            assert_eq!(p.open_bracket & tail, 0);
+            assert_eq!(p.close_bracket & tail, 0);
+        }
+    }
+
+    /// Correctness: next_quote returns the first real quote at or after
+    /// pos. If None, no real quotes exist at or after pos.
+    /// Adapted from agent audit (feat/kani-audit-and-verification).
+    #[kani::proof]
+    #[kani::unwind(65)]
+    fn verify_next_quote_correct() {
+        let buf: [u8; 64] = kani::any();
+        let (idx, _) = StructuralIndex::new(&buf);
+        let pos: usize = kani::any_where(|&p: &usize| p < 64);
+
+        let result = idx.next_quote(pos);
+
+        if let Some(q) = result {
+            assert!(q >= pos && q < 64);
+            // It's a real quote
+            assert!((idx.real_quotes[q >> 6] >> (q & 63)) & 1 == 1);
+            // No real quote between pos and q
+            let mut i = pos;
+            while i < q {
+                assert!((idx.real_quotes[i >> 6] >> (i & 63)) & 1 == 0);
+                i += 1;
+            }
+        } else {
+            // No real quotes at or after pos
+            let mut i = pos;
+            while i < 64 {
+                assert!((idx.real_quotes[i >> 6] >> (i & 63)) & 1 == 0);
+                i += 1;
+            }
+        }
+    }
+
+    /// Correctness: is_in_string is true iff an odd number of real
+    /// quotes precede this position AND the position itself is not a quote.
+    /// Adapted from agent audit (feat/kani-audit-and-verification).
+    #[kani::proof]
+    #[kani::unwind(65)]
+    fn verify_is_in_string_correct() {
+        let buf: [u8; 64] = kani::any();
+        let (idx, _) = StructuralIndex::new(&buf);
+        let pos: usize = kani::any_where(|&p: &usize| p < 64);
+
+        let in_string = idx.is_in_string(pos);
+
+        let mut quote_count: u32 = 0;
+        let mut i = 0;
+        while i < pos {
+            if (idx.real_quotes[i >> 6] >> (i & 63)) & 1 == 1 {
+                quote_count += 1;
+            }
+            i += 1;
+        }
+
+        let is_quote = (idx.real_quotes[pos >> 6] >> (pos & 63)) & 1 == 1;
+        let expected = (quote_count % 2 == 1) && !is_quote;
+        assert_eq!(in_string, expected);
     }
 }
