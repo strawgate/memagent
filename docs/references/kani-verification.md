@@ -1,5 +1,7 @@
 # Kani Rust Verifier -- Agent Reference
 
+Version: `kani-verifier 0.56+` (syncs monthly with Rust nightly)
+
 Kani is an open-source bounded model checker for Rust that translates Rust MIR
 into a SAT/SMT formula via CBMC. It proves safety and correctness properties
 by exhaustively exploring all possible inputs within bounds.
@@ -382,6 +384,7 @@ Loop contracts abstract loops via invariants, enabling unbounded verification
 without setting unwind bounds.
 
 ```rust
+// These feature gates are required by Kani's loop contract macros (Kani uses nightly)
 #![feature(stmt_expr_attributes)]
 #![feature(proc_macro_hygiene)]
 
