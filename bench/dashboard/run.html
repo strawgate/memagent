@@ -115,7 +115,7 @@ async function main() {
 
   document.getElementById('breadcrumb-title').textContent = 'Run #' + runId;
 
-  const run = await loadJSON('data/runs/' + runId + '.json');
+  const run = await loadJSON(DATA_BASE + '/runs/' + runId + '.json');
   if (!run) {
     document.getElementById('loading').textContent = 'Could not load run ' + runId + '. File data/runs/' + runId + '.json not found.';
     return;

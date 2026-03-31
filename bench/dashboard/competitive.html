@@ -93,7 +93,7 @@ async function loadJSON(url) {
 
 async function main() {
   chartColors();
-  const index = await loadJSON('data/index.json');
+  const index = await loadJSON(DATA_BASE + '/index.json');
   if (!index) {
     document.getElementById('loading').textContent = 'No data/index.json found.';
     return;
@@ -105,7 +105,7 @@ async function main() {
     return;
   }
 
-  const allRuns = (await Promise.all(runIds.map(id => loadJSON('data/runs/' + id + '.json')))).filter(Boolean);
+  const allRuns = (await Promise.all(runIds.map(id => loadJSON(DATA_BASE + '/runs/' + id + '.json')))).filter(Boolean);
   if (allRuns.length === 0) {
     document.getElementById('loading').textContent = 'Could not load any run data.';
     return;
