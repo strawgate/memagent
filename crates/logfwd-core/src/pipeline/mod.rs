@@ -19,5 +19,5 @@ pub use batch::{AckReceipt, BatchId, BatchTicket, Queued, Sending, SourceId};
 
 // Pipeline lifecycle types
 pub use lifecycle::{
-    CommitAdvance, Draining, PipelineMachine, Running, Starting, Stopped,
+    CommitAdvance, CreateBatchError, Draining, PipelineMachine, Running, Starting, Stopped,
 };

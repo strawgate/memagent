@@ -19,11 +19,11 @@ pub mod cri;
 pub mod framer;
 /// OTLP protobuf encoding helpers and parsers.
 pub mod otlp;
+/// Pipeline state machine — typestate batch lifecycle + ordered offset tracking.
+pub mod pipeline;
 /// Scanner configuration and field selection.
 pub mod scan_config;
 /// JSON-to-columnar scan loop.
 pub mod scanner;
 /// Streaming SIMD structural character detection.
 pub mod structural;
-/// Pipeline state machine — typestate batch lifecycle + ordered offset tracking.
-pub mod pipeline;

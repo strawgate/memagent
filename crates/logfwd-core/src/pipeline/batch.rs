@@ -78,12 +78,7 @@ pub struct AckReceipt {
 
 impl BatchTicket<Queued> {
     /// Create a new batch ticket from a source read.
-    pub fn new(
-        id: BatchId,
-        source: SourceId,
-        start_offset: u64,
-        end_offset: u64,
-    ) -> Self {
+    pub fn new(id: BatchId, source: SourceId, start_offset: u64, end_offset: u64) -> Self {
         BatchTicket {
             id,
             source,

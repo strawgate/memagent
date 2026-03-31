@@ -54,6 +54,36 @@ pub struct CommitAdvance {
     pub new_offset: u64,
 }
 
+/// Error returned when creating a batch with invalid offsets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateBatchError {
+    /// The batch range is empty or inverted.
+    InvalidRange {
+        /// Proposed start offset.
+        start_offset: u64,
+        /// Proposed end offset.
+        end_offset: u64,
+    },
+    /// The proposed start offset is below the committed offset.
+    StartBeforeCommitted {
+        /// Source for which the batch was requested.
+        source: SourceId,
+        /// Proposed start offset.
+        start_offset: u64,
+        /// Current committed offset for this source.
+        committed_offset: u64,
+    },
+    /// The proposed start offset regresses behind already tracked data.
+    StartRegresses {
+        /// Source for which the batch was requested.
+        source: SourceId,
+        /// Proposed start offset.
+        start_offset: u64,
+        /// Highest known end offset tracked by the machine.
+        highest_tracked_end: u64,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Starting → Running
 // ---------------------------------------------------------------------------
@@ -97,19 +127,37 @@ impl PipelineMachine<Running> {
     ///
     /// Assigns a unique BatchId and registers it in the in-flight set.
     ///
-    /// # Panics
-    ///
-    /// Panics if `end_offset <= start_offset`.
+    /// Returns `Err` when offsets are invalid or non-monotonic for the source.
     pub fn create_batch(
         &mut self,
         source: SourceId,
         start_offset: u64,
         end_offset: u64,
-    ) -> BatchTicket<Queued> {
-        assert!(
-            end_offset > start_offset,
-            "end_offset ({end_offset}) must be > start_offset ({start_offset})"
-        );
+    ) -> Result<BatchTicket<Queued>, CreateBatchError> {
+        if end_offset <= start_offset {
+            return Err(CreateBatchError::InvalidRange {
+                start_offset,
+                end_offset,
+            });
+        }
+        let committed_offset = self.committed.get(&source).copied().unwrap_or(0);
+        if start_offset < committed_offset {
+            return Err(CreateBatchError::StartBeforeCommitted {
+                source,
+                start_offset,
+                committed_offset,
+            });
+        }
+
+        let highest_tracked_end = self.highest_tracked_end(source);
+        if start_offset < highest_tracked_end {
+            return Err(CreateBatchError::StartRegresses {
+                source,
+                start_offset,
+                highest_tracked_end,
+            });
+        }
+
         let id = BatchId(self.next_batch_id);
         self.next_batch_id += 1;
 
@@ -119,7 +167,7 @@ impl PipelineMachine<Running> {
             .or_default()
             .insert(id, end_offset);
 
-        BatchTicket::new(id, source, start_offset, end_offset)
+        Ok(BatchTicket::new(id, source, start_offset, end_offset))
     }
 
     /// Apply an AckReceipt and advance the committed offset if possible.
@@ -157,11 +205,26 @@ impl PipelineMachine<Running> {
         self.in_flight.values().map(|m| m.len()).sum()
     }
 
-    /// Committed offset for a source (0 if never committed).
-    pub fn committed_offset(&self, source: SourceId) -> u64 {
-        self.committed.get(&source).copied().unwrap_or(0)
+    /// Committed offset for a source (`None` if never committed).
+    pub fn committed_offset(&self, source: SourceId) -> Option<u64> {
+        self.committed.get(&source).copied()
     }
 
+    fn highest_tracked_end(&self, source: SourceId) -> u64 {
+        let committed = self.committed.get(&source).copied().unwrap_or(0);
+        let in_flight_max = self
+            .in_flight
+            .get(&source)
+            .and_then(|f| f.values().next_back().copied())
+            .unwrap_or(0);
+        let pending_max = self
+            .pending_acks
+            .get(&source)
+            .and_then(|p| p.values().next_back().copied())
+            .unwrap_or(0);
+
+        committed.max(in_flight_max).max(pending_max)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +258,8 @@ fn record_ack_and_advance(
         while let Some((&lowest_id, &offset)) = pending.iter().next() {
             let has_lower = in_flight
                 .get(&source)
-                .map(|f| f.keys().any(|&id| id < lowest_id))
+                .and_then(|f| f.keys().next().copied())
+                .map(|min_id| min_id < lowest_id)
                 .unwrap_or(false);
             if has_lower {
                 break;
@@ -256,9 +320,9 @@ impl PipelineMachine<Draining> {
         self.in_flight.values().map(|m| m.len()).sum()
     }
 
-    /// Committed offset for a source.
-    pub fn committed_offset(&self, source: SourceId) -> u64 {
-        self.committed.get(&source).copied().unwrap_or(0)
+    /// Committed offset for a source (`None` if never committed).
+    pub fn committed_offset(&self, source: SourceId) -> Option<u64> {
+        self.committed.get(&source).copied()
     }
 }
 
@@ -287,8 +351,8 @@ mod tests {
         let mut running = machine.start();
 
         let src = SourceId(0);
-        let t1 = running.create_batch(src, 0, 1000);
-        let t2 = running.create_batch(src, 1000, 2000);
+        let t1 = running.create_batch(src, 0, 1000).expect("valid batch");
+        let t2 = running.create_batch(src, 1000, 2000).expect("valid batch");
         assert_eq!(running.in_flight_count(), 2);
 
         // Send and ack batch 1
@@ -318,9 +382,9 @@ mod tests {
         let mut running = machine.start();
         let src = SourceId(0);
 
-        let t1 = running.create_batch(src, 0, 1000);
-        let t2 = running.create_batch(src, 1000, 2000);
-        let t3 = running.create_batch(src, 2000, 3000);
+        let t1 = running.create_batch(src, 0, 1000).expect("valid batch");
+        let t2 = running.create_batch(src, 1000, 2000).expect("valid batch");
+        let t3 = running.create_batch(src, 2000, 3000).expect("valid batch");
 
         let s1 = t1.begin_send();
         let s2 = t2.begin_send();
@@ -345,7 +409,7 @@ mod tests {
         let mut running = machine.start();
         let src = SourceId(0);
 
-        let t1 = running.create_batch(src, 0, 1000);
+        let t1 = running.create_batch(src, 0, 1000).expect("valid batch");
         let s1 = t1.begin_send();
         let requeued = s1.fail(); // Transient failure
         assert_eq!(requeued.attempts, 1);
@@ -363,8 +427,8 @@ mod tests {
         let src_a = SourceId(0);
         let src_b = SourceId(1);
 
-        let ta = running.create_batch(src_a, 0, 500);
-        let tb = running.create_batch(src_b, 0, 800);
+        let ta = running.create_batch(src_a, 0, 500).expect("valid batch");
+        let tb = running.create_batch(src_b, 0, 800).expect("valid batch");
 
         let sa = ta.begin_send();
         let sb = tb.begin_send();
@@ -375,7 +439,7 @@ mod tests {
         assert_eq!(advance_b.new_offset, 800);
 
         // Source A still at 0
-        assert_eq!(running.committed_offset(src_a), 0);
+        assert_eq!(running.committed_offset(src_a), None);
 
         let advance_a = running.apply_ack(sa.ack());
         assert_eq!(advance_a.new_offset, 500);
@@ -387,7 +451,7 @@ mod tests {
         let mut running = machine.start();
         let src = SourceId(0);
 
-        let t1 = running.create_batch(src, 0, 1000);
+        let t1 = running.create_batch(src, 0, 1000).expect("valid batch");
         let s1 = t1.begin_send();
 
         // Begin drain with 1 in-flight
@@ -409,7 +473,7 @@ mod tests {
         let mut running = machine.start();
         let src = SourceId(0);
 
-        let t1 = running.create_batch(src, 0, 1000);
+        let t1 = running.create_batch(src, 0, 1000).expect("valid batch");
         let s1 = t1.begin_send();
 
         // Reject — offset still advances (we accept data loss for malformed data)
@@ -423,9 +487,9 @@ mod tests {
         let mut running = machine.start();
         let src = SourceId(0);
 
-        let t1 = running.create_batch(src, 0, 1000);
-        let t2 = running.create_batch(src, 1000, 2000);
-        let t3 = running.create_batch(src, 2000, 3000);
+        let t1 = running.create_batch(src, 0, 1000).expect("valid batch");
+        let t2 = running.create_batch(src, 1000, 2000).expect("valid batch");
+        let t3 = running.create_batch(src, 2000, 3000).expect("valid batch");
 
         let s1 = t1.begin_send();
         let s2 = t2.begin_send();
@@ -447,7 +511,7 @@ mod tests {
         let mut running = machine.start();
         let src = SourceId(0);
 
-        let t1 = running.create_batch(src, 0, 1000);
+        let t1 = running.create_batch(src, 0, 1000).expect("valid batch");
         let _s1 = t1.begin_send();
 
         let draining = running.begin_drain();
@@ -459,21 +523,64 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "end_offset")]
     fn create_batch_rejects_zero_size() {
         let machine = PipelineMachine::new();
         let mut running = machine.start();
-        // end_offset == start_offset should panic
-        let _ = running.create_batch(SourceId(0), 100, 100);
+        // end_offset == start_offset should return InvalidRange
+        let err = running
+            .create_batch(SourceId(0), 100, 100)
+            .err()
+            .expect("must reject empty range");
+        assert_eq!(
+            err,
+            CreateBatchError::InvalidRange {
+                start_offset: 100,
+                end_offset: 100
+            }
+        );
     }
 
     #[test]
-    #[should_panic(expected = "end_offset")]
     fn create_batch_rejects_inverted() {
         let machine = PipelineMachine::new();
         let mut running = machine.start();
-        // end_offset < start_offset should panic
-        let _ = running.create_batch(SourceId(0), 200, 100);
+        // end_offset < start_offset should return InvalidRange
+        let err = running
+            .create_batch(SourceId(0), 200, 100)
+            .err()
+            .expect("must reject inverted range");
+        assert_eq!(
+            err,
+            CreateBatchError::InvalidRange {
+                start_offset: 200,
+                end_offset: 100
+            }
+        );
+    }
+
+    #[test]
+    fn create_batch_rejects_regressing_source_offset() {
+        let machine = PipelineMachine::new();
+        let mut running = machine.start();
+        let src = SourceId(42);
+
+        let first = running
+            .create_batch(src, 0, 100)
+            .expect("first batch must be valid");
+        let _ = first.begin_send();
+
+        let err = running
+            .create_batch(src, 50, 150)
+            .err()
+            .expect("must reject regressing source offset");
+        assert_eq!(
+            err,
+            CreateBatchError::StartRegresses {
+                source: src,
+                start_offset: 50,
+                highest_tracked_end: 100
+            }
+        );
     }
 
     #[test]
@@ -492,7 +599,7 @@ mod tests {
         let machine: PipelineMachine<Starting> = PipelineMachine::default();
         let running = machine.start();
         assert_eq!(running.in_flight_count(), 0);
-        assert_eq!(running.committed_offset(SourceId(0)), 0);
+        assert_eq!(running.committed_offset(SourceId(0)), None);
     }
 
     #[test]
@@ -504,7 +611,9 @@ mod tests {
         // Create 100 batches
         let mut sending = alloc::vec::Vec::new();
         for i in 0..100u64 {
-            let t = running.create_batch(src, i * 100, (i + 1) * 100);
+            let t = running
+                .create_batch(src, i * 100, (i + 1) * 100)
+                .expect("valid batch");
             sending.push(t.begin_send());
         }
         assert_eq!(running.in_flight_count(), 100);
@@ -515,7 +624,7 @@ mod tests {
         }
 
         // After all acked, offset should be at 10000
-        assert_eq!(running.committed_offset(src), 10000);
+        assert_eq!(running.committed_offset(src), Some(10000));
         assert_eq!(running.in_flight_count(), 0);
     }
 }
@@ -541,9 +650,9 @@ mod verification {
         let off2: u64 = kani::any_where(|&x: &u64| x > off1 && x <= 2000);
         let off3: u64 = kani::any_where(|&x: &u64| x > off2 && x <= 3000);
 
-        let t1 = running.create_batch(src, 0, off1);
-        let t2 = running.create_batch(src, off1, off2);
-        let t3 = running.create_batch(src, off2, off3);
+        let t1 = running.create_batch(src, 0, off1).expect("valid batch");
+        let t2 = running.create_batch(src, off1, off2).expect("valid batch");
+        let t3 = running.create_batch(src, off2, off3).expect("valid batch");
 
         let s1 = t1.begin_send();
         let s2 = t2.begin_send();
@@ -586,8 +695,8 @@ mod verification {
         let end1: u64 = kani::any_where(|&x: &u64| x > 0 && x <= 500);
         let end2: u64 = kani::any_where(|&x: &u64| x > end1 && x <= 1000);
 
-        let t1 = running.create_batch(src, 0, end1);
-        let t2 = running.create_batch(src, end1, end2);
+        let t1 = running.create_batch(src, 0, end1).expect("valid batch");
+        let t2 = running.create_batch(src, end1, end2).expect("valid batch");
 
         let s1 = t1.begin_send();
         let s2 = t2.begin_send();
@@ -595,7 +704,7 @@ mod verification {
         running.apply_ack(s1.ack());
         running.apply_ack(s2.ack());
 
-        assert_eq!(running.committed_offset(src), end2);
+        assert_eq!(running.committed_offset(src), Some(end2));
         assert_eq!(running.in_flight_count(), 0);
     }
 
@@ -608,7 +717,7 @@ mod verification {
         let src = SourceId(0);
 
         let end: u64 = kani::any_where(|&x: &u64| x > 0 && x <= 1000);
-        let t1 = running.create_batch(src, 0, end);
+        let t1 = running.create_batch(src, 0, end).expect("valid batch");
         let s1 = t1.begin_send();
 
         let mut draining = running.begin_drain();
@@ -631,8 +740,8 @@ mod verification {
         let end_a: u64 = kani::any_where(|&x: &u64| x > 0 && x <= 500);
         let end_b: u64 = kani::any_where(|&x: &u64| x > 0 && x <= 500);
 
-        let ta = running.create_batch(src_a, 0, end_a);
-        let tb = running.create_batch(src_b, 0, end_b);
+        let ta = running.create_batch(src_a, 0, end_a).expect("valid batch");
+        let tb = running.create_batch(src_b, 0, end_b).expect("valid batch");
         let sa = ta.begin_send();
         let sb = tb.begin_send();
 
@@ -640,12 +749,12 @@ mod verification {
         running.apply_ack(sb.ack());
 
         // A is unaffected
-        assert_eq!(running.committed_offset(src_a), 0);
-        assert_eq!(running.committed_offset(src_b), end_b);
+        assert_eq!(running.committed_offset(src_a), None);
+        assert_eq!(running.committed_offset(src_b), Some(end_b));
 
         // Now ack A
         running.apply_ack(sa.ack());
-        assert_eq!(running.committed_offset(src_a), end_a);
+        assert_eq!(running.committed_offset(src_a), Some(end_a));
     }
 
     /// Duplicate ack (same batch acked twice) does not regress offset.
@@ -657,7 +766,7 @@ mod verification {
         let src = SourceId(0);
 
         let end: u64 = kani::any_where(|&x: &u64| x > 0 && x <= 1000);
-        let t1 = running.create_batch(src, 0, end);
+        let t1 = running.create_batch(src, 0, end).expect("valid batch");
         let s1 = t1.begin_send();
         let receipt = s1.ack();
 
@@ -689,7 +798,7 @@ mod verification {
         let src = SourceId(0);
 
         let end: u64 = kani::any_where(|&x: &u64| x > 0 && x <= 1000);
-        let t1 = running.create_batch(src, 0, end);
+        let t1 = running.create_batch(src, 0, end).expect("valid batch");
         let s1 = t1.begin_send();
         running.apply_ack(s1.ack());
 
@@ -752,7 +861,7 @@ mod proptests {
                         // Use running create_batch offset as the next write position
                         let end = start + size;
                         *source_offsets.entry(source).or_insert(0) = end;
-                        let ticket = running.create_batch(src, start, end);
+                        let ticket = running.create_batch(src, start, end).expect("valid batch");
                         let s = ticket.begin_send();
                         sending.entry(source).or_default().push(s);
                     }
@@ -760,7 +869,7 @@ mod proptests {
                         if let Some(queue) = sending.get_mut(&source) {
                             if !queue.is_empty() {
                                 let s = queue.remove(0);
-                                let old = running.committed_offset(SourceId(source));
+                                let old = running.committed_offset(SourceId(source)).unwrap_or(0);
                                 let advance = running.apply_ack(s.ack());
                                 // Offset never decreases
                                 prop_assert!(advance.new_offset >= old,
@@ -783,7 +892,7 @@ mod proptests {
                         if let Some(queue) = sending.get_mut(&source) {
                             if !queue.is_empty() {
                                 let s = queue.remove(0);
-                                let old = running.committed_offset(SourceId(source));
+                                let old = running.committed_offset(SourceId(source)).unwrap_or(0);
                                 let advance = running.apply_ack(s.reject());
                                 prop_assert!(advance.new_offset >= old,
                                     "offset decreased on reject: {} -> {}", old, advance.new_offset);
@@ -813,7 +922,7 @@ mod proptests {
             let mut offset = 0u64;
             for i in 0..n {
                 let end = offset + batch_sizes[i];
-                let t = running.create_batch(src, offset, end);
+                let t = running.create_batch(src, offset, end).expect("valid batch");
                 tickets.push(t.begin_send());
                 offset = end;
             }
@@ -840,9 +949,9 @@ mod proptests {
                 }
             }
 
-            prop_assert_eq!(running.committed_offset(src), expected_final,
+            prop_assert_eq!(running.committed_offset(src), Some(expected_final),
                 "committed {} != expected {} after acking all {} batches",
-                running.committed_offset(src), expected_final, n);
+                running.committed_offset(src).unwrap_or(0), expected_final, n);
             prop_assert_eq!(running.in_flight_count(), 0);
         }
 
@@ -863,7 +972,7 @@ mod proptests {
             let mut offset = 0u64;
             for i in 0..n {
                 let end = offset + batch_sizes[i];
-                let t = running.create_batch(src, offset, end);
+                let t = running.create_batch(src, offset, end).expect("valid batch");
                 sending.push(t.begin_send());
                 offset = end;
             }
@@ -910,7 +1019,7 @@ mod proptests {
                     let sz = batch_sizes[size_idx % batch_sizes.len()];
                     size_idx += 1;
                     let end = offset + sz;
-                    let ticket = running.create_batch(src, offset, end);
+                    let ticket = running.create_batch(src, offset, end).expect("valid batch");
                     sending_queues.entry(src_id).or_default().push(ticket.begin_send());
                     offset = end;
                 }
@@ -948,7 +1057,7 @@ mod proptests {
             // Phase 3: Verify all offsets reached expected values
             for src_id in 0..num_sources as u32 {
                 let expected = expected_offsets[&src_id];
-                let actual = running.committed_offset(SourceId(src_id));
+                let actual = running.committed_offset(SourceId(src_id)).unwrap_or(0);
                 prop_assert_eq!(actual, expected,
                     "source {} committed {} != expected {}", src_id, actual, expected);
             }

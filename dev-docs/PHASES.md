@@ -11,7 +11,7 @@ exhaustively. Tooling validated, CI working, 31 proofs total.
 
 Split logfwd-core into proven core + satellite crates.
 
-```
+```text
 1a: Create logfwd-arrow     ✅ DONE (PR #307)
 1b: Create logfwd-input     → Copilot (#265)
 1c: Move remaining impure   → Copilot (#266)
@@ -34,7 +34,7 @@ Benchmark proved viability (2026-03-30):
 - 9 chars at 3 GiB/s (NEON) — 11x headroom over target
 - Scaling linear at ~28µs per character per 760KB
 
-```
+```text
 2a: Extend ChunkIndex → StructuralIndex (NEON + AVX2 + SSE2 + scalar)
 2b: NewlineFramer consumes newline bitmask (replaces byte loop)
 2c: CRI field extraction from space bitmask (replaces per-line parsing)
@@ -44,7 +44,7 @@ Benchmark proved viability (2026-03-30):
 
 ## Phase 3: Zero-copy Bytes pipeline (#303)
 
-```
+```text
 3a: Bytes-based Reader (BytesMut → freeze → Bytes)
 3b: Connect StructuralIndex to Bytes pipeline
 3c: StreamingBuilder receives Bytes directly
@@ -55,11 +55,11 @@ Benchmark proved viability (2026-03-30):
 Rename ScanBuilder → FieldSink. Ensure scan loop works in no_std.
 Add bounded Kani proof for scan_line. proptest oracle vs serde_json.
 
-## Phase 5: Pipeline state machine + BatchToken (#270) ← IN PROGRESS
+## Phase 5: Pipeline state machine + BatchTicket (#270) ← IN PROGRESS
 
 Extract run_async decisions into pure state machine in core.
 
-```
+```text
 5a: Typestate BatchTicket               ✅ DONE
     Queued → Sending → Acked/Rejected
     #[must_use] linear type, compile-time enforcement
@@ -91,7 +91,7 @@ Model batching/timeout/shutdown protocol. Prove liveness (data is
 never abandoned) and fairness (no input starved). Requires Phase 5
 completion (pure state machine extraction).
 
-```
+```text
 7a: PipelineBatch.tla — N inputs, bounded channel, consumer
 7b: Prove NoDataAbandoned (every batch eventually acked or rejected)
 7c: Prove ShutdownCompletes (drain terminates)
