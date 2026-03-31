@@ -259,6 +259,22 @@ mod tests {
     }
 
     #[test]
+    fn test_raw_parser_control_char_escaping() {
+        let mut parser = RawParser::new();
+        let mut out = Vec::new();
+        // msg contains a backspace (\x08)
+        let (n, _) = parser.process(b"has\x08raw_byte\n", &mut out);
+        assert_eq!(n, 1);
+        let s = String::from_utf8(out).unwrap();
+        // RFC 8259 mandates control characters be escaped. \x08 should be \u0008.
+        assert!(
+            s.contains(r#""_raw":"has\u0008raw_byte""#),
+            "Expected escaped backspace, got: {}",
+            s
+        );
+    }
+
+    #[test]
     fn cri_basic() {
         let mut parser = CriParser::new(2 * 1024 * 1024);
         let mut out = Vec::new();

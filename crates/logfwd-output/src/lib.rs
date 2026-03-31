@@ -198,6 +198,9 @@ pub(crate) fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], 
                         b'\n' => out.extend_from_slice(b"\\n"),
                         b'\r' => out.extend_from_slice(b"\\r"),
                         b'\t' => out.extend_from_slice(b"\\t"),
+                        b if b < 0x20 => {
+                            let _ = std::io::Write::write_fmt(out, format_args!("\\u{:04x}", b));
+                        }
                         _ => out.push(b),
                     }
                 }
@@ -688,6 +691,26 @@ mod tests {
         };
         let sink = build_output_sink("auth-sink", &cfg).unwrap();
         assert_eq!(sink.name(), "auth-sink");
+    }
+
+    #[test]
+    fn test_json_control_char_escaping() {
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
+        // msg contains a backspace (\x08)
+        let msg = StringArray::from(vec![Some("has\x08raw_byte")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(msg)]).unwrap();
+
+        let cols = build_col_infos(&batch);
+        let mut out = Vec::new();
+        write_row_json(&batch, 0, &cols, &mut out);
+
+        let output = String::from_utf8(out).unwrap();
+        // RFC 8259 mandates control characters be escaped. \x08 should be \u0008.
+        assert!(
+            output.contains(r#""msg":"has\u0008raw_byte""#),
+            "Expected escaped backspace, got: {}",
+            output
+        );
     }
 
     // -----------------------------------------------------------------------
