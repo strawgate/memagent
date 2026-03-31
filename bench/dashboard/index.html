@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Benchmark Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
+</head>
+<body>
+<div class="container">
+  <h1>Benchmark Dashboard</h1>
+
+  <nav class="nav-pills">
+    <a href="index.html" class="active">Overview</a>
+    <a href="competitive.html">Competitive</a>
+    <a href="development.html">Development</a>
+  </nav>
+
+  <div id="loading" class="loading">Loading data...</div>
+  <div id="content" style="display:none">
+
+    <!-- Headline Cards -->
+    <div class="tracking-cards" id="headline-cards"></div>
+
+    <!-- Recent Competitive Results -->
+    <div class="section" id="competitive-section" style="display:none">
+      <h2>Recent Competitive Results</h2>
+      <div class="card">
+        <table id="competitive-table">
+          <thead><tr><th>Scenario</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Recent Development Metrics -->
+    <div class="section" id="dev-section" style="display:none">
+      <h2>Recent Development Metrics</h2>
+      <div class="card">
+        <table id="dev-table">
+          <thead><tr><th>Benchmark</th><th class="numeric">Mean</th><th class="numeric">Throughput</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- All Runs -->
+    <div class="section" id="runs-section" style="display:none">
+      <h2>All Runs</h2>
+      <div class="card">
+        <table id="runs-table">
+          <thead><tr><th>ID</th><th>Type</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const AGENT_COLORS = {
+  'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
+  'filebeat': '#d97706', 'otelcol': '#dc2626', 'vlagent': '#64748b'
+};
+
+function formatLPS(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return Math.round(n).toString();
+}
+
+function formatNs(ns) {
+  if (ns >= 1e9) return (ns / 1e9).toFixed(2) + 's';
+  if (ns >= 1e6) return (ns / 1e6).toFixed(2) + 'ms';
+  if (ns >= 1e3) return (ns / 1e3).toFixed(1) + 'us';
+  return Math.round(ns) + 'ns';
+}
+
+function isDark() {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function chartDefaults() {
+  const dark = isDark();
+  Chart.defaults.color = dark ? '#8b949e' : '#656d76';
+  Chart.defaults.borderColor = dark ? '#30363d' : '#d0d7de';
+}
+
+function drawSparkline(canvas, data, color) {
+  if (!canvas || !data || data.length === 0) return;
+  new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: data.map((_, i) => i),
+      datasets: [{ data, borderColor: color || '#2563eb', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.3 }]
+    },
+    options: {
+      responsive: false, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: { x: { display: false }, y: { display: false } },
+      animation: false
+    }
+  });
+}
+
+async function loadJSON(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return r.json(); }
+  catch { return null; }
+}
+
+async function main() {
+  chartDefaults();
+  const index = await loadJSON('data/index.json');
+  if (!index) {
+    document.getElementById('loading').textContent = 'No data available. Place data/index.json to get started.';
+    return;
+  }
+
+  const runs = index.competitive_runs || index.runs || [];
+  const rateRuns = index.rate_runs || [];
+  const criterionRuns = index.criterion_runs || [];
+
+  // Load latest of each type
+  const latestRun = runs.length ? await loadJSON('data/runs/' + runs[runs.length - 1] + '.json') : null;
+  const latestRate = rateRuns.length ? await loadJSON('data/rate-runs/' + rateRuns[rateRuns.length - 1] + '.json') : null;
+  const latestCriterion = criterionRuns.length ? await loadJSON('data/criterion-runs/' + criterionRuns[criterionRuns.length - 1] + '.json') : null;
+
+  // Load a few recent runs for sparklines
+  const recentRunIds = runs.slice(-10);
+  const recentRuns = (await Promise.all(recentRunIds.map(id => loadJSON('data/runs/' + id + '.json')))).filter(Boolean);
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('content').style.display = '';
+
+  // Headline cards
+  const cardsEl = document.getElementById('headline-cards');
+
+  // Card 1: Latest logfwd throughput
+  let logfwdLps = null;
+  let logfwdSparkData = [];
+  if (latestRun && latestRun.scenarios) {
+    const firstScenario = latestRun.scenario_names?.[0] || Object.keys(latestRun.scenarios)[0];
+    if (firstScenario && latestRun.scenarios[firstScenario]?.logfwd) {
+      logfwdLps = latestRun.scenarios[firstScenario].logfwd.avg_lps;
+    }
+    // Sparkline from recent runs
+    for (const r of recentRuns) {
+      const sc = r.scenario_names?.[0] || Object.keys(r.scenarios || {})[0];
+      if (sc && r.scenarios?.[sc]?.logfwd) logfwdSparkData.push(r.scenarios[sc].logfwd.avg_lps);
+    }
+  }
+  cardsEl.innerHTML += `
+    <div class="tracking-card">
+      <span class="label">logfwd Throughput</span>
+      <span class="value">${logfwdLps ? formatLPS(logfwdLps) : '--'}</span>
+      <span class="subtitle">lines/sec (${latestRun?.scenario_names?.[0] || 'primary'})</span>
+      <canvas class="sparkline" id="spark-lps" width="120" height="36"></canvas>
+    </div>`;
+
+  // Card 2: Best competitive ratio
+  let bestRatio = null;
+  if (latestRun && latestRun.scenarios) {
+    for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
+      const sc = latestRun.scenarios[sn];
+      if (!sc?.logfwd) continue;
+      const scenarioLogfwdLps = sc.logfwd.avg_lps;
+      for (const agent of Object.keys(sc)) {
+        if (agent === 'logfwd') continue;
+        const ratio = scenarioLogfwdLps / (sc[agent].avg_lps || 1);
+        if (!bestRatio || ratio > bestRatio.value) bestRatio = { value: ratio, vs: agent, scenario: sn };
+      }
+    }
+  }
+  cardsEl.innerHTML += `
+    <div class="tracking-card">
+      <span class="label">Best Competitive Ratio</span>
+      <span class="value">${bestRatio ? bestRatio.value.toFixed(1) + 'x' : '--'}</span>
+      <span class="subtitle">${bestRatio ? 'vs ' + bestRatio.vs + ' (' + bestRatio.scenario + ')' : 'no data'}</span>
+    </div>`;
+
+  // Card 3: RSS at 100K eps
+  let rss100k = null;
+  if (latestRate && latestRate.rates?.["100000"]) {
+    rss100k = latestRate.rates["100000"].rss_mb;
+  }
+  cardsEl.innerHTML += `
+    <div class="tracking-card">
+      <span class="label">RSS @ 100K eps</span>
+      <span class="value">${rss100k != null ? rss100k.toFixed(1) + ' MB' : '--'}</span>
+      <span class="subtitle">Memory usage at 100K events/sec</span>
+    </div>`;
+
+  // Draw sparklines after DOM update
+  if (logfwdSparkData.length > 1) drawSparkline(document.getElementById('spark-lps'), logfwdSparkData, '#2563eb');
+
+  // Recent competitive results table
+  if (latestRun && latestRun.scenarios) {
+    const section = document.getElementById('competitive-section');
+    section.style.display = '';
+    const table = document.getElementById('competitive-table');
+    const agents = latestRun.agents || [];
+    const thead = table.querySelector('thead tr');
+    agents.forEach(a => { thead.innerHTML += `<th class="numeric">${a}</th>`; });
+
+    const tbody = table.querySelector('tbody');
+    let rowsHtml = '';
+    for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
+      const sc = latestRun.scenarios[sn];
+      let bestAgent = null, bestLps = 0;
+      agents.forEach(a => { if (sc?.[a]?.avg_lps > bestLps) { bestLps = sc[a].avg_lps; bestAgent = a; } });
+
+      let row = `<td><a href="competitive.html">${sn}</a></td>`;
+      agents.forEach(a => {
+        const lps = sc?.[a]?.avg_lps;
+        const cls = a === bestAgent ? 'numeric winner' : 'numeric';
+        row += `<td class="${cls}">${lps ? formatLPS(lps) : '--'}</td>`;
+      });
+      rowsHtml += `<tr>${row}</tr>`;
+    }
+    tbody.innerHTML = rowsHtml;
+  }
+
+  // Recent development metrics
+  if (latestCriterion && latestCriterion.benchmarks) {
+    const section = document.getElementById('dev-section');
+    section.style.display = '';
+    const tbody = document.querySelector('#dev-table tbody');
+    const benchmarks = latestCriterion.benchmarks;
+    let rowsHtml = '';
+    for (const [name, data] of Object.entries(benchmarks).slice(0, 10)) {
+      const thrpt = data.thrpt_mib_s ? data.thrpt_mib_s.toFixed(1) + ' MiB/s'
+                  : data.thrpt_melem_s ? data.thrpt_melem_s.toFixed(1) + ' Melem/s' : '--';
+      rowsHtml += `<tr>
+        <td><a href="development.html">${name}</a></td>
+        <td class="numeric">${formatNs(data.mean_ns)}</td>
+        <td class="numeric">${thrpt}</td>
+      </tr>`;
+    }
+    tbody.innerHTML = rowsHtml;
+  }
+
+  // All runs list
+  const allRunIds = [...new Set([...runs, ...rateRuns, ...criterionRuns])];
+  if (allRunIds.length > 0) {
+    const section = document.getElementById('runs-section');
+    section.style.display = '';
+    const tbody = document.querySelector('#runs-table tbody');
+
+    // Show runs in reverse order (newest first)
+    let rowsHtml = '';
+    for (const id of [...allRunIds].reverse().slice(0, 50)) {
+      const types = [];
+      if (runs.includes(id)) types.push('competitive');
+      if (rateRuns.includes(id)) types.push('rate');
+      if (criterionRuns.includes(id)) types.push('criterion');
+
+      rowsHtml += `<tr>
+        <td><a href="run.html?id=${id}">#${id}</a></td>
+        <td>${types.map(t => '<span class="badge">' + t + '</span> ').join('')}</td>
+      </tr>`;
+    }
+    tbody.innerHTML = rowsHtml;
+  }
+}
+
+main();
+</script>
+</body>
+</html>

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Run Detail - Benchmark Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
+</head>
+<body>
+<div class="container">
+  <div class="breadcrumb">
+    <a href="index.html">Dashboard</a><span class="sep">/</span><span id="breadcrumb-title">Run</span>
+  </div>
+
+  <div id="loading" class="loading">Loading run data...</div>
+  <div id="content" style="display:none">
+    <div class="run-header">
+      <h1 id="run-title"></h1>
+    </div>
+    <div class="run-meta" id="run-meta"></div>
+
+    <div class="section">
+      <h2>Scenario Results</h2>
+      <div class="chart-grid" id="scenario-charts"></div>
+    </div>
+
+    <div class="section">
+      <h2>Full Results</h2>
+      <div class="card">
+        <table id="results-table">
+          <thead id="results-thead"></thead>
+          <tbody id="results-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const AGENT_COLORS = {
+  'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
+  'filebeat': '#d97706', 'otelcol': '#dc2626', 'vlagent': '#64748b'
+};
+
+function formatLPS(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return Math.round(n).toString();
+}
+
+function isDark() { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
+
+function chartColors() {
+  const dark = isDark();
+  Chart.defaults.color = dark ? '#8b949e' : '#656d76';
+  Chart.defaults.borderColor = dark ? '#30363d' : '#d0d7de';
+}
+
+function gridColor() { return isDark() ? '#30363d' : '#e5e7eb'; }
+
+async function loadJSON(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return r.json(); }
+  catch { return null; }
+}
+
+async function main() {
+  chartColors();
+  const params = new URLSearchParams(window.location.search);
+  const runId = params.get('id');
+
+  if (!runId) {
+    document.getElementById('loading').textContent = 'No run ID specified. Use ?id=<run_id>';
+    return;
+  }
+  if (!/^[a-zA-Z0-9._-]+$/.test(runId)) {
+    document.getElementById('loading').textContent = 'Invalid run ID format.';
+    return;
+  }
+
+  document.getElementById('breadcrumb-title').textContent = 'Run #' + runId;
+
+  const run = await loadJSON('data/runs/' + runId + '.json');
+  if (!run) {
+    document.getElementById('loading').textContent = 'Could not load run ' + runId + '. File data/runs/' + runId + '.json not found.';
+    return;
+  }
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('content').style.display = '';
+
+  // Header
+  document.getElementById('run-title').textContent = 'Run #' + run.id;
+
+  const metaEl = document.getElementById('run-meta');
+  const dateStr = run.date ? new Date(run.date).toLocaleString() : '--';
+  metaEl.innerHTML = `
+    <span>Date: ${dateStr}</span>
+    <span>Commit: <code>${run.commit || '--'}</code></span>
+    <span>Agents: ${(run.agents || []).join(', ')}</span>
+  `;
+
+  const scenarios = run.scenario_names || Object.keys(run.scenarios || {});
+  const agents = run.agents || [];
+
+  // Per-scenario bar charts
+  const chartsEl = document.getElementById('scenario-charts');
+  let rowsHtml = '';
+  for (const sn of scenarios) {
+    const sc = run.scenarios?.[sn];
+    if (!sc) continue;
+
+    const cardDiv = document.createElement('div');
+    cardDiv.className = 'card';
+    const canvasId = 'chart-' + sn.replace(/[^a-zA-Z0-9]/g, '_');
+    cardDiv.innerHTML = `<h3>${sn}</h3><canvas id="${canvasId}"></canvas>`;
+    chartsEl.appendChild(cardDiv);
+
+    const labels = [];
+    const data = [];
+    const colors = [];
+    for (const agent of agents) {
+      if (!sc[agent]) continue;
+      labels.push(agent);
+      data.push(sc[agent].avg_lps);
+      colors.push(AGENT_COLORS[agent] || '#64748b');
+    }
+
+    new Chart(document.getElementById(canvasId), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{ data, backgroundColor: colors, borderRadius: 3 }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => formatLPS(ctx.raw) + ' lps' } }
+        },
+        scales: {
+          x: { ticks: { callback: v => formatLPS(v) }, grid: { color: gridColor() } },
+          y: { grid: { display: false } }
+        }
+      }
+    });
+  }
+
+  // Full results table
+  const thead = document.getElementById('results-thead');
+  const tbody = document.getElementById('results-tbody');
+
+  let headerHtml = '<tr><th>Scenario</th>';
+  for (const a of agents) {
+    headerHtml += `<th class="numeric">${a} LPS</th><th class="numeric">Avg ms</th><th class="numeric">Stddev</th><th class="numeric">Iters</th>`;
+  }
+  headerHtml += '</tr>';
+  thead.innerHTML = headerHtml;
+
+  for (const sn of scenarios) {
+    const sc = run.scenarios?.[sn];
+    if (!sc) continue;
+
+    // Find winner
+    let bestAgent = null, bestLps = 0;
+    for (const a of agents) {
+      if (sc[a]?.avg_lps > bestLps) { bestLps = sc[a].avg_lps; bestAgent = a; }
+    }
+
+    let row = `<td>${sn}</td>`;
+    for (const a of agents) {
+      const d = sc[a];
+      const isWinner = a === bestAgent;
+      if (d) {
+        const lpsStr = d.lps ? d.lps.map(formatLPS).join(', ') : formatLPS(d.avg_lps);
+        const lpsCls = isWinner ? 'numeric winner' : 'numeric';
+        row += `<td class="${lpsCls}">${lpsStr}</td>`;
+        row += `<td class="numeric">${d.avg_ms != null ? d.avg_ms.toLocaleString() : '--'}</td>`;
+        row += `<td class="numeric">${d.stddev_ms != null ? d.stddev_ms + 'ms' : '--'}</td>`;
+        row += `<td class="numeric">${d.iterations ?? '--'}</td>`;
+      } else {
+        row += '<td class="numeric">--</td><td class="numeric">--</td><td class="numeric">--</td><td class="numeric">--</td>';
+      }
+    }
+    rowsHtml += `<tr>${row}</tr>`;
+  }
+  tbody.innerHTML = rowsHtml;
+}
+
+main();
+</script>
+</body>
+</html>

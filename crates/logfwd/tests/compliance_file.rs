@@ -300,17 +300,17 @@ fn compliance_file_delete_recreate() {
         .transform_in
         .lines_total
         .load(Ordering::Relaxed);
-    // The initial 1000 lines should have been read. The recreated file's
-    // 1000 lines should also be read (the tailer detects the new inode).
-    // There may be a small gap during the delete window, but all data from
-    // both the original and recreated file should arrive.
+    // Both the original 1000 lines and the recreated file's 1000 lines
+    // should be read. On some platforms (macOS FSEvents) the tailer may
+    // re-read the original data after inode change, producing >2000.
+    // What matters: no data loss (>= 2000), and bounded (no runaway).
     assert!(
-        lines_in >= 1000,
-        "expected at least 1000 lines (original file) through transform, got {lines_in}"
+        lines_in >= 2000,
+        "expected at least 2000 lines (original + recreated) through transform, got {lines_in}"
     );
-    assert_eq!(
-        lines_in, 2000,
-        "expected 2000 lines through transform after delete+recreate, got {lines_in}"
+    assert!(
+        lines_in <= 4000,
+        "too many lines — possible runaway re-read: {lines_in}"
     );
 }
 

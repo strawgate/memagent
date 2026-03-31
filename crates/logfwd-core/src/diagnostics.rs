@@ -372,6 +372,7 @@ impl DiagnosticsServer {
             "/health" => self.serve_health(request),
             "/ready" => self.serve_ready(request),
             "/api/pipelines" => self.serve_pipelines(request),
+            "/api/stats" => self.serve_stats(request),
             // Prometheus /metrics removed — use OTLP metrics push instead.
             // The /api/pipelines endpoint provides the same data as JSON.
             _ => {
@@ -437,6 +438,75 @@ impl DiagnosticsServer {
                 .with_header(header);
             request.respond(resp)?;
         }
+        Ok(())
+    }
+
+    /// Flat JSON endpoint for benchmark polling: process metrics + pipeline summary.
+    fn serve_stats(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
+        let uptime_s = self.start_time.elapsed().as_secs_f64();
+        let (rss_bytes, cpu_user_ms, cpu_sys_ms) = process_metrics();
+
+        // Aggregate pipeline counters.
+        let mut total_input_lines: u64 = 0;
+        let mut total_input_bytes: u64 = 0;
+        let mut total_output_lines: u64 = 0;
+        let mut total_output_bytes: u64 = 0;
+        let mut total_output_errors: u64 = 0;
+        let mut total_batches: u64 = 0;
+        let mut total_scan_ns: u64 = 0;
+        let mut total_transform_ns: u64 = 0;
+        let mut total_output_ns: u64 = 0;
+        let mut total_backpressure: u64 = 0;
+
+        for pm in &self.pipelines {
+            for (_, _, stats) in &pm.inputs {
+                total_input_lines += stats.lines();
+                total_input_bytes += stats.bytes();
+            }
+            for (_, _, stats) in &pm.outputs {
+                total_output_lines += stats.lines();
+                total_output_bytes += stats.bytes();
+                total_output_errors += stats.errors();
+            }
+            total_batches += pm.batches_total.load(Ordering::Relaxed);
+            total_scan_ns += pm.scan_nanos_total.load(Ordering::Relaxed);
+            total_transform_ns += pm.transform_nanos_total.load(Ordering::Relaxed);
+            total_output_ns += pm.output_nanos_total.load(Ordering::Relaxed);
+            total_backpressure += pm.backpressure_stalls.load(Ordering::Relaxed);
+        }
+
+        // Include jemalloc stats if available.
+        let mem_json = match self.memory_stats_fn.and_then(|f| f()) {
+            Some(m) => format!(
+                r#","mem_resident":{},"mem_allocated":{},"mem_active":{}"#,
+                m.resident, m.allocated, m.active,
+            ),
+            None => String::new(),
+        };
+
+        let body = format!(
+            r#"{{"uptime_sec":{:.3},"rss_bytes":{},"cpu_user_ms":{},"cpu_sys_ms":{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{}{}}}"#,
+            uptime_s,
+            rss_bytes,
+            cpu_user_ms,
+            cpu_sys_ms,
+            total_input_lines,
+            total_input_bytes,
+            total_output_lines,
+            total_output_bytes,
+            total_output_errors,
+            total_batches,
+            total_scan_ns as f64 / 1e9,
+            total_transform_ns as f64 / 1e9,
+            total_output_ns as f64 / 1e9,
+            total_backpressure,
+            mem_json,
+        );
+
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        let resp = tiny_http::Response::from_string(body).with_header(header);
+        request.respond(resp)?;
         Ok(())
     }
 
@@ -545,6 +615,29 @@ impl DiagnosticsServer {
             ),
             None => String::new(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Process-level metrics (RSS, CPU)
+// ---------------------------------------------------------------------------
+
+/// Returns (rss_bytes, cpu_user_ms, cpu_sys_ms) for the current process.
+fn process_metrics() -> (u64, u64, u64) {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+
+    let pid = Pid::from_u32(std::process::id());
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+
+    match sys.process(pid) {
+        Some(proc) => {
+            let rss = proc.memory();
+            // sysinfo reports cumulative CPU time in seconds as f32.
+            let cpu_ms = proc.run_time() * 1000;
+            (rss, cpu_ms, 0)
+        }
+        None => (0, 0, 0),
     }
 }
 
@@ -732,6 +825,45 @@ mod tests {
             "body: {}",
             body
         );
+    }
+
+    #[test]
+    fn test_stats_endpoint_contract() {
+        let port = free_port();
+        let mut server = server_with_test_pipeline(port);
+        server.set_memory_stats_fn(|| {
+            Some(MemoryStats {
+                resident: 1_000_000,
+                allocated: 800_000,
+                active: 900_000,
+            })
+        });
+        let _handle = server.start();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/api/stats");
+        assert_eq!(status, 200);
+        assert!(body.contains(r#""uptime_sec":"#), "body: {}", body);
+        assert!(body.contains(r#""rss_bytes":"#), "body: {}", body);
+        assert!(body.contains(r#""cpu_user_ms":"#), "body: {}", body);
+        assert!(body.contains(r#""cpu_sys_ms":"#), "body: {}", body);
+        assert!(body.contains(r#""input_lines":1000"#), "body: {}", body);
+        assert!(body.contains(r#""input_bytes":50000"#), "body: {}", body);
+        assert!(body.contains(r#""output_lines":900"#), "body: {}", body);
+        assert!(body.contains(r#""output_bytes":30000"#), "body: {}", body);
+        assert!(body.contains(r#""output_errors":2"#), "body: {}", body);
+        assert!(body.contains(r#""batches":50"#), "body: {}", body);
+        assert!(body.contains(r#""scan_sec":0.100000"#), "body: {}", body);
+        assert!(
+            body.contains(r#""transform_sec":0.500000"#),
+            "body: {}",
+            body
+        );
+        assert!(body.contains(r#""output_sec":0.200000"#), "body: {}", body);
+        assert!(body.contains(r#""mem_resident":1000000"#), "body: {}", body);
+        assert!(body.contains(r#""mem_allocated":800000"#), "body: {}", body);
+        assert!(body.contains(r#""mem_active":900000"#), "body: {}", body);
     }
 
     #[test]

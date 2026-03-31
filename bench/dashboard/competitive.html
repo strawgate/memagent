@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Competitive Analysis - Benchmark Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
+</head>
+<body>
+<div class="container">
+  <div class="breadcrumb">
+    <a href="index.html">Dashboard</a><span class="sep">/</span>Competitive
+  </div>
+
+  <h1>Competitive Analysis</h1>
+
+  <nav class="nav-pills">
+    <a href="index.html">Overview</a>
+    <a href="competitive.html" class="active">Competitive</a>
+    <a href="development.html">Development</a>
+  </nav>
+
+  <div id="loading" class="loading">Loading competitive data...</div>
+  <div id="content" style="display:none">
+    <div id="charts-section" class="section">
+      <h2>Per-Scenario Throughput</h2>
+      <div class="chart-grid" id="scenario-charts"></div>
+    </div>
+
+    <div id="trends-section" class="section">
+      <h2>Throughput Trends</h2>
+      <div class="chart-grid" id="trend-charts"></div>
+    </div>
+
+    <div id="table-section" class="section">
+      <h2>Full Results</h2>
+      <div class="card">
+        <table id="results-table">
+          <thead id="results-thead"></thead>
+          <tbody id="results-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const AGENT_COLORS = {
+  'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
+  'filebeat': '#d97706', 'otelcol': '#dc2626', 'vlagent': '#64748b'
+};
+
+function formatLPS(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return Math.round(n).toString();
+}
+
+function isDark() { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
+
+function chartColors() {
+  const dark = isDark();
+  Chart.defaults.color = dark ? '#8b949e' : '#656d76';
+  Chart.defaults.borderColor = dark ? '#30363d' : '#d0d7de';
+}
+
+async function loadJSON(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return r.json(); }
+  catch { return null; }
+}
+
+async function main() {
+  chartColors();
+  const index = await loadJSON('data/index.json');
+  if (!index) {
+    document.getElementById('loading').textContent = 'No data/index.json found.';
+    return;
+  }
+
+  const runIds = index.competitive_runs || index.runs || [];
+  if (runIds.length === 0) {
+    document.getElementById('loading').textContent = 'No competitive runs found.';
+    return;
+  }
+
+  const allRuns = (await Promise.all(runIds.map(id => loadJSON('data/runs/' + id + '.json')))).filter(Boolean);
+  if (allRuns.length === 0) {
+    document.getElementById('loading').textContent = 'Could not load any run data.';
+    return;
+  }
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('content').style.display = '';
+
+  const latestRun = allRuns[allRuns.length - 1];
+  const scenarios = latestRun.scenario_names || Object.keys(latestRun.scenarios || {});
+  const agents = latestRun.agents || [];
+
+  // Per-scenario horizontal bar charts (latest run)
+  const chartsEl = document.getElementById('scenario-charts');
+  for (const sn of scenarios) {
+    const sc = latestRun.scenarios?.[sn];
+    if (!sc) continue;
+
+    const cardDiv = document.createElement('div');
+    cardDiv.className = 'card';
+    cardDiv.innerHTML = `<h3>${sn}</h3><canvas id="chart-${sn}"></canvas>`;
+    chartsEl.appendChild(cardDiv);
+
+    const labels = [];
+    const data = [];
+    const colors = [];
+    for (const agent of agents) {
+      if (!sc[agent]) continue;
+      labels.push(agent);
+      data.push(sc[agent].avg_lps);
+      colors.push(AGENT_COLORS[agent] || '#64748b');
+    }
+
+    new Chart(document.getElementById('chart-' + sn), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{ data, backgroundColor: colors, borderRadius: 3 }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => formatLPS(ctx.raw) + ' lps' } }
+        },
+        scales: {
+          x: { ticks: { callback: v => formatLPS(v) }, grid: { color: isDark() ? '#30363d' : '#e5e7eb' } },
+          y: { grid: { display: false } }
+        }
+      }
+    });
+  }
+
+  // Throughput trend sparklines per scenario/agent
+  const trendsEl = document.getElementById('trend-charts');
+  for (const sn of scenarios) {
+    const cardDiv = document.createElement('div');
+    cardDiv.className = 'card';
+    cardDiv.innerHTML = `<h3>${sn} Trend</h3><canvas id="trend-${sn}" height="200"></canvas>`;
+    trendsEl.appendChild(cardDiv);
+
+    const labels = allRuns.map(r => r.id || '');
+    const datasets = [];
+    for (const agent of agents) {
+      const data = allRuns.map(r => r.scenarios?.[sn]?.[agent]?.avg_lps || null);
+      if (data.every(d => d === null)) continue;
+      datasets.push({
+        label: agent,
+        data,
+        borderColor: AGENT_COLORS[agent] || '#64748b',
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        pointRadius: 2,
+        tension: 0.3,
+        spanGaps: true
+      });
+    }
+
+    new Chart(document.getElementById('trend-' + sn), {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        plugins: {
+          tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatLPS(ctx.raw) } }
+        },
+        scales: {
+          x: { ticks: { maxTicksLimit: 10 }, grid: { color: isDark() ? '#30363d' : '#e5e7eb' } },
+          y: { ticks: { callback: v => formatLPS(v) }, grid: { color: isDark() ? '#30363d' : '#e5e7eb' } }
+        }
+      }
+    });
+  }
+
+  // Full results table
+  const thead = document.getElementById('results-thead');
+  const tbody = document.getElementById('results-tbody');
+
+  // Build header: Run | Scenario | agent1 lps | agent1 stddev | ...
+  let headerHtml = '<tr><th>Run</th><th>Scenario</th>';
+  for (const a of agents) {
+    headerHtml += `<th class="numeric">${a} LPS</th><th class="numeric">${a} stddev</th>`;
+  }
+  headerHtml += '</tr>';
+  thead.innerHTML = headerHtml;
+
+  // Rows (newest first)
+  let rowsHtml = '';
+  for (const run of [...allRuns].reverse()) {
+    const runScenarios = run.scenario_names || Object.keys(run.scenarios || {});
+    for (const sn of runScenarios) {
+      const sc = run.scenarios?.[sn];
+      if (!sc) continue;
+
+      // Find winner
+      let bestAgent = null, bestLps = 0;
+      for (const a of agents) {
+        if (sc[a]?.avg_lps > bestLps) { bestLps = sc[a].avg_lps; bestAgent = a; }
+      }
+
+      let row = `<td><a href="run.html?id=${run.id}">#${run.id}</a></td><td>${sn}</td>`;
+      for (const a of agents) {
+        const d = sc[a];
+        const isWinner = a === bestAgent;
+        const cls = isWinner ? 'numeric winner' : 'numeric';
+        if (d) {
+          const lpsStr = d.lps ? d.lps.map(formatLPS).join(', ') : formatLPS(d.avg_lps);
+          row += `<td class="${cls}">${lpsStr}</td>`;
+          row += `<td class="numeric">${d.stddev_ms != null ? d.stddev_ms + 'ms' : '--'}</td>`;
+        } else {
+          row += `<td class="numeric">--</td><td class="numeric">--</td>`;
+        }
+      }
+      rowsHtml += `<tr>${row}</tr>`;
+    }
+  }
+  tbody.innerHTML = rowsHtml;
+}
+
+main();
+</script>
+</body>
+</html>

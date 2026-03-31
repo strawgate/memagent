@@ -14,7 +14,7 @@ use std::process::Command;
 use crate::runner::BenchContext;
 
 /// A benchmark scenario defining what work each agent does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scenario {
     /// Tail file → sink, no transforms. Measures raw I/O throughput.
@@ -80,6 +80,36 @@ pub struct SetupState {
     pub children: Vec<std::process::Child>,
 }
 
+/// A snapshot of runtime metrics collected during a benchmark run.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct AgentSample {
+    /// Seconds elapsed since the benchmark run started.
+    #[serde(default)]
+    pub elapsed_sec: f64,
+    /// Resident set size in bytes.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub rss_bytes: u64,
+    /// User CPU time in milliseconds.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cpu_user_ms: u64,
+    /// System CPU time in milliseconds.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cpu_sys_ms: u64,
+    /// Total events observed by the agent.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub events_total: u64,
+    /// Total bytes observed by the agent.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub bytes_total: u64,
+    /// Total failed events observed by the agent.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub errors_total: u64,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
 /// A benchmark agent (logfwd, vector, filebeat, etc.).
 pub trait Agent {
     /// Short name used in output (e.g., "vector").
@@ -123,6 +153,16 @@ pub trait Agent {
     /// Optional pre-flight setup (e.g., fake K8s API for vlagent).
     fn setup(&self, _ctx: &BenchContext) -> Result<SetupState, String> {
         Ok(SetupState::default())
+    }
+
+    /// URL to poll for runtime stats during the benchmark (polled every 1s).
+    fn stats_url(&self) -> Option<String> {
+        None
+    }
+
+    /// Parse agent-specific stats response into a common AgentSample.
+    fn parse_stats(&self, _body: &str) -> Option<AgentSample> {
+        None
     }
 
     /// Clean up after benchmark.

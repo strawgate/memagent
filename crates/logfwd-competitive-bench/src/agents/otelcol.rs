@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{Agent, Scenario, SetupState};
+use super::{Agent, AgentSample, Scenario, SetupState};
 use crate::download::arch_alt;
 use crate::runner::BenchContext;
 
@@ -83,6 +83,9 @@ service:
   telemetry:
     logs:
       level: error
+    metrics:
+      level: detailed
+      address: "127.0.0.1:8888"
   pipelines:
     logs:
       receivers: [filelog]
@@ -102,7 +105,51 @@ service:
         cmd
     }
 
+    fn stats_url(&self) -> Option<String> {
+        Some("http://127.0.0.1:8888/metrics".to_string())
+    }
+
+    fn parse_stats(&self, body: &str) -> Option<AgentSample> {
+        let mut rss_bytes = 0u64;
+        let mut accepted = 0u64;
+        let mut sent = 0u64;
+        let mut failed = 0u64;
+        for line in body.lines() {
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            if let Some(val) = extract_prom_value(line, "process_resident_memory_bytes") {
+                rss_bytes = val as u64;
+            } else if let Some(val) =
+                extract_prom_value(line, "otelcol_receiver_accepted_log_records")
+            {
+                accepted += val as u64;
+            } else if let Some(val) = extract_prom_value(line, "otelcol_exporter_sent_log_records")
+            {
+                sent += val as u64;
+            } else if let Some(val) =
+                extract_prom_value(line, "otelcol_exporter_send_failed_log_records")
+            {
+                failed += val as u64;
+            }
+        }
+        Some(AgentSample {
+            rss_bytes,
+            events_total: accepted.max(sent),
+            errors_total: failed,
+            ..Default::default()
+        })
+    }
+
     fn setup(&self, _ctx: &BenchContext) -> Result<SetupState, String> {
         Ok(SetupState::default())
     }
+}
+
+fn extract_prom_value(line: &str, prefix: &str) -> Option<f64> {
+    if !line.starts_with(prefix) {
+        return None;
+    }
+    let val_str = line.rsplit_once(' ')?.1;
+    val_str.parse::<f64>().ok()
 }

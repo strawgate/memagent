@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{Agent, Scenario, SetupState};
+use super::{Agent, AgentSample, Scenario, SetupState};
 use crate::runner::BenchContext;
 
 pub struct Logfwd;
@@ -58,6 +58,23 @@ pipelines:
         let mut cmd = Command::new(binary);
         cmd.arg("--config").arg(config);
         cmd
+    }
+
+    fn stats_url(&self) -> Option<String> {
+        Some("http://127.0.0.1:19876/api/stats".to_string())
+    }
+
+    fn parse_stats(&self, body: &str) -> Option<AgentSample> {
+        let v: serde_json::Value = serde_json::from_str(body).ok()?;
+        Some(AgentSample {
+            rss_bytes: v.get("rss_bytes")?.as_u64().unwrap_or(0),
+            cpu_user_ms: v.get("cpu_user_ms")?.as_u64().unwrap_or(0),
+            cpu_sys_ms: v.get("cpu_sys_ms")?.as_u64().unwrap_or(0),
+            events_total: v.get("output_lines")?.as_u64().unwrap_or(0),
+            bytes_total: v.get("input_bytes")?.as_u64().unwrap_or(0),
+            errors_total: v.get("output_errors")?.as_u64().unwrap_or(0),
+            ..Default::default()
+        })
     }
 
     fn setup(&self, _ctx: &BenchContext) -> Result<SetupState, String> {
