@@ -640,7 +640,9 @@ fn process_metrics() -> (u64, u64, u64) {
     (rss, cpu_user_ms, cpu_sys_ms)
 }
 
-/// Reads /proc/self/stat to get utime and stime and converts them to milliseconds.
+/// Reads `/proc/self/stat` and returns `(user_ms, sys_ms)` CPU times in milliseconds.
+/// Returns `None` if `/proc` is unavailable (for example on non-Linux platforms)
+/// or if the stat payload cannot be parsed.
 fn get_cpu_times() -> Option<(u64, u64)> {
     use std::fs;
 
