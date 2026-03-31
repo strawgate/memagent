@@ -11,7 +11,8 @@ use logfwd_core::otlp::{
 };
 
 use super::{
-    BatchMetadata, Compression, OutputSink, is_transient_error, parse_column_name, str_value,
+    BatchMetadata, Compression, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink,
+    is_transient_error, parse_column_name, str_value,
 };
 
 // ---------------------------------------------------------------------------
@@ -169,14 +170,11 @@ impl OutputSink for OtlpSink {
         };
 
         // Retry with exponential backoff for transient failures.
-        // 1 initial attempt + up to 3 retries (4 total maximum); delays: 100ms → 200ms → 400ms.
+        // 1 initial attempt + up to HTTP_MAX_RETRIES retries; delays: 100ms → 200ms → 400ms.
         // Note: the full encoded payload is retransmitted on each attempt.
         // For large batches this multiplies bandwidth; this is acceptable as a
         // temporary measure until SinkDriver (#319) handles retries externally.
-        const MAX_RETRIES: u32 = 3;
-        let mut delay_ms: u64 = 100;
-        let mut attempt: u32 = 0;
-        loop {
+        let build_req = || {
             let mut req = self.http_agent.post(&self.endpoint);
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
@@ -185,9 +183,14 @@ impl OutputSink for OtlpSink {
             if self.compression == Compression::Zstd {
                 req = req.header("Content-Encoding", "zstd");
             }
-            match req.send(payload) {
+            req
+        };
+        let mut delay_ms: u64 = HTTP_RETRY_INITIAL_DELAY_MS;
+        let mut attempt: u32 = 0;
+        loop {
+            match build_req().send(payload) {
                 Ok(_) => return Ok(()),
-                Err(e) if attempt < MAX_RETRIES && is_transient_error(&e) => {
+                Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_error(&e) => {
                     std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                     delay_ms *= 2;
                     attempt += 1;

@@ -4,7 +4,8 @@ use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 
 use super::{
-    BatchMetadata, OutputSink, build_col_infos, is_transient_error, str_value, write_row_json,
+    BatchMetadata, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink, build_col_infos,
+    is_transient_error, str_value, write_row_json,
 };
 
 // ---------------------------------------------------------------------------
@@ -58,11 +59,15 @@ impl JsonLinesSink {
     }
 
     /// Serialize the batch into `self.batch_buf` as newline-delimited JSON.
-    pub fn serialize_batch(&mut self, batch: &RecordBatch) {
+    ///
+    /// Returns `Err` if the schema claims `_raw` passthrough but the column is
+    /// unexpectedly absent — this indicates a logic error and should not be
+    /// silently swallowed (issue #317).
+    pub fn serialize_batch(&mut self, batch: &RecordBatch) -> io::Result<()> {
         self.batch_buf.clear();
         let num_rows = batch.num_rows();
         if num_rows == 0 {
-            return;
+            return Ok(());
         }
 
         if Self::is_raw_passthrough(batch) {
@@ -73,21 +78,18 @@ impl JsonLinesSink {
                 .schema()
                 .fields()
                 .iter()
-                .position(|f| f.name() == "_raw");
-            if let Some(idx) = raw_idx {
-                let col = batch.column(idx);
-                for row in 0..num_rows {
-                    if !col.is_null(row) {
-                        self.batch_buf
-                            .extend_from_slice(str_value(col, row).as_bytes());
-                        self.batch_buf.push(b'\n');
-                    }
-                }
-            } else {
-                // _raw absent despite passthrough check; fall back to JSON serialization.
-                let cols = build_col_infos(batch);
-                for row in 0..num_rows {
-                    write_row_json(batch, row, &cols, &mut self.batch_buf);
+                .position(|f| f.name() == "_raw")
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "_raw column absent despite passthrough eligibility check",
+                    )
+                })?;
+            let col = batch.column(raw_idx);
+            for row in 0..num_rows {
+                if !col.is_null(row) {
+                    self.batch_buf
+                        .extend_from_slice(str_value(col, row).as_bytes());
                     self.batch_buf.push(b'\n');
                 }
             }
@@ -98,33 +100,35 @@ impl JsonLinesSink {
                 self.batch_buf.push(b'\n');
             }
         }
+        Ok(())
     }
 }
 
 impl OutputSink for JsonLinesSink {
     fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
-        self.serialize_batch(batch);
+        self.serialize_batch(batch)?;
         if self.batch_buf.is_empty() {
             return Ok(());
         }
 
         // Retry with exponential backoff for transient failures.
-        // 1 initial attempt + up to 3 retries (4 total maximum); delays: 100ms → 200ms → 400ms.
+        // 1 initial attempt + up to HTTP_MAX_RETRIES retries; delays: 100ms → 200ms → 400ms.
         // Note: `self.batch_buf` is re-sent as `&[u8]` on each attempt — no
         // allocation, but the full NDJSON payload is retransmitted each time.
         // This is acceptable as a temporary measure until SinkDriver (#319).
-        const MAX_RETRIES: u32 = 3;
-        let mut delay_ms: u64 = 100;
-        let mut attempt: u32 = 0;
-        loop {
+        let build_req = || {
             let mut req = self.http_agent.post(&self.url);
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            req = req.header("Content-Type", "application/x-ndjson");
-            match req.send(&self.batch_buf) {
+            req.header("Content-Type", "application/x-ndjson")
+        };
+        let mut delay_ms: u64 = HTTP_RETRY_INITIAL_DELAY_MS;
+        let mut attempt: u32 = 0;
+        loop {
+            match build_req().send(&self.batch_buf) {
                 Ok(_) => return Ok(()),
-                Err(e) if attempt < MAX_RETRIES && is_transient_error(&e) => {
+                Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_error(&e) => {
                     std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                     delay_ms *= 2;
                     attempt += 1;

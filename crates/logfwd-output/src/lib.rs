@@ -36,6 +36,11 @@ use logfwd_config::{AuthConfig, Format, OutputConfig, OutputType};
 ///
 /// Transient errors are: HTTP 429 Too Many Requests, 5xx server errors, and
 /// network/transport failures (I/O, host not found, connection failed, timeout).
+/// Maximum number of retry attempts for transient HTTP failures.
+pub(crate) const HTTP_MAX_RETRIES: u32 = 3;
+/// Initial retry delay in milliseconds; doubles on each subsequent attempt.
+pub(crate) const HTTP_RETRY_INITIAL_DELAY_MS: u64 = 100;
+
 pub(crate) fn is_transient_error(e: &ureq::Error) -> bool {
     match e {
         ureq::Error::StatusCode(status) => *status == 429 || *status >= 500,
@@ -476,7 +481,7 @@ mod tests {
             "http://localhost:9200".to_string(),
             vec![],
         );
-        sink.serialize_batch(&batch);
+        sink.serialize_batch(&batch).unwrap();
 
         let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
         let lines: Vec<&str> = output.trim().split('\n').collect();
@@ -759,7 +764,7 @@ mod tests {
             vec![],
         );
         // Must not panic.
-        sink.serialize_batch(&batch);
+        sink.serialize_batch(&batch).unwrap();
         let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
         assert_eq!(output.trim(), r#"{"x":1}"#);
     }
