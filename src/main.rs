@@ -12,8 +12,10 @@ use std::time::{Duration, Instant};
 use logfwd::chunk::ChunkConfig;
 use logfwd::compress::ChunkCompressor;
 use logfwd::otlp;
+#[cfg(unix)]
 use logfwd::daemon::{self, DaemonConfig};
 use logfwd::pipeline::{self, OutputMode, PipelineConfig, PipelineStats};
+#[cfg(unix)]
 use logfwd::tail::{FileTailer, TailConfig, TailEvent};
 
 fn main() -> io::Result<()> {
@@ -127,6 +129,7 @@ fn main() -> io::Result<()> {
     }
 
     // Handle --config mode (v2 Arrow pipeline from YAML config)
+    #[cfg(unix)]
     if args[1] == "--config" {
         if args.len() < 3 {
             eprintln!("Usage: logfwd --config <config.yaml> [--validate] [--dry-run]");
@@ -148,6 +151,7 @@ fn main() -> io::Result<()> {
     }
 
     // Handle --daemon mode
+    #[cfg(unix)]
     if args[1] == "--daemon" {
         let mut dc = DaemonConfig::default();
         let mut i = 2;
@@ -204,8 +208,14 @@ fn main() -> io::Result<()> {
         i += 1;
     }
 
+    #[cfg(unix)]
     if tail_mode {
         return run_tail(&path, &mode, level);
+    }
+    #[cfg(not(unix))]
+    if tail_mode {
+        eprintln!("Tail mode is not supported on this platform");
+        std::process::exit(1);
     }
 
     let mode_name = match mode {
@@ -434,6 +444,7 @@ fn run_blackhole(addr: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn run_v2_pipelines(config: logfwd::config::Config, dry_run: bool) -> io::Result<()> {
     use logfwd::diagnostics::DiagnosticsServer;
     use logfwd::pipeline_v2::Pipeline;
@@ -488,6 +499,7 @@ fn run_v2_pipelines(config: logfwd::config::Config, dry_run: bool) -> io::Result
     Ok(())
 }
 
+#[cfg(unix)]
 fn run_tail(path: &Path, mode: &OutputMode, level: i32) -> io::Result<()> {
     let mode_name = match mode {
         OutputMode::RawChunk => "raw",
@@ -605,6 +617,7 @@ fn run_tail(path: &Path, mode: &OutputMode, level: i32) -> io::Result<()> {
 }
 
 /// Set up Ctrl-C to flip an AtomicBool. Portable, no sigaction needed.
+#[cfg(unix)]
 fn ctrlc_flag(flag: &Arc<AtomicBool>) {
     let f = flag.clone();
     let _ = std::thread::spawn(move || {
