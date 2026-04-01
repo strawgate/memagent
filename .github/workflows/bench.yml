@@ -312,9 +312,17 @@ jobs:
           path: bin
       - run: chmod +x bin/*
 
+      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
       - name: Build logfwd with profiling
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: |
-          cargo build --release --features dhat-heap,cpu-profiling -p logfwd
+          cargo build --release --features cpu-profiling -p logfwd
           cp target/release/logfwd bin/logfwd-prof
 
       - name: Run profiling pass
@@ -324,8 +332,8 @@ jobs:
             --agents logfwd \
             --scenarios passthrough \
             --mode binary \
-            --profile . \
-            --dhat-binary ./bin/logfwd-prof
+            --profile ./profiles \
+            --dhat-binary ./bin/logfwd-dhat
         env:
           LOGFWD: ./bin/logfwd-prof
 
@@ -333,9 +341,7 @@ jobs:
         if: always()
         with:
           name: logfwd-profiles
-          path: |
-            dhat-heap.json
-            flamegraph.svg
+          path: profiles/
           retention-days: 30
 
   # -------------------------------------------------------------------
