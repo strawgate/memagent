@@ -43,6 +43,24 @@ toml-fmt:
 deny:
     cargo deny check
 
+# Build the diagnostics dashboard (Preact + TypeScript → single HTML file)
+# Requires Node.js. Output: crates/logfwd-io/src/dashboard.html
+# The built file is committed, so this is only needed when editing dashboard/ source.
+dashboard:
+    cd dashboard && npm install --prefer-offline && npm run build
+
+# Verify committed dashboard.html matches source (for CI)
+dashboard-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cp crates/logfwd-io/src/dashboard.html /tmp/dashboard-before.html
+    just dashboard
+    if ! diff -q crates/logfwd-io/src/dashboard.html /tmp/dashboard-before.html >/dev/null 2>&1; then
+        echo "ERROR: dashboard.html is stale. Run 'just dashboard' and commit the result."
+        exit 1
+    fi
+    echo "dashboard.html is up to date"
+
 # Build release binary
 build:
     cargo build --release
