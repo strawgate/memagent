@@ -396,6 +396,13 @@ impl Config {
                                 "pipeline '{name}' output '{label}': {msg}",
                             )));
                         }
+                        if output.output_type == OutputType::Otlp
+                            && output.compression.as_deref() == Some("gzip")
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': otlp output does not support 'gzip' compression yet"
+                            )));
+                        }
                     }
                     OutputType::FileOut => {
                         if output.path.is_none() {
@@ -687,6 +694,26 @@ output:
         assert!(
             msg.contains("endpoint"),
             "expected 'endpoint' in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn validation_otlp_gzip_not_implemented() {
+        let yaml = r#"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: otlp
+  endpoint: http://collector:4318
+  compression: gzip
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("gzip"), "expected 'gzip' in error: {msg}");
+        assert!(
+            msg.contains("does not support") || msg.contains("not"),
+            "expected unsupported message in error: {msg}"
         );
     }
 

@@ -275,7 +275,11 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
             };
             let compression = match cfg.compression.as_deref() {
                 Some("zstd") => Compression::Zstd,
-                Some("gzip") => Compression::Gzip,
+                Some("gzip") => {
+                    return Err(format!(
+                        "output '{name}': OTLP does not support 'gzip' compression yet"
+                    ));
+                }
                 _ => Compression::None,
             };
             Ok(Box::new(OtlpSink::new(
@@ -519,6 +523,22 @@ mod tests {
     }
 
     #[test]
+    fn test_otlp_gzip_send_batch_returns_error() {
+        let batch = make_test_batch();
+        let meta = make_metadata();
+        let mut sink = OtlpSink::new(
+            "test-otlp".to_string(),
+            "http://localhost:4318".to_string(),
+            OtlpProtocol::Http,
+            Compression::Gzip,
+            vec![],
+        );
+
+        let err = sink.send_batch(&batch, &meta).unwrap_err();
+        assert!(err.to_string().contains("gzip"), "got: {err}");
+    }
+
+    #[test]
     fn test_raw_passthrough() {
         // Build a batch with only _raw column (simulating no transforms).
         let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
@@ -632,6 +652,25 @@ mod tests {
         };
         let sink = build_output_sink("otel", &cfg).unwrap();
         assert_eq!(sink.name(), "otel");
+    }
+
+    #[test]
+    fn test_build_output_sink_otlp_rejects_gzip() {
+        let cfg = OutputConfig {
+            name: Some("otel".to_string()),
+            output_type: OutputType::Otlp,
+            endpoint: Some("http://localhost:4318".to_string()),
+            protocol: Some("http".to_string()),
+            compression: Some("gzip".to_string()),
+            format: None,
+            path: None,
+            auth: None,
+        };
+        let err = match build_output_sink("otel", &cfg) {
+            Ok(_) => panic!("expected gzip OTLP compression to be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.contains("gzip"), "got: {err}");
     }
 
     #[test]
@@ -906,13 +945,14 @@ mod write_row_json_tests {
 
     #[test]
     fn float_field() {
+        let expected = std::f64::consts::PI;
         let batch = make_batch(vec![(
             "duration_float",
-            Arc::new(Float64Array::from(vec![3.14])),
+            Arc::new(Float64Array::from(vec![expected])),
         )]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
-        assert!((v["duration"].as_f64().unwrap() - 3.14).abs() < 0.001);
+        assert!((v["duration"].as_f64().unwrap() - expected).abs() < 0.001);
     }
 
     #[test]

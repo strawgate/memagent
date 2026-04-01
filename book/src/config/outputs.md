@@ -9,7 +9,7 @@ output:
   type: otlp
   endpoint: https://collector:4318
   protocol: http       # http | grpc
-  compression: zstd    # zstd | gzip | none
+  compression: zstd    # zstd | none (gzip not yet supported)
   auth:
     bearer_token: "${OTEL_TOKEN}"
 ```

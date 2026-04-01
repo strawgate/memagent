@@ -162,7 +162,13 @@ impl OutputSink for OtlpSink {
                     &self.encoder_buf
                 }
             }
-            Compression::Gzip | Compression::None => &self.encoder_buf,
+            Compression::Gzip => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OTLP gzip compression is not yet implemented",
+                ));
+            }
+            Compression::None => &self.encoder_buf,
         };
 
         let content_type = match self.protocol {
