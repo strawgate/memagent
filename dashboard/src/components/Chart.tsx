@@ -55,7 +55,7 @@ export function Chart({ series }: Props) {
       axes: [
         {
           stroke: "#94a3b8",
-          grid: { stroke: "#1e253650", width: 1 },
+          grid: { stroke: "#252d40", width: 1 },
           ticks: { show: false },
           gap: 4,
           size: 24,
@@ -70,7 +70,7 @@ export function Chart({ series }: Props) {
         },
         {
           stroke: "#94a3b8",
-          grid: { stroke: "#1e253650", width: 1 },
+          grid: { stroke: "#252d40", width: 1 },
           ticks: { show: false },
           gap: 4,
           size: 46,
@@ -88,8 +88,8 @@ export function Chart({ series }: Props) {
         {},
         {
           stroke: series.color,
-          fill: series.color + "30",
-          width: 2,
+          fill: series.color + "40",
+          width: 2.5,
           points: { show: false },
         },
       ],

@@ -201,9 +201,10 @@ main {
 }
 /* uPlot dark theme overrides */
 .uplot { font-family: var(--mono) !important; }
-.uplot .u-over { background: #0e1119 !important; }
-.u-cursor-x, .u-cursor-y { border-color: #475569 !important; }
+.u-cursor-x, .u-cursor-y { border-color: #64748b !important; }
 .u-cursor-pt { border: none !important; }
+/* Make chart plot area visible against card background */
+.chart-card { background: #0c0f16; }
 
 /* === Pipeline === */
 .pipe-flow {
