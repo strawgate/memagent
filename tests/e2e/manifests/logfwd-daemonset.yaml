@@ -17,14 +17,20 @@ spec:
       tolerations:
         - operator: Exists
       # Log collection requires root to read /var/log/pods (owned by root).
-      # Production deployments should use supplementalGroups to grant access
+      # Production deployments should use fsGroup/supplementalGroups (as needed) to grant access
       # to the log directory without running as root.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: logfwd
           image: logfwd:e2e
           imagePullPolicy: IfNotPresent
           args: ["--config", "/etc/logfwd/config.yaml"]
           securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
