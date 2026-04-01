@@ -865,7 +865,7 @@ mod proptests {
             for action in actions {
                 match action {
                     Action::Create { source, checkpoint } => {
-                        let ticket = running.create_batch(SourceId(source), checkpoint);
+                        let ticket = running.create_batch(SourceId(u64::from(source)), checkpoint);
                         let s = running.begin_send(ticket);
                         sending.entry(source).or_default().push(s);
                     }
@@ -995,7 +995,7 @@ mod proptests {
 
             let mut cp_idx = 0;
             for src_id in 0..num_sources as u32 {
-                let src = SourceId(src_id);
+                let src = SourceId(u64::from(src_id));
                 for _ in 0..n {
                     let cp = checkpoints[cp_idx % checkpoints.len()];
                     cp_idx += 1;
@@ -1028,7 +1028,7 @@ mod proptests {
 
             for src_id in 0..num_sources as u32 {
                 let expected = expected_checkpoints[&src_id];
-                let actual = running.committed_checkpoint(SourceId(src_id));
+                let actual = running.committed_checkpoint(SourceId(u64::from(src_id)));
                 prop_assert_eq!(actual, Some(&expected));
             }
 

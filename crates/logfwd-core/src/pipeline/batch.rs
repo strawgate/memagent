@@ -21,7 +21,7 @@ use core::marker::PhantomData;
 
 /// Identifies a data source (file, Kafka topic, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SourceId(pub u32);
+pub struct SourceId(pub u64);
 
 /// Unique batch identifier within the pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
