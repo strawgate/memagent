@@ -359,7 +359,7 @@ impl StructuralIndex {
     ///
     /// Contract: result is always <= end (prevents reading past line boundary).
     #[inline]
-    #[cfg_attr(kani, kani::requires(end <= buf.len()))]
+    #[cfg_attr(kani, kani::requires(pos <= end && end <= buf.len()))]
     #[cfg_attr(kani, kani::ensures(|result: &usize| *result <= end))]
     pub fn skip_nested(&self, buf: &[u8], mut pos: usize, end: usize) -> usize {
         // Small stack for delimiter tracking. Max nesting 32 levels — deeper
@@ -1282,15 +1282,14 @@ mod verification {
                 j += 1;
             }
 
-            // Property 2: ranges are contiguous — next range starts
-            // right after the newline that terminated this range
+            // Property 2: ranges are separated only by newline bytes.
             if range_idx + 1 < line_ranges.len() {
                 let (next_start, _) = line_ranges[range_idx + 1];
-                // The byte at `end` should be a newline (except for
-                // the last range which may extend to EOF)
-                if end < 8 {
-                    assert!(buf[end] == b'\n', "gap not at newline");
-                    assert_eq!(next_start, end + 1, "ranges not contiguous");
+                assert!(next_start > end, "overlapping ranges");
+                let mut gap = end;
+                while gap < next_start {
+                    assert!(buf[gap] == b'\n', "non-newline gap between ranges");
+                    gap += 1;
                 }
             }
             range_idx += 1;

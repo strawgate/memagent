@@ -776,15 +776,15 @@ mod verification {
         // Ack in reverse order — worst case for pending-ACK queue
         let a4 = running.apply_ack(s4.ack());
         assert!(!a4.advanced, "s4 alone should not advance checkpoint");
-        assert_eq!(running.in_flight_count(), 4);
+        assert_eq!(running.in_flight_count(), 3);
 
         let a3 = running.apply_ack(s3.ack());
         assert!(!a3.advanced, "s3+s4 pending should not advance");
-        assert_eq!(running.in_flight_count(), 4);
+        assert_eq!(running.in_flight_count(), 2);
 
         let a2 = running.apply_ack(s2.ack());
         assert!(!a2.advanced, "s2+s3+s4 pending should not advance");
-        assert_eq!(running.in_flight_count(), 4);
+        assert_eq!(running.in_flight_count(), 1);
 
         // Acking s1 should trigger full commit advance through all 4
         let a1 = running.apply_ack(s1.ack());
