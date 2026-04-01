@@ -15,6 +15,8 @@ spec:
         app: logfwd
     spec:
       serviceAccountName: logfwd
+      tolerations:
+        - operator: Exists
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
