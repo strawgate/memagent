@@ -314,8 +314,9 @@ fn skip_whitespace(buf: &[u8], mut pos: usize, end: usize) -> usize {
 /// Skip a nested object/array using brace/bracket bitmasks.
 #[inline]
 fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'_>) -> usize {
+    const MAX_TRACKED_DEPTH: u32 = 32;
     let mut depth: u32 = 0;
-    let mut opener_stack = [0u8; 32];
+    let mut opener_stack = [0u8; MAX_TRACKED_DEPTH as usize];
 
     while pos < end {
         let block = pos >> 6;
@@ -329,10 +330,10 @@ fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'
 
         match b {
             b'{' | b'[' if (blocks.open_brace[block] | blocks.open_bracket[block]) & mask != 0 => {
-                if depth < 32 {
+                if depth < MAX_TRACKED_DEPTH {
                     opener_stack[depth as usize] = b;
                 }
-                depth += 1;
+                depth = depth.saturating_add(1);
                 pos += 1;
             }
             b'}' | b']'
@@ -341,8 +342,8 @@ fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'
                 if depth == 0 {
                     return pos;
                 }
-                depth -= 1;
-                if depth < 32 {
+                depth = depth.saturating_sub(1);
+                if depth < MAX_TRACKED_DEPTH {
                     let expected = if opener_stack[depth as usize] == b'{' {
                         b'}'
                     } else {

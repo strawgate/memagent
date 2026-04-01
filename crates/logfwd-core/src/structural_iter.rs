@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn escaped_quote_not_yielded() {
-        let buf = br#"{"k":"val\"ue"}"#;
+        let buf = br#"{"k":"val\"ues"}"#;
         let positions = collect_positions(buf);
         // The escaped quote inside the string should NOT appear
         let quotes: Vec<usize> = positions
