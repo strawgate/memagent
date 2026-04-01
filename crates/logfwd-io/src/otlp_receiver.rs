@@ -8,6 +8,7 @@
 //! This replaces the hand-rolled `--blackhole` with a proper pipeline input.
 
 use std::io;
+use std::io::Read as _;
 use std::sync::mpsc;
 
 use opentelemetry_proto::tonic::common::v1::AnyValue;
@@ -15,6 +16,12 @@ use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use prost::Message;
 
 use crate::input::{InputEvent, InputSource};
+
+/// Maximum request body size: 10 MB.
+const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+
+/// Bounded channel capacity — limits memory when the pipeline falls behind.
+const CHANNEL_BOUND: usize = 4096;
 
 /// OTLP receiver that listens for log exports via HTTP.
 pub struct OtlpReceiverInput {
@@ -31,7 +38,7 @@ impl OtlpReceiverInput {
         let server = tiny_http::Server::http(addr)
             .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(CHANNEL_BOUND);
 
         let handle = std::thread::Builder::new()
             .name("otlp-receiver".into())
@@ -48,27 +55,80 @@ impl OtlpReceiverInput {
                         continue;
                     }
 
-                    // Read body.
-                    let mut body = Vec::with_capacity(
-                        request.body_length().unwrap_or(0).min(64 * 1024 * 1024),
-                    );
-                    if request.as_reader().read_to_end(&mut body).is_err() {
+                    // Reject bodies that declare a size over the limit.
+                    if request.body_length().unwrap_or(0) > MAX_BODY_SIZE {
                         let _ = request.respond(
-                            tiny_http::Response::from_string("read error").with_status_code(400),
+                            tiny_http::Response::from_string("payload too large")
+                                .with_status_code(413),
                         );
                         continue;
                     }
 
+                    // Read body with a hard cap.
+                    let mut body =
+                        Vec::with_capacity(request.body_length().unwrap_or(0).min(MAX_BODY_SIZE));
+                    match request
+                        .as_reader()
+                        .take(MAX_BODY_SIZE as u64 + 1)
+                        .read_to_end(&mut body)
+                    {
+                        Ok(n) if n > MAX_BODY_SIZE => {
+                            let _ = request.respond(
+                                tiny_http::Response::from_string("payload too large")
+                                    .with_status_code(413),
+                            );
+                            continue;
+                        }
+                        Err(_) => {
+                            let _ = request.respond(
+                                tiny_http::Response::from_string("read error")
+                                    .with_status_code(400),
+                            );
+                            continue;
+                        }
+                        _ => {}
+                    }
+
+                    // Determine content type — accept protobuf and JSON.
+                    let content_type = request
+                        .headers()
+                        .iter()
+                        .find(|h| h.field.equiv("Content-Type"))
+                        .map_or("application/x-protobuf", |h| h.value.as_str());
+
+                    let is_json = content_type.contains("application/json");
+
                     // Decode and convert to JSON lines.
-                    let json_lines = decode_otlp_logs(&body);
+                    let json_lines = if is_json {
+                        decode_otlp_logs_json(&body)
+                    } else {
+                        decode_otlp_logs(&body)
+                    };
+
+                    let json_lines = match json_lines {
+                        Ok(lines) => lines,
+                        Err(msg) => {
+                            let _ = request.respond(
+                                tiny_http::Response::from_string(msg).with_status_code(400),
+                            );
+                            continue;
+                        }
+                    };
 
                     if !json_lines.is_empty() {
                         // Send to the pipeline. If the channel is full/closed, drop.
-                        let _ = tx.send(json_lines);
+                        let _ = tx.try_send(json_lines);
                     }
 
-                    // Return standard OTLP success response.
-                    let _ = request.respond(tiny_http::Response::from_string("{}"));
+                    // Return standard OTLP success response with Content-Type header.
+                    let response = tiny_http::Response::from_string("{}")
+                        .with_header(
+                            "Content-Type: application/json"
+                                .parse::<tiny_http::Header>()
+                                .unwrap(),
+                        )
+                        .with_status_code(200);
+                    let _ = request.respond(response);
                 }
             })
             .map_err(io::Error::other)?;
@@ -102,18 +162,156 @@ impl InputSource for OtlpReceiverInput {
     }
 }
 
+/// Decode an ExportLogsServiceRequest from JSON body and produce
+/// newline-delimited JSON lines. Parses the OTLP JSON structure directly
+/// since the protobuf types don't derive serde traits.
+fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, String> {
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let root: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| format!("invalid JSON: {e}"))?;
+
+    let resource_logs = match root.get("resourceLogs").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return Ok(Vec::new()),
+    };
+
+    let mut out = Vec::new();
+
+    for rl in resource_logs {
+        // Collect resource attributes.
+        let resource_attrs: Vec<(&str, String)> = rl
+            .get("resource")
+            .and_then(|r| r.get("attributes"))
+            .and_then(|a| a.as_array())
+            .map(|attrs| {
+                attrs
+                    .iter()
+                    .filter_map(|kv| {
+                        let key = kv.get("key")?.as_str()?;
+                        let val = json_any_value_to_string(kv.get("value")?);
+                        Some((key, val))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let scope_logs = match rl.get("scopeLogs").and_then(|v| v.as_array()) {
+            Some(arr) => arr,
+            None => continue,
+        };
+
+        for sl in scope_logs {
+            let records = match sl.get("logRecords").and_then(|v| v.as_array()) {
+                Some(arr) => arr,
+                None => continue,
+            };
+
+            for record in records {
+                out.push(b'{');
+
+                if let Some(ts) = record.get("timeUnixNano").and_then(|v| v.as_str()) {
+                    write_json_field(&mut out, "timestamp_int", ts);
+                    out.push(b',');
+                }
+
+                if let Some(sev) = record.get("severityText").and_then(|v| v.as_str()) {
+                    if !sev.is_empty() {
+                        write_json_string_field(&mut out, "level", sev);
+                        out.push(b',');
+                    }
+                }
+
+                if let Some(body_val) = record.get("body") {
+                    let body_str = json_any_value_to_string(body_val);
+                    if !body_str.is_empty() {
+                        write_json_string_field(&mut out, "message", &body_str);
+                        out.push(b',');
+                    }
+                }
+
+                if let Some(attrs) = record.get("attributes").and_then(|v| v.as_array()) {
+                    for kv in attrs {
+                        if let (Some(key), Some(val)) =
+                            (kv.get("key").and_then(|k| k.as_str()), kv.get("value"))
+                        {
+                            let s = json_any_value_to_string(val);
+                            write_json_string_field(&mut out, key, &s);
+                            out.push(b',');
+                        }
+                    }
+                }
+
+                for (key, value) in &resource_attrs {
+                    write_json_string_field(&mut out, key, value);
+                    out.push(b',');
+                }
+
+                if let Some(tid) = record.get("traceId").and_then(|v| v.as_str()) {
+                    if !tid.is_empty() {
+                        write_json_string_field(&mut out, "trace_id", tid);
+                        out.push(b',');
+                    }
+                }
+                if let Some(sid) = record.get("spanId").and_then(|v| v.as_str()) {
+                    if !sid.is_empty() {
+                        write_json_string_field(&mut out, "span_id", sid);
+                        out.push(b',');
+                    }
+                }
+
+                if out.last() == Some(&b',') {
+                    out.pop();
+                }
+                out.extend_from_slice(b"}\n");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// Extract a string from an OTLP JSON AnyValue object.
+fn json_any_value_to_string(v: &serde_json::Value) -> String {
+    if let Some(s) = v.get("stringValue").and_then(|v| v.as_str()) {
+        return s.to_string();
+    }
+    if let Some(i) = v.get("intValue") {
+        // OTLP JSON encodes int64 as string
+        return i.as_str().unwrap_or("0").to_string();
+    }
+    if let Some(d) = v.get("doubleValue").and_then(serde_json::Value::as_f64) {
+        return d.to_string();
+    }
+    if let Some(b) = v.get("boolValue").and_then(serde_json::Value::as_bool) {
+        return b.to_string();
+    }
+    String::new()
+}
+
 /// Decode an ExportLogsServiceRequest protobuf and produce newline-delimited
 /// JSON. Each LogRecord becomes one JSON line with fields that the scanner
 /// can extract into Arrow columns.
-fn decode_otlp_logs(body: &[u8]) -> Vec<u8> {
+fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, String> {
     use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 
-    let request = match ExportLogsServiceRequest::decode(body) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    let mut out = Vec::with_capacity(body.len());
+    let request =
+        ExportLogsServiceRequest::decode(body).map_err(|e| format!("invalid protobuf: {e}"))?;
+
+    Ok(convert_request_to_json_lines(&request))
+}
+
+/// Shared conversion: ExportLogsServiceRequest -> newline-delimited JSON bytes.
+fn convert_request_to_json_lines(
+    request: &opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest,
+) -> Vec<u8> {
+    let mut out = Vec::new();
 
     for resource_logs in &request.resource_logs {
         // Extract resource attributes (e.g., service.name).
@@ -302,7 +500,7 @@ mod tests {
     #[test]
     fn decodes_otlp_to_json_lines() {
         let body = make_test_request();
-        let json = decode_otlp_logs(&body);
+        let json = decode_otlp_logs(&body).unwrap();
         let text = String::from_utf8(json).unwrap();
         let lines: Vec<&str> = text.trim().split('\n').collect();
 
@@ -328,7 +526,56 @@ mod tests {
 
     #[test]
     fn handles_invalid_protobuf() {
-        let json = decode_otlp_logs(b"not valid protobuf");
+        let result = decode_otlp_logs(b"not valid protobuf");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn handles_empty_body() {
+        let json = decode_otlp_logs(b"").unwrap();
         assert!(json.is_empty());
+    }
+
+    #[test]
+    fn handles_request_with_no_log_records() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let body = request.encode_to_vec();
+        let json = decode_otlp_logs(&body).unwrap();
+        assert!(json.is_empty());
+    }
+
+    #[test]
+    fn handles_record_with_no_body() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        severity_text: "WARN".into(),
+                        body: None,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let body = request.encode_to_vec();
+        let json = decode_otlp_logs(&body).unwrap();
+        let text = String::from_utf8(json).unwrap();
+        assert!(text.contains("\"level\":\"WARN\""));
+        assert!(!text.contains("\"message\""));
+    }
+
+    #[test]
+    fn hex_encode_empty() {
+        assert_eq!(hex::encode(&[]), "");
     }
 }

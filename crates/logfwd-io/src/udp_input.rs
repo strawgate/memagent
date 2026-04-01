@@ -6,6 +6,9 @@ use std::net::UdpSocket;
 
 use crate::input::{InputEvent, InputSource};
 
+/// Maximum UDP payload: 65535 (IP max) - 20 (IP header) - 8 (UDP header).
+const MAX_UDP_PAYLOAD: usize = 65507;
+
 /// UDP input that listens for datagrams. Each datagram is treated as one
 /// or more newline-delimited log lines.
 pub struct UdpInput {
@@ -23,36 +26,46 @@ impl UdpInput {
         Ok(Self {
             name: name.into(),
             socket,
-            buf: vec![0u8; 65536], // max UDP datagram
+            buf: vec![0u8; MAX_UDP_PAYLOAD],
         })
     }
 }
 
 impl InputSource for UdpInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
-        let mut events = Vec::new();
-        let mut total = Vec::new();
+        // Accumulate into a single byte buffer; avoid per-datagram Vec alloc.
+        // We re-use `self.buf` for recv and build the output in a separate vec
+        // only when data actually arrives.
+        let mut total: Option<Vec<u8>> = None;
 
         // Drain all available datagrams in one poll cycle.
         loop {
-            match self.socket.recv_from(&mut self.buf) {
-                Ok((n, _addr)) => {
-                    total.extend_from_slice(&self.buf[..n]);
-                    // Ensure newline termination.
-                    if !total.ends_with(b"\n") {
-                        total.push(b'\n');
+            // `recv` is cheaper than `recv_from` — we don't need the source addr.
+            match self.socket.recv(&mut self.buf) {
+                Ok(0) => {} // no data in this datagram, loop again
+                Ok(n) => {
+                    let data = &self.buf[..n];
+                    let out = total.get_or_insert_with(|| Vec::with_capacity(4096));
+                    out.extend_from_slice(data);
+                    // Ensure newline termination so the scanner always sees
+                    // complete lines, even if the sender omitted a trailing LF.
+                    if !data.ends_with(b"\n") {
+                        out.push(b'\n');
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                // ECONNREFUSED can arrive on a connected UDP socket (ICMP
+                // port-unreachable cached by the kernel). Treat it like
+                // WouldBlock — there is simply no data right now.
+                Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => break,
                 Err(e) => return Err(e),
             }
         }
 
-        if !total.is_empty() {
-            events.push(InputEvent::Data { bytes: total });
+        match total {
+            Some(bytes) => Ok(vec![InputEvent::Data { bytes }]),
+            None => Ok(Vec::new()),
         }
-
-        Ok(events)
     }
 
     fn name(&self) -> &str {
@@ -87,9 +100,51 @@ mod tests {
     }
 
     #[test]
+    fn adds_trailing_newline_to_bare_datagram() {
+        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.socket.local_addr().unwrap();
+
+        let sender = StdSocket::bind("127.0.0.1:0").unwrap();
+        // No trailing newline — input must add one.
+        sender.send_to(b"no newline", addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+        assert_eq!(events.len(), 1);
+        if let InputEvent::Data { bytes } = &events[0] {
+            assert!(bytes.ends_with(b"\n"), "expected trailing newline");
+        }
+    }
+
+    #[test]
+    fn handles_multi_line_datagram() {
+        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.socket.local_addr().unwrap();
+
+        let sender = StdSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(b"line1\nline2\nline3\n", addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+        assert_eq!(events.len(), 1);
+        if let InputEvent::Data { bytes } = &events[0] {
+            let text = String::from_utf8_lossy(bytes);
+            assert_eq!(text.matches('\n').count(), 3);
+        }
+    }
+
+    #[test]
     fn empty_when_no_data() {
         let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
         let events = input.poll().unwrap();
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn buffer_is_max_udp_payload_size() {
+        let input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        assert_eq!(input.buf.len(), 65507);
     }
 }

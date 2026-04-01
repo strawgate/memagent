@@ -664,6 +664,7 @@ fn build_input_state(
                 events_per_sec,
                 batch_size: 1000,
                 total_events: 0,
+                ..Default::default()
             };
             let source = GeneratorInput::new(name, config);
             Ok(InputState {

@@ -6,6 +6,14 @@ use std::net::{TcpListener, TcpStream};
 
 use crate::input::{InputEvent, InputSource};
 
+/// Maximum number of concurrent TCP client connections.
+const MAX_CLIENTS: usize = 1024;
+
+/// Per-poll read buffer size (64 KiB). Shared across all connections within a
+/// single `poll` call; data is copied into `all_data` immediately, so one
+/// moderate buffer is sufficient.
+const READ_BUF_SIZE: usize = 64 * 1024;
+
 /// TCP input that accepts connections and reads newline-delimited data.
 pub struct TcpInput {
     name: String,
@@ -23,52 +31,76 @@ impl TcpInput {
             name: name.into(),
             listener,
             clients: Vec::new(),
-            buf: vec![0u8; 256 * 1024],
+            buf: vec![0u8; READ_BUF_SIZE],
         })
     }
 }
 
 impl InputSource for TcpInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
-        // Accept new connections.
+        // Accept new connections up to the limit.
         loop {
+            if self.clients.len() >= MAX_CLIENTS {
+                // Drain (and drop) any pending connections beyond the limit so
+                // the kernel accept queue does not fill up and stall.
+                match self.listener.accept() {
+                    Ok((_stream, _addr)) => continue, // dropped immediately
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => break, // transient accept error, not fatal
+                }
+            }
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
                     stream.set_nonblocking(true)?;
                     self.clients.push(stream);
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => {
+                    // Peer reset before we accepted — harmless, keep going.
+                }
                 Err(e) => return Err(e),
             }
         }
 
         // Read from all clients.
         let mut all_data = Vec::new();
-        let mut closed = Vec::new();
+        // Track which connections are dead using a bitmap for O(1) lookup.
+        let mut alive = vec![true; self.clients.len()];
 
         for (i, client) in self.clients.iter_mut().enumerate() {
             loop {
                 match client.read(&mut self.buf) {
                     Ok(0) => {
-                        closed.push(i);
+                        // Clean EOF.
+                        alive[i] = false;
                         break;
                     }
                     Ok(n) => {
                         all_data.extend_from_slice(&self.buf[..n]);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                        // Peer sent RST — treat as a close.
+                        alive[i] = false;
+                        break;
+                    }
                     Err(_) => {
-                        closed.push(i);
+                        // Any other read error — drop this connection.
+                        alive[i] = false;
                         break;
                     }
                 }
             }
         }
 
-        // Remove closed connections (reverse order to preserve indices).
-        for &i in closed.iter().rev() {
-            self.clients.swap_remove(i);
-        }
+        // Remove dead connections, preserving order of remaining ones.
+        // `retain` is cleaner than manual swap_remove with index tracking.
+        let mut idx = 0;
+        self.clients.retain(|_| {
+            let keep = alive[idx];
+            idx += 1;
+            keep
+        });
 
         let mut events = Vec::new();
         if !all_data.is_empty() {

@@ -2,6 +2,7 @@
 //! blackhole collector target.
 
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow::record_batch::RecordBatch;
 
@@ -9,18 +10,40 @@ use crate::{BatchMetadata, OutputSink};
 
 /// Discards all data. Useful as the output side of a blackhole receiver
 /// or for benchmarking pipeline overhead without network I/O.
+///
+/// Tracks the number of discarded batches and rows via atomic counters
+/// that can be read from a diagnostics thread without locking.
 pub struct NullSink {
     name: String,
+    batches_discarded: AtomicU64,
+    rows_discarded: AtomicU64,
 }
 
 impl NullSink {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
+        Self {
+            name: name.into(),
+            batches_discarded: AtomicU64::new(0),
+            rows_discarded: AtomicU64::new(0),
+        }
+    }
+
+    /// Total number of batches discarded since creation.
+    pub fn batches_discarded(&self) -> u64 {
+        self.batches_discarded.load(Ordering::Relaxed)
+    }
+
+    /// Total number of rows discarded since creation.
+    pub fn rows_discarded(&self) -> u64 {
+        self.rows_discarded.load(Ordering::Relaxed)
     }
 }
 
 impl OutputSink for NullSink {
-    fn send_batch(&mut self, _batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
+    fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
+        self.batches_discarded.fetch_add(1, Ordering::Relaxed);
+        self.rows_discarded
+            .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
         Ok(())
     }
 
@@ -50,5 +73,30 @@ mod tests {
         };
         assert!(sink.send_batch(&batch, &meta).is_ok());
         assert!(sink.flush().is_ok());
+
+        assert_eq!(sink.batches_discarded(), 1);
+        assert_eq!(sink.rows_discarded(), 0); // empty batch has 0 rows
+    }
+
+    #[test]
+    fn null_sink_counts_rows() {
+        use arrow::array::Int32Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        let col = Int32Array::from(vec![1, 2, 3]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap();
+        let meta = BatchMetadata {
+            resource_attrs: vec![],
+            observed_time_ns: 0,
+        };
+
+        let mut sink = NullSink::new("blackhole");
+        sink.send_batch(&batch, &meta).unwrap();
+        sink.send_batch(&batch, &meta).unwrap();
+
+        assert_eq!(sink.batches_discarded(), 2);
+        assert_eq!(sink.rows_discarded(), 6);
     }
 }
