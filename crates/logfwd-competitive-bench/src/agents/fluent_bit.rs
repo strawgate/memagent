@@ -10,11 +10,11 @@ const DOCKER_IMAGE: &str = "fluent/fluent-bit";
 pub struct FluentBit;
 
 impl Agent for FluentBit {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "fluent-bit"
     }
 
-    fn binary_name(&self) -> &str {
+    fn binary_name(&self) -> &'static str {
         "fluent-bit"
     }
 
@@ -36,7 +36,7 @@ impl Agent for FluentBit {
 
         let filter_section = match scenario {
             Scenario::Passthrough => String::new(),
-            Scenario::JsonParse => r#"
+            Scenario::JsonParse => r"
 [FILTER]
     name         parser
     match        *
@@ -48,16 +48,16 @@ impl Agent for FluentBit {
     name         modify
     match        *
     rename       duration_ms latency_ms
-"#
+"
             .to_string(),
             Scenario::Filter => {
                 // Fluent Bit uses Lua or grep to filter. grep supports regex.
-                r#"
+                r"
 [FILTER]
     name         grep
     match        *
     regex        log (WARN|ERROR)
-"#
+"
                 .to_string()
             }
         };
@@ -65,12 +65,12 @@ impl Agent for FluentBit {
         let parsers_section = match scenario {
             Scenario::JsonParse => {
                 let parsers_path = ctx.bench_dir.join("fb_parsers.conf");
-                let parsers = r#"[PARSER]
+                let parsers = r"[PARSER]
     name         json_parser
     format       json
     time_key     timestamp
     time_format  %Y-%m-%dT%H:%M:%S.%LZ
-"#;
+";
                 std::fs::write(&parsers_path, parsers).map_err(|e| e.to_string())?;
                 format!("    parsers_file {}\n", parsers_path.display())
             }
@@ -79,7 +79,7 @@ impl Agent for FluentBit {
 
         let cfg_path = ctx.bench_dir.join("fluent-bit.conf");
         let config = format!(
-            r#"[SERVICE]
+            r"[SERVICE]
     flush        1
     log_level    error
     HTTP_Server  On
@@ -99,7 +99,7 @@ impl Agent for FluentBit {
     port         {port}
     uri          /
     format       json_lines
-"#,
+",
             parsers = parsers_section,
             data_file = ctx.data_file.display(),
             db = db_path.display(),
@@ -126,13 +126,22 @@ impl Agent for FluentBit {
         let mut errors = 0u64;
         if let Some(inputs) = v.get("input").and_then(|v| v.as_object()) {
             for plugin in inputs.values() {
-                records += plugin.get("records").and_then(|v| v.as_u64()).unwrap_or(0);
-                bytes += plugin.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                records += plugin
+                    .get("records")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                bytes += plugin
+                    .get("bytes")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
             }
         }
         if let Some(outputs) = v.get("output").and_then(|v| v.as_object()) {
             for plugin in outputs.values() {
-                errors += plugin.get("errors").and_then(|v| v.as_u64()).unwrap_or(0);
+                errors += plugin
+                    .get("errors")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
             }
         }
         Some(AgentSample {

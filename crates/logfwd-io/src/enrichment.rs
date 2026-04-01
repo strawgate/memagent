@@ -126,7 +126,7 @@ impl HostInfoTable {
 }
 
 impl EnrichmentTable for HostInfoTable {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "host_info"
     }
 
@@ -195,7 +195,10 @@ impl K8sPathTable {
         });
 
         let batch = build_k8s_batch(&entries);
-        *self.data.write().unwrap_or_else(|e| e.into_inner()) = Some(batch);
+        *self
+            .data
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(batch);
     }
 }
 
@@ -205,7 +208,10 @@ impl EnrichmentTable for K8sPathTable {
     }
 
     fn snapshot(&self) -> Option<RecordBatch> {
-        self.data.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.data
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -324,7 +330,10 @@ impl CsvFileTable {
     pub fn load_from_reader<R: io::Read>(&self, reader: R) -> Result<usize, String> {
         let batch = read_csv_to_batch(reader)?;
         let num_rows = batch.num_rows();
-        *self.data.write().unwrap_or_else(|e| e.into_inner()) = Some(batch);
+        *self
+            .data
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(batch);
         Ok(num_rows)
     }
 
@@ -346,7 +355,10 @@ impl EnrichmentTable for CsvFileTable {
     }
 
     fn snapshot(&self) -> Option<RecordBatch> {
-        self.data.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.data
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -358,7 +370,7 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
         .headers()
         .map_err(|e| format!("CSV header error: {e}"))?
         .iter()
-        .map(|h| h.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
 
     if headers.is_empty() {
@@ -447,7 +459,10 @@ impl JsonLinesFileTable {
     pub fn load_from_reader<R: io::BufRead>(&self, reader: R) -> Result<usize, String> {
         let batch = read_jsonl_to_batch(reader)?;
         let num_rows = batch.num_rows();
-        *self.data.write().unwrap_or_else(|e| e.into_inner()) = Some(batch);
+        *self
+            .data
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(batch);
         Ok(num_rows)
     }
 
@@ -465,7 +480,10 @@ impl EnrichmentTable for JsonLinesFileTable {
     }
 
     fn snapshot(&self) -> Option<RecordBatch> {
-        self.data.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.data
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -492,17 +510,17 @@ fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String>
             serde_json::from_str(trimmed).map_err(|e| format!("JSONL parse error: {e}"))?;
 
         let mut row = BTreeMap::new();
-        for (k, v) in &obj {
+        for (k, v) in obj {
             if key_set.insert(k.clone()) {
                 all_keys.push(k.clone());
             }
             // Stringify all values.
             let s = match v {
-                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::String(s) => s,
                 serde_json::Value::Null => continue,
                 other => other.to_string(),
             };
-            row.insert(k.clone(), s);
+            row.insert(k, s);
         }
         rows.push(row);
     }
@@ -523,7 +541,7 @@ fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String>
         .map(|key| {
             let arr: StringArray = rows
                 .iter()
-                .map(|row| row.get(key).map(|s| s.as_str()))
+                .map(|row| row.get(key).map(std::string::String::as_str))
                 .collect();
             Arc::new(arr) as _
         })

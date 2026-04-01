@@ -21,7 +21,7 @@ impl OutputSink for DevNullSink {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "devnull"
     }
 }
@@ -40,7 +40,7 @@ impl OutputSink for SlowSink {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "slow"
     }
 }
@@ -64,7 +64,7 @@ impl OutputSink for FrozenSink {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "frozen"
     }
 }
@@ -101,7 +101,7 @@ impl OutputSink for FailingSink {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "failing"
     }
 }

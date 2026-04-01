@@ -103,7 +103,7 @@ impl ScalarUDFImpl for GrokUdf {
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "grok"
     }
 
@@ -173,9 +173,12 @@ impl ScalarUDFImpl for GrokUdf {
         } else {
             let new_compiled = compile_grok(&pattern_str)
                 .map_err(|e| datafusion::error::DataFusionError::Execution(format!("grok: {e}")))?;
-            // Racing threads may both compile; only the first set wins. Use whichever is stored.
+            // OnceLock::set may fail if another thread won the race, which is fine —
+            // we just use whichever value was stored first.
             let _ = self.compiled_grok.set(new_compiled);
-            self.compiled_grok.get().unwrap()
+            self.compiled_grok
+                .get()
+                .expect("OnceLock must be initialized: we just called set or another thread did")
         };
 
         match input {
@@ -247,8 +250,9 @@ impl ScalarUDFImpl for GrokUdf {
                         matches
                             .as_ref()
                             .and_then(|m| m.get(name))
-                            .map(|v| datafusion::common::ScalarValue::Utf8(Some(v.to_string())))
-                            .unwrap_or(datafusion::common::ScalarValue::Utf8(None))
+                            .map_or(datafusion::common::ScalarValue::Utf8(None), |v| {
+                                datafusion::common::ScalarValue::Utf8(Some(v.to_string()))
+                            })
                     })
                     .collect();
 

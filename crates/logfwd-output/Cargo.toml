@@ -1,7 +1,8 @@
 [package]
 name = "logfwd-output"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -14,3 +15,6 @@ logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 
 [dev-dependencies]
 serde_json = "1.0.149"
+
+[lints]
+workspace = true

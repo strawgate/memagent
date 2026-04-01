@@ -93,6 +93,7 @@ pub const fn bytes_field_size(field_number: u32, data_len: usize) -> usize {
 /// OTLP SeverityNumber enum values.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Severity {
     /// No severity specified.
     Unspecified = 0,

@@ -117,7 +117,7 @@ impl StreamingBuilder {
     /// silently truncated offsets without this guard.
     pub fn begin_batch(&mut self, buf: bytes::Bytes) {
         debug_assert!(
-            buf.len() <= u32::MAX as usize,
+            u32::try_from(buf.len()).is_ok(),
             "StreamingBuilder buffer too large for u32 offsets ({} bytes)",
             buf.len()
         );
@@ -173,7 +173,7 @@ impl StreamingBuilder {
         );
         let offset = ptr - base;
         debug_assert!(
-            offset <= u32::MAX as usize,
+            u32::try_from(offset).is_ok(),
             "StreamingBuilder buffer offset exceeds u32::MAX ({offset} bytes)"
         );
         offset as u32

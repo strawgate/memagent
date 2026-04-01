@@ -5,6 +5,7 @@ use crate::filter_hints::FilterHints;
 use crate::tail::{FileTailer, TailConfig, TailEvent};
 
 /// Events produced by an input source.
+#[non_exhaustive]
 pub enum InputEvent {
     /// New data read from the source.
     Data { bytes: Vec<u8> },

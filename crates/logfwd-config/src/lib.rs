@@ -72,6 +72,7 @@ impl From<serde_yaml::Error> for ConfigError {
 /// Recognised input types.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum InputType {
     File,
     Udp,
@@ -82,6 +83,7 @@ pub enum InputType {
 /// Recognised output types.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum OutputType {
     Otlp,
     Http,
@@ -95,6 +97,7 @@ pub enum OutputType {
 /// Recognised log formats.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Format {
     Cri,
     Json,
@@ -153,6 +156,7 @@ pub struct OutputConfig {
 /// Supported geo-IP database formats.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GeoDatabaseFormat {
     /// MaxMind MMDB format (GeoLite2-City, GeoIP2-City, DB-IP MMDB).
     Mmdb,
@@ -340,8 +344,7 @@ impl Config {
                 let label = input
                     .name
                     .as_deref()
-                    .map(String::from)
-                    .unwrap_or_else(|| format!("#{i}"));
+                    .map_or_else(|| format!("#{i}"), String::from);
                 match input.input_type {
                     InputType::File => {
                         if input.path.is_none() {
@@ -365,8 +368,7 @@ impl Config {
                 let label = output
                     .name
                     .as_deref()
-                    .map(String::from)
-                    .unwrap_or_else(|| format!("#{i}"));
+                    .map_or_else(|| format!("#{i}"), String::from);
 
                 // Reject placeholder output types that are not yet implemented.
                 match output.output_type {

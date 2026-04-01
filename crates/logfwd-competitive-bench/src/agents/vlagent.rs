@@ -23,11 +23,11 @@ const POD_UID: &str = "bench-uid-00000000-0000-0000-0000-000000000000";
 pub struct Vlagent;
 
 impl Agent for Vlagent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "vlagent"
     }
 
-    fn binary_name(&self) -> &str {
+    fn binary_name(&self) -> &'static str {
         "vlagent-prod"
     }
 
@@ -49,7 +49,7 @@ impl Agent for Vlagent {
         let host = ctx.blackhole_addr.split(':').next().unwrap_or("127.0.0.1");
         let kubeconfig_path = ctx.bench_dir.join("vlagent-kubeconfig");
         let kubeconfig = format!(
-            r#"apiVersion: v1
+            r"apiVersion: v1
 kind: Config
 clusters:
   - cluster:
@@ -66,7 +66,7 @@ current-context: fake
 users:
   - name: fake
     user: {{}}
-"#
+"
         );
         std::fs::write(&kubeconfig_path, kubeconfig).map_err(|e| e.to_string())?;
         Ok(kubeconfig_path)

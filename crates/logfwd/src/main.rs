@@ -57,6 +57,7 @@ impl From<io::Error> for CliError {
 // ---------------------------------------------------------------------------
 
 fn use_color() -> bool {
+    // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
     env::var_os("NO_COLOR").is_none() && unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
 }
 
@@ -126,7 +127,7 @@ async fn main_inner() -> i32 {
     };
 
     match result {
-        Ok(_) => EXIT_OK,
+        Ok(()) => EXIT_OK,
         Err(e) => {
             eprintln!("{}error{}: {e}", red(), reset());
             e.exit_code()
@@ -235,7 +236,9 @@ async fn cmd_config(args: &[String]) -> Result<(), CliError> {
 }
 
 fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
-    let addr = args.get(2).map(|s| s.as_str()).unwrap_or("127.0.0.1:4318");
+    let addr = args
+        .get(2)
+        .map_or("127.0.0.1:4318", std::string::String::as_str);
     run_blackhole(addr).map_err(CliError::Runtime)
 }
 

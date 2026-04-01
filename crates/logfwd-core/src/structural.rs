@@ -54,7 +54,7 @@ pub fn compute_real_quotes(quote_bits: u64, bs_bits: u64, prev_odd_backslash: &m
 
     let last_is_bs = (bs_bits >> 63) & 1 == 1;
     let last_is_escaped = (escaped >> 63) & 1 == 1;
-    *prev_odd_backslash = if last_is_bs && !last_is_escaped { 1 } else { 0 };
+    *prev_odd_backslash = u64::from(last_is_bs && !last_is_escaped);
 
     quote_bits & !escaped
 }

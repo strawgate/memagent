@@ -1,7 +1,8 @@
 [package]
 name = "logfwd-io"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -23,3 +24,6 @@ xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

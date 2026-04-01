@@ -320,7 +320,7 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
                 for arg in &arg_list.args {
                     match arg {
                         sqlast::FunctionArg::Unnamed(sqlast::FunctionArgExpr::Expr(e)) => {
-                            collect_column_refs(e, cols)
+                            collect_column_refs(e, cols);
                         }
                         sqlast::FunctionArg::Named {
                             arg: sqlast::FunctionArgExpr::Expr(e),
@@ -409,7 +409,7 @@ impl ScalarUDFImpl for IntCastUdf {
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "int"
     }
 
@@ -466,7 +466,7 @@ impl ScalarUDFImpl for FloatCastUdf {
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "float"
     }
 

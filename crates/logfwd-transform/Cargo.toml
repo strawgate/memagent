@@ -1,7 +1,8 @@
 [package]
 name = "logfwd-transform"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -22,3 +23,6 @@ logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 [dev-dependencies]
 logfwd-arrow = { path = "../logfwd-arrow" }
 bytes = "1"
+
+[lints]
+workspace = true

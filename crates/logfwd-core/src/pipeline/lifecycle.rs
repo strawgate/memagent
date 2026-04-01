@@ -160,7 +160,7 @@ impl<C: Clone> PipelineMachine<Running, C> {
     /// a successful `AckReceipt`. Use this for backpressure (e.g. limit
     /// concurrent sends) but note that retrying batches are counted.
     pub fn in_flight_count(&self) -> usize {
-        self.in_flight.values().map(|m| m.len()).sum()
+        self.in_flight.values().map(BTreeMap::len).sum()
     }
 
     /// Committed checkpoint for a source, or `None` if no batch for this
@@ -216,8 +216,7 @@ fn record_ack_and_advance<C: Clone>(
             let has_lower = in_flight
                 .get(&source)
                 .and_then(|f| f.keys().next().copied())
-                .map(|min_id| min_id < lowest_id)
-                .unwrap_or(false);
+                .is_some_and(|min_id| min_id < lowest_id);
             if has_lower {
                 break;
             }
@@ -230,18 +229,10 @@ fn record_ack_and_advance<C: Clone>(
 
     // Clean up empty inner maps to avoid unbounded accumulation
     // with many ephemeral sources (short-lived file tails, etc.).
-    if in_flight
-        .get(&source)
-        .map(|m| m.is_empty())
-        .unwrap_or(false)
-    {
+    if in_flight.get(&source).is_some_and(BTreeMap::is_empty) {
         in_flight.remove(&source);
     }
-    if pending_acks
-        .get(&source)
-        .map(|m| m.is_empty())
-        .unwrap_or(false)
-    {
+    if pending_acks.get(&source).is_some_and(BTreeMap::is_empty) {
         pending_acks.remove(&source);
     }
 
@@ -269,8 +260,8 @@ impl<C: Clone> PipelineMachine<Draining, C> {
 
     /// Check if all in-flight batches have been acked.
     pub fn is_drained(&self) -> bool {
-        self.in_flight.values().all(|m| m.is_empty())
-            && self.pending_acks.values().all(|m| m.is_empty())
+        self.in_flight.values().all(BTreeMap::is_empty)
+            && self.pending_acks.values().all(BTreeMap::is_empty)
     }
 
     /// All batches drained — transition to Stopped.
@@ -292,7 +283,7 @@ impl<C: Clone> PipelineMachine<Draining, C> {
 
     /// Number of in-flight batches across all sources.
     pub fn in_flight_count(&self) -> usize {
-        self.in_flight.values().map(|m| m.len()).sum()
+        self.in_flight.values().map(BTreeMap::len).sum()
     }
 
     /// Committed checkpoint for a source, or `None` if never committed.

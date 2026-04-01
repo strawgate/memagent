@@ -62,14 +62,20 @@ Don't reopen a settled question without new evidence.
 
 ## Key Commands
 
+Always use `just` recipes instead of bare `cargo` for linting. CI runs
+`cargo clippy -- -D warnings` (all warnings are errors), so bare
+`cargo clippy` will miss failures that CI catches. The `just` recipes
+match CI exactly.
+
 ```bash
-just ci           # Full CI: lint + test
+just ci           # Full CI: lint + test — run this before pushing
 just test         # Run all tests
 just lint         # Format + clippy + TOML + deny
-just clippy       # Clippy only
+just clippy       # Clippy with -D warnings (same as CI)
 just fmt          # Format code
 just bench        # Criterion benchmarks
-cargo kani -p logfwd-core  # Run Kani proofs
+cargo kani -p logfwd-core  # Run Kani proofs (no just recipe)
+cargo test -p logfwd-core  # Fast single-crate iteration
 ```
 
 ## Getting Help

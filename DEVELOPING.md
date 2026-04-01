@@ -37,7 +37,7 @@ cd crates/logfwd-core && cargo +nightly fuzz run scanner -- -max_total_time=300
 cargo install sccache --locked
 ```
 
-After that, every `cargo build` / `cargo test` / `cargo clippy` will use the cache automatically via the project's `.cargo/config.toml`.
+After that, every `cargo build` / `cargo test` / `just clippy` will use the cache automatically via the project's `.cargo/config.toml`.
 
 To temporarily **disable** sccache (e.g. for debugging):
 
@@ -133,9 +133,9 @@ Compressed Arrow IPC is `StreamWriter` with `IpcWriteOptions::try_with_compressi
 
 The `_raw` column stores the full JSON line. Larger than all other columns combined. Default is `keep_raw: false`.
 
-### CI clippy catches things local clippy misses
+### Always use `just clippy`, never bare `cargo clippy`
 
-Conditional SIMD compilation means dead code warnings differ between aarch64 (macOS) and x86_64 (CI Linux). Always check CI.
+CI runs `cargo clippy -- -D warnings` (all warnings are errors). Bare `cargo clippy` only shows warnings, so code that looks clean locally fails in CI. The `just clippy` recipe matches CI exactly. Additionally, conditional SIMD compilation means warnings differ between aarch64 (macOS) and x86_64 (CI Linux).
 
 ### proptest finds bugs unit tests can't
 

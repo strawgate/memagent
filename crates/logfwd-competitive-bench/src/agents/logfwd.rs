@@ -7,11 +7,11 @@ use crate::runner::BenchContext;
 pub struct Logfwd;
 
 impl Agent for Logfwd {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "logfwd"
     }
 
-    fn binary_name(&self) -> &str {
+    fn binary_name(&self) -> &'static str {
         "logfwd"
     }
 

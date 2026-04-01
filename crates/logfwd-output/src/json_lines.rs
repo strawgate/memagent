@@ -17,7 +17,7 @@ pub struct JsonLinesSink {
     name: String,
     url: String,
     headers: Vec<(String, String)>,
-    pub batch_buf: Vec<u8>,
+    pub(crate) batch_buf: Vec<u8>,
     http_agent: ureq::Agent,
 }
 

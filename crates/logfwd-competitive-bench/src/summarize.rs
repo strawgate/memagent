@@ -273,7 +273,7 @@ fn print_markdown(groups: &[AggResult], scenarios: &[String]) {
         if sg.is_empty() {
             continue;
         }
-        let n = sg.first().map(|g| g.runs.len()).unwrap_or(1);
+        let n = sg.first().map_or(1, |g| g.runs.len());
         println!("### {scenario} ({n} iterations)\n");
         println!("| Agent | Mode | Avg Time | Stddev | Throughput | Peak RSS | Runs |");
         println!("|-------|------|--------:|---------:|-----------:|---------:|------|");
@@ -354,7 +354,7 @@ fn print_table(groups: &[AggResult], scenarios: &[String]) {
         if sg.is_empty() {
             continue;
         }
-        let n = sg.first().map(|g| g.runs.len()).unwrap_or(1);
+        let n = sg.first().map_or(1, |g| g.runs.len());
         println!("===========================================");
         println!("  {scenario} ({n} iterations)");
         println!("===========================================");
@@ -436,11 +436,10 @@ fn write_dual_gh_bench(groups: &[AggResult], path: &Path) {
         Err(e) => eprintln!("ERROR: write gh-bench: {e}"),
     }
 
-    let smaller_path = path.with_file_name(
-        path.file_stem()
-            .map(|s| format!("{}-efficiency.json", s.to_string_lossy()))
-            .unwrap_or_else(|| "gh-bench-efficiency.json".to_string()),
-    );
+    let smaller_path = path.with_file_name(path.file_stem().map_or_else(
+        || "gh-bench-efficiency.json".to_string(),
+        |s| format!("{}-efficiency.json", s.to_string_lossy()),
+    ));
     let json = serde_json::to_string_pretty(&smaller).expect("serialize efficiency gh-bench JSON");
     match std::fs::write(&smaller_path, &json) {
         Ok(()) => eprintln!(

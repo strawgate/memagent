@@ -369,7 +369,7 @@ impl DiagnosticsServer {
         let route = path.split('?').next().unwrap_or(&path);
 
         match route {
-            "/" => self.serve_dashboard(request),
+            "/" => Self::serve_dashboard(request),
             "/health" => self.serve_health(request),
             "/ready" => self.serve_ready(request),
             "/api/pipelines" => self.serve_pipelines(request),
@@ -391,10 +391,7 @@ impl DiagnosticsServer {
 
     // -- endpoint handlers --------------------------------------------------
 
-    fn serve_dashboard(
-        &self,
-        request: tiny_http::Request,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn serve_dashboard(request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let header =
             tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
                 .map_err(|()| io::Error::other("invalid HTTP header"))?;

@@ -19,9 +19,12 @@ pub fn generate_json_lines(path: &Path, count: usize, source_id: &str) {
     let mut data = String::with_capacity(count * 120);
     for i in 0..count {
         let level = if i % 2 == 0 { "INFO" } else { "ERROR" };
-        data.push_str(&format!(
+        use std::fmt::Write;
+        write!(
+            data,
             r#"{{"sequence_id":{i},"source_id":"{source_id}","level":"{level}","message":"test line {i}","generated_at":"2024-01-01T00:00:00Z"}}"#,
-        ));
+        )
+        .unwrap();
         data.push('\n');
     }
     std::fs::write(path, data.as_bytes()).expect("failed to write test data");

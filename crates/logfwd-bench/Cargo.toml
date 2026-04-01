@@ -1,7 +1,8 @@
 [package]
 name = "logfwd-bench"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -19,3 +20,6 @@ logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 [[bench]]
 name = "pipeline"
 harness = false
+
+[lints]
+workspace = true

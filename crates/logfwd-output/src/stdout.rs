@@ -30,6 +30,7 @@ impl StdoutSink {
     pub fn new(name: String, format: StdoutFormat) -> Self {
         let color = format == StdoutFormat::Console
             && std::env::var_os("NO_COLOR").is_none()
+            // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
             && unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 };
         StdoutSink {
             name,
@@ -114,7 +115,7 @@ impl StdoutSink {
                 if !col.is_null(row) {
                     let ts = str_value(col, row);
                     // Show just the time portion if it's a full ISO timestamp.
-                    let short = ts.find('T').map(|i| &ts[i + 1..]).unwrap_or(ts);
+                    let short = ts.find('T').map_or(ts, |i| &ts[i + 1..]);
                     if self.color {
                         self.buf.extend_from_slice(b"\x1b[2m");
                     }
@@ -175,11 +176,11 @@ impl StdoutSink {
                     continue;
                 }
 
-                if !has_extra {
+                if has_extra {
+                    self.buf.push(b' ');
+                } else {
                     self.buf.extend_from_slice(b"  ");
                     has_extra = true;
-                } else {
-                    self.buf.push(b' ');
                 }
 
                 if self.color {
