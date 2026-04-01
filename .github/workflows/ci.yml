@@ -21,16 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: dashboard/package-lock.json
-
-      - name: Build dashboard
-        run: cd dashboard && npm ci && npm run build
-
+      - uses: ./.github/actions/build-dashboard
       - uses: mozilla-actions/sccache-action@v0.0.7
 
       - uses: dtolnay/rust-toolchain@stable
@@ -78,18 +69,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: dashboard/package-lock.json
-
-      - name: Build dashboard
-        run: cd dashboard && npm ci && npm run build
-
+      - uses: ./.github/actions/build-dashboard
       - uses: mozilla-actions/sccache-action@v0.0.7
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -107,18 +88,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: dashboard/package-lock.json
-
-      - name: Build dashboard
-        run: cd dashboard && npm ci && npm run build
-
+      - uses: ./.github/actions/build-dashboard
       - uses: mozilla-actions/sccache-action@v0.0.7
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -134,16 +105,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: dashboard/package-lock.json
-
-      - name: Build dashboard
-        run: cd dashboard && npm ci && npm run build
-
+      - uses: ./.github/actions/build-dashboard
       - uses: mozilla-actions/sccache-action@v0.0.7
 
       - uses: dtolnay/rust-toolchain@stable
@@ -171,18 +133,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: dashboard/package-lock.json
-
-      - name: Build dashboard
-        run: cd dashboard && npm ci && npm run build
-
+      - uses: ./.github/actions/build-dashboard
       - uses: mozilla-actions/sccache-action@v0.0.7
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2

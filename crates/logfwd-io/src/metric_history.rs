@@ -173,7 +173,8 @@ impl MetricHistory {
                 }
                 out.push('[');
                 // Send time as seconds since start (dashboard converts)
-                out.push_str(&format!("{:.1},{:.4}", p.t, p.v));
+                use std::fmt::Write;
+                let _ = write!(out, "{:.1},{:.4}", p.t, p.v);
                 out.push(']');
             }
             out.push(']');
