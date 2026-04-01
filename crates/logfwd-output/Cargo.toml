@@ -9,6 +9,8 @@ publish = false
 logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 arrow = { workspace = true }
+itoa = "1"
+ryu = "1"
 libc = "0.2"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }

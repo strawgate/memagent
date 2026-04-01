@@ -2139,10 +2139,12 @@ name = "logfwd-output"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "itoa",
  "libc",
  "logfwd-config",
  "logfwd-core",
  "logfwd-io",
+ "ryu",
  "serde_json",
  "ureq",
 ]

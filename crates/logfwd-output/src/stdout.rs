@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 
 use arrow::array::{Array, AsArray};
+use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
 use super::{BatchMetadata, OutputSink, build_col_infos, str_value, write_row_json};
@@ -162,19 +163,26 @@ impl StdoutSink {
             // Remaining fields as key=value pairs (dim).
             let mut has_extra = false;
             for col in &cols {
-                // Skip the well-known columns and _raw.
-                if Some(col.idx) == ts_idx
-                    || Some(col.idx) == level_idx
-                    || Some(col.idx) == msg_idx
-                    || col.field_name == "_raw"
+                // Skip the well-known columns and _raw. Check ALL variant
+                // indices — find_col may have matched a different variant
+                // (e.g. message_str vs message_int).
+                if col.field_name == "_raw"
+                    || col.variants.iter().any(|(idx, _)| {
+                        Some(*idx) == ts_idx || Some(*idx) == level_idx || Some(*idx) == msg_idx
+                    })
                 {
                     continue;
                 }
 
-                let arr = batch.column(col.idx);
-                if arr.is_null(row) {
+                // Find first non-null variant for this field in this row.
+                let Some((arr_idx, _)) = col
+                    .variants
+                    .iter()
+                    .find(|(idx, _)| !batch.column(*idx).is_null(row))
+                else {
                     continue;
-                }
+                };
+                let arr = batch.column(*arr_idx);
 
                 if has_extra {
                     self.buf.push(b' ');
@@ -189,14 +197,19 @@ impl StdoutSink {
                 self.buf.extend_from_slice(col.field_name.as_bytes());
                 self.buf.push(b'=');
 
-                match col.type_suffix.as_str() {
-                    "int" => {
-                        let arr = arr.as_primitive::<arrow::datatypes::Int64Type>();
-                        write!(self.buf, "{}", arr.value(row))?;
+                // Dispatch on Arrow DataType, not column name suffix.
+                match arr.data_type() {
+                    DataType::Int64 => {
+                        let v = arr.as_primitive::<arrow::datatypes::Int64Type>().value(row);
+                        self.buf
+                            .extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
                     }
-                    "float" => {
-                        let arr = arr.as_primitive::<arrow::datatypes::Float64Type>();
-                        write!(self.buf, "{}", arr.value(row))?;
+                    DataType::Float64 => {
+                        let v = arr
+                            .as_primitive::<arrow::datatypes::Float64Type>()
+                            .value(row);
+                        self.buf
+                            .extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
                     }
                     _ => {
                         self.buf.extend_from_slice(str_value(arr, row).as_bytes());
