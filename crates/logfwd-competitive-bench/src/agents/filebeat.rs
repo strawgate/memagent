@@ -11,11 +11,11 @@ const DOCKER_IMAGE: &str = "docker.elastic.co/beats/filebeat";
 pub struct Filebeat;
 
 impl Agent for Filebeat {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "filebeat"
     }
 
-    fn binary_name(&self) -> &str {
+    fn binary_name(&self) -> &'static str {
         "filebeat"
     }
 

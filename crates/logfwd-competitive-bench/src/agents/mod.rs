@@ -134,7 +134,7 @@ pub trait Agent {
         // Default: same as binary command args.
         let cmd = self.command(Path::new("/unused"), config, ctx);
         cmd.get_args()
-            .map(|a| a.to_string_lossy().to_string())
+            .map(|a| a.to_string_lossy().into_owned())
             .collect()
     }
 

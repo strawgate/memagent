@@ -10,11 +10,11 @@ const DOCKER_IMAGE: &str = "timberio/vector";
 pub struct Vector;
 
 impl Agent for Vector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "vector"
     }
 
-    fn binary_name(&self) -> &str {
+    fn binary_name(&self) -> &'static str {
         "vector"
     }
 

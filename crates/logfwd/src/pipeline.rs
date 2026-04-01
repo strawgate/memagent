@@ -96,6 +96,12 @@ impl Pipeline {
                                 })?;
                             Arc::new(mmdb)
                         }
+                        _ => {
+                            return Err(format!(
+                                "unsupported geo database format: {:?}",
+                                geo_cfg.format
+                            ));
+                        }
                     };
                     if geo_cfg.refresh_interval.is_some() {
                         eprintln!(
@@ -134,9 +140,9 @@ impl Pipeline {
                 }
                 // Try to canonicalize for better error reporting/stability, but don't fail if it doesn't exist yet (glob)
                 if let Ok(abs_path) = std::fs::canonicalize(&path) {
-                    resolved_cfg.path = Some(abs_path.to_string_lossy().to_string());
+                    resolved_cfg.path = Some(abs_path.to_string_lossy().into_owned());
                 } else {
-                    resolved_cfg.path = Some(path.to_string_lossy().to_string());
+                    resolved_cfg.path = Some(path.to_string_lossy().into_owned());
                 }
             }
 
@@ -246,7 +252,7 @@ impl Pipeline {
 
         loop {
             tokio::select! {
-                _ = shutdown.cancelled() => {
+                () = shutdown.cancelled() => {
                     break;
                 }
 
@@ -485,6 +491,7 @@ fn input_poll_loop(
                             agg.reset();
                         }
                     }
+                    _ => {}
                 }
             }
             // Set buffered_since after processing if buffer was empty before.
@@ -496,8 +503,7 @@ fn input_poll_loop(
         // Send when buffer reaches target size OR timeout since first
         // data in this batch has elapsed.
         let timeout_elapsed = buffered_since
-            .map(|t| t.elapsed() >= batch_timeout)
-            .unwrap_or(false);
+            .is_some_and(|t| t.elapsed() >= batch_timeout);
         let should_send =
             input.buf.len() >= batch_target_bytes || (!input.buf.is_empty() && timeout_elapsed);
         if should_send {
@@ -541,8 +547,7 @@ fn extract_cri_messages(
     let mut pos = 0;
     while pos < input.len() {
         let eol = memchr::memchr(b'\n', &input[pos..])
-            .map(|o| pos + o)
-            .unwrap_or(input.len());
+            .map_or(input.len(), |o| pos + o);
         let line = &input[pos..eol];
         if let Some(cri) = parse_cri_line(line) {
             match aggregator.feed(cri.message, cri.is_full) {

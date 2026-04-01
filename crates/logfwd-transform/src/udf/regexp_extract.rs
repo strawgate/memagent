@@ -58,7 +58,7 @@ impl ScalarUDFImpl for RegexpExtractUdf {
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "regexp_extract"
     }
 

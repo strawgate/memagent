@@ -95,7 +95,7 @@ fn main() {
     // Resolve which agents to run.
     let all = all_agents();
     let agents: Vec<&dyn Agent> = if args.agents.is_empty() {
-        all.iter().map(|a| a.as_ref()).collect()
+        all.iter().map(std::convert::AsRef::as_ref).collect()
     } else {
         let mut selected = Vec::new();
         for name in &args.agents {
@@ -983,7 +983,7 @@ impl Args {
                 }
                 "--agents" => {
                     i += 1;
-                    result.agents = args[i].split(',').map(|s| s.to_string()).collect();
+                    result.agents = args[i].split(',').map(std::string::ToString::to_string).collect();
                 }
                 "--scenarios" => {
                     i += 1;
@@ -996,7 +996,7 @@ impl Args {
                                     "Available: {}",
                                     Scenario::all()
                                         .iter()
-                                        .map(|s| s.name())
+                                        .map(agents::Scenario::name)
                                         .collect::<Vec<_>>()
                                         .join(", ")
                                 );

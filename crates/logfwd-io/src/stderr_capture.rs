@@ -11,7 +11,6 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 const MAX_LINES: usize = 1000;
 const IDLE_TIMEOUT_SECS: u64 = 60;
@@ -76,6 +75,12 @@ pub struct StderrCapture {
     state: Arc<CaptureState>,
 }
 
+impl Default for StderrCapture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StderrCapture {
     pub fn new() -> Self {
         Self {
@@ -99,8 +104,6 @@ impl StderrCapture {
 
     #[cfg(unix)]
     fn start(&self) {
-        use std::sync::atomic::AtomicI32;
-
         // Only one thread should set this up.
         if self
             .state
@@ -184,14 +187,14 @@ fn reader_loop(read_fd: i32, orig_fd: i32, state: &CaptureState) {
             return;
         }
 
-        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
 
         if n > 0 {
             let bytes = &buf[..n as usize];
 
             // Tee to original stderr so terminal still works.
             unsafe {
-                libc::write(orig_fd, bytes.as_ptr() as *const libc::c_void, n as usize);
+                libc::write(orig_fd, bytes.as_ptr().cast::<libc::c_void>(), n as usize);
             }
 
             // Split into lines and push to buffer.

@@ -172,7 +172,7 @@ pub fn run_agent_docker(
             .next()
             .unwrap_or(host_ip);
         let rewritten = content
-            .replace(&ctx.bench_dir.to_string_lossy().to_string(), "/bench")
+            .replace(&ctx.bench_dir.to_string_lossy().into_owned(), "/bench")
             .replace(&ctx.blackhole_addr, &ctx.docker_blackhole_addr)
             .replace(host_ip, docker_ip);
         let _ = std::fs::write(&config_path, rewritten);
@@ -227,7 +227,7 @@ pub fn run_agent_docker(
     cmd.arg(image);
 
     // Agent-specific args — rewrite paths and addresses for container context.
-    let bench_dir_str = ctx.bench_dir.to_string_lossy().to_string();
+    let bench_dir_str = ctx.bench_dir.to_string_lossy().into_owned();
     let args = agent.docker_args(&config_path, ctx);
     for arg in &args {
         let rewritten = arg

@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/logfwd-config",
     "crates/logfwd-core",
@@ -13,6 +13,10 @@ members = [
     "crates/logfwd-test-utils",
 ]
 
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+
 [workspace.dependencies]
 arrow = { version = "54", default-features = false, features = ["ipc_compression"] }
 opentelemetry = "0.31"
@@ -20,10 +24,46 @@ opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31", features = ["http-proto", "reqwest-client"] }
 serde = { version = "1", features = ["derive"] }
 
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Selectively allow noisy pedantic lints
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+items_after_statements = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+inline_always = "allow"
+needless_pass_by_value = "allow"
+return_self_not_must_use = "allow"
+struct_excessive_bools = "allow"
+wildcard_imports = "allow"
+unnested_or_patterns = "allow"
+unreadable_literal = "allow"
+single_match_else = "allow"
+manual_let_else = "allow"
+uninlined_format_args = "allow"
+too_many_lines = "allow"
+match_same_arms = "allow"
+similar_names = "allow"
+trivially_copy_pass_by_ref = "allow"
+# Opt-in restriction lints
+unwrap_used = "warn"
+clone_on_ref_ptr = "warn"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+overflow-checks = true
 debug = true  # needed for flamegraphs and dhat to show source locations
 
 [profile.test]

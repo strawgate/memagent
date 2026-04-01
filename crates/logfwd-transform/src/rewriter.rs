@@ -306,14 +306,14 @@ fn rewrite_expr(expr: SqlExpr, fields: &FieldTypeMap) -> SqlExpr {
 
         // Rule 4: `int(x)` call → `COALESCE(x_int, TRY_CAST(x_str AS BIGINT))`
         SqlExpr::Function(ref func)
-            if func_name_is(func, "int")
-                && func_single_bare_arg(func)
-                    .and_then(|n| fields.get(n))
-                    .is_some() =>
+            if func_name_is(func, "int") =>
         {
-            let name = func_single_bare_arg(func).unwrap().to_string();
-            let ft = fields.get(&name).unwrap();
-            build_int_coalesce(&name, ft)
+            if let Some(name) = func_single_bare_arg(func) {
+                if let Some(ft) = fields.get(name) {
+                    return build_int_coalesce(name, ft);
+                }
+            }
+            expr
         }
 
         // Parenthesized expression: recurse.

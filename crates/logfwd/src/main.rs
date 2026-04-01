@@ -27,6 +27,7 @@ const EXIT_RUNTIME: i32 = 2;
 // ---------------------------------------------------------------------------
 
 fn use_color() -> bool {
+    // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
     env::var_os("NO_COLOR").is_none() && unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
 }
 
@@ -203,7 +204,7 @@ async fn cmd_config(args: &[String]) -> io::Result<()> {
 }
 
 fn cmd_blackhole(args: &[String]) -> io::Result<()> {
-    let addr = args.get(2).map(|s| s.as_str()).unwrap_or("127.0.0.1:4318");
+    let addr = args.get(2).map_or("127.0.0.1:4318", std::string::String::as_str);
     run_blackhole(addr)
 }
 

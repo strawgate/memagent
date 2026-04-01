@@ -1,9 +1,13 @@
 [package]
 name = "logfwd-config"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
 serde = { workspace = true }
 serde_yaml = "0.9"
+
+[lints]
+workspace = true
