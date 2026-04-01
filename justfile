@@ -25,10 +25,10 @@ test:
 nextest:
     cargo nextest run
 
-# Lint everything: format, clippy, TOML, deny
+# Lint everything: format, clippy, TOML, deny (matches CI Lint job)
 lint: fmt-check clippy toml-check deny
 
-# Full CI suite: lint + test
+# Full CI suite: lint + test (run before pushing)
 ci: lint test
 
 # Check TOML formatting (Cargo.toml, etc.)
@@ -42,6 +42,14 @@ toml-fmt:
 # Audit dependencies for vulnerabilities, licenses, and duplicates
 deny:
     cargo deny check
+
+# Build the diagnostics dashboard (Preact + TypeScript → single HTML file)
+# Requires Node.js. Output: crates/logfwd-io/src/dashboard.html
+# Must run before cargo build/test/clippy (CI does this automatically).
+dashboard:
+    cd dashboard && npm install --prefer-offline && npm run build
+
+
 
 # Build release binary
 build:

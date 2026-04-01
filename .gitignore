@@ -6,3 +6,5 @@ build
 .worktrees/
 book/book/
 .DS_Store
+crates/logfwd-io/src/dashboard-dist/
+.playwright-mcp/

@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
-logfwd-output = { path = "../logfwd-output" }
+logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 opentelemetry = { workspace = true }
 proptest = "1"
 tokio-util = "0.7"

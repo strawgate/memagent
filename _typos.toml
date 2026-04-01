@@ -2,3 +2,11 @@
 # Intentional partial strings in test data and example error messages.
 hel = "hel"
 leve = "leve"
+# CSS class prefix for pipeline nodes in the dashboard.
+pn = "pn"
+
+[files]
+extend-exclude = [
+    # Built/minified dashboard — not human-authored, skip spell check.
+    "crates/logfwd-io/src/dashboard.html",
+]

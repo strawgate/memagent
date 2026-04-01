@@ -2051,6 +2051,7 @@ mod extract_cri_tests {
 
 #[cfg(test)]
 mod remainder_tests {
+    use super::*;
     /// Simulate splitting input at every possible byte position
     /// and verify we get the same output regardless of split point.
     #[test]

@@ -4,4 +4,6 @@ pub mod diagnostics;
 pub mod enrichment;
 pub mod filter_hints;
 pub mod input;
+pub mod metric_history;
+pub mod stderr_capture;
 pub mod tail;

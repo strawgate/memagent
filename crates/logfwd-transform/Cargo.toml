@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-logfwd-core = { path = "../logfwd-core" }
+logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 arrow = { workspace = true }
 datafusion = { version = "45", default-features = false, features = [
     "string_expressions",
@@ -21,7 +21,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 
 [dev-dependencies]
-logfwd-arrow = { path = "../logfwd-arrow" }
+logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 bytes = "1"
 
 [lints]

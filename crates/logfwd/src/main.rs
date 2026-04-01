@@ -198,7 +198,11 @@ async fn cmd_config(args: &[String]) -> Result<(), CliError> {
         }
     }
 
-    let config = match logfwd_config::Config::load(config_path) {
+    let config_yaml = std::fs::read_to_string(config_path).unwrap_or_else(|e| {
+        eprintln!("{}error{}: cannot read {config_path}: {e}", red(), reset());
+        std::process::exit(EXIT_CONFIG);
+    });
+    let config = match logfwd_config::Config::load_str(&config_yaml) {
         Ok(c) => c,
         Err(e) => {
             return Err(CliError::Config(e.to_string()));
@@ -232,7 +236,7 @@ async fn cmd_config(args: &[String]) -> Result<(), CliError> {
         );
     }
 
-    run_pipelines(config, base_path).await
+    run_pipelines(config, base_path, config_path, &config_yaml).await
 }
 
 fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
@@ -308,6 +312,8 @@ fn validate_pipelines(
 async fn run_pipelines(
     config: logfwd_config::Config,
     base_path: Option<&std::path::Path>,
+    config_path: &str,
+    config_yaml: &str,
 ) -> Result<(), CliError> {
     use logfwd::pipeline::Pipeline;
     use logfwd_io::diagnostics::DiagnosticsServer;
@@ -384,6 +390,7 @@ async fn run_pipelines(
 
     let _diag_handle = if let Some(ref addr) = config.server.diagnostics {
         let mut server = DiagnosticsServer::new(addr);
+        server.set_config(config_path, config_yaml);
         for p in &pipelines {
             server.add_pipeline(Arc::clone(p.metrics()));
         }

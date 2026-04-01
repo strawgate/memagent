@@ -1,0 +1,23 @@
+{
+  "name": "dashboard",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build && cp ../crates/logfwd-io/src/dashboard-dist/index.html ../crates/logfwd-io/src/dashboard.html",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@preact/signals": "^2.9.0",
+    "preact": "^10.29.0",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.4",
+    "@types/node": "^24.12.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.0.1",
+    "vite-plugin-singlefile": "^2.3.2"
+  }
+}

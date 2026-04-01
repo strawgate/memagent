@@ -6,8 +6,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-logfwd-config = { path = "../logfwd-config" }
-logfwd-core = { path = "../logfwd-core" }
+logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
+logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 arrow = { workspace = true }
 libc = "0.2"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
