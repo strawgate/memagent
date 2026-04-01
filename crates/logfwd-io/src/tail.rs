@@ -548,6 +548,15 @@ impl FileTailer {
     pub fn num_files(&self) -> usize {
         self.files.len()
     }
+
+    /// Return all currently watched files with their fingerprints and byte offsets.
+    /// Used by checkpoint system to snapshot file positions.
+    pub fn file_checkpoints(&self) -> Vec<(u64, PathBuf, u64)> {
+        self.files
+            .iter()
+            .map(|(path, tailed)| (tailed.identity.fingerprint, path.clone(), tailed.offset))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -1214,5 +1223,37 @@ mod tests {
             0,
             "deleted file should be removed from the files map"
         );
+    }
+
+    #[test]
+    fn test_file_checkpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("checkpoint.log");
+
+        let mut f = File::create(&log_path).unwrap();
+        writeln!(f, "hello checkpoint").unwrap();
+        f.flush().unwrap();
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+
+        // At least one Data event should have been produced.
+        let has_data = events.iter().any(|e| matches!(e, TailEvent::Data { .. }));
+        assert!(has_data, "expected Data event after writing to file");
+
+        let checkpoints = tailer.file_checkpoints();
+        assert_eq!(checkpoints.len(), 1, "one file should be checkpointed");
+
+        let (fingerprint, path, offset) = &checkpoints[0];
+        assert_eq!(path, &log_path, "checkpoint path must match the tailed file");
+        assert!(*fingerprint != 0, "fingerprint should be non-zero for a non-empty file");
+        assert!(*offset > 0, "offset should be > 0 after reading data");
     }
 }

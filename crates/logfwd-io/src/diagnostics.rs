@@ -1258,7 +1258,7 @@ mod tests {
         let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
 
-        let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
+        let server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
         // Don't add any pipelines.
         let _handle = server.start().expect("server bind failed");
 

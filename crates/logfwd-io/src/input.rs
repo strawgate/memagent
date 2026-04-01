@@ -49,6 +49,11 @@ impl FileInput {
         let tailer = FileTailer::new_with_globs(patterns, config)?;
         Ok(FileInput { name, tailer })
     }
+
+    /// Snapshot all watched file positions for checkpoint tracking.
+    pub fn file_checkpoints(&self) -> Vec<(u64, PathBuf, u64)> {
+        self.tailer.file_checkpoints()
+    }
 }
 
 impl InputSource for FileInput {
