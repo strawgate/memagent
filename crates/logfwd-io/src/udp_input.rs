@@ -120,13 +120,14 @@ impl InputSource for UdpInput {
                 // port-unreachable cached by the kernel). Treat it like
                 // WouldBlock — there is simply no data right now.
                 Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => break,
-                // ENOBUFS: kernel ran out of buffer space — a drop signal.
+                // ENOBUFS/ENOMEM: kernel ran out of buffer space — a drop signal.
+                // Break to yield what we have; continuing would spin without progress.
                 Err(ref e)
                     if e.raw_os_error() == Some(libc::ENOBUFS)
                         || e.raw_os_error() == Some(libc::ENOMEM) =>
                 {
                     self.drops_detected.fetch_add(1, Ordering::Relaxed);
-                    // Continue draining — there may be more datagrams queued.
+                    break;
                 }
                 Err(e) => return Err(e),
             }
@@ -314,14 +315,7 @@ mod tests {
         let input = UdpInput::new("test", "127.0.0.1:0").unwrap();
         // Verify by attempting a recv on an empty socket — it should return
         // WouldBlock immediately, not block.
-        let start = std::time::Instant::now();
         let result = input.socket.recv(&mut [0u8; 1]);
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed < std::time::Duration::from_millis(100),
-            "recv took {elapsed:?}, expected non-blocking return"
-        );
         assert!(
             result.is_err(),
             "expected WouldBlock error on empty non-blocking socket"

@@ -122,12 +122,7 @@ impl InputSource for TcpInput {
         let mut alive = vec![true; self.clients.len()];
 
         for (i, client) in self.clients.iter_mut().enumerate() {
-            // Disconnect clients that have been idle too long.
-            if now.duration_since(client.last_data) > self.idle_timeout {
-                alive[i] = false;
-                continue;
-            }
-
+            let mut got_data = false;
             loop {
                 match client.stream.read(&mut self.buf) {
                     Ok(0) => {
@@ -138,19 +133,28 @@ impl InputSource for TcpInput {
                     Ok(n) => {
                         let chunk = &self.buf[..n];
                         client.last_data = now;
+                        got_data = true;
 
-                        // Track bytes since last newline for max-line-length
-                        // enforcement. If the sender exceeds the limit without
-                        // a newline we disconnect them immediately — and do NOT
-                        // append the offending chunk.
-                        if let Some(last_nl) = memchr::memrchr(b'\n', chunk) {
-                            client.bytes_since_newline = n - last_nl - 1;
+                        // Track bytes since last newline for max-line-length.
+                        // Check BEFORE resetting at newline to catch lines that
+                        // were already over the limit when the newline arrives.
+                        if let Some(first_nl) = memchr::memchr(b'\n', chunk) {
+                            // Line length = accumulated + bytes up to first \n.
+                            let line_len = client.bytes_since_newline + first_nl;
+                            if line_len > MAX_LINE_LENGTH {
+                                alive[i] = false;
+                                break;
+                            }
+                            // Reset to bytes after the LAST newline in this chunk.
+                            if let Some(last_nl) = memchr::memrchr(b'\n', chunk) {
+                                client.bytes_since_newline = n - last_nl - 1;
+                            }
                         } else {
                             client.bytes_since_newline += n;
-                        }
-                        if client.bytes_since_newline > MAX_LINE_LENGTH {
-                            alive[i] = false;
-                            break;
+                            if client.bytes_since_newline > MAX_LINE_LENGTH {
+                                alive[i] = false;
+                                break;
+                            }
                         }
                         all_data.extend_from_slice(chunk);
                     }
@@ -166,6 +170,10 @@ impl InputSource for TcpInput {
                         break;
                     }
                 }
+            }
+            // Check idle AFTER reading — data may have arrived since last poll.
+            if !got_data && alive[i] && now.duration_since(client.last_data) > self.idle_timeout {
+                alive[i] = false;
             }
         }
 

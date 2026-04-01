@@ -109,14 +109,14 @@ fn tcp_multiple_lines() {
 
     let data = poll_until(&mut input, Duration::from_secs(5), |d| {
         let t = String::from_utf8_lossy(d);
-        (0..100).all(|i| t.contains(&format!("\"seq\":{i}")))
+        (0..100).all(|i| t.contains(&format!("\"seq\":{i}}}")))
     });
     let text = String::from_utf8_lossy(&data);
 
     // Verify all 100 lines arrived.
     for i in 0..100 {
         assert!(
-            text.contains(&format!("\"seq\":{i}")),
+            text.contains(&format!("\"seq\":{i}}}")),
             "missing seq {i} in: {text}"
         );
     }
@@ -302,7 +302,7 @@ fn udp_multiple_datagrams() {
     let data = poll_until(&mut input, Duration::from_secs(5), |d| {
         let t = String::from_utf8_lossy(d);
         let received = (0..100)
-            .filter(|i| t.contains(&format!("\"seq\":{i}")))
+            .filter(|i| t.contains(&format!("\"seq\":{i}}}")))
             .count();
         received >= 90
     });
@@ -311,7 +311,7 @@ fn udp_multiple_datagrams() {
     // UDP can drop packets, but on localhost most should arrive.
     let mut received = 0;
     for i in 0..100 {
-        if text.contains(&format!("\"seq\":{i}")) {
+        if text.contains(&format!("\"seq\":{i}}}")) {
             received += 1;
         }
     }
