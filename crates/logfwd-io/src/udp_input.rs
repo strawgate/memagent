@@ -4,10 +4,16 @@
 use std::io;
 use std::net::UdpSocket;
 
+use socket2::{Domain, Protocol, Socket, Type};
+
 use crate::input::{InputEvent, InputSource};
 
 /// Maximum UDP payload: 65535 (IP max) - 20 (IP header) - 8 (UDP header).
 const MAX_UDP_PAYLOAD: usize = 65507;
+
+/// Desired kernel receive buffer size (8 MiB). Set best-effort — the OS may
+/// cap it lower depending on `sysctl net.core.rmem_max`.
+const RECV_BUF_SIZE: usize = 8 * 1024 * 1024;
 
 /// UDP input that listens for datagrams. Each datagram is treated as one
 /// or more newline-delimited log lines.
@@ -20,14 +26,30 @@ pub struct UdpInput {
 impl UdpInput {
     /// Bind to `addr` (e.g. "0.0.0.0:514" for syslog).
     pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
-        let socket = UdpSocket::bind(addr)?;
-        // Non-blocking so poll() returns immediately when no data.
-        socket.set_nonblocking(true)?;
+        // Use socket2 to create the socket so we can tune SO_RCVBUF *before*
+        // any datagrams arrive.
+        let sock2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        // Tune kernel receive buffer to reduce packet loss under load.
+        let _ = sock2.set_recv_buffer_size(RECV_BUF_SIZE); // best-effort
+        sock2.set_nonblocking(true)?;
+        sock2.bind(
+            &addr
+                .parse::<std::net::SocketAddr>()
+                .map_err(io::Error::other)?
+                .into(),
+        )?;
+        let socket: UdpSocket = sock2.into();
+
         Ok(Self {
             name: name.into(),
             socket,
             buf: vec![0u8; MAX_UDP_PAYLOAD],
         })
+    }
+
+    /// Returns the local address this socket is bound to.
+    pub fn local_addr(&self) -> io::Result<std::net::SocketAddr> {
+        self.socket.local_addr()
     }
 }
 

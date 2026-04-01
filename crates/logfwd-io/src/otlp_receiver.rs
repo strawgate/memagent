@@ -27,6 +27,8 @@ const CHANNEL_BOUND: usize = 4096;
 pub struct OtlpReceiverInput {
     name: String,
     rx: mpsc::Receiver<Vec<u8>>,
+    /// The address the HTTP server is bound to.
+    addr: std::net::SocketAddr,
     /// Keep the server thread handle alive.
     _handle: std::thread::JoinHandle<()>,
 }
@@ -37,6 +39,13 @@ impl OtlpReceiverInput {
     pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
         let server = tiny_http::Server::http(addr)
             .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
+
+        let bound_addr = match server.server_addr() {
+            tiny_http::ListenAddr::IP(a) => a,
+            tiny_http::ListenAddr::Unix(_) => {
+                return Err(io::Error::other("OTLP receiver: unexpected listen addr"));
+            }
+        };
 
         let (tx, rx) = mpsc::sync_channel(CHANNEL_BOUND);
 
@@ -86,7 +95,7 @@ impl OtlpReceiverInput {
                             );
                             continue;
                         }
-                        _ => {}
+                        Ok(_) => {}
                     }
 
                     // Determine content type — accept protobuf and JSON.
@@ -136,8 +145,14 @@ impl OtlpReceiverInput {
         Ok(Self {
             name: name.into(),
             rx,
+            addr: bound_addr,
             _handle: handle,
         })
+    }
+
+    /// Returns the local address the HTTP server is bound to.
+    pub fn local_addr(&self) -> std::net::SocketAddr {
+        self.addr
     }
 }
 
