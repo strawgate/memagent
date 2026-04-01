@@ -78,7 +78,7 @@ Scaling is linear at ~28µs per character. Adding new format support
 (CSV, TSV, syslog) is nearly free — just add a comparison instruction.
 
 Portable SIMD via the `wide` crate lives in logfwd-core. The scalar
-`find_structural_chars_scalar` is the Kani-provable specification.
+`find$structural_chars_scalar` is the Kani-provable specification.
 proptest verifies SIMD output matches scalar for random inputs.
 
 ## Arrow-native ecosystem

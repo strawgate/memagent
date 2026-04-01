@@ -34,6 +34,8 @@ impl AggResult {
     }
 
     fn avg_lines_done(&self) -> u64 {
+        // Filter on elapsed_ms > 0 (not lines_done > 0) to stay consistent
+        // with avg_elapsed_ms() -- both aggregates use the same subset of runs.
         let valid: Vec<u64> = self
             .runs
             .iter()
@@ -61,48 +63,6 @@ impl AggResult {
             .filter(|r| r.elapsed_ms > 0)
             .map(|r| r.lines_done as f64 / (r.elapsed_ms as f64 / 1000.0))
             .collect()
-    }
-
-    fn avg_max_rss(&self) -> u64 {
-        let valid: Vec<u64> = self
-            .runs
-            .iter()
-            .map(|r| r.samples.iter().map(|s| s.rss_bytes).max().unwrap_or(0))
-            .filter(|&v| v > 0)
-            .collect();
-        if valid.is_empty() {
-            return 0;
-        }
-        valid.iter().sum::<u64>() / valid.len() as u64
-    }
-
-    fn avg_max_cpu(&self) -> f64 {
-        let valid: Vec<f64> = self
-            .runs
-            .iter()
-            .map(|r| {
-                if r.samples.len() < 2 {
-                    return 0.0;
-                }
-                let mut max_pct = 0.0;
-                for i in 1..r.samples.len() {
-                    let prev = &r.samples[i - 1];
-                    let curr = &r.samples[i];
-                    let diff_ms = (curr.cpu_user_ms + curr.cpu_sys_ms)
-                        .saturating_sub(prev.cpu_user_ms + prev.cpu_sys_ms);
-                    let pct = diff_ms as f64 / 10.0;
-                    if pct > max_pct {
-                        max_pct = pct;
-                    }
-                }
-                max_pct
-            })
-            .filter(|&v| v > 0.0)
-            .collect();
-        if valid.is_empty() {
-            return 0.0;
-        }
-        valid.iter().sum::<f64>() / valid.len() as f64
     }
 
     fn stddev_elapsed_ms(&self) -> f64 {
@@ -215,21 +175,10 @@ fn fmt_rate(lines: u64, ms: u64) -> String {
     }
 }
 
-fn fmt_bytes(bytes: u64) -> String {
-    if bytes == 0 {
-        return "-".to_string();
-    }
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
+/// Aggregate JSONL results from matrix benchmark cells and produce reports.
+///
+/// Reads `.jsonl` files from `results_dir`, groups by agent/scenario/mode,
+/// and outputs markdown summary (stdout), gh-bench JSON, and dashboard JSON.
 pub fn run(
     results_dir: &Path,
     markdown: bool,
@@ -275,22 +224,20 @@ fn print_markdown(groups: &[AggResult], scenarios: &[String]) {
         }
         let n = sg.first().map(|g| g.runs.len()).unwrap_or(1);
         println!("### {scenario} ({n} iterations)\n");
-        println!("| Agent | Mode | Avg Time | Stddev | Throughput | Peak RSS | Runs |");
-        println!("|-------|------|--------:|---------:|-----------:|---------:|------|");
+        println!("| Agent | Mode | Avg Time | Stddev | Throughput | Runs |");
+        println!("|-------|------|--------:|---------:|-----------:|------|");
         for g in &sg {
             let avg_ms = g.avg_elapsed_ms();
-            let rss = fmt_bytes(g.avg_max_rss());
             if avg_ms == 0 {
                 println!(
-                    "| {} | {} | FAILED | - | - | {} | {} |",
+                    "| {} | {} | FAILED | - | - | {} |",
                     g.name,
                     g.mode,
-                    rss,
                     g.individual_elapsed()
                 );
             } else if g.any_timed_out() {
                 println!(
-                    "| {} | {} | **TIMEOUT** ({}ms) | {:.0}ms | {} | {} | {} |",
+                    "| {} | {} | **TIMEOUT** ({}ms) | {:.0}ms | {} | {} |",
                     g.name,
                     g.mode,
                     avg_ms,
@@ -300,19 +247,17 @@ fn print_markdown(groups: &[AggResult], scenarios: &[String]) {
                     } else {
                         fmt_rate(g.avg_lines_done(), avg_ms)
                     },
-                    rss,
                     g.individual_elapsed(),
                 );
             } else {
                 let rate = fmt_rate(g.avg_lines_done(), avg_ms);
                 println!(
-                    "| {} | {} | {}ms | {:.0}ms | {} | {} | {} |",
+                    "| {} | {} | {}ms | {:.0}ms | {} | {} |",
                     g.name,
                     g.mode,
                     avg_ms,
                     g.stddev_elapsed_ms(),
                     rate,
-                    rss,
                     g.individual_elapsed(),
                 );
             }
@@ -359,27 +304,25 @@ fn print_table(groups: &[AggResult], scenarios: &[String]) {
         println!("  {scenario} ({n} iterations)");
         println!("===========================================");
         println!(
-            "  {:<16} {:<8} {:>10} {:>10} {:>20} {:>12}",
-            "Agent", "Mode", "Avg Time", "Stddev", "Throughput", "Peak RSS"
+            "  {:<16} {:<8} {:>10} {:>10} {:>20}",
+            "Agent", "Mode", "Avg Time", "Stddev", "Throughput"
         );
         for g in &sg {
             let avg_ms = g.avg_elapsed_ms();
             let rate = fmt_rate(g.avg_lines_done(), avg_ms);
-            let rss = fmt_bytes(g.avg_max_rss());
             if avg_ms == 0 {
                 println!(
-                    "  {:<16} {:<8} {:>10} {:>10} {:>20} {:>12}",
-                    g.name, g.mode, "FAILED", "-", "-", rss
+                    "  {:<16} {:<8} {:>10} {:>10} {:>20}",
+                    g.name, g.mode, "FAILED", "-", "-"
                 );
             } else {
                 println!(
-                    "  {:<16} {:<8} {:>8}ms {:>8.0}ms {:>20} {:>12}",
+                    "  {:<16} {:<8} {:>8}ms {:>8.0}ms {:>20}",
                     g.name,
                     g.mode,
                     avg_ms,
                     g.stddev_elapsed_ms(),
-                    rate,
-                    rss
+                    rate
                 );
             }
         }
@@ -387,6 +330,7 @@ fn print_table(groups: &[AggResult], scenarios: &[String]) {
     }
 }
 
+/// Write dual gh-bench JSON: throughput (bigger=better) + efficiency (smaller=better).
 fn write_dual_gh_bench(groups: &[AggResult], path: &Path) {
     #[derive(serde::Serialize)]
     struct Entry {
@@ -451,6 +395,7 @@ fn write_dual_gh_bench(groups: &[AggResult], path: &Path) {
     }
 }
 
+/// Write structured dashboard JSON for the GitHub Pages dashboard.
 fn write_dashboard_json(groups: &[AggResult], scenarios: &[String], path: &Path) {
     use serde_json::{Map, Value, json};
 
@@ -488,11 +433,13 @@ fn write_dashboard_json(groups: &[AggResult], scenarios: &[String], path: &Path)
             "avg_ms": g.avg_elapsed_ms(),
             "stddev_ms": g.stddev_elapsed_ms().round() as u64,
             "lines_done": g.avg_lines_done(),
-            "avg_max_rss": g.avg_max_rss(),
-            "avg_max_cpu": g.avg_max_cpu(),
             "iterations": g.runs.len(),
             "mode": g.mode,
         });
+        // NOTE: if the same agent appears in both binary and docker mode,
+        // the second insert overwrites the first. This is acceptable while
+        // CI only runs binary mode, but would need a (mode, agent) key to
+        // support both modes simultaneously.
         if let Value::Object(map) = scenario_entry {
             map.insert(g.name.clone(), agent_data);
         }
@@ -513,6 +460,7 @@ fn write_dashboard_json(groups: &[AggResult], scenarios: &[String], path: &Path)
         Err(e) => eprintln!("ERROR: write dashboard: {e}"),
     }
 
+    // Also write compact index entry.
     let index_entry = json!({
         "id": run_id,
         "date": date,

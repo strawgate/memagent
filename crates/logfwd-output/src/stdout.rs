@@ -196,12 +196,12 @@ impl StdoutSink {
                 self.buf.push(b'=');
 
                 let arr = batch.column(idx);
-                match arr.data_type() {
-                    arrow::datatypes::DataType::Int64 => {
+                match _suffix {
+                    "int" => {
                         let arr = arr.as_primitive::<arrow::datatypes::Int64Type>();
                         write!(self.buf, "{}", arr.value(row))?;
                     }
-                    arrow::datatypes::DataType::Float64 => {
+                    "float" => {
                         let arr = arr.as_primitive::<arrow::datatypes::Float64Type>();
                         write!(self.buf, "{}", arr.value(row))?;
                     }

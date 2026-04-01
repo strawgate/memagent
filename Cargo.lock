@@ -1952,7 +1952,6 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
- "proptest",
  "tempfile",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
@@ -2019,6 +2018,7 @@ dependencies = [
  "chrono",
  "criterion",
  "logfwd-arrow",
+ "logfwd-io",
  "logfwd-test-utils",
  "memchr",
  "memmap2",
@@ -2059,7 +2059,6 @@ dependencies = [
  "logfwd-config",
  "logfwd-core",
  "logfwd-io",
- "serde_json",
  "ureq",
 ]
 

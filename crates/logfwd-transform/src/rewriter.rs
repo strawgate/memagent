@@ -1,19 +1,19 @@
 // rewriter.rs — SQL rewriter that translates user-friendly bare-column SQL
 // to typed-column SQL that the scanner's typed Arrow schema can handle.
 //
-// The scanner produces columns named `{field}$str`, `{field}$int`, and
-// `{field}$float`. Users naturally write `level = 'ERROR'` or `status > 400`,
+// The scanner produces columns named `{field}_str`, `{field}_int`, and
+// `{field}_float`. Users naturally write `level = 'ERROR'` or `status > 400`,
 // but DataFusion needs `level$str = 'ERROR'` or `status$int > 400`.
 //
 // Rewrite rules:
 //  1. Bare column in SELECT: `duration_ms`
-//     → `COALESCE(CAST(duration_ms$int AS VARCHAR), duration_ms$str) AS duration_ms`
+//     → `COALESCE(CAST(duration_ms_int AS VARCHAR), duration_ms_str) AS duration_ms`
 //  2. Bare column in WHERE with string literal: `level = 'ERROR'`
 //     → `level$str = 'ERROR'`
 //  3. Bare column in WHERE with numeric literal: `status > 400`
 //     → `status$int > 400`
 //  4. `int(x)` call where `x` is a known field:
-//     → `COALESCE(x$int, TRY_CAST(x$str AS BIGINT))`
+//     → `COALESCE(x_int, TRY_CAST(x_str AS BIGINT))`
 
 use std::collections::HashMap;
 
@@ -32,20 +32,20 @@ use datafusion::sql::sqlparser::parser::Parser;
 /// Which Arrow type variants the scanner has produced for a JSON field.
 ///
 /// When the scanner encounters a JSON field that appears as multiple types
-/// across log lines, it creates separate columns for each type: `{field}$str`,
-/// `{field}$int`, `{field}$float`. This struct records which variants exist.
+/// across log lines, it creates separate columns for each type: `{field}_str`,
+/// `{field}_int`, `{field}_float`. This struct records which variants exist.
 #[derive(Debug, Clone, Default)]
 pub struct FieldTypes {
-    /// The `{field}$str` column exists in the schema.
+    /// The `{field}_str` column exists in the schema.
     pub has_str: bool,
-    /// The `{field}$int` column exists in the schema.
+    /// The `{field}_int` column exists in the schema.
     pub has_int: bool,
-    /// The `{field}$float` column exists in the schema.
+    /// The `{field}_float` column exists in the schema.
     pub has_float: bool,
 }
 
 /// Maps bare JSON field names (e.g., `"level"`) to the type variants
-/// present in the current Arrow schema (e.g., `$str`, `$int`, `$float`).
+/// present in the current Arrow schema (e.g., `_str`, `_int`, `_float`).
 ///
 /// Build one from a schema using [`field_type_map_from_schema`].
 pub type FieldTypeMap = HashMap<String, FieldTypes>;

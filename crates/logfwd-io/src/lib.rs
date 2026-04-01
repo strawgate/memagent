@@ -3,5 +3,6 @@ pub mod compress;
 pub mod diagnostics;
 pub mod enrichment;
 pub mod filter_hints;
+pub mod format;
 pub mod input;
 pub mod tail;

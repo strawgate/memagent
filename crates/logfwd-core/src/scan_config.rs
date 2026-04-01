@@ -141,7 +141,6 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
-    use alloc::string::ToString;
 
     /// Prove parse_int_fast never panics for any 8-byte input.
     #[kani::proof]

@@ -4,7 +4,7 @@
 
 ## The visitor pattern eliminates allocations entirely — serde proves it
 
-Serde's architecture is the single most instructive case study for logfwd's boundary design. Serde defines a fixed set of **29 kernel types** (bool, i8–i128, u8–u128, f32, f64, char, string, bytes, option, unit, seq, map, struct, and their variants) that constitute its data model. The critical insight, noted by Josh McGuigan's source analysis, is that **this data model never materializes as an enum or struct**. It exists purely as trait method signatures — `visit_i64`, `visit_str`, `visit_map` — and data flows directly from format bytes through the Deserializer into the Visitor with no intermediate allocation.
+Serde's architecture is the single most instructive case study for logfwd's boundary design. Serde defines a fixed set of **29 kernel types** (bool, i8–i128, u8–u128, f32, f64, char, string, bytes, option, unit, seq, map, struct, and their variants) that constitute its data model. The critical insight, noted by Josh McGuigan's source analysis, is that **this data model never materializes as an enum or struct**. It exists purely as trait method signatures — `visit_i64`, `visit$str`, `visit_map` — and data flows directly from format bytes through the Deserializer into the Visitor with no intermediate allocation.
 
 For compound types like maps, serde avoids buffering the entire structure by providing accessor traits (`MapAccess`, `SeqAccess`) that stream elements lazily:
 
@@ -23,9 +23,9 @@ This maps directly to logfwd's design challenge. Instead of the kernel returning
 ```rust
 // Kernel defines this trait (the "port")
 pub trait LineVisitor {
-    fn visit_str_field(&mut self, key: &[u8], value: &[u8]);
-    fn visit_int_field(&mut self, key: &[u8], value: i64);
-    fn visit_float_field(&mut self, key: &[u8], value: f64);
+    fn visit$str_field(&mut self, key: &[u8], value: &[u8]);
+    fn visit$int_field(&mut self, key: &[u8], value: i64);
+    fn visit$float_field(&mut self, key: &[u8], value: f64);
     fn visit_null_field(&mut self, key: &[u8]);
     fn visit_nested_field(&mut self, key: &[u8], raw: &[u8]);
     fn finish_line(&mut self);
@@ -38,7 +38,7 @@ impl LineVisitor for ArrowLineVisitor { /* append to Arrow builders */ }
 
 **Serde achieves zero-cost through three mechanisms**: monomorphization (all traits use generics, not `dyn`), inlining across trait boundaries with optimizations, and zero-sized Visitors (unit structs that exist only at the type level). The Rust compiler sees through the entire Serialize→Serializer→Formatter chain and can reduce it to code equivalent to handwritten serialization.
 
-Serde's zero-copy mechanism also maps perfectly to logfwd. The `Deserializer<'de>` lifetime parameter lets borrowed slices flow through the boundary. The Visitor trait provides three string methods — `visit_str(&str)` (transient), `visit_borrowed_str(&'de str)` (zero-copy from input), and `visit_string(String)` (owned). **logfwd's kernel already uses `&'a [u8]` slices — these can flow directly through a visitor trait boundary with no copy**, as long as the visitor's lifetime is tied to the input buffer.
+Serde's zero-copy mechanism also maps perfectly to logfwd. The `Deserializer<'de>` lifetime parameter lets borrowed slices flow through the boundary. The Visitor trait provides three string methods — `visit$str(&str)` (transient), `visit_borrowed$str(&'de str)` (zero-copy from input), and `visit$string(String)` (owned). **logfwd's kernel already uses `&'a [u8]` slices — these can flow directly through a visitor trait boundary with no copy**, as long as the visitor's lifetime is tied to the input buffer.
 
 ## Real projects overwhelmingly choose traits for hot paths, types for everything else
 
@@ -68,7 +68,7 @@ pub trait Compiler: Send + Sync {
 
 The compiled output is returned as `Box<dyn Any + Send>` — **complete type erasure**. The runtime never sees Cranelift-specific types. Only the compiler implementation knows how to unpack them. This existential typing pattern is extreme but effective for hard isolation.
 
-For logfwd specifically, the trait-based boundary (kernel calls `visitor.visit_str_field(...)`) is better for provability than it might seem. The kernel's logic is fully deterministic: given the same input, it makes the same sequence of visitor calls. **The trait boundary does not introduce unknown control flow into the kernel — it introduces unknown side effects in the callee**, which is the outer crate's problem. A formal verification tool analyzing the kernel can model the visitor as an opaque sink and still prove parsing correctness.
+For logfwd specifically, the trait-based boundary (kernel calls `visitor.visit$str_field(...)`) is better for provability than it might seem. The kernel's logic is fully deterministic: given the same input, it makes the same sequence of visitor calls. **The trait boundary does not introduce unknown control flow into the kernel — it introduces unknown side effects in the callee**, which is the outer crate's problem. A formal verification tool analyzing the kernel can model the visitor as an opaque sink and still prove parsing correctness.
 
 The type-based approach (`Vec<ParsedField>`) remains valuable as a **secondary API** for consumers who don't want to implement a visitor. Serde does exactly this: the trait path is primary, `serde_json::Value` is the fallback. For logfwd, provide both:
 
@@ -90,7 +90,7 @@ However, the dominant pattern in high-throughput Rust parsers is **buffer reuse*
 let mut fields = Vec::with_capacity(16);
 for line in input_lines {
     fields.clear();  // Resets length, keeps capacity — zero allocation
-    parse_line_into(line, &mut fields);
+    parse_line$into(line, &mut fields);
     convert_to_arrow(&fields);
 }
 ```
@@ -169,7 +169,7 @@ The workaround for logfwd's borrowed kernel types is to generate owned data and 
 ```rust
 use proptest::prelude::*;
 
-fn typed_value_strategy() -> impl Strategy<Value = OwnedTypedValue> {
+fn typed_value$strategy() -> impl Strategy<Value = OwnedTypedValue> {
     prop_oneof![
         any::<Vec<u8>>().prop_map(OwnedTypedValue::Str),
         any::<i64>().prop_map(OwnedTypedValue::Int),
@@ -182,7 +182,7 @@ proptest! {
     #[test]
     fn arrow_conversion_preserves_values(
         fields in prop::collection::vec(
-            (any::<Vec<u8>>(), typed_value_strategy()), 1..16
+            (any::<Vec<u8>>(), typed_value$strategy()), 1..16
         )
     ) {
         // Convert owned → borrowed kernel types

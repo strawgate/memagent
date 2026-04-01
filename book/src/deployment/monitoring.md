@@ -31,5 +31,5 @@ server:
 ```yaml
 server:
   metrics_endpoint: http://otel-collector:4318
-  metrics_interval_secs: 60
+  metrics$interval_secs: 60
 ```

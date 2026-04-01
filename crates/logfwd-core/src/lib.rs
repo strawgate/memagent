@@ -19,8 +19,6 @@ pub mod cri;
 pub mod framer;
 /// OTLP protobuf encoding helpers and parsers.
 pub mod otlp;
-/// Pipeline state machine — typestate batch lifecycle + ordered offset tracking.
-pub mod pipeline;
 /// Scanner configuration and field selection.
 pub mod scan_config;
 /// JSON-to-columnar scan loop.

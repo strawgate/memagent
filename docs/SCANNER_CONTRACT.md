@@ -15,7 +15,7 @@ The scanner assumes that **all input bytes are valid UTF-8**.
 - Field names and string values are converted to `&str` with
   `from_utf8_unchecked` during `finish_batch()`.  Passing non-UTF-8 bytes is
   **undefined behaviour**.
-- A `debug_assert!` at the `scan_into` entry point fires in debug builds if
+- A `debug_assert!` at the `scan$into` entry point fires in debug builds if
   the buffer is not valid UTF-8.
 - For production validation set `ScanConfig::validate_utf8 = true`.  This
   performs a safe `from_utf8` check before scanning and panics with a
@@ -101,7 +101,7 @@ fields.
 
 - A numeric value with a decimal point (`.`) or an exponent (`e`/`E`) is
   stored as `Float64`.
-- A value without either is first tried as `Int64` via `parse_int_fast`.  On
+- A value without either is first tried as `Int64` via `parse$int_fast`.  On
   overflow (value does not fit in `i64`) it falls back to `Float64`.
 - `true` and `false` are stored as the strings `"true"` / `"false"` in a
   `$str` column.

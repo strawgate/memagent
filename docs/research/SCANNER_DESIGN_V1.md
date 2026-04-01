@@ -101,7 +101,7 @@ write `level` but the RecordBatch has `level$str`.
 
 9. Aggregation:
    AVG(duration_ms) → error: "use AVG(float(duration_ms))"
-   COUNT(duration_ms) → COUNT(COALESCE(duration_ms$int, duration_ms$float, duration_ms$str))  (counts non-null)
+   COUNT(duration_ms) → COUNT(duration_ms$str)  (counts non-null)
 ```
 
 ### Implementation
