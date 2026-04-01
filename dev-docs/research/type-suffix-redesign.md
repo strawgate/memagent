@@ -99,6 +99,56 @@ Future option as DataFusion matures.
 Decision deferred — solve output dispatch bugs first (Fix 1 + Fix 3),
 then evaluate SQL UX options separately.
 
+### Constraint: Schema stability across batches
+
+The user's SQL is fixed, but the Arrow schema varies per batch. A batch
+of pure-integer status codes produces `status_int` only. The next batch
+might have mixed types producing `status_int` + `status_str`. A batch
+with no `status` field at all produces neither column.
+
+If the user's SQL references `status_int` but this batch has no integer
+status values, DataFusion throws "column not found." This is unacceptable
+for a log forwarder processing heterogeneous log streams.
+
+**Solution: Accumulated superset schema.** The SqlTransform maintains a
+running superset of all columns seen across batches. Before registering
+the MemTable, pad the current batch with null columns for any fields
+present in the superset but missing from this batch. This guarantees a
+stable schema for the user's SQL.
+
+Implementation sketch:
+```
+SqlTransform {
+    known_schema: HashMap<String, DataType>,  // accumulated superset
+}
+
+fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch> {
+    // 1. Merge batch schema into known_schema (add new columns)
+    for field in batch.schema().fields() {
+        self.known_schema.entry(field.name().clone())
+            .or_insert(field.data_type().clone());
+    }
+    // 2. Pad batch: add null columns for known fields missing from batch
+    let padded = pad_batch_to_schema(&batch, &self.known_schema);
+    // 3. Register padded batch as MemTable, create view, execute SQL
+}
+```
+
+The superset only grows — once a column is seen, it's always present
+(as nulls) in subsequent batches. This mirrors how Elasticsearch
+handles schema evolution: new fields are added to the mapping, never
+removed.
+
+Combined with the view layer, the flow per batch becomes:
+1. Merge batch schema into accumulated superset
+2. Pad batch with null columns for missing superset fields
+3. Register padded batch as `_raw_logs` MemTable
+4. Create view `logs` with bare-name aliases + typed columns
+5. Execute user SQL against `logs`
+
+The view SQL is regenerated when the superset changes (new columns
+seen), cached otherwise.
+
 ### Fix 3: Column deduplication uses DataType
 
 `build_col_infos()` currently deduplicates by parsing suffix strings.
@@ -164,5 +214,12 @@ string in → string out, per document.
    from column names when serializing. Uses `parse_column_name()` for
    name, `data_type()` for format. JSON: `"status": 200` not
    `"status_int": 200`.
-3. **SQL UX** — separate effort, options A-E above. Not urgent since
-   the rewriter was never wired in and users already use suffixed names.
+3. **Schema stability** — SqlTransform accumulates a superset schema
+   across batches and pads missing columns with nulls. This ensures
+   user SQL never fails due to missing columns in a particular batch.
+4. **View aliasing** — generate `CREATE VIEW logs AS SELECT ...` per
+   schema change. Bare name = COALESCE string. Typed columns exposed.
+   Regenerated only when the superset schema changes (new columns seen).
+5. **SQL UX** — with the view layer in place, `SELECT *` returns bare
+   names. Typed access via `status_int`, `status_str`. Users who want
+   typed filtering write `WHERE status_int > 400`. Clear and explicit.
