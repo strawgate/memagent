@@ -953,12 +953,26 @@ mod tests {
         server
     }
 
-    /// Simple HTTP GET helper using raw TCP.
+    /// Simple HTTP GET helper using raw TCP. Retries connection up to 20
+    /// times with 50ms backoff to handle server startup race on macOS.
     fn http_get(port: u16, path: &str) -> (u16, String) {
         use std::io::Write;
         use std::net::TcpStream;
 
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect failed");
+        let addr = format!("127.0.0.1:{port}");
+        let mut stream = None;
+        for _ in 0..20 {
+            match TcpStream::connect(&addr) {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            }
+        }
+        let mut stream = stream.unwrap_or_else(|| {
+            panic!("connect failed after retries to {addr}");
+        });
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .ok();
@@ -1011,7 +1025,7 @@ mod tests {
     fn test_health_endpoint() {
         let port = free_port();
         let server = server_with_test_pipeline(port);
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         // Give the server a moment to bind.
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1031,7 +1045,7 @@ mod tests {
     fn test_pipelines_endpoint() {
         let port = free_port();
         let server = server_with_test_pipeline(port);
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1071,7 +1085,7 @@ mod tests {
                 active: 900_000,
             })
         });
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1138,7 +1152,7 @@ mod tests {
     fn test_not_found() {
         let port = free_port();
         let server = server_with_test_pipeline(port);
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1152,7 +1166,7 @@ mod tests {
         // a "memory" key — no partial or null fields.
         let port = free_port();
         let server = server_with_test_pipeline(port);
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1178,7 +1192,7 @@ mod tests {
                 active: 900_000,
             })
         });
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1201,7 +1215,7 @@ mod tests {
 
         let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
         server.add_pipeline(Arc::new(pm));
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1220,7 +1234,7 @@ mod tests {
 
         let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
         server.add_pipeline(Arc::new(pm));
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1241,7 +1255,7 @@ mod tests {
 
         let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
         server.add_pipeline(Arc::new(pm));
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1267,7 +1281,7 @@ mod tests {
 
         let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
         server.add_pipeline(Arc::new(pm));
-        let _handle = server.start();
+        let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
