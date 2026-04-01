@@ -508,6 +508,12 @@ impl ScalarUDFImpl for FloatCastUdf {
 
 /// Manages a DataFusion context, compiles and caches plans, executes SQL
 /// transforms against Arrow RecordBatches.
+///
+/// The SessionContext and UDFs are created once and reused across batches.
+/// The `logs` MemTable and enrichment tables are swapped per batch
+/// (deregister + register). This eliminates the per-batch cost of
+/// SessionContext construction, built-in function registration, and
+/// UDF compilation.
 pub struct SqlTransform {
     user_sql: String,
     analyzer: QueryAnalyzer,
@@ -517,6 +523,8 @@ pub struct SqlTransform {
     enrichment_tables: Vec<Arc<dyn logfwd_io::enrichment::EnrichmentTable>>,
     /// Optional geo-IP database for the `geo_lookup()` UDF.
     geo_database: Option<Arc<dyn logfwd_io::enrichment::GeoDatabase>>,
+    /// Cached DataFusion session — created once, table swapped per batch.
+    ctx: Option<SessionContext>,
 }
 
 impl SqlTransform {
@@ -530,17 +538,26 @@ impl SqlTransform {
             schema_hash: 0,
             enrichment_tables: Vec::new(),
             geo_database: None,
+            ctx: None,
         })
     }
 
     /// Set the geo-IP database for the `geo_lookup()` UDF.
+    ///
+    /// Invalidates the cached SessionContext so the UDF is re-registered
+    /// with the new database on the next execute() call.
     pub fn set_geo_database(&mut self, db: Arc<dyn logfwd_io::enrichment::GeoDatabase>) {
         self.geo_database = Some(db);
+        self.ctx = None; // force re-creation with new geo UDF
     }
 
     /// Add an enrichment table that will be registered in each DataFusion
     /// session alongside the `logs` table. Returns an error if a table with
     /// the same name is already registered or if the name conflicts with "logs".
+    ///
+    /// Does NOT invalidate the cached SessionContext (unlike `set_geo_database`)
+    /// because enrichment tables are deregistered/re-registered per batch in
+    /// `execute()`. The context doesn't need to know about them at creation time.
     pub fn add_enrichment_table(
         &mut self,
         table: Arc<dyn logfwd_io::enrichment::EnrichmentTable>,
@@ -558,44 +575,41 @@ impl SqlTransform {
 
     /// Execute the SQL transform on a RecordBatch.
     ///
-    /// Creates a fresh DataFusion session, registers the batch as a MemTable
-    /// named "logs", runs the SQL, and returns the result.
+    /// Reuses a cached DataFusion SessionContext across batches. The `logs`
+    /// MemTable is swapped per batch (deregister + register). UDFs and
+    /// built-in functions persist across batches.
     ///
     /// Schema changes (new fields in later batches) are handled automatically
-    /// since each call creates a new context matching the batch schema.
+    /// since the MemTable is recreated with the batch's schema each call.
     pub async fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch, String> {
         if batch.num_rows() == 0 {
             return Ok(batch);
         }
 
-        // Track schema hash for diagnostics / future caching.
+        // Track schema hash for diagnostics.
         let new_hash = hash_schema(batch.schema());
         self.schema_hash = new_hash;
 
-        let sql = self.user_sql.clone();
+        // Ensure the SessionContext exists (created once, reused across batches).
+        self.ensure_context();
+        let ctx = self.ctx.as_ref().expect("context just ensured");
 
-        let ctx = SessionContext::new();
-
-        // Register custom UDFs.
-        ctx.register_udf(ScalarUDF::from(IntCastUdf::new()));
-        ctx.register_udf(ScalarUDF::from(FloatCastUdf::new()));
-        ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
-        ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
-        if let Some(ref db) = self.geo_database {
-            ctx.register_udf(ScalarUDF::from(crate::udf::geo_lookup::GeoLookupUdf::new(
-                Arc::clone(db),
-            )));
-        }
-
-        // Register the batch as a MemTable named "logs".
+        // Swap the `logs` table: build new table first, then deregister + register.
+        // Building the MemTable before deregistering ensures that on error we
+        // don't leave the context without a `logs` table.
         let schema = batch.schema();
         let table = MemTable::try_new(schema, vec![vec![batch]])
             .map_err(|e| format!("Failed to create MemTable: {e}"))?;
+        let _ = ctx.deregister_table("logs");
         ctx.register_table("logs", Arc::new(table))
             .map_err(|e| format!("Failed to register table: {e}"))?;
 
-        // Register enrichment tables (snapshots from background providers).
+        // Swap enrichment tables whose snapshots have changed.
+        // If snapshot() returns None (table not loaded yet), deregister the
+        // stale table — queries referencing it will fail with a clear error
+        // rather than silently returning stale data.
         for et in &self.enrichment_tables {
+            let _ = ctx.deregister_table(et.name());
             if let Some(snapshot) = et.snapshot() {
                 let et_table =
                     MemTable::try_new(snapshot.schema(), vec![vec![snapshot]]).map_err(|e| {
@@ -614,8 +628,9 @@ impl SqlTransform {
         }
 
         // Execute the SQL.
+        let sql = &self.user_sql;
         let df = ctx
-            .sql(&sql)
+            .sql(sql)
             .await
             .map_err(|e| format!("SQL execution error: {e}"))?;
 
@@ -627,21 +642,44 @@ impl SqlTransform {
         // Concat all result batches into one.
         match batches.len() {
             0 => {
-                // Return an empty batch with the result schema.
                 let df2 = ctx
-                    .sql(&sql)
+                    .sql(sql)
                     .await
                     .map_err(|e| format!("SQL schema error: {e}"))?;
                 let df_schema = df2.schema();
                 Ok(RecordBatch::new_empty(Arc::clone(df_schema.inner())))
             }
-            1 => Ok(batches.into_iter().next().unwrap()),
+            1 => Ok(batches.into_iter().next().expect("verified len==1")),
             _ => {
                 let schema = batches[0].schema();
                 concat_batches(&schema, &batches)
                     .map_err(|e| format!("Failed to concat batches: {e}"))
             }
         }
+    }
+
+    /// Lazily create the SessionContext with UDFs registered.
+    ///
+    /// Created lazily (not in new()) because set_geo_database() and
+    /// add_enrichment_table() may be called after construction.
+    fn ensure_context(&mut self) {
+        if self.ctx.is_some() {
+            return;
+        }
+        let ctx = SessionContext::new();
+
+        // Register custom UDFs once — they persist across batches.
+        ctx.register_udf(ScalarUDF::from(IntCastUdf::new()));
+        ctx.register_udf(ScalarUDF::from(FloatCastUdf::new()));
+        ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
+        ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
+        if let Some(ref db) = self.geo_database {
+            ctx.register_udf(ScalarUDF::from(crate::udf::geo_lookup::GeoLookupUdf::new(
+                Arc::clone(db),
+            )));
+        }
+
+        self.ctx = Some(ctx);
     }
 
     /// Synchronous wrapper around [`execute`](Self::execute) for callers that
@@ -1110,5 +1148,94 @@ mod tests {
                 .unwrap();
         let h = a.filter_hints();
         assert_eq!(h.facilities, Some(vec![4])); // intersection
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-batch context caching tests
+    // -----------------------------------------------------------------------
+
+    /// Verify that cached SessionContext doesn't leak data between batches.
+    /// Batch 1 and batch 2 have different data — a WHERE filter on batch 2
+    /// should never return rows from batch 1.
+    #[test]
+    fn test_cached_context_no_data_leakage() {
+        let mut transform =
+            SqlTransform::new("SELECT host_str FROM logs WHERE host_str = 'web2'").unwrap();
+
+        // Batch 1: only web1.
+        let batch1 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "host_str",
+                DataType::Utf8,
+                true,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["web1", "web1"])) as ArrayRef],
+        )
+        .unwrap();
+
+        let result1 = transform.execute_blocking(batch1).unwrap();
+        assert_eq!(result1.num_rows(), 0, "batch 1 should match nothing");
+
+        // Batch 2: has web2.
+        let batch2 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "host_str",
+                DataType::Utf8,
+                true,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["web2", "web3"])) as ArrayRef],
+        )
+        .unwrap();
+
+        let result2 = transform.execute_blocking(batch2).unwrap();
+        assert_eq!(result2.num_rows(), 1, "batch 2 should match one row");
+
+        // Batch 3: no web2 again — verify old data from batch 2 is gone.
+        let batch3 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "host_str",
+                DataType::Utf8,
+                true,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["web4"])) as ArrayRef],
+        )
+        .unwrap();
+
+        let result3 = transform.execute_blocking(batch3).unwrap();
+        assert_eq!(
+            result3.num_rows(),
+            0,
+            "batch 3 should not contain leftover data from batch 2"
+        );
+    }
+
+    /// Verify that many consecutive batches on the same SqlTransform work correctly.
+    /// This exercises the deregister/register cycle repeatedly.
+    #[test]
+    fn test_cached_context_many_batches() {
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "n_int",
+            DataType::Int64,
+            true,
+        )]));
+
+        for i in 0..20 {
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int64Array::from(vec![i as i64])) as ArrayRef],
+            )
+            .unwrap();
+
+            let result = transform.execute_blocking(batch).unwrap();
+            assert_eq!(result.num_rows(), 1);
+            let col = result
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            assert_eq!(col.value(0), i as i64, "batch {i} has wrong value");
+        }
     }
 }

@@ -10,5 +10,9 @@ logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 arrow = { workspace = true }
 bytes = "1"
 
+[dev-dependencies]
+serial_test = "3"
+stats_alloc = "0.1"
+
 [lints]
 workspace = true
