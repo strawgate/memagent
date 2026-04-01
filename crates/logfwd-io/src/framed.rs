@@ -230,7 +230,12 @@ mod tests {
 
         let events = framed.poll().unwrap();
         assert!(collect_data(events).is_empty());
-        assert_eq!(stats.parse_errors(), 1);
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]
