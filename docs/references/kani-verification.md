@@ -363,7 +363,7 @@ fn harness() {
 
 The recommended pattern for complex parsing/encoding pipelines:
 
-1. **Decompose** into small, pure functions (e.g., `parse_number`, `parse$string`,
+1. **Decompose** into small, pure functions (e.g., `parse_number`, `parse_string`,
    `encode_field`)
 2. **Write contracts** for each component
 3. **Verify** each component independently with `proof_for_contract`

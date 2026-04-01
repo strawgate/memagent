@@ -38,7 +38,7 @@ fn mask64(block: &[u8; 64], needle: u8) -> u64 {
 }
 
 /// Detect all 10 structural characters. One function, all platforms.
-pub fn find$structural_chars(block: &[u8; 64]) -> RawBlockMasks {
+pub fn find_structural_chars(block: &[u8; 64]) -> RawBlockMasks {
     RawBlockMasks {
         newline:       mask64(block, b'\n'),
         space:         mask64(block, b' '),
@@ -152,8 +152,8 @@ Same story as hand-rolled intrinsics: Kani cannot verify SIMD codepaths
 (they're opaque compiler intrinsics regardless of wrapper). Our
 verification strategy is unchanged:
 
-1. **Kani proves `find$structural_chars_scalar`** (pure Rust, no SIMD)
-2. **proptest proves `find$structural_chars` ≡ `_scalar`** (SIMD output
+1. **Kani proves `find_structural_chars_scalar`** (pure Rust, no SIMD)
+2. **proptest proves `find_structural_chars` ≡ `_scalar`** (SIMD output
    matches scalar for random inputs)
 3. **Kani proves `StreamingClassifier::process_block`** (pure u64 logic)
 
@@ -180,7 +180,7 @@ structural.rs:
   mod simd_neon     — 55 lines, unsafe, NEON intrinsics
   mod simd_avx2     — 30 lines, unsafe, AVX2 intrinsics
   mod simd_sse2     — 40 lines, unsafe, SSE2 intrinsics
-  fn find$structural_chars() — 15 lines, #[cfg] dispatch
+  fn find_structural_chars() — 15 lines, #[cfg] dispatch
 
 chunk_classify.rs:
   mod aarch64_impl  — 70 lines, unsafe, NEON intrinsics
@@ -192,7 +192,7 @@ chunk_classify.rs:
 ```text
 structural.rs:
   fn mask64()       — 6 lines, safe
-  fn find$structural_chars() — 15 lines, safe, all platforms
+  fn find_structural_chars() — 15 lines, safe, all platforms
 ```
 
 Total unsafe SIMD code eliminated: ~285 lines → 0 lines.

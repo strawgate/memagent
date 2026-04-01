@@ -178,7 +178,7 @@ impl StdoutSink {
                     }
                 }
 
-                let Some((idx, suffix)) = best_variant else {
+                let Some((idx, _suffix)) = best_variant else {
                     continue;
                 };
 

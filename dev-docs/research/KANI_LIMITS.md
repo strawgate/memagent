@@ -53,7 +53,7 @@ The recommended approach is **compositional verification using function contract
 
 1. Verify `detect_escape(bytes: &[u8]) -> Option<usize>` for inputs up to ~20 bytes
 2. Verify `parse_number(bytes: &[u8]) -> Result<(Number, usize)>` for inputs up to ~16 bytes
-3. Verify `parse$string(bytes: &[u8]) -> Result<(String, usize)>` for inputs up to ~16 bytes
+3. Verify `parse_string(bytes: &[u8]) -> Result<(String, usize)>` for inputs up to ~16 bytes
 4. Define `#[kani::requires]` / `#[kani::ensures]` contracts for each
 5. Verify the top-level parser using `#[kani::stub_verified(parse_number)]` to replace sub-parsers with their proven contracts
 

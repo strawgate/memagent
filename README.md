@@ -86,7 +86,7 @@ pipelines:
 
 ## SQL Column Naming
 
-All JSON fields are automatically suffixed with their type (`$str`, `$int`, `$float`) to ensure schema stability.
+Scanner-created Arrow/DataFusion columns are type-suffixed (`$str`, `$int`, `$float`) to ensure schema stability; JSON output keys use the logical field name without the suffix.
 
 ```sql
 -- Filter by level

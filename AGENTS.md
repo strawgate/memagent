@@ -43,7 +43,7 @@ Library-specific guides — read the relevant ones before working on related cod
 
 Key decisions:
 - Two-stage architecture: SIMD detects (parallel), scanner consumes (sequential)
-- Streaming per-block: quote/in$string bitmasks stored, others consumed immediately (moving toward zero stored)
+- Streaming per-block: quote/in_string bitmasks stored, others consumed immediately (moving toward zero stored)
 - Portable SIMD via `wide` crate: no hand-rolled platform backends
 - Three-layer verification: Kani (scalar) → proptest (SIMD ≡ scalar) → Kani (consumers)
 - Pipeline state machine over linear BatchToken (async cancellation prevents linear types)

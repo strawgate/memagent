@@ -379,7 +379,7 @@ impl SqlTransform {
             ctx.register_udf(udf);
         }
 
-        Ok(Self { ctx, rt, user_sql: sql.to$string() })
+        Ok(Self { ctx, rt, user_sql: sql.to_string() })
     }
 
     pub fn execute(&self, batch: RecordBatch) -> Result<RecordBatch, String> {

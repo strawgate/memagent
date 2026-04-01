@@ -32,7 +32,7 @@ let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
     .build()?;
 
 let reader = PeriodicReader::builder(otlp_exporter)
-    .with$interval(Duration::from_secs(60))
+    .with_interval(Duration::from_secs(60))
     .build();
 
 let provider = SdkMeterProvider::builder()

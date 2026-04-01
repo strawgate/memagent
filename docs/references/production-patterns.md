@@ -46,7 +46,7 @@ Key principles:
 - Separate transport errors (always retriable) from status errors
   (depends on code)
 - Use `#[non_exhaustive]` on public error enums
-- Don't erase error types with `.to$string()` — preserve the original
+- Don't erase error types with `.to_string()` — preserve the original
   for classification
 
 ---

@@ -314,7 +314,7 @@ Special columns added by the scanner:
 | `_file$str` | string | Absolute path of the source file (file inputs only). |
 | `_raw$str` | string | Original JSON line (only when `keep_raw: true`). |
 | `_time_ns$int` | int64 | Timestamp from CRI header in nanoseconds (CRI inputs only). |
-| `$stream$str` | string | CRI stream name (`stdout`/`stderr`). |
+| `_stream$str` | string | CRI stream name (`stdout`/`stderr`). |
 
 ### Built-in UDFs
 
@@ -422,14 +422,14 @@ The optional `server` block controls the diagnostics server and observability se
 | `diagnostics` | string | none | `host:port` to listen for HTTP diagnostics. Exposes `/metrics` and `/api/pipelines`. |
 | `log_level` | string | `info` | Log verbosity. One of `error`, `warn`, `info`, `debug`, `trace`. |
 | `metrics_endpoint` | string | none | OTLP endpoint for periodic metrics push, e.g. `http://otel-collector:4318`. |
-| `metrics$interval_secs` | integer | `60` | Push interval for OTLP metrics in seconds. |
+| `metrics_interval_secs` | integer | `60` | Push interval for OTLP metrics in seconds. |
 
 ```yaml
 server:
   diagnostics: 0.0.0.0:9090
   log_level: info
   metrics_endpoint: http://otel-collector:4318
-  metrics$interval_secs: 30
+  metrics_interval_secs: 30
 ```
 
 ---
@@ -514,7 +514,7 @@ server:
   diagnostics: 0.0.0.0:9090
   log_level: info
   metrics_endpoint: ${OTEL_ENDPOINT}
-  metrics$interval_secs: 60
+  metrics_interval_secs: 60
 
 storage:
   data_dir: /var/lib/logfwd

@@ -7,7 +7,7 @@ verification, architecture design, and memory layout.
 
 **Can Kani verify our SIMD intrinsics directly?** No. Kani operates at
 MIR level and cannot model `core::arch` intrinsics (they go through
-LLVM-specific lowering, not Kani's `platform$intrinsics` path).
+LLVM-specific lowering, not Kani's `platform_intrinsics` path).
 
 **But the underlying platform intrinsics ARE supported:**
 
@@ -88,7 +88,7 @@ logfwd-arrow (has SIMD, produces StructuralIndex)
 
 logfwd-core (no_std, proven, CONSUMES StructuralIndex)
   Framer::frame(buf, &newline_bitmask) → line ranges
-  CriParser::extract(buf, &space_bitmask, &in$string) → field ranges
+  CriParser::extract(buf, &space_bitmask, &in_string) → field ranges
   Scanner::scan(buf, &structural_index) → field values via FieldSink
 
   Also has: scalar_find_char_mask() for Kani proofs
@@ -115,7 +115,7 @@ between blocks (quote parity, backslash carry, pseudo-pred).
 | Bitmask | Cross-block? | Why |
 |---------|-------------|-----|
 | Backslash carry | YES | Position 63 escapes byte 0 of next block |
-| Quote parity (in$string) | YES | Opening quote means next block starts in string |
+| Quote parity (in_string) | YES | Opening quote means next block starts in string |
 | Newline | NO | Self-contained |
 | Space, comma, colon | NO | Self-contained |
 | Braces, brackets | NO | Self-contained |
@@ -128,22 +128,22 @@ time, consuming bitmasks immediately:
 ```rust
 for block in buf.chunks(64) {
     // Stage 1: SIMD detect all 9 chars → 9 u64 bitmasks (on stack)
-    let raw = find$structural_chars(block);
+    let raw = find_structural_chars(block);
 
     // Stage 2: escape handling (needs prev_odd_backslash carry)
     let real_q = compute_real_quotes(raw.quote, raw.backslash, &mut carry_bs);
 
-    // Stage 3: string interior (needs prev_in$string carry)
-    let in$string = prefix_xor(real_q) ^ carry$string;
-    carry$string = ...;
+    // Stage 3: string interior (needs prev_in_string carry)
+    let in_string = prefix_xor(real_q) ^ carry_string;
+    carry_string = ...;
 
     // Stage 4: mask structural chars & consume immediately
     let nl = raw.newline;  // newlines always structural
-    let sp = raw.space & !in$string;
-    let comma = raw.comma & !in$string;
+    let sp = raw.space & !in_string;
+    let comma = raw.comma & !in_string;
     // ... extract line ranges, CRI fields, etc. from these u64s
 
-    // Nothing stored! Just carry_bs and carry$string to next block.
+    // Nothing stored! Just carry_bs and carry_string to next block.
 }
 ```
 
@@ -152,7 +152,7 @@ This uses **zero heap allocation** for bitmasks. Only the output
 live on the stack (~72 bytes) for each block.
 
 **Trade-off:** The scanner currently uses ChunkIndex for random-access
-lookups (`next_quote(pos)`, `is_in$string(pos)`). Streaming eliminates
+lookups (`next_quote(pos)`, `is_in_string(pos)`). Streaming eliminates
 this. The scanner would need to be restructured to process sequentially
 within each block, using bitmask iteration (`trailing_zeros` + clear
 lowest bit) instead of position-based queries.

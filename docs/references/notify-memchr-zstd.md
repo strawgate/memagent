@@ -36,7 +36,7 @@ while let Ok(res) = self.fs_events.try_recv() {
 }
 
 // Poll if event fired OR timer expired (safety net)
-let should_poll = something_changed || self.last_poll.elapsed() >= poll$interval;
+let should_poll = something_changed || self.last_poll.elapsed() >= poll_interval;
 ```
 
 A typical poll interval is 250ms. On each poll:

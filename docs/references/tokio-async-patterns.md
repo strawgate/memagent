@@ -141,7 +141,7 @@ Pipeline stages: input -> scanner -> transform -> output.
 
 When the channel is full, `send().await` suspends the sender's task. This is
 how backpressure propagates: a slow output sink eventually pauses file reading.
-This replaces the current `thread::sleep(poll$interval)` polling pattern.
+This replaces the current `thread::sleep(poll_interval)` polling pattern.
 
 ---
 

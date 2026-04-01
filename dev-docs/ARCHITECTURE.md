@@ -100,10 +100,10 @@ producing bitmasks for quote and backslash positions. From these it
 computes:
 
 - **real_quotes**: unescaped quote positions (escaped quotes filtered out)
-- **in$string**: which bytes are inside JSON strings vs structural
+- **in_string**: which bytes are inside JSON strings vs structural
 
 The scanner uses these for O(1) lookups instead of byte-by-byte
-scanning: `scan$string()` jumps from opening quote to closing quote,
+scanning: `scan_string()` jumps from opening quote to closing quote,
 `skip_nested()` skips objects/arrays using the string mask.
 
 Platform-specific SIMD:
@@ -124,7 +124,7 @@ enables bitmask-based CRI field extraction and future CSV support.
 &[u8] + ChunkIndex → ScanBuilder callbacks → typed column values
 ```
 
-**scan$into** (`logfwd-core/src/scanner.rs`) walks each line
+**scan_into** (`logfwd-core/src/scanner.rs`) walks each line
 left-to-right, extracting key-value pairs. It uses ChunkIndex for
 string boundary detection and the **ScanBuilder** trait for output:
 
@@ -133,9 +133,9 @@ pub trait ScanBuilder {
     fn begin_row(&mut self);
     fn end_row(&mut self);
     fn resolve_field(&mut self, key: &[u8]) -> usize;
-    fn append$str_by_idx(&mut self, idx: usize, value: &[u8]);
-    fn append$int_by_idx(&mut self, idx: usize, value: &[u8]);
-    fn append$float_by_idx(&mut self, idx: usize, value: &[u8]);
+    fn append_str_by_idx(&mut self, idx: usize, value: &[u8]);
+    fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
+    fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
     fn append_null_by_idx(&mut self, idx: usize);
     fn append_raw(&mut self, line: &[u8]);
 }

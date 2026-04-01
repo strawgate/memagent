@@ -105,7 +105,7 @@ data:
         level$str,
         msg$str,
         _time_ns$int,
-        $stream$str
+        _stream$str
       FROM logs
       WHERE level$str != 'DEBUG'
 

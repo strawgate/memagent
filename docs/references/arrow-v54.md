@@ -129,12 +129,12 @@ use arrow_buffer::Buffer;
 let mut builder = StringViewBuilder::new();
 
 // Your raw data buffer (e.g., a parsed log page)
-let raw_bytes: &[u8] = b"helloworld_this_is_a_long$string";
+let raw_bytes: &[u8] = b"helloworld_this_is_a_long_string";
 let block = builder.append_block(Buffer::from(raw_bytes));
 
 // Point views into the existing buffer -- no copy of string data
 builder.try_append_view(block, 0, 5).unwrap();   // "hello"
-builder.try_append_view(block, 5, 27).unwrap();  // "world_this_is_a_long$string"
+builder.try_append_view(block, 5, 27).unwrap();  // "world_this_is_a_long_string"
 
 let array = builder.finish();
 assert_eq!(array.value(0), "hello");
@@ -148,7 +148,7 @@ bounds and UTF-8; `append_view_unchecked` skips validation (unsafe).
 
 ```rust
 let mut builder = StringViewBuilder::new()
-    .with_deduplicate$strings();  // uses ahash internally
+    .with_deduplicate_strings();  // uses ahash internally
 
 builder.append_value("repeated");
 builder.append_value("repeated"); // reuses the same view
@@ -457,7 +457,7 @@ let maybe: Option<&Int32Array> = arr.as_primitive_opt::<Int32Type>();
 assert!(maybe.is_none());
 
 // Correct downcast
-let strings: &StringArray = arr.as$string::<i32>();
+let strings: &StringArray = arr.as_string::<i32>();
 ```
 
 The `as_*()` methods on the `AsArray` trait panic on type mismatch. Always use
@@ -506,7 +506,7 @@ silently wrong data (or an error if types differ at the same index).
 Call `finish()` per batch, then keep appending to the same builder:
 
 ```rust
-let mut builder = StringBuilder::with_capacity(expected$strings, expected_total_bytes);
+let mut builder = StringBuilder::with_capacity(expected_strings, expected_total_bytes);
 
 loop {
     for line in next_chunk() {

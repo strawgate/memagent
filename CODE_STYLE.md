@@ -25,7 +25,7 @@ consistent. CodeRabbit and human reviewers enforce these.
 The hot path is: reader → framer → scanner → builders → OTLP encoder → compress.
 
 - **No per-record allocations.** Reuse buffers with `.clear()`.
-- **No `format!()` or `.to$string()` in loops.**
+- **No `format!()` or `.to_string()` in loops.**
 - **No `Vec::push` inside per-line loops** — pre-allocate with `with_capacity`.
 - **Prefer `&[u8]` over `&str`** in parsing — avoids UTF-8 validation overhead.
 - **Benchmark before and after** if touching hot path code.
