@@ -70,6 +70,11 @@ impl ComponentStats {
         self.otel_errors.add(1, &self.otel_attrs);
     }
 
+    /// Increment input rollover count for both file rotations and truncations.
+    ///
+    /// This updates the in-process atomic counter (`rotations_total`) and emits
+    /// the corresponding OpenTelemetry metric (`otel_rotations`) with the
+    /// component attributes.
     pub fn inc_rotations(&self) {
         self.rotations_total.fetch_add(1, Ordering::Relaxed);
         self.otel_rotations.add(1, &self.otel_attrs);
@@ -946,6 +951,7 @@ mod tests {
         let inp = pm.add_input("pod_logs", "file");
         inp.inc_lines(1000);
         inp.inc_bytes(50000);
+        inp.inc_rotations();
 
         pm.transform_in.inc_lines(1000);
         pm.transform_out.inc_lines(900);
@@ -1089,6 +1095,7 @@ mod tests {
             body
         );
         assert!(body.contains(r#""scan_errors_total":2"#), "body: {}", body);
+        assert!(body.contains(r#""rotations":1"#), "body: {}", body);
         assert!(body.contains(r#""parse_errors":0"#), "body: {}", body);
         assert!(
             body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))),
@@ -1208,6 +1215,7 @@ mod tests {
 
         let (status, body) = http_get(port, "/api/pipelines");
         assert_eq!(status, 200);
+        assert!(body.contains(r#""rotations":1"#), "body: {}", body);
         assert!(
             !body.contains(r#""memory""#),
             "unexpected memory key: {}",

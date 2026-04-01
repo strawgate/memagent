@@ -527,14 +527,6 @@ fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> 
                 ));
             }
         }
-        InputType::Udp | InputType::Tcp => {
-            if matches!(format, Format::Cri | Format::Auto) {
-                return Err(format!(
-                    "input '{name}': CRI/auto format is not supported for {:?} inputs (CRI is a file-based container log format)",
-                    input_type
-                ));
-            }
-        }
         _ => {}
     }
     Ok(())
