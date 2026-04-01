@@ -10,7 +10,17 @@
 
 use crate::scan_config::{ScanConfig, parse_int_fast};
 use crate::scanner::ScanBuilder;
-use crate::structural::{ProcessedBlock, StreamingClassifier, find_structural_chars};
+use crate::structural::{StreamingClassifier, find_structural_chars};
+
+/// Stored bitmasks for scan_line — only what's needed for random-access
+/// quote scanning and nested object/array skipping.
+struct StoredBitmasks<'a> {
+    real_quotes: &'a [u64],
+    open_brace: &'a [u64],
+    close_brace: &'a [u64],
+    open_bracket: &'a [u64],
+    close_bracket: &'a [u64],
+}
 
 /// Scan an NDJSON buffer using streaming structural iteration.
 ///
@@ -23,16 +33,20 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
         return;
     }
 
-    // Phase 1: Find line boundaries and collect per-block processed bitmasks.
-    // We need the bitmasks for Phase 2, so store ProcessedBlock per block.
-    // This is ~80 bytes per 64-byte block = 1.25x buffer size in stack-like
-    // storage. For a 4MB batch that's ~80KB — acceptable.
+    // Phase 1: SIMD pass — find line boundaries and store quote/string bitmasks.
+    // Only real_quotes and open/close brace/bracket bitmasks are stored (for
+    // scan_string and skip_nested). Newline, comma, colon, space bitmasks are
+    // consumed during this pass and not stored.
     let len = buf.len();
     let num_blocks = len.div_ceil(64);
 
-    // Use a Vec for the block bitmasks. This is the ONE allocation —
-    // all bitmask storage. No per-character vectors.
-    let mut blocks = alloc::vec::Vec::with_capacity(num_blocks);
+    // Stored per-block: only what scan_line needs for random-access lookups.
+    // 5 u64s per block (40 bytes) vs old StructuralIndex's 2 u64s (16 bytes).
+    let mut real_quotes = alloc::vec::Vec::with_capacity(num_blocks);
+    let mut open_brace = alloc::vec::Vec::with_capacity(num_blocks);
+    let mut close_brace = alloc::vec::Vec::with_capacity(num_blocks);
+    let mut open_bracket = alloc::vec::Vec::with_capacity(num_blocks);
+    let mut close_bracket = alloc::vec::Vec::with_capacity(num_blocks);
     let mut line_ranges = alloc::vec::Vec::new();
     let mut line_start: usize = 0;
     let mut classifier = StreamingClassifier::new();
@@ -53,7 +67,14 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
         let raw = find_structural_chars(&block);
         let processed = classifier.process_block(&raw, block_len);
 
-        // Extract line boundaries from newline bitmask
+        // Store only what scan_line needs
+        real_quotes.push(processed.real_quotes);
+        open_brace.push(processed.open_brace);
+        close_brace.push(processed.close_brace);
+        open_bracket.push(processed.open_bracket);
+        close_bracket.push(processed.close_bracket);
+
+        // Extract line boundaries (consumed, not stored)
         let mut nl = processed.newline;
         while nl != 0 {
             let bit_pos = nl.trailing_zeros() as usize;
@@ -64,19 +85,24 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
             line_start = abs_pos + 1;
             nl &= nl - 1;
         }
-
-        blocks.push(processed);
     }
 
-    // Handle final line without trailing newline
     if line_start < len {
         line_ranges.push((line_start, len));
     }
 
-    // Phase 2: Scan each line using per-block bitmasks.
+    let bitmasks = StoredBitmasks {
+        real_quotes: &real_quotes,
+        open_brace: &open_brace,
+        close_brace: &close_brace,
+        open_bracket: &open_bracket,
+        close_bracket: &close_bracket,
+    };
+
+    // Phase 2: Scan each line using stored bitmasks for quote/nested lookups.
     builder.begin_batch();
     for (start, end) in line_ranges {
-        scan_line(buf, start, end, &blocks, config, builder);
+        scan_line(buf, start, end, &bitmasks, config, builder);
     }
 }
 
@@ -85,7 +111,7 @@ fn scan_line<B: ScanBuilder>(
     buf: &[u8],
     start: usize,
     end: usize,
-    blocks: &[ProcessedBlock],
+    blocks: &StoredBitmasks<'_>,
     config: &ScanConfig,
     builder: &mut B,
 ) {
@@ -239,13 +265,13 @@ fn scan_line<B: ScanBuilder>(
 /// Find the next unescaped quote at or after `from`, bounded by `end`.
 /// Uses per-block real_quotes bitmask for O(1) per-block lookup.
 #[inline]
-fn next_quote(from: usize, end: usize, blocks: &[ProcessedBlock]) -> Option<usize> {
+fn next_quote(from: usize, end: usize, blocks: &StoredBitmasks<'_>) -> Option<usize> {
     let mut pos = from;
     while pos < end {
         let block = pos >> 6;
         let bit = pos & 63;
-        if block < blocks.len() {
-            let mask = blocks[block].real_quotes >> bit;
+        if block < blocks.real_quotes.len() {
+            let mask = blocks.real_quotes[block] >> bit;
             if mask != 0 {
                 let found = pos + mask.trailing_zeros() as usize;
                 if found < end {
@@ -278,31 +304,31 @@ fn next_non_ws(buf: &[u8], mut pos: usize, end: usize) -> usize {
 
 /// Skip a nested object/array using brace/bracket bitmasks.
 #[inline]
-fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &[ProcessedBlock]) -> usize {
+fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'_>) -> usize {
     let mut depth: u32 = 0;
     let mut opener_stack = [0u8; 32];
 
     while pos < end {
         let block = pos >> 6;
         let bit = pos & 63;
-        if block >= blocks.len() {
+        if block >= blocks.real_quotes.len() {
             break;
         }
 
-        let p = &blocks[block];
-        // Check if this position is a structural character (not in string)
         let mask = 1u64 << bit;
         let b = buf[pos];
 
         match b {
-            b'{' | b'[' if (p.open_brace | p.open_bracket) & mask != 0 => {
+            b'{' | b'[' if (blocks.open_brace[block] | blocks.open_bracket[block]) & mask != 0 => {
                 if depth < 32 {
                     opener_stack[depth as usize] = b;
                 }
                 depth += 1;
                 pos += 1;
             }
-            b'}' | b']' if (p.close_brace | p.close_bracket) & mask != 0 => {
+            b'}' | b']'
+                if (blocks.close_brace[block] | blocks.close_bracket[block]) & mask != 0 =>
+            {
                 if depth == 0 {
                     return pos;
                 }
@@ -322,7 +348,7 @@ fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &[ProcessedBlock]
                     return pos;
                 }
             }
-            b'"' if p.real_quotes & mask != 0 => {
+            b'"' if blocks.real_quotes[block] & mask != 0 => {
                 // Skip string
                 pos += 1;
                 match next_quote(pos, end, blocks) {
