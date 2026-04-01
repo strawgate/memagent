@@ -441,8 +441,8 @@ fn input_poll_loop(
                     }
                     InputEvent::Rotated | InputEvent::Truncated => {
                         // FramedInput already resets its internal state on these events.
-                        // Track them as input errors for observability in pipeline metrics.
-                        input.stats.inc_errors();
+                        // Track these expected lifecycle events separately from errors.
+                        input.stats.inc_rotations();
                     }
                     _ => {}
                 }
