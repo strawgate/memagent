@@ -25,6 +25,7 @@ zstd = "0.13"
 xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
 
 [dev-dependencies]
+serial_test = "3"
 dhat = "0.3"
 tempfile = "3.27.0"
 

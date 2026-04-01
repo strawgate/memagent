@@ -1,9 +1,10 @@
 //! Allocation regression tests for the scanner hot path.
 //!
-//! Single test function to avoid interference from the shared global
-//! allocator when `cargo test` runs tests in parallel. Each section
-//! creates its own `Region` snapshot so measurements are isolated.
+//! Tests use `#[serial]` because the global counting allocator is shared
+//! across all tests in this binary — parallel execution would cause
+//! measurements to interfere.
 
+use serial_test::serial;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::alloc::System;
 
@@ -31,7 +32,7 @@ fn make_ndjson(n: usize) -> Vec<u8> {
 
 fn assert_stable_windows(label: &str, alloc1: usize, alloc2: usize) {
     if alloc1 == 0 && alloc2 == 0 {
-        return; // Perfect: zero new allocations in both windows.
+        return;
     }
     let growth = alloc2 as f64 / alloc1.max(1) as f64;
     assert!(
@@ -41,114 +42,113 @@ fn assert_stable_windows(label: &str, alloc1: usize, alloc2: usize) {
     );
 }
 
-/// Combined allocation regression test covering:
-/// 1. StorageBuilder leak detection (two-window stability)
-/// 2. StreamingBuilder leak detection (two-window stability)
-/// 3. StorageBuilder scaling (linear, not quadratic)
-/// 4. StreamingBuilder scaling (sub-linear for zero-copy path)
+/// Repeated StorageBuilder scans should have stable allocation profiles.
 #[test]
-fn scanner_allocation_regression() {
-    // --- Part 1: StorageBuilder leak detection ---
-    {
-        let mut scanner = SimdScanner::new(ScanConfig::default());
-        let data = make_ndjson(500);
+#[serial]
+fn storage_scanner_no_leak_across_batches() {
+    let mut scanner = SimdScanner::new(ScanConfig::default());
+    let data = make_ndjson(500);
 
-        for _ in 0..5 {
-            drop(scanner.scan(&data).unwrap());
-        }
-
-        let reg1 = Region::new(&GLOBAL);
-        for _ in 0..10 {
-            drop(scanner.scan(&data).unwrap());
-        }
-        let stats1 = reg1.change();
-
-        let reg2 = Region::new(&GLOBAL);
-        for _ in 0..10 {
-            drop(scanner.scan(&data).unwrap());
-        }
-        let stats2 = reg2.change();
-
-        assert_stable_windows(
-            "StorageBuilder leak",
-            stats1.bytes_allocated,
-            stats2.bytes_allocated,
-        );
+    for _ in 0..5 {
+        drop(scanner.scan(&data).unwrap());
     }
 
-    // --- Part 2: StreamingBuilder leak detection ---
-    {
-        let mut scanner = StreamingSimdScanner::new(ScanConfig::default());
-        let input: bytes::Bytes = make_ndjson(500).into();
+    let reg1 = Region::new(&GLOBAL);
+    for _ in 0..10 {
+        drop(scanner.scan(&data).unwrap());
+    }
+    let stats1 = reg1.change();
 
-        for _ in 0..5 {
-            drop(scanner.scan(input.clone()).unwrap());
-        }
+    let reg2 = Region::new(&GLOBAL);
+    for _ in 0..10 {
+        drop(scanner.scan(&data).unwrap());
+    }
+    let stats2 = reg2.change();
 
-        let reg1 = Region::new(&GLOBAL);
-        for _ in 0..10 {
-            drop(scanner.scan(input.clone()).unwrap());
-        }
-        let stats1 = reg1.change();
+    assert_stable_windows(
+        "StorageBuilder leak",
+        stats1.bytes_allocated,
+        stats2.bytes_allocated,
+    );
+}
 
-        let reg2 = Region::new(&GLOBAL);
-        for _ in 0..10 {
-            drop(scanner.scan(input.clone()).unwrap());
-        }
-        let stats2 = reg2.change();
+/// Repeated StreamingBuilder scans should have stable allocation profiles.
+#[test]
+#[serial]
+fn streaming_scanner_no_leak_across_batches() {
+    let mut scanner = StreamingSimdScanner::new(ScanConfig::default());
+    let input: bytes::Bytes = make_ndjson(500).into();
 
-        assert_stable_windows(
-            "StreamingBuilder leak",
-            stats1.bytes_allocated,
-            stats2.bytes_allocated,
-        );
+    for _ in 0..5 {
+        drop(scanner.scan(input.clone()).unwrap());
     }
 
-    // --- Part 3: StorageBuilder scaling (linear, not quadratic) ---
-    {
-        let mut scanner = SimdScanner::new(ScanConfig::default());
-        let _ = scanner.scan(&make_ndjson(1000)).unwrap();
-
-        let data_500 = make_ndjson(500);
-        let reg_500 = Region::new(&GLOBAL);
-        let _ = scanner.scan(&data_500).unwrap();
-        let stats_500 = reg_500.change();
-
-        let data_5000 = make_ndjson(5000);
-        let reg_5000 = Region::new(&GLOBAL);
-        let _ = scanner.scan(&data_5000).unwrap();
-        let stats_5000 = reg_5000.change();
-
-        let count_ratio = stats_5000.allocations as f64 / stats_500.allocations.max(1) as f64;
-        assert!(
-            count_ratio < 15.0,
-            "StorageBuilder super-linear: 10x rows caused {count_ratio:.1}x allocs \
-             (500={}, 5000={}). Expected ~10x.",
-            stats_500.allocations,
-            stats_5000.allocations,
-        );
-
-        // --- Part 4: StreamingBuilder scaling (sub-linear) ---
-        let mut streaming = StreamingSimdScanner::new(ScanConfig::default());
-        let _ = streaming
-            .scan(bytes::Bytes::from(make_ndjson(1000)))
-            .unwrap();
-
-        let reg_s500 = Region::new(&GLOBAL);
-        let _ = streaming.scan(bytes::Bytes::from(data_500)).unwrap();
-        let stats_s500 = reg_s500.change();
-
-        let reg_s5000 = Region::new(&GLOBAL);
-        let _ = streaming.scan(bytes::Bytes::from(data_5000)).unwrap();
-        let stats_s5000 = reg_s5000.change();
-
-        let streaming_ratio = stats_s5000.allocations as f64 / stats_s500.allocations.max(1) as f64;
-        assert!(
-            streaming_ratio < 5.0,
-            "StreamingBuilder not sub-linear: 10x rows caused {streaming_ratio:.1}x allocs \
-             (500={}, 5000={}). Zero-copy path should not allocate per-row.",
-            stats_s500.allocations,
-            stats_s5000.allocations,
-        );
+    let reg1 = Region::new(&GLOBAL);
+    for _ in 0..10 {
+        drop(scanner.scan(input.clone()).unwrap());
     }
+    let stats1 = reg1.change();
+
+    let reg2 = Region::new(&GLOBAL);
+    for _ in 0..10 {
+        drop(scanner.scan(input.clone()).unwrap());
+    }
+    let stats2 = reg2.change();
+
+    assert_stable_windows(
+        "StreamingBuilder leak",
+        stats1.bytes_allocated,
+        stats2.bytes_allocated,
+    );
+}
+
+/// StorageBuilder allocations should scale linearly (not quadratically).
+/// StreamingBuilder should be sub-linear (zero-copy path).
+#[test]
+#[serial]
+fn scanner_allocs_scale_linearly() {
+    let mut scanner = SimdScanner::new(ScanConfig::default());
+    let _ = scanner.scan(&make_ndjson(1000)).unwrap();
+
+    let data_500 = make_ndjson(500);
+    let reg_500 = Region::new(&GLOBAL);
+    let _ = scanner.scan(&data_500).unwrap();
+    let stats_500 = reg_500.change();
+
+    let data_5000 = make_ndjson(5000);
+    let reg_5000 = Region::new(&GLOBAL);
+    let _ = scanner.scan(&data_5000).unwrap();
+    let stats_5000 = reg_5000.change();
+
+    let count_ratio = stats_5000.allocations as f64 / stats_500.allocations.max(1) as f64;
+    assert!(
+        count_ratio < 15.0,
+        "StorageBuilder super-linear: 10x rows caused {count_ratio:.1}x allocs \
+         (500={}, 5000={}). Expected ~10x.",
+        stats_500.allocations,
+        stats_5000.allocations,
+    );
+
+    // StreamingBuilder should be sub-linear (zero-copy path).
+    let mut streaming = StreamingSimdScanner::new(ScanConfig::default());
+    let _ = streaming
+        .scan(bytes::Bytes::from(make_ndjson(1000)))
+        .unwrap();
+
+    let reg_s500 = Region::new(&GLOBAL);
+    let _ = streaming.scan(bytes::Bytes::from(data_500)).unwrap();
+    let stats_s500 = reg_s500.change();
+
+    let reg_s5000 = Region::new(&GLOBAL);
+    let _ = streaming.scan(bytes::Bytes::from(data_5000)).unwrap();
+    let stats_s5000 = reg_s5000.change();
+
+    let streaming_ratio = stats_s5000.allocations as f64 / stats_s500.allocations.max(1) as f64;
+    assert!(
+        streaming_ratio < 5.0,
+        "StreamingBuilder not sub-linear: 10x rows caused {streaming_ratio:.1}x allocs \
+         (500={}, 5000={}). Zero-copy path should not allocate per-row.",
+        stats_s500.allocations,
+        stats_s5000.allocations,
+    );
 }
