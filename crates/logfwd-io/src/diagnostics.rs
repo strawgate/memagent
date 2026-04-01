@@ -471,20 +471,20 @@ impl DiagnosticsServer {
         Ok(())
     }
 
-    /// Returns 200 `{"status":"ready"}` when every registered pipeline has
-    /// processed a batch within the last 30 seconds, and 503 otherwise.
+    /// Returns 200 `{"status":"ready"}` when at least one pipeline is
+    /// registered (i.e., the agent has finished initialization and is
+    /// functional). Returns 503 before any pipelines are configured.
+    ///
+    /// Per-pipeline data-flow freshness (`last_batch_time_ns`) is exposed
+    /// via `/api/pipelines` for monitoring dashboards, but is NOT a
+    /// readiness gate — a quiet log source should not cause Kubernetes
+    /// to mark the pod as unready.
     fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        const STALENESS_THRESHOLD_NS: u64 = 30_000_000_000; // 30 s in nanoseconds
-
-        let now = now_nanos();
-        let all_ready = self.pipelines.iter().all(|pm| {
-            let last = pm.last_batch_time_ns.load(Ordering::Relaxed);
-            last > 0 && now.saturating_sub(last) <= STALENESS_THRESHOLD_NS
-        });
+        let ready = !self.pipelines.is_empty();
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        if all_ready {
+        if ready {
             let resp =
                 tiny_http::Response::from_string(r#"{"status":"ready"}"#).with_header(header);
             request.respond(resp)?;
@@ -679,8 +679,10 @@ impl DiagnosticsServer {
             let transform_s = pm.transform_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
             let output_s = pm.output_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
 
+            let last_batch_ns = pm.last_batch_time_ns.load(Ordering::Relaxed);
+
             pipelines_json.push(format!(
-                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"dropped_batches_total":{},"scan_errors_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6}}}}}"#,
+                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"dropped_batches_total":{},"scan_errors_total":{},"last_batch_time_ns":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6}}}}}"#,
                 esc(&pm.name),
                 inputs_json.join(","),
                 esc(&pm.transform_sql),
@@ -695,6 +697,7 @@ impl DiagnosticsServer {
                 pm.flush_by_timeout.load(Ordering::Relaxed),
                 pm.dropped_batches_total.load(Ordering::Relaxed),
                 pm.scan_errors_total.load(Ordering::Relaxed),
+                last_batch_ns,
                 scan_s,
                 transform_s,
                 output_s,
@@ -1250,17 +1253,13 @@ mod tests {
     }
 
     #[test]
-    fn test_ready_endpoint_no_batch_returns_503() {
-        // A pipeline that has never processed a batch (last_batch_time_ns == 0)
-        // must cause /ready to return 503.
+    fn test_ready_endpoint_no_pipelines_returns_503() {
+        // No pipelines registered yet → not ready.
         let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
-        let meter = opentelemetry::global::meter("test");
-        let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
-        // last_batch_time_ns stays at 0 (never processed).
 
         let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
-        server.add_pipeline(Arc::new(pm));
+        // Don't add any pipelines.
         let _handle = server.start().expect("server bind failed");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1271,13 +1270,14 @@ mod tests {
     }
 
     #[test]
-    fn test_ready_endpoint_recent_batch_returns_200() {
-        // A pipeline whose last batch was just now must return 200.
+    fn test_ready_endpoint_with_pipeline_returns_200() {
+        // A registered pipeline makes the server ready, regardless of
+        // whether any batches have been processed.
         let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let meter = opentelemetry::global::meter("test");
         let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
-        pm.last_batch_time_ns.store(now_nanos(), Ordering::Relaxed);
+        // last_batch_time_ns stays at 0 — no data yet, but still ready.
 
         let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
         server.add_pipeline(Arc::new(pm));
@@ -1288,28 +1288,6 @@ mod tests {
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 200, "body: {}", body);
         assert!(body.contains(r#""status":"ready""#), "body: {}", body);
-    }
-
-    #[test]
-    fn test_ready_endpoint_stale_batch_returns_503() {
-        // A pipeline whose last batch was more than 30s ago must return 503.
-        let _lock = TEST_LOCK.lock().unwrap();
-        let port = free_port();
-        let meter = opentelemetry::global::meter("test");
-        let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
-        // Set the timestamp 60 seconds in the past.
-        let stale = now_nanos().saturating_sub(60_000_000_000);
-        pm.last_batch_time_ns.store(stale, Ordering::Relaxed);
-
-        let mut server = DiagnosticsServer::new(&format!("127.0.0.1:{}", port));
-        server.add_pipeline(Arc::new(pm));
-        let _handle = server.start().expect("server bind failed");
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let (status, body) = http_get(port, "/ready");
-        assert_eq!(status, 503, "body: {}", body);
-        assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
     }
 
     #[test]
