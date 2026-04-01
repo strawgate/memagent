@@ -330,6 +330,60 @@ mod tests {
     }
 
     #[test]
+    fn proptest_generated_json_always_valid() {
+        // Inline proptest runner: validate JSON for a range of counter offsets
+        // by skipping past initial batches to reach different counter values.
+        use proptest::prelude::*;
+
+        proptest!(|(offset in 0u64..1000)| {
+            // We generate (offset + 1) events and check the last one.
+            let total = offset + 1;
+            let mut generator = GeneratorInput::new(
+                "test",
+                GeneratorConfig {
+                    batch_size: total as usize,
+                    total_events: total,
+                    ..Default::default()
+                },
+            );
+            let events = generator.poll().unwrap();
+            if let Some(InputEvent::Data { bytes }) = events.into_iter().next() {
+                let text = String::from_utf8(bytes).unwrap();
+                for (i, line) in text.trim().lines().enumerate() {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .unwrap_or_else(|e| panic!("invalid JSON at event {i} (offset={offset}): {e}\n{line}"));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn proptest_complex_json_always_valid() {
+        use proptest::prelude::*;
+
+        proptest!(|(offset in 0u64..500)| {
+            let total = offset + 1;
+            let mut generator = GeneratorInput::new(
+                "test",
+                GeneratorConfig {
+                    batch_size: total as usize,
+                    total_events: total,
+                    complexity: GeneratorComplexity::Complex,
+                    ..Default::default()
+                },
+            );
+            let events = generator.poll().unwrap();
+            if let Some(InputEvent::Data { bytes }) = events.into_iter().next() {
+                let text = String::from_utf8(bytes).unwrap();
+                for (i, line) in text.trim().lines().enumerate() {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .unwrap_or_else(|e| panic!("invalid JSON at event {i} (offset={offset}): {e}\n{line}"));
+                }
+            }
+        });
+    }
+
+    #[test]
     fn events_generated_counter() {
         let mut input = GeneratorInput::new(
             "test",

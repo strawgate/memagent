@@ -2181,6 +2181,7 @@ dependencies = [
  "notify",
  "opentelemetry",
  "opentelemetry-proto",
+ "proptest",
  "prost",
  "serde",
  "serde_json",
