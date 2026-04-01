@@ -16,6 +16,9 @@ spec:
       automountServiceAccountToken: false
       tolerations:
         - operator: Exists
+      # Log collection requires root to read /var/log/pods (owned by root).
+      # Production deployments should use fsGroup/supplementalGroups (as needed) to grant access
+      # to the log directory without running as root.
       securityContext:
         seccompProfile:
           type: RuntimeDefault
@@ -25,10 +28,10 @@ spec:
           imagePullPolicy: IfNotPresent
           args: ["--config", "/etc/logfwd/config.yaml"]
           securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
             allowPrivilegeEscalation: false
-            runAsNonRoot: true
-            runAsUser: 65532
-            runAsGroup: 65532
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
@@ -54,8 +57,8 @@ spec:
             httpGet:
               path: /ready
               port: diagnostics
-            initialDelaySeconds: 10
-            periodSeconds: 10
+            initialDelaySeconds: 5
+            periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 3
           startupProbe:

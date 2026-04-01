@@ -59,9 +59,27 @@ k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/blackhole-receiver.yaml"
 k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/logfwd-daemonset.yaml"
 
 echo "=== Phase 4: Wait for readiness ==="
-k wait -n "$NAMESPACE" deployment/blackhole-receiver \
-    --for=condition=available --timeout=90s
-k rollout status -n "$NAMESPACE" daemonset/logfwd --timeout=90s
+if ! k wait -n "$NAMESPACE" deployment/blackhole-receiver \
+    --for=condition=available --timeout=90s; then
+    echo ""
+    echo "FAIL: blackhole-receiver deployment not available"
+    echo "--- blackhole-receiver pods ---"
+    k describe pods -n "$NAMESPACE" -l app=blackhole-receiver 2>&1 || true
+    k logs -n "$NAMESPACE" -l app=blackhole-receiver --tail=50 2>&1 || true
+    exit 1
+fi
+if ! k rollout status -n "$NAMESPACE" daemonset/logfwd --timeout=90s; then
+    echo ""
+    echo "FAIL: logfwd daemonset rollout timed out"
+    echo "--- logfwd pods ---"
+    k get pods -n "$NAMESPACE" -l app=logfwd -o wide 2>&1 || true
+    k describe pods -n "$NAMESPACE" -l app=logfwd 2>&1 || true
+    echo "--- logfwd logs ---"
+    k logs -n "$NAMESPACE" -l app=logfwd --tail=80 2>&1 || true
+    echo "--- events ---"
+    k get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 || true
+    exit 1
+fi
 
 echo "=== Phase 5: Generate logs ==="
 k delete pod -n "$NAMESPACE" log-generator --ignore-not-found 2>/dev/null
