@@ -103,7 +103,7 @@ pub fn parse_column_name(col_name: &str) -> (&str, &str) {
 /// rows produces `status_int` (Int64) and `status_str` (Utf8) columns. This
 /// struct groups them so the output picks the first non-null variant per row,
 /// preserving type fidelity (integers stay unquoted, strings stay quoted).
-pub(crate) struct ColInfo {
+pub struct ColInfo {
     /// Index of the primary (highest-priority) column — used for output ordering.
     primary_idx: usize,
     /// Base field name with type suffix stripped (e.g. "status" from "status_int").
@@ -128,7 +128,7 @@ fn datatype_priority(dt: &DataType) -> u8 {
 /// Columns sharing the same base field name (e.g. `status_int` and `status_str`)
 /// are grouped into a single `ColInfo` with multiple variants. During output,
 /// the first non-null variant per row is used — no data is silently dropped.
-pub(crate) fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
+pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
     let schema = batch.schema();
 
     // Collect (field_name, column_index, data_type) for every column.
@@ -226,7 +226,7 @@ fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) {
 /// For fields backed by multiple typed columns (e.g. `status_int` + `status_str`),
 /// the first non-null variant is used — no data is silently dropped. Type dispatch
 /// uses the Arrow DataType, not the column name suffix.
-pub(crate) fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], out: &mut Vec<u8>) {
+pub fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], out: &mut Vec<u8>) {
     out.push(b'{');
     let mut first = true;
     for col in cols {

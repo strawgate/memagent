@@ -299,6 +299,20 @@ fn bench_output(c: &mut Criterion) {
         b.iter(|| sink.send_batch(&batch, &meta).unwrap())
     });
 
+    // JSON serialization via write_row_json (measures build_col_infos + per-row dispatch)
+    group.bench_function("json_serialize", |b| {
+        let cols = logfwd_output::build_col_infos(&batch);
+        let mut buf = Vec::with_capacity(n * 300);
+        b.iter(|| {
+            buf.clear();
+            for row in 0..batch.num_rows() {
+                logfwd_output::write_row_json(&batch, row, &cols, &mut buf);
+                buf.push(b'\n');
+            }
+            criterion::black_box(buf.len());
+        });
+    });
+
     group.finish();
 }
 
