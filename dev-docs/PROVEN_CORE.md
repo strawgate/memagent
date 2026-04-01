@@ -19,19 +19,18 @@ dashboard — things you notice.
 
 | Module | What it does | Verification |
 |--------|-------------|-------------|
-| classify.rs | Escape detection, quote classification (u64 bitmask ops) | Kani exhaustive (2 proofs) |
+| structural.rs | Escape detection, quote classification, SIMD structural detection (u64 bitmask ops) | Kani exhaustive (12 proofs) + proptest (SIMD ≡ scalar) |
+| structural_iter.rs | Streaming structural position iterator (block iteration, classify) | Kani exhaustive (2 proofs) |
 | framer.rs | Newline framing, line boundary detection | Kani exhaustive + oracle (4 proofs) |
-| aggregator.rs | CRI partial line reassembly (P/F merging) | Kani exhaustive (3 proofs) |
+| aggregator.rs | CRI partial line reassembly (P/F merging, zero-copy) | Kani exhaustive (5 proofs) |
 | byte_search.rs | Proven byte search (find_byte, rfind_byte) | Kani exhaustive + oracle (2 proofs) |
-| scan.rs | JSON field extraction (generic over ScanBuilder trait) | Kani bounded + proptest oracle |
+| scanner.rs | JSON field extraction (generic over ScanBuilder trait) | Kani bounded (skip_ws) + proptest oracle |
+| json_scanner.rs | Streaming JSON field scanner using bitmask iteration | Kani bounded (5 proofs) + proptest oracle |
 | scan_config.rs | parse_int_fast, parse_float_fast, ScanConfig | Kani exhaustive (2 proofs) |
-| cri.rs | CRI log parsing + partial line reassembly | Kani exhaustive (4 proofs) |
-| otlp.rs | Protobuf wire format + OTLP encoding | Kani exhaustive (14 proofs) |
-| format.rs | Legacy parsers (being replaced by framer + aggregator) | proptest state-machine |
-| pipeline/state.rs | Pipeline state machine (flush, drain, shutdown) | Kani exhaustive + TLA+ |
-| pipeline/token.rs | BatchToken linear type (ack/nack) | compile-time |
-| sink.rs | FieldSink trait definition | trait contract |
-| error.rs | ParseError enum | trivial |
+| cri.rs | CRI log parsing + partial line reassembly | Kani exhaustive (8 proofs) |
+| otlp.rs | Protobuf wire format + OTLP encoding + timestamp parsing | Kani exhaustive (20 proofs) + 3 contracts |
+| pipeline/lifecycle.rs | Pipeline state machine (ordered ACK, drain, shutdown) | Kani exhaustive (5 proofs) + proptest |
+| pipeline/batch.rs | BatchTicket typestate (ack/nack/fail/reject) | Kani exhaustive (5 proofs) + compile-time |
 
 ## Rules
 
@@ -54,26 +53,35 @@ dashboard — things you notice.
 ## Verification tiers
 
 **Tier 1 — Exhaustive (Kani proves for ALL inputs):**
-- u64 bitmask operations (compute_real_quotes, prefix_xor)
+- u64 bitmask operations (compute_real_quotes, prefix_xor, find_char_mask)
 - Integer parsing (parse_int_fast, all ≤20 byte inputs)
 - Varint encode/decode roundtrip (all u64 values)
-- Pipeline state machine (all State×Event pairs)
+- Pipeline state machine (all State×Event pairs, all ack orderings)
+- BatchTicket transitions (all state transitions preserve fields)
+- classify_bit (structural iterator, all bit positions)
+- is_json_delimiter (all 256 byte values)
+- Severity parsing (no false positives for any 8-byte input)
 
 **Tier 2 — Bounded (Kani proves for inputs up to size N):**
-- scan_line (all JSON lines ≤128 bytes with ≤8 fields)
-- parse_cri_line (all CRI lines ≤256 bytes)
+- parse_cri_line (all CRI lines ≤32 bytes)
 - days_from_civil (all valid dates in [1970, 2100])
+- NewlineFramer (all 32-byte inputs)
+- skip_nested (all 16-byte inputs, both scanner implementations)
+- scan_string (all 16-byte inputs)
+- CriAggregator P+P+F (all 8-byte messages, max_size ≤32)
+- write_json_line (all 8-byte messages with 4-byte prefix)
+- parse_timestamp_nanos compositional (all 24-byte inputs)
 
 **Tier 3 — Statistical (proptest, high confidence):**
-- FormatParser state machines (random chunk sequences)
-- CriReassembler (random feed/reset sequences)
-- scan_line for large inputs (oracle vs serde_json)
-- Pipeline event sequences (random events, no-data-abandoned)
+- SIMD ≡ scalar structural detection (random 64-byte blocks)
+- scan_line / scan_streaming for large inputs (oracle vs sonic-rs)
+- Scanner consistency (SimdScanner vs StreamingSimdScanner)
+- Pipeline event sequences (random events, in_flight_consistent)
+- Pipeline ack ordering (shuffled ack orders reach final checkpoint)
 
 **Tier 4 — Compile-time (Rust type system):**
-- BatchToken #[must_use] + Drop (silent data loss is loud)
-- ParseError #[non_exhaustive] (adding variants is non-breaking)
-- FieldSink sealed trait (controlled implementations)
+- BatchTicket #[must_use] + consume-on-transition (silent data loss is loud)
+- AckReceipt #[must_use] (must pass to apply_ack)
 
 ## How to add a function to core
 
@@ -119,32 +127,34 @@ dashboard — things you notice.
    cargo build -p logfwd-core --target thumbv6m-none-eabi  # no_std check
    ```
 
-## The FieldSink boundary
+## The ScanBuilder boundary
 
 The core doesn't know about Arrow. It parses JSON fields and calls
-methods on a `FieldSink` trait:
+methods on a `ScanBuilder` trait (defined in scanner.rs):
 
 ```rust
-pub trait FieldSink {
+pub trait ScanBuilder {
+    fn begin_batch(&mut self);
     fn begin_row(&mut self);
     fn end_row(&mut self);
     fn resolve_field(&mut self, key: &[u8]) -> usize;
-    fn field_str(&mut self, idx: usize, value: &[u8]);
-    fn field_int(&mut self, idx: usize, value: &[u8]);
-    fn field_float(&mut self, idx: usize, value: &[u8]);
-    fn field_null(&mut self, idx: usize);
+    fn append_str_by_idx(&mut self, idx: usize, value: &[u8]);
+    fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
+    fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
+    fn append_null_by_idx(&mut self, idx: usize);
+    fn append_raw(&mut self, line: &[u8]);
 }
 ```
 
 logfwd-arrow implements this with StreamingBuilder/StorageBuilder,
 producing Arrow RecordBatches. The core is verified independently
-of Arrow — Kani uses a mock FieldSink that records calls.
+of Arrow — proptest uses a mock ScanBuilder that records calls.
 
 ## SIMD split
 
-Core defines `CharDetector` trait (safe). logfwd-arrow implements
-it with SIMD (unsafe). Core provides a scalar fallback that Kani
-proves correct. proptest verifies SIMD matches scalar.
+SIMD structural detection lives in structural.rs (`find_structural_chars`
+via `wide` crate). The scalar fallback (`find_structural_chars_scalar`)
+is Kani-provable. proptest verifies SIMD matches scalar for random inputs.
 
 ## Kani mechanics
 

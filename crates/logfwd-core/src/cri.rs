@@ -519,4 +519,41 @@ mod verification {
         let result = r.feed(&partial);
         assert!(result.is_none(), "partial line should not produce output");
     }
+
+    /// Prove write_json_line with prefix correctly injects after opening brace.
+    #[kani::proof]
+    fn verify_write_json_line_prefix_injection() {
+        let msg: [u8; 8] = kani::any();
+        let prefix: [u8; 4] = kani::any();
+        let mut out = Vec::new();
+
+        write_json_line(&msg, Some(&prefix), &mut out);
+
+        if msg[0] == b'{' {
+            // Output should be: { + prefix + msg[1..] + \n
+            assert_eq!(out[0], b'{');
+            assert_eq!(&out[1..5], &prefix);
+            assert_eq!(&out[5..12], &msg[1..]);
+            assert_eq!(out[12], b'\n');
+            assert_eq!(out.len(), 13);
+        } else {
+            // Output should be: msg + \n
+            assert_eq!(&out[..8], &msg);
+            assert_eq!(out[8], b'\n');
+            assert_eq!(out.len(), 9);
+        }
+    }
+
+    /// Prove write_json_line without prefix is just msg + newline.
+    #[kani::proof]
+    fn verify_write_json_line_no_prefix() {
+        let msg: [u8; 8] = kani::any();
+        let mut out = Vec::new();
+
+        write_json_line(&msg, None, &mut out);
+
+        assert_eq!(&out[..8], &msg);
+        assert_eq!(out[8], b'\n');
+        assert_eq!(out.len(), 9);
+    }
 }

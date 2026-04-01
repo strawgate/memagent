@@ -395,3 +395,135 @@ mod tests {
         assert_eq!(quotes.len(), 2); // opening and closing quote
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani proofs
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+    use crate::structural::ProcessedBlock;
+
+    /// classify_bit always returns a valid StructuralKind, and the
+    /// selected kind matches exactly one of the bitmask fields.
+    /// Exhaustive over all bit positions and arbitrary bitmasks.
+    #[kani::proof]
+    fn verify_classify_bit_correct() {
+        let bit_pos: usize = kani::any_where(|&p: &usize| p < 64);
+        let mask = 1u64 << bit_pos;
+
+        let p = ProcessedBlock {
+            newline: kani::any(),
+            space: kani::any(),
+            real_quotes: kani::any(),
+            in_string: kani::any(),
+            comma: kani::any(),
+            colon: kani::any(),
+            open_brace: kani::any(),
+            close_brace: kani::any(),
+            open_bracket: kani::any(),
+            close_bracket: kani::any(),
+        };
+
+        // Build a minimal iterator just to call classify_bit
+        let iter = StructuralIter {
+            buf: &[],
+            len: 0,
+            block_idx: 0,
+            num_blocks: 0,
+            remaining_bits: 0,
+            current_block: p,
+            block_offset: 0,
+            classifier: crate::structural::StreamingClassifier::new(),
+            current_space: 0,
+        };
+
+        let kind = iter.classify_bit(bit_pos);
+
+        // The kind must correspond to a set bit in exactly the right field
+        match kind {
+            StructuralKind::Quote => assert!(p.real_quotes & mask != 0),
+            StructuralKind::Comma => {
+                assert!(p.comma & mask != 0);
+                assert!(p.real_quotes & mask == 0); // higher priority didn't match
+            }
+            StructuralKind::Colon => {
+                assert!(p.colon & mask != 0);
+                assert!(p.real_quotes & mask == 0);
+                assert!(p.comma & mask == 0);
+            }
+            StructuralKind::CloseBrace => {
+                assert!(p.close_brace & mask != 0);
+                assert!(p.real_quotes & mask == 0);
+                assert!(p.comma & mask == 0);
+                assert!(p.colon & mask == 0);
+            }
+            StructuralKind::OpenBrace => {
+                assert!(p.open_brace & mask != 0);
+                assert!(p.real_quotes & mask == 0);
+                assert!(p.comma & mask == 0);
+                assert!(p.colon & mask == 0);
+                assert!(p.close_brace & mask == 0);
+            }
+            StructuralKind::Newline => {
+                assert!(p.newline & mask != 0);
+                assert!(p.real_quotes & mask == 0);
+                assert!(p.comma & mask == 0);
+                assert!(p.colon & mask == 0);
+                assert!(p.close_brace & mask == 0);
+                assert!(p.open_brace & mask == 0);
+            }
+            StructuralKind::CloseBracket => {
+                assert!(p.close_bracket & mask != 0);
+                assert!(p.real_quotes & mask == 0);
+                assert!(p.comma & mask == 0);
+                assert!(p.colon & mask == 0);
+                assert!(p.close_brace & mask == 0);
+                assert!(p.open_brace & mask == 0);
+                assert!(p.newline & mask == 0);
+            }
+            StructuralKind::OpenBracket => {
+                assert!(p.open_bracket & mask != 0);
+                assert!(p.real_quotes & mask == 0);
+                assert!(p.comma & mask == 0);
+                assert!(p.colon & mask == 0);
+                assert!(p.close_brace & mask == 0);
+                assert!(p.open_brace & mask == 0);
+                assert!(p.newline & mask == 0);
+                assert!(p.close_bracket & mask == 0);
+            }
+        }
+    }
+
+    /// next_non_space fallback path: result is always in [from, len],
+    /// and the byte at result (if < len) is not a space/tab/CR.
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn verify_next_non_space_fallback() {
+        let buf: [u8; 16] = kani::any();
+        let from: usize = kani::any();
+        kani::assume(from <= 16);
+
+        // Build an iterator positioned past all blocks so it uses the fallback
+        let iter = StructuralIter {
+            buf: &buf,
+            len: 16,
+            block_idx: 99, // past all blocks — forces fallback path
+            num_blocks: 0,
+            remaining_bits: 0,
+            current_block: ProcessedBlock::default(),
+            block_offset: 0,
+            classifier: crate::structural::StreamingClassifier::new(),
+            current_space: 0,
+        };
+
+        let result = iter.next_non_space(from);
+
+        assert!(result >= from && result <= 16);
+        if result < 16 {
+            let b = buf[result];
+            assert!(b != b' ' && b != b'\t' && b != b'\r');
+        }
+    }
+}

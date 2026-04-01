@@ -267,4 +267,49 @@ mod verification {
             AggregateResult::Complete(_) => panic!("P line should not produce Complete"),
         }
     }
+
+    /// Prove 3-step P+P+F respects max_message_size.
+    #[kani::proof]
+    fn verify_aggregator_ppf_max_size() {
+        let max_size: usize = kani::any();
+        kani::assume(max_size >= 1 && max_size <= 32);
+
+        let mut agg = CriAggregator::new(max_size);
+
+        let msg1: [u8; 8] = kani::any();
+        let _ = agg.feed(&msg1, false);
+
+        let msg2: [u8; 8] = kani::any();
+        let _ = agg.feed(&msg2, false);
+
+        let msg3: [u8; 8] = kani::any();
+        match agg.feed(&msg3, true) {
+            AggregateResult::Complete(out) => {
+                assert!(out.len() <= max_size, "P+P+F output exceeds max");
+            }
+            AggregateResult::Pending => panic!("F line should produce Complete"),
+        }
+    }
+
+    /// Prove reset after Complete allows a clean new sequence.
+    #[kani::proof]
+    fn verify_aggregator_reset_clears_state() {
+        let mut agg = CriAggregator::new(64);
+
+        let msg1: [u8; 4] = kani::any();
+        let _ = agg.feed(&msg1, false);
+        assert!(agg.has_pending());
+
+        agg.reset();
+        assert!(!agg.has_pending());
+
+        // After reset, a new F line works as zero-copy
+        let msg2: [u8; 4] = kani::any();
+        match agg.feed(&msg2, true) {
+            AggregateResult::Complete(out) => {
+                assert_eq!(out.len(), 4);
+            }
+            AggregateResult::Pending => panic!("F line should produce Complete"),
+        }
+    }
 }

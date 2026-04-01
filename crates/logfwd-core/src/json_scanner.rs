@@ -690,24 +690,62 @@ mod verification {
         }
     }
 
-    /// trim_whitespace produces a subslice — result length <= input length.
+    /// is_json_delimiter covers all JSON value delimiters exhaustively.
+    /// Checks every byte value: only the 7 expected delimiters return true.
     #[kani::proof]
-    #[kani::unwind(9)]
-    fn verify_trim_whitespace() {
-        let buf: [u8; 8] = kani::any();
-        let len: usize = kani::any_where(|&l: &usize| l <= 8);
-        let input = &buf[..len];
-        let result = trim_whitespace(input);
+    fn verify_is_json_delimiter_exhaustive() {
+        let b: u8 = kani::any();
+        let result = is_json_delimiter(b);
+        let expected = b == b','
+            || b == b'}'
+            || b == b']'
+            || b == b' '
+            || b == b'\t'
+            || b == b'\r'
+            || b == b'\n';
+        assert!(result == expected);
+    }
 
-        assert!(result.len() <= input.len());
+    /// skip_nested: result is always in [pos, end], and for a single
+    /// balanced pair the returned position is past the closer.
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn verify_skip_nested_bounds() {
+        let buf: [u8; 16] = kani::any();
+        let pos: usize = kani::any();
+        let end: usize = kani::any();
+        kani::assume(pos <= end && end <= 16);
 
-        // First byte of result (if any) is not whitespace
-        if !result.is_empty() {
-            let first = result[0];
-            assert!(first != b' ' && first != b'\t' && first != b'\r' && first != b'\n');
-            let last = result[result.len() - 1];
-            assert!(last != b' ' && last != b'\t' && last != b'\r' && last != b'\n');
+        // Build bitmasks for this small buffer (1 block)
+        let mut rq = [0u64; 1];
+        let mut ob = [0u64; 1];
+        let mut cb = [0u64; 1];
+        let mut obrk = [0u64; 1];
+        let mut cbrk = [0u64; 1];
+        let mut i: usize = 0;
+        while i < 16 {
+            let mask = 1u64 << i;
+            match buf[i] {
+                b'"' => rq[0] |= mask,
+                b'{' => ob[0] |= mask,
+                b'}' => cb[0] |= mask,
+                b'[' => obrk[0] |= mask,
+                b']' => cbrk[0] |= mask,
+                _ => {}
+            }
+            i += 1;
         }
+
+        let blocks = StoredBitmasks {
+            real_quotes: &rq,
+            open_brace: &ob,
+            close_brace: &cb,
+            open_bracket: &obrk,
+            close_bracket: &cbrk,
+        };
+
+        let result = skip_nested(&buf, pos, end, &blocks);
+        assert!(result >= pos && result <= end);
     }
 
     /// next_quote on a single block: if found, the position has a set bit

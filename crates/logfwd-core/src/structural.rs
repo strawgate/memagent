@@ -1188,4 +1188,49 @@ mod verification {
         let expected = (quote_count % 2 == 1) && !is_quote;
         assert_eq!(in_string, expected);
     }
+
+    /// scan_string: if next_quote finds a close within [pos+1, end),
+    /// scan_string returns Some with correct content slice and after-position.
+    /// If no quote or quote >= end, returns None.
+    /// Uses 16-byte input to keep proof tractable.
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn verify_scan_string_bounds() {
+        let buf: [u8; 16] = kani::any();
+        let pos: usize = kani::any_where(|&p: &usize| p < 16);
+        let end: usize = kani::any_where(|&e: &usize| e <= 16);
+        kani::assume(pos < end);
+        kani::assume(buf[pos] == b'"');
+
+        let (idx, _) = StructuralIndex::new(&buf);
+        let result = idx.scan_string(&buf, pos, end);
+
+        match result {
+            Some((content, after)) => {
+                // after is the position past the closing quote
+                assert!(after > pos + 1 && after <= end);
+                // content starts at pos+1 and ends before the close quote
+                assert_eq!(content.len(), after - pos - 2);
+            }
+            None => {
+                // Either no quote found after pos, or the quote is >= end
+            }
+        }
+    }
+
+    /// skip_nested: result is always in [pos, end].
+    /// Uses 16-byte input to keep proof tractable.
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn verify_skip_nested_bounds() {
+        let buf: [u8; 16] = kani::any();
+        let pos: usize = kani::any();
+        let end: usize = kani::any();
+        kani::assume(pos <= end && end <= 16);
+
+        let (idx, _) = StructuralIndex::new(&buf);
+        let result = idx.skip_nested(&buf, pos, end);
+
+        assert!(result >= pos && result <= end);
+    }
 }

@@ -930,4 +930,36 @@ mod verification {
         let ts = b"2024-01-32T10:30:00Z";
         assert!(parse_timestamp_nanos(ts) == None);
     }
+
+    /// Prove eq_ignore_case_4 agrees with eq_ignore_case_match for INFO.
+    ///
+    /// **Oracle limitation:** eq_ignore_case_match also uses `|0x20`, so this
+    /// proof cannot detect non-letter collisions (e.g., `@` vs `` ` ``).
+    /// The exhaustive parse_severity proof (verify_parse_severity_no_false_positives)
+    /// already covers the real-world safety of eq_ignore_case_4 by checking
+    /// that only valid severity strings produce a match. This proof is kept
+    /// as a structural consistency check between eq_ignore_case_4 and the oracle.
+    #[kani::proof]
+    fn verify_eq_ignore_case_4_no_false_positives_info() {
+        let input: [u8; 4] = kani::any();
+        let target = b"INFO";
+        if eq_ignore_case_4(&input, target) {
+            assert!(eq_ignore_case_match(&input, target));
+        }
+    }
+
+    /// Same for 5-byte targets — proves eq_ignore_case_5 agrees with oracle.
+    ///
+    /// **Oracle limitation:** same as above — eq_ignore_case_match uses `|0x20`
+    /// and cannot detect non-letter collisions. Redundant with
+    /// verify_parse_severity_no_false_positives which exhaustively validates
+    /// that parse_severity only matches valid severity level strings.
+    #[kani::proof]
+    fn verify_eq_ignore_case_5_no_false_positives_error() {
+        let input: [u8; 5] = kani::any();
+        let target = b"ERROR";
+        if eq_ignore_case_5(&input, target) {
+            assert!(eq_ignore_case_match(&input, target));
+        }
+    }
 }
