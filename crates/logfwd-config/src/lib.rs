@@ -78,6 +78,8 @@ pub enum InputType {
     Udp,
     Tcp,
     Otlp,
+    /// Synthetic data generator for benchmarking.
+    Generator,
 }
 
 /// Recognised output types.
@@ -92,6 +94,8 @@ pub enum OutputType {
     Stdout,
     FileOut,
     Parquet,
+    /// Discard all data. Used for benchmarking and blackhole receivers.
+    Null,
 }
 
 /// Recognised log formats.
@@ -360,7 +364,7 @@ impl Config {
                             )));
                         }
                     }
-                    InputType::Otlp => {}
+                    InputType::Otlp | InputType::Generator => {}
                 }
             }
 
@@ -412,7 +416,7 @@ impl Config {
                             )));
                         }
                     }
-                    OutputType::Stdout => {}
+                    OutputType::Stdout | OutputType::Null => {}
                     // Elasticsearch, Loki, Parquet are already rejected above.
                     OutputType::Elasticsearch | OutputType::Loki | OutputType::Parquet => {
                         unreachable!("placeholder types are rejected before this match")
@@ -438,6 +442,7 @@ fn output_type_name(t: &OutputType) -> &'static str {
         OutputType::Stdout => "stdout",
         OutputType::FileOut => "file_out",
         OutputType::Parquet => "parquet",
+        OutputType::Null => "null",
     }
 }
 

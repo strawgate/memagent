@@ -3,6 +3,7 @@
 
 mod fanout;
 mod json_lines;
+mod null;
 mod otlp_sink;
 pub mod sink;
 mod stdout;
@@ -17,6 +18,7 @@ mod parquet;
 
 pub use fanout::{FanOut, FanOutError};
 pub use json_lines::JsonLinesSink;
+pub use null::NullSink;
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
 use stdout::*;
 
@@ -301,6 +303,7 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
                 auth_headers,
             )))
         }
+        OutputType::Null => Ok(Box::new(NullSink::new(name.to_string()))),
         _ => Err(format!(
             "output '{name}': type {:?} not yet supported",
             cfg.output_type

@@ -650,6 +650,28 @@ fn build_input_state(
                 stats,
             })
         }
+        InputType::Generator => {
+            use logfwd_io::generator::{GeneratorConfig, GeneratorInput};
+            let config = GeneratorConfig {
+                events_per_sec: cfg
+                    .listen
+                    .as_deref()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                batch_size: 1000,
+                total_events: 0,
+            };
+            let source = GeneratorInput::new(name, config);
+            Ok(InputState {
+                name: name.to_string(),
+                source: Box::new(source),
+                format: Format::Json,
+                buf: Vec::with_capacity(4 * 1024 * 1024),
+                remainder: Vec::new(),
+                cri_aggregator: None,
+                stats,
+            })
+        }
         _ => Err(format!(
             "input '{name}': type {:?} not yet supported",
             cfg.input_type
