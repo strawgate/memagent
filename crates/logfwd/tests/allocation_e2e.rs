@@ -88,16 +88,29 @@ output:
     assert!(batches > 0, "pipeline processed no batches");
     assert!(rows > 0, "pipeline processed no rows");
 
-    // Check allocation efficiency: bytes allocated per row processed.
-    // Includes fixed startup overhead (~15MB for tokio, DataFusion, OTel)
-    // plus per-row data processing. This threshold catches regressions
-    // (e.g. going from 1KB/row to 10KB/row) while allowing current overhead.
+    // Print actual numbers for visibility.
+    eprintln!("--- allocation profile ---");
+    eprintln!("  rows:       {rows}");
+    eprintln!("  batches:    {batches}");
+    eprintln!("  allocated:  {} bytes ({:.1} MB)", stats.bytes_allocated, stats.bytes_allocated as f64 / 1_048_576.0);
+    eprintln!("  freed:      {} bytes ({:.1} MB)", stats.bytes_deallocated, stats.bytes_deallocated as f64 / 1_048_576.0);
+    let net = stats.bytes_allocated as i64 - stats.bytes_deallocated as i64;
+    eprintln!("  retained:   {} bytes ({:.1} MB)", net, net as f64 / 1_048_576.0);
     let bytes_per_row = stats.bytes_allocated as f64 / rows.max(1) as f64;
+    eprintln!("  per row:    {:.0} bytes", bytes_per_row);
+    eprintln!("  alloc count: {}", stats.allocations);
+    eprintln!("  per row:    {:.1} allocs", stats.allocations as f64 / rows.max(1) as f64);
+    eprintln!("--------------------------");
+
+    // Baseline: ~1130 bytes/row (measured 2026-04-01 with 50K rows).
+    // Includes ~8MB fixed overhead (tokio/DataFusion/OTel) amortized across rows.
+    // Threshold set at 50% above baseline to catch meaningful regressions
+    // (e.g. per-row format!() or String allocation) while allowing normal variance.
     assert!(
-        bytes_per_row < 2048.0,
-        "excessive allocation per row: {bytes_per_row:.0} bytes/row \
-         ({} total bytes over {rows} rows in {batches} batches). \
-         Expected <2048 bytes/row.",
+        bytes_per_row < 1700.0,
+        "allocation regression: {bytes_per_row:.0} bytes/row \
+         (baseline ~1130, threshold 1700). \
+         {} total bytes over {rows} rows in {batches} batches.",
         stats.bytes_allocated,
     );
 
