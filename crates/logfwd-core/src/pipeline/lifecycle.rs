@@ -742,6 +742,56 @@ mod verification {
         assert!(!a2.advanced);
         assert_eq!(a2.checkpoint, Some(cp));
     }
+
+    /// Reverse-order ACK with 4 batches: acking in order 4,3,2,1 still
+    /// produces the correct final checkpoint (cp4).
+    ///
+    /// This extends the 3-batch proof to verify the ordered-ack tracking
+    /// handles a deeper pending-ACK queue correctly. The worst case for
+    /// the BTreeMap-based tracking is when ALL batches arrive in reverse
+    /// order — every ack goes through the pending path before the final
+    /// one triggers a full commit advance.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn verify_reverse_order_ack_4_batches() {
+        let mut running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let src = SourceId(0);
+
+        let cp1: u64 = kani::any();
+        let cp2: u64 = kani::any();
+        let cp3: u64 = kani::any();
+        let cp4: u64 = kani::any();
+
+        let t1 = running.create_batch(src, cp1);
+        let t2 = running.create_batch(src, cp2);
+        let t3 = running.create_batch(src, cp3);
+        let t4 = running.create_batch(src, cp4);
+
+        let s1 = running.begin_send(t1);
+        let s2 = running.begin_send(t2);
+        let s3 = running.begin_send(t3);
+        let s4 = running.begin_send(t4);
+
+        // Ack in reverse order — worst case for pending-ACK queue
+        let a4 = running.apply_ack(s4.ack());
+        assert!(!a4.advanced, "s4 alone should not advance checkpoint");
+        assert_eq!(running.in_flight_count(), 4);
+
+        let a3 = running.apply_ack(s3.ack());
+        assert!(!a3.advanced, "s3+s4 pending should not advance");
+        assert_eq!(running.in_flight_count(), 4);
+
+        let a2 = running.apply_ack(s2.ack());
+        assert!(!a2.advanced, "s2+s3+s4 pending should not advance");
+        assert_eq!(running.in_flight_count(), 4);
+
+        // Acking s1 should trigger full commit advance through all 4
+        let a1 = running.apply_ack(s1.ack());
+        assert!(a1.advanced, "s1 should trigger full advance");
+        assert_eq!(a1.checkpoint, Some(cp4));
+        assert_eq!(running.in_flight_count(), 0);
+    }
 }
 
 // ---------------------------------------------------------------------------

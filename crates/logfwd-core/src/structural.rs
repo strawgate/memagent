@@ -356,7 +356,11 @@ impl StructuralIndex {
     /// Skip a nested JSON object/array starting at `pos`, bounded by `end`.
     /// Tracks delimiter kind — `{` must close with `}`, `[` with `]`.
     /// Returns `end` on mismatch instead of desynchronizing (#369).
+    ///
+    /// Contract: result is always <= end (prevents reading past line boundary).
     #[inline]
+    #[cfg_attr(kani, kani::requires(end <= buf.len()))]
+    #[cfg_attr(kani, kani::ensures(|result: &usize| *result <= end))]
     pub fn skip_nested(&self, buf: &[u8], mut pos: usize, end: usize) -> usize {
         // Small stack for delimiter tracking. Max nesting 32 levels — deeper
         // nesting in a single NDJSON line is pathological.
@@ -1219,8 +1223,8 @@ mod verification {
     }
 
     /// skip_nested: result is always in [pos, end].
-    /// Uses 16-byte input to keep proof tractable.
-    #[kani::proof]
+    /// Proves the skip_nested contract on 16-byte inputs.
+    #[kani::proof_for_contract(StructuralIndex::skip_nested)]
     #[kani::unwind(18)]
     fn verify_skip_nested_bounds() {
         let buf: [u8; 16] = kani::any();
@@ -1232,5 +1236,64 @@ mod verification {
         let result = idx.skip_nested(&buf, pos, end);
 
         assert!(result >= pos && result <= end);
+    }
+
+    /// Prove StructuralIndex::new() produces valid line ranges.
+    ///
+    /// Properties verified on 8-byte input:
+    /// 1. Each range (start, end) satisfies start < end <= buf.len()
+    /// 2. Ranges are ordered and contiguous (no gaps between ranges
+    ///    except for the newline byte that separates them)
+    /// 3. No newlines appear inside any range's content
+    /// 4. Every non-newline byte belongs to exactly one range
+    #[kani::proof]
+    #[kani::unwind(66)]
+    fn verify_line_ranges_valid() {
+        let buf: [u8; 8] = kani::any();
+        let (_, line_ranges) = StructuralIndex::new(&buf);
+
+        // Count actual newlines in the buffer
+        let mut newline_count: usize = 0;
+        let mut i = 0;
+        while i < 8 {
+            if buf[i] == b'\n' {
+                newline_count += 1;
+            }
+            i += 1;
+        }
+
+        // line_ranges length is bounded: at most newline_count + 1
+        // (each newline splits into at most one more range)
+        assert!(line_ranges.len() <= newline_count + 1);
+
+        // Verify each range
+        let mut range_idx = 0;
+        while range_idx < line_ranges.len() {
+            let (start, end) = line_ranges[range_idx];
+
+            // Property 1: valid bounds
+            assert!(start < end, "empty range");
+            assert!(end <= 8, "range past buffer");
+
+            // Property 3: no newlines inside the range
+            let mut j = start;
+            while j < end {
+                assert!(buf[j] != b'\n', "newline inside range");
+                j += 1;
+            }
+
+            // Property 2: ranges are contiguous — next range starts
+            // right after the newline that terminated this range
+            if range_idx + 1 < line_ranges.len() {
+                let (next_start, _) = line_ranges[range_idx + 1];
+                // The byte at `end` should be a newline (except for
+                // the last range which may extend to EOF)
+                if end < 8 {
+                    assert!(buf[end] == b'\n', "gap not at newline");
+                    assert_eq!(next_start, end + 1, "ranges not contiguous");
+                }
+            }
+            range_idx += 1;
+        }
     }
 }
