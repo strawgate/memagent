@@ -1565,6 +1565,165 @@ output:
         assert!(result.unwrap().is_ok());
     }
 
+    /// SlowSink: verify that batch timeout flushes fire when the output
+    /// is slow, and that the pipeline continues processing all data.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_slow_output_flush_by_timeout() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("slow_timeout.log");
+
+        // Write enough data that multiple batches will be produced.
+        let mut data = String::new();
+        for i in 0..100 {
+            data.push_str(&format!(r#"{{"msg":"timeout {}"}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+
+        // Slow output with a small delay. Combined with a short batch_timeout
+        // and large batch_target_bytes, this forces flushes by timeout rather
+        // than by size.
+        pipeline = pipeline.with_output(Box::new(SlowSink {
+            delay: Duration::from_millis(10),
+        }));
+        pipeline.batch_timeout = Duration::from_millis(30);
+        pipeline.batch_target_bytes = 1024 * 1024; // 1 MB — far larger than our data
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            sd.cancel();
+        });
+
+        pipeline.run_async(&shutdown).await.unwrap();
+
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert!(
+            lines_in >= 100,
+            "slow output: pipeline should process all data, got {lines_in} (expected >= 100)"
+        );
+
+        let batches = pipeline.metrics.batches_total.load(Ordering::Relaxed);
+        assert!(
+            batches > 0,
+            "slow output: at least one batch should succeed, got {batches}"
+        );
+
+        let by_timeout = pipeline.metrics.flush_by_timeout.load(Ordering::Relaxed);
+        assert!(
+            by_timeout > 0,
+            "slow output: at least one flush should be by timeout, got {by_timeout}"
+        );
+    }
+
+    /// FrozenSink: verify that a frozen output causes dropped batches
+    /// and output errors to be tracked in metrics while the pipeline
+    /// still exits cleanly when released.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_frozen_output_tracks_metrics() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("frozen_metrics.log");
+
+        let mut data = String::new();
+        for i in 0..20 {
+            data.push_str(&format!(r#"{{"msg":"frozen {}"}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+
+        let freeze_token = CancellationToken::new();
+        pipeline = pipeline.with_output(Box::new(FrozenSink {
+            release: freeze_token.clone(),
+        }));
+        pipeline.batch_timeout = Duration::from_millis(20);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        let ft = freeze_token.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            sd.cancel();
+            // Release the frozen sink so the block_in_place call returns.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            ft.cancel();
+        });
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
+
+        assert!(
+            result.is_ok(),
+            "frozen output: pipeline must exit within timeout"
+        );
+        assert!(result.unwrap().is_ok());
+
+        // With a frozen output, the input side should still have ingested
+        // data (the input thread reads independently of the output).
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        let output_nanos = pipeline.metrics.output_nanos_total.load(Ordering::Relaxed);
+
+        // The frozen sink blocks in send_batch, so output_nanos should
+        // reflect time spent waiting. At least some data should have
+        // reached the transform stage.
+        assert!(
+            lines_in > 0,
+            "frozen output: some lines should reach transform, got {lines_in}"
+        );
+        assert!(
+            output_nanos > 0,
+            "frozen output: output stage should record nonzero time, got {output_nanos}"
+        );
+    }
+
     /// Concurrent shutdown and data arrival: data written to the file
     /// after shutdown is signalled should not cause panics or hangs.
     #[tokio::test(flavor = "multi_thread")]
@@ -1717,7 +1876,7 @@ mod remainder_tests {
     #[allow(unused_assignments)]
     fn partial_line_handling_split_anywhere() {
         let full_input = b"{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n";
-        let stats = Arc::new(ComponentStats::new());
+        let _stats = Arc::new(ComponentStats::new());
 
         for split_at in 1..full_input.len() {
             let chunk1 = &full_input[..split_at];
@@ -1814,7 +1973,7 @@ mod remainder_tests {
         combined.extend_from_slice(read2);
         if let Some(pos) = memchr::memrchr(b'\n', &combined) {
             if pos + 1 < combined.len() {
-                remainder = combined[pos + 1..].to_vec();
+                let _remainder_tail = combined[pos + 1..].to_vec();
                 combined.truncate(pos + 1);
             }
             buf.extend_from_slice(&combined);

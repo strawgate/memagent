@@ -144,4 +144,54 @@ mod tests {
         assert!(sink.send_batch(&batch, &meta).is_ok()); // call 3 — success
         assert!(sink.send_batch(&batch, &meta).is_ok()); // call 4 — success
     }
+
+    #[test]
+    fn slow_sink_delays_send() {
+        let delay = Duration::from_millis(50);
+        let mut sink = SlowSink { delay };
+        let batch = dummy_batch();
+        let meta = dummy_metadata();
+
+        let start = std::time::Instant::now();
+        assert!(sink.send_batch(&batch, &meta).is_ok());
+        assert!(
+            start.elapsed() >= delay,
+            "SlowSink should sleep at least {:?}, but only {:?} elapsed",
+            delay,
+            start.elapsed()
+        );
+        assert!(sink.flush().is_ok());
+        assert_eq!(sink.name(), "slow");
+    }
+
+    #[test]
+    fn frozen_sink_blocks_until_released() {
+        let token = CancellationToken::new();
+        let mut sink = FrozenSink {
+            release: token.clone(),
+        };
+        let batch = dummy_batch();
+        let meta = dummy_metadata();
+
+        // Release the token from another thread after a short delay.
+        let release_delay = Duration::from_millis(100);
+        let t = token.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(release_delay);
+            t.cancel();
+        });
+
+        let start = std::time::Instant::now();
+        assert!(sink.send_batch(&batch, &meta).is_ok());
+        // Allow 20% scheduling jitter below the release delay.
+        let min_expected = release_delay * 80 / 100;
+        assert!(
+            start.elapsed() >= min_expected,
+            "FrozenSink should block until released, but only {:?} elapsed (expected >= {min_expected:?})",
+            start.elapsed()
+        );
+        handle.join().expect("release thread should not panic");
+        assert!(sink.flush().is_ok());
+        assert_eq!(sink.name(), "frozen");
+    }
 }
