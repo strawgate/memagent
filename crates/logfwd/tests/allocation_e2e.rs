@@ -90,9 +90,13 @@ output:
     let batches = pipeline.metrics().batches_total.load(Ordering::Relaxed);
     let rows = pipeline.metrics().batch_rows_total.load(Ordering::Relaxed);
 
-    // Verify we actually processed data.
+    // Verify ALL expected data was processed — don't accept partial runs
+    // from the safety timeout.
     assert!(batches > 0, "pipeline processed no batches");
-    assert!(rows > 0, "pipeline processed no rows");
+    assert_eq!(
+        rows, expected_rows,
+        "pipeline processed {rows}/{expected_rows} rows — safety timeout may have fired"
+    );
 
     // Print actual numbers for visibility.
     eprintln!("--- allocation profile ---");

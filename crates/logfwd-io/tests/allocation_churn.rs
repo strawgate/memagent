@@ -114,6 +114,8 @@ fn framed_input_no_leak_across_polls() {
         drop(events);
     }
     drop(framed);
+    drop(stats);
+    drop(chunk);
 
     let final_stats = dhat::HeapStats::get();
 

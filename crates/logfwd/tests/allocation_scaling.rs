@@ -75,6 +75,12 @@ output:
     let rows = pipeline.metrics().batch_rows_total.load(Ordering::Relaxed);
     let batches = pipeline.metrics().batches_total.load(Ordering::Relaxed);
 
+    // Don't accept partial runs from safety timeout.
+    assert_eq!(
+        rows, expected,
+        "pipeline processed {rows}/{expected} rows — safety timeout may have fired"
+    );
+
     (
         stats.bytes_allocated as u64,
         rows as usize,
@@ -112,10 +118,11 @@ fn allocation_per_row_decreases_with_scale() {
         "per-row cost should not increase with scale: 10K={per_row_10k:.0}, 100K={per_row_100k:.0}"
     );
 
-    // At 500K rows, per-row cost should be well below the 10K baseline.
-    // Use 10% margin — at 500K the fixed overhead is negligible.
+    // At 500K rows, per-row cost should be strictly below the 10K baseline.
+    // Fixed overhead (~8MB) is amortized over 50x more rows — per-row cost
+    // must decrease. Baseline: 10K≈2089, 500K≈905.
     assert!(
-        per_row_500k < per_row_10k * 1.1,
+        per_row_500k < per_row_10k,
         "per-row cost at 500K ({per_row_500k:.0}) should be below 10K baseline ({per_row_10k:.0})"
     );
 }
