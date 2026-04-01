@@ -160,24 +160,40 @@ stays in the input plugin where it belongs.
 **Research:** `dev-docs/research/offset-checkpoint-research.md`
 **Related:** #270 (pipeline state machine).
 
-## Single column per field (not suffix-based multi-column)
+## Multi-column per field with DataType dispatch (not name-suffix dispatch)
 
-**Decision:** One JSON key produces one Arrow column. Column name
-equals the JSON key (no `_str`/`_int`/`_float` suffix). Arrow
-DataType is determined by observed values with type promotion.
+**Decision:** Keep the multi-column internal representation
+(`status_int`, `status_str`) for per-document type fidelity. Fix
+how columns are consumed: dispatch on Arrow DataType, not name suffix.
+Delete the SQL rewriter (dead code per #602). Solve SQL UX separately.
 
-**Why:** The suffix convention was root cause of 11 bugs. Name-based
-type dispatch breaks after SQL transforms, user field names collide
-with suffixes, and the 772-line SQL rewriter can never be complete.
+**Core requirement: round-trip type fidelity.** A field that enters
+as int 200 in document A and string "OK" in document B must exit with
+those exact types. No type promotion across documents. As long as the
+user doesn't modify a column via SQL, the same values come out the
+other end. This is how real log data works — other tools (Elasticsearch,
+Vector) preserve per-document types.
 
-**How it works:** `ResolvedType` per field in the builder tracks
-observed types. Conflicts promote: Int→Float→Utf8. At `finish_batch`,
-each field emits one column with the resolved DataType. Output sinks
-dispatch on `field.data_type()` (matching the existing OTLP pattern).
+**Why not single-column with promotion?** Promoting int+string to
+string loses type information. `200` becomes `"200"` — the downstream
+system sees a string, not the integer that was sent. This breaks
+schema expectations, Elasticsearch mappings, and observability queries
+that filter on numeric status codes.
 
-**What gets deleted:** `rewriter.rs` (772 lines), `parse_column_name`,
-`strip_type_suffix`, `build_col_infos` deduplication, name-based
-dispatch in `write_row_json`.
+**What was actually broken:** Not the multi-column schema — the
+consumption layer. Output sinks dispatched on column name suffix
+instead of Arrow DataType. The SQL rewriter (772 lines) attempted to
+translate bare SQL to suffixed columns but was never wired in (#602)
+and could never handle all SQL patterns.
+
+**What gets fixed:**
+1. Output sinks dispatch on `field.data_type()` (done in #568)
+2. Delete `rewriter.rs` (dead code, 772 lines)
+3. Delete `parse_column_name()` / `strip_type_suffix()`
+4. Output layer strips `_int`/`_float`/`_str` suffixes when
+   serializing field names (JSON key = bare name, type from DataType)
+5. SQL UX: TBD — options include DataFusion UDFs, custom
+   TableProvider, or requiring users to use suffixed names
 
 **Research:** `dev-docs/research/type-suffix-redesign.md`
 **Related:** #445 (tracking issue).
