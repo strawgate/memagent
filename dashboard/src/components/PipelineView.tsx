@@ -24,7 +24,6 @@ export function PipelineView({ pipeline: p }: Props) {
 
   const compRate = (comp: ComponentData, field: "lines_total" | "bytes_total") => {
     const v = ratesRef.current.rate(`${comp.name}_${field}`, comp[field]);
-    ratesRef.current.tick();
     return v != null ? fmt(v) + "/s" : "-";
   };
 

@@ -36,7 +36,3 @@ export function fmtDuration(s: number | null | undefined): string {
   return s + "s";
 }
 
-export function fmtPercent(n: number | null | undefined): string {
-  if (n == null) return "-";
-  return n.toFixed(1) + "%";
-}

@@ -61,26 +61,3 @@ export interface ConfigResponse {
   raw_yaml: string;
 }
 
-export interface SystemResponse {
-  uptime_seconds: number;
-  version: string;
-  pid: number;
-  cpu_percent: number | null;
-  global_cpu_percent: number | null;
-  cpu_count: number;
-  rss_bytes: number;
-  virtual_bytes: number;
-  total_memory_bytes: number;
-  available_memory_bytes: number;
-  used_memory_bytes: number;
-  total_swap_bytes: number;
-  used_swap_bytes: number;
-  fd_count: number | null;
-  fd_limit: number | null;
-  disk_read_bytes: number;
-  disk_write_bytes: number;
-  cgroup_memory_limit: number | null;
-  hostname: string;
-  os: string;
-  arch: string;
-}
