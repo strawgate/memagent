@@ -137,12 +137,13 @@ export function App() {
           <ChartGrid series={seriesRef.current} />
         </div>
 
+        <LogViewer />
+
         {pipes?.pipelines.map((p) => (
           <PipelineView key={p.name} pipeline={p} />
         ))}
 
         <ConfigView />
-        <LogViewer />
       </main>
     </>
   );
