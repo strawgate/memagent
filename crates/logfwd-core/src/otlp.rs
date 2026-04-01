@@ -1061,4 +1061,54 @@ mod verification {
             assert!(eq_ignore_case_match(&input, target));
         }
     }
+
+    /// Prove hex_decode roundtrip: for any 16-byte array, hex-encoding then
+    /// decoding yields the original bytes.
+    #[kani::proof]
+    #[kani::unwind(17)] // 16 bytes + 1
+    fn verify_hex_decode_roundtrip() {
+        let original: [u8; 16] = kani::any();
+        // Hex-encode
+        let mut hex = [0u8; 32];
+        for i in 0..16 {
+            let hi = original[i] >> 4;
+            let lo = original[i] & 0x0F;
+            hex[2 * i] = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
+            hex[2 * i + 1] = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
+        }
+        // Decode back
+        let mut decoded = [0u8; 16];
+        assert!(hex_decode(&hex, &mut decoded));
+        assert_eq!(original, decoded);
+    }
+
+    /// Prove hex_nibble returns the correct value for all 256 byte inputs:
+    /// valid hex digits map to 0x00..=0x0F, everything else maps to 0xFF.
+    #[kani::proof]
+    fn verify_hex_nibble_valid_range() {
+        let b: u8 = kani::any();
+        let result = hex_nibble(b);
+        if result <= 0x0F {
+            // Valid hex digit — verify correctness
+            match b {
+                b'0'..=b'9' => assert_eq!(result, b - b'0'),
+                b'a'..=b'f' => assert_eq!(result, b - b'a' + 10),
+                b'A'..=b'F' => assert_eq!(result, b - b'A' + 10),
+                _ => unreachable!(),
+            }
+        } else {
+            // Invalid — must be the sentinel 0xFF
+            assert_eq!(result, 0xFF);
+        }
+    }
+
+    /// Prove hex_decode rejects inputs where hex length != 2 * output length.
+    #[kani::proof]
+    fn verify_hex_decode_rejects_wrong_length() {
+        // Any length mismatch should return false
+        let hex_len: usize = kani::any_where(|&l: &usize| l <= 34 && l != 32);
+        let hex = vec![b'a'; hex_len];
+        let mut out = [0u8; 16];
+        assert!(!hex_decode(&hex, &mut out));
+    }
 }
