@@ -35,6 +35,7 @@ fn main() {
         "bench".to_string(),
         "http://localhost:19877".to_string(),
         vec![],
+        std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
     );
     json_sink.serialize_batch(&result);
     let json_ms = t2.elapsed().as_millis();
@@ -48,6 +49,7 @@ fn main() {
         logfwd_output::OtlpProtocol::Http,
         logfwd_output::Compression::None,
         vec![],
+        std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
     );
     let metadata = BatchMetadata {
         resource_attrs: vec![],
@@ -98,7 +100,7 @@ fn main() {
         let xform = t.elapsed().as_millis();
         
         let t = Instant::now();
-        let mut sink = logfwd_output::OtlpSink::new("b".into(), "http://x".into(), logfwd_output::OtlpProtocol::Http, logfwd_output::Compression::None, vec![]);
+        let mut sink = logfwd_output::OtlpSink::new("b".into(), "http://x".into(), logfwd_output::OtlpProtocol::Http, logfwd_output::Compression::None, vec![], std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()));
         let meta = BatchMetadata { resource_attrs: vec![], observed_time_ns: 0 };
         sink.encode_batch(&result, &meta);
         let encode = t.elapsed().as_millis();

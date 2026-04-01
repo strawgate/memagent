@@ -27,12 +27,14 @@ pub use tcp_sink::TcpSink;
 pub use udp_sink::UdpSink;
 
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
 use logfwd_config::{AuthConfig, Format, OutputConfig, OutputType};
+use logfwd_io::diagnostics::ComponentStats;
 
 // ---------------------------------------------------------------------------
 // HTTP retry helper
@@ -295,7 +297,11 @@ fn build_auth_headers(auth: Option<&AuthConfig>) -> Vec<(String, String)> {
 // ---------------------------------------------------------------------------
 
 /// Build an output sink from configuration.
-pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn OutputSink>, String> {
+pub fn build_output_sink(
+    name: &str,
+    cfg: &OutputConfig,
+    stats: Arc<ComponentStats>,
+) -> Result<Box<dyn OutputSink>, String> {
     let auth_headers = build_auth_headers(cfg.auth.as_ref());
     match cfg.output_type {
         OutputType::Stdout => {
@@ -304,7 +310,7 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
                 Some(Format::Console) => StdoutFormat::Console,
                 _ => StdoutFormat::Text,
             };
-            Ok(Box::new(StdoutSink::new(name.to_string(), fmt)))
+            Ok(Box::new(StdoutSink::new(name.to_string(), fmt, stats)))
         }
         OutputType::Otlp => {
             let endpoint = cfg
@@ -330,6 +336,7 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
                 protocol,
                 compression,
                 auth_headers,
+                stats,
             )))
         }
         OutputType::Http => {
@@ -341,22 +348,27 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
                 name.to_string(),
                 endpoint.clone(),
                 auth_headers,
+                stats,
             )))
         }
-        OutputType::Null => Ok(Box::new(NullSink::new(name.to_string()))),
+        OutputType::Null => Ok(Box::new(NullSink::new(name.to_string(), stats))),
         OutputType::TcpOut => {
             let endpoint = cfg
                 .endpoint
                 .as_ref()
                 .ok_or_else(|| format!("output '{name}': tcp_out requires 'endpoint'"))?;
-            Ok(Box::new(TcpSink::new(name.to_string(), endpoint.clone())))
+            Ok(Box::new(TcpSink::new(
+                name.to_string(),
+                endpoint.clone(),
+                stats,
+            )))
         }
         OutputType::UdpOut => {
             let endpoint = cfg
                 .endpoint
                 .as_ref()
                 .ok_or_else(|| format!("output '{name}': udp_out requires 'endpoint'"))?;
-            UdpSink::new(name.to_string(), endpoint.clone())
+            UdpSink::new(name.to_string(), endpoint.clone(), stats)
                 .map(|s| Box::new(s) as Box<dyn OutputSink>)
                 .map_err(|e| format!("output '{name}': udp_out bind failed: {e}"))
         }
@@ -413,6 +425,7 @@ mod tests {
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
     use arrow::datatypes::{Field, Schema};
+    use logfwd_io::diagnostics::ComponentStats;
     use std::sync::Arc;
 
     fn make_test_batch() -> RecordBatch {
@@ -448,7 +461,11 @@ mod tests {
     fn test_stdout_json() {
         let batch = make_test_batch();
         let meta = make_metadata();
-        let mut sink = StdoutSink::new("test".to_string(), StdoutFormat::Json);
+        let mut sink = StdoutSink::new(
+            "test".to_string(),
+            StdoutFormat::Json,
+            Arc::new(ComponentStats::new()),
+        );
         let mut out: Vec<u8> = Vec::new();
         sink.write_batch_to(&batch, &meta, &mut out).unwrap();
 
@@ -474,8 +491,16 @@ mod tests {
         let batch = make_test_batch();
         let meta = make_metadata();
 
-        let mut sink1 = StdoutSink::new("s1".to_string(), StdoutFormat::Json);
-        let mut sink2 = StdoutSink::new("s2".to_string(), StdoutFormat::Json);
+        let mut sink1 = StdoutSink::new(
+            "s1".to_string(),
+            StdoutFormat::Json,
+            Arc::new(ComponentStats::new()),
+        );
+        let mut sink2 = StdoutSink::new(
+            "s2".to_string(),
+            StdoutFormat::Json,
+            Arc::new(ComponentStats::new()),
+        );
 
         let mut out1: Vec<u8> = Vec::new();
         let mut out2: Vec<u8> = Vec::new();
@@ -488,8 +513,16 @@ mod tests {
         assert!(!out1.is_empty());
 
         // Also test FanOut trait dispatch works.
-        let fanout_s1 = StdoutSink::new("f1".to_string(), StdoutFormat::Json);
-        let fanout_s2 = StdoutSink::new("f2".to_string(), StdoutFormat::Json);
+        let fanout_s1 = StdoutSink::new(
+            "f1".to_string(),
+            StdoutFormat::Json,
+            Arc::new(ComponentStats::new()),
+        );
+        let fanout_s2 = StdoutSink::new(
+            "f2".to_string(),
+            StdoutFormat::Json,
+            Arc::new(ComponentStats::new()),
+        );
         let mut fanout = FanOut::new(vec![Box::new(fanout_s1), Box::new(fanout_s2)]);
         // send_batch writes to real stdout, but should not error.
         let result = fanout.send_batch(&batch, &meta);
@@ -572,6 +605,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
+            Arc::new(ComponentStats::new()),
         );
         sink.encode_batch(&batch, &meta);
 
@@ -591,6 +625,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::Gzip,
             vec![],
+            Arc::new(ComponentStats::new()),
         );
 
         let err = sink.send_batch(&batch, &meta).unwrap_err();
@@ -611,6 +646,7 @@ mod tests {
             "test-jsonl".to_string(),
             "http://localhost:9200".to_string(),
             vec![],
+            Arc::new(ComponentStats::new()),
         );
         sink.serialize_batch(&batch).unwrap();
 
@@ -633,7 +669,11 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![Arc::new(raw), Arc::new(level)]).unwrap();
         let meta = make_metadata();
 
-        let mut sink = StdoutSink::new("test".to_string(), StdoutFormat::Text);
+        let mut sink = StdoutSink::new(
+            "test".to_string(),
+            StdoutFormat::Text,
+            Arc::new(ComponentStats::new()),
+        );
         let mut out: Vec<u8> = Vec::new();
         sink.write_batch_to(&batch, &meta, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
@@ -653,7 +693,11 @@ mod tests {
             RecordBatch::try_new(schema, vec![Arc::new(status_s), Arc::new(status_i)]).unwrap();
         let meta = make_metadata();
 
-        let mut sink = StdoutSink::new("test".to_string(), StdoutFormat::Json);
+        let mut sink = StdoutSink::new(
+            "test".to_string(),
+            StdoutFormat::Json,
+            Arc::new(ComponentStats::new()),
+        );
         let mut out: Vec<u8> = Vec::new();
         sink.write_batch_to(&batch, &meta, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
@@ -674,7 +718,11 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![Arc::new(dur)]).unwrap();
         let meta = make_metadata();
 
-        let mut sink = StdoutSink::new("test".to_string(), StdoutFormat::Json);
+        let mut sink = StdoutSink::new(
+            "test".to_string(),
+            StdoutFormat::Json,
+            Arc::new(ComponentStats::new()),
+        );
         let mut out: Vec<u8> = Vec::new();
         sink.write_batch_to(&batch, &meta, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
@@ -693,7 +741,7 @@ mod tests {
             path: None,
             auth: None,
         };
-        let sink = build_output_sink("test", &cfg).unwrap();
+        let sink = build_output_sink("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "test");
     }
 
@@ -709,7 +757,7 @@ mod tests {
             path: None,
             auth: None,
         };
-        let sink = build_output_sink("otel", &cfg).unwrap();
+        let sink = build_output_sink("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "otel");
     }
 
@@ -725,7 +773,7 @@ mod tests {
             path: None,
             auth: None,
         };
-        let err = match build_output_sink("otel", &cfg) {
+        let err = match build_output_sink("otel", &cfg, Arc::new(ComponentStats::new())) {
             Ok(_) => panic!("expected gzip OTLP compression to be rejected"),
             Err(err) => err,
         };
@@ -744,7 +792,7 @@ mod tests {
             path: None,
             auth: None,
         };
-        let sink = build_output_sink("es", &cfg).unwrap();
+        let sink = build_output_sink("es", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "es");
     }
 
@@ -760,7 +808,7 @@ mod tests {
             path: None,
             auth: None,
         };
-        let result = build_output_sink("bad", &cfg);
+        let result = build_output_sink("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("endpoint"), "got: {err}");
@@ -836,7 +884,7 @@ mod tests {
                 headers: std::collections::HashMap::new(),
             }),
         };
-        let sink = build_output_sink("auth-sink", &cfg).unwrap();
+        let sink = build_output_sink("auth-sink", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "auth-sink");
     }
 
@@ -866,6 +914,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
+            Arc::new(ComponentStats::new()),
         );
         // Must not panic.
         sink.encode_batch(&batch, &meta);
@@ -892,6 +941,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
+            Arc::new(ComponentStats::new()),
         );
         // Must not panic, and should produce non-empty output.
         sink.encode_batch(&batch, &meta);
@@ -912,6 +962,7 @@ mod tests {
             "test-jsonl".to_string(),
             "http://localhost:9200".to_string(),
             vec![],
+            Arc::new(ComponentStats::new()),
         );
         // Must not panic.
         sink.serialize_batch(&batch).unwrap();

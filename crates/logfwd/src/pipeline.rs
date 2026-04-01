@@ -154,8 +154,8 @@ impl Pipeline {
                 .clone()
                 .unwrap_or_else(|| format!("output_{i}"));
             let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
-            let _output_stats = metrics.add_output(&output_name, &output_type_str);
-            sinks.push(build_output_sink(&output_name, output_cfg)?);
+            let output_stats = metrics.add_output(&output_name, &output_type_str);
+            sinks.push(build_output_sink(&output_name, output_cfg, output_stats)?);
         }
 
         let output: Box<dyn OutputSink> = if sinks.len() == 1 {
@@ -664,6 +664,7 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use logfwd_config::{Format, OutputConfig, OutputType};
+    use logfwd_io::diagnostics::ComponentStats;
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::test_meter;
 
@@ -708,7 +709,7 @@ mod tests {
             path: None,
             auth: None,
         };
-        let sink = build_output_sink("test", &cfg).unwrap();
+        let sink = build_output_sink("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "test");
     }
 
@@ -724,7 +725,7 @@ mod tests {
             path: None,
             auth: None,
         };
-        let sink = build_output_sink("otel", &cfg).unwrap();
+        let sink = build_output_sink("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "otel");
     }
 
@@ -740,7 +741,7 @@ mod tests {
             path: None,
             auth: None,
         };
-        let sink = build_output_sink("es", &cfg).unwrap();
+        let sink = build_output_sink("es", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "es");
     }
 
@@ -756,7 +757,7 @@ mod tests {
             path: None,
             auth: None,
         };
-        let result = build_output_sink("bad", &cfg);
+        let result = build_output_sink("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("endpoint"), "got: {err}");

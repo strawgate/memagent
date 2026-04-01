@@ -6,8 +6,11 @@
 
 use std::io;
 use std::net::UdpSocket;
+use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
+
+use logfwd_io::diagnostics::ComponentStats;
 
 use crate::{BatchMetadata, OutputSink, build_col_infos, write_row_json};
 
@@ -25,10 +28,15 @@ pub struct UdpSink {
     row_buf: Vec<u8>,
     /// Accumulation buffer for the current datagram being assembled.
     dgram_buf: Vec<u8>,
+    stats: Arc<ComponentStats>,
 }
 
 impl UdpSink {
-    pub fn new(name: impl Into<String>, target: impl Into<String>) -> io::Result<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        target: impl Into<String>,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
         Ok(Self {
             name: name.into(),
@@ -36,6 +44,7 @@ impl UdpSink {
             socket,
             row_buf: Vec::with_capacity(2048),
             dgram_buf: Vec::with_capacity(MAX_DATAGRAM_PAYLOAD),
+            stats,
         })
     }
 
@@ -65,6 +74,7 @@ impl OutputSink for UdpSink {
         }
 
         let cols = build_col_infos(batch);
+        let mut total_bytes: u64 = 0;
 
         for row in 0..batch.num_rows() {
             // Serialize row into scratch buffer.
@@ -73,6 +83,7 @@ impl OutputSink for UdpSink {
             self.row_buf.push(b'\n');
 
             let row_len = self.row_buf.len();
+            total_bytes += row_len as u64;
 
             // If this single row exceeds the MTU, send it alone as an
             // oversized datagram (up to 65507). The network may fragment it
@@ -97,6 +108,8 @@ impl OutputSink for UdpSink {
 
         // Flush any remaining rows.
         self.flush_dgram()?;
+        self.stats.inc_lines(batch.num_rows() as u64);
+        self.stats.inc_bytes(total_bytes);
         Ok(())
     }
 
@@ -114,6 +127,7 @@ mod tests {
     use super::*;
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
+    use logfwd_io::diagnostics::ComponentStats;
     use std::net::UdpSocket as StdSocket;
     use std::sync::Arc;
 
@@ -135,7 +149,8 @@ mod tests {
         let addr = receiver.local_addr().unwrap();
         receiver.set_nonblocking(true).unwrap();
 
-        let mut sink = UdpSink::new("test", addr.to_string()).unwrap();
+        let mut sink =
+            UdpSink::new("test", addr.to_string(), Arc::new(ComponentStats::new())).unwrap();
         let batch = make_batch(5);
         let meta = BatchMetadata {
             resource_attrs: vec![],
@@ -166,7 +181,8 @@ mod tests {
         let addr = receiver.local_addr().unwrap();
         receiver.set_nonblocking(true).unwrap();
 
-        let mut sink = UdpSink::new("test", addr.to_string()).unwrap();
+        let mut sink =
+            UdpSink::new("test", addr.to_string(), Arc::new(ComponentStats::new())).unwrap();
         // Create enough rows that they cannot all fit in 1400 bytes.
         let batch = make_batch(100);
         let meta = BatchMetadata {
