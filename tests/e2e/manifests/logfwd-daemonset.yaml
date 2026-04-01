@@ -55,10 +55,10 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /ready
+              path: /health
               port: diagnostics
-            initialDelaySeconds: 10
-            periodSeconds: 10
+            initialDelaySeconds: 2
+            periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 3
           startupProbe:
