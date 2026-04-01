@@ -416,29 +416,72 @@ fn main() -> io::Result<()> {
 
     let mode = &args[1];
     let get_arg = |name: &str, default: &str| -> String {
-        args.windows(2)
-            .find(|w| w[0] == format!("--{}", name))
-            .map(|w| w[1].clone())
-            .unwrap_or_else(|| default.to_string())
+        for i in 0..args.len() {
+            if args[i] == format!("--{}", name) {
+                if i + 1 < args.len() {
+                    return args[i + 1].clone();
+                } else {
+                    eprintln!("ERROR: --{} requires a value", name);
+                    std::process::exit(1);
+                }
+            }
+        }
+        default.to_string()
     };
 
     match mode.as_str() {
         "receive" => {
-            let port: u16 = get_arg("port", "5514").parse().expect("invalid argument value");
-            let sev: u8 = get_arg("severity", "4").parse().expect("invalid argument value");
-            let batch: usize = get_arg("batch", "64").parse().expect("invalid argument value");
+            let port_str = get_arg("port", "5514");
+            let port: u16 = port_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid port value '{}': {e}", port_str);
+                std::process::exit(1);
+            });
+            let sev_str = get_arg("severity", "4");
+            let sev: u8 = sev_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid severity value '{}': {e}", sev_str);
+                std::process::exit(1);
+            });
+            let batch_str = get_arg("batch", "64");
+            let batch: usize = batch_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid batch value '{}': {e}", batch_str);
+                std::process::exit(1);
+            });
             run_receiver(port, sev, batch)
         }
         "receive-batch" => {
-            let port: u16 = get_arg("port", "5514").parse().expect("invalid argument value");
-            let sev: u8 = get_arg("severity", "4").parse().expect("invalid argument value");
-            let batch: usize = get_arg("batch", "64").parse().expect("invalid argument value");
+            let port_str = get_arg("port", "5514");
+            let port: u16 = port_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid port value '{}': {e}", port_str);
+                std::process::exit(1);
+            });
+            let sev_str = get_arg("severity", "4");
+            let sev: u8 = sev_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid severity value '{}': {e}", sev_str);
+                std::process::exit(1);
+            });
+            let batch_str = get_arg("batch", "64");
+            let batch: usize = batch_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid batch value '{}': {e}", batch_str);
+                std::process::exit(1);
+            });
             run_batch_receiver(port, sev, batch)
         }
         "generate" => {
-            let port: u16 = get_arg("port", "5514").parse().expect("invalid argument value");
-            let count: u64 = get_arg("count", "1000000").parse().expect("invalid argument value");
-            let pps: u64 = get_arg("pps", "0").parse().expect("invalid argument value");
+            let port_str = get_arg("port", "5514");
+            let port: u16 = port_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid port value '{}': {e}", port_str);
+                std::process::exit(1);
+            });
+            let count_str = get_arg("count", "1000000");
+            let count: u64 = count_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid count value '{}': {e}", count_str);
+                std::process::exit(1);
+            });
+            let pps_str = get_arg("pps", "0");
+            let pps: u64 = pps_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid pps value '{}': {e}", pps_str);
+                std::process::exit(1);
+            });
             run_generator(port, count, pps)
         }
         _ => {
