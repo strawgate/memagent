@@ -55,6 +55,79 @@ dashboard:
 build:
     cargo build --release
 
+# ---------------------------------------------------------------------------
+# End-to-end pipeline benchmarks (bench/scenarios/*.yaml)
+# ---------------------------------------------------------------------------
+
+# Helper: run a single pipeline for N seconds, print stats from diagnostics.
+[private]
+_bench-run name config seconds="10" diag="http://127.0.0.1:9090":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LOGFWD=./target/release/logfwd
+    $LOGFWD --config {{config}} &
+    PID=$!
+    sleep {{seconds}}
+    STATS=$(curl -s {{diag}}/api/stats 2>/dev/null || echo '{}')
+    kill $PID 2>/dev/null; wait $PID 2>/dev/null || true
+    echo "$STATS" | python3 -c "
+    import sys,json; d=json.load(sys.stdin)
+    up=d.get('uptime_sec',0)
+    li=d.get('input_lines',0)
+    lps=li/up if up>0 else 0
+    print(f'  {\"{{name}}\":.<20s} {li:>12,} lines  {lps:>12,.0f} lines/sec  ({up:.1f}s)')
+    " 2>/dev/null || echo "  {{name}}: no stats"
+
+# Helper: run sender+receiver pair, report receiver stats.
+[private]
+_bench-pair name rx_config tx_config seconds="10":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LOGFWD=./target/release/logfwd
+    $LOGFWD --config {{rx_config}} &
+    RX=$!; sleep 1
+    $LOGFWD --config {{tx_config}} &
+    TX=$!; sleep {{seconds}}
+    STATS=$(curl -s http://127.0.0.1:9091/api/stats 2>/dev/null || echo '{}')
+    kill $TX $RX 2>/dev/null; wait $TX $RX 2>/dev/null || true
+    echo "$STATS" | python3 -c "
+    import sys,json; d=json.load(sys.stdin)
+    up=d.get('uptime_sec',0)
+    li=d.get('input_lines',0)
+    lps=li/up if up>0 else 0
+    print(f'  {\"{{name}}\":.<20s} {li:>12,} lines  {lps:>12,.0f} lines/sec  ({up:.1f}s)')
+    " 2>/dev/null || echo "  {{name}}: no stats"
+
+# Self-contained: generator → SQL filter → null (no network)
+bench-self seconds="10":
+    @echo "==> Self benchmark (generator → filter → null)"
+    just _bench-run self bench/scenarios/self-bench.yaml {{seconds}}
+
+# TCP end-to-end
+bench-tcp seconds="10":
+    @echo "==> TCP benchmark (generator → tcp_out → tcp → null)"
+    just _bench-pair tcp bench/scenarios/tcp-receiver.yaml bench/scenarios/tcp-sender.yaml {{seconds}}
+
+# UDP end-to-end
+bench-udp seconds="10":
+    @echo "==> UDP benchmark (generator → udp_out → udp → null)"
+    just _bench-pair udp bench/scenarios/udp-receiver.yaml bench/scenarios/udp-sender.yaml {{seconds}}
+
+# OTLP end-to-end
+bench-otlp seconds="10":
+    @echo "==> OTLP benchmark (generator → otlp → otlp_receiver → null)"
+    just _bench-pair otlp bench/scenarios/otlp-receiver.yaml bench/scenarios/otlp-sender.yaml {{seconds}}
+
+# Run all pipeline benchmarks
+bench-pipelines seconds="10":
+    @echo "logfwd pipeline benchmarks ({{seconds}}s each)"
+    @echo "================================================"
+    cargo build --release -p logfwd
+    just bench-self {{seconds}}
+    just bench-tcp {{seconds}}
+    just bench-udp {{seconds}}
+    just bench-otlp {{seconds}}
+
 # Build release binary with Profile-Guided Optimisation (PGO).
 # Runs a training workload automatically; output binary is target/release/logfwd-pgo.
 # Requires llvm-profdata on PATH (e.g. `sudo apt install llvm`).

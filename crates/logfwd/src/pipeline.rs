@@ -650,6 +650,96 @@ fn build_input_state(
                 stats,
             })
         }
+        InputType::Generator => {
+            use logfwd_io::generator::{GeneratorConfig, GeneratorInput};
+            let events_per_sec = match cfg.listen.as_deref() {
+                Some(s) => s.parse().map_err(|_| {
+                    format!(
+                        "input '{name}': generator 'listen' must be a valid integer (events/sec), got '{s}'"
+                    )
+                })?,
+                None => 0,
+            };
+            let config = GeneratorConfig {
+                events_per_sec,
+                batch_size: 1000,
+                total_events: 0,
+                ..Default::default()
+            };
+            let source = GeneratorInput::new(name, config);
+            Ok(InputState {
+                name: name.to_string(),
+                source: Box::new(source),
+                format: Format::Json,
+                buf: Vec::with_capacity(4 * 1024 * 1024),
+                remainder: Vec::new(),
+                cri_aggregator: None,
+                stats,
+            })
+        }
+        InputType::Otlp => {
+            let addr = cfg
+                .listen
+                .as_ref()
+                .ok_or_else(|| format!("input '{name}': otlp input requires 'listen'"))?;
+            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new(name, addr)
+                .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
+            Ok(InputState {
+                name: name.to_string(),
+                source: Box::new(source),
+                format: Format::Json, // OTLP decoder produces JSON lines
+                buf: Vec::with_capacity(4 * 1024 * 1024),
+                remainder: Vec::new(),
+                cri_aggregator: None,
+                stats,
+            })
+        }
+        InputType::Udp => {
+            let addr = cfg
+                .listen
+                .as_ref()
+                .ok_or_else(|| format!("input '{name}': udp input requires 'listen'"))?;
+            if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
+                return Err(format!(
+                    "input '{name}': CRI/auto format is not supported for UDP inputs (CRI is a file-based container log format)"
+                ));
+            }
+            let source = logfwd_io::udp_input::UdpInput::new(name, addr)
+                .map_err(|e| format!("input '{name}': failed to bind UDP {addr}: {e}"))?;
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            Ok(InputState {
+                name: name.to_string(),
+                source: Box::new(source),
+                format,
+                buf: Vec::with_capacity(1024 * 1024),
+                remainder: Vec::new(),
+                cri_aggregator: None,
+                stats,
+            })
+        }
+        InputType::Tcp => {
+            let addr = cfg
+                .listen
+                .as_ref()
+                .ok_or_else(|| format!("input '{name}': tcp input requires 'listen'"))?;
+            if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
+                return Err(format!(
+                    "input '{name}': CRI/auto format is not supported for TCP inputs (CRI is a file-based container log format)"
+                ));
+            }
+            let source = logfwd_io::tcp_input::TcpInput::new(name, addr)
+                .map_err(|e| format!("input '{name}': failed to bind TCP {addr}: {e}"))?;
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            Ok(InputState {
+                name: name.to_string(),
+                source: Box::new(source),
+                format,
+                buf: Vec::with_capacity(4 * 1024 * 1024),
+                remainder: Vec::new(),
+                cri_aggregator: None,
+                stats,
+            })
+        }
         _ => Err(format!(
             "input '{name}': type {:?} not yet supported",
             cfg.input_type
