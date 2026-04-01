@@ -14,51 +14,28 @@ One JSON key can currently produce up to 3 Arrow columns (`status_int`,
 - User field names collide with suffixes
 - Schema evolves across batches (different suffix sets)
 
-## Design: Single Column Per Field with Type Promotion
+## Revised Understanding
+
+The multi-column approach (`status_int` + `status_str`) is actually
+correct for type fidelity — it preserves round-trip JSON → Arrow → JSON
+without losing type information. The bugs are NOT caused by having
+multiple columns. They're caused by:
+
+1. Output sinks dispatch on column **name suffix** instead of Arrow DataType
+2. The SQL rewriter is incomplete and can never handle all SQL patterns
+3. Column deduplication in `build_col_infos` uses suffix strings, not DataType
+4. None of this is properly wired up — it's promised but broken
+
+## Design: Fix the Dispatch, Not the Schema
 
 ### Core rule
 
-One JSON key = one Arrow column. Column name = JSON key name (no suffix).
-Arrow DataType determined by observed values, with promotion on conflict.
+Keep the multi-column internal representation. Fix how it's consumed.
 
-### Type promotion rules
+### Fix 1: Output sinks dispatch on Arrow DataType
 
-```
-Int64 + Int64      → Int64
-Float64 + Float64  → Float64
-Int64 + Float64    → Float64    (widening)
-Int64 + Utf8       → Utf8       (universal fallback)
-Float64 + Utf8     → Utf8       (universal fallback)
-Utf8 + anything    → Utf8
-```
-
-This matches `arrow-json`'s strategy and DataFusion's type coercion.
-
-### How it works
-
-The `ScanBuilder` trait stays unchanged. `append_int_by_idx` /
-`append_float_by_idx` / `append_str_by_idx` communicate the observed
-JSON type. The builder tracks a `ResolvedType` per field:
-
-```rust
-enum ResolvedType {
-    Unknown,     // no values seen yet
-    Int,         // all values were integers
-    Float,       // all values were floats (or int promoted to float)
-    Str,         // all values were strings
-    PromotedToStr, // mixed types — everything becomes string
-}
-```
-
-At `finish_batch()`:
-- `Int` → emit `Int64` column
-- `Float` → emit `Float64` column (int values widened)
-- `Str` → emit `Utf8View` column (zero-copy in StreamingBuilder)
-- `PromotedToStr` → emit `Utf8View` column (int/float values formatted)
-
-### Output dispatch
-
-All output sinks dispatch on `field.data_type()`, not column name:
+`write_row_json` currently parses column name suffixes to decide how
+to serialize. Replace with `field.data_type()` dispatch (matching OTLP):
 
 ```rust
 match col.data_type() {
@@ -68,63 +45,65 @@ match col.data_type() {
 }
 ```
 
-The OTLP sink already does this. The JSON sink (`write_row_json`) and
-console format (`stdout.rs`) need updating.
+This alone fixes #430, #444, #428.
 
-### SQL transforms
+### Fix 2: Replace SQL rewriter with schema aliasing
 
-Column names are bare JSON keys. User SQL works naturally:
+Instead of rewriting SQL ASTs to add suffixes, register the MemTable
+with bare column names (alias `status_int` → `status` for the int
+variant). DataFusion handles type resolution natively. User writes:
 
 ```sql
-SELECT level, status, msg FROM logs WHERE status > 400
+SELECT level, status FROM logs WHERE status > 400
 ```
 
-No rewriter needed. DataFusion resolves types from the Arrow schema.
-The `int()` and `float()` UDFs remain for explicit casting when the
-user knows a Utf8 column should be numeric.
+DataFusion sees `status` as Int64 (the alias) and resolves correctly.
+This eliminates the 772-line rewriter. Fixes #415, #429, #531.
 
-### Zero-copy preservation
+### Fix 3: Column deduplication uses DataType
 
-For the common case (homogeneous types), StreamingBuilder's
-`StringViewArray` is still zero-copy into the input `Bytes` buffer.
-Promotion only costs string formatting for the rare mixed-type case.
+`build_col_infos()` currently deduplicates by parsing suffix strings.
+Replace with DataType-based priority: Int64 > Float64 > Utf8 for
+the "primary" column when a field has multiple typed columns.
+Fixes #404, #442.
+
+### What stays the same
+
+- Scanner still emits `append_str_by_idx` / `append_int_by_idx` etc.
+- Builders still create `_int` / `_float` / `_str` columns internally
+- Multi-column representation preserves type fidelity for round-tripping
+- OTLP sink already dispatches on DataType (no change needed)
 
 ## What gets deleted
 
 - `crates/logfwd-transform/src/rewriter.rs` — 772 lines, entire file
-- `parse_column_name()` in `logfwd-output/src/lib.rs`
+- `parse_column_name()` in `logfwd-output/src/lib.rs` — suffix parsing
 - `strip_type_suffix()` in `logfwd-transform/src/lib.rs`
-- `field_type_map_from_schema()` and `FieldTypeMap`/`FieldTypes` types
-- Suffix-based deduplication in `build_col_infos()`
 - Name-based type dispatch in `write_row_json()`
 
 ## What gets changed
 
 | File | Change |
 |------|--------|
-| `streaming_builder.rs` | Single column per field, type promotion |
-| `storage_builder.rs` | Same |
-| `logfwd-output/lib.rs` | DataType dispatch |
-| `otlp_sink.rs` | Remove `parse_column_name` usage |
-| `stdout.rs` | Bare column name lookup |
-| `logfwd-transform/lib.rs` | Delete `strip_type_suffix` |
+| `logfwd-output/lib.rs` | DataType dispatch in write_row_json |
+| `logfwd-output/lib.rs` | DataType-based dedup in build_col_infos |
+| `logfwd-output/stdout.rs` | DataType dispatch for console format |
+| `logfwd-transform/lib.rs` | Schema aliasing instead of rewriting |
 | `rewriter.rs` | **DELETE** |
-| All test files | `"status_int"` → `"status"`, etc. |
 
 ## Bugs this fixes
 
-#415, #429, #430, #404, #442, #444, #531, #410 — all 8 open bugs
-from the suffix convention are resolved by this design.
+| Fix | Bugs resolved |
+|-----|---------------|
+| DataType dispatch in output | #430, #444, #428 |
+| Schema aliasing (delete rewriter) | #415, #429, #531 |
+| DataType-based dedup | #404, #442 |
+| Escape handling fix | #410 |
 
-## Migration
+## Key insight
 
-No external API, no backward compatibility needed. Single PR with
-coordinated changes across all crates. Tests updated in the same PR.
-
-## Cross-batch schema consistency
-
-First batch pins each field's resolved type. Subsequent batches
-promote to match. If a field was `Int64` in batch 1 but gets a string
-value in batch 2, it promotes to `Utf8` for batch 2. DataFusion
-handles schema differences across batches because it creates a fresh
-session per batch.
+The multi-column representation is fine. The bugs are in the
+**consumption** layer, not the **production** layer. The builders
+produce correct typed columns. The output sinks and SQL transform
+consume them incorrectly by parsing column names instead of checking
+Arrow DataType.
