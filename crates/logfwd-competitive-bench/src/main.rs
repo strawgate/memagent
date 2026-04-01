@@ -997,9 +997,7 @@ impl Args {
                 eprintln!("  --cpus N             CPU limit per container (default: 1)");
                 eprintln!("  --memory N           Memory limit per container (default: 1g)");
                 eprintln!("  --profile DIR        Write CPU/memory profiles to DIR");
-                eprintln!(
-                    "  --dhat-binary PATH   logfwd binary built with --features dhat-heap"
-                );
+                eprintln!("  --dhat-binary PATH   logfwd binary built with --features dhat-heap");
                 eprintln!(
                     "  --rate-bench         Run low-and-slow rate-ingest benchmark (logfwd only)"
                 );

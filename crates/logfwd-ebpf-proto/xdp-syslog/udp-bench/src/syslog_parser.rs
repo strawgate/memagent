@@ -26,11 +26,11 @@ use memchr::memchr;
 pub struct SyslogLine<'a> {
     pub facility: u8,
     pub severity: u8,
-    pub timestamp: &'a [u8],  // "Jan 15 10:30:45" (15 bytes for BSD)
+    pub timestamp: &'a [u8], // "Jan 15 10:30:45" (15 bytes for BSD)
     pub hostname: &'a [u8],
-    pub app_name: &'a [u8],   // without [PID]
-    pub pid: &'a [u8],        // between [ and ], empty if no PID
-    pub message: &'a [u8],    // everything after ": "
+    pub app_name: &'a [u8], // without [PID]
+    pub pid: &'a [u8],      // between [ and ], empty if no PID
+    pub message: &'a [u8],  // everything after ": "
 }
 
 /// Batch parse results — pre-allocated vectors of field slices.
@@ -116,9 +116,13 @@ fn parse_syslog_line(line: &[u8]) -> Option<SyslogLine<'_>> {
     //    Use fixed slice to handle single-digit days with double spaces ("Jan  1").
     if rest.len() < 16 {
         return Some(SyslogLine {
-            facility, severity,
-            timestamp: rest, hostname: b"", app_name: b"",
-            pid: b"", message: rest,
+            facility,
+            severity,
+            timestamp: rest,
+            hostname: b"",
+            app_name: b"",
+            pid: b"",
+            message: rest,
         });
     }
 
@@ -183,7 +187,13 @@ fn parse_syslog_line(line: &[u8]) -> Option<SyslogLine<'_>> {
     };
 
     Some(SyslogLine {
-        facility, severity, timestamp, hostname, app_name, pid, message,
+        facility,
+        severity,
+        timestamp,
+        hostname,
+        app_name,
+        pid,
+        message,
     })
 }
 
