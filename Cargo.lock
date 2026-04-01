@@ -116,6 +116,8 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "arrow-string",
+ "half",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -2091,6 +2093,7 @@ dependencies = [
  "opentelemetry_sdk",
  "pprof",
  "proptest",
+ "stats_alloc",
  "tempfile",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
@@ -2204,6 +2207,7 @@ dependencies = [
  "logfwd-io",
  "ryu",
  "serde_json",
+ "stats_alloc",
  "ureq",
 ]
 
