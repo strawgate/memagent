@@ -189,4 +189,55 @@ mod verification {
             }
         }
     }
+
+    /// Prove find_byte_iter yields ALL positions of needle, in ascending
+    /// order, with no missing or duplicate results.
+    /// Tested on 8-byte inputs — the iterator delegates to find_byte
+    /// (already proven), so this proves the wrapper is correct.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn verify_find_byte_iter_exhaustive() {
+        let haystack: [u8; 8] = kani::any();
+        let needle: u8 = kani::any();
+
+        // Collect all positions from the iterator
+        let mut iter = find_byte_iter(&haystack, needle);
+        let mut prev: Option<usize> = None;
+        let mut count: usize = 0;
+
+        // Unroll: iterator on 8-byte input can return at most 8 results
+        let mut k = 0;
+        while k < 9 {
+            match iter.next() {
+                Some(pos) => {
+                    assert!(pos < 8, "position out of bounds");
+                    assert!(haystack[pos] == needle, "wrong byte at yielded position");
+                    // Strictly ascending
+                    if let Some(p) = prev {
+                        assert!(pos > p, "not strictly ascending");
+                    }
+                    prev = Some(pos);
+                    count += 1;
+                }
+                None => break,
+            }
+            k += 1;
+        }
+
+        // Verify completeness: count must equal actual occurrences
+        let mut expected = 0;
+        let mut i = 0;
+        while i < 8 {
+            if haystack[i] == needle {
+                expected += 1;
+            }
+            i += 1;
+        }
+        assert_eq!(count, expected, "iterator missed or duplicated positions");
+
+        // Guard against vacuous proof: verify interesting paths are reachable
+        kani::cover!(count > 0, "iterator yields at least one match");
+        kani::cover!(count > 1, "iterator yields multiple matches");
+        kani::cover!(count == 0, "iterator yields nothing when no matches");
+    }
 }

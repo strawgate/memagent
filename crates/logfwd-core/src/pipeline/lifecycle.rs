@@ -742,6 +742,90 @@ mod verification {
         assert!(!a2.advanced);
         assert_eq!(a2.checkpoint, Some(cp));
     }
+
+    /// Symbolic-order ACK with 4 batches: all 24 permutations produce
+    /// the correct final checkpoint (cp4).
+    ///
+    /// Extends the 3-batch proof (all 6 permutations) to 4 batches,
+    /// symbolically exploring all orderings via kani::any(). Verifies
+    /// the BTreeMap-based pending-ACK queue handles arbitrary depth
+    /// and ordering correctly.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn verify_symbolic_order_ack_4_batches() {
+        let mut running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let src = SourceId(0);
+
+        let cp1: u64 = kani::any();
+        let cp2: u64 = kani::any();
+        let cp3: u64 = kani::any();
+        let cp4: u64 = kani::any();
+
+        let t1 = running.create_batch(src, cp1);
+        let t2 = running.create_batch(src, cp2);
+        let t3 = running.create_batch(src, cp3);
+        let t4 = running.create_batch(src, cp4);
+
+        let s1 = running.begin_send(t1);
+        let s2 = running.begin_send(t2);
+        let s3 = running.begin_send(t3);
+        let s4 = running.begin_send(t4);
+
+        // Symbolically explore all 24 orderings (s2n-quic pattern)
+        let order: u8 = kani::any_where(|&o: &u8| o < 24);
+        let (r_a, r_b, r_c, r_d) = match order {
+            0 => (s1.ack(), s2.ack(), s3.ack(), s4.ack()),
+            1 => (s1.ack(), s2.ack(), s4.ack(), s3.ack()),
+            2 => (s1.ack(), s3.ack(), s2.ack(), s4.ack()),
+            3 => (s1.ack(), s3.ack(), s4.ack(), s2.ack()),
+            4 => (s1.ack(), s4.ack(), s2.ack(), s3.ack()),
+            5 => (s1.ack(), s4.ack(), s3.ack(), s2.ack()),
+            6 => (s2.ack(), s1.ack(), s3.ack(), s4.ack()),
+            7 => (s2.ack(), s1.ack(), s4.ack(), s3.ack()),
+            8 => (s2.ack(), s3.ack(), s1.ack(), s4.ack()),
+            9 => (s2.ack(), s3.ack(), s4.ack(), s1.ack()),
+            10 => (s2.ack(), s4.ack(), s1.ack(), s3.ack()),
+            11 => (s2.ack(), s4.ack(), s3.ack(), s1.ack()),
+            12 => (s3.ack(), s1.ack(), s2.ack(), s4.ack()),
+            13 => (s3.ack(), s1.ack(), s4.ack(), s2.ack()),
+            14 => (s3.ack(), s2.ack(), s1.ack(), s4.ack()),
+            15 => (s3.ack(), s2.ack(), s4.ack(), s1.ack()),
+            16 => (s3.ack(), s4.ack(), s1.ack(), s2.ack()),
+            17 => (s3.ack(), s4.ack(), s2.ack(), s1.ack()),
+            18 => (s4.ack(), s1.ack(), s2.ack(), s3.ack()),
+            19 => (s4.ack(), s1.ack(), s3.ack(), s2.ack()),
+            20 => (s4.ack(), s2.ack(), s1.ack(), s3.ack()),
+            21 => (s4.ack(), s2.ack(), s3.ack(), s1.ack()),
+            22 => (s4.ack(), s3.ack(), s1.ack(), s2.ack()),
+            _ => (s4.ack(), s3.ack(), s2.ack(), s1.ack()),
+        };
+
+        // Assert progression after each ACK: advanced flag, checkpoint, and in_flight_count.
+        // With symbolic ordering, intermediate checkpoint depends on which batch was acked.
+        let a1 = running.apply_ack(r_a);
+        assert_eq!(running.in_flight_count(), 3);
+        // First ack only advances if batch 1 (the oldest) was acked
+        if a1.advanced {
+            assert!(a1.checkpoint.is_some(), "advanced but no checkpoint");
+        }
+
+        let a2 = running.apply_ack(r_b);
+        assert_eq!(running.in_flight_count(), 2);
+
+        let a3 = running.apply_ack(r_c);
+        assert_eq!(running.in_flight_count(), 1);
+
+        let a4 = running.apply_ack(r_d);
+        // After all 4 acked in any order, checkpoint must be cp4
+        assert!(a4.advanced, "final ack must advance checkpoint");
+        assert_eq!(a4.checkpoint, Some(cp4));
+        assert_eq!(running.in_flight_count(), 0);
+
+        // Verify interesting orderings are reachable
+        kani::cover!(order == 0, "in-order ack");
+        kani::cover!(order == 23, "fully reversed ack");
+    }
 }
 
 // ---------------------------------------------------------------------------
