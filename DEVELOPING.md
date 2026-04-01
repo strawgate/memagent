@@ -45,6 +45,44 @@ To temporarily **disable** sccache (e.g. for debugging):
 RUSTC_WRAPPER="" cargo build
 ```
 
+## Local CPU profiling (macOS)
+
+The `cpu-profiling` feature works locally on macOS, but the shutdown path matters:
+the profiled `logfwd` process must receive `SIGTERM` directly so it can build and
+write `flamegraph.svg` before exiting.
+
+The easiest way to run the full File -> OTLP path locally is:
+
+```bash
+just profile-otlp-local
+```
+
+This recipe:
+
+- builds `logfwd` with `--features cpu-profiling`
+- generates a JSON input file
+- starts a local OTLP blackhole on a fresh port
+- runs `logfwd` with a file input and OTLP output
+- sends `SIGTERM` to the real `logfwd` child process after a short run
+- leaves a temp directory containing `config.yaml`, `logs.json`, `pipeline.log`,
+  `blackhole.log`, and `flamegraph.svg`
+
+Useful variants:
+
+```bash
+just profile-otlp-local 1000000 10
+```
+
+Caveats:
+
+- Avoid reusing a diagnostics port from another local run; the helper recipe
+  omits diagnostics entirely to keep the profile loop simple.
+- If the `cpu-profiling` release build fails with `No space left on device`,
+  run `RUSTC_WRAPPER= cargo clean` and retry. The profiled release build is
+  large because `release` keeps debug info for flamegraphs.
+- Killing a wrapper shell is not sufficient; the `SIGTERM` must reach the
+  actual `logfwd` process.
+
 ---
 
 ## Things that will bite you

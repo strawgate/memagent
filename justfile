@@ -85,6 +85,64 @@ bench-docker:
         --lines 5000000 --docker --cpus 1 --memory 1g --markdown \
         --profile ./profiles --dhat-binary ./target/release/logfwd-dhat
 
+# Run a local File -> OTLP profile with pprof-rs.
+# Outputs a temp directory containing config.yaml, logs.json, pipeline.log,
+# blackhole.log, and flamegraph.svg.
+profile-otlp-local lines="500000" seconds="6":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT=$(mktemp -d /tmp/logfwd-pprof.XXXXXX)
+    PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+
+    echo "==> Build cpu-profiling binary"
+    RUSTC_WRAPPER= cargo build --release --features cpu-profiling -p logfwd
+
+    mkdir -p "${ROOT}/bin"
+    cp target/release/logfwd "${ROOT}/bin/logfwd-prof"
+
+    echo "==> Generate test data ({{lines}} lines)"
+    "${ROOT}/bin/logfwd-prof" --generate-json "{{lines}}" "${ROOT}/logs.json"
+
+    printf '%s\n' \
+      "input:" \
+      "  type: file" \
+      "  path: ${ROOT}/logs.json" \
+      "  format: json" \
+      "transform: |" \
+      "  SELECT * FROM logs" \
+      "output:" \
+      "  type: otlp" \
+      "  endpoint: http://127.0.0.1:${PORT}" \
+      "  protocol: http" \
+      "  compression: zstd" \
+      > "${ROOT}/config.yaml"
+
+    echo "==> Start blackhole on ${PORT}"
+    "${ROOT}/bin/logfwd-prof" --blackhole "127.0.0.1:${PORT}" > "${ROOT}/blackhole.log" 2>&1 &
+    BLACKHOLE_PID=$!
+    cleanup() {
+        kill -TERM "${BLACKHOLE_PID}" 2>/dev/null || true
+    }
+    trap cleanup EXIT
+
+    echo "==> Run profiled pipeline for {{seconds}}s"
+    pushd "${ROOT}" >/dev/null
+    "${ROOT}/bin/logfwd-prof" --config "${ROOT}/config.yaml" > pipeline.log 2>&1 &
+    PIPELINE_PID=$!
+    sleep "{{seconds}}"
+    kill -TERM "${PIPELINE_PID}"
+    wait "${PIPELINE_PID}" || true
+    popd >/dev/null
+
+    echo "==> Output directory: ${ROOT}"
+    ls -lah "${ROOT}"
+    if [ -f "${ROOT}/flamegraph.svg" ]; then
+        du -h "${ROOT}/flamegraph.svg"
+    else
+        echo "flamegraph.svg missing"
+        exit 1
+    fi
+
 # Generate microbenchmark report (markdown)
 bench-report:
     cargo run -p logfwd-bench
