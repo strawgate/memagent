@@ -551,10 +551,7 @@ impl DiagnosticsServer {
         Ok(())
     }
 
-    fn serve_config(
-        &self,
-        request: tiny_http::Request,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn serve_config(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let body = format!(
             r#"{{"path":"{}","raw_yaml":"{}"}}"#,
             esc(&self.config_path),
@@ -567,10 +564,7 @@ impl DiagnosticsServer {
         Ok(())
     }
 
-    fn serve_history(
-        &self,
-        request: tiny_http::Request,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn serve_history(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let body = self.history.to_json();
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
@@ -579,10 +573,7 @@ impl DiagnosticsServer {
         Ok(())
     }
 
-    fn serve_logs(
-        &self,
-        request: tiny_http::Request,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn serve_logs(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let lines = self.stderr.get_logs();
         // Build JSON array of strings.
         let mut body = String::with_capacity(lines.len() * 80 + 32);
@@ -748,8 +739,7 @@ fn get_process_metrics_unix() -> Option<(u64, u64, u64)> {
         }
         let user_ms =
             (usage.ru_utime.tv_sec as u64) * 1000 + (usage.ru_utime.tv_usec as u64) / 1000;
-        let sys_ms =
-            (usage.ru_stime.tv_sec as u64) * 1000 + (usage.ru_stime.tv_usec as u64) / 1000;
+        let sys_ms = (usage.ru_stime.tv_sec as u64) * 1000 + (usage.ru_stime.tv_usec as u64) / 1000;
         // ru_maxrss is bytes on macOS, KB on Linux
         #[cfg(target_os = "macos")]
         let rss_bytes = usage.ru_maxrss as u64;

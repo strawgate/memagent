@@ -104,8 +104,6 @@ impl StderrCapture {
 
     #[cfg(unix)]
     fn start(&self) {
-        
-
         // Only one thread should set this up.
         if self
             .state

@@ -71,8 +71,8 @@ impl MetricBuffer {
             name: name.to_string(),
             tiers: vec![
                 Tier::new(2.0, 300.0),   // 2s intervals, 5 min
-                Tier::new(10.0, 600.0),   // 10s intervals, 5-15 min
-                Tier::new(30.0, 2700.0),  // 30s intervals, 15-60 min
+                Tier::new(10.0, 600.0),  // 10s intervals, 5-15 min
+                Tier::new(30.0, 2700.0), // 30s intervals, 15-60 min
             ],
         }
     }
