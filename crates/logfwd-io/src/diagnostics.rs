@@ -325,6 +325,8 @@ pub struct DiagnosticsServer {
     /// Raw YAML config text for the /api/config endpoint.
     config_yaml: String,
     config_path: String,
+    /// Lazy stderr capture — activated on first /api/logs request.
+    stderr: crate::stderr_capture::StderrCapture,
 }
 
 impl DiagnosticsServer {
@@ -336,6 +338,7 @@ impl DiagnosticsServer {
             memory_stats_fn: None,
             config_yaml: String::new(),
             config_path: String::new(),
+            stderr: crate::stderr_capture::StderrCapture::new(),
         }
     }
 
@@ -386,6 +389,7 @@ impl DiagnosticsServer {
             "/api/pipelines" => self.serve_pipelines(request),
             "/api/stats" => self.serve_stats(request),
             "/api/config" => self.serve_config(request),
+            "/api/logs" => self.serve_logs(request),
             // Prometheus /metrics removed — use OTLP metrics push instead.
             // The /api/pipelines endpoint provides the same data as JSON.
             _ => {
@@ -543,6 +547,37 @@ impl DiagnosticsServer {
         Ok(())
     }
 
+    fn serve_logs(
+        &self,
+        request: tiny_http::Request,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let lines = self.stderr.get_logs();
+        // Build JSON array of strings.
+        let mut body = String::with_capacity(lines.len() * 80 + 32);
+        body.push_str(r#"{"lines":["#);
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                body.push(',');
+            }
+            body.push('"');
+            body.push_str(&esc(line));
+            body.push('"');
+        }
+        body.push_str(r#"],"capturing":"#);
+        body.push_str(if self.stderr.is_active() {
+            "true"
+        } else {
+            "false"
+        });
+        body.push('}');
+
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        let resp = tiny_http::Response::from_string(body).with_header(header);
+        request.respond(resp)?;
+        Ok(())
+    }
+
     fn serve_pipelines(
         &self,
         request: tiny_http::Request,
@@ -657,21 +692,44 @@ impl DiagnosticsServer {
 
 /// Returns (rss_bytes, cpu_user_ms, cpu_sys_ms) for the current process.
 fn process_metrics() -> Option<(u64, u64, u64)> {
-    get_process_metrics()
+    get_process_metrics_linux().or_else(get_process_metrics_unix)
 }
 
-/// Reads /proc/self/stat to get RSS, utime and stime.
-fn get_process_metrics() -> Option<(u64, u64, u64)> {
+/// Reads /proc/self/stat to get RSS, utime and stime (Linux).
+fn get_process_metrics_linux() -> Option<(u64, u64, u64)> {
     use std::fs;
-
-    // Read only the first 4KB of /proc/self/stat, which is plenty for our needs.
-    // procfs files don't have a reliable size in metadata, so we read into a buffer.
     use std::io::Read;
     let mut f = fs::File::open("/proc/self/stat").ok()?;
     let mut buf = Vec::with_capacity(4096);
     f.by_ref().take(4096).read_to_end(&mut buf).ok()?;
     let stat = String::from_utf8_lossy(&buf);
     parse_proc_stat(&stat)
+}
+
+/// Fallback using getrusage (macOS, BSDs).
+#[cfg(unix)]
+fn get_process_metrics_unix() -> Option<(u64, u64, u64)> {
+    unsafe {
+        let mut usage: libc::rusage = std::mem::zeroed();
+        if libc::getrusage(libc::RUSAGE_SELF, &mut usage) != 0 {
+            return None;
+        }
+        let user_ms =
+            (usage.ru_utime.tv_sec as u64) * 1000 + (usage.ru_utime.tv_usec as u64) / 1000;
+        let sys_ms =
+            (usage.ru_stime.tv_sec as u64) * 1000 + (usage.ru_stime.tv_usec as u64) / 1000;
+        // ru_maxrss is bytes on macOS, KB on Linux
+        #[cfg(target_os = "macos")]
+        let rss_bytes = usage.ru_maxrss as u64;
+        #[cfg(not(target_os = "macos"))]
+        let rss_bytes = (usage.ru_maxrss as u64) * 1024;
+        Some((rss_bytes, user_ms, sys_ms))
+    }
+}
+
+#[cfg(not(unix))]
+fn get_process_metrics_unix() -> Option<(u64, u64, u64)> {
+    None
 }
 
 /// Parses `/proc/self/stat` content and returns `(rss_bytes, user_ms, sys_ms)`.

@@ -1,11 +1,10 @@
-import { useState } from "preact/hooks";
+import { useState, useRef } from "preact/hooks";
 import { fmt, fmtBytes } from "../lib/format";
 import type { PipelineData, ComponentData } from "../types";
-import type { RateTracker } from "../lib/rates";
+import { RateTracker } from "../lib/rates";
 
 interface Props {
   pipeline: PipelineData;
-  rates: RateTracker;
 }
 
 const Arrow = () => (
@@ -17,13 +16,15 @@ const Arrow = () => (
   </div>
 );
 
-export function PipelineView({ pipeline: p, rates }: Props) {
+export function PipelineView({ pipeline: p }: Props) {
   const [sel, setSel] = useState<string | null>(null);
+  const ratesRef = useRef(new RateTracker());
 
   const toggle = (id: string) => setSel(sel === id ? null : id);
 
   const compRate = (comp: ComponentData, field: "lines_total" | "bytes_total") => {
-    const v = rates.rate(`comp_${comp.name}_${field}`, comp[field]);
+    const v = ratesRef.current.rate(`${comp.name}_${field}`, comp[field]);
+    ratesRef.current.tick();
     return v != null ? fmt(v) + "/s" : "-";
   };
 
