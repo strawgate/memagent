@@ -453,14 +453,16 @@ fn main() -> io::Result<()> {
 
     let mode = &args[1];
     let get_arg = |name: &str, default: &str| -> String {
+        let flag = format!("--{}", name);
         for i in 0..args.len() {
-            if args[i] == format!("--{}", name) {
-                if i + 1 < args.len() {
-                    return args[i + 1].clone();
-                } else {
+            if args[i] == flag {
+                match args.get(i + 1) {
+                    Some(value) if !value.starts_with('-') => return value.clone(),
+                    _ => {
                     eprintln!("ERROR: --{} requires a value", name);
                     std::process::exit(1);
-                }
+                    }
+                };
             }
         }
         default.to_string()
