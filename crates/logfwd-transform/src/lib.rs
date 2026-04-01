@@ -510,9 +510,10 @@ impl ScalarUDFImpl for FloatCastUdf {
 /// transforms against Arrow RecordBatches.
 ///
 /// The SessionContext and UDFs are created once and reused across batches.
-/// Only the `logs` MemTable is swapped per batch (deregister + register).
-/// This eliminates the per-batch cost of SessionContext construction,
-/// built-in function registration, and UDF compilation.
+/// The `logs` MemTable and enrichment tables are swapped per batch
+/// (deregister + register). This eliminates the per-batch cost of
+/// SessionContext construction, built-in function registration, and
+/// UDF compilation.
 pub struct SqlTransform {
     user_sql: String,
     analyzer: QueryAnalyzer,
@@ -542,8 +543,12 @@ impl SqlTransform {
     }
 
     /// Set the geo-IP database for the `geo_lookup()` UDF.
+    ///
+    /// Invalidates the cached SessionContext so the UDF is re-registered
+    /// with the new database on the next execute() call.
     pub fn set_geo_database(&mut self, db: Arc<dyn logfwd_io::enrichment::GeoDatabase>) {
         self.geo_database = Some(db);
+        self.ctx = None; // force re-creation with new geo UDF
     }
 
     /// Add an enrichment table that will be registered in each DataFusion
@@ -635,10 +640,7 @@ impl SqlTransform {
                 let df_schema = df2.schema();
                 Ok(RecordBatch::new_empty(Arc::clone(df_schema.inner())))
             }
-            1 => Ok(batches
-                .into_iter()
-                .next()
-                .expect("verified len==1")),
+            1 => Ok(batches.into_iter().next().expect("verified len==1")),
             _ => {
                 let schema = batches[0].schema();
                 concat_batches(&schema, &batches)
@@ -663,9 +665,9 @@ impl SqlTransform {
         ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
         ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
         if let Some(ref db) = self.geo_database {
-            ctx.register_udf(ScalarUDF::from(
-                crate::udf::geo_lookup::GeoLookupUdf::new(Arc::clone(db)),
-            ));
+            ctx.register_udf(ScalarUDF::from(crate::udf::geo_lookup::GeoLookupUdf::new(
+                Arc::clone(db),
+            )));
         }
 
         self.ctx = Some(ctx);
@@ -1202,12 +1204,13 @@ mod tests {
     /// This exercises the deregister/register cycle repeatedly.
     #[test]
     fn test_cached_context_many_batches() {
-        let mut transform =
-            SqlTransform::new("SELECT * FROM logs").unwrap();
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("n_int", DataType::Int64, true),
-        ]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "n_int",
+            DataType::Int64,
+            true,
+        )]));
 
         for i in 0..20 {
             let batch = RecordBatch::try_new(

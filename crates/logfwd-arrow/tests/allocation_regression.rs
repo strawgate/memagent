@@ -9,7 +9,7 @@
 //! This is a separate integration test binary because `#[global_allocator]`
 //! is per-binary — it cannot coexist with other allocator overrides (e.g. dhat).
 
-use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::alloc::System;
 
 #[global_allocator]
@@ -80,22 +80,26 @@ fn streaming_scanner_no_leak_across_batches() {
     let mut scanner = StreamingSimdScanner::new(ScanConfig::default());
     let data = make_ndjson(500);
 
+    // Pre-build Bytes outside measurement regions to avoid clone noise.
+    let input: bytes::Bytes = data.into();
+
     // Warmup.
     for _ in 0..5 {
-        drop(scanner.scan(bytes::Bytes::from(data.clone())).unwrap());
+        drop(scanner.scan(input.clone()).unwrap());
     }
 
     // Window 1.
     let reg1 = Region::new(&GLOBAL);
     for _ in 0..10 {
-        drop(scanner.scan(bytes::Bytes::from(data.clone())).unwrap());
+        // Bytes::clone is O(1) refcount increment — negligible noise.
+        drop(scanner.scan(input.clone()).unwrap());
     }
     let stats1 = reg1.change();
 
     // Window 2.
     let reg2 = Region::new(&GLOBAL);
     for _ in 0..10 {
-        drop(scanner.scan(bytes::Bytes::from(data.clone())).unwrap());
+        drop(scanner.scan(input.clone()).unwrap());
     }
     let stats2 = reg2.change();
 
@@ -113,7 +117,7 @@ fn streaming_scanner_no_leak_across_batches() {
 /// documents the current allocation profile and catches SUPER-linear
 /// regressions (O(n²) or worse) while accepting the expected O(n) growth.
 #[test]
-fn storage_scanner_allocs_are_linear_not_quadratic() {
+fn scanner_allocs_scale_linearly() {
     let mut scanner = SimdScanner::new(ScanConfig::default());
 
     // Warmup.
@@ -133,8 +137,7 @@ fn storage_scanner_allocs_are_linear_not_quadratic() {
 
     // Linear growth is expected (StorageBuilder copies values).
     // Quadratic (>15x for 10x data) would indicate a bug.
-    let count_ratio =
-        stats_5000.allocations as f64 / stats_500.allocations.max(1) as f64;
+    let count_ratio = stats_5000.allocations as f64 / stats_500.allocations.max(1) as f64;
     assert!(
         count_ratio < 15.0,
         "super-linear allocation growth: 10x rows caused {count_ratio:.1}x more allocations \
@@ -145,7 +148,9 @@ fn storage_scanner_allocs_are_linear_not_quadratic() {
 
     // Also verify streaming scanner is sub-linear (zero-copy path).
     let mut streaming = StreamingSimdScanner::new(ScanConfig::default());
-    let _ = streaming.scan(bytes::Bytes::from(make_ndjson(1000))).unwrap();
+    let _ = streaming
+        .scan(bytes::Bytes::from(make_ndjson(1000)))
+        .unwrap();
 
     let reg_s500 = Region::new(&GLOBAL);
     let _ = streaming.scan(bytes::Bytes::from(data_500)).unwrap();
@@ -155,8 +160,7 @@ fn storage_scanner_allocs_are_linear_not_quadratic() {
     let _ = streaming.scan(bytes::Bytes::from(data_5000)).unwrap();
     let stats_s5000 = reg_s5000.change();
 
-    let streaming_ratio =
-        stats_s5000.allocations as f64 / stats_s500.allocations.max(1) as f64;
+    let streaming_ratio = stats_s5000.allocations as f64 / stats_s500.allocations.max(1) as f64;
     assert!(
         streaming_ratio < 5.0,
         "streaming scanner should be sub-linear: 10x rows caused {streaming_ratio:.1}x \

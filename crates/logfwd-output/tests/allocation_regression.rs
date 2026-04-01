@@ -4,7 +4,7 @@
 //! not per-row. However, they should still have stable allocation profiles
 //! across repeated batches (no leaks) and linear scaling with batch size.
 
-use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::alloc::System;
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 use arrow::array::{Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use logfwd_output::{write_row_json, build_col_infos, BatchMetadata};
+use logfwd_output::{BatchMetadata, build_col_infos, write_row_json};
 
 fn make_batch(n: usize) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
@@ -23,7 +23,9 @@ fn make_batch(n: usize) -> RecordBatch {
         Field::new("latency_float", DataType::Float64, true),
     ]));
 
-    let hosts: Vec<&str> = (0..n).map(|i| if i % 2 == 0 { "web1" } else { "web2" }).collect();
+    let hosts: Vec<&str> = (0..n)
+        .map(|i| if i % 2 == 0 { "web1" } else { "web2" })
+        .collect();
     let statuses: Vec<i64> = (0..n).map(|i| 200 + (i as i64 % 5)).collect();
     let latencies: Vec<f64> = (0..n).map(|i| 1.0 + (i as f64) * 0.01).collect();
 
@@ -91,7 +93,7 @@ fn write_row_json_stable_across_batches() {
 /// OTLP encode_batch should have stable allocation across repeated calls.
 #[test]
 fn otlp_encode_stable_across_batches() {
-    use logfwd_output::{OtlpSink, OtlpProtocol};
+    use logfwd_output::{OtlpProtocol, OtlpSink};
 
     let mut sink = OtlpSink::new(
         "test".to_string(),
@@ -126,6 +128,10 @@ fn otlp_encode_stable_across_batches() {
     }
     let stats2 = reg2.change();
 
+    // Both windows should allocate roughly the same (or zero — even better).
+    if stats1.bytes_allocated == 0 && stats2.bytes_allocated == 0 {
+        return;
+    }
     let growth = stats2.bytes_allocated as f64 / stats1.bytes_allocated.max(1) as f64;
     assert!(
         (0.5..2.0).contains(&growth),

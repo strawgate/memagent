@@ -27,7 +27,11 @@ struct MockSource {
 impl MockSource {
     fn repeating(chunk: &[u8], count: usize) -> Self {
         let events: VecDeque<Vec<InputEvent>> = (0..count)
-            .map(|_| vec![InputEvent::Data { bytes: chunk.to_vec() }])
+            .map(|_| {
+                vec![InputEvent::Data {
+                    bytes: chunk.to_vec(),
+                }]
+            })
             .collect();
         Self {
             name: "mock".to_string(),
@@ -53,9 +57,12 @@ impl InputSource for MockSource {
 fn framed_input_no_buffer_churn() {
     let _prof = dhat::Profiler::builder().testing().build();
 
+    const TOTAL_POLLS: usize = 50;
+    const WARMUP_POLLS: usize = 5;
+
     let chunk = b"{\"msg\":\"hello world\",\"level\":\"info\"}\n".repeat(100);
     let stats = Arc::new(ComponentStats::new());
-    let source = MockSource::repeating(&chunk, 50);
+    let source = MockSource::repeating(&chunk, TOTAL_POLLS);
     let mut framed = FramedInput::new(
         Box::new(source),
         FormatProcessor::Passthrough,
@@ -63,7 +70,7 @@ fn framed_input_no_buffer_churn() {
     );
 
     // Warmup: first few polls allocate buffers.
-    for _ in 0..5 {
+    for _ in 0..WARMUP_POLLS {
         let _ = framed.poll().unwrap();
     }
 
@@ -88,7 +95,7 @@ fn framed_input_no_buffer_churn() {
     //   2. InputEvent::Data bytes Vec (escapes to caller — tracked in #608)
     //   3. Occasional Vec growth in format processing
     // Allow up to 5 per poll to catch regressions beyond the known baseline.
-    let polls_remaining = 45;
+    let polls_remaining = TOTAL_POLLS - WARMUP_POLLS;
     let max_acceptable = polls_remaining * 5;
     assert!(
         new_blocks < max_acceptable as u64,
