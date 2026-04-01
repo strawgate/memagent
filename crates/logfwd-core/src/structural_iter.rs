@@ -548,16 +548,15 @@ mod verification {
         let buf: [u8; 8] = kani::any();
         let mut iter = StructuralIter::new(&buf);
 
-        // Capture initial merged structural bitmask before advance mutates it
-        let expected_bits = iter.remaining_bits;
-
-        // Independent oracle: count structural bytes in the buffer directly
-        let mut oracle_count: usize = 0;
+        // Independent oracle: build expected bitmask from buf directly,
+        // NOT from iter.remaining_bits (which would only prove advance()
+        // drains its own internal state, not that load_block() was correct).
+        let mut oracle_bits: u64 = 0;
         let mut b = 0;
         while b < 8 {
             match buf[b] {
                 b'"' | b',' | b':' | b'{' | b'}' | b'[' | b']' | b'\n' => {
-                    oracle_count += 1;
+                    oracle_bits |= 1u64 << b;
                 }
                 _ => {}
             }
@@ -603,8 +602,9 @@ mod verification {
             k += 1;
         }
 
-        // All expected structural positions were yielded
-        assert_eq!(yielded_bits, expected_bits, "missed structural positions");
+        // All expected structural positions were yielded (compared against
+        // independent oracle, not iterator internals)
+        assert_eq!(yielded_bits, oracle_bits, "missed structural positions");
         // Iterator is exhausted
         assert!(iter.advance().is_none(), "advance returned extra position");
 

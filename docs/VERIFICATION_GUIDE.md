@@ -96,9 +96,11 @@ bitmask.
 
 ### Select solvers for complex proofs
 
-Add `#[kani::solver(kissat)]` to proofs that take > 10 seconds. Benchmarks
-show kissat is fastest for ~47% of slow harnesses, with speedups up to 265x.
-For arithmetic-heavy proofs, try `z3` or `bitwuzla`.
+Add `#[kani::solver(kissat)]` to proofs that take > 10 seconds. Published
+benchmarks from large-scale QUIC protocol verification show kissat is fastest
+for ~47% of slow harnesses, with speedups up to 265x over minisat. For
+arithmetic-heavy proofs, try `z3` or `bitwuzla`.
+See: https://model-checking.github.io/kani-verifier-blog/2023/08/03/turbocharging-rust-code-verification.html
 
 ### Verify complete partitions
 
@@ -116,8 +118,9 @@ constraints span multiple variables or depend on computed state.
 
 For deep call chains, add `#[kani::requires]` / `#[kani::ensures]` contracts
 to leaf functions, verify them with `proof_for_contract`, then use
-`stub_verified` in higher-level proofs. This converts O(2^N) verification
-into O(N).
+`stub_verified` in higher-level proofs. This prevents exponential state-space
+explosion by decomposing verification into N independent proofs, each
+verifying a bounded slice of the call graph.
 
 ## Kani vs Proptest vs Miri
 

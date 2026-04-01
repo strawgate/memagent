@@ -801,15 +801,24 @@ mod verification {
             _ => (s4.ack(), s3.ack(), s2.ack(), s1.ack()),
         };
 
-        running.apply_ack(r_a);
+        // Assert progression after each ACK: advanced flag, checkpoint, and in_flight_count.
+        // With symbolic ordering, intermediate checkpoint depends on which batch was acked.
+        let a1 = running.apply_ack(r_a);
         assert_eq!(running.in_flight_count(), 3);
-        running.apply_ack(r_b);
-        assert_eq!(running.in_flight_count(), 2);
-        running.apply_ack(r_c);
-        assert_eq!(running.in_flight_count(), 1);
-        let a4 = running.apply_ack(r_d);
+        // First ack only advances if batch 1 (the oldest) was acked
+        if a1.advanced {
+            assert!(a1.checkpoint.is_some(), "advanced but no checkpoint");
+        }
 
+        let a2 = running.apply_ack(r_b);
+        assert_eq!(running.in_flight_count(), 2);
+
+        let a3 = running.apply_ack(r_c);
+        assert_eq!(running.in_flight_count(), 1);
+
+        let a4 = running.apply_ack(r_d);
         // After all 4 acked in any order, checkpoint must be cp4
+        assert!(a4.advanced, "final ack must advance checkpoint");
         assert_eq!(a4.checkpoint, Some(cp4));
         assert_eq!(running.in_flight_count(), 0);
 

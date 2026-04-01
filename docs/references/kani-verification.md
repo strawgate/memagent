@@ -1,7 +1,10 @@
 # Kani Rust Verifier -- Agent Reference
 
-Version: `kani-verifier 0.56+` (syncs monthly with Rust nightly; contracts
-and loop contracts enabled by default since v0.62)
+Version: `kani-verifier 0.56+` (syncs monthly with Rust nightly)
+
+Note: Function contracts (`-Z function-contracts`) and loop contracts
+(`-Z loop-contracts`) still require explicit flags for regular `cargo kani`.
+They are only enabled by default in the `cargo kani autoharness` flow (v0.62+).
 
 Kani is an open-source bounded model checker for Rust that translates Rust MIR
 into a SAT/SMT formula via CBMC. It proves safety and correctness properties
