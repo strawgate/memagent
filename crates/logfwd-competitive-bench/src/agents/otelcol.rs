@@ -11,11 +11,11 @@ const DOCKER_IMAGE: &str = "otel/opentelemetry-collector-contrib";
 pub struct Otelcol;
 
 impl Agent for Otelcol {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "otelcol"
     }
 
-    fn binary_name(&self) -> &str {
+    fn binary_name(&self) -> &'static str {
         "otelcol-contrib"
     }
 

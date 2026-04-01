@@ -89,7 +89,7 @@ impl ScalarUDFImpl for GeoLookupUdf {
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "geo_lookup"
     }
 

@@ -38,6 +38,7 @@ struct TailedFile {
 }
 
 /// Events emitted by the tailer.
+#[non_exhaustive]
 pub enum TailEvent {
     /// New data available. The Vec is raw bytes read from the file.
     /// NOT necessarily aligned on line boundaries — the pipeline handles that.
@@ -224,7 +225,7 @@ impl FileTailer {
         let initial_paths: Vec<PathBuf> = expand_glob_patterns(patterns);
 
         let mut tailer = Self::new(&initial_paths, config)?;
-        tailer.glob_patterns = patterns.iter().map(|s| s.to_string()).collect();
+        tailer.glob_patterns = patterns.iter().map(std::string::ToString::to_string).collect();
         Ok(tailer)
     }
 
@@ -367,11 +368,10 @@ impl FileTailer {
             let is_rotated = self
                 .files
                 .get(path)
-                .map(|tailed| {
+                .is_some_and(|tailed| {
                     tailed.identity.device != current_identity.device
                         || tailed.identity.inode != current_identity.inode
-                })
-                .unwrap_or(false);
+                });
             let is_new = !self.files.contains_key(path);
 
             if is_rotated {

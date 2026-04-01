@@ -1,7 +1,8 @@
 [package]
 name = "logfwd-test-utils"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -10,3 +11,6 @@ logfwd-output = { path = "../logfwd-output" }
 opentelemetry = { workspace = true }
 proptest = "1"
 tokio-util = "0.7"
+
+[lints]
+workspace = true

@@ -4,6 +4,34 @@ Style preferences enforced during code review. These are NOT linting
 rules — they are subjective conventions that keep the codebase
 consistent. CodeRabbit and human reviewers enforce these.
 
+## Workspace Lint Policy
+
+Workspace-level lints are in the root `Cargo.toml` under `[workspace.lints]`.
+All crates inherit via `[lints] workspace = true`. Do not add per-crate lint
+overrides — adjust the workspace config instead.
+
+- **clippy::pedantic** is warn-level with selective allows for noisy lints.
+- **clippy::unwrap_used** is warn-level. Use `?`, `.expect("reason")`, or
+  `unwrap_or` in production code. `unwrap()` is acceptable only in tests
+  and truly impossible cases.
+- **unsafe_code** is warn-level globally. logfwd-core overrides to `forbid`.
+  Every `unsafe` block must have a `// SAFETY:` comment.
+- **overflow-checks** are enabled in release builds.
+
+## Ownership and Types
+
+- **Prefer `&str` / `&[u8]` over owned `String` / `Vec<u8>`** in function
+  parameters when the callee doesn't need ownership.
+- **Use `Cow<str>` correctly.** `.into_owned()` only allocates when borrowed;
+  `.to_string()` always allocates.
+- **Don't clone when you can borrow.** Especially avoid cloning in loops —
+  clone once outside the loop if needed.
+- **`#[non_exhaustive]`** on all public enums so new variants aren't breaking.
+- **Private fields by default.** Use `pub(crate)` for internal access, expose
+  via methods when external access is needed.
+- **Enums over strings for config values.** Parse into typed enums at
+  deserialization, not at use sites.
+
 ## Naming
 
 - **Functions:** `verb_noun` — `parse_timestamp`, `encode_batch`, `scan_line`

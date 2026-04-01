@@ -82,9 +82,7 @@ fn main() {
     }
 
     let criterion_dir = args
-        .get(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/criterion"));
+        .get(1).map_or_else(|| PathBuf::from("target/criterion"), PathBuf::from);
 
     if !criterion_dir.exists() {
         eprintln!(
@@ -115,9 +113,7 @@ fn main() {
                     .name
                     .rsplit('/')
                     .next()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .map(|n| format_rate(b.median_ns, n))
-                    .unwrap_or_else(|| "—".to_string()),
+                    .and_then(|s| s.parse::<u64>().ok()).map_or_else(|| "—".to_string(), |n| format_rate(b.median_ns, n)),
             };
             println!("| {} | {} | {} | {} |", b.name, time, range, tp);
         }
@@ -157,7 +153,7 @@ fn collect_results(dir: &PathBuf, groups: &mut BTreeMap<String, Vec<BenchResult>
             .throughput
             .as_ref()
             .and_then(|v| v.get("Bytes"))
-            .and_then(|v| v.as_u64());
+            .and_then(serde_json::Value::as_u64);
 
         groups
             .entry(bench.group_id.clone())

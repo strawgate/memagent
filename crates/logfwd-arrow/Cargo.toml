@@ -1,13 +1,14 @@
 [package]
 name = "logfwd-arrow"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
 logfwd-core = { path = "../logfwd-core" }
 arrow = { workspace = true }
 bytes = "1"
-[lints.rust.unexpected_cfgs]
-level = "warn"
-check-cfg = ['cfg(kani)']
+
+[lints]
+workspace = true

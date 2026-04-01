@@ -311,9 +311,13 @@ fn rewrite_expr(expr: SqlExpr, fields: &FieldTypeMap) -> SqlExpr {
                     .and_then(|n| fields.get(n))
                     .is_some() =>
         {
-            let name = func_single_bare_arg(func).unwrap().to_string();
-            let ft = fields.get(&name).unwrap();
-            build_int_coalesce(&name, ft)
+            if let Some(name) = func_single_bare_arg(func)
+                && let Some(ft) = fields.get(name)
+            {
+                build_int_coalesce(name, ft)
+            } else {
+                expr
+            }
         }
 
         // Parenthesized expression: recurse.

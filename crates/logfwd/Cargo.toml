@@ -1,7 +1,8 @@
 [package]
 name = "logfwd"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [features]
@@ -36,3 +37,6 @@ logfwd-test-utils = { path = "../logfwd-test-utils" }
 proptest = "1.11.0"
 tempfile = "3"
 tiny_http = "0.12"
+
+[lints]
+workspace = true

@@ -24,6 +24,7 @@ use super::BatchMetadata;
 // ---------------------------------------------------------------------------
 
 /// The outcome of a [`Sink::send_batch`] call.
+#[non_exhaustive]
 pub enum SendResult {
     /// The batch was accepted and delivered.
     Ok,

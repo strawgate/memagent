@@ -1,7 +1,8 @@
 [package]
 name = "logfwd-core"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -21,10 +22,9 @@ proptest = "1"
 sonic-rs = "0.5"
 tempfile = "3"
 
-[lints.rust.unexpected_cfgs]
-level = "warn"
-check-cfg = ['cfg(kani)']
-
 [[bench]]
 name = "scanner"
 harness = false
+
+[lints]
+workspace = true
