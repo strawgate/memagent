@@ -137,14 +137,13 @@ impl InputSource for TcpInput {
                     }
                     Ok(n) => {
                         let chunk = &self.buf[..n];
-                        all_data.extend_from_slice(chunk);
                         client.last_data = now;
 
                         // Track bytes since last newline for max-line-length
                         // enforcement. If the sender exceeds the limit without
-                        // a newline we disconnect them immediately.
+                        // a newline we disconnect them immediately — and do NOT
+                        // append the offending chunk.
                         if let Some(last_nl) = memchr::memrchr(b'\n', chunk) {
-                            // Newline found — reset counter to bytes after it.
                             client.bytes_since_newline = n - last_nl - 1;
                         } else {
                             client.bytes_since_newline += n;
@@ -153,6 +152,7 @@ impl InputSource for TcpInput {
                             alive[i] = false;
                             break;
                         }
+                        all_data.extend_from_slice(chunk);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {

@@ -238,10 +238,12 @@ mod tests {
         let addr = input.local_addr().unwrap();
 
         let sender = StdSocket::bind("127.0.0.1:0").unwrap();
+        let mut sent = 0u32;
         for i in 0u32..10_000 {
             let msg = format!("seq:{i}\n");
-            // send_to can fail transiently on localhost; ignore errors.
-            let _ = sender.send_to(msg.as_bytes(), addr);
+            if sender.send_to(msg.as_bytes(), addr).is_ok() {
+                sent += 1;
+            }
         }
 
         // Give the OS time to deliver.
@@ -263,10 +265,12 @@ mod tests {
                 received += 1;
             }
         }
-        // UDP can drop on busy CI — accept ≥50% on localhost.
+        // Base threshold on successful sends, not total attempts.
+        // UDP can drop on busy CI — accept ≥50% of what was sent.
+        let threshold = sent / 2;
         assert!(
-            received >= 5_000,
-            "expected at least 5000/10000 datagrams on localhost, got {received}"
+            received >= threshold,
+            "expected at least {threshold}/{sent} datagrams on localhost, got {received}"
         );
     }
 
