@@ -229,21 +229,18 @@ fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) {
 /// Write a single row as a JSON object into `out`.
 ///
 /// For fields backed by multiple typed columns (e.g. `status_int` + `status_str`),
-/// the first non-null variant is used — no data is silently dropped. Type dispatch
-/// uses the Arrow DataType, not the column name suffix.
+/// the first non-null variant is used. If all variants are null the field is emitted
+/// as `"field":null` to preserve JSON field presence. Type dispatch uses the Arrow
+/// DataType, not the column name suffix.
 pub fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], out: &mut Vec<u8>) {
     out.push(b'{');
     let mut first = true;
     for col in cols {
         // Find the first non-null variant for this field.
-        let Some((arr_idx, _)) = col
+        let variant = col
             .variants
             .iter()
-            .find(|(idx, _)| !batch.column(*idx).is_null(row))
-        else {
-            continue; // all variants null for this row
-        };
-        let arr = batch.column(*arr_idx);
+            .find(|(idx, _)| !batch.column(*idx).is_null(row));
 
         if !first {
             out.push(b',');
@@ -255,6 +252,13 @@ pub fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], out: &m
         out.extend_from_slice(col.field_name.as_bytes());
         out.push(b'"');
         out.push(b':');
+
+        let Some((arr_idx, _)) = variant else {
+            // All variants null for this row — emit JSON null to preserve field presence.
+            out.extend_from_slice(b"null");
+            continue;
+        };
+        let arr = batch.column(*arr_idx);
 
         // Value — dispatch on Arrow DataType, not column name suffix
         write_json_value(arr, row, out);
@@ -1066,7 +1070,7 @@ mod write_row_json_tests {
     }
 
     #[test]
-    fn null_values_skipped() {
+    fn null_values_preserved() {
         let batch = make_batch(vec![(
             "msg_str",
             Arc::new(StringArray::from(vec![Some("hello"), None])),
@@ -1074,7 +1078,12 @@ mod write_row_json_tests {
         let json0 = render(&batch, 0);
         let json1 = render(&batch, 1);
         assert!(json0.contains("msg"));
-        assert_eq!(json1, "{}"); // null skipped entirely
+        // Null field must be emitted as "field":null, not omitted entirely.
+        let v1: serde_json::Value = serde_json::from_str(&json1).expect("row 1 must be valid JSON");
+        assert!(
+            v1["msg"].is_null(),
+            "null field should be emitted as null, got {json1}"
+        );
     }
 
     #[test]
