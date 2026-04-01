@@ -11,6 +11,7 @@
 //!      applicable, on captured output.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -212,8 +213,8 @@ output:
 // ---------------------------------------------------------------------------
 
 /// Start a minimal in-process HTTP server via `tiny_http`, configure the
-/// pipeline with an `http` output pointing to it, and verify that at least one
-/// HTTP request arrives (confirming the output path is exercised end-to-end).
+/// pipeline with an `http` output pointing to it, and verify that all 5 lines
+/// written to the log file are received by the server across all requests.
 #[test]
 fn test_http_output_sends_to_server() {
     // Bind a tiny_http server on a kernel-assigned free port.
@@ -225,11 +226,19 @@ fn test_http_output_sends_to_server() {
         .expect("test server did not bind to an IP address");
 
     let request_count = Arc::new(AtomicU64::new(0));
+    let received_bodies: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let server_clone = Arc::clone(&server);
     let count_clone = Arc::clone(&request_count);
+    let bodies_clone = Arc::clone(&received_bodies);
     std::thread::spawn(move || {
-        for request in server_clone.incoming_requests() {
+        for mut request in server_clone.incoming_requests() {
             count_clone.fetch_add(1, Ordering::Relaxed);
+            let mut body = String::new();
+            request
+                .as_reader()
+                .read_to_string(&mut body)
+                .expect("failed to read request body");
+            bodies_clone.lock().unwrap().push(body);
             let _ = request.respond(tiny_http::Response::from_string("{}").with_status_code(200));
         }
     });
@@ -264,6 +273,24 @@ output:
 
     let reqs = request_count.load(Ordering::Relaxed);
     assert!(reqs >= 1, "expected at least 1 HTTP request, got {reqs}");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let total_lines = loop {
+        let total: usize = received_bodies
+            .lock()
+            .expect("mutex poisoned")
+            .iter()
+            .map(|body| body.lines().count())
+            .sum();
+        if total == 5 || std::time::Instant::now() >= deadline {
+            break total;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(
+        total_lines, 5,
+        "expected 5 lines across all HTTP requests, got {total_lines}"
+    );
 
     server.unblock();
 }
