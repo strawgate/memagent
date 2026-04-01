@@ -652,14 +652,24 @@ output:
 
     #[test]
     fn unterminated_env_var_preserved_as_is() {
+        struct RemoveVarOnDrop(&'static str);
+
+        impl Drop for RemoveVarOnDrop {
+            fn drop(&mut self) {
+                // SAFETY: this test is not run concurrently with other tests
+                // that depend on the same environment variable.
+                unsafe { std::env::remove_var(self.0) };
+            }
+        }
+
         // SAFETY: this test is not run concurrently with other tests that
         // depend on the same environment variable.
         unsafe { std::env::set_var("LOGFWD_TEST_UNTERMINATED", "http://should-not-expand") };
+        let _guard = RemoveVarOnDrop("LOGFWD_TEST_UNTERMINATED");
         assert_eq!(
             expand_env_vars("endpoint: ${LOGFWD_TEST_UNTERMINATED"),
             "endpoint: ${LOGFWD_TEST_UNTERMINATED"
         );
-        unsafe { std::env::remove_var("LOGFWD_TEST_UNTERMINATED") };
     }
 
     #[test]
