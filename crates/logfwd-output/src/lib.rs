@@ -97,50 +97,70 @@ pub fn parse_column_name(col_name: &str) -> (&str, &str) {
 // JSON serialization helpers (shared by StdoutSink and JsonLinesSink)
 // ---------------------------------------------------------------------------
 
-/// Describes one output column: its index in the RecordBatch, the field name
-/// (with type suffix stripped), the type suffix, and the Arrow data type.
+/// Describes one output field, potentially backed by multiple Arrow columns.
+///
+/// A JSON field like "status" that had both integer and string values across
+/// rows produces `status_int` (Int64) and `status_str` (Utf8) columns. This
+/// struct groups them so the output picks the first non-null variant per row,
+/// preserving type fidelity (integers stay unquoted, strings stay quoted).
 pub(crate) struct ColInfo {
-    idx: usize,
+    /// Index of the primary (highest-priority) column — used for output ordering.
+    primary_idx: usize,
+    /// Base field name with type suffix stripped (e.g. "status" from "status_int").
     field_name: String,
-    type_suffix: String,
+    /// All column variants for this field, ordered by type priority (Int64 first).
+    /// Each entry is (column_index, data_type).
+    variants: Vec<(usize, DataType)>,
 }
 
-/// Build a de-duplicated ordered list of columns for JSON output.
-/// When the same field_name appears multiple times (e.g. status_int and
-/// status_str), prefer int > float > str.
+/// Priority for Arrow DataTypes when multiple columns exist for the same field.
+/// Higher priority types are checked first per row — the first non-null wins.
+fn datatype_priority(dt: &DataType) -> u8 {
+    match dt {
+        DataType::Int64 => 3,
+        DataType::Float64 => 2,
+        _ => 1, // Utf8, Utf8View, or anything else
+    }
+}
+
+/// Build a grouped, ordered list of output fields from a RecordBatch schema.
+///
+/// Columns sharing the same base field name (e.g. `status_int` and `status_str`)
+/// are grouped into a single `ColInfo` with multiple variants. During output,
+/// the first non-null variant per row is used — no data is silently dropped.
 pub(crate) fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
     let schema = batch.schema();
-    let mut infos: Vec<ColInfo> = Vec::new();
-    // Collect all columns.
+
+    // Collect (field_name, column_index, data_type) for every column.
+    let mut entries: Vec<(String, usize, DataType)> = Vec::new();
     for (idx, field) in schema.fields().iter().enumerate() {
-        let name = field.name().as_str();
-        let (field_name, type_suffix) = parse_column_name(name);
-        infos.push(ColInfo {
-            idx,
-            field_name: field_name.to_string(),
-            type_suffix: type_suffix.to_string(),
-        });
+        let (field_name, _) = parse_column_name(field.name().as_str());
+        entries.push((field_name.to_string(), idx, field.data_type().clone()));
     }
-    // De-duplicate: for each field_name keep the best-typed column.
-    // Priority: int > float > str > untyped
-    fn type_priority(suffix: &str) -> u8 {
-        match suffix {
-            "int" => 3,
-            "float" => 2,
-            "str" => 1,
-            _ => 0,
+
+    // Group by field_name, preserving first-seen order.
+    let mut groups: Vec<ColInfo> = Vec::new();
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (field_name, idx, dt) in entries {
+        if let Some(&group_idx) = seen.get(&field_name) {
+            groups[group_idx].variants.push((idx, dt));
+        } else {
+            seen.insert(field_name.clone(), groups.len());
+            groups.push(ColInfo {
+                primary_idx: idx,
+                field_name,
+                variants: vec![(idx, dt)],
+            });
         }
     }
-    // Use a stable sort + dedup to keep the highest-priority for each name.
-    infos.sort_by(|a, b| {
-        a.field_name
-            .cmp(&b.field_name)
-            .then_with(|| type_priority(&b.type_suffix).cmp(&type_priority(&a.type_suffix)))
-    });
-    infos.dedup_by(|a, b| a.field_name == b.field_name);
-    // Re-sort by original column index to maintain stable output order.
-    infos.sort_by_key(|c| c.idx);
-    infos
+
+    // Sort variants within each group by priority (Int64 first).
+    for g in &mut groups {
+        g.variants
+            .sort_by(|a, b| datatype_priority(&b.1).cmp(&datatype_priority(&a.1)));
+    }
+
+    groups
 }
 
 /// Read a string value from a column at the given row.
@@ -155,65 +175,84 @@ pub(crate) fn str_value(col: &dyn Array, row: usize) -> &str {
     }
 }
 
+/// Write a JSON string value with RFC 8259 escaping.
+fn write_json_string(out: &mut Vec<u8>, v: &str) {
+    out.push(b'"');
+    for &b in v.as_bytes() {
+        match b {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            b if b < 0x20 => {
+                let _ = Write::write_fmt(out, format_args!("\\u{:04x}", b));
+            }
+            _ => out.push(b),
+        }
+    }
+    out.push(b'"');
+}
+
+/// Write a single Arrow value as JSON, dispatching on the actual Arrow DataType.
+///
+/// Int64 → unquoted integer, Float64 → unquoted number (null for non-finite),
+/// everything else → quoted string. This preserves JSON type fidelity on
+/// roundtrip without relying on column name suffixes.
+fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) {
+    match arr.data_type() {
+        DataType::Int64 => {
+            let v = arr.as_primitive::<arrow::datatypes::Int64Type>().value(row);
+            let _ = Write::write_fmt(out, format_args!("{v}"));
+        }
+        DataType::Float64 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::Float64Type>()
+                .value(row);
+            if v.is_finite() {
+                let _ = Write::write_fmt(out, format_args!("{v}"));
+            } else {
+                out.extend_from_slice(b"null");
+            }
+        }
+        _ => {
+            write_json_string(out, str_value(arr, row));
+        }
+    }
+}
+
 /// Write a single row as a JSON object into `out`.
+///
+/// For fields backed by multiple typed columns (e.g. `status_int` + `status_str`),
+/// the first non-null variant is used — no data is silently dropped. Type dispatch
+/// uses the Arrow DataType, not the column name suffix.
 pub(crate) fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], out: &mut Vec<u8>) {
     out.push(b'{');
     let mut first = true;
     for col in cols {
-        let arr = batch.column(col.idx);
-        if arr.is_null(row) {
-            continue;
-        }
+        // Find the first non-null variant for this field.
+        let Some((arr_idx, _)) = col
+            .variants
+            .iter()
+            .find(|(idx, _)| !batch.column(*idx).is_null(row))
+        else {
+            continue; // all variants null for this row
+        };
+        let arr = batch.column(*arr_idx);
+
         if !first {
             out.push(b',');
         }
         first = false;
+
         // Key
         out.push(b'"');
         out.extend_from_slice(col.field_name.as_bytes());
         out.push(b'"');
         out.push(b':');
-        // Value — type-aware
-        match col.type_suffix.as_str() {
-            "int" => {
-                let arr = arr.as_primitive::<arrow::datatypes::Int64Type>();
-                let v = arr.value(row);
-                // Write integer directly; no quotes in JSON.
-                let _ = Write::write_fmt(out, format_args!("{}", v));
-            }
-            "float" => {
-                let arr = arr.as_primitive::<arrow::datatypes::Float64Type>();
-                let v = arr.value(row);
-                // RFC 8259: JSON numbers cannot be inf, -inf, or NaN.
-                // Emit as null instead of producing invalid JSON.
-                if v.is_finite() {
-                    let _ = Write::write_fmt(out, format_args!("{}", v));
-                } else {
-                    out.extend_from_slice(b"null");
-                }
-            }
-            _ => {
-                // str or untyped — treat as string (Utf8 or Utf8View)
-                let v = str_value(arr, row);
-                out.push(b'"');
-                // JSON string escape per RFC 8259
-                for &b in v.as_bytes() {
-                    match b {
-                        b'"' => out.extend_from_slice(b"\\\""),
-                        b'\\' => out.extend_from_slice(b"\\\\"),
-                        b'\n' => out.extend_from_slice(b"\\n"),
-                        b'\r' => out.extend_from_slice(b"\\r"),
-                        b'\t' => out.extend_from_slice(b"\\t"),
-                        b if b < 0x20 => {
-                            // Escape control characters per RFC 8259
-                            let _ = Write::write_fmt(out, format_args!("\\u{:04x}", b));
-                        }
-                        _ => out.push(b),
-                    }
-                }
-                out.push(b'"');
-            }
-        }
+
+        // Value — dispatch on Arrow DataType, not column name suffix
+        write_json_value(arr, row, out);
     }
     out.push(b'}');
 }
@@ -1040,5 +1079,80 @@ mod write_row_json_tests {
         assert_eq!(v["level"], "INFO");
         assert_eq!(v["status"], 200);
         assert_eq!(v["duration"], 1.5);
+    }
+
+    /// Regression: when a field has both int and str variants across rows,
+    /// the old dedup picked one column and silently dropped the other.
+    /// Now both variants are kept, and the first non-null wins per row.
+    #[test]
+    fn mixed_type_field_no_data_loss() {
+        // Row 0: status is integer 200 (int column populated, str null)
+        // Row 1: status is string "ok" (str column populated, int null)
+        let batch = make_batch(vec![
+            (
+                "status_int",
+                Arc::new(Int64Array::from(vec![Some(200), None])),
+            ),
+            (
+                "status_str",
+                Arc::new(StringArray::from(vec![None, Some("ok")])),
+            ),
+        ]);
+        // Row 0: should get the integer value
+        let json0 = render(&batch, 0);
+        let v0: serde_json::Value = serde_json::from_str(&json0).unwrap();
+        assert_eq!(v0["status"], 200, "row 0 should be integer 200");
+
+        // Row 1: should get the string value — NOT be missing
+        let json1 = render(&batch, 1);
+        let v1: serde_json::Value = serde_json::from_str(&json1).unwrap();
+        assert_eq!(v1["status"], "ok", "row 1 should be string 'ok'");
+    }
+
+    /// After SQL transforms, columns may have DataTypes that don't match
+    /// their name suffix. Dispatch on DataType ensures correctness.
+    #[test]
+    fn sql_computed_column_dispatches_on_datatype() {
+        // COUNT(*) produces Int64 column named "cnt" (no suffix).
+        // Old code treated it as string (default arm). New code checks DataType.
+        let batch = make_batch(vec![("cnt", Arc::new(Int64Array::from(vec![42])))]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["cnt"], 42,
+            "computed int column should serialize as number, not string"
+        );
+    }
+
+    /// Float values like 1.0 should stay as numbers, not become strings.
+    #[test]
+    fn float_roundtrip_preserves_type() {
+        let batch = make_batch(vec![(
+            "score_float",
+            Arc::new(Float64Array::from(vec![1.0])),
+        )]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            v["score"].is_number(),
+            "1.0 should roundtrip as number, got {}",
+            v["score"]
+        );
+    }
+
+    /// Boolean-like values are stored as strings by the scanner. After a SQL
+    /// CAST to boolean (which DataFusion might represent as UInt8 or Boolean),
+    /// ensure they don't panic. Non-int/float types fall through to string.
+    #[test]
+    fn unknown_datatype_falls_through_to_string() {
+        use arrow::array::BooleanArray;
+        let batch = make_batch(vec![(
+            "active",
+            Arc::new(BooleanArray::from(vec![true])) as Arc<dyn arrow::array::Array>,
+        )]);
+        let json = render(&batch, 0);
+        // Boolean columns go through str_value fallback, which returns ""
+        // for non-Utf8 types. This is existing behavior — the point is no panic.
+        let _: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
     }
 }
