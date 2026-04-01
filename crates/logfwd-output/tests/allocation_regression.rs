@@ -1,8 +1,7 @@
 //! Allocation regression tests for output encoding hot paths.
 //!
-//! OTLP encoding and JSON serialization run once per batch (~every 100ms),
-//! not per-row. However, they should still have stable allocation profiles
-//! across repeated batches (no leaks) and linear scaling with batch size.
+//! Single test function to avoid interference from the shared global
+//! allocator when cargo test runs tests in parallel.
 
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::alloc::System;
@@ -47,96 +46,92 @@ fn now_nanos() -> u64 {
         .as_nanos() as u64
 }
 
-/// write_row_json should have stable allocations across repeated calls.
-/// It writes into a reusable buffer — no per-call allocation growth.
-#[test]
-fn write_row_json_stable_across_batches() {
-    let batch = make_batch(100);
-    let cols = build_col_infos(&batch);
-    let mut buf = Vec::with_capacity(4096);
-
-    // Warmup.
-    for row in 0..batch.num_rows() {
-        write_row_json(&batch, row, &cols, &mut buf);
+fn assert_stable_or_zero(label: &str, alloc1: usize, alloc2: usize) {
+    if alloc1 == 0 && alloc2 == 0 {
+        return; // Perfect: zero allocations.
     }
-    buf.clear();
-
-    // Window 1.
-    let reg1 = Region::new(&GLOBAL);
-    for row in 0..batch.num_rows() {
-        write_row_json(&batch, row, &cols, &mut buf);
-    }
-    let stats1 = reg1.change();
-    buf.clear();
-
-    // Window 2.
-    let reg2 = Region::new(&GLOBAL);
-    for row in 0..batch.num_rows() {
-        write_row_json(&batch, row, &cols, &mut buf);
-    }
-    let stats2 = reg2.change();
-
-    // Both windows should allocate roughly the same (or zero — even better).
-    if stats1.bytes_allocated == 0 && stats2.bytes_allocated == 0 {
-        // Perfect: zero allocations per row when buffer is pre-allocated.
-        return;
-    }
-    let growth = stats2.bytes_allocated as f64 / stats1.bytes_allocated.max(1) as f64;
+    let growth = alloc2 as f64 / alloc1.max(1) as f64;
     assert!(
         (0.5..2.0).contains(&growth),
-        "write_row_json instability: window 1={} bytes, window 2={} bytes (ratio={growth:.2})",
-        stats1.bytes_allocated,
-        stats2.bytes_allocated,
+        "{label}: window 1={alloc1} bytes, window 2={alloc2} bytes (ratio={growth:.2})",
     );
 }
 
-/// OTLP encode_batch should have stable allocation across repeated calls.
+/// Combined output allocation test:
+/// 1. write_row_json stability (reusable buffer, no per-call growth)
+/// 2. OTLP encode_batch stability (buffer reuse across batches)
 #[test]
-fn otlp_encode_stable_across_batches() {
-    use logfwd_output::{OtlpProtocol, OtlpSink};
+fn output_encoding_allocation_regression() {
+    // --- Part 1: write_row_json ---
+    {
+        let batch = make_batch(100);
+        let cols = build_col_infos(&batch);
+        let mut buf = Vec::with_capacity(4096);
 
-    let mut sink = OtlpSink::new(
-        "test".to_string(),
-        "http://localhost:4318/v1/logs".to_string(),
-        OtlpProtocol::Http,
-        logfwd_output::Compression::None,
-        vec![],
-    );
+        // Warmup.
+        for row in 0..batch.num_rows() {
+            write_row_json(&batch, row, &cols, &mut buf);
+        }
+        buf.clear();
 
-    let batch = make_batch(500);
-    let meta = BatchMetadata {
-        resource_attrs: vec![],
-        observed_time_ns: now_nanos(),
-    };
+        let reg1 = Region::new(&GLOBAL);
+        for row in 0..batch.num_rows() {
+            write_row_json(&batch, row, &cols, &mut buf);
+        }
+        let stats1 = reg1.change();
+        buf.clear();
 
-    // Warmup.
-    for _ in 0..3 {
-        sink.encode_batch(&batch, &meta);
+        let reg2 = Region::new(&GLOBAL);
+        for row in 0..batch.num_rows() {
+            write_row_json(&batch, row, &cols, &mut buf);
+        }
+        let stats2 = reg2.change();
+
+        assert_stable_or_zero(
+            "write_row_json",
+            stats1.bytes_allocated,
+            stats2.bytes_allocated,
+        );
     }
 
-    // Window 1.
-    let reg1 = Region::new(&GLOBAL);
-    for _ in 0..5 {
-        sink.encode_batch(&batch, &meta);
-    }
-    let stats1 = reg1.change();
+    // --- Part 2: OTLP encode_batch ---
+    {
+        use logfwd_output::{OtlpProtocol, OtlpSink};
 
-    // Window 2.
-    let reg2 = Region::new(&GLOBAL);
-    for _ in 0..5 {
-        sink.encode_batch(&batch, &meta);
-    }
-    let stats2 = reg2.change();
+        let mut sink = OtlpSink::new(
+            "test".to_string(),
+            "http://localhost:4318/v1/logs".to_string(),
+            OtlpProtocol::Http,
+            logfwd_output::Compression::None,
+            vec![],
+        );
 
-    // Both windows should allocate roughly the same (or zero — even better).
-    if stats1.bytes_allocated == 0 && stats2.bytes_allocated == 0 {
-        return;
+        let batch = make_batch(500);
+        let meta = BatchMetadata {
+            resource_attrs: vec![],
+            observed_time_ns: now_nanos(),
+        };
+
+        for _ in 0..3 {
+            sink.encode_batch(&batch, &meta);
+        }
+
+        let reg1 = Region::new(&GLOBAL);
+        for _ in 0..5 {
+            sink.encode_batch(&batch, &meta);
+        }
+        let stats1 = reg1.change();
+
+        let reg2 = Region::new(&GLOBAL);
+        for _ in 0..5 {
+            sink.encode_batch(&batch, &meta);
+        }
+        let stats2 = reg2.change();
+
+        assert_stable_or_zero(
+            "OTLP encode_batch",
+            stats1.bytes_allocated,
+            stats2.bytes_allocated,
+        );
     }
-    let growth = stats2.bytes_allocated as f64 / stats1.bytes_allocated.max(1) as f64;
-    assert!(
-        (0.5..2.0).contains(&growth),
-        "OTLP encode instability: window 1={} bytes, window 2={} bytes (ratio={growth:.2})",
-        stats1.bytes_allocated,
-        stats2.bytes_allocated,
-    );
 }

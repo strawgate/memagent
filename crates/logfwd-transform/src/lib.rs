@@ -554,6 +554,10 @@ impl SqlTransform {
     /// Add an enrichment table that will be registered in each DataFusion
     /// session alongside the `logs` table. Returns an error if a table with
     /// the same name is already registered or if the name conflicts with "logs".
+    ///
+    /// Does NOT invalidate the cached SessionContext (unlike `set_geo_database`)
+    /// because enrichment tables are deregistered/re-registered per batch in
+    /// `execute()`. The context doesn't need to know about them at creation time.
     pub fn add_enrichment_table(
         &mut self,
         table: Arc<dyn logfwd_io::enrichment::EnrichmentTable>,
@@ -615,6 +619,11 @@ impl SqlTransform {
                     .map_err(|e| {
                         format!("Failed to register enrichment table '{}': {e}", et.name())
                     })?;
+            } else {
+                eprintln!(
+                    "  warning: enrichment table '{}' not yet loaded, skipping",
+                    et.name()
+                );
             }
         }
 

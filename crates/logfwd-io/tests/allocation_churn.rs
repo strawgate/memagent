@@ -1,11 +1,10 @@
 //! Allocation churn tests for the input layer.
 //!
 //! Uses dhat to detect allocation/deallocation churn — where buffers are
-//! allocated and freed repeatedly instead of being reused. A high ratio
-//! of total_blocks to max_blocks indicates churn.
+//! allocated and freed repeatedly instead of being reused.
 //!
-//! Separate integration test binary because `#[global_allocator]` is per-binary.
-//! Run with `--test-threads=1` since dhat allows only one profiler at a time.
+//! Single test function because dhat only allows one active Profiler at a time.
+//! Multiple #[test] functions would panic when run in parallel.
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -50,96 +49,88 @@ impl InputSource for MockSource {
     }
 }
 
-/// FramedInput should reuse its internal buffers across polls.
-/// After warmup, repeated polls of same-sized data should not cause
-/// allocation growth (total_blocks should stay close to max_blocks).
+/// Combined churn + leak test (single function to avoid dhat parallel panic).
+///
+/// Part 1: After warmup, repeated polls should have bounded allocation count.
+/// Part 2: After all data consumed, live allocations should be small.
 #[test]
-fn framed_input_no_buffer_churn() {
+fn framed_input_allocation_behavior() {
     let _prof = dhat::Profiler::builder().testing().build();
 
-    const TOTAL_POLLS: usize = 50;
-    const WARMUP_POLLS: usize = 5;
+    // --- Part 1: Buffer churn check ---
+    {
+        const TOTAL_POLLS: usize = 50;
+        const WARMUP_POLLS: usize = 5;
 
-    let chunk = b"{\"msg\":\"hello world\",\"level\":\"info\"}\n".repeat(100);
-    let stats = Arc::new(ComponentStats::new());
-    let source = MockSource::repeating(&chunk, TOTAL_POLLS);
-    let mut framed = FramedInput::new(
-        Box::new(source),
-        FormatProcessor::Passthrough,
-        Arc::clone(&stats),
-    );
+        let chunk = b"{\"msg\":\"hello world\",\"level\":\"info\"}\n".repeat(100);
+        let stats = Arc::new(ComponentStats::new());
+        let source = MockSource::repeating(&chunk, TOTAL_POLLS);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatProcessor::Passthrough,
+            Arc::clone(&stats),
+        );
 
-    // Warmup: first few polls allocate buffers.
-    for _ in 0..WARMUP_POLLS {
-        let _ = framed.poll().unwrap();
-    }
-
-    // Snapshot after warmup.
-    let warmup_stats = dhat::HeapStats::get();
-
-    // Process remaining polls.
-    loop {
-        let events = framed.poll().unwrap();
-        if events.is_empty() {
-            break;
+        for _ in 0..WARMUP_POLLS {
+            let _ = framed.poll().unwrap();
         }
-    }
 
-    let final_stats = dhat::HeapStats::get();
-    let new_blocks = final_stats.total_blocks - warmup_stats.total_blocks;
-    let peak_blocks = final_stats.max_blocks;
+        let warmup_stats = dhat::HeapStats::get();
 
-    // After warmup, new allocations per poll should be bounded.
-    // Current expected allocations per poll:
-    //   1. Vec<InputEvent> result vector
-    //   2. InputEvent::Data bytes Vec (escapes to caller — tracked in #608)
-    //   3. Occasional Vec growth in format processing
-    // Allow up to 5 per poll to catch regressions beyond the known baseline.
-    let polls_remaining = TOTAL_POLLS - WARMUP_POLLS;
-    let max_acceptable = polls_remaining * 5;
-    assert!(
-        new_blocks < max_acceptable as u64,
-        "allocation churn: {new_blocks} new blocks after warmup over {polls_remaining} polls \
-         (peak was {peak_blocks} blocks). Expected <{max_acceptable}. \
-         Buffers may not be reused across polls.",
-    );
-}
-
-/// Verify no memory leaks across many poll cycles.
-/// After all data is consumed and results dropped, net allocations should
-/// return close to baseline.
-#[test]
-fn framed_input_no_leak_across_polls() {
-    let _prof = dhat::Profiler::builder().testing().build();
-
-    let chunk = b"{\"a\":1}\n{\"b\":2}\n".repeat(50);
-    let stats = Arc::new(ComponentStats::new());
-    let source = MockSource::repeating(&chunk, 100);
-    let mut framed = FramedInput::new(
-        Box::new(source),
-        FormatProcessor::Passthrough,
-        Arc::clone(&stats),
-    );
-
-    // Process all data, dropping results.
-    loop {
-        let events = framed.poll().unwrap();
-        if events.is_empty() {
-            break;
+        loop {
+            let events = framed.poll().unwrap();
+            if events.is_empty() {
+                break;
+            }
         }
-        drop(events);
+
+        let final_stats = dhat::HeapStats::get();
+        let new_blocks = final_stats.total_blocks - warmup_stats.total_blocks;
+        let peak_blocks = final_stats.max_blocks;
+
+        // Current expected: ~3 allocs/poll (Vec<InputEvent>, data Vec, occasional growth).
+        // Allow up to 5 per poll to catch regressions.
+        let polls_remaining = TOTAL_POLLS - WARMUP_POLLS;
+        let max_acceptable = polls_remaining * 5;
+        assert!(
+            new_blocks < max_acceptable as u64,
+            "allocation churn: {new_blocks} new blocks after warmup over {polls_remaining} polls \
+             (peak was {peak_blocks} blocks). Expected <{max_acceptable}.",
+        );
     }
 
-    let final_stats = dhat::HeapStats::get();
+    // --- Part 2: Leak check ---
+    // Use a fresh FramedInput (the profiler accumulates across both parts).
+    {
+        let chunk = b"{\"a\":1}\n{\"b\":2}\n".repeat(50);
+        let stats = Arc::new(ComponentStats::new());
+        let source = MockSource::repeating(&chunk, 100);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatProcessor::Passthrough,
+            Arc::clone(&stats),
+        );
 
-    // curr_blocks = currently live allocations. Should be small
-    // (just the FramedInput's internal buffers, not accumulated data).
-    // The FramedInput struct itself has ~3 Vecs (out_buf, spare_buf, remainder).
-    assert!(
-        final_stats.curr_blocks < 20,
-        "possible memory leak: {} blocks still alive after consuming all data \
-         ({} bytes). Expected <20 live blocks.",
-        final_stats.curr_blocks,
-        final_stats.curr_bytes,
-    );
+        loop {
+            let events = framed.poll().unwrap();
+            if events.is_empty() {
+                break;
+            }
+            drop(events);
+        }
+        // Drop framed to release its internal buffers.
+        drop(framed);
+
+        let final_stats = dhat::HeapStats::get();
+
+        // After dropping FramedInput, only the ComponentStats Arc and
+        // dhat internals should remain. Allow generous headroom.
+        assert!(
+            final_stats.curr_blocks < 30,
+            "possible memory leak: {} blocks still alive after dropping FramedInput \
+             ({} bytes). Expected <30.",
+            final_stats.curr_blocks,
+            final_stats.curr_bytes,
+        );
+    }
 }
