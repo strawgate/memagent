@@ -36,52 +36,48 @@ export function LogViewer() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs.length]);
 
-  if (!open) {
-    return (
-      <div
-        class="log-prompt"
-        onClick={() => setOpen(true)}
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="flex-shrink:0">
-          <rect x="1" y="2" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.2" />
-          <line x1="4" y1="6" x2="12" y2="6" stroke="currentColor" stroke-width="1" opacity="0.5" />
-          <line x1="4" y1="9" x2="10" y2="9" stroke="currentColor" stroke-width="1" opacity="0.5" />
-        </svg>
-        <span>Stream process logs</span>
-        <span class="log-prompt-hint">stderr output will appear here</span>
-      </div>
-    );
-  }
+  const icon = (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="flex-shrink:0">
+      <rect x="1" y="2" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.2" />
+      <line x1="4" y1="6" x2="12" y2="6" stroke="currentColor" stroke-width="1" opacity="0.5" />
+      <line x1="4" y1="9" x2="10" y2="9" stroke="currentColor" stroke-width="1" opacity="0.5" />
+    </svg>
+  );
 
   return (
     <div class="log-box">
       <div class="log-header">
         <div class="log-header-left">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="flex-shrink:0">
-            <rect x="1" y="2" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.2" />
-            <line x1="4" y1="6" x2="12" y2="6" stroke="currentColor" stroke-width="1" opacity="0.5" />
-            <line x1="4" y1="9" x2="10" y2="9" stroke="currentColor" stroke-width="1" opacity="0.5" />
-          </svg>
+          {icon}
           <span>Process Logs</span>
-          {capturing && <span class="log-live">● live</span>}
-          <span class="log-count">{logs.length} lines</span>
+          {open && capturing && <span class="log-live">● live</span>}
+          {open && <span class="log-count">{logs.length} lines</span>}
         </div>
-        <button class="log-close" onClick={() => setOpen(false)}>✕</button>
-      </div>
-      <div class="log-output">
-        {logs.length === 0 ? (
-          <div class="log-empty">
-            {capturing
-              ? "Capturing stderr… waiting for output."
-              : "Activating capture…"}
-          </div>
-        ) : (
-          logs.map((line, i) => (
-            <div key={i} class="log-line">{line}</div>
-          ))
+        {open && (
+          <button class="log-close" onClick={() => setOpen(false)} aria-label="Close log viewer">✕</button>
         )}
-        <div ref={bottomRef} />
       </div>
+      {!open ? (
+        <div class="log-start" role="button" tabIndex={0} onClick={() => setOpen(true)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setOpen(true); }}>
+          <span class="log-start-btn">▶ Stream logs</span>
+          <span class="log-start-hint">Captures stderr output from this process</span>
+        </div>
+      ) : (
+        <div class="log-output">
+          {logs.length === 0 ? (
+            <div class="log-empty">
+              {capturing
+                ? "Capturing stderr… waiting for output."
+                : "Activating capture…"}
+            </div>
+          ) : (
+            logs.map((line, i) => (
+              <div key={i} class="log-line">{line}</div>
+            ))
+          )}
+          <div ref={bottomRef} />
+        </div>
+      )}
     </div>
   );
 }

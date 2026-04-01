@@ -117,21 +117,6 @@ main {
   background: var(--t4);
 }
 
-/* === System info row === */
-.sys-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-bottom: 16px;
-  font-size: 12px;
-  color: var(--t3);
-}
-.sys-row b {
-  color: var(--t2);
-  font-weight: 500;
-  font-family: var(--mono);
-}
-
 /* === Metric badges === */
 .badge-row {
   display: flex;
@@ -407,31 +392,6 @@ canvas.chart-canvas {
 }
 
 /* === Log viewer === */
-.log-prompt {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  background: var(--card);
-  border: 1px dashed var(--border);
-  border-radius: var(--r);
-  cursor: pointer;
-  color: var(--t3);
-  font-size: 12px;
-  transition: all 0.15s;
-  margin-bottom: 16px;
-}
-.log-prompt:hover {
-  border-color: var(--accent);
-  color: var(--t2);
-  background: var(--card-hover);
-}
-.log-prompt-hint {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--t4);
-}
-
 .log-box {
   background: var(--card);
   border: 1px solid var(--border);
@@ -493,6 +453,27 @@ canvas.chart-canvas {
 .log-line {
   white-space: pre-wrap;
   word-break: break-all;
+}
+.log-start {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 20px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.log-start:hover {
+  background: var(--card-hover);
+}
+.log-start-btn {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.log-start-hint {
+  color: var(--t4);
+  font-size: 11px;
 }
 
 @media (max-width: 1000px) {

@@ -1,8 +1,7 @@
 /** EMA-smoothed rate tracker. Tracks counter deltas over time. */
 export class RateTracker {
-  private prev = new Map<string, number>();
+  private prev = new Map<string, { value: number; time: number }>();
   private ema = new Map<string, number>();
-  private prevTime: number | null = null;
   private alpha: number;
 
   constructor(alpha: number = 0.3) {
@@ -13,20 +12,19 @@ export class RateTracker {
   rate(key: string, value: number): number | null {
     const now = Date.now();
     const prev = this.prev.get(key);
-    const dt = this.prevTime != null ? (now - this.prevTime) / 1000 : 0;
-    this.prev.set(key, value);
+    this.prev.set(key, { value, time: now });
 
-    if (prev == null || dt <= 0) return null;
+    if (prev == null) return null;
+    const dt = (now - prev.time) / 1000;
+    if (dt <= 0) return this.ema.get(key) ?? null; // same render cycle — return last EMA
 
-    const raw = Math.max(0, (value - prev) / dt);
+    const raw = Math.max(0, (value - prev.value) / dt);
     const prevEma = this.ema.get(key);
     const smoothed = prevEma == null ? raw : prevEma * (1 - this.alpha) + raw * this.alpha;
     this.ema.set(key, smoothed);
     return smoothed;
   }
 
-  /** Call once per poll cycle after all rate() calls */
-  tick() {
-    this.prevTime = Date.now();
-  }
+  /** @deprecated No longer needed — each key tracks its own timestamp. */
+  tick() {}
 }
