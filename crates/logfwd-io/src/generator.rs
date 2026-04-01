@@ -111,9 +111,10 @@ impl InputSource for GeneratorInput {
             return Ok(vec![]);
         }
 
-        Ok(vec![InputEvent::Data {
-            bytes: std::mem::take(&mut self.buf),
-        }])
+        // Swap buffers to preserve capacity (avoid realloc every batch).
+        let mut out = Vec::with_capacity(self.config.batch_size * 256);
+        std::mem::swap(&mut self.buf, &mut out);
+        Ok(vec![InputEvent::Data { bytes: out }])
     }
 
     fn name(&self) -> &str {

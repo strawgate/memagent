@@ -817,6 +817,7 @@ output:
             ("http", "endpoint: http://x"),
             ("stdout", ""),
             ("file_out", "path: /tmp/out.log"),
+            ("null", ""),
         ] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  {extra}\n"
@@ -849,6 +850,7 @@ output:
             ("udp", "listen: 0.0.0.0:514"),
             ("tcp", "listen: 0.0.0.0:514"),
             ("otlp", ""),
+            ("generator", ""),
         ] {
             let yaml = format!("input:\n  type: {itype}\n  {extra}\noutput:\n  type: stdout\n");
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));

@@ -6,6 +6,7 @@ pub mod filter_hints;
 pub mod generator;
 pub mod input;
 pub mod metric_history;
+pub mod otlp_receiver;
 pub mod stderr_capture;
 pub mod tail;
 pub mod tcp_input;
