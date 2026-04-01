@@ -65,11 +65,16 @@ transform: |
 ```
 
 ### GeoIP enrichment
+
+`geo_lookup(ip)` returns a struct with fields: `country_code`, `country_name`,
+`city`, `region`, `latitude`, `longitude`, `asn`, `org`. Use `get_field()` to
+extract individual fields.
+
 ```yaml
 enrichment:
   - type: geo_database
     path: /data/GeoLite2-City.mmdb
 transform: |
-  SELECT *, geo_lookup(source_ip, 'city') as city
-  FROM logs
+  SELECT *, get_field(geo, 'city') AS city, get_field(geo, 'country_code') AS country
+  FROM (SELECT *, geo_lookup(source_ip) AS geo FROM logs)
 ```
