@@ -110,44 +110,56 @@ If the user's SQL references `status_int` but this batch has no integer
 status values, DataFusion throws "column not found." This is unacceptable
 for a log forwarder processing heterogeneous log streams.
 
-**Solution: Accumulated superset schema.** The SqlTransform maintains a
-running superset of all columns seen across batches. Before registering
-the MemTable, pad the current batch with null columns for any fields
-present in the superset but missing from this batch. This guarantees a
-stable schema for the user's SQL.
+**Rejected: accumulated superset schema.** A growing superset is implicit
+state the user can't reason about. "My query worked for 5 minutes then
+broke when a new field appeared" is terrible UX. Queries should not be
+stateful.
+
+**Solution: SQL-declared columns guaranteed with nulls.** We already
+parse the user's SQL at config time (`QueryAnalyzer.referenced_columns`).
+The suffix convention tells us the type (`_int` → Int64, `_str` → Utf8,
+`_float` → Float64). Before registering the MemTable, pad the batch
+with null columns for any SQL-referenced columns missing from this batch.
+
+This is **deterministic and stateless**: the set of guaranteed columns
+is derived from the user's SQL, not from runtime data. The user's SQL
+IS the schema declaration.
 
 Implementation sketch:
 ```
+QueryAnalyzer {
+    referenced_columns: HashSet<String>,  // e.g., {"status_int", "level_str"}
+}
+
 SqlTransform {
-    known_schema: HashMap<String, DataType>,  // accumulated superset
+    // Derived once from QueryAnalyzer at config time:
+    guaranteed_columns: Vec<(String, DataType)>,
+    // e.g., [("status_int", Int64), ("level_str", Utf8)]
 }
 
 fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch> {
-    // 1. Merge batch schema into known_schema (add new columns)
-    for field in batch.schema().fields() {
-        self.known_schema.entry(field.name().clone())
-            .or_insert(field.data_type().clone());
-    }
-    // 2. Pad batch: add null columns for known fields missing from batch
-    let padded = pad_batch_to_schema(&batch, &self.known_schema);
-    // 3. Register padded batch as MemTable, create view, execute SQL
+    // Pad batch: add null columns for guaranteed columns missing from batch
+    let padded = pad_batch_to_schema(&batch, &self.guaranteed_columns);
+    // Register padded batch as MemTable, create view, execute SQL
 }
 ```
 
-The superset only grows — once a column is seen, it's always present
-(as nulls) in subsequent batches. This mirrors how Elasticsearch
-handles schema evolution: new fields are added to the mapping, never
-removed.
+Type inference from suffix:
+- `_int` suffix → Int64
+- `_float` suffix → Float64
+- `_str` suffix or no recognized suffix → Utf8
+
+For `SELECT *` queries (no explicit column references), no padding is
+needed — `SELECT *` returns whatever the batch contains.
 
 Combined with the view layer, the flow per batch becomes:
-1. Merge batch schema into accumulated superset
-2. Pad batch with null columns for missing superset fields
-3. Register padded batch as `_raw_logs` MemTable
-4. Create view `logs` with bare-name aliases + typed columns
-5. Execute user SQL against `logs`
+1. Pad batch with null columns for SQL-referenced columns missing from batch
+2. Register padded batch as `_raw_logs` MemTable
+3. Create view `logs` with bare-name aliases + typed columns
+4. Execute user SQL against `logs`
 
-The view SQL is regenerated when the superset changes (new columns
-seen), cached otherwise.
+The guaranteed column set and view SQL are both derived from the user's
+SQL at config time — no runtime state accumulation.
 
 ### Fix 3: Column deduplication uses DataType
 
