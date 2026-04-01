@@ -10,8 +10,8 @@ memchr = { version = "2", default-features = false }
 wide = { version = "1.2.0", default-features = false }
 
 [dev-dependencies]
-logfwd-arrow = { path = "../logfwd-arrow" }
-logfwd-test-utils = { path = "../logfwd-test-utils" }
+logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
+logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 arrow = { workspace = true }
 arrow-json = "54"
 bytes = "1"

@@ -10,11 +10,11 @@ dhat-heap = ["dhat"]
 cpu-profiling = ["pprof"]
 
 [dependencies]
-logfwd-config = { path = "../logfwd-config" }
-logfwd-core = { path = "../logfwd-core" }
-logfwd-arrow = { path = "../logfwd-arrow" }
-logfwd-transform = { path = "../logfwd-transform" }
-logfwd-output = { path = "../logfwd-output" }
+logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
+logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
+logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
+logfwd-transform = { version = "0.1.0", path = "../logfwd-transform" }
+logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 dhat = { version = "0.3", optional = true }
 pprof = { version = "0.14", features = ["flamegraph"], optional = true }
 libc = "0.2"
@@ -33,7 +33,7 @@ tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 
 [dev-dependencies]
 arrow = { workspace = true }
-logfwd-test-utils = { path = "../logfwd-test-utils" }
+logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1.11.0"
 tempfile = "3"
 tiny_http = "0.12"
