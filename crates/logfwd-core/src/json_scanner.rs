@@ -584,3 +584,112 @@ mod tests {
         assert!(builder.rows[0].iter().any(|(k, v)| k == "a" && v == "b"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani proofs
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// next_non_ws returns a position in [start, end].
+    /// If result < end, the byte at result is NOT whitespace.
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn verify_next_non_ws() {
+        let buf: [u8; 16] = kani::any();
+        let start: usize = kani::any();
+        let end: usize = kani::any();
+        kani::assume(start <= end && end <= 16);
+
+        let result = next_non_ws(&buf, start, end);
+
+        assert!(result >= start && result <= end);
+        if result < end {
+            let b = buf[result];
+            assert!(b != b' ' && b != b'\t' && b != b'\r');
+        }
+    }
+
+    /// skip_bare_value returns a position in [start, end].
+    /// All bytes before result are NOT delimiters.
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn verify_skip_bare_value() {
+        let buf: [u8; 16] = kani::any();
+        let start: usize = kani::any();
+        let end: usize = kani::any();
+        kani::assume(start <= end && end <= 16);
+
+        let result = skip_bare_value(&buf, start, end);
+
+        assert!(result >= start && result <= end);
+        let mut i = start;
+        while i < result {
+            let b = buf[i];
+            assert!(
+                b != b',' && b != b'}' && b != b' ' && b != b'\t' && b != b'\r' && b != b'\n'
+            );
+            i += 1;
+        }
+    }
+
+    /// trim_ws produces a subslice — result length <= input length.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn verify_trim_ws() {
+        let buf: [u8; 8] = kani::any();
+        let len: usize = kani::any_where(|&l: &usize| l <= 8);
+        let input = &buf[..len];
+        let result = trim_ws(input);
+
+        assert!(result.len() <= input.len());
+
+        // First byte of result (if any) is not whitespace
+        if !result.is_empty() {
+            let first = result[0];
+            assert!(
+                first != b' ' && first != b'\t' && first != b'\r' && first != b'\n'
+            );
+            let last = result[result.len() - 1];
+            assert!(
+                last != b' ' && last != b'\t' && last != b'\r' && last != b'\n'
+            );
+        }
+    }
+
+    /// next_quote on a single block: if found, the position has a set bit
+    /// in the bitmask. If not found, no bits are set in [from, end).
+    #[kani::proof]
+    fn verify_next_quote_single_block() {
+        let bitmask: u64 = kani::any();
+        let from: usize = kani::any_where(|&f: &usize| f < 64);
+        let end: usize = kani::any_where(|&e: &usize| e <= 64 && e >= from);
+
+        let blocks = StoredBitmasks {
+            real_quotes: &[bitmask],
+            open_brace: &[0],
+            close_brace: &[0],
+            open_bracket: &[0],
+            close_bracket: &[0],
+        };
+
+        let result = next_quote(from, end, &blocks);
+
+        match result {
+            Some(pos) => {
+                assert!(pos >= from && pos < end);
+                assert!((bitmask >> pos) & 1 == 1);
+            }
+            None => {
+                // No bits set in [from, end)
+                let mut i = from;
+                while i < end {
+                    assert!((bitmask >> i) & 1 == 0);
+                    i += 1;
+                }
+            }
+        }
+    }
+}
