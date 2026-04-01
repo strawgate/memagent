@@ -104,7 +104,8 @@ impl InputSource for FramedInput {
                         // Reuse buffers to avoid per-event allocations.
                         self.spare_buf.clear();
                         std::mem::swap(&mut self.out_buf, &mut self.spare_buf);
-                        let data = std::mem::take(&mut self.spare_buf);
+                        let mut data = Vec::new();
+                        std::mem::swap(&mut self.spare_buf, &mut data);
                         result_events.push(InputEvent::Data { bytes: data });
                     }
                 }

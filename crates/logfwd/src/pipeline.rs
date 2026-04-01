@@ -33,11 +33,7 @@ struct InputState {
     source: Box<dyn InputSource>,
     /// Buffer accumulating scanner-ready bytes for batching.
     buf: Vec<u8>,
-    /// Kept alive so the Arc<ComponentStats> shared with PipelineMetrics isn't dropped.
-    #[expect(
-        dead_code,
-        reason = "stats Arc shared with PipelineMetrics, must stay alive"
-    )]
+    /// Input metrics (used for parse/rotation/truncation observability).
     stats: Arc<ComponentStats>,
 }
 
@@ -439,8 +435,16 @@ fn input_poll_loop(
                 buffered_since = Some(Instant::now());
             }
             for event in events {
-                if let InputEvent::Data { bytes } = event {
-                    input.buf.extend_from_slice(&bytes);
+                match event {
+                    InputEvent::Data { bytes } => {
+                        input.buf.extend_from_slice(&bytes);
+                    }
+                    InputEvent::Rotated | InputEvent::Truncated => {
+                        // FramedInput already resets its internal state on these events.
+                        // Track them as input errors for observability in pipeline metrics.
+                        input.stats.inc_errors();
+                    }
+                    _ => {}
                 }
             }
             if buffered_since.is_none() && !input.buf.is_empty() {
