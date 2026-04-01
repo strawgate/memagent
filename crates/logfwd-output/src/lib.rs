@@ -15,7 +15,7 @@ mod loki;
 #[allow(dead_code)]
 mod parquet;
 
-pub use fanout::FanOut;
+pub use fanout::{FanOut, FanOutError};
 pub use json_lines::JsonLinesSink;
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
 use stdout::*;
@@ -349,7 +349,7 @@ impl OutputSink for CaptureSink {
 mod tests {
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{Field, Schema};
     use std::sync::Arc;
 
     fn make_test_batch() -> RecordBatch {
@@ -431,6 +431,48 @@ mod tests {
         // send_batch writes to real stdout, but should not error.
         let result = fanout.send_batch(&batch, &meta);
         assert!(result.is_ok());
+    }
+
+    struct AlwaysFailSink {
+        name: &'static str,
+    }
+
+    impl OutputSink for AlwaysFailSink {
+        fn send_batch(
+            &mut self,
+            _batch: &RecordBatch,
+            _metadata: &BatchMetadata,
+        ) -> io::Result<()> {
+            Err(io::Error::other(format!("{} failed", self.name)))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn name(&self) -> &str {
+            self.name
+        }
+    }
+
+    #[test]
+    fn test_fanout_error_reports_failed_sink_names() {
+        let batch = make_test_batch();
+        let meta = make_metadata();
+        let mut fanout = FanOut::new(vec![
+            Box::new(AlwaysFailSink { name: "sink-a" }),
+            Box::new(AlwaysFailSink { name: "sink-b" }),
+        ]);
+
+        let err = fanout
+            .send_batch(&batch, &meta)
+            .expect_err("fanout should fail");
+        let fanout_err = err
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<FanOutError>())
+            .expect("fanout should wrap failures in FanOutError");
+
+        assert_eq!(fanout_err.failed_sinks(), ["sink-a", "sink-b"]);
     }
 
     #[test]
@@ -820,7 +862,7 @@ mod tests {
 mod write_row_json_tests {
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
 

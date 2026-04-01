@@ -229,10 +229,13 @@ impl PipelineMetrics {
         stats
     }
 
-    /// Increment error counter on all outputs.
-    pub fn output_error(&self) {
-        for (_, _, stats) in &self.outputs {
-            stats.inc_errors();
+    /// Increment error counter on one output.
+    pub fn output_error(&self, output_name: &str) {
+        for (name, _, stats) in &self.outputs {
+            if name == output_name {
+                stats.inc_errors();
+                break;
+            }
         }
     }
 

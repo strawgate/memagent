@@ -19,7 +19,7 @@ use logfwd_core::cri::parse_cri_line;
 use logfwd_io::diagnostics::{ComponentStats, PipelineMetrics};
 use logfwd_io::input::{FileInput, InputEvent, InputSource};
 use logfwd_io::tail::TailConfig;
-use logfwd_output::{BatchMetadata, FanOut, OutputSink, build_output_sink};
+use logfwd_output::{BatchMetadata, FanOut, FanOutError, OutputSink, build_output_sink};
 use logfwd_transform::SqlTransform;
 use tokio_util::sync::CancellationToken;
 
@@ -361,7 +361,16 @@ impl Pipeline {
             observed_time_ns: now_nanos(),
         };
         if let Err(e) = tokio::task::block_in_place(|| self.output.send_batch(&result, &metadata)) {
-            self.metrics.output_error();
+            if let Some(fanout_error) = e
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<FanOutError>())
+            {
+                for failed_sink in fanout_error.failed_sinks() {
+                    self.metrics.output_error(failed_sink);
+                }
+            } else {
+                self.metrics.output_error(self.output.name());
+            }
             self.metrics.inc_dropped_batch();
             eprintln!("pipeline: output error (batch dropped): {e}");
             return;
@@ -632,9 +641,41 @@ fn now_nanos() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+    use std::sync::atomic::Ordering;
+
     use logfwd_config::{Format, OutputConfig, OutputType};
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::test_meter;
+
+    struct NamedSink<T> {
+        name: &'static str,
+        inner: T,
+    }
+
+    impl<T> NamedSink<T> {
+        fn new(name: &'static str, inner: T) -> Self {
+            Self { name, inner }
+        }
+    }
+
+    impl<T: OutputSink> OutputSink for NamedSink<T> {
+        fn send_batch(
+            &mut self,
+            batch: &arrow::record_batch::RecordBatch,
+            metadata: &BatchMetadata,
+        ) -> io::Result<()> {
+            self.inner.send_batch(batch, metadata)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
+
+        fn name(&self) -> &str {
+            self.name
+        }
+    }
 
     #[test]
     fn test_build_output_sink_stdout() {
@@ -1334,8 +1375,6 @@ output:
     /// and processing continues.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_output_errors_do_not_crash() {
-        use std::sync::atomic::Ordering;
-
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("output_err.log");
 
@@ -1390,6 +1429,86 @@ output:
         assert!(
             lines_in > 0,
             "data should flow through transform despite output errors"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_fanout_output_errors_only_increment_failing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("fanout_output_err.log");
+
+        let mut data = String::new();
+        for i in 0..100 {
+            data.push_str(&format!(r#"{{"err":{i}}}"#));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: "{}"
+        format: json
+    outputs:
+      - type: stdout
+        format: json
+        name: healthy-a
+      - type: stdout
+        format: json
+        name: failing
+      - type: stdout
+        format: json
+        name: healthy-b
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+        pipeline = pipeline.with_output(Box::new(FanOut::new(vec![
+            Box::new(NamedSink::new("healthy-a", DevNullSink)),
+            Box::new(NamedSink::new("failing", FailingSink::new(3))),
+            Box::new(NamedSink::new("healthy-b", DevNullSink)),
+        ])));
+        pipeline.batch_timeout = Duration::from_millis(20);
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            sd.cancel();
+        });
+
+        let result = pipeline.run_async(&shutdown).await;
+        assert!(
+            result.is_ok(),
+            "fanout output errors should not crash pipeline"
+        );
+
+        let dropped = pipeline
+            .metrics
+            .dropped_batches_total
+            .load(Ordering::Relaxed);
+        assert!(
+            dropped > 0,
+            "expected dropped_batches_total > 0, got {dropped}"
+        );
+
+        let output_errors: Vec<_> = pipeline
+            .metrics
+            .outputs
+            .iter()
+            .map(|(name, _, stats)| (name.as_str(), stats.errors_total.load(Ordering::Relaxed)))
+            .collect();
+
+        assert_eq!(
+            output_errors,
+            vec![("healthy-a", 0), ("failing", dropped), ("healthy-b", 0)]
         );
     }
 
@@ -1706,15 +1825,12 @@ mod extract_cri_tests {
 
 #[cfg(test)]
 mod remainder_tests {
-    use super::*;
-
     /// Simulate splitting input at every possible byte position
     /// and verify we get the same output regardless of split point.
     #[test]
     #[allow(unused_assignments)]
     fn partial_line_handling_split_anywhere() {
         let full_input = b"{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n";
-        let stats = Arc::new(ComponentStats::new());
 
         for split_at in 1..full_input.len() {
             let chunk1 = &full_input[..split_at];
@@ -1811,7 +1927,6 @@ mod remainder_tests {
         combined.extend_from_slice(read2);
         if let Some(pos) = memchr::memrchr(b'\n', &combined) {
             if pos + 1 < combined.len() {
-                remainder = combined[pos + 1..].to_vec();
                 combined.truncate(pos + 1);
             }
             buf.extend_from_slice(&combined);
