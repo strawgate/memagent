@@ -274,8 +274,19 @@ output:
     let reqs = request_count.load(Ordering::Relaxed);
     assert!(reqs >= 1, "expected at least 1 HTTP request, got {reqs}");
 
-    let responses = received_bodies.lock().unwrap();
-    let total_lines: usize = responses.iter().map(|body| body.lines().count()).sum();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let total_lines = loop {
+        let total: usize = received_bodies
+            .lock()
+            .expect("mutex poisoned")
+            .iter()
+            .map(|body| body.lines().count())
+            .sum();
+        if total == 5 || std::time::Instant::now() >= deadline {
+            break total;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert_eq!(
         total_lines, 5,
         "expected 5 lines across all HTTP requests, got {total_lines}"
