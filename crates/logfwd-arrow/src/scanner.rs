@@ -326,6 +326,19 @@ mod tests {
         assert!(batch.column_by_name("big_float").is_some());
     }
     #[test]
+    fn test_i64_min_is_preserved_as_int() {
+        let batch = default_scanner(4)
+            .scan(b"{\"big\":-9223372036854775808}\n")
+            .unwrap();
+        let col = batch
+            .column_by_name("big_int")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(col.value(0), i64::MIN);
+    }
+    #[test]
     fn test_empty_object() {
         assert_eq!(default_scanner(4).scan(b"{}\n").unwrap().num_rows(), 1);
     }
