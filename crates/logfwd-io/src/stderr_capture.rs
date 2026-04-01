@@ -187,34 +187,43 @@ fn reader_loop(read_fd: i32, orig_fd: i32, state: &CaptureState) {
             return;
         }
 
-        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        let n = unsafe {
+            libc::read(
+                read_fd,
+                buf.as_mut_ptr().cast::<libc::c_void>(),
+                buf.len(),
+            )
+        };
 
-        if n > 0 {
-            let bytes = &buf[..n as usize];
+        match n.cmp(&0) {
+            std::cmp::Ordering::Greater => {
+                let bytes = &buf[..n as usize];
 
-            // Tee to original stderr so terminal still works.
-            unsafe {
-                libc::write(orig_fd, bytes.as_ptr() as *const libc::c_void, n as usize);
-            }
+                // Tee to original stderr so terminal still works.
+                unsafe {
+                    libc::write(orig_fd, bytes.as_ptr().cast::<libc::c_void>(), n as usize);
+                }
 
-            // Split into lines and push to buffer.
-            let chunk = String::from_utf8_lossy(bytes);
-            partial.push_str(&chunk);
-            while let Some(pos) = partial.find('\n') {
-                let line = partial[..pos].to_string();
-                partial.drain(..=pos);
-                // Strip ANSI escape codes.
-                let clean = strip_ansi(&line);
-                if !clean.is_empty() {
-                    state.push_line(clean);
+                // Split into lines and push to buffer.
+                let chunk = String::from_utf8_lossy(bytes);
+                partial.push_str(&chunk);
+                while let Some(pos) = partial.find('\n') {
+                    let line = partial[..pos].to_string();
+                    partial.drain(..=pos);
+                    let clean = strip_ansi(&line);
+                    if !clean.is_empty() {
+                        state.push_line(clean);
+                    }
                 }
             }
-        } else if n == 0 {
-            // EOF — pipe write end closed (process exiting).
-            break;
-        } else {
-            // EAGAIN (non-blocking, no data) — sleep briefly.
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::cmp::Ordering::Equal => {
+                // EOF — pipe write end closed (process exiting).
+                break;
+            }
+            std::cmp::Ordering::Less => {
+                // EAGAIN (non-blocking, no data) — sleep briefly.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
     }
 
