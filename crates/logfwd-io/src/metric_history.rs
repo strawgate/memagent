@@ -113,7 +113,7 @@ impl MetricBuffer {
         }
 
         // Sort by time and deduplicate close timestamps.
-        all.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
+        all.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
         all.dedup_by(|a, b| (a.t - b.t).abs() < 1.0);
         all
     }

@@ -496,7 +496,14 @@ fn input_poll_loop(
                                         true,
                                     );
                                 }
+                                Format::Json | Format::Raw => {
+                                    input.buf.extend_from_slice(&chunk);
+                                }
                                 _ => {
+                                    eprintln!(
+                                        "pipeline: unsupported input format {:?}, treating as raw",
+                                        input.format
+                                    );
                                     input.buf.extend_from_slice(&chunk);
                                 }
                             }
