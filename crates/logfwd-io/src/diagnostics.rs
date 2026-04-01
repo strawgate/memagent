@@ -18,12 +18,15 @@ pub struct ComponentStats {
     pub lines_total: AtomicU64,
     pub bytes_total: AtomicU64,
     pub errors_total: AtomicU64,
+    /// Expected input lifecycle events (rotation/truncation).
+    pub rotations_total: AtomicU64,
     /// Lines that failed format parsing (e.g. malformed CRI lines).
     pub parse_errors_total: AtomicU64,
     // OTel counters (for OTLP push)
     otel_lines: Counter<u64>,
     otel_bytes: Counter<u64>,
     otel_errors: Counter<u64>,
+    otel_rotations: Counter<u64>,
     otel_parse_errors: Counter<u64>,
     otel_attrs: Vec<KeyValue>,
 }
@@ -35,10 +38,12 @@ impl ComponentStats {
             lines_total: AtomicU64::new(0),
             bytes_total: AtomicU64::new(0),
             errors_total: AtomicU64::new(0),
+            rotations_total: AtomicU64::new(0),
             parse_errors_total: AtomicU64::new(0),
             otel_lines: meter.u64_counter(format!("{prefix}_lines")).build(),
             otel_bytes: meter.u64_counter(format!("{prefix}_bytes")).build(),
             otel_errors: meter.u64_counter(format!("{prefix}_errors")).build(),
+            otel_rotations: meter.u64_counter(format!("{prefix}_rotations")).build(),
             otel_parse_errors: meter.u64_counter(format!("{prefix}_parse_errors")).build(),
             otel_attrs: attrs,
         }
@@ -65,6 +70,16 @@ impl ComponentStats {
         self.otel_errors.add(1, &self.otel_attrs);
     }
 
+    /// Increment input rollover count for both file rotations and truncations.
+    ///
+    /// This updates the in-process atomic counter (`rotations_total`) and emits
+    /// the corresponding OpenTelemetry metric (`otel_rotations`) with the
+    /// component attributes.
+    pub fn inc_rotations(&self) {
+        self.rotations_total.fetch_add(1, Ordering::Relaxed);
+        self.otel_rotations.add(1, &self.otel_attrs);
+    }
+
     pub fn inc_parse_errors(&self, n: u64) {
         self.parse_errors_total.fetch_add(n, Ordering::Relaxed);
         self.otel_parse_errors.add(n, &self.otel_attrs);
@@ -80,6 +95,10 @@ impl ComponentStats {
 
     fn errors(&self) -> u64 {
         self.errors_total.load(Ordering::Relaxed)
+    }
+
+    fn rotations(&self) -> u64 {
+        self.rotations_total.load(Ordering::Relaxed)
     }
 
     fn parse_errors(&self) -> u64 {
@@ -614,12 +633,13 @@ impl DiagnosticsServer {
                 .iter()
                 .map(|(name, typ, stats)| {
                     format!(
-                        r#"{{"name":"{}","type":"{}","lines_total":{},"bytes_total":{},"errors":{},"parse_errors":{}}}"#,
+                        r#"{{"name":"{}","type":"{}","lines_total":{},"bytes_total":{},"errors":{},"rotations":{},"parse_errors":{}}}"#,
                         esc(name),
                         esc(typ),
                         stats.lines(),
                         stats.bytes(),
                         stats.errors(),
+                        stats.rotations(),
                         stats.parse_errors(),
                     )
                 })
@@ -931,6 +951,7 @@ mod tests {
         let inp = pm.add_input("pod_logs", "file");
         inp.inc_lines(1000);
         inp.inc_bytes(50000);
+        inp.inc_rotations();
 
         pm.transform_in.inc_lines(1000);
         pm.transform_out.inc_lines(900);
@@ -1074,6 +1095,7 @@ mod tests {
             body
         );
         assert!(body.contains(r#""scan_errors_total":2"#), "body: {}", body);
+        assert!(body.contains(r#""rotations":1"#), "body: {}", body);
         assert!(body.contains(r#""parse_errors":0"#), "body: {}", body);
         assert!(
             body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))),
@@ -1158,6 +1180,16 @@ mod tests {
     }
 
     #[test]
+    fn test_component_stats_rotations() {
+        let stats = ComponentStats::new();
+        assert_eq!(stats.rotations_total.load(Ordering::Relaxed), 0);
+
+        stats.inc_rotations();
+        stats.inc_rotations();
+        assert_eq!(stats.rotations_total.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
     fn test_not_found() {
         let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
@@ -1183,6 +1215,7 @@ mod tests {
 
         let (status, body) = http_get(port, "/api/pipelines");
         assert_eq!(status, 200);
+        assert!(body.contains(r#""rotations":1"#), "body: {}", body);
         assert!(
             !body.contains(r#""memory""#),
             "unexpected memory key: {}",

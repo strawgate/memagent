@@ -14,9 +14,9 @@ use logfwd_arrow::scanner::StreamingSimdScanner as Scanner;
 use logfwd_config::{
     EnrichmentConfig, Format, GeoDatabaseFormat, InputConfig, InputType, PipelineConfig,
 };
-use logfwd_core::aggregator::{AggregateResult, CriAggregator};
-use logfwd_core::cri::parse_cri_line;
 use logfwd_io::diagnostics::{ComponentStats, PipelineMetrics};
+use logfwd_io::format::FormatProcessor;
+use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{FileInput, InputEvent, InputSource};
 use logfwd_io::tail::TailConfig;
 use logfwd_output::{BatchMetadata, FanOut, FanOutError, OutputSink, build_output_sink};
@@ -27,24 +27,13 @@ use tokio_util::sync::CancellationToken;
 // Per-input state
 // ---------------------------------------------------------------------------
 
-/// Maximum size for the remainder buffer. If a "line" exceeds this without
-/// a newline, the remainder is discarded to prevent unbounded memory growth.
-/// Prevents OOM on input without newlines.
-const MAX_REMAINDER_BYTES: usize = 2 * 1024 * 1024;
-
 struct InputState {
-    #[expect(dead_code, reason = "reserved for future per-input logging")]
-    name: String,
+    /// The input source, wrapped in FramedInput for line framing + format processing.
+    /// The pipeline receives scanner-ready bytes — it doesn't know about formats.
     source: Box<dyn InputSource>,
-    format: Format,
-    /// Buffer accumulating raw bytes from the reader.
-    /// For JSON/Raw: passed directly to the scanner (StructuralIndex handles line splitting).
-    /// For CRI: CRI fields stripped per-line, JSON message extracted before scanning.
+    /// Buffer accumulating scanner-ready bytes for batching.
     buf: Vec<u8>,
-    /// Partial line remainder from last read (bytes after last newline).
-    remainder: Vec<u8>,
-    /// CRI partial-line aggregator (only used for CRI format).
-    cri_aggregator: Option<CriAggregator>,
+    /// Input metrics (used for parse/rotation/truncation observability).
     stats: Arc<ComponentStats>,
 }
 
@@ -427,6 +416,9 @@ fn input_poll_loop(
             break;
         }
 
+        // FramedInput handles newline framing, remainder management, and
+        // format processing (CRI/Auto/passthrough). Events arriving here
+        // contain scanner-ready bytes.
         let events = match input.source.poll() {
             Ok(e) => e,
             Err(e) => {
@@ -439,81 +431,22 @@ fn input_poll_loop(
         if events.is_empty() {
             std::thread::sleep(poll_interval);
         } else {
-            // Track when this batch started accumulating.
             if !input.buf.is_empty() && buffered_since.is_none() {
                 buffered_since = Some(Instant::now());
             }
             for event in events {
                 match event {
-                    InputEvent::Data { bytes, .. } => {
-                        input.stats.inc_bytes(bytes.len() as u64);
-                        let mut chunk = std::mem::take(&mut input.remainder);
-                        chunk.extend_from_slice(&bytes);
-
-                        let last_nl = memchr::memrchr(b'\n', &chunk);
-                        match last_nl {
-                            Some(pos) => {
-                                if pos + 1 < chunk.len() {
-                                    input.remainder.clear();
-                                    input.remainder.extend_from_slice(&chunk[pos + 1..]);
-                                    chunk.truncate(pos + 1);
-                                }
-                            }
-                            None => {
-                                input.remainder = chunk;
-                                chunk = Vec::new();
-                                // Cap remainder to prevent OOM on lines without newlines
-                                if input.remainder.len() > MAX_REMAINDER_BYTES {
-                                    input.stats.inc_parse_errors(1);
-                                    input.remainder.clear();
-                                }
-                            }
-                        }
-
-                        if !chunk.is_empty() {
-                            match input.format {
-                                Format::Cri => {
-                                    extract_cri_messages(
-                                        &chunk,
-                                        &mut input.buf,
-                                        input
-                                            .cri_aggregator
-                                            .as_mut()
-                                            .expect("CRI aggregator must exist for CRI format"),
-                                        &input.stats,
-                                        false,
-                                    );
-                                }
-                                Format::Auto => {
-                                    extract_cri_messages(
-                                        &chunk,
-                                        &mut input.buf,
-                                        input
-                                            .cri_aggregator
-                                            .as_mut()
-                                            .expect("CRI aggregator must exist for Auto format"),
-                                        &input.stats,
-                                        true,
-                                    );
-                                }
-                                _ => {
-                                    input.buf.extend_from_slice(&chunk);
-                                }
-                            }
-                            let line_count = memchr::memchr_iter(b'\n', &chunk).count();
-                            input.stats.inc_lines(line_count as u64);
-                        }
+                    InputEvent::Data { bytes } => {
+                        input.buf.extend_from_slice(&bytes);
                     }
                     InputEvent::Rotated | InputEvent::Truncated => {
-                        input.remainder.clear();
-                        if let Some(ref mut agg) = input.cri_aggregator {
-                            agg.reset();
-                        }
+                        // FramedInput already resets its internal state on these events.
+                        // Track these expected lifecycle events separately from errors.
+                        input.stats.inc_rotations();
                     }
                     _ => {}
                 }
             }
-            // Set buffered_since after processing if buffer was empty before.
             if buffered_since.is_none() && !input.buf.is_empty() {
                 buffered_since = Some(Instant::now());
             }
@@ -525,10 +458,6 @@ fn input_poll_loop(
         let should_send =
             input.buf.len() >= batch_target_bytes || (!input.buf.is_empty() && timeout_elapsed);
         if should_send {
-            // Swap in a pre-allocated buffer to avoid reallocation churn.
-            // The old buffer is sent to the consumer; the new one reuses
-            // the capacity from a fresh allocation (same size as the
-            // original pre-allocation in build_input_state).
             let mut data = Vec::with_capacity(batch_target_bytes);
             std::mem::swap(&mut input.buf, &mut data);
             if blocking_send_with_backpressure_metric(&tx, &metrics, data).is_err() {
@@ -566,45 +495,41 @@ fn blocking_send_with_backpressure_metric(
 // Input construction
 // ---------------------------------------------------------------------------
 
-/// Extract JSON messages from CRI-formatted lines, handling P/F merging.
-/// P (partial) lines are buffered in the aggregator until an F (full) line
-/// arrives, then the merged message is emitted.
-///
-/// If `passthrough_on_fail` is true (Format::Auto mode), lines that fail
-/// CRI parsing are passed through as-is — they're probably plain JSON.
-fn extract_cri_messages(
-    input: &[u8],
-    out: &mut Vec<u8>,
-    aggregator: &mut CriAggregator,
-    stats: &ComponentStats,
-    passthrough_on_fail: bool,
-) {
-    let mut pos = 0;
-    while pos < input.len() {
-        let eol = memchr::memchr(b'\n', &input[pos..]).map_or(input.len(), |o| pos + o);
-        let line = &input[pos..eol];
-        if let Some(cri) = parse_cri_line(line) {
-            match aggregator.feed(cri.message, cri.is_full) {
-                AggregateResult::Complete(msg) => {
-                    out.extend_from_slice(msg);
-                    out.push(b'\n');
-                    // Clear pending buffer after consuming the complete message.
-                    // Without this, subsequent P+F sequences append to stale data.
-                    aggregator.reset();
-                }
-                AggregateResult::Pending => {}
-            }
-        } else if !line.is_empty() {
-            if passthrough_on_fail {
-                // Auto mode: not CRI, pass through as plain JSON
-                out.extend_from_slice(line);
-                out.push(b'\n');
-            } else {
-                stats.inc_parse_errors(1);
+/// Build a format processor from the config format.
+fn make_format(
+    name: &str,
+    input_type: InputType,
+    format: &Format,
+    stats: &Arc<ComponentStats>,
+) -> Result<FormatProcessor, String> {
+    const CRI_MAX_MESSAGE: usize = 2 * 1024 * 1024;
+    let proc = match format {
+        Format::Cri => FormatProcessor::cri(CRI_MAX_MESSAGE, Arc::clone(stats)),
+        Format::Auto => FormatProcessor::auto(CRI_MAX_MESSAGE, Arc::clone(stats)),
+        Format::Json | Format::Raw => FormatProcessor::Passthrough,
+        unsupported => {
+            return Err(format!(
+                "input '{name}': format {:?} is not supported for {:?} inputs",
+                unsupported, input_type
+            ));
+        }
+    };
+    Ok(proc)
+}
+
+fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> Result<(), String> {
+    match input_type {
+        InputType::Generator | InputType::Otlp => {
+            if !matches!(format, Format::Json) {
+                return Err(format!(
+                    "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
+                    format, input_type
+                ));
             }
         }
-        pos = eol + 1;
+        _ => {}
     }
+    Ok(())
 }
 
 fn build_input_state(
@@ -612,7 +537,8 @@ fn build_input_state(
     cfg: &InputConfig,
     stats: Arc<ComponentStats>,
 ) -> Result<InputState, String> {
-    match cfg.input_type {
+    let (raw_source, format, buf_cap): (Box<dyn InputSource>, Format, usize) = match cfg.input_type
+    {
         InputType::File => {
             let path = cfg
                 .path
@@ -633,118 +559,80 @@ fn build_input_state(
                 FileInput::new(name.to_string(), &[PathBuf::from(path)], tail_config)
             }
             .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
-
-            let cri_aggregator = if matches!(format, Format::Cri | Format::Auto) {
-                Some(CriAggregator::new(2 * 1024 * 1024))
-            } else {
-                None
-            };
-
-            Ok(InputState {
-                name: name.to_string(),
-                source: Box::new(source),
-                format,
-                buf: Vec::with_capacity(4 * 1024 * 1024),
-                remainder: Vec::new(),
-                cri_aggregator,
-                stats,
-            })
+            validate_input_format(name, InputType::File, &format)?;
+            (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputType::Generator => {
             use logfwd_io::generator::{GeneratorConfig, GeneratorInput};
             let events_per_sec = match cfg.listen.as_deref() {
-                Some(s) => s.parse().map_err(|_| {
-                    format!(
-                        "input '{name}': generator 'listen' must be a valid integer (events/sec), got '{s}'"
-                    )
-                })?,
-                None => 0,
-            };
+                    Some(s) => s.parse().map_err(|_| {
+                        format!(
+                            "input '{name}': generator 'listen' must be a valid integer (events/sec), got '{s}'"
+                        )
+                    })?,
+                    None => 0,
+                };
             let config = GeneratorConfig {
                 events_per_sec,
                 batch_size: 1000,
                 total_events: 0,
                 ..Default::default()
             };
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            validate_input_format(name, InputType::Generator, &format)?;
             let source = GeneratorInput::new(name, config);
-            Ok(InputState {
-                name: name.to_string(),
-                source: Box::new(source),
-                format: Format::Json,
-                buf: Vec::with_capacity(4 * 1024 * 1024),
-                remainder: Vec::new(),
-                cri_aggregator: None,
-                stats,
-            })
+            (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputType::Otlp => {
             let addr = cfg
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': otlp input requires 'listen'"))?;
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            validate_input_format(name, InputType::Otlp, &format)?;
             let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new(name, addr)
                 .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
-            Ok(InputState {
-                name: name.to_string(),
-                source: Box::new(source),
-                format: Format::Json, // OTLP decoder produces JSON lines
-                buf: Vec::with_capacity(4 * 1024 * 1024),
-                remainder: Vec::new(),
-                cri_aggregator: None,
-                stats,
-            })
+            (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputType::Udp => {
             let addr = cfg
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': udp input requires 'listen'"))?;
-            if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
-                return Err(format!(
-                    "input '{name}': CRI/auto format is not supported for UDP inputs (CRI is a file-based container log format)"
-                ));
-            }
             let source = logfwd_io::udp_input::UdpInput::new(name, addr)
                 .map_err(|e| format!("input '{name}': failed to bind UDP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
-            Ok(InputState {
-                name: name.to_string(),
-                source: Box::new(source),
-                format,
-                buf: Vec::with_capacity(1024 * 1024),
-                remainder: Vec::new(),
-                cri_aggregator: None,
-                stats,
-            })
+            validate_input_format(name, InputType::Udp, &format)?;
+            (Box::new(source), format, 1024 * 1024)
         }
         InputType::Tcp => {
             let addr = cfg
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': tcp input requires 'listen'"))?;
-            if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
-                return Err(format!(
-                    "input '{name}': CRI/auto format is not supported for TCP inputs (CRI is a file-based container log format)"
-                ));
-            }
             let source = logfwd_io::tcp_input::TcpInput::new(name, addr)
                 .map_err(|e| format!("input '{name}': failed to bind TCP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
-            Ok(InputState {
-                name: name.to_string(),
-                source: Box::new(source),
-                format,
-                buf: Vec::with_capacity(4 * 1024 * 1024),
-                remainder: Vec::new(),
-                cri_aggregator: None,
-                stats,
-            })
+            validate_input_format(name, InputType::Tcp, &format)?;
+            (Box::new(source), format, 4 * 1024 * 1024)
         }
-        _ => Err(format!(
-            "input '{name}': type {:?} not yet supported",
-            cfg.input_type
-        )),
-    }
+        _ => {
+            return Err(format!(
+                "input '{name}': type {:?} not yet supported",
+                cfg.input_type
+            ));
+        }
+    };
+
+    // Wrap the raw transport with framing + format processing.
+    let format_proc = make_format(name, cfg.input_type.clone(), &format, &stats)?;
+    let framed = FramedInput::new(raw_source, format_proc, Arc::clone(&stats));
+
+    Ok(InputState {
+        source: Box::new(framed),
+        buf: Vec::with_capacity(buf_cap),
+        stats,
+    })
 }
 
 fn now_nanos() -> u64 {
@@ -2064,198 +1952,6 @@ output:
 }
 
 #[cfg(test)]
-mod extract_cri_tests {
-    use super::*;
-    use std::sync::atomic::Ordering;
-
-    fn make_stats() -> Arc<ComponentStats> {
-        Arc::new(ComponentStats::new())
-    }
-
-    #[test]
-    fn cri_full_lines_extracted() {
-        let input = b"2024-01-15T10:30:00Z stdout F hello\n2024-01-15T10:30:01Z stdout F world\n";
-        let mut out = Vec::new();
-        let mut agg = CriAggregator::new(1024);
-        let stats = make_stats();
-        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
-        let output = String::from_utf8(out).unwrap();
-        let lines: Vec<&str> = output.trim().split('\n').collect();
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "hello");
-        assert_eq!(lines[1], "world");
-    }
-
-    #[test]
-    fn cri_partial_then_full_merged() {
-        let input = b"2024-01-15T10:30:00Z stdout P hel\n2024-01-15T10:30:00Z stdout F lo\n";
-        let mut out = Vec::new();
-        let mut agg = CriAggregator::new(1024);
-        let stats = make_stats();
-        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
-        let output = String::from_utf8(out).unwrap();
-        assert_eq!(output.trim(), "hello", "P+F should merge into one line");
-    }
-
-    #[test]
-    fn cri_multiple_pf_sequences_dont_accumulate() {
-        let input = b"2024-01-15T10:30:00Z stdout P aa\n2024-01-15T10:30:00Z stdout F bb\n2024-01-15T10:30:01Z stdout P cc\n2024-01-15T10:30:01Z stdout F dd\n";
-        let mut out = Vec::new();
-        let mut agg = CriAggregator::new(1024);
-        let stats = make_stats();
-        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
-        let output = String::from_utf8(out).unwrap();
-        let lines: Vec<&str> = output.trim().split('\n').collect();
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "aabb");
-        assert_eq!(lines[1], "ccdd", "second sequence must not contain first");
-    }
-
-    #[test]
-    fn cri_malformed_lines_count_errors() {
-        let input = b"bad line\n2024-01-15T10:30:00Z stdout F ok\nalso bad\n";
-        let mut out = Vec::new();
-        let mut agg = CriAggregator::new(1024);
-        let stats = make_stats();
-        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
-        let output = String::from_utf8(out).unwrap();
-        assert_eq!(output.trim(), "ok");
-        assert_eq!(stats.parse_errors_total.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn cri_auto_passthrough() {
-        let input = b"plain json\n2024-01-15T10:30:00Z stdout F cri_msg\nnot cri\n";
-        let mut out = Vec::new();
-        let mut agg = CriAggregator::new(1024);
-        let stats = make_stats();
-        extract_cri_messages(input, &mut out, &mut agg, &stats, true);
-        let output = String::from_utf8(out).unwrap();
-        let lines: Vec<&str> = output.trim().split('\n').collect();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "plain json");
-        assert_eq!(lines[1], "cri_msg");
-        assert_eq!(lines[2], "not cri");
-    }
-}
-
-#[cfg(test)]
-mod remainder_tests {
-    use super::*;
-    /// Simulate splitting input at every possible byte position
-    /// and verify we get the same output regardless of split point.
-    #[test]
-    #[allow(unused_assignments)]
-    fn partial_line_handling_split_anywhere() {
-        let full_input = b"{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n";
-        let _stats = Arc::new(ComponentStats::new());
-
-        for split_at in 1..full_input.len() {
-            let chunk1 = &full_input[..split_at];
-            let chunk2 = &full_input[split_at..];
-
-            let mut buf = Vec::new();
-            let mut remainder: Vec<u8> = Vec::new();
-
-            // Process chunk1
-            let mut combined = remainder.clone();
-            combined.extend_from_slice(chunk1);
-            if let Some(pos) = memchr::memrchr(b'\n', &combined) {
-                if pos + 1 < combined.len() {
-                    remainder = combined[pos + 1..].to_vec();
-                    combined.truncate(pos + 1);
-                } else {
-                    remainder.clear();
-                }
-                buf.extend_from_slice(&combined);
-            } else {
-                remainder = combined;
-            }
-
-            // Process chunk2
-            let mut combined2 = remainder.clone();
-            combined2.extend_from_slice(chunk2);
-            if let Some(pos) = memchr::memrchr(b'\n', &combined2) {
-                if pos + 1 < combined2.len() {
-                    remainder = combined2[pos + 1..].to_vec();
-                    combined2.truncate(pos + 1);
-                } else {
-                    remainder.clear();
-                }
-                buf.extend_from_slice(&combined2);
-            } else {
-                remainder = combined2;
-            }
-
-            let result = String::from_utf8(buf).unwrap();
-            let lines: Vec<&str> = result
-                .trim()
-                .split('\n')
-                .filter(|l| !l.is_empty())
-                .collect();
-            assert_eq!(
-                lines.len(),
-                3,
-                "split at {split_at}: expected 3 lines, got {} from {:?}",
-                lines.len(),
-                lines
-            );
-        }
-    }
-
-    /// Verify that input with no newlines at all stays in remainder.
-    #[test]
-    #[allow(unused_variables)]
-    fn no_newline_all_remainder() {
-        let input = b"partial line without newline";
-        let mut remainder: Vec<u8> = Vec::new();
-
-        let mut combined = remainder.clone();
-        combined.extend_from_slice(input);
-        if memchr::memrchr(b'\n', &combined).is_none() {
-            remainder = combined;
-        }
-
-        assert_eq!(remainder, input);
-    }
-
-    /// Verify consecutive reads merge correctly across boundaries.
-    #[test]
-    fn remainder_merges_with_next_read() {
-        // Read 1: "hello " (no newline)
-        // Read 2: "world\n" (has newline)
-        // Should produce one line: "hello world"
-        let read1 = b"hello ";
-        let read2 = b"world\n";
-
-        let mut buf = Vec::new();
-        let mut remainder: Vec<u8> = Vec::new();
-
-        // Read 1
-        let mut combined = remainder.clone();
-        combined.extend_from_slice(read1);
-        if memchr::memrchr(b'\n', &combined).is_none() {
-            remainder = combined;
-            combined = Vec::new();
-        }
-        buf.extend_from_slice(&combined);
-
-        // Read 2
-        let mut combined = std::mem::take(&mut remainder);
-        combined.extend_from_slice(read2);
-        if let Some(pos) = memchr::memrchr(b'\n', &combined) {
-            if pos + 1 < combined.len() {
-                let _remainder_tail = combined[pos + 1..].to_vec();
-                combined.truncate(pos + 1);
-            }
-            buf.extend_from_slice(&combined);
-        }
-
-        assert_eq!(String::from_utf8(buf).unwrap().trim(), "hello world");
-    }
-}
-
-#[cfg(test)]
 mod format_integration_tests {
     use super::*;
     use logfwd_arrow::scanner::SimdScanner;
@@ -2300,11 +1996,10 @@ mod format_integration_tests {
     fn cri_extraction_produces_json() {
         let cri_input = b"2024-01-15T10:30:00Z stdout F {\"level\":\"INFO\",\"msg\":\"hello\"}\n";
         let mut out = Vec::new();
-        let mut agg = CriAggregator::new(1024);
         let stats = Arc::new(ComponentStats::new());
-        extract_cri_messages(cri_input, &mut out, &mut agg, &stats, false);
+        let mut fmt = FormatProcessor::cri(1024, Arc::clone(&stats));
+        fmt.process_lines(cri_input, &mut out);
 
-        // The extracted message should be valid JSON parseable by the scanner
         let config = ScanConfig {
             wanted_fields: vec![],
             extract_all: true,
@@ -2322,9 +2017,9 @@ mod format_integration_tests {
     fn cri_pf_merge_then_scan() {
         let input = b"2024-01-15T10:30:00Z stdout P {\"level\":\"ER\n2024-01-15T10:30:00Z stdout F ROR\",\"msg\":\"boom\"}\n";
         let mut out = Vec::new();
-        let mut agg = CriAggregator::new(1024);
         let stats = Arc::new(ComponentStats::new());
-        extract_cri_messages(input, &mut out, &mut agg, &stats, false);
+        let mut fmt = FormatProcessor::cri(1024, Arc::clone(&stats));
+        fmt.process_lines(input, &mut out);
 
         let config = ScanConfig {
             wanted_fields: vec![],
@@ -2472,9 +2167,9 @@ mod proptest_pipeline {
             }
 
             let mut out = Vec::new();
-            let mut agg = CriAggregator::new(1024 * 1024);
             let stats = Arc::new(ComponentStats::new());
-            extract_cri_messages(&input, &mut out, &mut agg, &stats, false);
+            let mut fmt = FormatProcessor::cri(1024 * 1024, Arc::clone(&stats));
+            fmt.process_lines(&input, &mut out);
 
             let line_count = out.iter().filter(|&&b| b == b'\n').count();
             prop_assert_eq!(
@@ -2485,42 +2180,5 @@ mod proptest_pipeline {
                 line_count
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod remainder_cap_tests {
-    use super::*;
-
-    #[test]
-    fn remainder_capped_at_max_size() {
-        // Input with no newlines that exceeds MAX_REMAINDER_BYTES
-        // should be discarded with a parse error.
-        let huge_input = vec![b'x'; MAX_REMAINDER_BYTES + 100];
-        let stats = Arc::new(ComponentStats::new());
-
-        let mut remainder: Vec<u8> = Vec::new();
-        let mut combined = std::mem::take(&mut remainder);
-        combined.extend_from_slice(&huge_input);
-
-        if memchr::memrchr(b'\n', &combined).is_none() {
-            remainder = combined;
-            if remainder.len() > MAX_REMAINDER_BYTES {
-                stats.inc_parse_errors(1);
-                remainder.clear();
-            }
-        }
-
-        assert!(
-            remainder.is_empty(),
-            "remainder should be cleared after cap"
-        );
-        assert_eq!(
-            stats
-                .parse_errors_total
-                .load(std::sync::atomic::Ordering::Relaxed),
-            1,
-            "should count one parse error"
-        );
     }
 }

@@ -3,6 +3,8 @@ pub mod compress;
 pub mod diagnostics;
 pub mod enrichment;
 pub mod filter_hints;
+pub mod format;
+pub mod framed;
 pub mod generator;
 pub mod input;
 pub mod metric_history;
