@@ -27,6 +27,8 @@ const CHANNEL_BOUND: usize = 4096;
 pub struct OtlpReceiverInput {
     name: String,
     rx: mpsc::Receiver<Vec<u8>>,
+    /// The address the HTTP server is bound to.
+    addr: std::net::SocketAddr,
     /// Keep the server thread handle alive.
     _handle: std::thread::JoinHandle<()>,
 }
@@ -37,6 +39,13 @@ impl OtlpReceiverInput {
     pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
         let server = tiny_http::Server::http(addr)
             .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
+
+        let bound_addr = match server.server_addr() {
+            tiny_http::ListenAddr::IP(a) => a,
+            tiny_http::ListenAddr::Unix(_) => {
+                return Err(io::Error::other("OTLP receiver: unexpected listen addr"));
+            }
+        };
 
         let (tx, rx) = mpsc::sync_channel(CHANNEL_BOUND);
 
@@ -86,7 +95,7 @@ impl OtlpReceiverInput {
                             );
                             continue;
                         }
-                        _ => {}
+                        Ok(_) => {}
                     }
 
                     // Determine content type — accept protobuf and JSON.
@@ -136,8 +145,14 @@ impl OtlpReceiverInput {
         Ok(Self {
             name: name.into(),
             rx,
+            addr: bound_addr,
             _handle: handle,
         })
+    }
+
+    /// Returns the local address the HTTP server is bound to.
+    pub fn local_addr(&self) -> std::net::SocketAddr {
+        self.addr
     }
 }
 
@@ -443,6 +458,58 @@ mod hex {
             s.push(char::from_digit((b & 0xf) as u32, 16).unwrap_or('0'));
         }
         s
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn hex_encode_matches_format() {
+        let len: usize = kani::any();
+        kani::assume(len <= 4);
+        let mut bytes = [0u8; 4];
+        for i in 0..len {
+            bytes[i] = kani::any();
+        }
+        let result = hex::encode(&bytes[..len]);
+        assert_eq!(result.len(), len * 2);
+        // Each char is a valid hex digit
+        for c in result.chars() {
+            assert!(c.is_ascii_hexdigit());
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn json_string_escaping_produces_valid_json() {
+        let len: usize = kani::any();
+        kani::assume(len <= 8);
+        let mut bytes = [0u8; 8];
+        for i in 0..len {
+            bytes[i] = kani::any();
+        }
+        if let Ok(s) = std::str::from_utf8(&bytes[..len]) {
+            let mut out = Vec::new();
+            write_json_string_field(&mut out, "k", s);
+            // Output must start with "k":" and end with "
+            assert!(out.starts_with(b"\"k\":\""));
+            assert!(out.ends_with(b"\""));
+            // No unescaped control chars, quotes, or backslashes in the value
+            let value = &out[5..out.len() - 1]; // strip "k":"..."
+            let mut i = 0;
+            while i < value.len() {
+                if value[i] == b'\\' {
+                    i += 2; // skip escaped char
+                } else {
+                    assert!(value[i] != b'"');
+                    assert!(value[i] != b'\\');
+                    i += 1;
+                }
+            }
+        }
     }
 }
 

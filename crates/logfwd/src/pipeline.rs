@@ -599,6 +599,11 @@ fn build_input_state(
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': udp input requires 'listen'"))?;
+            if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
+                return Err(format!(
+                    "input '{name}': CRI/auto format is not supported for UDP inputs (CRI is a file-based container log format)"
+                ));
+            }
             let source = logfwd_io::udp_input::UdpInput::new(name, addr)
                 .map_err(|e| format!("input '{name}': failed to bind UDP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
@@ -610,6 +615,11 @@ fn build_input_state(
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': tcp input requires 'listen'"))?;
+            if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
+                return Err(format!(
+                    "input '{name}': CRI/auto format is not supported for TCP inputs (CRI is a file-based container log format)"
+                ));
+            }
             let source = logfwd_io::tcp_input::TcpInput::new(name, addr)
                 .map_err(|e| format!("input '{name}': failed to bind TCP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);

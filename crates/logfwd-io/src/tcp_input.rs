@@ -3,6 +3,7 @@
 
 use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
+use std::time::{Duration, Instant};
 
 use crate::input::{InputEvent, InputSource};
 
@@ -14,11 +15,20 @@ const MAX_CLIENTS: usize = 1024;
 /// moderate buffer is sufficient.
 const READ_BUF_SIZE: usize = 64 * 1024;
 
+/// Disconnect clients that have been idle longer than this.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A connected TCP client with an associated last-data timestamp.
+struct Client {
+    stream: TcpStream,
+    last_data: Instant,
+}
+
 /// TCP input that accepts connections and reads newline-delimited data.
 pub struct TcpInput {
     name: String,
     listener: TcpListener,
-    clients: Vec<TcpStream>,
+    clients: Vec<Client>,
     buf: Vec<u8>,
 }
 
@@ -33,6 +43,16 @@ impl TcpInput {
             clients: Vec::new(),
             buf: vec![0u8; READ_BUF_SIZE],
         })
+    }
+
+    /// Returns the local address this listener is bound to.
+    pub fn local_addr(&self) -> io::Result<std::net::SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    /// Returns the number of currently tracked client connections.
+    pub fn client_count(&self) -> usize {
+        self.clients.len()
     }
 }
 
@@ -52,7 +72,21 @@ impl InputSource for TcpInput {
             match self.listener.accept() {
                 Ok((stream, _addr)) => {
                     stream.set_nonblocking(true)?;
-                    self.clients.push(stream);
+
+                    // Enable TCP keepalive so we detect dead peers promptly.
+                    let sock2 = socket2::Socket::from(stream.try_clone()?);
+                    let _ = sock2.set_keepalive(true);
+                    let keepalive = socket2::TcpKeepalive::new()
+                        .with_time(Duration::from_secs(60))
+                        .with_interval(Duration::from_secs(10));
+                    let _ = sock2.set_tcp_keepalive(&keepalive);
+                    // Don't close the fd — the original `stream` still owns it.
+                    std::mem::forget(sock2);
+
+                    self.clients.push(Client {
+                        stream,
+                        last_data: Instant::now(),
+                    });
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => {
@@ -64,12 +98,19 @@ impl InputSource for TcpInput {
 
         // Read from all clients.
         let mut all_data = Vec::new();
+        let now = Instant::now();
         // Track which connections are dead using a bitmap for O(1) lookup.
         let mut alive = vec![true; self.clients.len()];
 
         for (i, client) in self.clients.iter_mut().enumerate() {
+            // Disconnect clients that have been idle too long.
+            if now.duration_since(client.last_data) > IDLE_TIMEOUT {
+                alive[i] = false;
+                continue;
+            }
+
             loop {
-                match client.read(&mut self.buf) {
+                match client.stream.read(&mut self.buf) {
                     Ok(0) => {
                         // Clean EOF.
                         alive[i] = false;
@@ -77,6 +118,7 @@ impl InputSource for TcpInput {
                     }
                     Ok(n) => {
                         all_data.extend_from_slice(&self.buf[..n]);
+                        client.last_data = now;
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {

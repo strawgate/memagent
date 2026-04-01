@@ -248,6 +248,46 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn strip_ansi_preserves_non_escape_chars() {
+        // Prove: for inputs ≤8 bytes with no \x1b, output == input
+        let len: usize = kani::any();
+        kani::assume(len <= 8);
+        let mut bytes = [0u8; 8];
+        for i in 0..len {
+            bytes[i] = kani::any();
+            kani::assume(bytes[i] != 0x1b); // no escape chars
+        }
+        let input = std::str::from_utf8(&bytes[..len]);
+        if let Ok(s) = input {
+            let result = strip_ansi(s);
+            assert_eq!(result, s);
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(13)]
+    fn strip_ansi_removes_escapes() {
+        // Prove: output never contains \x1b
+        let len: usize = kani::any();
+        kani::assume(len <= 12);
+        let mut bytes = [0u8; 12];
+        for i in 0..len {
+            bytes[i] = kani::any();
+        }
+        let input = std::str::from_utf8(&bytes[..len]);
+        if let Ok(s) = input {
+            let result = strip_ansi(s);
+            assert!(!result.contains('\x1b'));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
