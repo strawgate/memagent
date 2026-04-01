@@ -5,8 +5,9 @@ use arrow::datatypes::{DataType, Float64Type, Int64Type};
 use arrow::record_batch::RecordBatch;
 
 use logfwd_core::otlp::{
-    Severity, bytes_field_size, encode_bytes_field, encode_fixed64, encode_tag, encode_varint,
-    encode_varint_field, parse_severity, parse_timestamp_nanos, varint_len,
+    Severity, bytes_field_size, encode_bytes_field, encode_fixed32, encode_fixed64, encode_tag,
+    encode_varint, encode_varint_field, hex_decode, parse_severity, parse_timestamp_nanos,
+    varint_len,
 };
 use logfwd_io::compress::ChunkCompressor;
 
@@ -237,6 +238,12 @@ struct BatchColumns<'a> {
     /// Downcast array for the `_raw` column, used as a per-row body
     /// fallback when `body_col` is null for that row.
     raw_col: Option<(usize, &'a dyn Array)>,
+    /// Downcast array for the `trace_id` column (32 hex chars → 16-byte OTLP field 9).
+    trace_id_col: Option<(usize, &'a dyn Array)>,
+    /// Downcast array for the `span_id` column (16 hex chars → 8-byte OTLP field 10).
+    span_id_col: Option<(usize, &'a dyn Array)>,
+    /// Downcast array for the `flags` / `trace_flags` column (uint32, OTLP field 8).
+    flags_col: Option<(usize, &'a PrimitiveArray<Int64Type>)>,
     /// Non-special attribute columns: (field_name, pre-downcast array).
     attribute_cols: Vec<(String, AttrArray<'a>)>,
 }
@@ -248,6 +255,9 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
     let mut level_col: Option<(usize, &dyn Array)> = None;
     let mut body_col: Option<(usize, &dyn Array)> = None;
     let mut raw_col: Option<(usize, &dyn Array)> = None;
+    let mut trace_id_col: Option<(usize, &dyn Array)> = None;
+    let mut span_id_col: Option<(usize, &dyn Array)> = None;
+    let mut flags_col: Option<(usize, &PrimitiveArray<Int64Type>)> = None;
     // Indices of columns to exclude from attributes.
     let mut excluded: Vec<usize> = Vec::with_capacity(4);
 
@@ -286,6 +296,28 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     raw_col = Some((idx, batch.column(idx).as_ref()));
                 }
             }
+            "trace_id" => {
+                if trace_id_col.is_none()
+                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                {
+                    trace_id_col = Some((idx, batch.column(idx).as_ref()));
+                    excluded.push(idx);
+                }
+            }
+            "span_id" => {
+                if span_id_col.is_none()
+                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                {
+                    span_id_col = Some((idx, batch.column(idx).as_ref()));
+                    excluded.push(idx);
+                }
+            }
+            "flags" | "trace_flags" => {
+                if flags_col.is_none() && matches!(field.data_type(), DataType::Int64) {
+                    flags_col = Some((idx, batch.column(idx).as_primitive::<Int64Type>()));
+                    excluded.push(idx);
+                }
+            }
             _ => {}
         }
     }
@@ -314,6 +346,9 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         level_col,
         body_col,
         raw_col,
+        trace_id_col,
+        span_id_col,
+        flags_col,
         attribute_cols,
     }
 }
@@ -420,6 +455,35 @@ fn encode_row_as_log_record(
         }
     }
 
+    // field 8: flags (fixed32) — W3C trace flags
+    if let Some((_, arr)) = columns.flags_col {
+        if !arr.is_null(row) {
+            encode_fixed32(buf, 8, arr.value(row) as u32);
+        }
+    }
+
+    // field 9: trace_id (bytes, 16 bytes) — hex-decoded from 32-char string column
+    if let Some((_, arr)) = columns.trace_id_col {
+        if !arr.is_null(row) {
+            let hex = str_value(arr, row);
+            let mut decoded = [0u8; 16];
+            if hex_decode(hex.as_bytes(), &mut decoded) {
+                encode_bytes_field(buf, 9, &decoded);
+            }
+        }
+    }
+
+    // field 10: span_id (bytes, 8 bytes) — hex-decoded from 16-char string column
+    if let Some((_, arr)) = columns.span_id_col {
+        if !arr.is_null(row) {
+            let hex = str_value(arr, row);
+            let mut decoded = [0u8; 8];
+            if hex_decode(hex.as_bytes(), &mut decoded) {
+                encode_bytes_field(buf, 10, &decoded);
+            }
+        }
+    }
+
     // field 11: observed_time_unix_nano (fixed64)
     encode_fixed64(buf, 11, metadata.observed_time_ns);
 }
@@ -465,4 +529,167 @@ fn encode_key_value_double(buf: &mut Vec<u8>, key: &[u8], value: f64) {
     encode_varint(buf, anyvalue_inner as u64);
     // AnyValue.double_value = field 4, wire type 1 (64-bit fixed)
     encode_fixed64(buf, 4, value.to_bits());
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::{Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+
+    use super::*;
+
+    fn make_sink() -> OtlpSink {
+        OtlpSink::new(
+            "test".into(),
+            "http://localhost:4318".into(),
+            OtlpProtocol::Http,
+            Compression::None,
+            vec![],
+        )
+    }
+
+    fn make_metadata() -> BatchMetadata {
+        BatchMetadata {
+            resource_attrs: vec![],
+            observed_time_ns: 1_000_000_000,
+        }
+    }
+
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn encode_trace_id_as_field_9() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "trace_id",
+            DataType::Utf8,
+            true,
+        )]));
+        let arr = StringArray::from(vec!["0102030405060708090a0b0c0d0e0f10"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        // field 9, wire type 2: tag = (9 << 3) | 2 = 0x4A; length = 16 = 0x10
+        let mut expected = vec![0x4Au8, 0x10u8];
+        expected.extend_from_slice(&[
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10,
+        ]);
+        assert!(
+            contains_bytes(&sink.encoder_buf, &expected),
+            "trace_id field 9 not found in encoded output"
+        );
+    }
+
+    #[test]
+    fn encode_span_id_as_field_10() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "span_id",
+            DataType::Utf8,
+            true,
+        )]));
+        let arr = StringArray::from(vec!["0102030405060708"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        // field 10, wire type 2: tag = (10 << 3) | 2 = 0x52; length = 8 = 0x08
+        let mut expected = vec![0x52u8, 0x08u8];
+        expected.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        assert!(
+            contains_bytes(&sink.encoder_buf, &expected),
+            "span_id field 10 not found in encoded output"
+        );
+    }
+
+    #[test]
+    fn encode_flags_as_field_8() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "flags",
+            DataType::Int64,
+            true,
+        )]));
+        let arr = Int64Array::from(vec![1i64]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        // field 8, wire type 5: tag = (8 << 3) | 5 = 0x45; then 4 bytes LE
+        let expected = [0x45u8, 0x01, 0x00, 0x00, 0x00];
+        assert!(
+            contains_bytes(&sink.encoder_buf, &expected),
+            "flags field 8 not found in encoded output"
+        );
+    }
+
+    #[test]
+    fn trace_id_not_encoded_as_attribute() {
+        // A trace_id column must NOT appear as a KeyValue attribute (field 6).
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "trace_id",
+            DataType::Utf8,
+            true,
+        )]));
+        let arr = StringArray::from(vec!["0102030405060708090a0b0c0d0e0f10"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        // If trace_id were encoded as an attribute, its key bytes would appear.
+        assert!(
+            !contains_bytes(&sink.encoder_buf, b"trace_id"),
+            "trace_id key must not appear as an attribute"
+        );
+    }
+
+    #[test]
+    fn span_id_not_encoded_as_attribute() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "span_id",
+            DataType::Utf8,
+            true,
+        )]));
+        let arr = StringArray::from(vec!["0102030405060708"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        assert!(
+            !contains_bytes(&sink.encoder_buf, b"span_id"),
+            "span_id key must not appear as an attribute"
+        );
+    }
+
+    #[test]
+    fn invalid_trace_id_hex_is_silently_ignored() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "trace_id",
+            DataType::Utf8,
+            true,
+        )]));
+        // Not a valid 32-char hex string.
+        let arr = StringArray::from(vec!["not-a-valid-hex-string-here!!!!"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata()); // must not panic
+
+        // Field 9 tag 0x4A must not appear.
+        let mut probe = vec![0x4Au8, 0x10u8];
+        probe.extend_from_slice(&[0u8; 16]);
+        assert!(
+            !contains_bytes(&sink.encoder_buf, &probe),
+            "invalid trace_id should not produce field 9"
+        );
+    }
 }

@@ -7,15 +7,18 @@
 //!
 //! The OTLP LogRecord protobuf layout (field numbers from opentelemetry/proto/logs/v1/logs.proto):
 //!   1: time_unix_nano (fixed64)
-//!  11: observed_time_unix_nano (fixed64)
 //!   2: severity_number (int32 enum)
 //!   3: severity_text (string)
 //!   5: body (AnyValue message containing string_value)
 //!   6: attributes (repeated KeyValue)
+//!   8: flags (fixed32) — W3C trace flags
+//!   9: trace_id (bytes, 16 bytes) — hex-decoded from string column
+//!  10: span_id (bytes, 8 bytes) — hex-decoded from string column
+//!  11: observed_time_unix_nano (fixed64)
 //!
 //! Wire format: each field = tag_varint + value
 //!   tag = (field_number << 3) | wire_type
-//!   wire_type: 0=varint, 1=64-bit fixed, 2=length-delimited
+//!   wire_type: 0=varint, 1=64-bit fixed, 2=length-delimited, 5=32-bit fixed
 
 // --- Protobuf wire format helpers ---
 
@@ -86,6 +89,47 @@ pub const fn bytes_field_size(field_number: u32, data_len: usize) -> usize {
     let tag_size = varint_len(((field_number as u64) << 3) | 2);
     let len_size = varint_len(data_len as u64);
     tag_size + len_size + data_len
+}
+
+/// Write a fixed32 field (tag + 4 bytes little-endian).
+/// Used for LogRecord field 8 (`flags`), wire type 5.
+#[inline(always)]
+pub fn encode_fixed32(buf: &mut Vec<u8>, field_number: u32, value: u32) {
+    encode_tag(buf, field_number, 5); // wire type 5 = 32-bit fixed
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+/// Decode a hex-encoded byte slice into `out`.
+///
+/// Returns `true` when `hex_bytes.len() == out.len() * 2` and every character
+/// is a valid lowercase or uppercase hex digit. On failure `out` is left in
+/// an unspecified state (partial write).
+///
+/// Designed for zero-allocation decoding of `trace_id` (32 hex chars → 16 bytes)
+/// and `span_id` (16 hex chars → 8 bytes) on the hot encoding path.
+pub fn hex_decode(hex_bytes: &[u8], out: &mut [u8]) -> bool {
+    if hex_bytes.len() != out.len() * 2 {
+        return false;
+    }
+    for (i, byte) in out.iter_mut().enumerate() {
+        let hi = hex_nibble(hex_bytes[i * 2]);
+        let lo = hex_nibble(hex_bytes[i * 2 + 1]);
+        if hi > 0x0F || lo > 0x0F {
+            return false;
+        }
+        *byte = (hi << 4) | lo;
+    }
+    true
+}
+
+#[inline(always)]
+fn hex_nibble(c: u8) -> u8 {
+    match c {
+        b'0'..=b'9' => c - b'0',
+        b'a'..=b'f' => c - b'a' + 10,
+        b'A'..=b'F' => c - b'A' + 10,
+        _ => 0xFF,
+    }
 }
 
 // --- OTLP Severity mapping ---
@@ -426,6 +470,61 @@ mod tests {
         assert_eq!(parse_timestamp_nanos(b"not a timestamp"), None);
         assert_eq!(parse_timestamp_nanos(b""), None);
         assert_eq!(parse_timestamp_nanos(b"2024"), None);
+    }
+
+    #[test]
+    fn wire_format_fixed32() {
+        let mut buf = Vec::new();
+        // field 8, wire type 5 = (8 << 3) | 5 = 0x45
+        encode_fixed32(&mut buf, 8, 0x01000000);
+        assert_eq!(buf[0], 0x45); // tag
+        assert_eq!(&buf[1..], &[0x00, 0x00, 0x00, 0x01]); // little-endian
+    }
+
+    #[test]
+    fn hex_decode_trace_id() {
+        // 32 hex chars → 16 bytes
+        let hex = b"0102030405060708090a0b0c0d0e0f10";
+        let mut out = [0u8; 16];
+        assert!(hex_decode(hex, &mut out));
+        assert_eq!(
+            out,
+            [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                0x0f, 0x10
+            ]
+        );
+    }
+
+    #[test]
+    fn hex_decode_span_id() {
+        // 16 hex chars → 8 bytes
+        let hex = b"0102030405060708";
+        let mut out = [0u8; 8];
+        assert!(hex_decode(hex, &mut out));
+        assert_eq!(out, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+    }
+
+    #[test]
+    fn hex_decode_uppercase() {
+        let hex = b"AABBCCDDEEFF0011";
+        let mut out = [0u8; 8];
+        assert!(hex_decode(hex, &mut out));
+        assert_eq!(out, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11]);
+    }
+
+    #[test]
+    fn hex_decode_wrong_length_fails() {
+        let mut out = [0u8; 8];
+        assert!(!hex_decode(b"0102", &mut out)); // too short
+        assert!(!hex_decode(b"010203040506070809", &mut out)); // too long
+    }
+
+    #[test]
+    fn hex_decode_invalid_char_fails() {
+        let mut out = [0u8; 4];
+        assert!(!hex_decode(b"0102030G", &mut out)); // 'G' is invalid
+        assert!(!hex_decode(b"01 20304", &mut out)); // space is invalid
     }
 }
 
@@ -961,5 +1060,55 @@ mod verification {
         if eq_ignore_case_5(&input, target) {
             assert!(eq_ignore_case_match(&input, target));
         }
+    }
+
+    /// Prove hex_decode roundtrip: for any 16-byte array, hex-encoding then
+    /// decoding yields the original bytes.
+    #[kani::proof]
+    #[kani::unwind(17)] // 16 bytes + 1
+    fn verify_hex_decode_roundtrip() {
+        let original: [u8; 16] = kani::any();
+        // Hex-encode
+        let mut hex = [0u8; 32];
+        for i in 0..16 {
+            let hi = original[i] >> 4;
+            let lo = original[i] & 0x0F;
+            hex[2 * i] = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
+            hex[2 * i + 1] = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
+        }
+        // Decode back
+        let mut decoded = [0u8; 16];
+        assert!(hex_decode(&hex, &mut decoded));
+        assert_eq!(original, decoded);
+    }
+
+    /// Prove hex_nibble returns the correct value for all 256 byte inputs:
+    /// valid hex digits map to 0x00..=0x0F, everything else maps to 0xFF.
+    #[kani::proof]
+    fn verify_hex_nibble_valid_range() {
+        let b: u8 = kani::any();
+        let result = hex_nibble(b);
+        if result <= 0x0F {
+            // Valid hex digit — verify correctness
+            match b {
+                b'0'..=b'9' => assert_eq!(result, b - b'0'),
+                b'a'..=b'f' => assert_eq!(result, b - b'a' + 10),
+                b'A'..=b'F' => assert_eq!(result, b - b'A' + 10),
+                _ => unreachable!(),
+            }
+        } else {
+            // Invalid — must be the sentinel 0xFF
+            assert_eq!(result, 0xFF);
+        }
+    }
+
+    /// Prove hex_decode rejects inputs where hex length != 2 * output length.
+    #[kani::proof]
+    fn verify_hex_decode_rejects_wrong_length() {
+        // Any length mismatch should return false
+        let hex_len: usize = kani::any_where(|&l: &usize| l <= 34 && l != 32);
+        let hex = vec![b'a'; hex_len];
+        let mut out = [0u8; 16];
+        assert!(!hex_decode(&hex, &mut out));
     }
 }
