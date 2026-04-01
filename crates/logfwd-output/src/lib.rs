@@ -7,6 +7,8 @@ mod null;
 mod otlp_sink;
 pub mod sink;
 mod stdout;
+mod tcp_sink;
+mod udp_sink;
 
 // Placeholder sinks — not yet wired into build_output_sink.
 #[allow(dead_code)]
@@ -21,6 +23,8 @@ pub use json_lines::JsonLinesSink;
 pub use null::NullSink;
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
 use stdout::*;
+pub use tcp_sink::TcpSink;
+pub use udp_sink::UdpSink;
 
 use std::io::{self, Write};
 
@@ -304,6 +308,22 @@ pub fn build_output_sink(name: &str, cfg: &OutputConfig) -> Result<Box<dyn Outpu
             )))
         }
         OutputType::Null => Ok(Box::new(NullSink::new(name.to_string()))),
+        OutputType::TcpOut => {
+            let endpoint = cfg
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| format!("output '{name}': tcp_out requires 'endpoint'"))?;
+            Ok(Box::new(TcpSink::new(name.to_string(), endpoint.clone())))
+        }
+        OutputType::UdpOut => {
+            let endpoint = cfg
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| format!("output '{name}': udp_out requires 'endpoint'"))?;
+            UdpSink::new(name.to_string(), endpoint.clone())
+                .map(|s| Box::new(s) as Box<dyn OutputSink>)
+                .map_err(|e| format!("output '{name}': udp_out bind failed: {e}"))
+        }
         _ => Err(format!(
             "output '{name}': type {:?} not yet supported",
             cfg.output_type

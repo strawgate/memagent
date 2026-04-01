@@ -96,6 +96,10 @@ pub enum OutputType {
     Parquet,
     /// Discard all data. Used for benchmarking and blackhole receivers.
     Null,
+    /// Send newline-delimited data over TCP.
+    TcpOut,
+    /// Send datagrams over UDP.
+    UdpOut,
 }
 
 /// Recognised log formats.
@@ -417,6 +421,14 @@ impl Config {
                         }
                     }
                     OutputType::Stdout | OutputType::Null => {}
+                    OutputType::TcpOut | OutputType::UdpOut => {
+                        if output.endpoint.is_none() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
+                                output_type_name(&output.output_type),
+                            )));
+                        }
+                    }
                     // Elasticsearch, Loki, Parquet are already rejected above.
                     OutputType::Elasticsearch | OutputType::Loki | OutputType::Parquet => {
                         unreachable!("placeholder types are rejected before this match")
@@ -443,6 +455,8 @@ fn output_type_name(t: &OutputType) -> &'static str {
         OutputType::FileOut => "file_out",
         OutputType::Parquet => "parquet",
         OutputType::Null => "null",
+        OutputType::TcpOut => "tcp_out",
+        OutputType::UdpOut => "udp_out",
     }
 }
 
