@@ -102,14 +102,20 @@ output:
     eprintln!("  per row:    {:.1} allocs", stats.allocations as f64 / rows.max(1) as f64);
     eprintln!("--------------------------");
 
-    // Baseline: ~1130 bytes/row (measured 2026-04-01 with 50K rows).
-    // Includes ~8MB fixed overhead (tokio/DataFusion/OTel) amortized across rows.
-    // Threshold set at 50% above baseline to catch meaningful regressions
-    // (e.g. per-row format!() or String allocation) while allowing normal variance.
+    // Scaling profile (measured 2026-04-01):
+    //   10K rows:  ~2089 bytes/row (fixed overhead dominates)
+    //   50K rows:  ~1130 bytes/row
+    //   100K rows: ~1005 bytes/row
+    //   500K rows:  ~905 bytes/row (asymptotic per-row cost)
+    //
+    // Asymptotic cost is ~900 bytes/row for ~120 bytes input JSON (~7.5x
+    // amplification from flat text to typed Arrow columnar representation).
+    // Threshold at 1500 catches regressions while allowing the ~8MB fixed
+    // overhead to be amortized over 50K rows.
     assert!(
-        bytes_per_row < 1700.0,
+        bytes_per_row < 1500.0,
         "allocation regression: {bytes_per_row:.0} bytes/row \
-         (baseline ~1130, threshold 1700). \
+         (asymptotic ~900, threshold 1500 for 50K rows). \
          {} total bytes over {rows} rows in {batches} batches.",
         stats.bytes_allocated,
     );
