@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { api } from "./api";
 import { RateTracker } from "./lib/rates";
 import { RingBuffer } from "./lib/ring";
-import { fmt, fmtBytes } from "./lib/format";
+import { fmt, fmtBytes, fmtCompact, fmtBytesCompact } from "./lib/format";
 import type { PipelinesResponse, StatsResponse } from "./types";
 import { StatusBar } from "./components/StatusBar";
 import { MetricBadges } from "./components/MetricBadges";
@@ -21,20 +21,30 @@ export interface MetricSeries {
   value: string;
   unit: string;
   limit?: string;
+  fmtAxis?: (v: number) => string;
 }
 
 const rates = new RateTracker();
 
 function createSeries(): MetricSeries[] {
   return [
-    { id: "lps", label: "Lines / sec", color: "#3b82f6", ring: new RingBuffer(), value: "-", unit: "/s" },
-    { id: "bps", label: "Input Bytes", color: "#8b5cf6", ring: new RingBuffer(), value: "-", unit: "/s" },
-    { id: "err", label: "Errors / sec", color: "#ef4444", ring: new RingBuffer(), value: "-", unit: "/s" },
-    { id: "cpu", label: "Process CPU", color: "#f59e0b", ring: new RingBuffer(), value: "-", unit: "%" },
-    { id: "mem", label: "Memory", color: "#10b981", ring: new RingBuffer(), value: "-", unit: "" },
-    { id: "lat", label: "Batch Latency", color: "#06b6d4", ring: new RingBuffer(), value: "-", unit: "ms" },
+    { id: "lps", label: "Lines / sec", color: "#3b82f6", ring: new RingBuffer(), value: "-", unit: "/s", fmtAxis: fmtCompact },
+    { id: "bps", label: "Input Bytes", color: "#8b5cf6", ring: new RingBuffer(), value: "-", unit: "/s", fmtAxis: fmtBytesCompact },
+    { id: "err", label: "Errors / sec", color: "#ef4444", ring: new RingBuffer(), value: "-", unit: "/s", fmtAxis: fmtCompact },
+    { id: "cpu", label: "Process CPU", color: "#f59e0b", ring: new RingBuffer(), value: "-", unit: "%", fmtAxis: (v) => v.toFixed(1) },
+    { id: "mem", label: "Memory", color: "#10b981", ring: new RingBuffer(), value: "-", unit: "", fmtAxis: fmtBytesCompact },
+    { id: "lat", label: "Batch Latency", color: "#06b6d4", ring: new RingBuffer(), value: "-", unit: "ms", fmtAxis: (v) => v.toFixed(1) },
   ];
 }
+
+/** Map server history counters → dashboard series. */
+const HISTORY_MAP: Record<string, { series: string; mode: "gauge" | "counter" }> = {
+  input_lines: { series: "lps", mode: "counter" },
+  input_bytes: { series: "bps", mode: "counter" },
+  output_errors: { series: "err", mode: "counter" },
+  cpu_user_ms: { series: "cpu", mode: "counter" },
+  mem_allocated: { series: "mem", mode: "gauge" },
+};
 
 export function App() {
   const [connected, setConnected] = useState(false);
@@ -43,6 +53,46 @@ export function App() {
   const [totalErrors, setTotalErrors] = useState(0);
   const seriesRef = useRef(createSeries());
   const [, forceUpdate] = useState(0);
+  const historyLoaded = useRef(false);
+
+  // Load server-side history on mount — gives charts data from before page open.
+  useEffect(() => {
+    if (historyLoaded.current) return;
+    historyLoaded.current = true;
+    api.history().then((hist) => {
+      if (!hist) return;
+      const series = seriesRef.current;
+      const now = Date.now();
+
+      for (const [metricName, points] of Object.entries(hist)) {
+        const mapping = HISTORY_MAP[metricName];
+        if (!mapping || points.length < 2) continue;
+        const s = series.find((s) => s.id === mapping.series);
+        if (!s) continue;
+
+        // Server times are seconds-since-start. Convert to epoch ms
+        // by anchoring the latest point to "now".
+        const latestServerT = points[points.length - 1][0];
+
+        if (mapping.mode === "gauge") {
+          for (const [t, v] of points) {
+            s.ring.pushRaw(now - (latestServerT - t) * 1000, v);
+          }
+        } else {
+          // Counter → compute deltas as rates.
+          for (let i = 1; i < points.length; i++) {
+            const dt = points[i][0] - points[i - 1][0];
+            if (dt <= 0) continue;
+            let rate = (points[i][1] - points[i - 1][1]) / dt;
+            if (metricName === "cpu_user_ms") rate /= 10; // ms/s → %
+            if (rate < 0) rate = 0;
+            s.ring.pushRaw(now - (latestServerT - points[i][0]) * 1000, rate);
+          }
+        }
+      }
+      forceUpdate((n) => n + 1);
+    });
+  }, []);
 
   const poll = useCallback(async () => {
     const [pipeData, statsData] = await Promise.all([api.pipelines(), api.stats()]);
@@ -51,7 +101,6 @@ export function App() {
       setConnected(true);
       setPipes(pipeData);
 
-      // Compute rates from pipeline counters
       let tl = 0, tb = 0, te = 0;
       for (const p of pipeData.pipelines) {
         tl += p.transform.lines_in;
@@ -76,18 +125,16 @@ export function App() {
       setStats(statsData);
       const series = seriesRef.current;
 
-      // CPU: compute from user + sys ms deltas
       if (statsData.cpu_user_ms != null && statsData.cpu_sys_ms != null) {
         const cpuMs = statsData.cpu_user_ms + statsData.cpu_sys_ms;
         const cpuRate = rates.rate("cpu_ms", cpuMs);
         if (cpuRate != null) {
-          const cpuPct = cpuRate / 10; // ms/s → %
+          const cpuPct = cpuRate / 10;
           series[3].ring.push(cpuPct);
           series[3].value = cpuPct.toFixed(1);
         }
       }
 
-      // Memory: prefer jemalloc allocated, fall back to rss_bytes
       const memBytes = statsData.mem_allocated ?? statsData.rss_bytes;
       if (memBytes != null) {
         series[4].ring.push(memBytes);
@@ -97,7 +144,6 @@ export function App() {
         }
       }
 
-      // Batch latency: total processing time / batches
       if (statsData.batches > 0) {
         const totalSec = statsData.scan_sec + statsData.transform_sec + statsData.output_sec;
         const latRate = rates.rate("lat", totalSec * 1000);
@@ -108,8 +154,7 @@ export function App() {
       }
     }
 
-    rates.tick();
-    forceUpdate((n) => n + 1); // trigger re-render for charts
+    forceUpdate((n) => n + 1);
   }, []);
 
   useEffect(() => {

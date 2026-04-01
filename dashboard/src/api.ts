@@ -10,8 +10,11 @@ async function get<T>(url: string): Promise<T | null> {
   }
 }
 
+export type HistoryResponse = Record<string, [number, number][]>;
+
 export const api = {
   pipelines: () => get<PipelinesResponse>("/api/pipelines"),
   stats: () => get<StatsResponse>("/api/stats"),
   config: () => get<ConfigResponse>("/api/config"),
+  history: () => get<HistoryResponse>("/api/history"),
 };

@@ -199,12 +199,11 @@ main {
   font-weight: 400;
   margin-left: 4px;
 }
-canvas.chart-canvas {
-  width: 100%;
-  height: 120px;
-  display: block;
-  border-radius: 4px;
-}
+/* uPlot dark theme overrides */
+.uplot { font-family: var(--mono) !important; }
+.uplot .u-over { background: #0e1119 !important; }
+.u-cursor-x, .u-cursor-y { border-color: #475569 !important; }
+.u-cursor-pt { border: none !important; }
 
 /* === Pipeline === */
 .pipe-flow {
