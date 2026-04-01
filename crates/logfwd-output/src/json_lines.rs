@@ -1,7 +1,10 @@
 use std::io;
+use std::sync::Arc;
 
 use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
+
+use logfwd_io::diagnostics::ComponentStats;
 
 use super::{
     BatchMetadata, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink, build_col_infos,
@@ -19,10 +22,16 @@ pub struct JsonLinesSink {
     headers: Vec<(String, String)>,
     pub(crate) batch_buf: Vec<u8>,
     http_agent: ureq::Agent,
+    stats: Arc<ComponentStats>,
 }
 
 impl JsonLinesSink {
-    pub fn new(name: String, url: String, headers: Vec<(String, String)>) -> Self {
+    pub fn new(
+        name: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        stats: Arc<ComponentStats>,
+    ) -> Self {
         let http_agent = ureq::config::Config::builder()
             .timeout_global(Some(std::time::Duration::from_secs(30)))
             .build()
@@ -33,6 +42,7 @@ impl JsonLinesSink {
             headers,
             batch_buf: Vec::with_capacity(64 * 1024),
             http_agent,
+            stats,
         }
     }
 
@@ -127,7 +137,11 @@ impl OutputSink for JsonLinesSink {
         let mut attempt: u32 = 0;
         loop {
             match build_req().send(&self.batch_buf) {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    self.stats.inc_lines(batch.num_rows() as u64);
+                    self.stats.inc_bytes(self.batch_buf.len() as u64);
+                    return Ok(());
+                }
                 Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_error(&e) => {
                     std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                     delay_ms *= 2;

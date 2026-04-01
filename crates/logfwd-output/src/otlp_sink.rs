@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::Arc;
 
 use arrow::array::{Array, AsArray, PrimitiveArray};
 use arrow::datatypes::{DataType, Float64Type, Int64Type};
@@ -10,6 +11,7 @@ use logfwd_core::otlp::{
     varint_len,
 };
 use logfwd_io::compress::ChunkCompressor;
+use logfwd_io::diagnostics::ComponentStats;
 
 use super::{
     BatchMetadata, Compression, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink,
@@ -39,6 +41,7 @@ pub struct OtlpSink {
     compress_buf: Vec<u8>,
     compressor: Option<ChunkCompressor>,
     http_agent: ureq::Agent,
+    stats: Arc<ComponentStats>,
 }
 
 impl OtlpSink {
@@ -48,6 +51,7 @@ impl OtlpSink {
         protocol: OtlpProtocol,
         compression: Compression,
         headers: Vec<(String, String)>,
+        stats: Arc<ComponentStats>,
     ) -> Self {
         let compressor = match compression {
             Compression::Zstd => {
@@ -69,6 +73,7 @@ impl OtlpSink {
             compress_buf: Vec::with_capacity(64 * 1024),
             compressor,
             http_agent,
+            stats,
         }
     }
 
@@ -197,7 +202,11 @@ impl OutputSink for OtlpSink {
         let mut attempt: u32 = 0;
         loop {
             match build_req().send(payload) {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    self.stats.inc_lines(batch.num_rows() as u64);
+                    self.stats.inc_bytes(self.encoder_buf.len() as u64);
+                    return Ok(());
+                }
                 Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_error(&e) => {
                     std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                     delay_ms *= 2;
@@ -548,6 +557,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
+            Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
         )
     }
 

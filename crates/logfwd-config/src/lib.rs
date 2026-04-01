@@ -37,7 +37,7 @@ pub struct AuthConfig {
 #[derive(Debug)]
 pub enum ConfigError {
     Io(std::io::Error),
-    Yaml(serde_yaml::Error),
+    Yaml(serde_yaml_ng::Error),
     Validation(String),
 }
 
@@ -59,8 +59,8 @@ impl From<std::io::Error> for ConfigError {
     }
 }
 
-impl From<serde_yaml::Error> for ConfigError {
-    fn from(e: serde_yaml::Error) -> Self {
+impl From<serde_yaml_ng::Error> for ConfigError {
+    fn from(e: serde_yaml_ng::Error) -> Self {
         ConfigError::Yaml(e)
     }
 }
@@ -294,7 +294,7 @@ impl Config {
     /// Load configuration from a YAML string (handy for tests).
     pub fn load_str(yaml: &str) -> Result<Self, ConfigError> {
         let expanded = expand_env_vars(yaml);
-        let raw: RawConfig = serde_yaml::from_str(&expanded)?;
+        let raw: RawConfig = serde_yaml_ng::from_str(&expanded)?;
         Self::from_raw(raw)
     }
 

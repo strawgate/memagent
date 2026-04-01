@@ -3,9 +3,12 @@
 
 use std::io::{self, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
+
+use logfwd_io::diagnostics::ComponentStats;
 
 use crate::{BatchMetadata, OutputSink, build_col_infos, write_row_json};
 
@@ -21,15 +24,21 @@ pub struct TcpSink {
     addr: String,
     stream: Option<TcpStream>,
     buf: Vec<u8>,
+    stats: Arc<ComponentStats>,
 }
 
 impl TcpSink {
-    pub fn new(name: impl Into<String>, addr: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        addr: impl Into<String>,
+        stats: Arc<ComponentStats>,
+    ) -> Self {
         Self {
             name: name.into(),
             addr: addr.into(),
             stream: None,
             buf: Vec::with_capacity(64 * 1024),
+            stats,
         }
     }
 
@@ -98,7 +107,10 @@ impl OutputSink for TcpSink {
             self.buf.push(b'\n');
         }
 
-        self.write_with_retry()
+        self.write_with_retry()?;
+        self.stats.inc_lines(batch.num_rows() as u64);
+        self.stats.inc_bytes(self.buf.len() as u64);
+        Ok(())
     }
 
     fn flush(&mut self) -> io::Result<()> {

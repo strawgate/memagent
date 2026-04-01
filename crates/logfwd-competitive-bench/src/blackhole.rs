@@ -107,17 +107,95 @@ fn count_lines(body: &[u8], url: &str) -> u64 {
     }
 
     if url.contains("/v1/logs") {
-        // OTLP JSON: each log record contains a "body" key. Count occurrences.
-        // Falls back to newline count if no "body" keys found (e.g., protobuf).
-        let otlp_count = count_otlp_body_keys(body);
-        return if otlp_count > 0 { otlp_count } else { newlines };
+        // OTLP JSON: count exact logRecords from nested arrays when possible.
+        // Falls back to lightweight body-key scanning or newline-based estimates.
+        let otlp_count = match count_otlp_log_records(body) {
+            0 => count_otlp_body_keys(body),
+            n => n,
+        };
+        if otlp_count > 0 {
+            return otlp_count;
+        }
+        return ndjson_line_count(body, newlines);
     }
 
-    // Default: NDJSON — one newline per log line.
-    newlines
+    // Default: NDJSON — tolerate missing trailing newline.
+    ndjson_line_count(body, newlines)
 }
 
 /// Count `"body":` occurrences in OTLP JSON — one per log record.
 fn count_otlp_body_keys(body: &[u8]) -> u64 {
     memchr::memmem::find_iter(body, b"\"body\":").count() as u64
+}
+
+/// Count OTLP log records by parsing the JSON payload shape:
+/// `resourceLogs[].scopeLogs[].logRecords[]`.
+fn count_otlp_log_records(body: &[u8]) -> u64 {
+    let v: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    v.get("resourceLogs")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, |resource_logs| {
+            resource_logs
+                .iter()
+                .filter_map(|r| r.get("scopeLogs").and_then(serde_json::Value::as_array))
+                .map(|scope_logs| {
+                    scope_logs
+                        .iter()
+                        .filter_map(|s| s.get("logRecords").and_then(serde_json::Value::as_array))
+                        .map(|records| records.len() as u64)
+                        .sum::<u64>()
+                })
+                .sum::<u64>()
+        })
+}
+
+fn ndjson_line_count(body: &[u8], newlines: u64) -> u64 {
+    if body.is_empty() {
+        return 0;
+    }
+    if body.last() == Some(&b'\n') {
+        newlines
+    } else {
+        newlines + 1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_lines;
+
+    #[test]
+    fn count_ndjson_with_and_without_trailing_newline() {
+        assert_eq!(count_lines(b"{\"a\":1}\n{\"a\":2}\n", "/"), 2);
+        assert_eq!(count_lines(b"{\"a\":1}\n{\"a\":2}", "/"), 2);
+        assert_eq!(count_lines(b"{\"a\":1}", "/"), 1);
+    }
+
+    #[test]
+    fn count_es_bulk_pairs() {
+        let body = br#"{"index":{}}
+{"msg":"a"}
+{"index":{}}
+{"msg":"b"}
+"#;
+        assert_eq!(count_lines(body, "/_bulk"), 2);
+    }
+
+    #[test]
+    fn count_otlp_json_log_records() {
+        let body = br#"{
+  "resourceLogs": [
+    {
+      "scopeLogs": [
+        { "logRecords": [{ "body": { "stringValue": "a" } }, { "body": { "stringValue": "b" } }] },
+        { "logRecords": [{ "body": { "stringValue": "c" } }] }
+      ]
+    }
+  ]
+}"#;
+        assert_eq!(count_lines(body, "/v1/logs"), 3);
+    }
 }

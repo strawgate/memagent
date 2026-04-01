@@ -13,7 +13,9 @@
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_arrow::scanner::SimdScanner;
+use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::{BatchMetadata, Compression, JsonLinesSink, OtlpProtocol, OtlpSink};
+use std::sync::Arc;
 
 fuzz_target!(|data: &[u8]| {
     let mut scanner = SimdScanner::new(ScanConfig {
@@ -30,8 +32,12 @@ fuzz_target!(|data: &[u8]| {
     };
 
     // --- JSON lines serialization ---
-    let mut json_sink =
-        JsonLinesSink::new("fuzz".to_string(), "http://localhost/".to_string(), vec![]);
+    let mut json_sink = JsonLinesSink::new(
+        "fuzz".to_string(),
+        "http://localhost/".to_string(),
+        vec![],
+        Arc::new(ComponentStats::new()),
+    );
     json_sink.serialize_batch(&batch);
 
     // Output must be valid UTF-8 (it is JSON).
@@ -55,6 +61,8 @@ fuzz_target!(|data: &[u8]| {
         "http://localhost/".to_string(),
         OtlpProtocol::Http,
         Compression::None,
+        vec![],
+        Arc::new(ComponentStats::new()),
     );
     otlp_sink.encode_batch(&batch, &metadata);
 

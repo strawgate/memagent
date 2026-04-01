@@ -75,6 +75,12 @@ impl FormatProcessor {
 }
 
 /// Extract JSON messages from CRI-formatted lines, handling P/F merging.
+///
+/// For each complete message the CRI `_timestamp` and `_stream` fields are
+/// injected into the JSON output (see [`inject_cri_metadata`]).  For P+F
+/// sequences the timestamp and stream are taken from the closing F line,
+/// which is correct because the CRI spec requires all fragments of the same
+/// log entry to carry the same timestamp and stream.
 fn extract_cri_messages(
     input: &[u8],
     out: &mut Vec<u8>,
@@ -89,8 +95,7 @@ fn extract_cri_messages(
         if let Some(cri) = parse_cri_line(line) {
             match aggregator.feed(cri.message, cri.is_full) {
                 AggregateResult::Complete(msg) => {
-                    out.extend_from_slice(msg);
-                    out.push(b'\n');
+                    inject_cri_metadata(msg, cri.timestamp, cri.stream, out);
                     aggregator.reset();
                 }
                 AggregateResult::Pending => {}
@@ -107,6 +112,45 @@ fn extract_cri_messages(
         }
         pos = eol + 1;
     }
+}
+
+/// Inject `_timestamp` and `_stream` CRI metadata into a JSON message and
+/// write the result with a trailing newline to `out`.
+///
+/// If `msg` starts with `{`, produces:
+///   `{"_timestamp":"<ts>","_stream":"<stream>",<rest of msg>}\n`
+///
+/// Otherwise writes `msg\n` verbatim so that non-JSON CRI messages (plain
+/// text log lines) pass through unchanged.
+///
+/// # Safety invariants
+///
+/// `timestamp` and `stream` are inserted without JSON-escaping.  Both are
+/// taken directly from a successfully parsed CRI line: `timestamp` is an
+/// RFC 3339 timestamp (digits, `-`, `T`, `Z`, `:`, `.`) and `stream` is
+/// exactly `"stdout"` or `"stderr"` — neither can contain characters that
+/// require escaping in a JSON string.
+///
+/// The `{` guard is a best-effort check identical to the one used by
+/// `write_json_line` in `cri.rs`.  It is not a full JSON validator;
+/// a CRI message that begins with `{` but is otherwise malformed will
+/// produce an output line that is also malformed.  This is consistent
+/// with the broader pipeline philosophy: the scanner validates the final
+/// output rather than the format layer.
+#[inline]
+fn inject_cri_metadata(msg: &[u8], timestamp: &[u8], stream: &[u8], out: &mut Vec<u8>) {
+    if msg.first() == Some(&b'{') {
+        out.push(b'{');
+        out.extend_from_slice(b"\"_timestamp\":\"");
+        out.extend_from_slice(timestamp);
+        out.extend_from_slice(b"\",\"_stream\":\"");
+        out.extend_from_slice(stream);
+        out.extend_from_slice(b"\",");
+        out.extend_from_slice(&msg[1..]);
+    } else {
+        out.extend_from_slice(msg);
+    }
+    out.push(b'\n');
 }
 
 #[cfg(test)]
@@ -133,7 +177,10 @@ mod tests {
         let input = b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hello\"}\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
-        assert_eq!(out, b"{\"msg\":\"hello\"}\n");
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"msg\":\"hello\"}\n"
+        );
     }
 
     #[test]
@@ -184,7 +231,10 @@ mod tests {
         let input = b"2024-01-15T10:30:00Z stdout F {\"msg\":\"cri\"}\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
-        assert_eq!(out, b"{\"msg\":\"cri\"}\n");
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"msg\":\"cri\"}\n"
+        );
     }
 
     #[test]
@@ -216,5 +266,60 @@ mod tests {
         // Next full line should not contain the old partial
         proc.process_lines(b"2024-01-15T10:30:00Z stdout F world\n", &mut out);
         assert_eq!(out, b"world\n");
+    }
+
+    #[test]
+    fn cri_injects_timestamp_and_stream() {
+        // Verify that _timestamp and _stream are injected for both stdout and stderr.
+        let stats = make_stats();
+        let mut proc = FormatProcessor::cri(2 * 1024 * 1024, stats);
+        let mut out = Vec::new();
+
+        proc.process_lines(
+            b"2024-01-15T10:30:00Z stderr F {\"level\":\"ERROR\",\"msg\":\"disk full\"}\n",
+            &mut out,
+        );
+        proc.process_lines(
+            b"2024-01-15T10:30:01Z stdout F {\"level\":\"INFO\",\"msg\":\"ok\"}\n",
+            &mut out,
+        );
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stderr\",\"level\":\"ERROR\",\"msg\":\"disk full\"}\n",
+        );
+        expected.extend_from_slice(
+            b"{\"_timestamp\":\"2024-01-15T10:30:01Z\",\"_stream\":\"stdout\",\"level\":\"INFO\",\"msg\":\"ok\"}\n",
+        );
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn cri_partial_then_full_injects_metadata() {
+        // For a P+F sequence the timestamp/stream from the closing F line are used.
+        // P message: `{"msg":`, F message: `"hello"}`, concatenated: `{"msg":"hello"}`
+        let stats = make_stats();
+        let mut proc = FormatProcessor::cri(2 * 1024 * 1024, stats);
+        let mut out = Vec::new();
+
+        proc.process_lines(b"2024-01-15T10:30:00Z stdout P {\"msg\":\n", &mut out);
+        assert!(out.is_empty(), "partial should not emit");
+
+        proc.process_lines(b"2024-01-15T10:30:00Z stdout F \"hello\"}\n", &mut out);
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"msg\":\"hello\"}\n"
+        );
+    }
+
+    #[test]
+    fn cri_non_json_message_passes_through_verbatim() {
+        // Non-JSON CRI messages (plain text) must not have metadata injected.
+        let stats = make_stats();
+        let mut proc = FormatProcessor::cri(2 * 1024 * 1024, stats);
+        let input = b"2024-01-15T10:30:00Z stdout F plain text message\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(out, b"plain text message\n");
     }
 }

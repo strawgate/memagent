@@ -1,8 +1,11 @@
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
+
+use logfwd_io::diagnostics::ComponentStats;
 
 use super::{BatchMetadata, OutputSink, build_col_infos, str_value, write_row_json};
 
@@ -25,10 +28,11 @@ pub struct StdoutSink {
     format: StdoutFormat,
     buf: Vec<u8>,
     color: bool,
+    stats: Arc<ComponentStats>,
 }
 
 impl StdoutSink {
-    pub fn new(name: String, format: StdoutFormat) -> Self {
+    pub fn new(name: String, format: StdoutFormat, stats: Arc<ComponentStats>) -> Self {
         let color = format == StdoutFormat::Console
             && std::env::var_os("NO_COLOR").is_none()
             // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
@@ -38,6 +42,7 @@ impl StdoutSink {
             format,
             buf: Vec::with_capacity(8192),
             color,
+            stats,
         }
     }
 
@@ -241,7 +246,9 @@ fn find_col(fields: &arrow::datatypes::Fields, names: &[&str]) -> Option<usize> 
 impl OutputSink for StdoutSink {
     fn send_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()> {
         let mut stdout = io::stdout().lock();
-        self.write_batch_to(batch, metadata, &mut stdout)
+        self.write_batch_to(batch, metadata, &mut stdout)?;
+        self.stats.inc_lines(batch.num_rows() as u64);
+        Ok(())
     }
 
     fn flush(&mut self) -> io::Result<()> {

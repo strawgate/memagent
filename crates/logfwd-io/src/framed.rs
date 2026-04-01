@@ -311,7 +311,10 @@ mod tests {
         );
 
         let events = framed.poll().unwrap();
-        assert_eq!(collect_data(events), b"{\"msg\":\"hello\"}\n");
+        assert_eq!(
+            collect_data(events),
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"msg\":\"hello\"}\n"
+        );
     }
 
     #[test]
