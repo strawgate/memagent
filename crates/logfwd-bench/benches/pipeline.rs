@@ -106,37 +106,33 @@ fn bench_scanner(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(bytes));
         group.bench_with_input(BenchmarkId::new("scan_all_fields", n), &data, |b, data| {
-            b.iter(|| {
-                let mut scanner = SimdScanner::new(ScanConfig::default());
-                scanner.scan(data).expect("bench: scan should not fail")
-            })
+            let mut scanner = SimdScanner::new(ScanConfig::default());
+            b.iter(|| scanner.scan(data).expect("bench: scan should not fail"))
         });
 
         // Pushdown: only extract 3 fields.
         group.bench_with_input(BenchmarkId::new("scan_3_fields", n), &data, |b, data| {
-            b.iter(|| {
-                let config = ScanConfig {
-                    wanted_fields: vec![
-                        FieldSpec {
-                            name: "level".into(),
-                            aliases: vec![],
-                        },
-                        FieldSpec {
-                            name: "status".into(),
-                            aliases: vec![],
-                        },
-                        FieldSpec {
-                            name: "duration_ms".into(),
-                            aliases: vec![],
-                        },
-                    ],
-                    extract_all: false,
-                    keep_raw: false,
-                    validate_utf8: false,
-                };
-                let mut scanner = SimdScanner::new(config);
-                scanner.scan(data).expect("bench: scan should not fail")
-            })
+            let config = ScanConfig {
+                wanted_fields: vec![
+                    FieldSpec {
+                        name: "level".into(),
+                        aliases: vec![],
+                    },
+                    FieldSpec {
+                        name: "status".into(),
+                        aliases: vec![],
+                    },
+                    FieldSpec {
+                        name: "duration_ms".into(),
+                        aliases: vec![],
+                    },
+                ],
+                extract_all: false,
+                keep_raw: false,
+                validate_utf8: false,
+            };
+            let mut scanner = SimdScanner::new(config);
+            b.iter(|| scanner.scan(data).expect("bench: scan should not fail"))
         });
     }
 
@@ -331,10 +327,10 @@ fn bench_end_to_end(c: &mut Criterion) {
     // Full pipeline: scan → SELECT * → capture sink
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("scan_passthrough_capture", |b| {
+        let mut scanner = SimdScanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let mut scanner = SimdScanner::new(ScanConfig::default());
             let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
@@ -343,11 +339,11 @@ fn bench_end_to_end(c: &mut Criterion) {
 
     // Full pipeline: scan → filter → capture sink
     group.bench_function("scan_filter_capture", |b| {
+        let mut scanner = SimdScanner::new(ScanConfig::default());
         let mut transform =
             SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let mut scanner = SimdScanner::new(ScanConfig::default());
             let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
@@ -356,6 +352,7 @@ fn bench_end_to_end(c: &mut Criterion) {
 
     // Full pipeline: scan → grok + filter → capture sink
     group.bench_function("scan_grok_filter_capture", |b| {
+        let mut scanner = SimdScanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new(
             "SELECT grok(message_str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed \
              FROM logs WHERE level_str != 'DEBUG'",
@@ -363,7 +360,6 @@ fn bench_end_to_end(c: &mut Criterion) {
         .unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let mut scanner = SimdScanner::new(ScanConfig::default());
             let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
