@@ -74,8 +74,15 @@ fn format_rate(ns: f64, count: u64) -> String {
 }
 
 fn main() {
-    let criterion_dir = std::env::args()
-        .nth(1)
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("Usage: logfwd-bench [criterion_dir]");
+        println!("  Default criterion_dir: target/criterion");
+        return;
+    }
+
+    let criterion_dir = args
+        .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target/criterion"));
 

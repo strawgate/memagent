@@ -1,13 +1,14 @@
 //! Scanner wrapper types that produce Arrow `RecordBatch` from raw bytes.
 //!
-//! These compose logfwd-core's generic `scan_into` with Arrow builders
+//! These compose logfwd-core's generic `scan_streaming` with Arrow builders
 //! to produce `RecordBatch`. The core scan logic lives in logfwd-core;
 //! this crate provides the Arrow-specific builder implementations.
 
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
+use logfwd_core::json_scanner::scan_streaming;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::{ScanBuilder, scan_into};
+use logfwd_core::scanner::ScanBuilder;
 
 use crate::storage_builder::StorageBuilder;
 use crate::streaming_builder::StreamingBuilder;
@@ -128,7 +129,7 @@ impl SimdScanner {
                 ))
             })?;
         }
-        scan_into(buf, &self.config, &mut self.builder);
+        scan_streaming(buf, &self.config, &mut self.builder);
         self.builder.finish_batch()
     }
 }
@@ -169,7 +170,7 @@ impl StreamingSimdScanner {
             })?;
         }
         self.builder.begin_batch(buf.clone());
-        scan_into(&buf, &self.config, &mut self.builder);
+        scan_streaming(&buf, &self.config, &mut self.builder);
         self.builder.finish_batch()
     }
 }

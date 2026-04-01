@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 struct SyslogMeta {
     facility: u8,
     severity: u8,
-    pri_len: u8,  // bytes consumed including < and >
+    pri_len: u8, // bytes consumed including < and >
 }
 
 /// Parse syslog <priority> from the start of a buffer.
@@ -130,8 +130,10 @@ fn run_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> io::Res
         sock.as_raw_fd()
     };
 
-    eprintln!("Listening on UDP port {}, severity <= {}, batch size {}",
-              port, severity_threshold, batch_size);
+    eprintln!(
+        "Listening on UDP port {}, severity <= {}, batch size {}",
+        port, severity_threshold, batch_size
+    );
 
     // Pre-allocate buffers
     let mut bufs: Vec<Vec<u8>> = (0..batch_size).map(|_| vec![0u8; 2048]).collect();
@@ -157,10 +159,18 @@ fn run_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> io::Res
             let now = Instant::now();
             if now.duration_since(last_report) >= Duration::from_secs(1) {
                 if total_packets > 0 {
-                    report_stats(start, &mut last_report, now,
-                                 interval_packets, interval_matched,
-                                 total_packets, total_matched, total_dropped,
-                                 total_parse_fail, total_bytes);
+                    report_stats(
+                        start,
+                        &mut last_report,
+                        now,
+                        interval_packets,
+                        interval_matched,
+                        total_packets,
+                        total_matched,
+                        total_dropped,
+                        total_parse_fail,
+                        total_bytes,
+                    );
                     interval_packets = 0;
                     interval_matched = 0;
                 }
@@ -198,10 +208,18 @@ fn run_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> io::Res
         // Periodic reporting
         let now = Instant::now();
         if now.duration_since(last_report) >= Duration::from_secs(1) {
-            report_stats(start, &mut last_report, now,
-                         interval_packets, interval_matched,
-                         total_packets, total_matched, total_dropped,
-                         total_parse_fail, total_bytes);
+            report_stats(
+                start,
+                &mut last_report,
+                now,
+                interval_packets,
+                interval_matched,
+                total_packets,
+                total_matched,
+                total_dropped,
+                total_parse_fail,
+                total_bytes,
+            );
             interval_packets = 0;
             interval_matched = 0;
         }
@@ -209,10 +227,16 @@ fn run_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> io::Res
 }
 
 fn report_stats(
-    start: Instant, last_report: &mut Instant, now: Instant,
-    interval_pkts: u64, interval_matched: u64,
-    total_pkts: u64, total_matched: u64, total_dropped: u64,
-    total_fail: u64, total_bytes: u64,
+    start: Instant,
+    last_report: &mut Instant,
+    now: Instant,
+    interval_pkts: u64,
+    interval_matched: u64,
+    total_pkts: u64,
+    total_matched: u64,
+    total_dropped: u64,
+    total_fail: u64,
+    total_bytes: u64,
 ) {
     let interval = now.duration_since(*last_report).as_secs_f64();
     let total_secs = now.duration_since(start).as_secs_f64();
@@ -236,7 +260,9 @@ fn run_generator(port: u16, count: u64, target_pps: u64) -> io::Result<()> {
     let dest = format!("127.0.0.1:{}", port);
 
     // Pre-generate messages for all 8 severity levels
-    let sev_names = ["EMERG", "ALERT", "CRIT", "ERR", "WARN", "NOTICE", "INFO", "DEBUG"];
+    let sev_names = [
+        "EMERG", "ALERT", "CRIT", "ERR", "WARN", "NOTICE", "INFO", "DEBUG",
+    ];
     let messages: Vec<Vec<u8>> = (0..8).map(|sev| {
         let pri = (16 << 3) | sev; // facility=local0
         format!(
@@ -245,9 +271,16 @@ fn run_generator(port: u16, count: u64, target_pps: u64) -> io::Result<()> {
         ).into_bytes()
     }).collect();
 
-    eprintln!("Generating {} syslog packets to {} (target: {} pps)",
-              count, dest,
-              if target_pps == 0 { "max".to_string() } else { format!("{}", target_pps) });
+    eprintln!(
+        "Generating {} syslog packets to {} (target: {} pps)",
+        count,
+        dest,
+        if target_pps == 0 {
+            "max".to_string()
+        } else {
+            format!("{}", target_pps)
+        }
+    );
 
     let start = Instant::now();
     let mut sent: u64 = 0;
@@ -292,7 +325,10 @@ fn run_generator(port: u16, count: u64, target_pps: u64) -> io::Result<()> {
 
     let elapsed = start.elapsed().as_secs_f64();
     let avg_pps = sent as f64 / elapsed;
-    eprintln!("Done: {} packets in {:.2}s ({:.0} pps avg)", sent, elapsed, avg_pps);
+    eprintln!(
+        "Done: {} packets in {:.2}s ({:.0} pps avg)",
+        sent, elapsed, avg_pps
+    );
     Ok(())
 }
 
@@ -306,8 +342,10 @@ fn run_batch_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> i
         sock.as_raw_fd()
     };
 
-    eprintln!("Listening on UDP port {} (BATCH PARSER), severity <= {}, batch size {}",
-              port, severity_threshold, batch_size);
+    eprintln!(
+        "Listening on UDP port {} (BATCH PARSER), severity <= {}, batch size {}",
+        port, severity_threshold, batch_size
+    );
 
     // Contiguous buffer for all packets + per-packet length tracking
     let mut bufs: Vec<Vec<u8>> = (0..batch_size).map(|_| vec![0u8; 2048]).collect();
@@ -365,9 +403,8 @@ fn run_batch_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> i
         interval_packets += n as u64;
 
         // SIMD batch parse: parse all packets in one call
-        let batch = syslog_parser::parse_recvmmsg_batch(
-            &concat_buf, &packet_lens, severity_threshold,
-        );
+        let batch =
+            syslog_parser::parse_recvmmsg_batch(&concat_buf, &packet_lens, severity_threshold);
 
         let matched = batch.lines.len() as u64;
         total_matched += matched;
@@ -416,33 +453,79 @@ fn main() -> io::Result<()> {
 
     let mode = &args[1];
     let get_arg = |name: &str, default: &str| -> String {
-        args.windows(2)
-            .find(|w| w[0] == format!("--{}", name))
-            .map(|w| w[1].clone())
-            .unwrap_or_else(|| default.to_string())
+        for i in 0..args.len() {
+            if args[i] == format!("--{}", name) {
+                if i + 1 < args.len() {
+                    return args[i + 1].clone();
+                } else {
+                    eprintln!("ERROR: --{} requires a value", name);
+                    std::process::exit(1);
+                }
+            }
+        }
+        default.to_string()
     };
 
     match mode.as_str() {
         "receive" => {
-            let port: u16 = get_arg("port", "5514").parse().expect("invalid argument value");
-            let sev: u8 = get_arg("severity", "4").parse().expect("invalid argument value");
-            let batch: usize = get_arg("batch", "64").parse().expect("invalid argument value");
+            let port_str = get_arg("port", "5514");
+            let port: u16 = port_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid port value '{}': {e}", port_str);
+                std::process::exit(1);
+            });
+            let sev_str = get_arg("severity", "4");
+            let sev: u8 = sev_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid severity value '{}': {e}", sev_str);
+                std::process::exit(1);
+            });
+            let batch_str = get_arg("batch", "64");
+            let batch: usize = batch_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid batch value '{}': {e}", batch_str);
+                std::process::exit(1);
+            });
             run_receiver(port, sev, batch)
         }
         "receive-batch" => {
-            let port: u16 = get_arg("port", "5514").parse().expect("invalid argument value");
-            let sev: u8 = get_arg("severity", "4").parse().expect("invalid argument value");
-            let batch: usize = get_arg("batch", "64").parse().expect("invalid argument value");
+            let port_str = get_arg("port", "5514");
+            let port: u16 = port_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid port value '{}': {e}", port_str);
+                std::process::exit(1);
+            });
+            let sev_str = get_arg("severity", "4");
+            let sev: u8 = sev_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid severity value '{}': {e}", sev_str);
+                std::process::exit(1);
+            });
+            let batch_str = get_arg("batch", "64");
+            let batch: usize = batch_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid batch value '{}': {e}", batch_str);
+                std::process::exit(1);
+            });
             run_batch_receiver(port, sev, batch)
         }
         "generate" => {
-            let port: u16 = get_arg("port", "5514").parse().expect("invalid argument value");
-            let count: u64 = get_arg("count", "1000000").parse().expect("invalid argument value");
-            let pps: u64 = get_arg("pps", "0").parse().expect("invalid argument value");
+            let port_str = get_arg("port", "5514");
+            let port: u16 = port_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid port value '{}': {e}", port_str);
+                std::process::exit(1);
+            });
+            let count_str = get_arg("count", "1000000");
+            let count: u64 = count_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid count value '{}': {e}", count_str);
+                std::process::exit(1);
+            });
+            let pps_str = get_arg("pps", "0");
+            let pps: u64 = pps_str.parse().unwrap_or_else(|e| {
+                eprintln!("ERROR: invalid pps value '{}': {e}", pps_str);
+                std::process::exit(1);
+            });
             run_generator(port, count, pps)
         }
         _ => {
-            eprintln!("Unknown mode: {}. Use 'receive', 'receive-batch', or 'generate'.", mode);
+            eprintln!(
+                "Unknown mode: {}. Use 'receive', 'receive-batch', or 'generate'.",
+                mode
+            );
             std::process::exit(1);
         }
     }
@@ -456,8 +539,8 @@ mod tests {
     fn parse_priority_basic() {
         let m = parse_syslog_pri(b"<134>test").unwrap();
         assert_eq!(m.facility, 16); // 134 >> 3 = 16
-        assert_eq!(m.severity, 6);  // 134 & 7 = 6
-        assert_eq!(m.pri_len, 5);   // "<134>"
+        assert_eq!(m.severity, 6); // 134 & 7 = 6
+        assert_eq!(m.pri_len, 5); // "<134>"
     }
 
     #[test]
@@ -507,7 +590,7 @@ mod tests {
         assert!(parse_syslog_pri(b"no angle bracket").is_none());
         assert!(parse_syslog_pri(b"<abc>test").is_none());
         assert!(parse_syslog_pri(b"<1234>test").is_none()); // 4+ digits
-        assert!(parse_syslog_pri(b"<13").is_none());         // no closing >
+        assert!(parse_syslog_pri(b"<13").is_none()); // no closing >
         assert!(parse_syslog_pri(b"").is_none());
     }
 
@@ -522,7 +605,10 @@ mod tests {
         }
         let elapsed = start.elapsed();
         let ns_per = elapsed.as_nanos() as f64 / n as f64;
-        eprintln!("parse_syslog_pri: {:.1}ns/call ({:.1}M/sec)",
-                  ns_per, 1000.0 / ns_per);
+        eprintln!(
+            "parse_syslog_pri: {:.1}ns/call ({:.1}M/sec)",
+            ns_per,
+            1000.0 / ns_per
+        );
     }
 }

@@ -17,6 +17,8 @@ pub mod byte_search;
 pub mod cri;
 /// Newline framing (Kani-proven).
 pub mod framer;
+/// Streaming JSON field scanner using StructuralIter.
+pub mod json_scanner;
 /// OTLP protobuf encoding helpers and parsers.
 pub mod otlp;
 /// Pipeline state machine — typestate batch lifecycle + ordered offset tracking.
@@ -27,3 +29,5 @@ pub mod scan_config;
 pub mod scanner;
 /// Streaming SIMD structural character detection.
 pub mod structural;
+/// Streaming structural position iterator (format-agnostic).
+pub mod structural_iter;

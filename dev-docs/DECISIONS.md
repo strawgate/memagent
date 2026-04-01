@@ -159,3 +159,25 @@ stays in the input plugin where it belongs.
 
 **Research:** `dev-docs/research/offset-checkpoint-research.md`
 **Related:** #270 (pipeline state machine).
+
+## Single column per field (not suffix-based multi-column)
+
+**Decision:** One JSON key produces one Arrow column. Column name
+equals the JSON key (no `_str`/`_int`/`_float` suffix). Arrow
+DataType is determined by observed values with type promotion.
+
+**Why:** The suffix convention was root cause of 11 bugs. Name-based
+type dispatch breaks after SQL transforms, user field names collide
+with suffixes, and the 772-line SQL rewriter can never be complete.
+
+**How it works:** `ResolvedType` per field in the builder tracks
+observed types. Conflicts promote: Int→Float→Utf8. At `finish_batch`,
+each field emits one column with the resolved DataType. Output sinks
+dispatch on `field.data_type()` (matching the existing OTLP pattern).
+
+**What gets deleted:** `rewriter.rs` (772 lines), `parse_column_name`,
+`strip_type_suffix`, `build_col_infos` deduplication, name-based
+dispatch in `write_row_json`.
+
+**Research:** `dev-docs/research/type-suffix-redesign.md`
+**Related:** #445 (tracking issue).

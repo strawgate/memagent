@@ -312,9 +312,21 @@ jobs:
           path: bin
       - run: chmod +x bin/*
 
+      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build logfwd with profiling
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+        run: |
+          cargo build --release --features cpu-profiling -p logfwd
+          cp target/release/logfwd bin/logfwd-prof
+
       - name: Run profiling pass
         run: |
-          mkdir -p profiles
           bin/logfwd-competitive-bench \
             --lines ${{ env.LINES }} \
             --agents logfwd \
@@ -323,7 +335,7 @@ jobs:
             --profile ./profiles \
             --dhat-binary ./bin/logfwd-dhat
         env:
-          LOGFWD: ./bin/logfwd
+          LOGFWD: ./bin/logfwd-prof
 
       - uses: actions/upload-artifact@v4
         if: always()

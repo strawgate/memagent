@@ -114,13 +114,38 @@ Remove `extern crate alloc` entirely. No Vec, String, Box in core.
 All buffers stack-local or caller-provided. Mathematically impossible
 to OOM. Requires fully sequential scanner (no stored bitmask vecs).
 
+## Phase 10: Type suffix redesign (#445) ← NEXT
+
+Eliminate `_str`/`_int`/`_float` column name suffixes. Root cause of
+11 bugs. One JSON key = one Arrow column. DataType-based dispatch
+everywhere.
+
+```text
+10a: Type promotion in builders          → TODO
+     ResolvedType enum, single column per field
+     StreamingBuilder + StorageBuilder
+
+10b: DataType dispatch in output sinks   → TODO
+     write_row_json dispatches on DataType
+     Delete parse_column_name
+
+10c: Delete SQL rewriter                 → TODO
+     Delete rewriter.rs (772 lines)
+     Delete strip_type_suffix
+
+10d: Update all tests                    → TODO
+     "status_int" → "status" everywhere
+```
+
+Research: `dev-docs/research/type-suffix-redesign.md`
+
 ## Parallel work
 
 | Issue | What | Status |
 |-------|------|--------|
+| #491 | Transform/output errors kill pipeline | Open (production) |
+| #318 | Retry with backoff | Open (production) |
+| #319 | AsyncFanout with circuit breaker | Open (production) |
 | #357 | Decommission shadow JSON parser in otlp.rs | Open |
-| #359 | proptest: SQL pushdown integrity | Open |
 | #275 | Fix CRI silent truncation | Open |
-| #279 | Arrow version upgrade | Open |
-| #308 | Rethink _raw column | Open |
-| #337-346 | Codebase audit (10 issues) | Copilot assigned |
+| #337-346 | Codebase audit (10 issues) | Jules assigned |

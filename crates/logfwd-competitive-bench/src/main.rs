@@ -976,17 +976,59 @@ impl Args {
 
         let mut i = 1;
         while i < args.len() {
-            match args[i].as_str() {
+            let arg = &args[i];
+            if arg == "--help" || arg == "-h" {
+                eprintln!("Usage: logfwd-competitive-bench [OPTIONS]");
+                eprintln!();
+                eprintln!("  --lines N            Lines to generate (default: 5000000)");
+                eprintln!("  --agents A,B,C       Agents to run (default: all)");
+                eprintln!("  --scenarios S,S      Scenarios to run (default: passthrough)");
+                eprintln!("                       Available: passthrough, json_parse, filter");
+                eprintln!("  --markdown           Output markdown table");
+                eprintln!("  --json               Output structured JSON (for CI dashboards)");
+                eprintln!(
+                    "  --json-file PATH     Write JSON results to file (combinable with --markdown)"
+                );
+                eprintln!("  --no-download        Skip binary downloads");
+                eprintln!(
+                    "  --mode M             Execution mode: binary, docker, both (default: binary)"
+                );
+                eprintln!("  --docker             Enable Docker (sets mode to docker)");
+                eprintln!("  --cpus N             CPU limit per container (default: 1)");
+                eprintln!("  --memory N           Memory limit per container (default: 1g)");
+                eprintln!("  --profile DIR        Write CPU/memory profiles to DIR");
+                eprintln!("  --dhat-binary PATH   logfwd binary built with --features dhat-heap");
+                eprintln!(
+                    "  --rate-bench         Run low-and-slow rate-ingest benchmark (logfwd only)"
+                );
+                process::exit(0);
+            }
+            match arg.as_str() {
                 "--lines" => {
                     i += 1;
-                    result.lines = args[i].parse().expect("invalid --lines value");
+                    if i >= args.len() {
+                        eprintln!("ERROR: --lines requires a value");
+                        process::exit(1);
+                    }
+                    result.lines = args[i].parse().unwrap_or_else(|e| {
+                        eprintln!("ERROR: invalid --lines value '{}': {e}", args[i]);
+                        process::exit(1);
+                    });
                 }
                 "--agents" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --agents requires a value");
+                        process::exit(1);
+                    }
                     result.agents = args[i].split(',').map(|s| s.to_string()).collect();
                 }
                 "--scenarios" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --scenarios requires a value");
+                        process::exit(1);
+                    }
                     result.scenarios = args[i]
                         .split(',')
                         .map(|s| {
@@ -1009,16 +1051,28 @@ impl Args {
                 "--json" => result.json = true,
                 "--json-file" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --json-file requires a path");
+                        process::exit(1);
+                    }
                     result.json_file = Some(PathBuf::from(&args[i]));
                 }
                 "--gh-bench-file" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --gh-bench-file requires a path");
+                        process::exit(1);
+                    }
                     result.gh_bench_file = Some(PathBuf::from(&args[i]));
                 }
                 "--no-download" => result.no_download = true,
                 "--docker" => result.docker = true,
                 "--mode" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --mode requires a value (binary, docker, both)");
+                        process::exit(1);
+                    }
                     let m = args[i].as_str();
                     if !["binary", "docker", "both"].contains(&m) {
                         eprintln!("Invalid --mode: {m} (expected: binary, docker, both)");
@@ -1028,35 +1082,70 @@ impl Args {
                 }
                 "--cpus" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --cpus requires a value");
+                        process::exit(1);
+                    }
                     result.docker_limits.cpus = args[i].clone();
                 }
                 "--memory" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --memory requires a value");
+                        process::exit(1);
+                    }
                     result.docker_limits.memory = args[i].clone();
                 }
                 "--profile" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --profile requires a directory path");
+                        process::exit(1);
+                    }
                     result.profile_dir = Some(PathBuf::from(&args[i]));
                 }
                 "--dhat-binary" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --dhat-binary requires a path");
+                        process::exit(1);
+                    }
                     result.dhat_binary = Some(args[i].clone());
                 }
                 "--rate-bench" => result.rate_bench = true,
                 "--iterations" => {
                     i += 1;
-                    result.iterations = args[i].parse().expect("invalid --iterations value");
+                    if i >= args.len() {
+                        eprintln!("ERROR: --iterations requires a value");
+                        process::exit(1);
+                    }
+                    result.iterations = args[i].parse().unwrap_or_else(|e| {
+                        eprintln!("ERROR: invalid --iterations value '{}': {e}", args[i]);
+                        process::exit(1);
+                    });
                 }
                 "--results-file" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --results-file requires a path");
+                        process::exit(1);
+                    }
                     result.results_file = Some(PathBuf::from(&args[i]));
                 }
                 "--results-dir" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --results-dir requires a path");
+                        process::exit(1);
+                    }
                     result.results_dir = Some(PathBuf::from(&args[i]));
                 }
                 "--dashboard-file" => {
                     i += 1;
+                    if i >= args.len() {
+                        eprintln!("ERROR: --dashboard-file requires a path");
+                        process::exit(1);
+                    }
                     result.dashboard_file = Some(PathBuf::from(&args[i]));
                 }
                 other
