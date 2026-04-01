@@ -79,7 +79,7 @@ impl OutputSink for UdpSink {
         for row in 0..batch.num_rows() {
             // Serialize row into scratch buffer.
             self.row_buf.clear();
-            write_row_json(batch, row, &cols, &mut self.row_buf);
+            write_row_json(batch, row, &cols, &mut self.row_buf)?;
             self.row_buf.push(b'\n');
 
             let row_len = self.row_buf.len();

@@ -181,7 +181,7 @@ pub(crate) fn str_value(col: &dyn Array, row: usize) -> &str {
 }
 
 /// Write a JSON string value with RFC 8259 escaping.
-fn write_json_string(out: &mut Vec<u8>, v: &str) {
+fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
     out.push(b'"');
     for &b in v.as_bytes() {
         match b {
@@ -191,12 +191,13 @@ fn write_json_string(out: &mut Vec<u8>, v: &str) {
             b'\r' => out.extend_from_slice(b"\\r"),
             b'\t' => out.extend_from_slice(b"\\t"),
             b if b < 0x20 => {
-                let _ = Write::write_fmt(out, format_args!("\\u{:04x}", b));
+                Write::write_fmt(out, format_args!("\\u{:04x}", b))?;
             }
             _ => out.push(b),
         }
     }
     out.push(b'"');
+    Ok(())
 }
 
 /// Write a single Arrow value as JSON, dispatching on the actual Arrow DataType.
@@ -204,7 +205,7 @@ fn write_json_string(out: &mut Vec<u8>, v: &str) {
 /// Int64 → unquoted integer, Float64 → unquoted number (null for non-finite),
 /// everything else → quoted string. This preserves JSON type fidelity on
 /// roundtrip without relying on column name suffixes.
-fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) {
+fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -> io::Result<()> {
     match arr.data_type() {
         DataType::Int64 => {
             let v = arr.as_primitive::<arrow::datatypes::Int64Type>().value(row);
@@ -221,9 +222,10 @@ fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) {
             }
         }
         _ => {
-            write_json_string(out, str_value(arr, row));
+            write_json_string(out, str_value(arr, row))?;
         }
     }
+    Ok(())
 }
 
 /// Write a single row as a JSON object into `out`.
@@ -232,7 +234,12 @@ fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) {
 /// the first non-null variant is used. If all variants are null the field is emitted
 /// as `"field":null` to preserve JSON field presence. Type dispatch uses the Arrow
 /// DataType, not the column name suffix.
-pub fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], out: &mut Vec<u8>) {
+pub fn write_row_json(
+    batch: &RecordBatch,
+    row: usize,
+    cols: &[ColInfo],
+    out: &mut Vec<u8>,
+) -> io::Result<()> {
     out.push(b'{');
     let mut first = true;
     for col in cols {
@@ -261,9 +268,10 @@ pub fn write_row_json(batch: &RecordBatch, row: usize, cols: &[ColInfo], out: &m
         let arr = batch.column(*arr_idx);
 
         // Value — dispatch on Arrow DataType, not column name suffix
-        write_json_value(arr, row, out);
+        write_json_value(arr, row, out)?;
     }
     out.push(b'}');
+    Ok(())
 }
 
 /// Compression algorithm.
@@ -1034,7 +1042,7 @@ mod write_row_json_tests {
     fn render(batch: &RecordBatch, row: usize) -> String {
         let cols = build_col_infos(batch);
         let mut out = Vec::new();
-        write_row_json(batch, row, &cols, &mut out);
+        write_row_json(batch, row, &cols, &mut out).expect("write_row_json failed");
         String::from_utf8(out).expect("output must be valid UTF-8")
     }
 
