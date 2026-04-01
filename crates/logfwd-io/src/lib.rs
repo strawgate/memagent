@@ -8,3 +8,5 @@ pub mod input;
 pub mod metric_history;
 pub mod stderr_capture;
 pub mod tail;
+pub mod tcp_input;
+pub mod udp_input;

@@ -672,6 +672,42 @@ fn build_input_state(
                 stats,
             })
         }
+        InputType::Udp => {
+            let addr = cfg
+                .listen
+                .as_ref()
+                .ok_or_else(|| format!("input '{name}': udp input requires 'listen'"))?;
+            let source = logfwd_io::udp_input::UdpInput::new(name, addr)
+                .map_err(|e| format!("input '{name}': failed to bind UDP {addr}: {e}"))?;
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            Ok(InputState {
+                name: name.to_string(),
+                source: Box::new(source),
+                format,
+                buf: Vec::with_capacity(1024 * 1024),
+                remainder: Vec::new(),
+                cri_aggregator: None,
+                stats,
+            })
+        }
+        InputType::Tcp => {
+            let addr = cfg
+                .listen
+                .as_ref()
+                .ok_or_else(|| format!("input '{name}': tcp input requires 'listen'"))?;
+            let source = logfwd_io::tcp_input::TcpInput::new(name, addr)
+                .map_err(|e| format!("input '{name}': failed to bind TCP {addr}: {e}"))?;
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            Ok(InputState {
+                name: name.to_string(),
+                source: Box::new(source),
+                format,
+                buf: Vec::with_capacity(4 * 1024 * 1024),
+                remainder: Vec::new(),
+                cri_aggregator: None,
+                stats,
+            })
+        }
         _ => Err(format!(
             "input '{name}': type {:?} not yet supported",
             cfg.input_type
