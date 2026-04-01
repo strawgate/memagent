@@ -906,6 +906,12 @@ mod tests {
     use super::*;
     use std::io::Read;
     use std::net::TcpListener;
+    use std::sync::Mutex;
+
+    /// Serialize diagnostics tests to prevent port collisions.
+    /// free_port() releases the port before the server binds — running
+    /// tests in parallel means another test can grab the same port.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// Pick an available port by binding to :0.
     fn free_port() -> u16 {
@@ -1023,6 +1029,7 @@ mod tests {
 
     #[test]
     fn test_health_endpoint() {
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let server = server_with_test_pipeline(port);
         let _handle = server.start().expect("server bind failed");
@@ -1043,6 +1050,7 @@ mod tests {
 
     #[test]
     fn test_pipelines_endpoint() {
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let server = server_with_test_pipeline(port);
         let _handle = server.start().expect("server bind failed");
@@ -1076,6 +1084,7 @@ mod tests {
 
     #[test]
     fn test_stats_endpoint_contract() {
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let mut server = server_with_test_pipeline(port);
         server.set_memory_stats_fn(|| {
@@ -1150,6 +1159,7 @@ mod tests {
 
     #[test]
     fn test_not_found() {
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let server = server_with_test_pipeline(port);
         let _handle = server.start().expect("server bind failed");
@@ -1164,6 +1174,7 @@ mod tests {
     fn test_pipelines_endpoint_no_memory_stats() {
         // Without a memory_stats_fn set, the system section must NOT contain
         // a "memory" key — no partial or null fields.
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let server = server_with_test_pipeline(port);
         let _handle = server.start().expect("server bind failed");
@@ -1183,6 +1194,7 @@ mod tests {
     fn test_pipelines_endpoint_with_memory_stats() {
         // With a memory_stats_fn set, the system section must include
         // "memory" with resident/allocated/active fields.
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let mut server = server_with_test_pipeline(port);
         server.set_memory_stats_fn(|| {
@@ -1208,6 +1220,7 @@ mod tests {
     fn test_ready_endpoint_no_batch_returns_503() {
         // A pipeline that has never processed a batch (last_batch_time_ns == 0)
         // must cause /ready to return 503.
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let meter = opentelemetry::global::meter("test");
         let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1227,6 +1240,7 @@ mod tests {
     #[test]
     fn test_ready_endpoint_recent_batch_returns_200() {
         // A pipeline whose last batch was just now must return 200.
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let meter = opentelemetry::global::meter("test");
         let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1246,6 +1260,7 @@ mod tests {
     #[test]
     fn test_ready_endpoint_stale_batch_returns_503() {
         // A pipeline whose last batch was more than 30s ago must return 503.
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let meter = opentelemetry::global::meter("test");
         let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1274,6 +1289,7 @@ mod tests {
 
     #[test]
     fn test_pipelines_endpoint_escaping() {
+        let _lock = TEST_LOCK.lock().unwrap();
         let port = free_port();
         let meter = opentelemetry::global::meter("test");
         // Control character in pipeline name.
