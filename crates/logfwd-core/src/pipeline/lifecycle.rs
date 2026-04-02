@@ -587,10 +587,74 @@ mod tests {
         // Create and complete another batch
         let t2 = running.create_batch(src, 2000u64);
         let s2 = running.begin_send(t2);
-        running.apply_ack(s2.ack());
+        let advance = running.apply_ack(s2.ack());
 
-        // Pipeline can drain and stop — not wedged
+        // Committed advances to t2's checkpoint — the gap at t1 is invisible
+        assert!(advance.advanced);
+        assert_eq!(advance.checkpoint, Some(2000));
+
+        // Pipeline can drain and stop — not wedged by the dropped ticket
         assert_eq!(running.in_flight_count(), 0);
+        let draining = running.begin_drain();
+        assert!(draining.is_drained());
+        let stopped = draining.stop().ok().expect("should drain");
+        assert_eq!(*stopped.final_checkpoints().get(&src).unwrap(), 2000);
+    }
+
+    #[test]
+    fn dropped_queued_ticket_gap_in_middle() {
+        // Drop the middle ticket — sends t1 and t3, skips t2.
+        // Committed should advance past the gap to t3's checkpoint.
+        let mut running = new_running();
+        let src = SourceId(0);
+
+        let t1 = running.create_batch(src, 1000u64);
+        let _t2_dropped = running.create_batch(src, 2000u64);
+        let t3 = running.create_batch(src, 3000u64);
+
+        let s1 = running.begin_send(t1);
+        let s3 = running.begin_send(t3);
+
+        // Ack t1 — t3 still in-flight, so committed = 1000
+        let advance = running.apply_ack(s1.ack());
+        assert_eq!(advance.checkpoint, Some(1000));
+
+        // Ack t3 — no lower-ID in-flight; gap at t2 is invisible → advances to 3000
+        let advance = running.apply_ack(s3.ack());
+        assert!(advance.advanced);
+        assert_eq!(advance.checkpoint, Some(3000));
+
+        let draining = running.begin_drain();
+        assert!(draining.is_drained());
+        let stopped = draining.stop().ok().expect("should drain");
+        assert_eq!(*stopped.final_checkpoints().get(&src).unwrap(), 3000);
+    }
+
+    #[test]
+    fn dropped_queued_ticket_only_one_sent() {
+        // Drop first ticket, send only the second — gap is at a lower ID.
+        // Committed should advance to the sent ticket's checkpoint without waiting
+        // for the dropped ticket.
+        let mut running = new_running();
+        let src = SourceId(0);
+
+        let _t1_dropped = running.create_batch(src, 1000u64);
+        let t2 = running.create_batch(src, 2000u64);
+        let t3 = running.create_batch(src, 3000u64);
+        let _t4_dropped = running.create_batch(src, 4000u64);
+
+        let s2 = running.begin_send(t2);
+        let s3 = running.begin_send(t3);
+
+        // Ack out of order: t3 first
+        let advance = running.apply_ack(s3.ack());
+        assert!(!advance.advanced, "t2 still in-flight blocks t3");
+
+        // Ack t2 — t1 was never sent so no lower in-flight; t3 pending drains too
+        let advance = running.apply_ack(s2.ack());
+        assert!(advance.advanced);
+        assert_eq!(advance.checkpoint, Some(3000));
+
         let draining = running.begin_drain();
         assert!(draining.is_drained());
         assert!(draining.stop().is_ok());
