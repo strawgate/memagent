@@ -39,9 +39,11 @@ EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
     Sources,               \* Set of source identifiers (use symmetry in MC file)
-    MaxBatchesPerSource    \* Max batch IDs to explore per source
+    MaxBatchesPerSource,   \* Max batch IDs to explore per source
+    EnableForceStop        \* TRUE to model emergency hard-kill; FALSE for normal-path proofs
 
 ASSUME MaxBatchesPerSource \in Nat /\ MaxBatchesPerSource >= 1
+ASSUME EnableForceStop \in BOOLEAN
 
 BatchIds == 1..MaxBatchesPerSource
 
@@ -168,21 +170,26 @@ BeginDrain ==
     /\ UNCHANGED <<created, in_flight, acked, committed>>
 
 \* stop: THE DRAIN GUARANTEE.
-\* Only reachable when ALL sources have empty in_flight.
 \* Rust: PipelineMachine<Draining, C>::stop() returns Err(self) if not drained.
-\*
 \* Rust's is_drained() checks BOTH in_flight.all_empty() AND pending_acks.all_empty().
-\* The TLA+ guard `\A s: in_flight[s] = {}` is equivalent because:
-\*   In record_ack_and_advance(), when the last in-flight batch for source s is
-\*   acked, the pending_acks loop immediately drains (has_lower is false for all
-\*   pending entries since in_flight[s] is now empty). So pending_acks[s] is
-\*   always empty whenever in_flight[s] is empty — the two conditions are
-\*   inseparable in the Rust implementation. NewCommitted() models this by
-\*   computing the committed value directly from acked and in_flight, without
-\*   a separate pending_acks variable; the result is identical.
+\*
+\* TLA+ models both conditions explicitly:
+\*   (1) in_flight[s] = {} — no batch is actively being sent
+\*   (2) acked[s] ⊆ 1..committed[s] — no acked batch is awaiting commit (≡ pending_acks empty)
+\*
+\* Why (2) is necessary: consider batch 1 created-but-never-sent, batch 2 sent+acked.
+\*   in_flight = {}, acked = {2}, committed = 0.
+\*   NewCommitted({2}, {}) = 0 because batch 1 was never acked (gap at position 1).
+\*   In Rust: pending_acks = {2: ...}, is_drained() = false — stop() returns Err(self).
+\*   Without guard (2), TLA+ Stop would fire here, diverging from the Rust behavior.
+\*
+\* Why (2) is sufficient: if acked[s] ⊆ 1..committed[s] AND in_flight[s] = {},
+\*   then committed[s] = Cardinality(acked[s]) and all acked batches are committed,
+\*   which exactly corresponds to pending_acks[s] being empty in Rust.
 Stop ==
     /\ phase = "Draining"
-    /\ \A s \in Sources : in_flight[s] = {}    \* THE DRAIN GUARD (≡ is_drained())
+    /\ \A s \in Sources : in_flight[s] = {}                    \* no active sends
+    /\ \A s \in Sources : acked[s] \subseteq 1..committed[s]  \* no pending_acks (≡ is_drained())
     /\ phase' = "Stopped"
     /\ UNCHANGED <<created, in_flight, acked, committed>>
 
@@ -197,8 +204,9 @@ Stop ==
 \* may have been non-empty). This is intentional — ForceStop is the
 \* explicit policy decision to accept data loss in exchange for liveness.
 \*
-\* A separate TLA+ model with ForceStop disabled verifies the normal-path
-\* properties. With ForceStop enabled, DrainCompleteness is NOT checked.
+\* Controlled by the EnableForceStop constant in .cfg files — no manual spec edits
+\* needed. Normal-path configs set EnableForceStop = FALSE; ForceStop model sets TRUE.
+\* With ForceStop enabled, DrainCompleteness is NOT checked (remove from INVARIANTS).
 ForceStop ==
     /\ phase = "Draining"
     /\ phase' = "Stopped"
@@ -216,7 +224,7 @@ Next ==
           b \in BatchIds        : AckBatch(s, b)
     \/ BeginDrain
     \/ Stop
-    \/ ForceStop    \* Comment out for the normal-path model
+    \/ EnableForceStop /\ ForceStop    \* controlled by model constant in .cfg
 
 (*
  * Fairness:

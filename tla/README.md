@@ -49,20 +49,22 @@ tla/
 
 ### Four models to run
 
-**Model 1 — Safety (normal path, no ForceStop):**
+**Model 1 — Safety (normal path, EnableForceStop=FALSE):**
+
 ```bash
 java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg
 # Sources={"s1","s2"}, MaxBatchesPerSource=3, symmetry on Sources
 # ~50K states, < 30s. Checks all INVARIANTS + temporal action properties.
-# ForceStop must be commented out in Next (see MCPipelineMachine.tla).
 ```
 
 **Model 2 — Liveness (smaller constants, no SYMMETRY):**
+
 ```bash
 java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.liveness.cfg
 # Sources={"s1","s2"}, MaxBatchesPerSource=2 — liveness needs small constants
 # ~5K states, < 5 min. Checks EventualDrain, NoBatchLeftBehind, StoppedIsStable
 ```
+
 > **Warning:** Never use `CONSTRAINT` to bound state space for liveness
 > checking — it silently breaks liveness by cutting off infinite behaviors
 > before they reach the convergent state. Use model constants instead.
@@ -71,19 +73,22 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 > that must be distinct for temporal reasoning, silently producing unsound results.
 > SYMMETRY is safe only for safety (INVARIANT) checks.
 
-**Model 3 — Safety with ForceStop:**
+**Model 3 — Safety with ForceStop (EnableForceStop=TRUE):**
+
 ```text
-Enable ForceStop in Next. Remove DrainCompleteness from INVARIANTS.
+Set EnableForceStop = TRUE in constants. Remove DrainCompleteness from INVARIANTS.
 Verifies: Stopped is reachable even with in_flight > 0; all other invariants hold.
 ```
 
 **Model 4 — Coverage / reachability (vacuity guards):**
+
 ```bash
 java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.coverage.cfg
 # TLC will report PROPERTY VIOLATIONS for BeginDrainReachable, StopReachable,
 # AckOccurs, CommitAdvances — each violation is a witness trace proving the
 # state IS reachable. No violation = state unreachable = spec or model bug.
 ```
+
 This is the TLA+ equivalent of `kani::cover!()`. If you add a new invariant, add
 a corresponding reachability assertion to verify its precondition is not vacuously
 impossible.
