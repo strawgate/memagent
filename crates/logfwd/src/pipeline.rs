@@ -182,7 +182,10 @@ impl Pipeline {
         }
 
         let output: Box<dyn OutputSink> = if sinks.len() == 1 {
-            sinks.into_iter().next().unwrap()
+            sinks
+                .into_iter()
+                .next()
+                .expect("exactly one sink verified by sinks.len() == 1")
         } else {
             Box::new(FanOut::new(sinks))
         };
