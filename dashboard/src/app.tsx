@@ -170,13 +170,13 @@ export function App() {
         }
       }
 
-      if (statsData.batches > 0) {
-        const totalSec = statsData.scan_sec + statsData.transform_sec + statsData.output_sec;
-        const latRate = rates.rate("lat", totalSec * 1000);
-        if (latRate != null) {
-          series[5].ring.push(latRate);
-          series[5].value = latRate.toFixed(1);
-        }
+      // Batch latency: rolling average of total_ns from recent traces.
+      // This gives true ms/batch rather than the cumulative-rate approximation.
+      if (tracesData && tracesData.traces.length > 0) {
+        const recent = tracesData.traces.slice(0, 50);
+        const avgMs = recent.reduce((s, t) => s + t.total_ns, 0) / recent.length / 1e6;
+        series[5].ring.push(avgMs);
+        series[5].value = avgMs.toFixed(1);
       }
     }
 

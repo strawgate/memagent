@@ -426,12 +426,12 @@ impl Pipeline {
         skip_all,
         fields(
             pipeline = %self.name,
-            bytes_in = 0u64,
+            bytes_in = tracing::field::Empty,
             flush_reason = tracing::field::Empty,
-            queue_wait_ns = 0u64,
-            input_rows = 0u64,
-            output_rows = 0u64,
-            errors = 0u64,
+            queue_wait_ns = tracing::field::Empty,
+            input_rows = tracing::field::Empty,
+            output_rows = tracing::field::Empty,
+            errors = tracing::field::Empty,
         )
     )]
     async fn flush_batch(
@@ -477,7 +477,7 @@ impl Pipeline {
         // tokio to move other tasks off this worker while scanning.
         let t0 = Instant::now();
         let batch = {
-            let scan_span = tracing::info_span!("scan", pipeline = %self.name, rows = 0u64);
+            let scan_span = tracing::info_span!("scan", pipeline = %self.name, rows = tracing::field::Empty);
             let _entered = scan_span.enter();
             let b = match tokio::task::block_in_place(|| self.scanner.scan(combined.into())) {
                 Ok(b) => b,

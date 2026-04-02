@@ -380,6 +380,9 @@ export function TraceExplorer({ traces, collapsed = false }: Props) {
         </div>
       </div>
 
+      {/* Detail panel for timeline-selected trace — shown even when collapsed */}
+      {collapsed && expanded && <DetailPanel t={expanded} />}
+
       {/* Batch list — hidden when collapsed */}
       {!collapsed && (
         <div class="t2-list">
