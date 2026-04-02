@@ -170,7 +170,7 @@ async fn basic_empty_batch() {
 async fn coerce_json_int_on_string_parseable() {
     // String "200" -- the scanner sees the quoted value and places it in the
     // _str column.  json_int's suffix order is ["_int", ""], so it finds the
-    // _int column first.  The scanner writes 0 for unparseable-as-int strings
+    // _int column first.  The scanner writes 0 for unparsable-as-int strings
     // into _int, so the result is 0 (not 200).
     //
     // To get 200 from a quoted-string JSON value, use json(_raw,'code') and
@@ -191,7 +191,7 @@ async fn coerce_json_int_on_string_parseable() {
 }
 
 #[tokio::test]
-async fn coerce_json_int_on_string_unparseable() {
+async fn coerce_json_int_on_string_unparsable() {
     // String "OK" cannot be parsed as integer -> NULL.
     let batch = make_raw_batch(&[r#"{"code": "OK"}"#]);
     let result = query1("SELECT json_int(_raw, 'code') AS c FROM logs", batch).await;

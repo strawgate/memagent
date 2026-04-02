@@ -242,7 +242,7 @@ impl ScalarUDFImpl for JsonExtractUdf {
                     if *arr.data_type() == DataType::Int64 {
                         arr
                     } else {
-                        // Try parsing strings as i64; unparseable → null.
+                        // Try parsing strings as i64; unparsable → null.
                         let str_arr = arrow::compute::cast(&arr, &DataType::Utf8)?;
                         let str_arr = str_arr
                             .as_any()
