@@ -509,6 +509,11 @@ mod kani_proofs {
 
         let outcome = dispatch_step(&states[..n], max_workers);
 
+        // Guard against vacuous proofs: confirm all three arms are reachable.
+        kani::cover!(matches!(outcome, DispatchOutcome::SentToIndex(_)), "SentToIndex path reachable");
+        kani::cover!(matches!(outcome, DispatchOutcome::SpawnNew), "SpawnNew path reachable");
+        kani::cover!(matches!(outcome, DispatchOutcome::WaitOnFront), "WaitOnFront path reachable");
+
         match outcome {
             DispatchOutcome::SentToIndex(i) => {
                 // Must be a valid index.
@@ -556,6 +561,9 @@ mod kani_proofs {
 
         let outcome = dispatch_step(&states[..n], max_workers);
 
+        // Guard: confirm MRU path (SentToIndex) is reachable under these inputs.
+        kani::cover!(matches!(outcome, DispatchOutcome::SentToIndex(_)), "SentToIndex reachable in picks_first proof");
+
         if let DispatchOutcome::SentToIndex(i) = outcome {
             // All workers before i must be Full or Closed.
             for j in 0..i {
@@ -582,6 +590,10 @@ mod kani_proofs {
         let has_space = states[..n].iter().any(|&s| s == ChannelState::HasSpace);
 
         let outcome = dispatch_step(&states[..n], max_workers);
+
+        // Guard: both branches (has_space / no_space) must be reachable.
+        kani::cover!(has_space, "has_space=true path exercised");
+        kani::cover!(!has_space, "has_space=false path exercised");
 
         if has_space {
             // Must send to an existing worker, not spawn.
@@ -610,6 +622,9 @@ mod kani_proofs {
             .count();
 
         let outcome = dispatch_step(&states[..n], max_workers);
+
+        // Guard: WaitOnFront must be reachable (not vacuously avoided).
+        kani::cover!(matches!(outcome, DispatchOutcome::WaitOnFront), "WaitOnFront reachable in wait_only_at_capacity proof");
 
         if matches!(outcome, DispatchOutcome::WaitOnFront) {
             assert_eq!(active, max_workers);
