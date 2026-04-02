@@ -12,17 +12,17 @@ mod udp_sink;
 
 mod elasticsearch;
 
-// Placeholder sinks — not yet wired into build_output_sink.
-#[allow(dead_code)]
 mod loki;
 #[allow(dead_code)]
 mod parquet;
 
-pub use elasticsearch::ElasticsearchSink;
+pub use elasticsearch::{ElasticsearchAsyncSink, ElasticsearchSink, ElasticsearchSinkFactory};
 pub use fanout::{FanOut, FanOutError};
 pub use json_lines::JsonLinesSink;
+pub use loki::{LokiAsyncSink, LokiSinkFactory};
 pub use null::NullSink;
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
+pub use sink::{SendResult, Sink, SinkFactory, SyncSinkAdapter};
 use stdout::*;
 pub use tcp_sink::TcpSink;
 pub use udp_sink::UdpSink;

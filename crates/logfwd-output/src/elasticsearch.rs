@@ -313,6 +313,390 @@ impl OutputSink for ElasticsearchSink {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ElasticsearchAsyncSink — reqwest-based async implementation of Sink
+// ---------------------------------------------------------------------------
+
+/// Configuration shared across all `ElasticsearchAsyncSink` instances from
+/// the same factory.
+struct ElasticsearchConfig {
+    endpoint: String,
+    index: String,
+    headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
+    compress: bool,
+}
+
+/// Async Elasticsearch sink using reqwest.
+///
+/// Implements the [`super::sink::Sink`] trait for use with `OutputWorkerPool`.
+/// Each worker owns one instance; the `Arc<reqwest::Client>` inside the factory
+/// is shared so HTTP/2 connection multiplexing applies across workers.
+pub struct ElasticsearchAsyncSink {
+    config: Arc<ElasticsearchConfig>,
+    client: Arc<reqwest::Client>,
+    name: String,
+    batch_buf: Vec<u8>,
+    stats: Arc<ComponentStats>,
+}
+
+impl ElasticsearchAsyncSink {
+    fn new(
+        name: String,
+        config: Arc<ElasticsearchConfig>,
+        client: Arc<reqwest::Client>,
+        stats: Arc<ComponentStats>,
+    ) -> Self {
+        ElasticsearchAsyncSink {
+            name,
+            config,
+            client,
+            batch_buf: Vec::with_capacity(64 * 1024),
+            stats,
+        }
+    }
+
+    /// Serialize the batch into `self.batch_buf` in Elasticsearch bulk format.
+    ///
+    /// Each row produces two lines:
+    /// 1. Action: `{"index":{"_index":"<index>"}}`
+    /// 2. Document: JSON-serialized record, with `@timestamp` injected if absent.
+    fn serialize_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()> {
+        self.batch_buf.clear();
+        let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return Ok(());
+        }
+
+        let action_line = format!("{{\"index\":{{\"_index\":\"{}\"}}}}\n", self.config.index);
+        let action_bytes = action_line.as_bytes();
+
+        // Derive @timestamp from metadata (ISO-8601 UTC).
+        let ts_nanos = metadata.observed_time_ns;
+        let ts_secs = ts_nanos / 1_000_000_000;
+        let ts_frac = ts_nanos % 1_000_000_000;
+        let ts_str = format!(
+            "\",\"@timestamp\":\"{}.{:09}Z\"}}",
+            format_unix_timestamp_utc(ts_secs),
+            ts_frac
+        );
+
+        let cols = build_col_infos(batch);
+        let has_timestamp_col = batch
+            .schema()
+            .fields()
+            .iter()
+            .any(|f| f.name() == "@timestamp" || f.name() == "_timestamp");
+
+        for row in 0..num_rows {
+            self.batch_buf.extend_from_slice(action_bytes);
+            // Write doc JSON, replacing trailing `}` with @timestamp if needed.
+            let doc_start = self.batch_buf.len();
+            write_row_json(batch, row, &cols, &mut self.batch_buf)?;
+            self.batch_buf.push(b'\n');
+
+            // Inject @timestamp unless the batch already has a timestamp column.
+            if !has_timestamp_col {
+                // Replace trailing `}\n` with `,"@timestamp":"..."}` + `\n`.
+                let len = self.batch_buf.len();
+                // Remove the trailing `}\n` (2 bytes).
+                debug_assert!(self.batch_buf.ends_with(b"}\n"), "JSON must end with }}\\n");
+                let trim_to = len - 2;
+                // For the first field (empty doc `{}`), emit `{"@timestamp":"..."}`
+                if trim_to == doc_start + 1 {
+                    // doc was `{}`; replace with `{"@timestamp":"..."}`.
+                    self.batch_buf.truncate(doc_start);
+                    self.batch_buf.push(b'{');
+                    self.batch_buf
+                        .extend_from_slice(ts_str.trim_start_matches(',').as_bytes());
+                } else {
+                    self.batch_buf.truncate(trim_to);
+                    self.batch_buf.extend_from_slice(ts_str.as_bytes());
+                }
+                self.batch_buf.push(b'\n');
+            }
+        }
+        Ok(())
+    }
+
+    /// Parse the ES bulk API response body for per-document errors.
+    ///
+    /// Returns `Ok(())` if all documents succeeded (`errors: false`), or
+    /// an `Err` with the first failure's type and reason.
+    fn parse_bulk_response(body: &[u8]) -> io::Result<()> {
+        if memchr::memmem::find(body, b"\"errors\":true").is_none() {
+            return Ok(());
+        }
+        let v: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to parse ES bulk response: {e}"),
+            )
+        })?;
+        let items = v
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ES bulk response missing 'items' array",
+                )
+            })?;
+        for item in items {
+            let action = item
+                .as_object()
+                .and_then(|obj| obj.values().next())
+                .and_then(serde_json::Value::as_object);
+            if let Some(action_obj) = action {
+                if let Some(error) = action_obj.get("error") {
+                    let error_type = error
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown");
+                    let reason = error
+                        .get("reason")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("no reason provided");
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("ES bulk error: {error_type}: {reason}"),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn do_send(&self, body: Vec<u8>) -> io::Result<super::sink::SendResult> {
+        let url = format!("{}/_bulk", self.config.endpoint);
+
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/x-ndjson");
+        for (k, v) in &self.config.headers {
+            req = req.header(k.clone(), v.clone());
+        }
+
+        let req = if self.config.compress {
+            use flate2::Compression;
+            use flate2::write::GzEncoder;
+            use std::io::Write;
+            let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+            enc.write_all(&body).map_err(io::Error::other)?;
+            let compressed = enc.finish().map_err(io::Error::other)?;
+            req.header("Content-Encoding", "gzip").body(compressed)
+        } else {
+            req.body(body)
+        };
+
+        let response = req.send().await.map_err(io::Error::other)?;
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            // Parse Retry-After header (seconds integer) or use default.
+            let retry_after = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+            return Ok(super::sink::SendResult::RetryAfter(
+                std::time::Duration::from_secs(retry_after),
+            ));
+        }
+
+        if status.is_client_error() {
+            return Ok(super::sink::SendResult::Rejected(format!(
+                "ES rejected batch with HTTP {status}"
+            )));
+        }
+
+        if !status.is_success() {
+            return Err(io::Error::other(format!("ES returned HTTP {status}")));
+        }
+
+        let body = response.bytes().await.map_err(io::Error::other)?;
+        Self::parse_bulk_response(&body)?;
+        Ok(super::sink::SendResult::Ok)
+    }
+}
+
+impl super::sink::Sink for ElasticsearchAsyncSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        metadata: &'a BatchMetadata,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.serialize_batch(batch, metadata)?;
+            if self.batch_buf.is_empty() {
+                return Ok(super::sink::SendResult::Ok);
+            }
+            let body = self.batch_buf.clone();
+            let byte_len = body.len();
+            let row_count = batch.num_rows() as u64;
+            let result = self.do_send(body).await?;
+            if matches!(result, super::sink::SendResult::Ok) {
+                self.stats.inc_lines(row_count);
+                self.stats.inc_bytes(byte_len as u64);
+            }
+            Ok(result)
+        })
+    }
+
+    fn flush(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn shutdown(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ElasticsearchSinkFactory
+// ---------------------------------------------------------------------------
+
+/// Creates `ElasticsearchAsyncSink` instances for the output worker pool.
+///
+/// Each factory holds a shared `Arc<reqwest::Client>` so all workers from
+/// this factory share one HTTP/2 connection pool.
+pub struct ElasticsearchSinkFactory {
+    name: String,
+    config: Arc<ElasticsearchConfig>,
+    client: Arc<reqwest::Client>,
+    stats: Arc<ComponentStats>,
+}
+
+impl ElasticsearchSinkFactory {
+    /// Create a new factory.
+    ///
+    /// - `endpoint`: Base URL (e.g. `http://localhost:9200`)
+    /// - `index`: Target index name (e.g. `logs`)
+    /// - `headers`: Authentication headers (e.g. `Authorization: ApiKey …`)
+    /// - `compress`: Enable gzip compression of the request body
+    pub fn new(
+        name: String,
+        endpoint: String,
+        index: String,
+        headers: Vec<(String, String)>,
+        compress: bool,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(io::Error::other)?;
+
+        let parsed_headers = headers
+            .into_iter()
+            .map(|(k, v)| {
+                let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+                let value = reqwest::header::HeaderValue::from_str(&v)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+                Ok((name, value))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
+        Ok(ElasticsearchSinkFactory {
+            name,
+            config: Arc::new(ElasticsearchConfig {
+                endpoint: endpoint.trim_end_matches('/').to_string(),
+                index,
+                headers: parsed_headers,
+                compress,
+            }),
+            client: Arc::new(client),
+            stats,
+        })
+    }
+}
+
+impl super::sink::SinkFactory for ElasticsearchSinkFactory {
+    fn create(&self) -> io::Result<Box<dyn super::sink::Sink>> {
+        Ok(Box::new(ElasticsearchAsyncSink::new(
+            self.name.clone(),
+            Arc::clone(&self.config),
+            Arc::clone(&self.client),
+            Arc::clone(&self.stats),
+        )))
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UTC timestamp formatting (no chrono dependency)
+// ---------------------------------------------------------------------------
+
+/// Format a Unix timestamp (seconds) as `YYYY-MM-DDTHH:MM:SS` in UTC.
+///
+/// This minimal implementation handles dates from 1970 to 2100 without pulling
+/// in the chrono crate. The fractional seconds are formatted by the caller.
+fn format_unix_timestamp_utc(secs: u64) -> String {
+    // Days since epoch
+    let days = secs / 86400;
+    let time = secs % 86400;
+    let h = time / 3600;
+    let m = (time % 3600) / 60;
+    let s = time % 60;
+
+    // Gregorian calendar calculation
+    let mut year = 1970u32;
+    let mut remaining = days;
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap_year(year);
+    let month_days: [u32; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u32;
+    for &md in &month_days {
+        if remaining < md as u64 {
+            break;
+        }
+        remaining -= md as u64;
+        month += 1;
+    }
+    let day = remaining + 1;
+    format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}")
+}
+
+fn is_leap_year(y: u32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
