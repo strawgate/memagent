@@ -327,4 +327,94 @@ mod verification {
             AggregateResult::Pending => panic!("F line should produce Complete"),
         }
     }
+
+    /// max_message_size=0 never panics — output is always empty.
+    ///
+    /// Edge case: zero-sized limit. P lines return Pending (no allocation),
+    /// F lines return Complete(&[]) without slicing panics.
+    #[kani::proof]
+    fn verify_aggregator_max_size_zero() {
+        let mut agg = CriAggregator::new(0);
+        let msg: [u8; 8] = kani::any();
+
+        // P line: no output, no panic
+        match agg.feed(&msg, false) {
+            AggregateResult::Pending => {}
+            AggregateResult::Complete(_) => panic!("P should not produce Complete"),
+        }
+
+        // F line: output must be empty (not a slice panic)
+        match agg.feed(&msg, true) {
+            AggregateResult::Complete(out) => {
+                assert!(out.is_empty(), "max_size=0 must produce empty output");
+            }
+            AggregateResult::Pending => panic!("F should produce Complete"),
+        }
+    }
+
+    /// F-only fast path: when no partials are pending, output is a byte-for-byte
+    /// prefix of the input (zero-copy — no data transformation or allocation).
+    #[kani::proof]
+    fn verify_aggregator_f_only_is_input_prefix() {
+        let max_size: usize = kani::any_where(|&s: &usize| s >= 1 && s <= 16);
+        let mut agg = CriAggregator::new(max_size);
+        assert!(!agg.has_pending()); // fast path requires no pending
+
+        let msg: [u8; 8] = kani::any();
+        match agg.feed(&msg, true) {
+            AggregateResult::Complete(out) => {
+                let expected_len = msg.len().min(max_size);
+                assert_eq!(out.len(), expected_len, "output length incorrect");
+
+                // Every output byte must match the corresponding input byte
+                let mut i = 0;
+                while i < out.len() {
+                    assert_eq!(out[i], msg[i], "output byte {} differs from input", i);
+                    i += 1;
+                }
+
+                kani::cover!(out.len() < msg.len(), "truncated by max_size");
+                kani::cover!(out.len() == msg.len(), "full message fits");
+            }
+            AggregateResult::Pending => panic!("F should produce Complete"),
+        }
+    }
+
+    /// P+F slow path: output is a byte-for-byte prefix of the P chunk followed
+    /// by a prefix of the F chunk, bounded by max_message_size.
+    #[kani::proof]
+    fn verify_aggregator_pf_content_correct() {
+        let max_size: usize = kani::any_where(|&s: &usize| s >= 1 && s <= 16);
+        let mut agg = CriAggregator::new(max_size);
+
+        let p_msg: [u8; 4] = kani::any();
+        let _ = agg.feed(&p_msg, false); // P chunk
+
+        let f_msg: [u8; 4] = kani::any();
+        match agg.feed(&f_msg, true) {
+            AggregateResult::Complete(out) => {
+                assert!(out.len() <= max_size);
+
+                // First out.len().min(4) bytes must match p_msg
+                let p_bytes = p_msg.len().min(max_size).min(out.len());
+                let mut i = 0;
+                while i < p_bytes {
+                    assert_eq!(out[i], p_msg[i], "P chunk byte {} wrong", i);
+                    i += 1;
+                }
+
+                // Remaining bytes come from f_msg
+                let f_start = p_bytes;
+                let mut j = 0;
+                while f_start + j < out.len() {
+                    assert_eq!(out[f_start + j], f_msg[j], "F chunk byte {} wrong", j);
+                    j += 1;
+                }
+
+                kani::cover!(out.len() == p_msg.len() + f_msg.len(), "full concat fits");
+                kani::cover!(out.len() == max_size && max_size < 8, "truncated concat");
+            }
+            AggregateResult::Pending => panic!("F should produce Complete"),
+        }
+    }
 }

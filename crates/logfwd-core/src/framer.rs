@@ -291,5 +291,42 @@ mod verification {
         }
     }
 
+    /// Line ranges are non-overlapping and strictly ordered.
+    ///
+    /// Consecutive ranges [start_i, end_i) and [start_j, end_j) must satisfy
+    /// start_j > end_i — they are separated by at least one newline byte.
+    /// This is stronger than the bounds proof: it rules out duplicated or
+    /// reversed ranges that would cause double-processing of bytes.
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn verify_newline_framer_ranges_non_overlapping() {
+        let input: [u8; 16] = kani::any();
+        let output = NewlineFramer.frame(&input);
+
+        let mut i = 0;
+        while i + 1 < output.count {
+            let (_, end_i) = output.line_ranges[i];
+            let (start_j, _) = output.line_ranges[i + 1];
+            // Next line must start strictly after the newline terminating this one.
+            // end_i is the position of the newline, so next start >= end_i + 1.
+            assert!(start_j > end_i, "line ranges overlap or are not separated by newline");
+            i += 1;
+        }
+
+        kani::cover!(output.count >= 2, "at least two lines found");
+    }
+
+    /// Line count never exceeds MAX_LINES_PER_FRAME.
+    ///
+    /// Even for inputs densely packed with newlines, the output struct
+    /// cannot overflow its fixed-size array.
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn verify_newline_framer_count_bounded() {
+        let input: [u8; 16] = kani::any();
+        let output = NewlineFramer.frame(&input);
+        assert!(output.count <= MAX_LINES_PER_FRAME, "count exceeded MAX_LINES_PER_FRAME");
+    }
+
     // find_byte proofs are in byte_search.rs
 }

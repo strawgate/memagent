@@ -892,6 +892,180 @@ mod verification {
         kani::cover!(order == 0, "in-order ack");
         kani::cover!(order == 23, "fully reversed ack");
     }
+
+    /// Committed checkpoint for a source never decreases.
+    ///
+    /// Verifies the monotonicity invariant that makes crash recovery safe:
+    /// once a checkpoint is committed, it never regresses. Maps to the TLA+
+    /// `CommittedMonotonic` property: `[][committed[s]' >= committed[s]]_vars`.
+    ///
+    /// Checks all 6 ACK orderings for 3 batches — if any ordering caused a
+    /// regression Kani would find the violating permutation.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn verify_committed_monotonic() {
+        let mut running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let src = SourceId(0);
+
+        let cp1: u64 = kani::any();
+        let cp2: u64 = kani::any();
+        let cp3: u64 = kani::any();
+
+        let t1 = running.create_batch(src, cp1);
+        let t2 = running.create_batch(src, cp2);
+        let t3 = running.create_batch(src, cp3);
+        let s1 = running.begin_send(t1);
+        let s2 = running.begin_send(t2);
+        let s3 = running.begin_send(t3);
+
+        let order: u8 = kani::any_where(|&o: &u8| o < 6);
+        let (r_a, r_b, r_c) = match order {
+            0 => (s1.ack(), s2.ack(), s3.ack()),
+            1 => (s1.ack(), s3.ack(), s2.ack()),
+            2 => (s2.ack(), s1.ack(), s3.ack()),
+            3 => (s2.ack(), s3.ack(), s1.ack()),
+            4 => (s3.ack(), s1.ack(), s2.ack()),
+            _ => (s3.ack(), s2.ack(), s1.ack()),
+        };
+
+        let adv_a = running.apply_ack(r_a);
+        let cp_after_a = adv_a.checkpoint;
+
+        let adv_b = running.apply_ack(r_b);
+        let cp_after_b = adv_b.checkpoint;
+
+        let adv_c = running.apply_ack(r_c);
+        let cp_after_c = adv_c.checkpoint;
+
+        // Checkpoint must not regress between consecutive acks
+        if let (Some(a), Some(b)) = (cp_after_a, cp_after_b) {
+            assert!(b >= a, "checkpoint regressed after second ack");
+        }
+        if let (Some(b), Some(c)) = (cp_after_b, cp_after_c) {
+            assert!(c >= b, "checkpoint regressed after third ack");
+        }
+
+        kani::cover!(adv_a.advanced, "first ack advances checkpoint");
+        kani::cover!(!adv_a.advanced, "first ack does not advance (out-of-order)");
+    }
+
+    /// stop() returns Err when batches are still in-flight.
+    ///
+    /// The drain completeness guarantee: the pipeline cannot be stopped
+    /// while unresolved batches remain. Maps to TLA+ `DrainCompleteness`:
+    /// `(phase = "Stopped" /\ ~forced) => ∀s: in_flight[s] = {}`.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn verify_stop_blocks_when_in_flight() {
+        let mut running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let src = SourceId(0);
+
+        let cp: u64 = kani::any();
+        let t1 = running.create_batch(src, cp);
+        let _s1 = running.begin_send(t1); // leave it in-flight
+
+        let draining = running.begin_drain();
+        assert!(!draining.is_drained(), "one batch in-flight, should not be drained");
+
+        // stop() must refuse — not all batches resolved
+        assert!(draining.stop().is_err(), "stop() must block while in-flight batches remain");
+    }
+
+    /// reject() advances the checkpoint just like ack().
+    ///
+    /// Permanently-undeliverable data must not stall checkpoint progress
+    /// forever — at-least-once delivery is weakened to at-most-once for
+    /// rejected batches. Maps to TLA+ `RejectBatch` aliased to `AckBatch`.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn verify_reject_advances_checkpoint() {
+        let mut running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let src = SourceId(0);
+
+        let cp: u64 = kani::any();
+        let t1 = running.create_batch(src, cp);
+        let s1 = running.begin_send(t1);
+
+        let receipt = s1.reject();
+        assert!(!receipt.delivered(), "reject marks delivered=false");
+
+        let advance = running.apply_ack(receipt);
+        assert!(advance.advanced, "reject must advance committed checkpoint");
+        assert_eq!(advance.checkpoint, Some(cp));
+        assert_eq!(running.in_flight_count(), 0);
+
+        // Can drain immediately after a reject
+        let draining = running.begin_drain();
+        assert!(draining.is_drained());
+        let stopped = draining.stop().ok().expect("should drain");
+        assert_eq!(*stopped.final_checkpoints().get(&src).unwrap(), cp);
+    }
+
+    /// BatchIds assigned by create_batch are strictly increasing.
+    ///
+    /// IDs never collide or wrap within a single pipeline instance.
+    /// Required for the ordered-ack invariant: a stale duplicate ack
+    /// can never be mistaken for a live in-flight batch.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn verify_batch_id_strictly_monotonic() {
+        let mut running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let src = SourceId(0);
+
+        let t1 = running.create_batch(src, 0u64);
+        let t2 = running.create_batch(src, 0u64);
+        let t3 = running.create_batch(src, 0u64);
+
+        assert!(t1.id() < t2.id(), "batch IDs must be strictly increasing");
+        assert!(t2.id() < t3.id(), "batch IDs must be strictly increasing");
+    }
+
+    /// Mixed ack and reject: both resolve in-flight batches and advance checkpoint.
+    ///
+    /// For a sequence of batches where some are acked and some rejected,
+    /// the final checkpoint must equal the last batch's checkpoint — reject
+    /// does not stall the ordered-ack queue.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn verify_mixed_ack_reject_advances() {
+        let mut running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let src = SourceId(0);
+
+        let cp1: u64 = kani::any();
+        let cp2: u64 = kani::any();
+        let cp3: u64 = kani::any();
+
+        let t1 = running.create_batch(src, cp1);
+        let t2 = running.create_batch(src, cp2);
+        let t3 = running.create_batch(src, cp3);
+        let s1 = running.begin_send(t1);
+        let s2 = running.begin_send(t2);
+        let s3 = running.begin_send(t3);
+
+        // Symbolically choose which batches are acked vs rejected
+        let pattern: u8 = kani::any_where(|&p: &u8| p < 8); // 3 bits
+        let outcome1 = pattern & 1 != 0;
+        let outcome2 = pattern & 2 != 0;
+        let outcome3 = pattern & 4 != 0;
+
+        // Apply in strict order (t1, t2, t3) to avoid ordering complexity
+        let r1 = if outcome1 { s1.ack() } else { s1.reject() };
+        let r2 = if outcome2 { s2.ack() } else { s2.reject() };
+        let r3 = if outcome3 { s3.ack() } else { s3.reject() };
+
+        running.apply_ack(r1);
+        running.apply_ack(r2);
+        let final_adv = running.apply_ack(r3);
+
+        // All resolved — checkpoint must equal cp3 regardless of ack/reject mix
+        assert_eq!(final_adv.checkpoint, Some(cp3));
+        assert_eq!(running.in_flight_count(), 0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,6 +1275,164 @@ mod proptests {
             prop_assert_eq!(running.in_flight_count(), 0);
             let draining = running.begin_drain();
             prop_assert!(draining.is_drained());
+        }
+
+        /// Committed checkpoint never decreases when input checkpoints are non-decreasing.
+        ///
+        /// The pipeline does NOT enforce monotonic input checkpoints — that is a
+        /// caller contract (byte offsets always increase as the file is read).
+        /// This test upholds that contract and verifies the pipeline preserves
+        /// monotonicity through arbitrary ack/reject/fail sequences.
+        ///
+        /// Maps to TLA+ `CommittedMonotonic`: `[][committed[s]' >= committed[s]]_vars`.
+        #[test]
+        fn committed_checkpoint_monotonic(
+            actions in proptest::collection::vec(
+                prop_oneof![
+                    3 => (0..3u32).prop_map(|s| Action::Create { source: s, checkpoint: 0 }),
+                    3 => (0..3u32).prop_map(|s| Action::Ack { source: s }),
+                    1 => (0..3u32).prop_map(|s| Action::Fail { source: s }),
+                    1 => (0..3u32).prop_map(|s| Action::Reject { source: s }),
+                ],
+                1..50,
+            )
+        ) {
+            let mut running: PipelineMachine<Running, u64> =
+                PipelineMachine::<Starting, u64>::new().start();
+            let mut sending: alloc::collections::BTreeMap<
+                u32,
+                alloc::vec::Vec<super::super::BatchTicket<super::super::Sending, u64>>,
+            > = alloc::collections::BTreeMap::new();
+            // Monotonically increasing counter per source (simulates advancing byte offset).
+            let mut next_checkpoint: alloc::collections::BTreeMap<u32, u64> =
+                alloc::collections::BTreeMap::new();
+            // Maximum committed value seen per source — must never decrease.
+            let mut max_committed: alloc::collections::BTreeMap<u64, u64> =
+                alloc::collections::BTreeMap::new();
+
+            for action in actions {
+                match action {
+                    Action::Create { source, checkpoint: _ } => {
+                        let cp_counter = next_checkpoint.entry(source).or_insert(0);
+                        *cp_counter += 100; // always increasing
+                        let cp = *cp_counter;
+                        let ticket = running.create_batch(SourceId(u64::from(source)), cp);
+                        let s = running.begin_send(ticket);
+                        sending.entry(source).or_default().push(s);
+                    }
+                    Action::Ack { source } => {
+                        if let Some(queue) = sending.get_mut(&source) {
+                            if !queue.is_empty() {
+                                let s = queue.remove(0);
+                                let advance = running.apply_ack(s.ack());
+                                if advance.advanced {
+                                    if let Some(cp) = advance.checkpoint {
+                                        let prev = max_committed
+                                            .get(&u64::from(source))
+                                            .copied()
+                                            .unwrap_or(0);
+                                        prop_assert!(
+                                            cp >= prev,
+                                            "ack: checkpoint regressed src {}: {} < {}",
+                                            source, cp, prev
+                                        );
+                                        max_committed.insert(u64::from(source), cp);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Action::Fail { source } => {
+                        if let Some(queue) = sending.get_mut(&source) {
+                            if !queue.is_empty() {
+                                let s = queue.remove(0);
+                                let requeued = s.fail();
+                                queue.push(running.begin_send(requeued));
+                            }
+                        }
+                    }
+                    Action::Reject { source } => {
+                        if let Some(queue) = sending.get_mut(&source) {
+                            if !queue.is_empty() {
+                                let s = queue.remove(0);
+                                let advance = running.apply_ack(s.reject());
+                                if advance.advanced {
+                                    if let Some(cp) = advance.checkpoint {
+                                        let prev = max_committed
+                                            .get(&u64::from(source))
+                                            .copied()
+                                            .unwrap_or(0);
+                                        prop_assert!(
+                                            cp >= prev,
+                                            "reject: checkpoint regressed src {}: {} < {}",
+                                            source, cp, prev
+                                        );
+                                        max_committed.insert(u64::from(source), cp);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Acking in any random order produces the same final checkpoint as in-order.
+        ///
+        /// Extends the 4-batch Kani exhaustive-permutation proof to proptest
+        /// with up to 20 batches and arbitrary shuffles. The ordered-ack BTreeMap
+        /// must produce the same result regardless of arrival order.
+        #[test]
+        fn out_of_order_acks_final_matches_ordered(
+            num_batches in 1..20usize,
+            checkpoints in proptest::collection::vec(1..10000u64, 1..20),
+            perm_seed in proptest::collection::vec(0..10000usize, 1..20),
+        ) {
+            let n = num_batches.min(checkpoints.len());
+            if n == 0 {
+                return Ok(());
+            }
+
+            let mut running: PipelineMachine<Running, u64> =
+                PipelineMachine::<Starting, u64>::new().start();
+            let src = SourceId(0);
+
+            let mut tickets = alloc::vec::Vec::new();
+            for i in 0..n {
+                let t = running.create_batch(src, checkpoints[i]);
+                tickets.push(running.begin_send(t));
+            }
+
+            let expected_final = checkpoints[n - 1];
+
+            // Build a random permutation from the seed
+            let mut indices: alloc::vec::Vec<usize> = (0..n).collect();
+            for i in (1..n).rev() {
+                let j = perm_seed[i % perm_seed.len()] % (i + 1);
+                indices.swap(i, j);
+            }
+
+            let mut ticket_map: alloc::collections::BTreeMap<
+                usize,
+                super::super::BatchTicket<super::super::Sending, u64>,
+            > = alloc::collections::BTreeMap::new();
+            for (i, t) in tickets.into_iter().enumerate() {
+                ticket_map.insert(i, t);
+            }
+
+            for &idx in &indices {
+                if let Some(t) = ticket_map.remove(&idx) {
+                    running.apply_ack(t.ack());
+                }
+            }
+
+            prop_assert_eq!(
+                running.committed_checkpoint(src),
+                Some(&expected_final),
+                "out-of-order ack produced wrong final checkpoint (n={})",
+                n
+            );
+            prop_assert_eq!(running.in_flight_count(), 0);
         }
     }
 }
