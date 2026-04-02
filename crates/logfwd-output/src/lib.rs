@@ -10,14 +10,15 @@ mod stdout;
 mod tcp_sink;
 mod udp_sink;
 
-// Placeholder sinks — not yet wired into build_output_sink.
-#[allow(dead_code)]
 mod elasticsearch;
+
+// Placeholder sinks — not yet wired into build_output_sink.
 #[allow(dead_code)]
 mod loki;
 #[allow(dead_code)]
 mod parquet;
 
+pub use elasticsearch::ElasticsearchSink;
 pub use fanout::{FanOut, FanOutError};
 pub use json_lines::JsonLinesSink;
 pub use null::NullSink;
@@ -393,6 +394,27 @@ pub fn build_output_sink(
                 .map(|s| Box::new(s) as Box<dyn OutputSink>)
                 .map_err(|e| format!("output '{name}': udp_out bind failed: {e}"))
         }
+        OutputType::Elasticsearch => {
+            let endpoint = cfg
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| format!("output '{name}': elasticsearch requires 'endpoint'"))?;
+            // Index name can come from config.index or config.path, defaulting to "logs"
+            let index = cfg
+                .index
+                .as_ref()
+                .or(cfg.path.as_ref())
+                .map(String::as_str)
+                .unwrap_or("logs")
+                .to_string();
+            Ok(Box::new(ElasticsearchSink::new(
+                name.to_string(),
+                endpoint.clone(),
+                index,
+                auth_headers,
+                stats,
+            )))
+        }
         _ => Err(format!(
             "output '{name}': type {:?} not yet supported",
             cfg.output_type
@@ -760,6 +782,7 @@ mod tests {
             compression: None,
             format: Some(Format::Json),
             path: None,
+            index: None,
             auth: None,
         };
         let sink = build_output_sink("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
@@ -776,6 +799,7 @@ mod tests {
             compression: Some("zstd".to_string()),
             format: None,
             path: None,
+            index: None,
             auth: None,
         };
         let sink = build_output_sink("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
@@ -792,6 +816,7 @@ mod tests {
             compression: Some("gzip".to_string()),
             format: None,
             path: None,
+            index: None,
             auth: None,
         };
         let err = match build_output_sink("otel", &cfg, Arc::new(ComponentStats::new())) {
@@ -811,6 +836,7 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            index: None,
             auth: None,
         };
         let sink = build_output_sink("es", &cfg, Arc::new(ComponentStats::new())).unwrap();
@@ -827,6 +853,7 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            index: None,
             auth: None,
         };
         let result = build_output_sink("bad", &cfg, Arc::new(ComponentStats::new()));
@@ -900,6 +927,7 @@ mod tests {
             compression: None,
             format: None,
             path: None,
+            index: None,
             auth: Some(AuthConfig {
                 bearer_token: Some("mytoken".to_string()),
                 headers: std::collections::HashMap::new(),

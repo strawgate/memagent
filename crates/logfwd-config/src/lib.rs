@@ -148,6 +148,8 @@ pub struct OutputConfig {
     pub compression: Option<String>,
     pub format: Option<Format>,
     pub path: Option<String>,
+    /// Elasticsearch index name. Defaults to "logs" if not specified.
+    pub index: Option<String>,
     /// Optional authentication for HTTP-based outputs.
     #[serde(default)]
     pub auth: Option<AuthConfig>,

@@ -2210,6 +2210,7 @@ dependencies = [
  "logfwd-config",
  "logfwd-core",
  "logfwd-io",
+ "memchr",
  "ryu",
  "serde_json",
  "serial_test",
