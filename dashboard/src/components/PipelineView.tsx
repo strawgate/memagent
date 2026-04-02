@@ -95,8 +95,8 @@ export function PipelineView({ pipeline: p }: Props) {
             <div class="insp-kv"><div class="ik-l">Lines In</div><div class="ik-v">{fmt(p.transform.lines_in)}</div></div>
             <div class="insp-kv"><div class="ik-l">Lines Out</div><div class="ik-v">{fmt(p.transform.lines_out)}</div></div>
             <div class="insp-kv"><div class="ik-l">Drop Rate</div><div class="ik-v">{(p.transform.filter_drop_rate * 100).toFixed(1)}%</div></div>
-            {p.scan_sec != null && <div class="insp-kv"><div class="ik-l">Scan Time</div><div class="ik-v">{p.scan_sec.toFixed(3)}s</div></div>}
-            {p.transform_sec != null && <div class="insp-kv"><div class="ik-l">Transform Time</div><div class="ik-v">{p.transform_sec.toFixed(3)}s</div></div>}
+            {p.stage_seconds?.scan != null && <div class="insp-kv"><div class="ik-l">Scan Time</div><div class="ik-v">{p.stage_seconds.scan.toFixed(3)}s</div></div>}
+            {p.stage_seconds?.transform != null && <div class="insp-kv"><div class="ik-l">Transform Time</div><div class="ik-v">{p.stage_seconds.transform.toFixed(3)}s</div></div>}
           </div>
         </div>
       )}

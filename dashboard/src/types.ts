@@ -22,9 +22,7 @@ export interface PipelineData {
   transform: TransformData;
   outputs: ComponentData[];
   batches?: number;
-  scan_sec?: number;
-  transform_sec?: number;
-  output_sec?: number;
+  stage_seconds?: { scan: number; transform: number; output: number };
   backpressure_stalls?: number;
 }
 
