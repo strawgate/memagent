@@ -216,6 +216,102 @@ mod tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Proptest: random P/F sequences
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Output never exceeds max_message_size for any sequence of P and F feeds.
+        ///
+        /// Extends the Kani proofs (fixed depth P+F, P+P+F) to arbitrary-length
+        /// partial-line sequences. The truncation invariant must hold regardless
+        /// of how many P chunks accumulate before the final F.
+        #[test]
+        fn aggregator_output_never_exceeds_max_size(
+            max_size in 1..256usize,
+            sequence in proptest::collection::vec(
+                (proptest::collection::vec(proptest::num::u8::ANY, 0..64usize), proptest::bool::ANY),
+                1..20usize,
+            )
+        ) {
+            let mut agg = CriAggregator::new(max_size);
+            for (msg, is_full) in sequence {
+                match agg.feed(&msg, is_full) {
+                    AggregateResult::Complete(out) => {
+                        prop_assert!(
+                            out.len() <= max_size,
+                            "output {} exceeded max_size {}",
+                            out.len(),
+                            max_size
+                        );
+                        agg.reset();
+                    }
+                    AggregateResult::Pending => {}
+                }
+            }
+        }
+
+        /// P-only sequences (no F line) never produce output.
+        ///
+        /// Even a very long sequence of P chunks must remain Pending — no output
+        /// until a Full line arrives. Tests the pending buffer growth without
+        /// accidental early output.
+        #[test]
+        fn aggregator_p_only_stays_pending(
+            max_size in 1..256usize,
+            p_chunks in proptest::collection::vec(
+                proptest::collection::vec(proptest::num::u8::ANY, 0..32usize),
+                1..20usize,
+            )
+        ) {
+            let mut agg = CriAggregator::new(max_size);
+            for chunk in p_chunks {
+                match agg.feed(&chunk, false) {
+                    AggregateResult::Pending => {}
+                    AggregateResult::Complete(_) => {
+                        prop_assert!(false, "P line must not produce Complete");
+                    }
+                }
+            }
+        }
+
+        /// After reset(), the aggregator behaves identically to a freshly constructed one.
+        ///
+        /// Verifies that reset() is a true reset: the next F line takes the
+        /// zero-copy fast path and ignores any prior pending data.
+        #[test]
+        fn aggregator_reset_is_clean_slate(
+            max_size in 1..256usize,
+            p_chunk in proptest::collection::vec(proptest::num::u8::ANY, 0..32usize),
+            f_chunk in proptest::collection::vec(proptest::num::u8::ANY, 0..32usize),
+        ) {
+            let mut agg = CriAggregator::new(max_size);
+
+            // Accumulate some P data, then reset
+            let _ = agg.feed(&p_chunk, false);
+            agg.reset();
+            prop_assert!(!agg.has_pending(), "reset should clear pending");
+
+            // After reset, F line takes fast path: output matches f_chunk[..min(len, max_size)]
+            match agg.feed(&f_chunk, true) {
+                AggregateResult::Complete(out) => {
+                    let expected_len = f_chunk.len().min(max_size);
+                    prop_assert_eq!(out.len(), expected_len);
+                    for i in 0..out.len() {
+                        prop_assert_eq!(out[i], f_chunk[i], "byte {} mismatch after reset", i);
+                    }
+                }
+                AggregateResult::Pending => prop_assert!(false, "F should produce Complete"),
+            }
+        }
+    }
+}
+
 #[cfg(kani)]
 mod verification {
     use super::*;
@@ -258,10 +354,12 @@ mod verification {
             AggregateResult::Complete(out) => {
                 assert!(out.len() <= max_size, "P+F output exceeds max");
 
-                // Guard vacuity: verify constraint allows meaningful paths
-                kani::cover!(out.len() > 8, "P+F concatenation happened");
-                kani::cover!(out.len() == max_size, "truncation at max size");
-                kani::cover!(out.len() < max_size, "no truncation needed");
+                // Guard vacuity: verify constraint allows meaningful paths.
+                // "P+F concatenation happened" = F bytes were appended after P bytes,
+                // requiring max_size > 8 so both chunks contributed.
+                kani::cover!(out.len() > 8, "F bytes appended after full P chunk");
+                kani::cover!(out.len() == max_size, "truncated at max_size boundary");
+                kani::cover!(out.len() < max_size, "output fits without truncation");
             }
             AggregateResult::Pending => panic!("F line should produce Complete"),
         }
@@ -297,10 +395,12 @@ mod verification {
             AggregateResult::Complete(out) => {
                 assert!(out.len() <= max_size, "P+P+F output exceeds max");
 
-                // Guard vacuity: verify 3-part aggregation works
-                kani::cover!(out.len() > 16, "multi-partial concatenation");
-                kani::cover!(out.len() == max_size, "truncation at limit");
-                kani::cover!(out.len() == 24, "all parts fit");
+                // Guard vacuity: confirm interesting multi-partial cases are explored.
+                // "all three chunks contributed" requires max_size > 16 (so both P chunks fit).
+                kani::cover!(out.len() > 16, "all three chunks contributed bytes");
+                kani::cover!(out.len() == max_size, "truncated at max_size boundary");
+                // "all three chunks fit without truncation" requires max_size >= 24.
+                kani::cover!(out.len() == 24, "all three chunks fit without truncation");
             }
             AggregateResult::Pending => panic!("F line should produce Complete"),
         }
@@ -356,7 +456,8 @@ mod verification {
     /// prefix of the input (zero-copy — no data transformation or allocation).
     #[kani::proof]
     fn verify_aggregator_f_only_is_input_prefix() {
-        let max_size: usize = kani::any_where(|&s: &usize| s >= 1 && s <= 16);
+        let max_size: usize = kani::any();
+        kani::assume(max_size >= 1 && max_size <= 32); // consistent with other aggregator proofs
         let mut agg = CriAggregator::new(max_size);
         assert!(!agg.has_pending()); // fast path requires no pending
 

@@ -797,9 +797,10 @@ mod verification {
         assert!(a1.advanced);
         assert_eq!(a1.checkpoint, Some(cp));
 
-        // Fabricate duplicate
+        // Fabricate a duplicate with an arbitrary batch_id — any stale or fabricated
+        // receipt must be harmless, not just the specific id=0 case.
         let duplicate = AckReceipt {
-            batch_id: BatchId(0),
+            batch_id: BatchId(kani::any()),
             source: src,
             checkpoint: kani::any(),
             delivered: true,
@@ -1030,6 +1031,42 @@ mod verification {
         assert!(t2.id() < t3.id(), "batch IDs must be strictly increasing");
     }
 
+    /// `is_drained()` returns true if and only if `in_flight_count() == 0`.
+    ///
+    /// The biconditional that makes `stop()` safe: drained ↔ no in-flight batches.
+    /// An empty pipeline is immediately drained; a pipeline with in-flight batches
+    /// is not. These are two separate proofs (each direction separately).
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn verify_is_drained_when_empty() {
+        // An empty pipeline (never any batches) must be immediately drained.
+        let running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let draining = running.begin_drain();
+        assert!(draining.is_drained());
+        assert_eq!(draining.in_flight_count(), 0);
+        assert!(draining.stop().is_ok());
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn verify_not_drained_with_in_flight() {
+        // A pipeline with exactly one unsent-to-acked batch must NOT be drained.
+        let mut running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let src = SourceId(kani::any());
+        let cp: u64 = kani::any();
+        let t1 = running.create_batch(src, cp);
+        let _s1 = running.begin_send(t1); // in-flight, not acked
+
+        let draining = running.begin_drain();
+        assert!(!draining.is_drained());
+        assert_eq!(draining.in_flight_count(), 1);
+        assert!(draining.stop().is_err());
+
+        kani::cover!(true, "in-flight batch present at drain time");
+    }
+
     /// Mixed ack and reject: both resolve in-flight batches and advance checkpoint.
     ///
     /// For a sequence of batches where some are acked and some rejected,
@@ -1152,11 +1189,12 @@ mod proptests {
         #[test]
         fn all_acked_reaches_final(
             num_batches in 1..20usize,
-            checkpoints in proptest::collection::vec(1..5000u64, 1..20),
-            ack_order_seed in proptest::collection::vec(0..1000u32, 1..20),
+            // Fixed-length vecs (length 20) ensure Fisher-Yates uses a distinct seed per
+            // swap position with no modular wrapping for any n <= 20.
+            checkpoints in proptest::collection::vec(1..5000u64, 20),
+            perm_seed in proptest::collection::vec(0..10000usize, 20),
         ) {
-            let n = num_batches.min(checkpoints.len()).min(ack_order_seed.len());
-            if n == 0 { return Ok(()); }
+            let n = num_batches;
 
             let mut running: PipelineMachine<Running, u64> =
                 PipelineMachine::<Starting, u64>::new().start();
@@ -1169,10 +1207,11 @@ mod proptests {
             }
             let expected_final = checkpoints[n - 1];
 
-            // Ack in shuffled order
+            // Unbiased Fisher-Yates: perm_seed[i] is the swap index for position i.
+            // No wrapping because perm_seed.len() == 20 >= n.
             let mut indices: alloc::vec::Vec<usize> = (0..n).collect();
-            for i in (1..indices.len()).rev() {
-                let j = ack_order_seed[i % ack_order_seed.len()] as usize % (i + 1);
+            for i in (1..n).rev() {
+                let j = perm_seed[i] % (i + 1);
                 indices.swap(i, j);
             }
 
@@ -1227,8 +1266,10 @@ mod proptests {
         fn multi_source_simulation(
             num_sources in 1..4usize,
             batches_per_source in 2..8usize,
-            checkpoints in proptest::collection::vec(1..5000u64, 1..32),
-            outcomes in proptest::collection::vec(0..10u32, 1..32),
+            checkpoints in proptest::collection::vec(1..5000u64, 32),
+            // Fixed length 32 >= max(num_sources * batches_per_source) = 3*7=21,
+            // so outcome_idx never wraps and each batch gets an independent outcome.
+            outcomes in proptest::collection::vec(0..10u32, 32),
         ) {
             let mut running: PipelineMachine<Running, u64> =
                 PipelineMachine::<Starting, u64>::new().start();
@@ -1391,13 +1432,11 @@ mod proptests {
         #[test]
         fn out_of_order_acks_final_matches_ordered(
             num_batches in 1..20usize,
-            checkpoints in proptest::collection::vec(1..10000u64, 1..20),
-            perm_seed in proptest::collection::vec(0..10000usize, 1..20),
+            // Fixed-length vecs (20) avoid Fisher-Yates modular wrapping for any n <= 20.
+            checkpoints in proptest::collection::vec(1..10000u64, 20),
+            perm_seed in proptest::collection::vec(0..10000usize, 20),
         ) {
-            let n = num_batches.min(checkpoints.len());
-            if n == 0 {
-                return Ok(());
-            }
+            let n = num_batches;
 
             let mut running: PipelineMachine<Running, u64> =
                 PipelineMachine::<Starting, u64>::new().start();
@@ -1411,10 +1450,10 @@ mod proptests {
 
             let expected_final = checkpoints[n - 1];
 
-            // Build a random permutation from the seed
+            // Unbiased Fisher-Yates: distinct seed per position, no wrapping.
             let mut indices: alloc::vec::Vec<usize> = (0..n).collect();
             for i in (1..n).rev() {
-                let j = perm_seed[i % perm_seed.len()] % (i + 1);
+                let j = perm_seed[i] % (i + 1);
                 indices.swap(i, j);
             }
 

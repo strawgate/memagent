@@ -356,5 +356,10 @@ mod verification {
         let sending = ticket.begin_send();
         let receipt = sending.ack();
         assert!(receipt.delivered);
+
+        // Guard vacuity: confirm the loop body executed in at least one explored path.
+        // If max_retries were always 0, the proof would only verify the trivial case.
+        kani::cover!(max_retries > 0, "at least one retry occurred");
+        kani::cover!(max_retries == 5, "maximum retry count reached");
     }
 }

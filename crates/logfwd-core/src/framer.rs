@@ -183,7 +183,11 @@ mod verification {
     #[kani::unwind(34)]
     fn verify_newline_framer_no_panic() {
         let input: [u8; 32] = kani::any();
-        let _ = NewlineFramer.frame(&input);
+        let output = NewlineFramer.frame(&input);
+        // Vacuity: confirm interesting cases are explored
+        kani::cover!(output.count > 0, "at least one line found");
+        kani::cover!(output.remainder_offset < input.len(), "partial remainder exists");
+        kani::cover!(output.remainder_offset == input.len(), "no remainder (all consumed)");
     }
 
     /// Prove NewlineFramer line ranges are valid sub-ranges of input.
@@ -209,6 +213,8 @@ mod verification {
             output.remainder_offset <= input.len(),
             "remainder out of bounds"
         );
+        kani::cover!(output.count >= 2, "multiple lines found");
+        kani::cover!(output.count == 0 && output.remainder_offset > 0, "no newlines, non-empty remainder");
     }
 
     /// Prove NewlineFramer remainder is correct: bytes after remainder_offset
