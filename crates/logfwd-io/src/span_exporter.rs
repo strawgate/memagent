@@ -80,6 +80,19 @@ impl Default for SpanBuffer {
     }
 }
 
+#[cfg(test)]
+impl SpanBuffer {
+    /// Push a span directly — test-only helper to populate the buffer.
+    pub fn push_test_span(&self, span: TraceSpan) {
+        if let Ok(mut buf) = self.inner.lock() {
+            if buf.len() >= MAX_SPANS {
+                buf.pop_front();
+            }
+            buf.push_back(span);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Exporter
 // ---------------------------------------------------------------------------

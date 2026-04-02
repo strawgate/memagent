@@ -1478,4 +1478,86 @@ mod tests {
         let _v: serde_json::Value =
             serde_json::from_str(&body).expect("invalid JSON output from /api/pipelines");
     }
+
+    #[test]
+    fn test_traces_endpoint_empty() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let port = free_port();
+        // Server with no trace buffer attached — should return empty array.
+        let server = server_with_test_pipeline(port);
+        let _handle = server.start().expect("server bind failed");
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/api/traces");
+        assert_eq!(status, 200);
+        assert_eq!(body, r#"{"traces":[]}"#, "unexpected body: {body}");
+    }
+
+    #[test]
+    fn test_traces_endpoint_with_data() {
+        use crate::span_exporter::{SpanBuffer, TraceSpan};
+
+        let _lock = TEST_LOCK.lock().unwrap();
+        let port = free_port();
+
+        let trace_buf = SpanBuffer::new();
+
+        // Push a root span (parent_id all-zeros = root).
+        trace_buf.push_test_span(TraceSpan {
+            trace_id: "aabbccdd00112233aabbccdd00112233".into(),
+            span_id: "aabbccdd00112233".into(),
+            parent_id: "0000000000000000".into(),
+            name: "batch".into(),
+            start_unix_ns: 1_000_000_000,
+            duration_ns: 200_000_000,
+            attrs: vec![
+                ["pipeline".into(), "default".into()],
+                ["bytes_in".into(), "4096".into()],
+                ["input_rows".into(), "100".into()],
+                ["output_rows".into(), "75".into()],
+                ["errors".into(), "0".into()],
+                ["flush_reason".into(), "size".into()],
+                ["queue_wait_ns".into(), "5000000".into()],
+            ],
+            status: "ok",
+        });
+        // Push a scan child span.
+        trace_buf.push_test_span(TraceSpan {
+            trace_id: "aabbccdd00112233aabbccdd00112233".into(),
+            span_id: "1122334455667788".into(),
+            parent_id: "aabbccdd00112233".into(),
+            name: "scan".into(),
+            start_unix_ns: 1_000_000_000,
+            duration_ns: 150_000_000,
+            attrs: vec![["rows".into(), "100".into()]],
+            status: "ok",
+        });
+
+        let mut server = server_with_test_pipeline(port);
+        server.set_trace_buffer(trace_buf);
+        let _handle = server.start().expect("server bind failed");
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/api/traces");
+        assert_eq!(status, 200);
+
+        // Must parse as valid JSON.
+        let v: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON from /api/traces");
+
+        let traces = v["traces"].as_array().expect("traces must be array");
+        assert_eq!(traces.len(), 1, "expected 1 trace, got {}", traces.len());
+
+        let t = &traces[0];
+        assert_eq!(t["pipeline"], "default");
+        assert_eq!(t["input_rows"], 100);
+        assert_eq!(t["output_rows"], 75);
+        assert_eq!(t["errors"], 0);
+        assert_eq!(t["flush_reason"], "size");
+        assert_eq!(t["scan_ns"], 150_000_000u64);
+        assert_eq!(t["total_ns"], 200_000_000u64);
+        assert_eq!(t["status"], "ok");
+    }
 }

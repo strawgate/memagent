@@ -487,7 +487,9 @@ impl Pipeline {
                     self.metrics.inc_scan_error();
                     self.metrics.inc_dropped_batch();
                     eprintln!("pipeline: scan error (batch dropped): {e}");
-                    tracing::Span::current().record("errors", 1u64);
+                    // Must use `span` (the batch root) not `Span::current()` here —
+                    // _entered is still live so current() points to the scan child span.
+                    span.record("errors", 1u64);
                     return;
                 }
             };
