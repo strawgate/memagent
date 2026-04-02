@@ -27,7 +27,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(batch) = scanner.scan(data) else { return; };
 
     let metadata = BatchMetadata {
-        resource_attrs: vec![],
+        resource_attrs: Arc::new(vec![]),
         observed_time_ns: 0,
     };
 

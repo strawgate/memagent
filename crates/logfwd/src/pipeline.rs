@@ -477,7 +477,8 @@ impl Pipeline {
         // tokio to move other tasks off this worker while scanning.
         let t0 = Instant::now();
         let batch = {
-            let scan_span = tracing::info_span!("scan", pipeline = %self.name, rows = tracing::field::Empty);
+            let scan_span =
+                tracing::info_span!("scan", pipeline = %self.name, rows = tracing::field::Empty);
             let _entered = scan_span.enter();
             let b = match tokio::task::block_in_place(|| self.scanner.scan(combined.into())) {
                 Ok(b) => b,

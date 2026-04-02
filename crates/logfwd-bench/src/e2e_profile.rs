@@ -2,6 +2,7 @@
 //! Run with: cargo run -p logfwd-bench --release --bin e2e-profile
 
 use std::io::Write;
+use std::sync::Arc;
 use std::time::Instant;
 
 use logfwd_core::scan_config::ScanConfig;
@@ -52,7 +53,7 @@ fn main() {
         std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
     );
     let metadata = BatchMetadata {
-        resource_attrs: vec![],
+        resource_attrs: Arc::new(vec![]),
         observed_time_ns: 0,
     };
     otlp_sink.encode_batch(&result, &metadata);
@@ -101,7 +102,7 @@ fn main() {
         
         let t = Instant::now();
         let mut sink = logfwd_output::OtlpSink::new("b".into(), "http://x".into(), logfwd_output::OtlpProtocol::Http, logfwd_output::Compression::None, vec![], std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()));
-        let meta = BatchMetadata { resource_attrs: vec![], observed_time_ns: 0 };
+        let meta = BatchMetadata { resource_attrs: Arc::new(vec![]), observed_time_ns: 0 };
         sink.encode_batch(&result, &meta);
         let encode = t.elapsed().as_millis();
         

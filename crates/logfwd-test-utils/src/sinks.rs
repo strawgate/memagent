@@ -120,7 +120,7 @@ mod tests {
 
     fn dummy_metadata() -> BatchMetadata {
         BatchMetadata {
-            resource_attrs: vec![],
+            resource_attrs: Arc::new(vec![]),
             observed_time_ns: 0,
         }
     }

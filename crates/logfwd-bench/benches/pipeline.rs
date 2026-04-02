@@ -4,6 +4,7 @@
 //! JSON output: cargo bench -p logfwd-bench -- --output-format bencher 2>/dev/null
 
 use std::fmt::Write;
+use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
@@ -67,7 +68,7 @@ fn gen_cri_lines(n: usize) -> Vec<u8> {
 
 fn make_metadata() -> BatchMetadata {
     BatchMetadata {
-        resource_attrs: vec![("service.name".into(), "bench".into())],
+        resource_attrs: Arc::new(vec![("service.name".into(), "bench".into())]),
         observed_time_ns: 0,
     }
 }
