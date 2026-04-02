@@ -98,6 +98,34 @@ impl OtlpReceiverInput {
                         Ok(_) => {}
                     }
 
+                    // Decompress if Content-Encoding is set.
+                    let content_encoding = request
+                        .headers()
+                        .iter()
+                        .find(|h| h.field.equiv("Content-Encoding"))
+                        .map(|h| h.value.as_str().to_lowercase());
+
+                    let body = match content_encoding.as_deref() {
+                        Some("zstd") => {
+                            use std::io::Read;
+                            let mut decoder = zstd::Decoder::new(&body[..]).unwrap();
+                            let mut decompressed = Vec::with_capacity(body.len() * 4);
+                            match decoder.read_to_end(&mut decompressed) {
+                                Ok(_) => decompressed,
+                                Err(_) => {
+                                    let _ = request.respond(
+                                        tiny_http::Response::from_string(
+                                            "zstd decompression failed",
+                                        )
+                                        .with_status_code(400),
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => body, // no compression or unknown — pass through
+                    };
+
                     // Determine content type — accept protobuf and JSON.
                     let content_type = request
                         .headers()

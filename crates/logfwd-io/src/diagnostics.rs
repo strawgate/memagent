@@ -249,6 +249,13 @@ impl PipelineMetrics {
     }
 
     /// Increment error counter on one output.
+    /// Record successful output delivery for all output sinks.
+    pub fn inc_output_success(&self, lines: u64) {
+        for (_, _, stats) in &self.outputs {
+            stats.inc_lines(lines);
+        }
+    }
+
     pub fn output_error(&self, output_name: &str) {
         for (name, _, stats) in &self.outputs {
             if name == output_name {

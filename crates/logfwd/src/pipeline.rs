@@ -391,6 +391,7 @@ impl Pipeline {
             return;
         }
         let output_elapsed = t2.elapsed();
+        self.metrics.inc_output_success(num_rows);
 
         self.metrics.record_batch(
             num_rows,
