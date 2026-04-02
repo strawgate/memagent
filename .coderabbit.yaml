@@ -820,6 +820,47 @@ reviews:
           SIMD path, a filesystem case-sensitivity issue, or a timing-dependent test.
 
 
+          RAISING THE BAR — EVERY PR SHOULD LEAVE THE CODEBASE BETTER.
+          A PR that does exactly what the issue asked and nothing more is acceptable.
+          A PR that also closes a small nearby gap — a missing proof, an undocumented
+          public function, a DEVELOPING.md lesson from a bug just fixed — is better.
+          Ask: did the author leave the touched modules in better shape than they found them?
+
+          The standard is not "perfect" but "net positive." Specific things to look for
+          in the modules this PR actually touched:
+
+          Missing Kani proofs: if the PR adds or modifies a public function in logfwd-core
+          and a nearby public function already lacks a proof, the author should add it.
+          They're already context-loaded in that module. A PR that adds one function with a
+          proof while leaving a neighboring unproved function untouched is fine; a PR
+          that adds five functions with no proofs when other functions in the same file
+          already have them is a missed opportunity worth flagging.
+
+          Missing or shallow doc comments: if the PR touches a module where adjacent
+          public items have no /// doc comments, the author should add them while they're
+          there. Flag files where the PR author clearly read the code but left surrounding
+          public items undocumented.
+
+          DEVELOPING.md lessons: if this PR fixes a non-obvious bug or resolves a subtle
+          correctness issue, and no lesson exists in DEVELOPING.md that would have helped
+          a developer avoid it, the PR is the right moment to add one. The lesson doesn't
+          need to be long — a heading and two paragraphs is enough. Flag bug-fix PRs that
+          reveal a non-obvious trap and don't document it.
+
+          Test coverage gaps: if the PR touches a function that has no unit tests or
+          proptest coverage, and the logic is complex enough to warrant them, ask whether
+          a test should be added. A proof is preferred for pure logic in logfwd-core, but
+          if a proof isn't feasible (async, heap-heavy), a proptest case is expected.
+
+          Stale TODOs: if the PR resolves the issue referenced in a nearby // TODO(#N)
+          comment, the comment should be removed. If the PR touches code with a TODO that
+          is clearly no longer relevant, removing it is a small, free improvement.
+
+          Do not penalize authors for not gold-plating unrelated code. The scope is the
+          modules this PR actually changed. But within those modules, "leave it slightly
+          better" is a reasonable expectation and worth a gentle note when it's missed.
+
+
           COMMIT HYGIENE AND PR HYGIENE.
           No merge commits on the feature branch — the branch must rebase onto master.
           Commit messages follow: type(optional-scope): concise description. One concern
