@@ -15,6 +15,10 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
+/// Arrow schema metadata key used to record conflict groups.
+/// Format: semicolon-separated `base:type1,type2` entries, e.g. `"status:int,str"`.
+pub const CONFLICT_GROUPS_METADATA_KEY: &str = "logfwd.conflict_groups";
+
 use logfwd_core::scan_config::{parse_float_fast, parse_int_fast};
 
 use crate::check_dup_bits;
@@ -186,6 +190,23 @@ impl StorageBuilder {
         let num_rows = self.row_count as usize;
         let mut schema_fields: Vec<Field> = Vec::with_capacity(self.fields.len() + 1);
         let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.fields.len() + 1);
+        // Accumulate conflict group descriptions for schema metadata.
+        let mut conflict_meta: Vec<String> = Vec::new();
+
+        // Detect duplicate output column names before building the schema.
+        let mut emitted_names = std::collections::HashSet::new();
+        if self.keep_raw && !self.raw_values.is_empty() {
+            emitted_names.insert("_raw".to_string());
+        }
+        let mut reserve_name = |name: &str| -> Result<(), ArrowError> {
+            if emitted_names.insert(name.to_string()) {
+                Ok(())
+            } else {
+                Err(ArrowError::InvalidArgumentError(format!(
+                    "duplicate output column name: {name}"
+                )))
+            }
+        };
 
         for fc in &self.fields {
             // Field names come from JSON keys (valid UTF-8 in well-formed input).
@@ -193,7 +214,32 @@ impl StorageBuilder {
             // handled gracefully instead of triggering undefined behaviour.
             let name = String::from_utf8_lossy(&fc.name);
 
+            // Suffix columns only when the same field has multiple types in this
+            // batch. Single-type fields use the bare field name.
+            let conflict = (fc.has_int as u8) + (fc.has_float as u8) + (fc.has_str as u8) > 1;
+
+            if conflict {
+                // Record this group for schema metadata.
+                let mut types = Vec::with_capacity(3);
+                if fc.has_int {
+                    types.push("int");
+                }
+                if fc.has_float {
+                    types.push("float");
+                }
+                if fc.has_str {
+                    types.push("str");
+                }
+                conflict_meta.push(format!("{}:{}", name, types.join(",")));
+            }
+
             if fc.has_int {
+                let col_name = if conflict {
+                    format!("{}__int", name)
+                } else {
+                    name.to_string()
+                };
+                reserve_name(&col_name)?;
                 let mut values = vec![0i64; num_rows];
                 let mut valid = vec![false; num_rows];
                 for &(row, v) in &fc.int_values {
@@ -203,13 +249,19 @@ impl StorageBuilder {
                         valid[r] = true;
                     }
                 }
-                schema_fields.push(Field::new(format!("{}_int", name), DataType::Int64, true));
+                schema_fields.push(Field::new(col_name, DataType::Int64, true));
                 arrays.push(Arc::new(Int64Array::new(
                     values.into(),
                     Some(NullBuffer::from(valid)),
                 )) as ArrayRef);
             }
             if fc.has_float {
+                let col_name = if conflict {
+                    format!("{}__float", name)
+                } else {
+                    name.to_string()
+                };
+                reserve_name(&col_name)?;
                 let mut values = vec![0.0f64; num_rows];
                 let mut valid = vec![false; num_rows];
                 for &(row, v) in &fc.float_values {
@@ -219,17 +271,19 @@ impl StorageBuilder {
                         valid[r] = true;
                     }
                 }
-                schema_fields.push(Field::new(
-                    format!("{}_float", name),
-                    DataType::Float64,
-                    true,
-                ));
+                schema_fields.push(Field::new(col_name, DataType::Float64, true));
                 arrays.push(Arc::new(Float64Array::new(
                     values.into(),
                     Some(NullBuffer::from(valid)),
                 )) as ArrayRef);
             }
             if fc.has_str {
+                let col_name = if conflict {
+                    format!("{}__str", name)
+                } else {
+                    name.to_string()
+                };
+                reserve_name(&col_name)?;
                 let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 16);
                 let mut vi = 0;
                 for row in 0..num_rows {
@@ -245,7 +299,7 @@ impl StorageBuilder {
                         builder.append_null();
                     }
                 }
-                schema_fields.push(Field::new(format!("{}_str", name), DataType::Utf8, true));
+                schema_fields.push(Field::new(col_name, DataType::Utf8, true));
                 arrays.push(Arc::new(builder.finish()) as ArrayRef);
             }
         }
@@ -262,7 +316,16 @@ impl StorageBuilder {
             arrays.push(Arc::new(builder.finish()) as ArrayRef);
         }
 
-        let schema = Arc::new(Schema::new(schema_fields));
+        let schema = if conflict_meta.is_empty() {
+            Arc::new(Schema::new(schema_fields))
+        } else {
+            let mut meta = HashMap::new();
+            meta.insert(
+                CONFLICT_GROUPS_METADATA_KEY.to_string(),
+                conflict_meta.join(";"),
+            );
+            Arc::new(Schema::new_with_metadata(schema_fields, meta))
+        };
         let opts = RecordBatchOptions::new().with_row_count(Some(num_rows));
         RecordBatch::try_new_with_options(schema, arrays, &opts)
     }
@@ -289,9 +352,10 @@ mod tests {
         b.end_row();
         let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 2);
+        // Single-type fields use bare names
         assert_eq!(
             batch
-                .column_by_name("host_str")
+                .column_by_name("host")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
@@ -301,7 +365,7 @@ mod tests {
         );
         assert_eq!(
             batch
-                .column_by_name("status_int")
+                .column_by_name("status")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<Int64Array>()
@@ -325,7 +389,8 @@ mod tests {
         b.end_row();
         let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 2);
-        let ac = batch.column_by_name("a_str").unwrap();
+        // Single-type string field: bare name
+        let ac = batch.column_by_name("a").unwrap();
         assert!(!ac.is_null(0));
         assert!(ac.is_null(1));
     }
@@ -342,8 +407,8 @@ mod tests {
         b.append_str_by_idx(idx, b"OK");
         b.end_row();
         let batch = b.finish_batch().unwrap();
-        assert!(batch.column_by_name("status_int").is_some());
-        assert!(batch.column_by_name("status_str").is_some());
+        assert!(batch.column_by_name("status__int").is_some());
+        assert!(batch.column_by_name("status__str").is_some());
     }
 
     #[test]
@@ -371,7 +436,8 @@ mod tests {
         b.end_row();
         let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 3);
-        let ac = batch.column_by_name("a_str").unwrap();
+        // Single-type string field: bare name
+        let ac = batch.column_by_name("a").unwrap();
         assert!(!ac.is_null(0));
         assert!(ac.is_null(1));
         assert!(!ac.is_null(2));
@@ -387,9 +453,10 @@ mod tests {
         b.append_int_by_idx(idx, b"2");
         b.end_row();
         let batch = b.finish_batch().unwrap();
+        // Single-type int field: bare name
         assert_eq!(
             batch
-                .column_by_name("a_int")
+                .column_by_name("a")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<Int64Array>()
@@ -434,6 +501,6 @@ mod tests {
         // Must not panic and must produce a valid batch.
         let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert!(batch.column_by_name("field64_int").is_some());
+        assert!(batch.column_by_name("field64").is_some());
     }
 }

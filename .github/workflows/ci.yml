@@ -127,6 +127,8 @@ jobs:
 
       - name: Tests
         run: cargo test
+        env:
+          RUSTC_WRAPPER: ""
 
   # -------------------------------------------------------------------------
   # Build checks — release + cross-compile as a matrix (one job definition)

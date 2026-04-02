@@ -145,9 +145,9 @@ fn compliance_empty_lines() {
     let input = b"{\"seq\":0}\n\n{\"seq\":1}\n\n\n{\"seq\":2}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 3);
-        assert_eq!(get_int(batch, "seq_int", 0), Some(0));
-        assert_eq!(get_int(batch, "seq_int", 1), Some(1));
-        assert_eq!(get_int(batch, "seq_int", 2), Some(2));
+        assert_eq!(get_int(batch, "seq", 0), Some(0));
+        assert_eq!(get_int(batch, "seq", 1), Some(1));
+        assert_eq!(get_int(batch, "seq", 2), Some(2));
     });
 }
 
@@ -158,7 +158,7 @@ fn compliance_huge_line() {
     let input = format!("{{\"msg\":\"{big_msg}\"}}\n");
     assert_both_scanners(input.as_bytes(), |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let val = get_str(batch, "msg_str", 0).expect("msg_str should exist");
+        let val = get_str(batch, "msg", 0).expect("msg should exist");
         assert_eq!(val.len(), 1_000_000);
     });
 }
@@ -171,7 +171,7 @@ fn compliance_special_chars_in_values() {
     let input_nl = [input.as_slice(), b"\n"].concat();
     assert_both_scanners(&input_nl, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let val = get_str(batch, "msg_str", 0).expect("msg_str should exist");
+        let val = get_str(batch, "msg", 0).expect("msg should exist");
         // Scanner stores raw escape sequences, so the value should contain
         // the literal backslash-n, backslash-t etc.
         assert!(val.contains(r#"\n"#), "missing \\n in: {val}");
@@ -186,7 +186,7 @@ fn compliance_nested_json_value() {
     let input_nl = [input.as_slice(), b"\n"].concat();
     assert_both_scanners(&input_nl, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let val = get_str(batch, "data_str", 0).expect("data_str should exist");
+        let val = get_str(batch, "data", 0).expect("data should exist");
         assert!(
             val.contains("inner") && val.contains("value") && val.contains("42"),
             "nested JSON not preserved: {val}"
@@ -202,7 +202,7 @@ fn compliance_array_value() {
     let input = b"{\"tags\":[\"a\",\"b\",\"c\"]}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let val = get_str(batch, "tags_str", 0).expect("tags_str should exist");
+        let val = get_str(batch, "tags", 0).expect("tags should exist");
         assert_eq!(val, r#"["a","b","c"]"#);
     });
 }
@@ -213,7 +213,7 @@ fn compliance_duplicate_keys() {
     let input = b"{\"a\":\"first\",\"b\":\"x\",\"a\":\"second\"}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let val = get_str(batch, "a_str", 0).expect("a_str should exist");
+        let val = get_str(batch, "a", 0).expect("a should exist");
         assert_eq!(val, "first", "first-writer-wins violated");
     });
 }
@@ -226,13 +226,13 @@ fn compliance_type_conflict() {
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 2);
 
-        // Row 0: status_int=200, status_str=null
-        assert_eq!(get_int(batch, "status_int", 0), Some(200));
-        assert_null(batch, "status_str", 0);
+        // Row 0: status__int=200, status__str=null
+        assert_eq!(get_int(batch, "status__int", 0), Some(200));
+        assert_null(batch, "status__str", 0);
 
-        // Row 1: status_int=null, status_str="OK"
-        assert_null(batch, "status_int", 1);
-        assert_eq!(get_str(batch, "status_str", 1), Some("OK".to_string()));
+        // Row 1: status__int=null, status__str="OK"
+        assert_null(batch, "status__int", 1);
+        assert_eq!(get_str(batch, "status__str", 1), Some("OK".to_string()));
     });
 }
 
@@ -248,14 +248,14 @@ fn compliance_integer_boundaries() {
         assert_eq!(batch.num_rows(), 3);
 
         // Row 0: i64::MAX as int
-        assert_eq!(get_int(batch, "n_int", 0), Some(i64::MAX));
+        assert_eq!(get_int(batch, "n__int", 0), Some(i64::MAX));
 
         // Row 1: i64::MIN as int
-        assert_eq!(get_int(batch, "n_int", 1), Some(i64::MIN));
+        assert_eq!(get_int(batch, "n__int", 1), Some(i64::MIN));
 
         // Row 2: overflow -> float column
-        assert_null(batch, "n_int", 2);
-        let f = get_float(batch, "n_float", 2).expect("n_float should exist for overflow");
+        assert_null(batch, "n__int", 2);
+        let f = get_float(batch, "n__float", 2).expect("n__float should exist for overflow");
         assert!(f > 9.2e18, "overflow should be a large float: {f}");
     });
 }
@@ -266,19 +266,19 @@ fn compliance_float_precision() {
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 4);
 
-        let v0 = get_float(batch, "f_float", 0).expect("pi");
+        let v0 = get_float(batch, "f", 0).expect("pi");
         assert!(
             (v0 - std::f64::consts::PI).abs() < 1e-15,
             "pi mismatch: {v0}"
         );
 
-        let v1 = get_float(batch, "f_float", 1).expect("1e308");
+        let v1 = get_float(batch, "f", 1).expect("1e308");
         assert!((v1 - 1e308).abs() < 1e292, "1e308 mismatch: {v1}");
 
-        let v2 = get_float(batch, "f_float", 2).expect("-1e308");
+        let v2 = get_float(batch, "f", 2).expect("-1e308");
         assert!((v2 - (-1e308)).abs() < 1e292, "-1e308 mismatch: {v2}");
 
-        let v3 = get_float(batch, "f_float", 3).expect("5e-324");
+        let v3 = get_float(batch, "f", 3).expect("5e-324");
         assert!(v3 > 0.0 && v3 < 1e-300, "smallest positive: {v3}");
     });
 }
@@ -288,8 +288,8 @@ fn compliance_boolean_as_string() {
     let input = b"{\"flag\":true}\n{\"flag\":false}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(get_str(batch, "flag_str", 0), Some("true".to_string()));
-        assert_eq!(get_str(batch, "flag_str", 1), Some("false".to_string()));
+        assert_eq!(get_str(batch, "flag", 0), Some("true".to_string()));
+        assert_eq!(get_str(batch, "flag", 1), Some("false".to_string()));
     });
 }
 
@@ -298,14 +298,14 @@ fn compliance_null_value() {
     let input = b"{\"a\":\"x\",\"b\":null,\"c\":\"y\"}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        assert_not_null(batch, "a_str", 0);
-        assert_eq!(get_str(batch, "a_str", 0), Some("x".to_string()));
+        assert_not_null(batch, "a", 0);
+        assert_eq!(get_str(batch, "a", 0), Some("x".to_string()));
         // b is null — it may not have a column at all, or the column is null.
-        assert_null(batch, "b_str", 0);
-        assert_null(batch, "b_int", 0);
-        assert_null(batch, "b_float", 0);
-        assert_not_null(batch, "c_str", 0);
-        assert_eq!(get_str(batch, "c_str", 0), Some("y".to_string()));
+        assert_null(batch, "b__str", 0);
+        assert_null(batch, "b__int", 0);
+        assert_null(batch, "b__float", 0);
+        assert_not_null(batch, "c", 0);
+        assert_eq!(get_str(batch, "c", 0), Some("y".to_string()));
     });
 }
 
@@ -316,9 +316,9 @@ fn compliance_unicode_keys_and_values() {
     assert_both_scanners(input.as_bytes(), |batch| {
         assert_eq!(batch.num_rows(), 1);
         // The scanner stores raw bytes between quotes, so CJK/emoji should round-trip.
-        let name = get_str(batch, "名前_str", 0).expect("CJK key should exist");
+        let name = get_str(batch, "名前", 0).expect("CJK key should exist");
         assert_eq!(name, "太郎");
-        let emoji = get_str(batch, "emoji_str", 0).expect("emoji key should exist");
+        let emoji = get_str(batch, "emoji", 0).expect("emoji key should exist");
         assert_eq!(emoji, "🎉");
     });
 }
@@ -329,7 +329,7 @@ fn compliance_escaped_quotes_in_strings() {
     let input_nl = [input.as_slice(), b"\n"].concat();
     assert_both_scanners(&input_nl, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let val = get_str(batch, "msg_str", 0).expect("msg_str should exist");
+        let val = get_str(batch, "msg", 0).expect("msg should exist");
         // Scanner stores raw content between outer quotes, preserving escape sequences.
         assert!(
             val.contains("\\\"hello\\\""),
@@ -344,7 +344,7 @@ fn compliance_deeply_nested_json() {
     let input_nl = [input.as_slice(), b"\n"].concat();
     assert_both_scanners(&input_nl, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let val = get_str(batch, "a_str", 0).expect("a_str should exist");
+        let val = get_str(batch, "a", 0).expect("a should exist");
         assert!(val.contains("deep"), "nested value not preserved: {val}");
         assert!(val.starts_with('{'));
         assert!(val.ends_with('}'));
@@ -364,7 +364,7 @@ fn compliance_many_fields() {
         assert_eq!(batch.num_rows(), 1);
         // All 100 fields should be present as columns.
         for i in 0..100 {
-            let col_name = format!("f{i}_int");
+            let col_name = format!("f{i}");
             assert_eq!(
                 get_int(batch, &col_name, 0),
                 Some(i),
@@ -390,8 +390,8 @@ fn compliance_empty_string_value() {
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
         // Empty string is NOT null.
-        assert_not_null(batch, "key_str", 0);
-        let val = get_str(batch, "key_str", 0).expect("key_str should exist");
+        assert_not_null(batch, "key", 0);
+        let val = get_str(batch, "key", 0).expect("key should exist");
         assert_eq!(val, "", "empty string should be empty, not null");
     });
 }
@@ -408,20 +408,20 @@ fn compliance_whitespace_variations() {
     assert_eq!(batch_compact.num_rows(), 1);
     assert_eq!(batch_spaced.num_rows(), 1);
     assert_eq!(
-        get_str(&batch_compact, "a_str", 0),
-        get_str(&batch_spaced, "a_str", 0),
+        get_str(&batch_compact, "a", 0),
+        get_str(&batch_spaced, "a", 0),
     );
     assert_eq!(
-        get_int(&batch_compact, "c_int", 0),
-        get_int(&batch_spaced, "c_int", 0),
+        get_int(&batch_compact, "c", 0),
+        get_int(&batch_spaced, "c", 0),
     );
 
     // Also verify streaming produces same results.
     let batch_compact_s = scan_streaming(compact);
     let batch_spaced_s = scan_streaming(spaced);
     assert_eq!(
-        get_str(&batch_compact_s, "a_str", 0),
-        get_str(&batch_spaced_s, "a_str", 0),
+        get_str(&batch_compact_s, "a", 0),
+        get_str(&batch_spaced_s, "a", 0),
     );
 }
 
@@ -432,10 +432,10 @@ fn compliance_non_object_lines() {
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 6);
         // Only the last row should have a non-null value.
-        assert_eq!(get_str(batch, "valid_str", 5), Some("object".to_string()));
+        assert_eq!(get_str(batch, "valid", 5), Some("object".to_string()));
         // Rows 0-4 should have null for the valid_str column.
         for row in 0..5 {
-            assert_null(batch, "valid_str", row);
+            assert_null(batch, "valid", row);
         }
     });
 }
@@ -447,9 +447,9 @@ fn compliance_trailing_no_newline() {
     let input = b"{\"a\":\"complete\"}\n{\"b\":\"no newline at end\"}";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(get_str(batch, "a_str", 0), Some("complete".to_string()));
+        assert_eq!(get_str(batch, "a", 0), Some("complete".to_string()));
         assert_eq!(
-            get_str(batch, "b_str", 1),
+            get_str(batch, "b", 1),
             Some("no newline at end".to_string())
         );
     });
@@ -468,7 +468,7 @@ fn compliance_cri_format() {
 
     let batch = scan_storage(&json_out);
     assert_eq!(batch.num_rows(), 1);
-    assert_eq!(get_str(&batch, "msg_str", 0), Some("hello".to_string()));
+    assert_eq!(get_str(&batch, "msg", 0), Some("hello".to_string()));
 }
 
 #[test]
@@ -543,7 +543,7 @@ fn compliance_duplicate_keys_across_dup_detection_boundary() {
     // field64_int should be the first value (0-indexed field64=64), but
     // since idx >= 64 bypasses dup detection, the second write (999) overwrites.
     // This is the known limitation — document it.
-    let val = get_int(&batch, "field64_int", 0);
+    let val = get_int(&batch, "field64", 0);
     assert!(
         val.is_some(),
         "field64 should exist regardless of dup detection"
@@ -584,7 +584,7 @@ fn compliance_very_long_key() {
     let input = format!("{{\"{key}\":\"val\"}}\n");
     assert_both_scanners(input.as_bytes(), |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let col_name = format!("{key}_str");
+        let col_name = format!("{key}");
         assert_eq!(get_str(batch, &col_name, 0), Some("val".to_string()));
     });
 }
@@ -595,7 +595,7 @@ fn compliance_numeric_string_not_coerced() {
     let input = b"{\"port\":\"8080\"}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(get_str(batch, "port_str", 0), Some("8080".to_string()));
+        assert_eq!(get_str(batch, "port", 0), Some("8080".to_string()));
         // Should NOT appear as an int column.
         assert!(
             batch.column_by_name("port_int").is_none(),
@@ -612,24 +612,24 @@ fn compliance_mixed_type_across_rows() {
         assert_eq!(batch.num_rows(), 5);
 
         // Row 0: int
-        assert_eq!(get_int(batch, "v_int", 0), Some(42));
+        assert_eq!(get_int(batch, "v__int", 0), Some(42));
 
         // Row 1: float
-        let f = get_float(batch, "v_float", 1).expect("v_float row 1");
+        let f = get_float(batch, "v__float", 1).expect("v__float should exist for row 1");
         #[allow(clippy::approx_constant)]
         let expected = 3.14;
         assert!((f - expected).abs() < 1e-10);
 
         // Row 2: string "text"
-        assert_eq!(get_str(batch, "v_str", 2), Some("text".to_string()));
+        assert_eq!(get_str(batch, "v__str", 2), Some("text".to_string()));
 
         // Row 3: bool stored as string
-        assert_eq!(get_str(batch, "v_str", 3), Some("true".to_string()));
+        assert_eq!(get_str(batch, "v__str", 3), Some("true".to_string()));
 
         // Row 4: null — all typed columns should be null for this row.
-        assert_null(batch, "v_int", 4);
-        assert_null(batch, "v_float", 4);
-        assert_null(batch, "v_str", 4);
+        assert_null(batch, "v__int", 4);
+        assert_null(batch, "v__float", 4);
+        assert_null(batch, "v__str", 4);
     });
 }
 
@@ -639,7 +639,7 @@ fn compliance_negative_zero_integer() {
     let input = b"{\"v\":-0}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(get_int(batch, "v_int", 0), Some(0));
+        assert_eq!(get_int(batch, "v", 0), Some(0));
     });
 }
 
@@ -657,10 +657,10 @@ fn compliance_batch_reuse_isolation() {
     // b2 should NOT contain field "a" from b1.
     // (StorageBuilder clears collectors on begin_batch, but field_index persists
     // for schema stability. The column exists but the value should be null.)
-    if b2.column_by_name("a_str").is_some() {
-        assert_null(&b2, "a_str", 0);
+    if b2.column_by_name("a").is_some() {
+        assert_null(&b2, "a", 0);
     }
-    assert_eq!(get_str(&b2, "b_str", 0), Some("second".to_string()));
+    assert_eq!(get_str(&b2, "b", 0), Some("second".to_string()));
 }
 
 #[test]
@@ -676,8 +676,8 @@ fn compliance_streaming_batch_reuse_isolation() {
     assert_eq!(b1.num_rows(), 1);
     assert_eq!(b2.num_rows(), 1);
 
-    if b2.column_by_name("a_str").is_some() {
-        assert_null(&b2, "a_str", 0);
+    if b2.column_by_name("a").is_some() {
+        assert_null(&b2, "a", 0);
     }
 }
 
@@ -688,8 +688,8 @@ fn compliance_json_with_carriage_return() {
     assert_both_scanners(input, |batch| {
         // \r is treated as whitespace by skip_ws, so the scanner should handle this.
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(get_int(batch, "a_int", 0), Some(1));
-        assert_eq!(get_int(batch, "b_int", 1), Some(2));
+        assert_eq!(get_int(batch, "a", 0), Some(1));
+        assert_eq!(get_int(batch, "b", 1), Some(2));
     });
 }
 
@@ -699,7 +699,7 @@ fn compliance_nested_array_of_objects() {
     let input_nl = [input.as_slice(), b"\n"].concat();
     assert_both_scanners(&input_nl, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let val = get_str(batch, "items_str", 0).expect("items_str");
+        let val = get_str(batch, "items", 0).expect("items column should exist");
         assert!(val.starts_with('['));
         assert!(val.ends_with(']'));
         assert!(val.contains("\"id\":1"));
@@ -712,8 +712,8 @@ fn compliance_empty_nested_structures() {
     let input = b"{\"obj\":{},\"arr\":[]}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(get_str(batch, "obj_str", 0), Some("{}".to_string()));
-        assert_eq!(get_str(batch, "arr_str", 0), Some("[]".to_string()));
+        assert_eq!(get_str(batch, "obj", 0), Some("{}".to_string()));
+        assert_eq!(get_str(batch, "arr", 0), Some("[]".to_string()));
     });
 }
 
@@ -724,7 +724,7 @@ fn compliance_scientific_notation_integers() {
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
         // The 'e' makes it a float, not an int.
-        let f = get_float(batch, "v_float", 0).expect("v_float");
+        let f = get_float(batch, "v", 0).expect("v column should be float for 1e2");
         assert!((f - 100.0).abs() < 1e-10);
     });
 }
@@ -735,9 +735,9 @@ fn compliance_zero_as_all_types() {
     let input = b"{\"a\":0}\n{\"a\":0.0}\n{\"a\":\"0\"}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 3);
-        assert_eq!(get_int(batch, "a_int", 0), Some(0));
-        assert_eq!(get_float(batch, "a_float", 1), Some(0.0));
-        assert_eq!(get_str(batch, "a_str", 2), Some("0".to_string()));
+        assert_eq!(get_int(batch, "a__int", 0), Some(0));
+        assert_eq!(get_float(batch, "a__float", 1), Some(0.0));
+        assert_eq!(get_str(batch, "a__str", 2), Some("0".to_string()));
     });
 }
 
@@ -753,9 +753,9 @@ fn compliance_field_ordering_preserved() {
         .map(|f| f.name().clone())
         .collect();
     // The first field encountered is "z", then "a", then "m".
-    assert_eq!(names[0], "z_int");
-    assert_eq!(names[1], "a_int");
-    assert_eq!(names[2], "m_int");
+    assert_eq!(names[0], "z");
+    assert_eq!(names[1], "a");
+    assert_eq!(names[2], "m");
 }
 
 #[test]
@@ -765,7 +765,7 @@ fn compliance_braces_inside_string_values() {
     let input_nl = [input.as_slice(), b"\n"].concat();
     assert_both_scanners(&input_nl, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(get_int(batch, "count_int", 0), Some(1));
+        assert_eq!(get_int(batch, "count", 0), Some(1));
     });
 }
 
@@ -778,7 +778,7 @@ fn compliance_large_batch_row_count() {
     }
     assert_both_scanners(&buf, |batch| {
         assert_eq!(batch.num_rows(), 10_000);
-        assert_eq!(get_int(batch, "i_int", 0), Some(0));
-        assert_eq!(get_int(batch, "i_int", 9_999), Some(9_999));
+        assert_eq!(get_int(batch, "i", 0), Some(0));
+        assert_eq!(get_int(batch, "i", 9_999), Some(9_999));
     });
 }

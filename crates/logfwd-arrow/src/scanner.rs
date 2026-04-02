@@ -190,9 +190,10 @@ mod tests {
         let input = b"{\"host\":\"web1\",\"status\":200,\"lat\":1.5}\n{\"host\":\"web2\",\"status\":404,\"lat\":0.3}\n";
         let batch = default_scanner(4).scan(input).unwrap();
         assert_eq!(batch.num_rows(), 2);
+        // Single-type fields: bare names
         assert_eq!(
             batch
-                .column_by_name("host_str")
+                .column_by_name("host")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
@@ -202,7 +203,7 @@ mod tests {
         );
         assert_eq!(
             batch
-                .column_by_name("status_int")
+                .column_by_name("status")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<Int64Array>()
@@ -210,14 +211,23 @@ mod tests {
                 .value(1),
             404
         );
+        // Legacy single-underscore suffixed columns must NOT be emitted.
+        assert!(
+            batch.column_by_name("host_str").is_none(),
+            "single-type string fields must not emit legacy suffixed columns"
+        );
+        assert!(
+            batch.column_by_name("status_int").is_none(),
+            "single-type int fields must not emit legacy suffixed columns"
+        );
     }
     #[test]
     fn test_type_conflict() {
         let batch = default_scanner(4)
             .scan(b"{\"s\":200}\n{\"s\":\"OK\"}\n")
             .unwrap();
-        assert!(batch.column_by_name("s_int").is_some());
-        assert!(batch.column_by_name("s_str").is_some());
+        assert!(batch.column_by_name("s__int").is_some());
+        assert!(batch.column_by_name("s__str").is_some());
     }
     #[test]
     fn test_missing_fields() {
@@ -225,7 +235,8 @@ mod tests {
             .scan(b"{\"a\":\"hello\"}\n{\"b\":\"world\"}\n")
             .unwrap();
         assert_eq!(batch.num_rows(), 2);
-        let a = batch.column_by_name("a_str").unwrap();
+        // Single-type string fields: bare names
+        let a = batch.column_by_name("a").unwrap();
         assert!(!a.is_null(0));
         assert!(a.is_null(1));
     }
@@ -239,7 +250,7 @@ mod tests {
             .unwrap();
         assert!(
             batch
-                .column_by_name("u_str")
+                .column_by_name("u")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
@@ -265,8 +276,9 @@ mod tests {
 "#,
             )
             .unwrap();
-        assert!(batch.column_by_name("a_str").is_some());
-        assert!(batch.column_by_name("b_str").is_none());
+        // Single-type string field: bare name
+        assert!(batch.column_by_name("a").is_some());
+        assert!(batch.column_by_name("b").is_none());
     }
     #[test]
     fn test_keep_raw() {
@@ -293,9 +305,10 @@ mod tests {
         let batch = default_scanner(4)
             .scan(b"{\"a\":true,\"b\":false,\"c\":null}\n")
             .unwrap();
+        // Single-type string field: bare name
         assert_eq!(
             batch
-                .column_by_name("a_str")
+                .column_by_name("a")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
@@ -307,9 +320,10 @@ mod tests {
     #[test]
     fn test_duplicate_keys() {
         let batch = default_scanner(4).scan(b"{\"a\":1,\"a\":2}\n").unwrap();
+        // Single-type int field: bare name (first-writer-wins for dup keys)
         assert_eq!(
             batch
-                .column_by_name("a_int")
+                .column_by_name("a")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<Int64Array>()
@@ -323,15 +337,16 @@ mod tests {
         let batch = default_scanner(4)
             .scan(b"{\"big\":99999999999999999999}\n")
             .unwrap();
-        assert!(batch.column_by_name("big_float").is_some());
+        assert!(batch.column_by_name("big").is_some());
     }
     #[test]
     fn test_i64_min_is_preserved_as_int() {
         let batch = default_scanner(4)
             .scan(b"{\"big\":-9223372036854775808}\n")
             .unwrap();
+        // Single-type int field: bare name
         let col = batch
-            .column_by_name("big_int")
+            .column_by_name("big")
             .unwrap()
             .as_any()
             .downcast_ref::<Int64Array>()
@@ -352,7 +367,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             batch
-                .column_by_name("tags_str")
+                .column_by_name("tags")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
@@ -371,7 +386,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             batch
-                .column_by_name("ok_str")
+                .column_by_name("ok")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
@@ -390,7 +405,7 @@ mod tests {
             .unwrap();
         assert!(
             batch
-                .column_by_name("msg_str")
+                .column_by_name("msg")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
@@ -418,7 +433,8 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(batch.num_rows(), 2);
-        assert!(batch.column_by_name("host_str").is_some());
+        // Single-type string field: bare name
+        assert!(batch.column_by_name("host").is_some());
     }
     #[test]
     fn test_streaming_reuse() {

@@ -12,7 +12,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, Float64Builder, Int64Builder, StringArray};
+use arrow::array::{Array, StringArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
@@ -57,14 +57,14 @@ impl JsonExtractMode {
     }
 
     /// Column-name suffixes to try, in preference order, when looking up the
-    /// scanner output for this mode. The scanner always emits type-suffixed
-    /// column names (`_str`, `_int`, `_float`), so bare-name (`""`) entries
-    /// are omitted — they would never match any scanner output.
+    /// scanner output for this mode. Bare name (`""`) is included as a
+    /// fallback for single-type fields, which use the bare field name
+    /// when there is no type conflict in the batch.
     fn suffix_order(self) -> &'static [&'static str] {
         match self {
-            Self::Str => &["_str", "_int", "_float"],
-            Self::Int => &["_int"],
-            Self::Float => &["_float", "_int"],
+            Self::Str => &["", "__str", "__int", "__float"],
+            Self::Int => &["__int", ""],
+            Self::Float => &["__float", "__int", ""],
         }
     }
 }
@@ -217,16 +217,35 @@ impl ScalarUDFImpl for JsonExtractUdf {
         // --- parse ---
         let batch = parse_raw(&raw_array, key)?;
 
+        // --- coerce to the declared return type ---
+        let target_dt = self.mode.return_type();
+        let num_rows = raw_array.len();
+
+        // Special case: Str mode on a conflict batch where the bare column is
+        // absent. Coalesce all variant columns row-by-row into a single Utf8.
+        if self.mode == JsonExtractMode::Str && batch.column_by_name(key).is_none() {
+            let int_col = batch.column_by_name(&format!("{key}__int"));
+            let float_col = batch.column_by_name(&format!("{key}__float"));
+            let str_col = batch.column_by_name(&format!("{key}__str"));
+
+            if int_col.is_some() || float_col.is_some() || str_col.is_some() {
+                use crate::conflict_schema::merge_to_utf8;
+                let merged = merge_to_utf8(
+                    int_col.map(Arc::as_ref),
+                    float_col.map(Arc::as_ref),
+                    str_col.map(Arc::as_ref),
+                    num_rows,
+                );
+                return Ok(ColumnarValue::Array(merged));
+            }
+        }
+
         // --- look up the best column by suffix order ---
         let col = self.mode.suffix_order().iter().find_map(|suffix| {
             batch
                 .column_by_name(&format!("{key}{suffix}"))
                 .map(Arc::clone)
         });
-
-        // --- coerce to the declared return type ---
-        let target_dt = self.mode.return_type();
-        let num_rows = raw_array.len();
 
         let result = match col {
             None => arrow::array::new_null_array(&target_dt, num_rows),
@@ -239,24 +258,10 @@ impl ScalarUDFImpl for JsonExtractUdf {
                     if *arr.data_type() == DataType::Int64 {
                         arr
                     } else {
-                        // Try parsing strings as i64; unparsable → null.
-                        let str_arr = arrow::compute::cast(&arr, &DataType::Utf8)?;
-                        let str_arr = str_arr
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .expect("cast to Utf8 must yield StringArray in Int path");
-                        let mut builder = Int64Builder::with_capacity(str_arr.len());
-                        for i in 0..str_arr.len() {
-                            if str_arr.is_null(i) {
-                                builder.append_null();
-                            } else {
-                                match str_arr.value(i).parse::<i64>() {
-                                    Ok(v) => builder.append_value(v),
-                                    Err(_) => builder.append_null(),
-                                }
-                            }
-                        }
-                        Arc::new(builder.finish())
+                        // The column is not Int64 (e.g. bare string column found
+                        // via bare-name fallback). The JSON value is not a number,
+                        // so return all-null rather than coercing a string "200" → 200.
+                        arrow::array::new_null_array(&DataType::Int64, num_rows)
                     }
                 }
                 JsonExtractMode::Float => {
@@ -265,23 +270,10 @@ impl ScalarUDFImpl for JsonExtractUdf {
                     } else if *arr.data_type() == DataType::Int64 {
                         arrow::compute::cast(&arr, &DataType::Float64)?
                     } else {
-                        let str_arr = arrow::compute::cast(&arr, &DataType::Utf8)?;
-                        let str_arr = str_arr
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .expect("cast to Utf8 must yield StringArray in Float path");
-                        let mut builder = Float64Builder::with_capacity(str_arr.len());
-                        for i in 0..str_arr.len() {
-                            if str_arr.is_null(i) {
-                                builder.append_null();
-                            } else {
-                                match str_arr.value(i).parse::<f64>() {
-                                    Ok(v) => builder.append_value(v),
-                                    Err(_) => builder.append_null(),
-                                }
-                            }
-                        }
-                        Arc::new(builder.finish())
+                        // The column is not a numeric type (e.g. bare string column found
+                        // via bare-name fallback). The JSON value is not a number,
+                        // so return all-null rather than coercing a string "1.5" → 1.5.
+                        arrow::array::new_null_array(&DataType::Float64, num_rows)
                     }
                 }
             },
@@ -419,5 +411,56 @@ mod tests {
             .unwrap();
         assert!(col.value(0).contains("200"));
         assert!(col.value(1).contains("500"));
+    }
+
+    /// `json_int` on a field that is a quoted string (no type conflict in the
+    /// batch) must return NULL, not a coerced integer. The scanner emits a bare
+    /// Utf8 column `status` (no conflict), so `json_int` finds a string column
+    /// and must return null rather than silently parsing "200" as 200.
+    #[tokio::test]
+    async fn test_json_int_on_quoted_string_is_null() {
+        let batch = make_raw_batch(vec![r#"{"status": "200"}"#]);
+        let result = query("SELECT json_int(_raw, 'status') as s FROM logs", batch).await;
+        let col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(
+            col.is_null(0),
+            "json_int on a quoted string must return null"
+        );
+    }
+
+    /// `json(_raw, 'status')` on a batch where some rows have `{"status": 200}`
+    /// and others have `{"status": "OK"}` must coalesce all variants row-by-row
+    /// and return `["200", "OK"]` — not `[null, "OK"]`.
+    #[tokio::test]
+    async fn test_json_str_on_conflict_batch_coalesces() {
+        let batch = make_raw_batch(vec![r#"{"status": 200}"#, r#"{"status": "OK"}"#]);
+        let result = query("SELECT json(_raw, 'status') as s FROM logs", batch).await;
+        let col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "200", "int row must be coalesced to string");
+        assert_eq!(col.value(1), "OK", "str row must be returned as-is");
+    }
+
+    /// `json_float` on a field that is a quoted string must return NULL.
+    #[tokio::test]
+    async fn test_json_float_on_quoted_string_is_null() {
+        let batch = make_raw_batch(vec![r#"{"duration": "1.5"}"#]);
+        let result = query("SELECT json_float(_raw, 'duration') as d FROM logs", batch).await;
+        let col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert!(
+            col.is_null(0),
+            "json_float on a quoted string must return null"
+        );
     }
 }

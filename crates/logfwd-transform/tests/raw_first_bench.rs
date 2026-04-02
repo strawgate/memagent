@@ -64,16 +64,10 @@ async fn path_a_extraction(json_data: &[u8], num_fields: usize) -> RecordBatch {
     let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
     ctx.register_table("logs", Arc::new(table)).unwrap();
 
-    // Build SQL selecting specific fields (using suffixed names)
-    let select_cols: Vec<String> = (0..num_fields.min(10))
-        .map(|f| match f % 3 {
-            0 => format!("f{f}_int"),
-            1 => format!("f{f}_float"),
-            _ => format!("f{f}_str"),
-        })
-        .collect();
+    // Build SQL selecting specific fields (bare names — no type suffix)
+    let select_cols: Vec<String> = (0..num_fields.min(10)).map(|f| format!("f{f}")).collect();
     let sql = format!(
-        "SELECT {} FROM logs WHERE f0_int > 5000",
+        "SELECT {} FROM logs WHERE f0 > 5000",
         select_cols.join(", ")
     );
 

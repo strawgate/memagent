@@ -134,7 +134,7 @@ fn verify_batches(
 
     for batch in batches {
         // Find the sequence_id column (scanner produces sequence_id_int for integers).
-        let seq_col = batch.column_by_name("sequence_id_int");
+        let seq_col = batch.column_by_name("sequence_id");
         if seq_col.is_none() {
             // Batch has no sequence_id_int column; all rows are malformed
             // from the compliance perspective.
@@ -144,11 +144,11 @@ fn verify_batches(
         let seq_arr = seq_col
             .as_any()
             .downcast_ref::<Int64Array>()
-            .expect("sequence_id_int should be Int64");
+            .expect("sequence_id should be Int64");
 
         // Optional source_id filter.
         let source_filter: Option<Vec<bool>> = if !source_id.is_empty() {
-            batch.column_by_name("source_id_str").map(|col| {
+            batch.column_by_name("source_id").map(|col| {
                 (0..batch.num_rows())
                     .map(|row| {
                         if col.is_null(row) {
@@ -349,7 +349,7 @@ input:
   type: file
   path: {}
   format: json
-transform: "SELECT * FROM logs WHERE level_str = 'ERROR'"
+transform: "SELECT * FROM logs WHERE level = 'ERROR'"
 output:
   type: stdout
   format: json
@@ -362,11 +362,11 @@ output:
     // ERROR lines are the odd-numbered sequence_ids (1, 3, 5, ...).
     let mut all_ids: Vec<i64> = Vec::new();
     for batch in &batches {
-        if let Some(seq_col) = batch.column_by_name("sequence_id_int") {
+        if let Some(seq_col) = batch.column_by_name("sequence_id") {
             let seq_arr = seq_col
                 .as_any()
                 .downcast_ref::<Int64Array>()
-                .expect("sequence_id_int should be Int64");
+                .expect("sequence_id should be Int64");
             for row in 0..batch.num_rows() {
                 if !seq_arr.is_null(row) {
                     all_ids.push(seq_arr.value(row));
@@ -419,7 +419,7 @@ input:
   type: file
   path: {}
   format: json
-transform: "SELECT sequence_id_int, message_str FROM logs"
+transform: "SELECT sequence_id, message FROM logs"
 output:
   type: stdout
   format: json
@@ -434,12 +434,12 @@ output:
         let schema = batch.schema();
         let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
         assert!(
-            col_names.contains(&"sequence_id_int"),
-            "expected sequence_id_int column, got: {col_names:?}"
+            col_names.contains(&"sequence_id"),
+            "expected sequence_id column, got: {col_names:?}"
         );
         assert!(
-            col_names.contains(&"message_str"),
-            "expected message_str column, got: {col_names:?}"
+            col_names.contains(&"message"),
+            "expected message column, got: {col_names:?}"
         );
         assert_eq!(
             col_names.len(),

@@ -1129,7 +1129,7 @@ input:
   type: file
   path: {}
   format: json
-transform: "SELECT * FROM logs WHERE level_str = 'ERROR'"
+transform: "SELECT * FROM logs WHERE level = 'ERROR'"
 output:
   type: stdout
   format: json
@@ -2466,7 +2466,7 @@ input:
   type: file
   path: {}
   format: json
-transform: "SELECT * FROM logs WHERE level_str = 'NONEXISTENT'"
+transform: "SELECT * FROM logs WHERE level = 'NONEXISTENT'"
 output:
   type: "null"
 "#,
@@ -2529,8 +2529,9 @@ mod format_integration_tests {
         let mut scanner = SimdScanner::new(config);
         let batch = scanner.scan(input).unwrap();
         assert_eq!(batch.num_rows(), 2);
-        assert!(batch.schema().field_with_name("level_str").is_ok());
-        assert!(batch.schema().field_with_name("msg_str").is_ok());
+        // Single-type string fields: bare names
+        assert!(batch.schema().field_with_name("level").is_ok());
+        assert!(batch.schema().field_with_name("msg").is_ok());
     }
 
     /// Raw format: lines captured as _raw when keep_raw is true.
@@ -2567,7 +2568,8 @@ mod format_integration_tests {
         let mut scanner = SimdScanner::new(config);
         let batch = scanner.scan(&out).unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert!(batch.schema().field_with_name("level_str").is_ok());
+        // Single-type string field: bare name
+        assert!(batch.schema().field_with_name("level").is_ok());
     }
 
     /// Mixed: CRI P+F → scanner produces correct fields.
