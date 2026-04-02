@@ -21,6 +21,10 @@ clippy:
 test:
     cargo test
 
+# Run Kani formal verification proofs (logfwd-core only)
+kani:
+    cargo kani -p logfwd-core
+
 # Run all tests with nextest (parallel, faster)
 nextest:
     cargo nextest run

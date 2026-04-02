@@ -23,3 +23,8 @@ jobs:
 
       - name: Fetch dependencies
         run: cargo fetch
+
+      - name: Install Kani verifier
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup

@@ -74,7 +74,7 @@ just lint         # Format + clippy + TOML + deny
 just clippy       # Clippy with -D warnings (same as CI)
 just fmt          # Format code
 just bench        # Criterion benchmarks
-cargo kani -p logfwd-core  # Run Kani proofs (no just recipe)
+just kani         # Run Kani formal verification proofs
 cargo test -p logfwd-core  # Fast single-crate iteration
 ```
 

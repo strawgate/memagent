@@ -144,6 +144,18 @@ jobs:
       - name: Tests
         run: cargo test
 
+  kani:
+    name: Kani proofs
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Kani verification
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: -p logfwd-core
+
   actionlint:
     name: Actionlint
     if: github.event_name == 'push' || github.event.pull_request.draft == false
