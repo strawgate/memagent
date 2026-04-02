@@ -20,6 +20,7 @@ use datafusion::prelude::*;
 
 use logfwd_core::scan_config::ScanConfig;
 
+pub mod conflict_schema;
 pub mod udf;
 
 // Re-export sqlparser through datafusion.
@@ -594,6 +595,12 @@ impl SqlTransform {
         // Swap the `logs` table: build new table first, then deregister + register.
         // Building the MemTable before deregistering ensures that on error we
         // don't leave the context without a `logs` table.
+        //
+        // Normalize the batch first: if the scanner detected type conflicts it
+        // emits suffixed columns (`status_int`, `status_str`). Add a bare
+        // `status: Utf8` column so SQL using bare names resolves on both clean
+        // and conflict batches.
+        let batch = conflict_schema::normalize_conflict_columns(batch);
         let schema = batch.schema();
         let table = MemTable::try_new(schema, vec![vec![batch]])
             .map_err(|e| format!("Failed to create MemTable: {e}"))?;

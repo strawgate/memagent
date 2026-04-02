@@ -407,18 +407,17 @@ mod tests {
             .as_any()
             .downcast_ref::<Int64Array>()
             .unwrap();
-        assert!(col.is_null(0), "json_int on a quoted string must return null");
+        assert!(
+            col.is_null(0),
+            "json_int on a quoted string must return null"
+        );
     }
 
     /// `json_float` on a field that is a quoted string must return NULL.
     #[tokio::test]
     async fn test_json_float_on_quoted_string_is_null() {
         let batch = make_raw_batch(vec![r#"{"duration": "1.5"}"#]);
-        let result = query(
-            "SELECT json_float(_raw, 'duration') as d FROM logs",
-            batch,
-        )
-        .await;
+        let result = query("SELECT json_float(_raw, 'duration') as d FROM logs", batch).await;
         let col = result
             .column(0)
             .as_any()

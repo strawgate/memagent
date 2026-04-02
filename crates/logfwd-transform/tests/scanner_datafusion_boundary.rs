@@ -589,3 +589,137 @@ fn streaming_builder_group_by_and_order_by() {
     let error_pos = levels.iter().position(|v| v == "ERROR").unwrap();
     assert_eq!(counts[error_pos], Some(2));
 }
+
+// ===========================================================================
+// Section 5: Conflict-schema normalization (bare-name SQL on conflict batches)
+// ===========================================================================
+//
+// When the scanner detects a type conflict for a field it emits suffixed
+// columns (`status_int: Int64, status_str: Utf8View`). Before handing the
+// batch to DataFusion, SqlTransform calls normalize_conflict_columns() which
+// adds a bare `status: Utf8` column so that user SQL using bare names resolves
+// correctly against both clean and conflict batches.
+
+/// Conflict batch: `status_int` + `status_str` both present.
+/// SQL `SELECT status FROM logs` must resolve the synthesised bare column.
+#[test]
+fn conflict_batch_bare_select() {
+    use arrow::array::StringViewBuilder;
+
+    let mut sv = StringViewBuilder::new();
+    sv.append_null(); // row 0: no string value
+    sv.append_value("OK"); // row 1: string value
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("status_int", DataType::Int64, true),
+        Field::new("status_str", DataType::Utf8View, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![Some(200), None])) as ArrayRef,
+            Arc::new(sv.finish()) as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    let mut t = SqlTransform::new("SELECT status FROM logs").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 2);
+    let col = collect_string_col(&result, "status");
+    assert_eq!(col[0], "200"); // from status_int
+    assert_eq!(col[1], "OK"); // from status_str
+}
+
+/// WHERE on a bare column from a conflict batch.
+#[test]
+fn conflict_batch_where_on_bare_column() {
+    use arrow::array::StringViewBuilder;
+
+    let mut sv = StringViewBuilder::new();
+    sv.append_null();
+    sv.append_value("OK");
+    sv.append_value("NOT_FOUND");
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("status_int", DataType::Int64, true),
+        Field::new("status_str", DataType::Utf8View, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![Some(200), None, None])) as ArrayRef,
+            Arc::new(sv.finish()) as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    let mut t = SqlTransform::new("SELECT status FROM logs WHERE status = 'OK'").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 1);
+    let col = collect_string_col(&result, "status");
+    assert_eq!(col[0], "OK");
+}
+
+/// `int(status)` on a conflict batch's bare column returns the numeric value.
+#[test]
+fn conflict_batch_int_udf_on_bare_column() {
+    use arrow::array::StringViewBuilder;
+
+    let mut sv = StringViewBuilder::new();
+    sv.append_null();
+    sv.append_value("OK");
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("status_int", DataType::Int64, true),
+        Field::new("status_str", DataType::Utf8View, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![Some(500), None])) as ArrayRef,
+            Arc::new(sv.finish()) as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    let mut t =
+        SqlTransform::new("SELECT int(status) AS s FROM logs WHERE int(status) > 400").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+
+    // Only row 0 (status "500" cast to int = 500 > 400) should match.
+    assert_eq!(result.num_rows(), 1);
+    let counts = collect_i64_col(&result, "s");
+    assert_eq!(counts[0], Some(500));
+}
+
+/// Verify that a batch with only a single suffixed column (no true conflict)
+/// is NOT modified — the lone `error_str` column must remain unmodified.
+#[test]
+fn single_suffixed_column_not_treated_as_conflict() {
+    use arrow::array::StringViewBuilder;
+
+    let mut sv = StringViewBuilder::new();
+    sv.append_value("oops");
+    sv.append_value("crash");
+
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "error_str",
+        DataType::Utf8View,
+        true,
+    )]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(sv.finish()) as ArrayRef]).unwrap();
+
+    // SQL must use the actual column name — no bare `error` column should appear.
+    let mut t = SqlTransform::new("SELECT error_str FROM logs").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 2);
+    // No bare `error` column in output.
+    assert!(
+        result.column_by_name("error").is_none(),
+        "bare 'error' column must not be synthesized from a lone 'error_str'"
+    );
+}
