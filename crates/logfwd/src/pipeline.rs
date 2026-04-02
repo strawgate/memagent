@@ -1501,6 +1501,7 @@ output:
         tx.try_send(ChannelMsg::Data {
             bytes: vec![1],
             checkpoints: vec![],
+            queued_at: Instant::now(),
         })
         .unwrap();
 
@@ -1508,11 +1509,13 @@ output:
         let metrics2 = Arc::clone(&metrics);
         let handle = std::thread::spawn(move || {
             blocking_send_channel_msg(
+                "test",
                 &tx2,
                 &metrics2,
                 ChannelMsg::Data {
                     bytes: vec![2],
                     checkpoints: vec![],
+                    queued_at: Instant::now(),
                 },
             )
         });
@@ -2406,6 +2409,7 @@ output:
         tx.try_send(ChannelMsg::Data {
             bytes: b"test\n".to_vec(),
             checkpoints: vec![(SourceId(42), ByteOffset(1000))],
+            queued_at: Instant::now(),
         })
         .unwrap();
 
