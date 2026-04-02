@@ -153,7 +153,7 @@ mod tests {
             UdpSink::new("test", addr.to_string(), Arc::new(ComponentStats::new())).unwrap();
         let batch = make_batch(5);
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::default(),
             observed_time_ns: 0,
         };
         sink.send_batch(&batch, &meta).unwrap();
@@ -186,7 +186,7 @@ mod tests {
         // Create enough rows that they cannot all fit in 1400 bytes.
         let batch = make_batch(100);
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::default(),
             observed_time_ns: 0,
         };
         sink.send_batch(&batch, &meta).unwrap();

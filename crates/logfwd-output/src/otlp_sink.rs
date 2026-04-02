@@ -643,7 +643,7 @@ mod tests {
 
     fn make_metadata() -> BatchMetadata {
         BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::default(),
             observed_time_ns: 1_000_000_000,
         }
     }

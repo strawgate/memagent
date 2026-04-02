@@ -75,7 +75,7 @@ mod tests {
         let schema = std::sync::Arc::new(arrow::datatypes::Schema::empty());
         let batch = RecordBatch::new_empty(schema);
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::default(),
             observed_time_ns: 0,
         };
         assert!(sink.send_batch(&batch, &meta).is_ok());
@@ -95,7 +95,7 @@ mod tests {
         let col = Int32Array::from(vec![1, 2, 3]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap();
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::default(),
             observed_time_ns: 0,
         };
 
@@ -118,7 +118,7 @@ mod tests {
         let col = Int32Array::from(vec![10, 20, 30]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap();
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::default(),
             observed_time_ns: 0,
         };
 

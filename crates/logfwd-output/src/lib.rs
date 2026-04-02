@@ -461,7 +461,7 @@ mod tests {
 
     fn make_metadata() -> BatchMetadata {
         BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::default(),
             observed_time_ns: 1_700_000_000_000_000_000,
         }
     }
@@ -926,7 +926,7 @@ mod tests {
         let msg = StringArray::from(vec![Some("something happened")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(count), Arc::new(msg)]).unwrap();
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::default(),
             observed_time_ns: 1_700_000_000_000_000_000,
         };
         let mut sink = OtlpSink::new(
@@ -953,7 +953,7 @@ mod tests {
         let status = Int64Array::from(vec![Some(200i64)]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(status)]).unwrap();
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::default(),
             observed_time_ns: 1_700_000_000_000_000_000,
         };
         let mut sink = OtlpSink::new(
