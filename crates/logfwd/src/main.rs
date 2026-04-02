@@ -223,13 +223,13 @@ async fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
         .get(2)
         .map_or("127.0.0.1:4318", std::string::String::as_str);
 
-    // Validate addr looks like host:port — reject anything that could inject YAML.
-    if !addr.contains(':') || addr.contains('\n') || addr.contains(' ') {
-        return Err(CliError::Config(format!("invalid bind address: {addr}")));
-    }
+    // Validate addr is a parseable socket address before injecting into YAML.
+    addr.parse::<std::net::SocketAddr>()
+        .map_err(|_| CliError::Config(format!("invalid bind address: {addr}")))?;
 
+    // Use port 0 for diagnostics so it never collides with an in-use port.
     let yaml = format!(
-        "input:\n  type: otlp\n  listen: {addr}\noutput:\n  type: null\nserver:\n  diagnostics: 127.0.0.1:9090\n"
+        "input:\n  type: otlp\n  listen: {addr}\noutput:\n  type: null\nserver:\n  diagnostics: 127.0.0.1:0\n"
     );
     let config = logfwd_config::Config::load_str(&yaml)
         .map_err(|e| CliError::Config(format!("internal config error: {e}")))?;
@@ -691,13 +691,17 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
 
     writer.flush()?;
     let size = std::fs::metadata(output)?.len();
-    eprintln!(
-        "{}done{}: {:.1} MB, avg {:.0} bytes/line",
-        green(),
-        reset(),
-        size as f64 / (1024.0 * 1024.0),
-        size as f64 / num_lines as f64,
-    );
+    if num_lines == 0 {
+        eprintln!("{}done{}: 0 lines, 0 bytes", green(), reset());
+    } else {
+        eprintln!(
+            "{}done{}: {:.1} MB, avg {:.0} bytes/line",
+            green(),
+            reset(),
+            size as f64 / (1024.0 * 1024.0),
+            size as f64 / num_lines as f64,
+        );
+    }
     Ok(())
 }
 

@@ -441,6 +441,17 @@ impl DiagnosticsServer {
         &self,
         request: tiny_http::Request,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // All diagnostics endpoints are read-only — reject non-GET methods.
+        if request.method() != &tiny_http::Method::Get {
+            let allow_header = tiny_http::Header::from_bytes(&b"Allow"[..], &b"GET"[..])
+                .map_err(|()| io::Error::other("invalid HTTP header"))?;
+            let resp = tiny_http::Response::from_string("method not allowed")
+                .with_status_code(405)
+                .with_header(allow_header);
+            request.respond(resp)?;
+            return Ok(());
+        }
+
         let path = request.url().to_string();
         // Strip query string for routing.
         let route = path.split('?').next().unwrap_or(&path);
@@ -455,8 +466,20 @@ impl DiagnosticsServer {
             "/api/logs" => self.serve_logs(request),
             "/api/history" => self.serve_history(request),
             "/api/traces" => self.serve_traces(request),
-            // Prometheus /metrics removed — use OTLP metrics push instead.
-            // The /api/pipelines endpoint provides the same data as JSON.
+            // Prometheus /metrics was removed. Return 410 Gone with a pointer
+            // to the replacement endpoint so monitoring tools get a clear signal.
+            "/metrics" => {
+                let header =
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..])
+                        .map_err(|()| io::Error::other("invalid HTTP header"))?;
+                let resp = tiny_http::Response::from_string(
+                    "Prometheus /metrics endpoint removed. Use /api/pipelines for JSON metrics.",
+                )
+                .with_status_code(410)
+                .with_header(header);
+                request.respond(resp)?;
+                Ok(())
+            }
             _ => {
                 let header =
                     tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..])
@@ -1559,5 +1582,75 @@ mod tests {
         assert_eq!(t["scan_ns"], 150_000_000u64);
         assert_eq!(t["total_ns"], 200_000_000u64);
         assert_eq!(t["status"], "ok");
+    }
+
+    /// Raw TCP POST helper for method-rejection tests.
+    fn http_post(port: u16, path: &str) -> u16 {
+        use std::io::Write;
+        use std::net::TcpStream;
+
+        let addr = format!("127.0.0.1:{port}");
+        let mut stream = None;
+        for _ in 0..20 {
+            match TcpStream::connect(&addr) {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            }
+        }
+        let mut stream = stream.unwrap_or_else(|| panic!("connect failed after retries to {addr}"));
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        let req = format!(
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+
+        let mut buf = Vec::new();
+        let _ = stream.read_to_end(&mut buf);
+        let text = String::from_utf8_lossy(&buf).to_string();
+        text.lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0)
+    }
+
+    // Bug #728: diagnostics server should return 405 for non-GET methods.
+    #[test]
+    fn non_get_returns_405() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let port = free_port();
+        let server = server_with_test_pipeline(port);
+        let _handle = server.start().expect("server bind failed");
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        for path in &["/health", "/api/pipelines", "/api/stats"] {
+            let status = http_post(port, path);
+            assert_eq!(status, 405, "POST {path} should return 405, got {status}");
+        }
+    }
+
+    // Bug #715: /metrics should return 410 Gone with a helpful message,
+    // not a generic 404 that gives no hint about what happened.
+    #[test]
+    fn metrics_endpoint_returns_410() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let port = free_port();
+        let server = server_with_test_pipeline(port);
+        let _handle = server.start().expect("server bind failed");
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/metrics");
+        assert_eq!(status, 410, "expected 410 Gone for /metrics, got {status}");
+        assert!(
+            body.contains("/api/pipelines"),
+            "/metrics 410 body should mention /api/pipelines: {body}"
+        );
     }
 }

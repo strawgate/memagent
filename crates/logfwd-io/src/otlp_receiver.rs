@@ -60,11 +60,23 @@ impl OtlpReceiverInput {
                 for mut request in server.incoming_requests() {
                     let url = request.url().to_string();
 
-                    // Accept POST to /v1/logs (standard OTLP endpoint).
-                    if request.method() != &tiny_http::Method::Post || !url.starts_with("/v1/logs")
-                    {
+                    // Only accept the exact OTLP endpoint path (with optional query string).
+                    // Reject unrecognised paths with 404; wrong method with 405.
+                    let path = url.split('?').next().unwrap_or(&url);
+                    if path != "/v1/logs" {
                         let _ = request.respond(
                             tiny_http::Response::from_string("not found").with_status_code(404),
+                        );
+                        continue;
+                    }
+                    if request.method() != &tiny_http::Method::Post {
+                        let allow_header = "Allow: POST"
+                            .parse::<tiny_http::Header>()
+                            .expect("static header is valid");
+                        let _ = request.respond(
+                            tiny_http::Response::from_string("method not allowed")
+                                .with_status_code(405)
+                                .with_header(allow_header),
                         );
                         continue;
                     }
@@ -168,7 +180,10 @@ impl OtlpReceiverInput {
                         .find(|h| h.field.equiv("Content-Type"))
                         .map_or("application/x-protobuf", |h| h.value.as_str());
 
-                    let is_json = content_type.contains("application/json");
+                    // Content-Type matching is case-insensitive per RFC 7231.
+                    let is_json = content_type
+                        .to_ascii_lowercase()
+                        .contains("application/json");
 
                     // Decode and convert to JSON lines.
                     let json_lines = if is_json {
@@ -958,5 +973,58 @@ mod tests {
 
         // Drain the two buffered entries so the receiver is valid.
         let _ = receiver.poll().unwrap();
+    }
+
+    // Bug #686: /v1/logsFOO and /v1/logs/extra should return 404, not 200.
+    #[test]
+    fn path_prefix_variants_return_404() {
+        let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
+        let port = receiver.local_addr().port();
+
+        for bad_path in &["/v1/logsFOO", "/v1/logs/extra", "/v1/logs2", "/v1/log"] {
+            let url = format!("http://127.0.0.1:{port}{bad_path}");
+            let status = match ureq::get(&url).call() {
+                Ok(r) => r.status().as_u16(),
+                Err(ureq::Error::StatusCode(c)) => c,
+                Err(e) => panic!("unexpected error for {bad_path}: {e}"),
+            };
+            assert_eq!(status, 404, "{bad_path} should return 404, got {status}");
+        }
+    }
+
+    // Bug #687: Content-Type: Application/JSON (capital A) should be treated as JSON.
+    #[test]
+    fn content_type_matching_is_case_insensitive() {
+        let mut receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
+        let port = receiver.local_addr().port();
+        let url = format!("http://127.0.0.1:{port}/v1/logs");
+
+        let body = serde_json::json!({
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{"body": {"stringValue": "hello"}}]
+                }]
+            }]
+        })
+        .to_string();
+
+        // Send with mixed-case Content-Type header.
+        let resp = ureq::post(&url)
+            .header("content-type", "Application/JSON")
+            .send(body.as_bytes())
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "Application/JSON should be decoded as JSON and return 200"
+        );
+
+        // Verify data actually arrived (receiver parsed the JSON body).
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let data = receiver.poll().unwrap();
+        assert!(
+            !data.is_empty(),
+            "expected data from JSON body with mixed-case Content-Type"
+        );
     }
 }
