@@ -2322,9 +2322,7 @@ output:
         .unwrap();
 
         let msg = rx.try_recv().unwrap();
-        assert!(
-            matches!(&msg, ChannelMsg::Data { checkpoints, .. } if checkpoints.len() == 1)
-        );
+        assert!(matches!(&msg, ChannelMsg::Data { checkpoints, .. } if checkpoints.len() == 1));
 
         let msg = rx.try_recv().unwrap();
         assert!(matches!(msg, ChannelMsg::PathUpdate(updates) if updates.len() == 1));
@@ -2375,7 +2373,10 @@ output:
         });
 
         let result = pipeline.run(&shutdown);
-        assert!(result.is_ok(), "pipeline with filtering transform must not crash");
+        assert!(
+            result.is_ok(),
+            "pipeline with filtering transform must not crash"
+        );
         assert!(
             pipeline.machine.is_none(),
             "machine should drain cleanly even when transform filters all rows"
