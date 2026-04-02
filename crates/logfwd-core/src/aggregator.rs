@@ -232,6 +232,11 @@ mod verification {
         match agg.feed(&msg, true) {
             AggregateResult::Complete(out) => {
                 assert!(out.len() <= max_size, "F-only output exceeds max");
+
+                // Guard vacuity: verify constraint doesn't eliminate all paths
+                kani::cover!(out.len() > 0, "non-empty output");
+                kani::cover!(out.len() == max_size, "output at max size");
+                kani::cover!(out.len() < max_size, "output under max size");
             }
             AggregateResult::Pending => panic!("F line should produce Complete"),
         }
@@ -252,6 +257,11 @@ mod verification {
         match agg.feed(&msg2, true) {
             AggregateResult::Complete(out) => {
                 assert!(out.len() <= max_size, "P+F output exceeds max");
+
+                // Guard vacuity: verify constraint allows meaningful paths
+                kani::cover!(out.len() > 8, "P+F concatenation happened");
+                kani::cover!(out.len() == max_size, "truncation at max size");
+                kani::cover!(out.len() < max_size, "no truncation needed");
             }
             AggregateResult::Pending => panic!("F line should produce Complete"),
         }
@@ -286,6 +296,11 @@ mod verification {
         match agg.feed(&msg3, true) {
             AggregateResult::Complete(out) => {
                 assert!(out.len() <= max_size, "P+P+F output exceeds max");
+
+                // Guard vacuity: verify 3-part aggregation works
+                kani::cover!(out.len() > 16, "multi-partial concatenation");
+                kani::cover!(out.len() == max_size, "truncation at limit");
+                kani::cover!(out.len() < 24, "all parts fit");
             }
             AggregateResult::Pending => panic!("F line should produce Complete"),
         }
