@@ -625,22 +625,39 @@ mod verification {
 
     /// Prove write_json_line without prefix passes JSON through and wraps plain text.
     #[kani::proof]
+    #[kani::unwind(60)]
     fn verify_write_json_line_no_prefix() {
         let msg: [u8; 8] = kani::any();
         let mut out = Vec::new();
 
         write_json_line(&msg, None, &mut out);
 
+        // Always ends with \n
+        assert_eq!(out[out.len() - 1], b'\n');
+
         if msg[0] == b'{' {
-            // JSON message passed through: msg + \n
-            assert_eq!(&out[..8], &msg);
-            assert_eq!(out[8], b'\n');
+            // JSON message passed through unchanged: msg + \n
             assert_eq!(out.len(), 9);
+            // Check each byte individually to avoid memcmp VCC explosion
+            assert_eq!(out[0], msg[0]);
+            assert_eq!(out[1], msg[1]);
+            assert_eq!(out[2], msg[2]);
+            assert_eq!(out[3], msg[3]);
+            assert_eq!(out[4], msg[4]);
+            assert_eq!(out[5], msg[5]);
+            assert_eq!(out[6], msg[6]);
+            assert_eq!(out[7], msg[7]);
         } else {
-            // Non-JSON: wrapped as {"_raw":"..."}\n — ends with \n
-            assert_eq!(out[out.len() - 1], b'\n');
-            // Output starts with {"_raw":"
-            assert_eq!(&out[..9], b"{\"_raw\":\"");
+            // Non-JSON: wrapped as {"_raw":"..."}\n — check prefix byte by byte
+            assert_eq!(out[0], b'{');
+            assert_eq!(out[1], b'"');
+            assert_eq!(out[2], b'_');
+            assert_eq!(out[3], b'r');
+            assert_eq!(out[4], b'a');
+            assert_eq!(out[5], b'w');
+            assert_eq!(out[6], b'"');
+            assert_eq!(out[7], b':');
+            assert_eq!(out[8], b'"');
         }
     }
 }

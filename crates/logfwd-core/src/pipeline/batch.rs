@@ -52,7 +52,10 @@ pub struct Sending;
 /// BatchTicket<Sending, C> →  fail()        →  BatchTicket<Queued, C>  (retry)
 /// BatchTicket<Sending, C> →  reject()      →  AckReceipt<C>          (permanent failure)
 /// ```
-#[must_use = "batch tickets must be explicitly acked, rejected, or requeued — dropping loses data"]
+///
+/// Dropping a `BatchTicket<Queued>` is safe — the pipeline does not track
+/// Queued tickets. Only `BatchTicket<Sending>` must not be dropped:
+/// `PipelineMachine::begin_send` is `#[must_use]` to enforce this.
 pub struct BatchTicket<S, C> {
     id: BatchId,
     source: SourceId,
