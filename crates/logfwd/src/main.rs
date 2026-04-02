@@ -420,6 +420,7 @@ async fn run_pipelines(
     for (name, pipe_cfg) in &config.pipelines {
         match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
             Ok(pipeline) => {
+                eprintln!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
                 pipelines.push(pipeline);
             }
             Err(e) => {
