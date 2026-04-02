@@ -185,8 +185,7 @@ fn reader_loop(read_fd: i32, orig_fd: i32, state: &CaptureState) {
     let mut partial: Vec<u8> = Vec::new();
 
     loop {
-        let n =
-            unsafe { libc::read(read_fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
+        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
 
         if n < 0 {
             // EINTR: signal interrupted the read — retry.
@@ -315,7 +314,11 @@ mod tests {
             buf.push(format!("line {:04}", i));
         }
         // Byte total must stay within the cap.
-        assert!(buf.total_bytes <= MAX_BYTES, "total_bytes {} > MAX_BYTES", buf.total_bytes);
+        assert!(
+            buf.total_bytes <= MAX_BYTES,
+            "total_bytes {} > MAX_BYTES",
+            buf.total_bytes
+        );
         assert!(!buf.lines.is_empty());
         // Most-recent line should be the last one pushed.
         assert_eq!(buf.lines.back().unwrap(), &format!("line {:04}", n - 1));

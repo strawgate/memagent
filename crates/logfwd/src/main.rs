@@ -325,7 +325,9 @@ fn output_label(o: &logfwd_config::OutputConfig) -> String {
     match o.output_type {
         OutputType::Otlp => format!("otlp  {}", o.endpoint.as_deref().unwrap_or("")),
         OutputType::Http => format!("http  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Elasticsearch => format!("elasticsearch  {}", o.endpoint.as_deref().unwrap_or("")),
+        OutputType::Elasticsearch => {
+            format!("elasticsearch  {}", o.endpoint.as_deref().unwrap_or(""))
+        }
         OutputType::Loki => format!("loki  {}", o.endpoint.as_deref().unwrap_or("")),
         OutputType::TcpOut => format!("tcp   {}", o.endpoint.as_deref().unwrap_or("")),
         OutputType::UdpOut => format!("udp   {}", o.endpoint.as_deref().unwrap_or("")),
