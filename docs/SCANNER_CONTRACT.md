@@ -54,15 +54,30 @@ The scanner expects **newline-delimited JSON** (`\n`-separated lines):
 
 ### Column naming
 
-Each JSON field `<name>` that is observed in at least one row produces one or
-more typed columns:
+Each JSON field `<name>` produces columns based on observed types:
+
+**Single type (no conflict):** bare field name with native Arrow type.
+
+| Observed type   | Column name | Arrow type  |
+|-----------------|-------------|-------------|
+| Integer (only)  | `<name>`    | `Int64`     |
+| Float (only)    | `<name>`    | `Float64`   |
+| String (only)   | `<name>`    | `Utf8` / `Utf8View` |
+
+**Multiple types (conflict):** suffixed columns per observed type.
 
 | Observed type   | Column name       | Arrow type  |
 |-----------------|-------------------|-------------|
 | Integer         | `<name>_int`      | `Int64`     |
 | Float           | `<name>_float`    | `Float64`   |
 | String / bool / nested object or array | `<name>_str` | `Utf8` / `Utf8View` |
-| Raw input line  | `_raw`            | `Utf8`      |
+
+Suffixed columns only appear when a field has multiple types across rows
+within the same batch.
+
+| Special column  | Description       | Arrow type  |
+|-----------------|-------------------|-------------|
+| `_raw`          | Original raw line | `Utf8`      |
 
 The `_raw` column is only present when `ScanConfig::keep_raw = true`.
 
@@ -82,9 +97,12 @@ valid JSON object).
 
 If the same field name appears as different JSON types across rows — for
 example `"status": 200` in one row and `"status": "OK"` in another — the
-scanner produces **separate columns** for each type that was observed:
+scanner produces **separate suffixed columns** for each type that was observed:
 `status_int` and `status_str` in this case.  Within each typed column the rows
 that did not supply that type are null.
+
+If a field has only one type across all rows in the batch, it gets a bare
+column name with no suffix (e.g., `status` as `Int64`).
 
 ### Duplicate keys
 

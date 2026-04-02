@@ -160,40 +160,37 @@ stays in the input plugin where it belongs.
 **Research:** `dev-docs/research/offset-checkpoint-research.md`
 **Related:** #270 (pipeline state machine).
 
-## Multi-column per field with DataType dispatch (not name-suffix dispatch)
+## Suffix only on type conflict (not always-suffix, not single-column promotion)
 
-**Decision:** Keep the multi-column internal representation
-(`status_int`, `status_str`) for per-document type fidelity. Fix
-how columns are consumed: dispatch on Arrow DataType, not name suffix.
-Delete the SQL rewriter (dead code per #602). Solve SQL UX separately.
+**Decision:** Bare column names by default. Suffixed columns (`_int`,
+`_str`, `_float`) only when a field has multiple types within a batch.
 
 **Core requirement: round-trip type fidelity.** A field that enters
-as int 200 in document A and string "OK" in document B must exit with
-those exact types. No type promotion across documents. As long as the
-user doesn't modify a column via SQL, the same values come out the
-other end. This is how real log data works — other tools (Elasticsearch,
-Vector) preserve per-document types.
+as int 200 must exit as int 200. No type promotion across documents.
+`SELECT *` round-trips the data.
 
-**Why not single-column with promotion?** Promoting int+string to
-string loses type information. `200` becomes `"200"` — the downstream
-system sees a string, not the integer that was sent. This breaks
-schema expectations, Elasticsearch mappings, and observability queries
-that filter on numeric status codes.
+**Core requirement: clean schemas stay clean.** OTLP, Arrow IPC, CSV,
+and consistent JSON produce bare column names with native types. No
+suffixes, no views, no overhead. The suffix machinery only activates
+when there's an actual per-row type conflict (e.g., JSON `status` is
+200 in one row and "OK" in another).
 
-**What was actually broken:** Not the multi-column schema — the
-consumption layer. Output sinks dispatched on column name suffix
-instead of Arrow DataType. The SQL rewriter (772 lines) attempted to
-translate bare SQL to suffixed columns but was never wired in (#602)
-and could never handle all SQL patterns.
+**How it works:**
+- Single type in batch: bare name, native DataType.
+  `status` (Int64), `level` (Utf8).
+- Multiple types in batch: suffixed names per type.
+  `status_int` (Int64) + `status_str` (Utf8).
+- Output always serializes with bare JSON key, dispatching on DataType.
+- View layer provides bare-name access for suffixed columns.
 
-**What gets fixed:**
-1. Output sinks dispatch on `field.data_type()` (done in #568)
-2. Delete `rewriter.rs` (dead code, 772 lines)
-3. Delete `parse_column_name()` / `strip_type_suffix()`
-4. Output layer strips `_int`/`_float`/`_str` suffixes when
-   serializing field names (JSON key = bare name, type from DataType)
-5. SQL UX: TBD — options include DataFusion UDFs, custom
-   TableProvider, or requiring users to use suffixed names
+**Why not always-suffix?** Penalizes clean-schema inputs (OTLP, CSV)
+with ugly SQL for a problem they don't have.
+
+**Why not single-column promotion?** Loses per-document type fidelity.
+int 200 becomes string "200".
+
+**What gets deleted:** `rewriter.rs` (772 lines, dead code per #602),
+`strip_type_suffix()`, name-based type dispatch.
 
 **Research:** `dev-docs/research/type-suffix-redesign.md`
 **Related:** #445 (tracking issue).

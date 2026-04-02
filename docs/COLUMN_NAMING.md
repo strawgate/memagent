@@ -1,49 +1,86 @@
 # Column Naming and Schema Mapping
 
-`logfwd` uses a zero-copy scanner that automatically maps JSON fields to typed columns. To avoid ambiguity and enable efficient SQL transforms, all JSON fields are suffixed with their detected type.
+`logfwd` automatically maps input fields to typed Arrow columns. Column
+names match the original field names whenever possible.
 
-## Type Suffixes
+## How Column Names Work
 
-When you write a SQL transform, reference your JSON fields using these suffixes:
+### Single-type fields (common case)
 
-| Suffix | JSON Type | DataFusion Type | Example |
-|--------|-----------|-----------------|---------|
-| `_str` | String | `Utf8` or `Utf8View` | `level_str` |
-| `_int` | Integer | `Int64` | `status_int` |
-| `_float` | Float | `Float64` | `duration_ms_float` |
+When a field has a consistent type across all rows in a batch, the column
+uses the bare field name with the native Arrow type:
 
-## Why Suffixes?
+| JSON value | Column name | Arrow type |
+|---|---|---|
+| `"status": 200` | `status` | `Int64` |
+| `"level": "INFO"` | `level` | `Utf8` |
+| `"duration": 1.5` | `duration` | `Float64` |
 
-NDJSON (Newline Delimited JSON) is schema-less. A field like `status` might be an integer in one line (`200`) and a string in another (`"200"`). 
-
-To process these efficiently in Arrow's strictly-typed `RecordBatch` format without a full pre-scan, `logfwd` extracts both versions into separate columns.
-
-## Example
-
-Given this JSON:
-
-```json
-{"timestamp":"2024-01-15T10:30:00Z", "level":"INFO", "status":200, "duration":1.5}
+SQL works naturally:
+```sql
+SELECT status, level FROM logs WHERE status > 400
 ```
 
-The available columns in your SQL `SELECT` will be:
-- `timestamp_str`
-- `level_str`
-- `status_int` (and `status_str` if it looks like a string elsewhere)
-- `duration_float` (and `duration_str`)
+This is the normal case for OTLP inputs, CSV inputs, and JSON sources
+with consistent types.
 
-## Automatic "Smart" Coalesce
+### Mixed-type fields (type conflict)
 
-If you want to handle fields that might be either `int` or `str` gracefully, you can use `COALESCE`:
+When the same field appears as different types across rows in a batch —
+for example `"status": 200` in one row and `"status": "OK"` in another —
+`logfwd` creates separate typed columns:
+
+| Column name | Arrow type | Contains |
+|---|---|---|
+| `status_int` | `Int64` | Rows where status was an integer |
+| `status_str` | `Utf8` | Rows where status was a string |
+
+Each typed column is nullable — rows where the field had a different type
+contain null.
 
 ```sql
-SELECT COALESCE(CAST(status_int AS VARCHAR), status_str) AS status FROM logs
+-- Filter on the integer version:
+SELECT status_int FROM logs WHERE status_int > 400
+
+-- Get the string version:
+SELECT status_str FROM logs WHERE status_str = 'OK'
 ```
+
+### Type suffixes
+
+| Suffix | JSON type | Arrow type |
+|---|---|---|
+| `_str` | String, boolean, nested object/array | `Utf8` / `Utf8View` |
+| `_int` | Integer | `Int64` |
+| `_float` | Float | `Float64` |
+
+Suffixes only appear when there's a type conflict. If a field is always
+one type, it has a bare name with no suffix.
+
+## Output Round-Tripping
+
+Output serialization uses the Arrow DataType, not the column name:
+- `Int64` → JSON number: `"status": 200`
+- `Float64` → JSON number: `"duration": 1.5`
+- `Utf8` → JSON string: `"level": "INFO"`
+
+The output JSON key is always the bare field name (suffix stripped).
+This means `SELECT *` round-trips documents with their original types.
 
 ## Special Columns
 
 | Column | Description |
-|--------|-------------|
+|---|---|
 | `_raw` | The original raw byte line (unparsed) |
 | `_file_str` | The absolute path of the file being tailed |
 | `_time` | The internal timestamp assigned to the log line |
+
+## Schema Stability
+
+If your SQL references a column that doesn't exist in a particular batch
+(e.g., `WHERE status_int > 400` but this batch has no integer status
+values), the column is automatically padded with nulls. Your SQL will
+never fail due to a missing column — it will simply return no matching
+rows for that column.
+
+This is derived from your SQL at config time, not accumulated at runtime.

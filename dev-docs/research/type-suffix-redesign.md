@@ -1,237 +1,183 @@
-# Type Suffix Redesign Research
+# Column Type Design
 
-Date: 2026-03-31 (updated 2026-04-01)
-Context: #445 — `_str`/`_int`/`_float` suffix convention is root cause of 11 bugs
+Date: 2026-04-01
+Context: #445 — column naming, type fidelity, and SQL UX
 
-## Core Requirement: Per-Document Type Fidelity
+## Core Requirements
 
-A field that enters as `200` (integer) in document A and `"OK"` (string)
-in document B must exit with those exact types. No type promotion across
-documents. As long as the user doesn't modify a column via SQL, the same
-values come out the other end.
+1. **Per-document type fidelity.** A field that enters as int `200` in
+   document A and string `"OK"` in document B must exit with those exact
+   types. `SELECT *` round-trips the data.
 
-This rules out single-column-per-field with type promotion (Int→Float→Utf8).
-Promotion would turn `200` into `"200"`, losing type information and breaking
-downstream systems that expect integers for status codes.
+2. **Clean-schema inputs stay clean.** OTLP, Arrow IPC, and other typed
+   inputs already have per-column types with no conflicts. These should
+   pass through with bare column names — no suffixes, no views, no overhead.
 
-Other log tools (Elasticsearch, Vector) preserve per-document types.
-We must too.
+3. **Mixed-type inputs are handled gracefully.** JSON can have `status: 200`
+   in one row and `status: "OK"` in another. The system must preserve both
+   types without promotion.
 
-## Problem
+4. **SQL is usable.** Users write SQL against column names. Bare names
+   should work for the common case. Typed access is available when needed.
 
-One JSON key can currently produce up to 3 Arrow columns (`status_int`,
-`status_float`, `status_str`). The output layer dispatches on column
-**name suffix** to determine serialization format. This breaks when:
+5. **Schema stability.** The user's SQL is fixed but the batch schema
+   varies. SQL-referenced columns must always exist (padded with nulls
+   if absent from a batch).
 
-- SQL transforms rename columns (suffix lost)
-- SQL aggregates produce new columns (no suffix)
-- User field names collide with suffixes
-- Schema evolves across batches (different suffix sets)
+## Design: Suffix Only On Conflict
 
-## Revised Understanding
+### The rule
 
-The multi-column approach (`status_int` + `status_str`) is actually
-correct for type fidelity — it preserves round-trip JSON → Arrow → JSON
-without losing type information. The bugs are NOT caused by having
-multiple columns. They're caused by:
+When the builder finalizes a batch, each field gets:
 
-1. Output sinks dispatch on column **name suffix** instead of Arrow DataType
-2. The SQL rewriter is incomplete and can never handle all SQL patterns
-3. Column deduplication in `build_col_infos` uses suffix strings, not DataType
-4. The rewriter was never wired in (#602) — it's dead code
+- **No type conflict** (field is always int, or always string, etc.):
+  bare column name, native DataType.
+  - `status` always int → column `status` (Int64)
+  - `level` always string → column `level` (Utf8)
 
-## Design: Fix the Dispatch, Not the Schema
+- **Type conflict** (field has multiple types across rows in the batch):
+  suffixed columns for each observed type.
+  - `status` is int in some rows, string in others →
+    `status_int` (Int64) + `status_str` (Utf8)
 
-### Core rule
+### Why this works for all input types
 
-Keep the multi-column internal representation. Fix how it's consumed.
+| Input source | Type conflicts? | Column names |
+|---|---|---|
+| OTLP / Arrow IPC | Never (typed per-column) | Bare: `status`, `level` |
+| CSV / raw / syslog | Never (all strings) | Bare: `status`, `level` |
+| JSON (consistent) | No (field is always same type) | Bare: `status` (Int64), `level` (Utf8) |
+| JSON (mixed types) | Yes | `status_int` + `status_str`, `level` (Utf8) |
+| Mixed pipeline | Depends on batch | Bare when clean, suffixed on conflict |
 
-### Fix 1: Output sinks dispatch on Arrow DataType
+Clean-schema inputs (OTLP, CSV, consistent JSON) get bare names and
+native SQL. No suffixes, no views, no overhead. The suffix machinery
+only activates when there's an actual type conflict in the batch.
 
-`write_row_json` currently parses column name suffixes to decide how
-to serialize. Replace with `field.data_type()` dispatch (matching OTLP):
+### SQL interface
+
+**Bare names (common case):**
+```sql
+-- Works when columns are bare (OTLP, CSV, consistent JSON):
+SELECT status, level FROM logs WHERE status > 400
+```
+
+**Suffixed names (type conflict case):**
+```sql
+-- When a field has multiple types, user accesses typed columns:
+SELECT status_int, status_str FROM logs WHERE status_int > 400
+```
+
+**View layer for type-conflict batches:**
+When suffixed columns exist, a DataFusion view provides bare-name access:
+```sql
+-- Auto-generated view:
+CREATE VIEW logs AS SELECT
+  status_str AS status,      -- bare name = string representation
+  status_int,                -- typed access
+  status_str,
+  level_str AS level,        -- single-type field, alias only
+  ...
+FROM _raw_logs
+```
+
+`SELECT status` returns the string representation. `SELECT status_int`
+returns the integer column. `SELECT *` returns all columns — the output
+layer groups by bare field name and picks the non-null typed value per
+row for serialization.
+
+The view is only created when suffixed columns are detected in the
+batch schema. For clean-schema batches, the table is registered
+directly as `logs`.
+
+### Output serialization
+
+The output layer already dispatches on Arrow DataType (#568), not column
+name suffix. For round-trip serialization:
+
+1. Group columns by bare field name (strip `_int`/`_float`/`_str` suffix)
+2. For each row, find the first non-null value across the column group
+3. Serialize using the DataType of that column:
+   - Int64 → JSON number: `"status": 200`
+   - Float64 → JSON number: `"status": 1.5`
+   - Utf8 → JSON string: `"status": "OK"`
+
+JSON output key is always the bare field name. Never `status_int`.
+
+### Schema stability
+
+The user's SQL is fixed but batch schemas vary. Solution:
+
+- At config time, `QueryAnalyzer` extracts `referenced_columns` from
+  the user's SQL. The suffix convention gives us the DataType.
+- Before registering each batch as a MemTable, pad with null columns
+  for any SQL-referenced columns missing from this batch.
+- This is **stateless** — guaranteed columns are derived from the SQL,
+  not from runtime data.
+
+For `SELECT *` (no explicit column references), no padding is needed.
+
+### Builder implementation
 
 ```rust
-match col.data_type() {
-    DataType::Int64 => { /* write as JSON number */ }
-    DataType::Float64 => { /* write as JSON number */ }
-    _ => { /* write as JSON string */ }
+// In StreamingBuilder::finish() / StorageBuilder::finish():
+if fc.has_int && !fc.has_float && !fc.has_str {
+    // Single type: bare name
+    columns.push(Column::new(field_name, DataType::Int64, int_values));
+} else if fc.has_str && !fc.has_int && !fc.has_float {
+    // Single type: bare name
+    columns.push(Column::new(field_name, DataType::Utf8View, str_values));
+} else if fc.has_float && !fc.has_int && !fc.has_str {
+    // Single type: bare name
+    columns.push(Column::new(field_name, DataType::Float64, float_values));
+} else {
+    // Type conflict: suffixed names
+    if fc.has_int {
+        columns.push(Column::new(format!("{field_name}_int"), DataType::Int64, int_values));
+    }
+    if fc.has_float {
+        columns.push(Column::new(format!("{field_name}_float"), DataType::Float64, float_values));
+    }
+    if fc.has_str {
+        columns.push(Column::new(format!("{field_name}_str"), DataType::Utf8View, str_values));
+    }
 }
 ```
-
-This alone fixes #430, #444, #428.
-
-### Fix 2: Delete the SQL rewriter (dead code)
-
-The rewriter was never wired into the pipeline (#602) — `SqlTransform::execute()`
-passes `user_sql` directly to DataFusion. Delete the 772 lines of dead code.
-
-This means users currently write SQL against suffixed names (`status_int`,
-`level_str`), which is ugly but functional. The SQL UX problem is separate
-from the output dispatch bugs and should be solved independently.
-
-### Open question: SQL UX for bare column names
-
-How to let users write `WHERE status > 400` instead of `WHERE status_int > 400`:
-
-**Option A: DataFusion view aliasing.** Register a view that maps bare
-names to typed columns via COALESCE. Problem: for `SELECT status`,
-which type wins? COALESCE picks one, losing the other. Recreates
-rewriter complexity in SQL form.
-
-**Option B: Custom TableProvider.** Present a schema with bare names,
-resolve to typed columns based on query context. Powerful but complex.
-DataFusion's `TableProvider` trait would need to inspect the query plan.
-
-**Option C: UDFs.** Register `int(status)` → `status_int`, `str(status)`
-→ `status_str`. Explicit, no ambiguity. Users learn a simple convention.
-`WHERE int(status) > 400` is clear and predictable.
-
-**Option D: Status quo.** Users write suffixed names. Document it well.
-The `COLUMN_NAMING.md` doc already explains this. Not elegant but zero
-new code and zero ambiguity.
-
-**Option E: Arrow Union type columns.** Single `status` column of type
-`Union<Int64, Utf8>`. Perfect type fidelity in one column. But
-DataFusion's Union support is limited (no filtering, grouping, etc.).
-Future option as DataFusion matures.
-
-Decision deferred — solve output dispatch bugs first (Fix 1 + Fix 3),
-then evaluate SQL UX options separately.
-
-### Constraint: Schema stability across batches
-
-The user's SQL is fixed, but the Arrow schema varies per batch. A batch
-of pure-integer status codes produces `status_int` only. The next batch
-might have mixed types producing `status_int` + `status_str`. A batch
-with no `status` field at all produces neither column.
-
-If the user's SQL references `status_int` but this batch has no integer
-status values, DataFusion throws "column not found." This is unacceptable
-for a log forwarder processing heterogeneous log streams.
-
-**Rejected: accumulated superset schema.** A growing superset is implicit
-state the user can't reason about. "My query worked for 5 minutes then
-broke when a new field appeared" is terrible UX. Queries should not be
-stateful.
-
-**Solution: SQL-declared columns guaranteed with nulls.** We already
-parse the user's SQL at config time (`QueryAnalyzer.referenced_columns`).
-The suffix convention tells us the type (`_int` → Int64, `_str` → Utf8,
-`_float` → Float64). Before registering the MemTable, pad the batch
-with null columns for any SQL-referenced columns missing from this batch.
-
-This is **deterministic and stateless**: the set of guaranteed columns
-is derived from the user's SQL, not from runtime data. The user's SQL
-IS the schema declaration.
-
-Implementation sketch:
-```
-QueryAnalyzer {
-    referenced_columns: HashSet<String>,  // e.g., {"status_int", "level_str"}
-}
-
-SqlTransform {
-    // Derived once from QueryAnalyzer at config time:
-    guaranteed_columns: Vec<(String, DataType)>,
-    // e.g., [("status_int", Int64), ("level_str", Utf8)]
-}
-
-fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch> {
-    // Pad batch: add null columns for guaranteed columns missing from batch
-    let padded = pad_batch_to_schema(&batch, &self.guaranteed_columns);
-    // Register padded batch as MemTable, create view, execute SQL
-}
-```
-
-Type inference from suffix:
-- `_int` suffix → Int64
-- `_float` suffix → Float64
-- `_str` suffix or no recognized suffix → Utf8
-
-For `SELECT *` queries (no explicit column references), no padding is
-needed — `SELECT *` returns whatever the batch contains.
-
-Combined with the view layer, the flow per batch becomes:
-1. Pad batch with null columns for SQL-referenced columns missing from batch
-2. Register padded batch as `_raw_logs` MemTable
-3. Create view `logs` with bare-name aliases + typed columns
-4. Execute user SQL against `logs`
-
-The guaranteed column set and view SQL are both derived from the user's
-SQL at config time — no runtime state accumulation.
-
-### Fix 3: Column deduplication uses DataType
-
-`build_col_infos()` currently deduplicates by parsing suffix strings.
-Replace with DataType-based priority: Int64 > Float64 > Utf8 for
-the "primary" column when a field has multiple typed columns.
-Fixes #404, #442.
-
-### What stays the same
-
-- Scanner still emits `append_str_by_idx` / `append_int_by_idx` etc.
-- Builders still create `_int` / `_float` / `_str` columns internally
-- Multi-column representation preserves type fidelity for round-tripping
-- OTLP sink already dispatches on DataType (no change needed)
 
 ## What gets deleted
 
 - `crates/logfwd-transform/src/rewriter.rs` — 772 lines, dead code (#602)
-- `parse_column_name()` in `logfwd-output/src/lib.rs` — suffix parsing
-  (replace with DataType dispatch throughout)
 - `strip_type_suffix()` in `logfwd-transform/src/lib.rs`
 - Name-based type dispatch in `write_row_json()` (already replaced by #568)
 
 ## What gets changed
 
-| File | Change |
-|------|--------|
-| `logfwd-output/lib.rs` | DataType dispatch in write_row_json |
-| `logfwd-output/lib.rs` | DataType-based dedup in build_col_infos |
-| `logfwd-output/stdout.rs` | DataType dispatch for console format |
-| `logfwd-transform/lib.rs` | Schema aliasing instead of rewriting |
-| `rewriter.rs` | **DELETE** |
+| Component | Change |
+|---|---|
+| `StreamingBuilder` | Suffix only on conflict (bare name when single type) |
+| `StorageBuilder` | Same |
+| `build_col_infos()` | Group by bare name using DataType, not suffix parsing |
+| `SqlTransform` | Generate view when suffixed columns exist; pad missing columns |
+| `COLUMN_NAMING.md` | Update to reflect bare-name-first convention |
+| `SCANNER_CONTRACT.md` | Update column naming section |
+| All tests | Update expected column names |
 
 ## Bugs this fixes
 
 | Fix | Bugs resolved |
-|-----|---------------|
+|---|---|
 | DataType dispatch in output | #430, #444, #428 |
-| Schema aliasing (delete rewriter) | #415, #429, #531 |
+| Delete dead rewriter | #415, #429, #531 |
 | DataType-based dedup | #404, #442 |
-| Escape handling fix | #410 |
-
-## Key insight
-
-The multi-column representation is correct and necessary for per-document
-type fidelity. The bugs are in the **consumption** layer, not the
-**production** layer. The builders produce correct typed columns. The
-output sinks consume them incorrectly by parsing column names instead of
-checking Arrow DataType.
-
-The SQL rewriter was the wrong abstraction — it tried to hide the
-multi-column schema behind bare names, but SQL AST rewriting can never
-be complete. The rewriter was dead code anyway (#602). Delete it.
-
-Output sinks should strip suffixes from column names when serializing
-(JSON key = bare name) and dispatch on `field.data_type()` to determine
-value formatting. This preserves round-trip fidelity: int in → int out,
-string in → string out, per document.
+| Bare names for clean schemas | Improves SQL UX for OTLP/CSV pipelines |
 
 ## Implementation phases
 
 1. **Delete dead code** — rewriter.rs, strip_type_suffix(). Zero risk.
-2. **Output suffix stripping** — output sinks strip `_int`/`_float`/`_str`
-   from column names when serializing. Uses `parse_column_name()` for
-   name, `data_type()` for format. JSON: `"status": 200` not
-   `"status_int": 200`.
-3. **Schema stability** — SqlTransform accumulates a superset schema
-   across batches and pads missing columns with nulls. This ensures
-   user SQL never fails due to missing columns in a particular batch.
-4. **View aliasing** — generate `CREATE VIEW logs AS SELECT ...` per
-   schema change. Bare name = COALESCE string. Typed columns exposed.
-   Regenerated only when the superset schema changes (new columns seen).
-5. **SQL UX** — with the view layer in place, `SELECT *` returns bare
-   names. Typed access via `status_int`, `status_str`. Users who want
-   typed filtering write `WHERE status_int > 400`. Clear and explicit.
+2. **Suffix only on conflict** — builder change. Bare names when single
+   type, suffixed only on actual type conflict.
+3. **Output grouping** — `build_col_infos()` uses DataType-based grouping.
+   Handles both bare (single column) and suffixed (multi-column) fields.
+4. **Schema stability** — pad SQL-referenced columns with nulls.
+5. **View layer** — auto-generate view when suffixed columns exist.
+   Bare name = string representation. Typed columns available.
