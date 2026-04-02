@@ -211,6 +211,15 @@ mod tests {
                 .value(1),
             404
         );
+        // Legacy single-underscore suffixed columns must NOT be emitted.
+        assert!(
+            batch.column_by_name("host_str").is_none(),
+            "single-type string fields must not emit legacy suffixed columns"
+        );
+        assert!(
+            batch.column_by_name("status_int").is_none(),
+            "single-type int fields must not emit legacy suffixed columns"
+        );
     }
     #[test]
     fn test_type_conflict() {

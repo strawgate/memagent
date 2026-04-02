@@ -481,9 +481,8 @@ fn test_enrichment_join() {
     csv_table.reload().expect("failed to load enrichment CSV");
 
     // SQL joins the log batch with the enrichment table on the `service` field.
-    // CSV columns use plain names (no `_str` suffix); scanner columns use the
-    // `{field}_{type}` convention.  The alias brings the enriched column into
-    // the logfwd naming scheme for downstream compatibility.
+    // Both scanner and CSV columns are addressed via bare names for this
+    // single-type dataset.  The alias brings the enriched column into the output.
     let sql = "SELECT l.service, l.message, t.team AS team \
                FROM logs l \
                JOIN teams t ON l.service = t.service";
@@ -499,7 +498,7 @@ fn test_enrichment_join() {
     // All 3 log rows have a matching service in the CSV.
     assert_eq!(result.num_rows(), 3, "expected 3 enriched rows");
 
-    // The output must contain the `team_str` column from the CSV.
+    // The output must contain the `team` column from the CSV.
     let schema = result.schema();
     assert!(
         schema.field_with_name("team").is_ok(),

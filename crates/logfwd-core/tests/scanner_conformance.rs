@@ -98,87 +98,99 @@ fn assert_values_correct(input: &[u8]) {
                 // resolves to the typed column.
                 let col = batch
                     .column_by_name(&format!("{key_str}__str"))
-                    .or_else(|| batch.column_by_name(key_str));
-                if let Some(col) = col {
-                    let arr = col.as_any().downcast_ref::<StringArray>().unwrap_or_else(|| {
+                    .or_else(|| batch.column_by_name(key_str))
+                    .unwrap_or_else(|| {
                         panic!(
-                            "Expected StringArray for key '{key_str}' at row {row} but got {:?}.\nInput: {:?}",
-                            col.data_type(),
+                            "Scanner produced no column for string key '{key_str}' at row {row}.\nInput: {:?}",
                             String::from_utf8_lossy(line)
                         )
                     });
-                    if !arr.is_null(row) {
-                        let actual = arr.value(row);
-                        // Our scanner preserves escape sequences (raw bytes),
-                        // sonic-rs unescapes them. For strings without escapes
-                        // the values must be identical.
-                        if !actual.contains('\\') {
-                            assert_eq!(
-                                actual,
-                                expected,
-                                "String value mismatch at '{key_str}'[{row}].\nExpected: {expected:?}\nActual: {actual:?}\nInput: {:?}",
-                                String::from_utf8_lossy(line)
-                            );
-                        }
+                let arr = col.as_any().downcast_ref::<StringArray>().unwrap_or_else(|| {
+                    panic!(
+                        "Expected StringArray for key '{key_str}' at row {row} but got {:?}.\nInput: {:?}",
+                        col.data_type(),
+                        String::from_utf8_lossy(line)
+                    )
+                });
+                if !arr.is_null(row) {
+                    let actual = arr.value(row);
+                    // Our scanner preserves escape sequences (raw bytes),
+                    // sonic-rs unescapes them. For strings without escapes
+                    // the values must be identical.
+                    if !actual.contains('\\') {
+                        assert_eq!(
+                            actual,
+                            expected,
+                            "String value mismatch at '{key_str}'[{row}].\nExpected: {expected:?}\nActual: {actual:?}\nInput: {:?}",
+                            String::from_utf8_lossy(line)
+                        );
                     }
                 }
             } else if val.is_i64() {
                 let expected = val.as_i64().unwrap();
                 let col = batch
                     .column_by_name(&format!("{key_str}__int"))
-                    .or_else(|| batch.column_by_name(key_str));
-                if let Some(col) = col {
-                    let arr = col.as_any().downcast_ref::<Int64Array>().unwrap_or_else(|| {
+                    .or_else(|| batch.column_by_name(key_str))
+                    .unwrap_or_else(|| {
                         panic!(
-                            "Expected Int64Array for key '{key_str}' at row {row} but got {:?}.\nInput: {:?}",
-                            col.data_type(),
+                            "Scanner produced no column for int key '{key_str}' at row {row}.\nInput: {:?}",
                             String::from_utf8_lossy(line)
                         )
                     });
-                    if !arr.is_null(row) {
-                        assert_eq!(
-                            arr.value(row),
-                            expected,
-                            "Int value mismatch at '{key_str}'[{row}].\nInput: {:?}",
-                            String::from_utf8_lossy(line)
-                        );
-                    }
+                let arr = col.as_any().downcast_ref::<Int64Array>().unwrap_or_else(|| {
+                    panic!(
+                        "Expected Int64Array for key '{key_str}' at row {row} but got {:?}.\nInput: {:?}",
+                        col.data_type(),
+                        String::from_utf8_lossy(line)
+                    )
+                });
+                if !arr.is_null(row) {
+                    assert_eq!(
+                        arr.value(row),
+                        expected,
+                        "Int value mismatch at '{key_str}'[{row}].\nInput: {:?}",
+                        String::from_utf8_lossy(line)
+                    );
                 }
             } else if val.is_f64() {
                 let expected = val.as_f64().unwrap();
                 let col = batch
                     .column_by_name(&format!("{key_str}__float"))
-                    .or_else(|| batch.column_by_name(key_str));
-                if let Some(col) = col {
-                    if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
-                        if !arr.is_null(row) {
-                            let actual = arr.value(row);
-                            assert!(
-                                actual == expected
-                                    || (actual - expected).abs() < 1e-6
-                                    || (actual.is_nan() && expected.is_nan()),
-                                "Float value mismatch at '{key_str}'[{row}]: expected={expected}, actual={actual}.\nInput: {:?}",
-                                String::from_utf8_lossy(line)
-                            );
-                        }
-                    } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-                        // Scanner classified this as Int64 (e.g. -0 has no decimal/exponent).
-                        // Verify the integer value matches when cast to f64.
-                        if !arr.is_null(row) {
-                            let actual = arr.value(row) as f64;
-                            assert!(
-                                (actual - expected).abs() < 1.0,
-                                "Float(as int) value mismatch at '{key_str}'[{row}]: expected={expected}, actual={actual}.\nInput: {:?}",
-                                String::from_utf8_lossy(line)
-                            );
-                        }
-                    } else {
+                    .or_else(|| batch.column_by_name(key_str))
+                    .unwrap_or_else(|| {
                         panic!(
-                            "Expected Float64Array or Int64Array for key '{key_str}' at row {row} but got {:?}.\nInput: {:?}",
-                            col.data_type(),
+                            "Scanner produced no column for float key '{key_str}' at row {row}.\nInput: {:?}",
+                            String::from_utf8_lossy(line)
+                        )
+                    });
+                if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
+                    if !arr.is_null(row) {
+                        let actual = arr.value(row);
+                        assert!(
+                            actual == expected
+                                || (actual - expected).abs() < 1e-6
+                                || (actual.is_nan() && expected.is_nan()),
+                            "Float value mismatch at '{key_str}'[{row}]: expected={expected}, actual={actual}.\nInput: {:?}",
                             String::from_utf8_lossy(line)
                         );
                     }
+                } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
+                    // Scanner classified this as Int64 (e.g. -0 has no decimal/exponent).
+                    // Verify the integer value matches when cast to f64.
+                    if !arr.is_null(row) {
+                        let actual = arr.value(row) as f64;
+                        assert!(
+                            (actual - expected).abs() < 1.0,
+                            "Float(as int) value mismatch at '{key_str}'[{row}]: expected={expected}, actual={actual}.\nInput: {:?}",
+                            String::from_utf8_lossy(line)
+                        );
+                    }
+                } else {
+                    panic!(
+                        "Expected Float64Array or Int64Array for key '{key_str}' at row {row} but got {:?}.\nInput: {:?}",
+                        col.data_type(),
+                        String::from_utf8_lossy(line)
+                    );
                 }
             }
             // booleans stored as strings, nulls are null — skip for now

@@ -264,6 +264,23 @@ impl StreamingBuilder {
         // Accumulate conflict group descriptions for schema metadata.
         let mut conflict_meta: Vec<String> = Vec::new();
 
+        // Detect duplicate output column names before building the schema.
+        // A user field literally named `status__int` would collide with a
+        // conflict-suffixed `status` field; `_raw` would collide with keep_raw.
+        let mut emitted_names = std::collections::HashSet::new();
+        if self.keep_raw && !self.raw_views.is_empty() {
+            emitted_names.insert("_raw".to_string());
+        }
+        let mut reserve_name = |name: &str| -> Result<(), ArrowError> {
+            if emitted_names.insert(name.to_string()) {
+                Ok(())
+            } else {
+                Err(ArrowError::InvalidArgumentError(format!(
+                    "duplicate output column name: {name}"
+                )))
+            }
+        };
+
         for fc in &self.fields {
             // Field names come from JSON keys (valid UTF-8 in well-formed input).
             // Use from_utf8_lossy so that fuzz inputs with arbitrary bytes are
@@ -295,6 +312,7 @@ impl StreamingBuilder {
                 } else {
                     name.to_string()
                 };
+                reserve_name(&col_name)?;
                 let mut values = vec![0i64; num_rows];
                 let mut valid = vec![false; num_rows];
                 for &(row, v) in &fc.int_values {
@@ -317,6 +335,7 @@ impl StreamingBuilder {
                 } else {
                     name.to_string()
                 };
+                reserve_name(&col_name)?;
                 let mut values = vec![0.0f64; num_rows];
                 let mut valid = vec![false; num_rows];
                 for &(row, v) in &fc.float_values {
@@ -339,6 +358,7 @@ impl StreamingBuilder {
                 } else {
                     name.to_string()
                 };
+                reserve_name(&col_name)?;
                 let mut builder = StringViewBuilder::new();
                 let block = builder.append_block(arrow_buf.clone());
 

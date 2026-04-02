@@ -193,6 +193,21 @@ impl StorageBuilder {
         // Accumulate conflict group descriptions for schema metadata.
         let mut conflict_meta: Vec<String> = Vec::new();
 
+        // Detect duplicate output column names before building the schema.
+        let mut emitted_names = std::collections::HashSet::new();
+        if self.keep_raw && !self.raw_values.is_empty() {
+            emitted_names.insert("_raw".to_string());
+        }
+        let mut reserve_name = |name: &str| -> Result<(), ArrowError> {
+            if emitted_names.insert(name.to_string()) {
+                Ok(())
+            } else {
+                Err(ArrowError::InvalidArgumentError(format!(
+                    "duplicate output column name: {name}"
+                )))
+            }
+        };
+
         for fc in &self.fields {
             // Field names come from JSON keys (valid UTF-8 in well-formed input).
             // Use from_utf8_lossy so that fuzz inputs with arbitrary bytes are
@@ -224,6 +239,7 @@ impl StorageBuilder {
                 } else {
                     name.to_string()
                 };
+                reserve_name(&col_name)?;
                 let mut values = vec![0i64; num_rows];
                 let mut valid = vec![false; num_rows];
                 for &(row, v) in &fc.int_values {
@@ -245,6 +261,7 @@ impl StorageBuilder {
                 } else {
                     name.to_string()
                 };
+                reserve_name(&col_name)?;
                 let mut values = vec![0.0f64; num_rows];
                 let mut valid = vec![false; num_rows];
                 for &(row, v) in &fc.float_values {
@@ -266,6 +283,7 @@ impl StorageBuilder {
                 } else {
                     name.to_string()
                 };
+                reserve_name(&col_name)?;
                 let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 16);
                 let mut vi = 0;
                 for row in 0..num_rows {
