@@ -25,9 +25,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -57,7 +57,7 @@ jobs:
           # — nothing to copy here.
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: book/book
 
@@ -70,4 +70,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

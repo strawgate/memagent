@@ -28,7 +28,7 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,9 +62,9 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -99,9 +99,9 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -116,9 +116,9 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -149,9 +149,9 @@ jobs:
             linker: "aarch64-linux-gnu-gcc"
             cargo_args: "--target aarch64-unknown-linux-gnu"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -182,7 +182,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Run Kani verification
         uses: model-checking/kani-github-action@v1
