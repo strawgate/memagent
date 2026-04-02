@@ -403,8 +403,6 @@ async fn run_pipelines(
     let meter_provider = build_meter_provider(&config)?;
     let meter = meter_provider.meter("logfwd");
 
-    eprintln!("{}logfwd{} {}v{VERSION}{}", bold(), reset(), dim(), reset());
-
     let mut pipelines = Vec::new();
     for (name, pipe_cfg) in &config.pipelines {
         match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
@@ -417,7 +415,7 @@ async fn run_pipelines(
         }
     }
 
-    let _diag_handle = if let Some(ref addr) = config.server.diagnostics {
+    let diag_handle = if let Some(ref addr) = config.server.diagnostics {
         let mut server = DiagnosticsServer::new(addr);
         server.set_config(config_path, config_yaml);
         for p in &pipelines {
@@ -431,6 +429,8 @@ async fn run_pipelines(
         None
     };
 
+    eprintln!("{}logfwd{} {}v{VERSION}{}", bold(), reset(), dim(), reset());
+
     // Print startup summary after everything is ready.
     for (name, pipe_cfg) in &config.pipelines {
         eprintln!();
@@ -441,8 +441,8 @@ async fn run_pipelines(
         if let Some(sql) = pipe_cfg.transform.as_deref() {
             let sql = sql.trim();
             let first_line = sql.lines().next().unwrap_or(sql);
-            let truncated = if first_line.len() > 100 {
-                format!("{}…", &first_line[..100])
+            let truncated = if first_line.chars().count() > 100 {
+                format!("{}…", first_line.chars().take(100).collect::<String>())
             } else {
                 first_line.to_string()
             };
@@ -452,7 +452,7 @@ async fn run_pipelines(
             eprintln!("     {}out{}  {}", dim(), reset(), output_label(output));
         }
     }
-    if let Some((_, ref addr)) = _diag_handle {
+    if let Some((_, ref addr)) = diag_handle {
         eprintln!();
         eprintln!("  {}dashboard{}  http://{addr}", bold(), reset());
     }

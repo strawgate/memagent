@@ -30,6 +30,10 @@ impl LogBuf {
 
     fn push(&mut self, line: String) {
         let line_bytes = line.len() + 1; // +1 accounts for the stripped newline
+        // Drop lines that would alone exceed the cap — they can never fit.
+        if line_bytes > MAX_BYTES {
+            return;
+        }
         // Evict oldest lines until there is room for the new one.
         while self.total_bytes + line_bytes > MAX_BYTES {
             if let Some(removed) = self.lines.pop_front() {
@@ -96,9 +100,11 @@ impl StderrCapture {
 
     /// Start capturing stderr. Called once by the diagnostics server at startup.
     /// Safe to call multiple times — only the first call takes effect.
-    pub fn start(&self) {
+    pub fn start(&self) -> std::io::Result<()> {
         #[cfg(unix)]
-        self.start_unix();
+        return self.start_unix();
+        #[cfg(not(unix))]
+        Ok(())
     }
 
     /// Returns all buffered log lines (up to ~1 MiB worth).
@@ -112,7 +118,7 @@ impl StderrCapture {
     }
 
     #[cfg(unix)]
-    fn start_unix(&self) {
+    fn start_unix(&self) -> std::io::Result<()> {
         // Only one thread should set this up.
         if self
             .state
@@ -120,7 +126,7 @@ impl StderrCapture {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
         {
-            return; // already started
+            return Ok(()); // already started
         }
 
         unsafe {
@@ -128,7 +134,7 @@ impl StderrCapture {
             let orig = libc::dup(2);
             if orig < 0 {
                 self.state.active.store(false, Ordering::Relaxed);
-                return;
+                return Err(std::io::Error::last_os_error());
             }
 
             // Create pipe.
@@ -136,7 +142,7 @@ impl StderrCapture {
             if libc::pipe(fds.as_mut_ptr()) != 0 {
                 libc::close(orig);
                 self.state.active.store(false, Ordering::Relaxed);
-                return;
+                return Err(std::io::Error::last_os_error());
             }
             let (read_fd, write_fd) = (fds[0], fds[1]);
 
@@ -146,19 +152,26 @@ impl StderrCapture {
                 libc::close(write_fd);
                 libc::close(orig);
                 self.state.active.store(false, Ordering::Relaxed);
-                return;
+                return Err(std::io::Error::last_os_error());
             }
             libc::close(write_fd); // fd 2 now holds the write end
 
-            // Spawn reader thread.
+            // Spawn reader thread. If spawn fails, restore fd 2 so stderr still works.
             let state = Arc::clone(&self.state);
-            std::thread::Builder::new()
+            let spawn_result = std::thread::Builder::new()
                 .name("stderr-capture".into())
                 .spawn(move || {
                     reader_loop(read_fd, orig, &state);
-                })
-                .ok();
+                });
+            if let Err(e) = spawn_result {
+                libc::dup2(orig, 2);
+                libc::close(read_fd);
+                libc::close(orig);
+                self.state.active.store(false, Ordering::Relaxed);
+                return Err(e);
+            }
         }
+        Ok(())
     }
 }
 
@@ -167,7 +180,9 @@ impl StderrCapture {
 #[cfg(unix)]
 fn reader_loop(read_fd: i32, orig_fd: i32, state: &CaptureState) {
     let mut buf = vec![0u8; 4096];
-    let mut partial = String::new();
+    // Accumulate raw bytes so multi-byte UTF-8 sequences split across reads
+    // are decoded correctly per complete line, not per chunk.
+    let mut partial: Vec<u8> = Vec::new();
 
     loop {
         let n =
@@ -194,16 +209,16 @@ fn reader_loop(read_fd: i32, orig_fd: i32, state: &CaptureState) {
             libc::write(orig_fd, bytes.as_ptr().cast::<libc::c_void>(), n as usize);
         }
 
-        // Split into lines and push to buffer.
-        let chunk = String::from_utf8_lossy(bytes);
-        partial.push_str(&chunk);
-        while let Some(pos) = partial.find('\n') {
-            let line = partial[..pos].to_string();
-            partial.drain(..=pos);
+        // Accumulate and split on newline bytes; decode each complete line once.
+        partial.extend_from_slice(bytes);
+        while let Some(pos) = partial.iter().position(|&b| b == b'\n') {
+            let line_bytes = &partial[..pos];
+            let line = String::from_utf8_lossy(line_bytes);
             let clean = strip_ansi(&line);
             if !clean.is_empty() {
                 state.push_line(clean);
             }
+            partial.drain(..=pos);
         }
     }
 
@@ -305,13 +320,12 @@ mod tests {
 
     #[test]
     fn test_ring_buffer_single_oversized_line() {
-        // A single line larger than MAX_BYTES — it should still be stored
-        // (we can't evict what doesn't exist yet).
+        // A single line larger than MAX_BYTES is dropped to enforce the cap.
         let mut buf = LogBuf::new();
         let big = "x".repeat(MAX_BYTES + 1);
-        buf.push(big.clone());
-        assert_eq!(buf.lines.len(), 1);
-        assert_eq!(buf.lines[0], big);
+        buf.push(big);
+        assert_eq!(buf.lines.len(), 0);
+        assert_eq!(buf.total_bytes, 0);
     }
 
     #[test]

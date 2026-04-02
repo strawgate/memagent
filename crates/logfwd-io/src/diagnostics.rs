@@ -402,7 +402,10 @@ impl DiagnosticsServer {
 
         // Start capturing stderr into the 1 MiB ring buffer immediately so
         // log lines emitted before the first /api/logs request are not lost.
-        self.stderr.start();
+        // Non-fatal: if capture setup fails (e.g. out of fds), log to real stderr.
+        if let Err(e) = self.stderr.start() {
+            eprintln!("logfwd: stderr capture failed: {e}");
+        }
 
         // Background metric sampler — records pipeline + process metrics
         // every 2s into the history buffer, regardless of dashboard activity.
