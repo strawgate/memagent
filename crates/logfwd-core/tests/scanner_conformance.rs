@@ -97,7 +97,7 @@ fn assert_values_correct(input: &[u8]) {
                 // a conflict batch (which has both bare-int and suffixed-str cols)
                 // resolves to the typed column.
                 let col = batch
-                    .column_by_name(&format!("{key_str}_str"))
+                    .column_by_name(&format!("{key_str}__str"))
                     .or_else(|| batch.column_by_name(key_str));
                 if let Some(col) = col {
                     let arr = col.as_any().downcast_ref::<StringArray>().unwrap_or_else(|| {
@@ -125,7 +125,7 @@ fn assert_values_correct(input: &[u8]) {
             } else if val.is_i64() {
                 let expected = val.as_i64().unwrap();
                 let col = batch
-                    .column_by_name(&format!("{key_str}_int"))
+                    .column_by_name(&format!("{key_str}__int"))
                     .or_else(|| batch.column_by_name(key_str));
                 if let Some(col) = col {
                     let arr = col.as_any().downcast_ref::<Int64Array>().unwrap_or_else(|| {
@@ -147,7 +147,7 @@ fn assert_values_correct(input: &[u8]) {
             } else if val.is_f64() {
                 let expected = val.as_f64().unwrap();
                 let col = batch
-                    .column_by_name(&format!("{key_str}_float"))
+                    .column_by_name(&format!("{key_str}__float"))
                     .or_else(|| batch.column_by_name(key_str));
                 if let Some(col) = col {
                     if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {

@@ -611,8 +611,8 @@ fn conflict_batch_bare_select() {
     sv.append_value("OK"); // row 1: string value
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new("status_int", DataType::Int64, true),
-        Field::new("status_str", DataType::Utf8View, true),
+        Field::new("status__int", DataType::Int64, true),
+        Field::new("status__str", DataType::Utf8View, true),
     ]));
     let batch = RecordBatch::try_new(
         schema,
@@ -628,8 +628,8 @@ fn conflict_batch_bare_select() {
 
     assert_eq!(result.num_rows(), 2);
     let col = collect_string_col(&result, "status");
-    assert_eq!(col[0], "200"); // from status_int
-    assert_eq!(col[1], "OK"); // from status_str
+    assert_eq!(col[0], "200"); // from status__int
+    assert_eq!(col[1], "OK"); // from status__str
 }
 
 /// WHERE on a bare column from a conflict batch.
@@ -643,8 +643,8 @@ fn conflict_batch_where_on_bare_column() {
     sv.append_value("NOT_FOUND");
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new("status_int", DataType::Int64, true),
-        Field::new("status_str", DataType::Utf8View, true),
+        Field::new("status__int", DataType::Int64, true),
+        Field::new("status__str", DataType::Utf8View, true),
     ]));
     let batch = RecordBatch::try_new(
         schema,
@@ -673,8 +673,8 @@ fn conflict_batch_int_udf_on_bare_column() {
     sv.append_value("OK");
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new("status_int", DataType::Int64, true),
-        Field::new("status_str", DataType::Utf8View, true),
+        Field::new("status__int", DataType::Int64, true),
+        Field::new("status__str", DataType::Utf8View, true),
     ]));
     let batch = RecordBatch::try_new(
         schema,
@@ -706,20 +706,20 @@ fn single_suffixed_column_not_treated_as_conflict() {
     sv.append_value("crash");
 
     let schema = Arc::new(Schema::new(vec![Field::new(
-        "error_str",
+        "error__str",
         DataType::Utf8View,
         true,
     )]));
     let batch = RecordBatch::try_new(schema, vec![Arc::new(sv.finish()) as ArrayRef]).unwrap();
 
     // SQL must use the actual column name — no bare `error` column should appear.
-    let mut t = SqlTransform::new("SELECT error_str FROM logs").unwrap();
+    let mut t = SqlTransform::new("SELECT error__str FROM logs").unwrap();
     let result = t.execute_blocking(batch).unwrap();
 
     assert_eq!(result.num_rows(), 2);
     // No bare `error` column in output.
     assert!(
         result.column_by_name("error").is_none(),
-        "bare 'error' column must not be synthesized from a lone 'error_str'"
+        "bare 'error' column must not be synthesized from a lone 'error__str'"
     );
 }

@@ -261,6 +261,8 @@ impl StreamingBuilder {
 
         let mut schema_fields: Vec<Field> = Vec::with_capacity(self.fields.len());
         let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.fields.len());
+        // Accumulate conflict group descriptions for schema metadata.
+        let mut conflict_meta: Vec<String> = Vec::new();
 
         for fc in &self.fields {
             // Field names come from JSON keys (valid UTF-8 in well-formed input).
@@ -272,9 +274,24 @@ impl StreamingBuilder {
             // batch. Single-type fields use the bare field name.
             let conflict = (fc.has_int as u8) + (fc.has_float as u8) + (fc.has_str as u8) > 1;
 
+            if conflict {
+                // Record this group for schema metadata.
+                let mut types = Vec::with_capacity(3);
+                if fc.has_int {
+                    types.push("int");
+                }
+                if fc.has_float {
+                    types.push("float");
+                }
+                if fc.has_str {
+                    types.push("str");
+                }
+                conflict_meta.push(format!("{}:{}", name, types.join(",")));
+            }
+
             if fc.has_int {
                 let col_name = if conflict {
-                    format!("{}_int", name)
+                    format!("{}__int", name)
                 } else {
                     name.to_string()
                 };
@@ -296,7 +313,7 @@ impl StreamingBuilder {
 
             if fc.has_float {
                 let col_name = if conflict {
-                    format!("{}_float", name)
+                    format!("{}__float", name)
                 } else {
                     name.to_string()
                 };
@@ -318,7 +335,7 @@ impl StreamingBuilder {
 
             if fc.has_str {
                 let col_name = if conflict {
-                    format!("{}_str", name)
+                    format!("{}__str", name)
                 } else {
                     name.to_string()
                 };
@@ -369,7 +386,16 @@ impl StreamingBuilder {
             arrays.push(Arc::new(builder.finish()) as ArrayRef);
         }
 
-        let schema = Arc::new(Schema::new(schema_fields));
+        let schema = if conflict_meta.is_empty() {
+            Arc::new(Schema::new(schema_fields))
+        } else {
+            let mut meta = HashMap::new();
+            meta.insert(
+                crate::storage_builder::CONFLICT_GROUPS_METADATA_KEY.to_string(),
+                conflict_meta.join(";"),
+            );
+            Arc::new(Schema::new_with_metadata(schema_fields, meta))
+        };
         let opts = RecordBatchOptions::new().with_row_count(Some(num_rows));
         RecordBatch::try_new_with_options(schema, arrays, &opts)
     }
@@ -429,12 +455,12 @@ mod tests {
         assert_eq!(batch.num_rows(), 2);
         // Conflict: both suffixed columns present, no bare "status"
         assert!(
-            batch.column_by_name("status_int").is_some(),
-            "status_int missing"
+            batch.column_by_name("status__int").is_some(),
+            "status__int missing"
         );
         assert!(
-            batch.column_by_name("status_str").is_some(),
-            "status_str missing"
+            batch.column_by_name("status__str").is_some(),
+            "status__str missing"
         );
         assert!(
             batch.column_by_name("status").is_none(),

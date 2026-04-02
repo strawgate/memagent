@@ -62,9 +62,9 @@ impl JsonExtractMode {
     /// when there is no type conflict in the batch.
     fn suffix_order(self) -> &'static [&'static str] {
         match self {
-            Self::Str => &["", "_str", "_int", "_float"],
-            Self::Int => &["_int", ""],
-            Self::Float => &["_float", "_int", ""],
+            Self::Str => &["", "__str", "__int", "__float"],
+            Self::Int => &["__int", ""],
+            Self::Float => &["__float", "__int", ""],
         }
     }
 }

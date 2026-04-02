@@ -217,8 +217,8 @@ mod tests {
         let batch = default_scanner(4)
             .scan(b"{\"s\":200}\n{\"s\":\"OK\"}\n")
             .unwrap();
-        assert!(batch.column_by_name("s_int").is_some());
-        assert!(batch.column_by_name("s_str").is_some());
+        assert!(batch.column_by_name("s__int").is_some());
+        assert!(batch.column_by_name("s__str").is_some());
     }
     #[test]
     fn test_missing_fields() {

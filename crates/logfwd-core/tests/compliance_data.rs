@@ -226,13 +226,13 @@ fn compliance_type_conflict() {
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 2);
 
-        // Row 0: status_int=200, status_str=null
-        assert_eq!(get_int(batch, "status_int", 0), Some(200));
-        assert_null(batch, "status_str", 0);
+        // Row 0: status__int=200, status__str=null
+        assert_eq!(get_int(batch, "status__int", 0), Some(200));
+        assert_null(batch, "status__str", 0);
 
-        // Row 1: status_int=null, status_str="OK"
-        assert_null(batch, "status_int", 1);
-        assert_eq!(get_str(batch, "status_str", 1), Some("OK".to_string()));
+        // Row 1: status__int=null, status__str="OK"
+        assert_null(batch, "status__int", 1);
+        assert_eq!(get_str(batch, "status__str", 1), Some("OK".to_string()));
     });
 }
 
@@ -248,14 +248,14 @@ fn compliance_integer_boundaries() {
         assert_eq!(batch.num_rows(), 3);
 
         // Row 0: i64::MAX as int
-        assert_eq!(get_int(batch, "n_int", 0), Some(i64::MAX));
+        assert_eq!(get_int(batch, "n__int", 0), Some(i64::MAX));
 
         // Row 1: i64::MIN as int
-        assert_eq!(get_int(batch, "n_int", 1), Some(i64::MIN));
+        assert_eq!(get_int(batch, "n__int", 1), Some(i64::MIN));
 
         // Row 2: overflow -> float column
-        assert_null(batch, "n_int", 2);
-        let f = get_float(batch, "n_float", 2).expect("n_float should exist for overflow");
+        assert_null(batch, "n__int", 2);
+        let f = get_float(batch, "n__float", 2).expect("n__float should exist for overflow");
         assert!(f > 9.2e18, "overflow should be a large float: {f}");
     });
 }
@@ -301,9 +301,9 @@ fn compliance_null_value() {
         assert_not_null(batch, "a", 0);
         assert_eq!(get_str(batch, "a", 0), Some("x".to_string()));
         // b is null — it may not have a column at all, or the column is null.
-        assert_null(batch, "b_str", 0);
-        assert_null(batch, "b_int", 0);
-        assert_null(batch, "b_float", 0);
+        assert_null(batch, "b__str", 0);
+        assert_null(batch, "b__int", 0);
+        assert_null(batch, "b__float", 0);
         assert_not_null(batch, "c", 0);
         assert_eq!(get_str(batch, "c", 0), Some("y".to_string()));
     });
@@ -612,24 +612,24 @@ fn compliance_mixed_type_across_rows() {
         assert_eq!(batch.num_rows(), 5);
 
         // Row 0: int
-        assert_eq!(get_int(batch, "v_int", 0), Some(42));
+        assert_eq!(get_int(batch, "v__int", 0), Some(42));
 
         // Row 1: float
-        let f = get_float(batch, "v_float", 1).expect("v_float row 1");
+        let f = get_float(batch, "v__float", 1).expect("v__float should exist for row 1");
         #[allow(clippy::approx_constant)]
         let expected = 3.14;
         assert!((f - expected).abs() < 1e-10);
 
         // Row 2: string "text"
-        assert_eq!(get_str(batch, "v_str", 2), Some("text".to_string()));
+        assert_eq!(get_str(batch, "v__str", 2), Some("text".to_string()));
 
         // Row 3: bool stored as string
-        assert_eq!(get_str(batch, "v_str", 3), Some("true".to_string()));
+        assert_eq!(get_str(batch, "v__str", 3), Some("true".to_string()));
 
         // Row 4: null — all typed columns should be null for this row.
-        assert_null(batch, "v_int", 4);
-        assert_null(batch, "v_float", 4);
-        assert_null(batch, "v_str", 4);
+        assert_null(batch, "v__int", 4);
+        assert_null(batch, "v__float", 4);
+        assert_null(batch, "v__str", 4);
     });
 }
 
@@ -699,7 +699,7 @@ fn compliance_nested_array_of_objects() {
     let input_nl = [input.as_slice(), b"\n"].concat();
     assert_both_scanners(&input_nl, |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let val = get_str(batch, "items", 0).expect("items_str");
+        let val = get_str(batch, "items", 0).expect("items column should exist");
         assert!(val.starts_with('['));
         assert!(val.ends_with(']'));
         assert!(val.contains("\"id\":1"));
@@ -724,7 +724,7 @@ fn compliance_scientific_notation_integers() {
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 1);
         // The 'e' makes it a float, not an int.
-        let f = get_float(batch, "v", 0).expect("v_float");
+        let f = get_float(batch, "v", 0).expect("v column should be float for 1e2");
         assert!((f - 100.0).abs() < 1e-10);
     });
 }
@@ -735,9 +735,9 @@ fn compliance_zero_as_all_types() {
     let input = b"{\"a\":0}\n{\"a\":0.0}\n{\"a\":\"0\"}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 3);
-        assert_eq!(get_int(batch, "a_int", 0), Some(0));
-        assert_eq!(get_float(batch, "a_float", 1), Some(0.0));
-        assert_eq!(get_str(batch, "a_str", 2), Some("0".to_string()));
+        assert_eq!(get_int(batch, "a__int", 0), Some(0));
+        assert_eq!(get_float(batch, "a__float", 1), Some(0.0));
+        assert_eq!(get_str(batch, "a__str", 2), Some("0".to_string()));
     });
 }
 
