@@ -19,6 +19,15 @@ use super::{
 };
 
 // ---------------------------------------------------------------------------
+// InstrumentationScope constants
+// ---------------------------------------------------------------------------
+
+/// Name emitted in the OTLP `InstrumentationScope.name` field of every `ScopeLogs`.
+const SCOPE_NAME: &[u8] = b"logfwd";
+/// Version emitted in the OTLP `InstrumentationScope.version` field (from Cargo.toml).
+const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
+
+// ---------------------------------------------------------------------------
 // OtlpSink
 // ---------------------------------------------------------------------------
 
@@ -100,8 +109,11 @@ impl OtlpSink {
         }
 
         // Phase 2: compute sizes bottom-up.
-        // ScopeLogs inner = repeated field 2 (LogRecord) entries
-        let mut scope_logs_inner_size = 0usize;
+        // ScopeLogs inner = field 1 (InstrumentationScope) + repeated field 2 (LogRecord) entries
+        let instrumentation_scope_inner_size =
+            bytes_field_size(1, SCOPE_NAME.len()) + bytes_field_size(2, SCOPE_VERSION.len());
+
+        let mut scope_logs_inner_size = bytes_field_size(1, instrumentation_scope_inner_size);
         for &(start, end) in &record_ranges {
             let record_len = end - start;
             // tag for field 2 wire type 2 + varint length + payload
@@ -142,6 +154,15 @@ impl OtlpSink {
         // ScopeLogs (field 2 of ResourceLogs)
         encode_tag(&mut self.encoder_buf, 2, 2);
         encode_varint(&mut self.encoder_buf, scope_logs_inner_size as u64);
+
+        // InstrumentationScope (field 1 of ScopeLogs)
+        encode_tag(&mut self.encoder_buf, 1, 2);
+        encode_varint(
+            &mut self.encoder_buf,
+            instrumentation_scope_inner_size as u64,
+        );
+        encode_bytes_field(&mut self.encoder_buf, 1, SCOPE_NAME);
+        encode_bytes_field(&mut self.encoder_buf, 2, SCOPE_VERSION);
 
         // LogRecords (field 2 of ScopeLogs, repeated)
         for &(start, end) in &record_ranges {
@@ -720,6 +741,29 @@ mod tests {
         assert!(
             !contains_bytes(&sink.encoder_buf, &probe),
             "invalid trace_id should not produce field 9"
+        );
+    }
+
+    #[test]
+    fn scope_logs_has_instrumentation_scope() {
+        let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
+        let arr = StringArray::from(vec!["hello"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        // The InstrumentationScope name "logfwd" must be present in the encoded bytes.
+        assert!(
+            contains_bytes(&sink.encoder_buf, b"logfwd"),
+            "InstrumentationScope name 'logfwd' not found in encoded output"
+        );
+
+        // The InstrumentationScope version (from CARGO_PKG_VERSION) must also be present.
+        let version = env!("CARGO_PKG_VERSION").as_bytes();
+        assert!(
+            contains_bytes(&sink.encoder_buf, version),
+            "InstrumentationScope version not found in encoded output"
         );
     }
 
