@@ -205,9 +205,8 @@ reviews:
           explodes; use proptest), and (3) trivial getters or setters with no logic beyond
           a field read/write (no invariant to prove). These are the ONLY exemptions. Any
           function with logic — parsing, encoding, bit manipulation, state transitions,
-          arithmetic — is NOT exempt. For any non-exempt function, the absence of a proof
-          is a hard fail. These exemptions mirror the ones in CRATE_RULES.md and are the
-          same exemptions referenced by the Crate Boundary check's Rule 5.
+          arithmetic — is NOT exempt. The absence of a proof for a non-exempt function
+          is a hard fail.
 
           By function category the requirements are:
 
@@ -267,34 +266,27 @@ reviews:
           actually reachable. If a cover! statement reports UNSATISFIABLE, the proof
           may be trivially true because no input satisfies the constraints — this is a
           vacuous proof and must be fixed before merging.
-          5. Build oracles independently. The oracle must compute the expected result
-          from the raw input without calling through to the function under test. For
-          iterator-based proofs, count expected items by scanning the input buffer
-          directly rather than trusting an iterator's bitmask output.
-          6. Prefer kani::any_where() over kani::any() + kani::assume() when constraints
-          can be expressed at value generation time. Reserve assume() for constraints
-          that span multiple variables or depend on computed intermediate state.
+          5. Build oracles independently from raw input — never call through to the
+          function under test. For iterator proofs, count expected items by scanning
+          the input buffer directly rather than trusting the iterator's own output.
+          Prefer kani::any_where() over any() + assume() when constraints are
+          co-located with value generation; reserve assume() for multi-variable
+          constraints or computed intermediate state.
 
 
           SOLVER SELECTION.
-          Proofs that run longer than 10 seconds must carry #[kani::solver(kissat)] with
-          a comment explaining why: "kissat chosen: default cadical times out on this
-          bitmask-heavy proof". For arithmetic-heavy proofs (varint, integer parsing
-          with overflow), try z3 or bitwuzla if cadical is slow. Document the solver
-          choice. The CI Kani job has a 30-minute timeout; any proof expected to approach
-          this limit must use kissat or another fast solver and carry a comment.
+          Proofs running >10s must carry #[kani::solver(kissat)] with a comment. For
+          arithmetic-heavy proofs (varint, integer overflow), try z3 or bitwuzla. CI
+          timeout is 30 minutes; proofs approaching it must use a faster solver.
 
 
           COMPOSITIONAL PROOFS FOR DEEP CALL CHAINS.
-          For functions in logfwd-core that are called from multiple other functions in
-          the hot path (e.g., scan_string, skip_nested, byte_search primitives), add
-          #[cfg_attr(kani, kani::requires(...))] and #[cfg_attr(kani, kani::ensures(...))]
-          contracts to the leaf function. Verify these contracts with proof_for_contract.
-          Then callers can use stub_verified to replace the callee with its contract —
-          bounding state-space explosion to N independent proofs over slices of the call
-          graph rather than one exponentially expensive monolithic proof. Reject PRs that
-          add deeply nested pure logic to logfwd-core hot-path functions without contracts
-          on the leaf functions, when those functions are called from multiple sites.
+          Hot-path leaf functions called from multiple sites (scan_string, skip_nested,
+          byte_search primitives) must carry #[cfg_attr(kani, kani::requires(...))] and
+          #[cfg_attr(kani, kani::ensures(...))] contracts verified with proof_for_contract.
+          Callers then use stub_verified, bounding state-space to N independent proofs
+          rather than one exponentially expensive monolithic proof. Flag PRs that add
+          deeply nested pure logic to multi-callsite hot-path functions without contracts.
 
 
           TLA+ REQUIREMENTS.
@@ -548,15 +540,16 @@ reviews:
           and escalate — this is an architectural regression that invalidates the Kani
           proofs (Kani proofs of safe Rust do not cover unsafe code paths).
 
-          Rule 3: ONLY memchr and wide as dependencies. logfwd-core's [dependencies]
-          section in Cargo.toml must contain exactly memchr and wide. No other dependency
-          is permitted, regardless of how small or well-audited it seems. Adding serde,
-          bytes, regex, or any other crate violates the minimal-dependency invariant that
-          makes logfwd-core auditable, provable, and embeddable. CI enforces this with a
-          dependency allowlist check. If a PR adds any other dependency to logfwd-core,
-          reject it. If there is a legitimate need (e.g., a specific utility), the
-          dependency belongs in logfwd-arrow or another satellite crate, and logfwd-core
-          should expose a trait that the satellite implements.
+          Rule 3: ONLY memchr and wide in [dependencies]. This restriction applies only
+          to logfwd-core's [dependencies] section — the runtime deps compiled into
+          production builds. The [dev-dependencies] section is exempt: proptest, criterion,
+          and test utilities are permitted there. No other crate may appear in [dependencies]
+          regardless of size or quality. Adding serde, bytes, regex, or anything else
+          violates the minimal-dependency invariant that makes logfwd-core auditable,
+          provable, and embeddable. CI enforces this with a dependency allowlist check.
+          If a PR adds a runtime dep to logfwd-core, reject it; the functionality belongs
+          in a satellite crate with logfwd-core exposing a trait that the satellite
+          implements.
 
           Rule 4: No panics in logfwd-core. CRATE_RULES.md specifies that
           clippy::unwrap_used, clippy::panic, and clippy::indexing_slicing must be denied
@@ -741,13 +734,10 @@ reviews:
           Exception: changes that are demonstrably read-only for performance (adding a
           Kani proof, fixing a doc comment, renaming a local variable inside a proof module).
 
-          Red flags in hot-path code that always require benchmark justification:
-          Any new allocation (Vec::new, String::new, HashMap::new) per record or per line.
-          Any .clone() inside a loop over records. Any format!() or .to_string() inside
-          a loop. Any new HashMap lookup per field per row instead of using the resolve_field
-          index caching. Any change to the structural detection (structural.rs,
-          chunk_classify.rs) that alters the bitmask computation or carry-across-block
-          behavior. Any change to how StringViewArray views are created or dropped.
+          Red flags requiring benchmark justification: per-record allocation, .clone()
+          in record loops, format!/to_string() in loops, HashMap lookup per field per
+          row (use resolve_field caching), changes to structural detection carry logic
+          (structural.rs, chunk_classify.rs), StringViewArray view lifetime changes.
 
           If benchmark results show regression > 5%, the PR must be redesigned unless
           there is an explicit trade-off being accepted (e.g., correctness fix that
@@ -755,15 +745,11 @@ reviews:
 
 
           SEMANTIC CORRECTNESS — FIRST-WRITE-WINS AND CONFLICT SEMANTICS.
-          logfwd uses first-writer-wins for duplicate JSON keys. When a JSON object
-          contains {"status": 200, "status": "error"}, the scanner sees the first
-          occurrence of "status" first. sonic-rs (used as the proptest oracle) uses
-          last-writer-wins. Both are valid per RFC 8259, which leaves duplicate key
-          behavior undefined. Downstream SQL queries and DataFusion schemas are written
-          assuming first-write-wins. Any PR that changes this to last-write-wins — even
-          as a "fix" — is a behavior change that will silently alter query results for
-          operators. Require an explicit ADR in DESIGN.md, a CONFIG_REFERENCE.md update,
-          and an announcement in the PR description that this is a breaking semantic change.
+          logfwd uses first-writer-wins for duplicate JSON keys. sonic-rs (the proptest
+          oracle) uses last-writer-wins — both are valid per RFC 8259 but downstream SQL
+          queries are written assuming first-write-wins. Any PR changing this semantics,
+          even as a "fix", must include an ADR in DESIGN.md, a CONFIG_REFERENCE.md
+          update, and explicit breaking-change notice in the PR description.
 
           Type conflict column names use double-underscore suffixes: when a field named
           "status" appears as both an integer and a string in the same batch, the columns
@@ -794,17 +780,13 @@ reviews:
           type aliases defined and not used.
 
 
-          BREAKING CHANGES IN logfwd-core — THE FULL PROTOCOL.
-          logfwd-core is a library used by all other crates. A breaking change (renamed
-          public type, removed public method, changed trait signature) ripples through the
-          entire workspace. For any breaking change in logfwd-core, require: (1) the PR
-          description explicitly identifies the break and why it was necessary, (2) every
-          call site in the workspace is updated in the same PR (no partial migrations where
-          old and new patterns coexist), (3) any Kani proof contracts (kani::requires,
-          kani::ensures) that reference the changed function signature are updated, (4) if
-          the change was driven by a design insight, an ADR is added to DESIGN.md. This
-          project has no external users, so breaking changes are acceptable when justified —
-          but they must be clean, complete, and documented.
+          BREAKING CHANGES IN logfwd-core.
+          A breaking change (renamed type, removed method, changed trait signature)
+          ripples through the entire workspace. Require: (1) PR description names the
+          break and why it was necessary, (2) every call site updated in the same PR —
+          no partial migrations, (3) Kani proof contracts updated for the new signature,
+          (4) ADR in DESIGN.md if a design insight drove the change. Breaking changes
+          are acceptable — they just must be clean and complete.
 
 
           CI STATUS — NON-NEGOTIABLE GATE.
@@ -820,45 +802,30 @@ reviews:
           SIMD path, a filesystem case-sensitivity issue, or a timing-dependent test.
 
 
-          RAISING THE BAR — EVERY PR SHOULD LEAVE THE CODEBASE BETTER.
-          A PR that does exactly what the issue asked and nothing more is acceptable.
-          A PR that also closes a small nearby gap — a missing proof, an undocumented
-          public function, a DEVELOPING.md lesson from a bug just fixed — is better.
-          Ask: did the author leave the touched modules in better shape than they found them?
+          RAISING THE BAR — IS THIS PR MAKING THE CODEBASE MEASURABLY BETTER.
+          Every PR should leave the codebase stronger than it found it. Ask three questions:
 
-          The standard is not "perfect" but "net positive." Specific things to look for
-          in the modules this PR actually touched:
+          Is the verification story complete, or just non-regressing? A fix that also
+          adds a Kani proof or proptest case that would have caught the original bug is
+          categorically better than one that just patches the symptom. A new function
+          with a proof is better than a new function that relies on existing tests not
+          failing. If logic was added or changed in a category where verification is
+          expected (parsers, encoders, state machines, bitmask ops — see the Formal
+          Verification Coverage check), and no new verification was added alongside it,
+          that is a gap worth raising.
 
-          Missing Kani proofs: if the PR adds or modifies a public function in logfwd-core
-          and a nearby public function already lacks a proof, the author should add it.
-          They're already context-loaded in that module. A PR that adds one function with a
-          proof while leaving a neighboring unproved function untouched is fine; a PR
-          that adds five functions with no proofs when other functions in the same file
-          already have them is a missed opportunity worth flagging.
+          If this PR reveals a non-obvious trap — a correctness subtlety, a performance
+          pitfall, an invariant that isn't obvious from reading the code — has the author
+          documented it? The DEVELOPING.md "Things that will bite you" section exists
+          because these lessons are hard-won and easy to forget. The best time to write
+          the lesson is immediately, by the author who just lived through it. A bug fix
+          that doesn't also document why the bug existed leaves the next developer to
+          rediscover it from scratch.
 
-          Missing or shallow doc comments: if the PR touches a module where adjacent
-          public items have no /// doc comments, the author should add them while they're
-          there. Flag files where the PR author clearly read the code but left surrounding
-          public items undocumented.
-
-          DEVELOPING.md lessons: if this PR fixes a non-obvious bug or resolves a subtle
-          correctness issue, and no lesson exists in DEVELOPING.md that would have helped
-          a developer avoid it, the PR is the right moment to add one. The lesson doesn't
-          need to be long — a heading and two paragraphs is enough. Flag bug-fix PRs that
-          reveal a non-obvious trap and don't document it.
-
-          Test coverage gaps: if the PR touches a function that has no unit tests or
-          proptest coverage, and the logic is complex enough to warrant them, ask whether
-          a test should be added. A proof is preferred for pure logic in logfwd-core, but
-          if a proof isn't feasible (async, heap-heavy), a proptest case is expected.
-
-          Stale TODOs: if the PR resolves the issue referenced in a nearby // TODO(#N)
-          comment, the comment should be removed. If the PR touches code with a TODO that
-          is clearly no longer relevant, removing it is a small, free improvement.
-
-          Do not penalize authors for not gold-plating unrelated code. The scope is the
-          modules this PR actually changed. But within those modules, "leave it slightly
-          better" is a reasonable expectation and worth a gentle note when it's missed.
+          Does the overall PR demonstrate craftsmanship? Not perfection — direction.
+          A PR that fixes a bug, proves it can't recur, and documents the trap it
+          revealed is the standard to aim for. A PR that does the minimum to pass CI
+          is acceptable. Recognize the difference and note it.
 
 
           COMMIT HYGIENE AND PR HYGIENE.
