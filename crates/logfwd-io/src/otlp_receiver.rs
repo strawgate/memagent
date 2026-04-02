@@ -108,9 +108,31 @@ impl OtlpReceiverInput {
                     let body = match content_encoding.as_deref() {
                         Some("zstd") => {
                             use std::io::Read;
-                            let mut decoder = zstd::Decoder::new(&body[..]).unwrap();
-                            let mut decompressed = Vec::with_capacity(body.len() * 4);
-                            match decoder.read_to_end(&mut decompressed) {
+                            let decoder = match zstd::Decoder::new(&body[..]) {
+                                Ok(d) => d,
+                                Err(_) => {
+                                    let _ = request.respond(
+                                        tiny_http::Response::from_string(
+                                            "zstd decompression failed",
+                                        )
+                                        .with_status_code(400),
+                                    );
+                                    continue;
+                                }
+                            };
+                            let mut decompressed =
+                                Vec::with_capacity(body.len().min(MAX_BODY_SIZE));
+                            match decoder
+                                .take(MAX_BODY_SIZE as u64 + 1)
+                                .read_to_end(&mut decompressed)
+                            {
+                                Ok(n) if n > MAX_BODY_SIZE => {
+                                    let _ = request.respond(
+                                        tiny_http::Response::from_string("payload too large")
+                                            .with_status_code(413),
+                                    );
+                                    continue;
+                                }
                                 Ok(_) => decompressed,
                                 Err(_) => {
                                     let _ = request.respond(
