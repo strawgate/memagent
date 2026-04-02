@@ -53,8 +53,6 @@ export function PipelineView({ pipeline: p, traces }: Props) {
     return v != null ? fmt(v) + "/s" : "-";
   };
 
-  const pipelineTraces = traces.filter(t => t.pipeline === p.name);
-
   return (
     <div class="section">
       <div class="heading">Pipeline: {p.name}</div>
@@ -171,17 +169,17 @@ export function PipelineView({ pipeline: p, traces }: Props) {
       })()}
 
       {/* Batch traces — timeline always visible, list shown when expanded */}
-      {pipelineTraces.length > 0 && (
+      {traces.length > 0 && (
         <div class="pipe-traces">
           <button
             class="pipe-traces-toggle"
             onClick={() => setTracesOpen(!tracesOpen)}
           >
             <span>Batch Traces</span>
-            <span class="pipe-traces-count">{pipelineTraces.length} recent</span>
+            <span class="pipe-traces-count">{traces.length} recent</span>
             <span class="pipe-traces-chevron">{tracesOpen ? "▲" : "▼"}</span>
           </button>
-          <TraceExplorer traces={pipelineTraces} collapsed={!tracesOpen} />
+          <TraceExplorer traces={traces} collapsed={!tracesOpen} />
         </div>
       )}
     </div>

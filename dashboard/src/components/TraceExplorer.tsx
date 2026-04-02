@@ -66,7 +66,7 @@ function computeStats(traces: TraceRecord[]): Stats | null {
     if (t.flush_reason === "timeout") timeouts++;
   }
   const windowSec = Math.max(1,
-    (traces[0].start_unix_ns - traces[traces.length - 1].start_unix_ns) / 1e9,
+    (traces[0].start_unix_ns + traces[0].total_ns - traces[traces.length - 1].start_unix_ns) / 1e9,
   );
   return {
     batchPerMin:    (traces.length / windowSec) * 60,
