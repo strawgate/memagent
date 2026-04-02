@@ -194,10 +194,9 @@ impl OutputSink for ElasticsearchSink {
             match build_req().send(&self.batch_buf) {
                 Ok(response) => {
                     // Read response body to check for bulk errors.
-                    let body = response
-                        .into_body()
-                        .read_to_vec()
-                        .map_err(|e| io::Error::other(format!("failed to read ES response: {e}")))?;
+                    let body = response.into_body().read_to_vec().map_err(|e| {
+                        io::Error::other(format!("failed to read ES response: {e}"))
+                    })?;
                     self.parse_bulk_response(&body)?;
 
                     self.stats.inc_lines(batch.num_rows() as u64);
@@ -315,9 +314,11 @@ mod tests {
             DataType::Utf8,
             false,
         )]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(Vec::<&str>::new()))])
-                .expect("batch creation failed");
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(Vec::<&str>::new()))],
+        )
+        .expect("batch creation failed");
 
         let stats = Arc::new(ComponentStats::default());
         let mut sink = ElasticsearchSink::new(

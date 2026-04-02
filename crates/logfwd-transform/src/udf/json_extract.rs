@@ -219,7 +219,9 @@ impl ScalarUDFImpl for JsonExtractUdf {
 
         // --- look up the best column by suffix order ---
         let col = self.mode.suffix_order().iter().find_map(|suffix| {
-            batch.column_by_name(&format!("{key}{suffix}")).map(Arc::clone)
+            batch
+                .column_by_name(&format!("{key}{suffix}"))
+                .map(Arc::clone)
         });
 
         // --- coerce to the declared return type ---

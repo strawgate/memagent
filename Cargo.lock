@@ -2215,6 +2215,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "stats_alloc",
+ "tiny_http",
  "ureq",
 ]
 
