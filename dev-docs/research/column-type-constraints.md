@@ -101,22 +101,42 @@ pipeline with both inputs can't have both.
 Per-batch conflict detection means the config doesn't determine the
 schema — the data does. This violates C8 and makes debugging hard.
 
-## Questions to resolve
+## Questions resolved
 
-1. Should the typing strategy be per-input, per-pipeline, or global?
+**1. Typing strategy: per-input (reader-level), inferred from format.**
+The scanner/reader decides. JSON gets conflict detection because it has no
+schema. Protobuf/Avro/Parquet/OTLP never produce conflicts because their
+schemas are fixed. This is the only place where it can be decided —
+the reader sees the raw bytes and knows the format.
 
-2. Should the user declare the typing mode in config, or should we
-   infer it from the input type?
+**2. Config declares type hints; reader infers by default.**
+The reader infers by default (type conflicts produce suffixed columns).
+Config can declare `schema: { status: int }` to pin a field type at scan
+time, eliminating conflict columns. This satisfies C8 for teams with
+known-type fields. Default behavior (no hint) is data-driven and
+satisfies C1 and C3 per-batch.
 
-3. For JSON inputs specifically: should we offer both "everything is
-   string" (CSV-like) and "detect types" (current behavior) modes?
+**3. JSON offers detect-types mode only (current behavior).**
+"Everything is string" mode is not worth the complexity — CSV/syslog
+inputs already behave that way and use bare string columns natively.
+A JSON user who wants strings can use `SELECT CAST(status AS VARCHAR)`.
 
-4. When a field has multiple types and the user does `SELECT *`, what
-   columns appear in the output? All typed variants? Just the string?
+**4. `SELECT *` emits bare names, correct types per row.**
+The output layer uses `ConflictGroups` to skip typed variant columns
+(`status__int`, `status__str`) and the synthesized SQL column (`status:
+Utf8`), and instead emits one `status` field per row with the correct
+type from `typed_value_for_row`. `SELECT *` round-trips correctly.
 
-5. Should the output sink be responsible for collapsing multiple typed
-   columns back into one field, or should the SQL transform do it?
+**5. Output sink is responsible for collapsing.**
+The SQL transform synthesizes a bare `status: Utf8` column for SQL
+resolution only. Output sinks use `ConflictGroups` to collapse typed
+variants back into a single correctly-typed field per row. The SQL
+transform must not be used to collapse — it would lose type fidelity.
 
-6. For Elasticsearch output: if `status` is sometimes int and sometimes
-   string, what do we send? The int (and drop the string rows)? The
-   string (and lose type fidelity)? Both (and get a mapping conflict)?
+**6. Elasticsearch output: emit per-row type, accept mapping conflict.**
+Send `status: 200` (int) for integer rows and `status: "error"` (string)
+for string rows. ES will reject the conflicting-type documents unless
+`ignore_malformed: true` is set. This is an ES limitation that the user
+must configure. Our job is fidelity; downstream schema enforcement is
+the user's responsibility. Document in sink config: "ES mappings must
+accommodate the field types your pipeline produces."

@@ -1,6 +1,6 @@
 # Column Type Design
 
-Context: #445
+Context: #445, #625
 
 ## Requirements
 
@@ -29,12 +29,16 @@ When the builder finalizes a batch, each field gets:
 - **No type conflict** (field is always int, or always string, etc.):
   bare column name, native DataType.
   - `status` always int → column `status` (Int64)
-  - `level` always string → column `level` (Utf8)
+  - `level` always string → column `level` (Utf8View)
 
 - **Type conflict** (field has multiple types across rows in the batch):
-  suffixed columns for each observed type.
+  double-underscore suffixed columns for each observed type.
   - `status` is int in some rows, string in others →
-    `status_int` (Int64) + `status_str` (Utf8)
+    `status__int` (Int64) + `status__str` (Utf8View)
+
+Double underscores (`__`) are used to minimize collision with real field
+names (a JSON field literally named `status_int` is common; `status__int`
+is not).
 
 ### Input compatibility
 
@@ -42,76 +46,188 @@ When the builder finalizes a batch, each field gets:
 |---|---|---|
 | OTLP / Arrow IPC | Never (typed per-column) | Bare: `status`, `level` |
 | CSV / raw / syslog | Never (all strings) | Bare: `status`, `level` |
-| JSON (consistent) | No | Bare: `status` (Int64), `level` (Utf8) |
-| JSON (mixed types) | Yes | `status_int` + `status_str`, `level` (Utf8) |
+| JSON (consistent) | No | Bare: `status` (Int64), `level` (Utf8View) |
+| JSON (mixed types) | Yes | `status__int` + `status__str`, `level` (Utf8View) |
 | Mixed pipeline | Depends on batch | Bare when clean, suffixed on conflict |
 
-### SQL interface
+This is almost entirely a JSON problem. Protobuf, Avro, Parquet, and
+OTLP all have per-field schemas that eliminate type conflicts at the
+source. The typed-variant machinery is invisible for non-JSON inputs.
 
-**Bare names (common case):**
+### Schema metadata
+
+When the builder emits conflict columns, it also stamps the Arrow schema
+with a metadata key listing the conflict groups:
+
+```
+schema.metadata["logfwd.conflict_groups"] = "status:int,str;duration:float,int"
+```
+
+Format: semicolon-separated groups, each group is `base_name:type1,type2`
+where types are `int`, `float`, `str`. The metadata is the authoritative
+record — all downstream code (output sinks, tests) reads this key rather
+than parsing column names.
+
+For batches with no conflicts (the common case), the key is absent.
+Zero overhead.
+
+### SQL layer
+
+**Problem:** When a conflict batch has `status__int` and `status__str`
+but no bare `status` column, SQL `SELECT status FROM logs` fails.
+
+**Solution:** `normalize_conflict_columns()` in `logfwd-transform` reads
+the `logfwd.conflict_groups` metadata and adds a synthesized bare
+`status: Utf8` column before handing the batch to DataFusion:
+
+```
+COALESCE(CAST(status__int AS Utf8), CAST(status__float AS Utf8), status__str)
+```
+
+This column is for SQL resolution only. Output sinks ignore it (see below).
+
+**Bare names (common case — no conflict):**
 ```sql
 SELECT status, level FROM logs WHERE status > 400
 ```
 
-**Suffixed names (type conflict case):**
+**Mixed-type case:**
 ```sql
-SELECT status_int, status_str FROM logs WHERE status_int > 400
+-- status is Utf8 (synthesized), use int() / float() UDFs for numeric ops
+SELECT status, level FROM logs WHERE int(status) > 400
+SELECT status, level FROM logs WHERE status = 'ERROR'
 ```
 
-**AnalyzerRule + TableProvider for type-conflict batches (see #625):**
-a DataFusion `AnalyzerRule` walks the expression tree and routes bare-name
-references to the appropriate typed column. A custom `TableProvider` presents
-bare column names in its schema so `SELECT *` shows clean names.
-
-- `status > 400` → routed to `status_int > 400`
-- `status = 'ERROR'` → routed to `status_str = 'ERROR'`
-- `SELECT status` → COALESCE(CAST(status_int AS VARCHAR), status_str) AS status
-
-A DataFusion VIEW was considered but rejected: VIEWs only help `SELECT *`
-and cannot rewrite WHERE/GROUP BY/ORDER BY predicates correctly. The
-AnalyzerRule handles all SQL constructs. For clean-schema batches (no conflict),
-the table is registered directly with no AnalyzerRule overhead.
+**Direct typed-variant access (power users):**
+```sql
+SELECT status__int, status__str FROM logs WHERE status__int > 400
+```
 
 ### Output serialization
 
-The output layer dispatches on Arrow DataType, not column name suffix.
-For round-trip serialization:
+Output sinks **must not** emit `status__int`/`status__str` as separate
+fields, and **must not** use the synthesized bare `status: Utf8` column
+(it's string-only and loses type fidelity).
 
-1. Group columns by bare field name (strip `_int`/`_float`/`_str` suffix
-   if present).
-2. For each row, find the first non-null value across the column group.
-3. Serialize using the DataType of that column:
-   - Int64 → JSON number: `"status": 200`
-   - Float64 → JSON number: `"status": 1.5`
-   - Utf8 → JSON string: `"status": "OK"`
+Instead, each output sink uses `ConflictGroups` from `logfwd-output`:
 
-JSON output key is always the bare field name.
+```rust
+pub enum TypedValue<'a> {
+    Int(i64),
+    Float(f64),
+    Str(&'a str),
+    Null,
+}
 
-### Schema stability
+pub struct ConflictGroup {
+    pub base: String,             // "status"
+    pub int_col:   Option<usize>, // column index of status__int
+    pub float_col: Option<usize>,
+    pub str_col:   Option<usize>,
+    pub synth_col: Option<usize>, // index of synthesized bare col — skip
+}
 
-At config time, `QueryAnalyzer` extracts `referenced_columns` from the
-user's SQL. The suffix convention gives us the DataType. Before
-registering each batch as a MemTable, pad with null columns for any
-SQL-referenced columns missing from the batch.
+pub struct ConflictGroups {
+    pub groups:    Vec<ConflictGroup>,
+    pub skip_cols: HashSet<usize>, // variant + synth cols — skip in normal iteration
+}
 
-This is stateless — guaranteed columns are derived from the SQL at
-config time, not from runtime data. For `SELECT *` (no explicit column
-references), no padding is needed.
+impl ConflictGroups {
+    /// Parse from Arrow schema metadata.
+    pub fn from_schema(schema: &Schema) -> Self { ... }
+
+    /// Return the non-null typed value for this group at this row.
+    /// Priority: int > float > str.
+    pub fn typed_value_for_row<'a>(
+        &self, batch: &'a RecordBatch, group: &ConflictGroup, row: usize,
+    ) -> TypedValue<'a> { ... }
+}
+```
+
+Each output sink's row-emission loop:
+
+```rust
+let groups = ConflictGroups::from_schema(batch.schema());
+
+// Normal columns
+for (i, field) in schema.fields().iter().enumerate() {
+    if groups.skip_cols.contains(&i) { continue; }
+    emit_column(field.name(), batch.column(i), row);
+}
+
+// Conflict groups (type-preserving, correct field names)
+for group in &groups.groups {
+    match groups.typed_value_for_row(batch, group, row) {
+        TypedValue::Int(v)   => emit_int(group.base, v),
+        TypedValue::Float(v) => emit_float(group.base, v),
+        TypedValue::Str(v)   => emit_str(group.base, v),
+        TypedValue::Null     => {},
+    }
+}
+```
+
+This produces `"status": 200` or `"status": "error"` per row with correct
+types — identical to what the original JSON document contained.
 
 ### Builder logic
 
 ```rust
-if fc.has_int && !fc.has_float && !fc.has_str {
-    // Single type: bare name
-    columns.push((field_name, DataType::Int64, int_values));
-} else if fc.has_str && !fc.has_int && !fc.has_float {
-    columns.push((field_name, DataType::Utf8View, str_values));
-} else if fc.has_float && !fc.has_int && !fc.has_str {
-    columns.push((field_name, DataType::Float64, float_values));
+let conflict = (fc.has_int as u8) + (fc.has_float as u8) + (fc.has_str as u8) > 1;
+
+if !conflict {
+    // Single type: bare name, zero overhead
+    if fc.has_int   { columns.push((field_name.clone(), DataType::Int64,    int_values));   }
+    if fc.has_float { columns.push((field_name.clone(), DataType::Float64,  float_values)); }
+    if fc.has_str   { columns.push((field_name.clone(), DataType::Utf8View, str_values));   }
 } else {
-    // Type conflict: suffixed names
-    if fc.has_int   { columns.push((format!("{field_name}_int"),   DataType::Int64,    int_values));   }
-    if fc.has_float { columns.push((format!("{field_name}_float"), DataType::Float64,  float_values)); }
-    if fc.has_str   { columns.push((format!("{field_name}_str"),   DataType::Utf8View, str_values));   }
+    // Type conflict: double-underscore suffixed names
+    if fc.has_int   { columns.push((format!("{field_name}__int"),   DataType::Int64,    int_values));   }
+    if fc.has_float { columns.push((format!("{field_name}__float"), DataType::Float64,  float_values)); }
+    if fc.has_str   { columns.push((format!("{field_name}__str"),   DataType::Utf8View, str_values));   }
+    // Stamp schema metadata (accumulated and set on schema at finish_batch)
+    conflict_groups.push((field_name.clone(), observed_types));
 }
 ```
+
+### Schema stability
+
+At config time, `QueryAnalyzer` extracts `referenced_columns` from the
+user's SQL. Before registering each batch as a MemTable, pad with null
+columns for any SQL-referenced columns missing from the batch.
+
+For conflict batches, `normalize_conflict_columns` synthesizes the bare
+column so SQL references resolve. This is stateless — no per-batch
+schema tracking needed.
+
+## Implementation Phases
+
+### Phase 10 (complete — PR #684)
+- Builders emit bare names for single-type fields, `_int`/`_str`/`_float`
+  for conflicts (single underscore — to be updated)
+- `normalize_conflict_columns` synthesizes bare Utf8 column for SQL
+- Dead `rewriter.rs` deleted
+
+### Phase 10b: Double-underscore rename
+- Change `_int`/`_str`/`_float` → `__int`/`__str`/`__float` in
+  `StreamingBuilder`, `StorageBuilder`
+- Update `strip_conflict_suffix` in `conflict_schema.rs`
+- Update `suffix_order` in `json_extract.rs`
+- Update all tests (scanner_conformance, compliance_data, scanner.rs, etc.)
+- Add `logfwd.conflict_groups` schema metadata stamping in builders
+
+### Phase 10c: ConflictGroups output abstraction
+- Add `ConflictGroups` + `TypedValue` to `logfwd-output`
+- Update OTLP sink (type-preserving per-row emission)
+- Update JSON Lines / TCP / UDP sinks (same)
+- Update stdout sink
+- Tests: conflict batch round-trips correctly through each sink
+
+### Future: Type hints (#625 follow-on)
+A user can declare in config:
+```yaml
+schema:
+  status: int
+```
+This pins `status` to Int64 across all batches. The scanner uses this hint
+to coerce values at scan time, eliminating the conflict columns entirely.
+Satisfies C8 (config determines behavior, not data).
