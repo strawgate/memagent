@@ -118,7 +118,19 @@ satisfies C1 (per-batch type fidelity) only. C3 (cross-batch schema
 stability) is NOT guaranteed by default: a field that is always-int in one
 batch gets a bare `status: Int64` column, but in a later batch where it
 conflicts it becomes `status__int` + `status__str`. C3 is only satisfied
-when type hints are pinned via config (future work).
+when type hints are pinned via config, or via the query-scoped Utf8 view
+approach planned in #625.
+
+The #625 design satisfies C3 without requiring config: for each column the
+user's SQL references, the `TableProvider` advertises it as `Utf8` in the
+schema it presents to DataFusion (stable name, stable type across all
+batches). The `AnalyzerRule` then rewrites accesses at plan time —
+`status` reads the Utf8 view; `CAST(status AS BIGINT)` is rewritten to
+read `status__int` directly, bypassing the string round-trip. Columns the
+query never references get no view synthesized at all. The current
+`normalize_conflict_columns` is a batch-level approximation that covers
+conflict batches but not clean ones; #625 replaces it with this
+query-scoped approach.
 
 **3. JSON offers detect-types mode only (current behavior).**
 "Everything is string" mode is not worth the complexity — CSV/syslog
