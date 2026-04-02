@@ -12,23 +12,24 @@ mod udp_sink;
 
 mod elasticsearch;
 
-// Placeholder sinks — not yet wired into build_output_sink.
-#[allow(dead_code)]
 mod loki;
 #[allow(dead_code)]
 mod parquet;
 
-pub use elasticsearch::ElasticsearchSink;
+pub use elasticsearch::{ElasticsearchAsyncSink, ElasticsearchSink, ElasticsearchSinkFactory};
 pub use fanout::{FanOut, FanOutError};
 pub use json_lines::JsonLinesSink;
+pub use loki::{LokiAsyncSink, LokiSinkFactory};
 pub use null::NullSink;
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
+pub use sink::{SendResult, Sink, SinkFactory, SyncSinkAdapter};
 use stdout::*;
 pub use tcp_sink::TcpSink;
 pub use udp_sink::UdpSink;
 
 use std::io::{self, Write};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
@@ -418,6 +419,124 @@ pub fn build_output_sink(
             "output '{name}': type {:?} not yet supported",
             cfg.output_type
         )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OnceFactory — wraps a pre-built OutputSink for sync/legacy sinks
+// ---------------------------------------------------------------------------
+
+/// `SinkFactory` implementation for synchronous [`OutputSink`] types.
+///
+/// Wraps one pre-built sink in a `Mutex`. On the first `create()` call it
+/// transfers ownership into a [`SyncSinkAdapter`]; subsequent calls return an
+/// error. This naturally enforces `max_workers = 1` for sync sinks since the
+/// pool will stop spawning workers once the factory starts returning errors.
+///
+/// For most sync sinks (Stdout, TCP, UDP) a single worker is correct —
+/// there is only one connection or file handle anyway.
+pub struct OnceFactory {
+    name: String,
+    inner: Mutex<Option<Box<dyn OutputSink>>>,
+}
+
+impl OnceFactory {
+    pub fn new(name: String, sink: Box<dyn OutputSink>) -> Self {
+        OnceFactory {
+            name,
+            inner: Mutex::new(Some(sink)),
+        }
+    }
+}
+
+impl sink::SinkFactory for OnceFactory {
+    fn create(&self) -> io::Result<Box<dyn sink::Sink>> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| io::Error::other("OnceFactory mutex poisoned"))?;
+        match guard.take() {
+            Some(s) => Ok(Box::new(SyncSinkAdapter::new(s))),
+            None => Err(io::Error::other(
+                "OnceFactory: sync sink already consumed (max_workers must be 1)",
+            )),
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_single_use(&self) -> bool {
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// build_sink_factory — produce Arc<dyn SinkFactory> from config
+// ---------------------------------------------------------------------------
+
+/// Build an `Arc<dyn SinkFactory>` from an output configuration.
+///
+/// For async-native sinks (Elasticsearch, Loki) this returns a factory that
+/// creates a fresh reqwest-based sink per worker. For all other sinks it
+/// builds the sink synchronously and wraps it in a [`OnceFactory`] — those
+/// sinks are limited to one worker.
+pub fn build_sink_factory(
+    name: &str,
+    cfg: &logfwd_config::OutputConfig,
+    stats: Arc<ComponentStats>,
+) -> Result<Arc<dyn sink::SinkFactory>, String> {
+    use logfwd_config::OutputType;
+
+    let auth_headers = build_auth_headers(cfg.auth.as_ref());
+
+    match cfg.output_type {
+        OutputType::Elasticsearch => {
+            let endpoint = cfg
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| format!("output '{name}': elasticsearch requires 'endpoint'"))?;
+            let index = cfg
+                .index
+                .as_ref()
+                .or(cfg.path.as_ref())
+                .map_or("logs", String::as_str)
+                .to_string();
+            let compress = cfg.compression.as_deref() == Some("gzip");
+            let factory = ElasticsearchSinkFactory::new(
+                name.to_string(),
+                endpoint.clone(),
+                index,
+                auth_headers,
+                compress,
+                stats,
+            )
+            .map_err(|e| format!("output '{name}': elasticsearch factory: {e}"))?;
+            Ok(Arc::new(factory))
+        }
+        OutputType::Loki => {
+            let endpoint = cfg
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| format!("output '{name}': loki requires 'endpoint'"))?;
+            let factory = LokiSinkFactory::new(
+                name.to_string(),
+                endpoint.clone(),
+                None, // tenant_id: not yet in OutputConfig
+                Vec::new(),
+                Vec::new(),
+                auth_headers,
+                stats,
+            )
+            .map_err(|e| format!("output '{name}': loki factory: {e}"))?;
+            Ok(Arc::new(factory))
+        }
+        _ => {
+            // Sync sink — build it once, wrap in OnceFactory (max_workers=1).
+            let sink = build_output_sink(name, cfg, stats)?;
+            Ok(Arc::new(OnceFactory::new(name.to_string(), sink)))
+        }
     }
 }
 

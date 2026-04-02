@@ -114,6 +114,177 @@ impl JsonLinesSink {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::StringArray;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use logfwd_io::diagnostics::ComponentStats;
+
+    fn make_sink() -> JsonLinesSink {
+        JsonLinesSink::new(
+            "test".to_string(),
+            "http://localhost:1".to_string(), // unreachable — tests only call serialize_batch
+            vec![],
+            Arc::new(ComponentStats::default()),
+        )
+    }
+
+    fn batch_with_raw_only(raw_values: Vec<&str>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(raw_values))]).unwrap()
+    }
+
+    fn batch_raw_plus_nulls(raw_values: Vec<&str>) -> RecordBatch {
+        let n = raw_values.len();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("_raw", DataType::Utf8, true),
+            Field::new("level", DataType::Utf8, true), // will be all-null
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(raw_values)),
+                Arc::new(StringArray::from(vec![None::<&str>; n])), // all null
+            ],
+        )
+        .unwrap()
+    }
+
+    fn batch_raw_with_non_null_col() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("_raw", DataType::Utf8, true),
+            Field::new("level", DataType::Utf8, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["raw data"])),
+                Arc::new(StringArray::from(vec!["ERROR"])), // not null — blocks passthrough
+            ],
+        )
+        .unwrap()
+    }
+
+    fn batch_no_raw() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["hello"]))]).unwrap()
+    }
+
+    // --- is_raw_passthrough ---
+
+    #[test]
+    fn passthrough_raw_only_column() {
+        let batch = batch_with_raw_only(vec!["line 1", "line 2"]);
+        assert!(JsonLinesSink::is_raw_passthrough(&batch));
+    }
+
+    #[test]
+    fn passthrough_raw_plus_all_null_cols() {
+        let batch = batch_raw_plus_nulls(vec!["line 1", "line 2"]);
+        assert!(JsonLinesSink::is_raw_passthrough(&batch));
+    }
+
+    #[test]
+    fn no_passthrough_when_no_raw_col() {
+        let batch = batch_no_raw();
+        assert!(!JsonLinesSink::is_raw_passthrough(&batch));
+    }
+
+    #[test]
+    fn no_passthrough_when_non_null_col_present() {
+        let batch = batch_raw_with_non_null_col();
+        assert!(!JsonLinesSink::is_raw_passthrough(&batch));
+    }
+
+    #[test]
+    fn no_passthrough_empty_schema() {
+        let schema = Arc::new(Schema::empty());
+        let batch = RecordBatch::new_empty(schema);
+        assert!(!JsonLinesSink::is_raw_passthrough(&batch));
+    }
+
+    // --- serialize_batch: raw passthrough path ---
+
+    #[test]
+    fn serialize_passthrough_copies_raw_verbatim() {
+        let mut sink = make_sink();
+        let batch = batch_with_raw_only(vec![r#"{"a":1}"#, r#"{"b":2}"#]);
+        sink.serialize_batch(&batch).unwrap();
+        let out = std::str::from_utf8(&sink.batch_buf).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines, vec![r#"{"a":1}"#, r#"{"b":2}"#]);
+    }
+
+    #[test]
+    fn serialize_passthrough_raw_plus_null_cols() {
+        let mut sink = make_sink();
+        let batch = batch_raw_plus_nulls(vec!["raw-line-1", "raw-line-2"]);
+        sink.serialize_batch(&batch).unwrap();
+        let out = std::str::from_utf8(&sink.batch_buf).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines, vec!["raw-line-1", "raw-line-2"]);
+    }
+
+    // --- serialize_batch: JSON serialization path ---
+
+    #[test]
+    fn serialize_json_path_produces_valid_ndjson() {
+        let mut sink = make_sink();
+        let batch = batch_raw_with_non_null_col();
+        sink.serialize_batch(&batch).unwrap();
+        let out = std::str::from_utf8(&sink.batch_buf).unwrap();
+        // Each line must be a valid JSON object ending with \n
+        for line in out.lines() {
+            assert!(line.starts_with('{'), "expected JSON object, got: {line}");
+            assert!(line.ends_with('}'));
+        }
+        assert!(
+            out.contains("ERROR"),
+            "field value must appear in JSON output"
+        );
+    }
+
+    // --- serialize_batch: edge cases ---
+
+    #[test]
+    fn serialize_empty_batch_produces_no_output() {
+        let mut sink = make_sink();
+        let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(Vec::<&str>::new()))],
+        )
+        .unwrap();
+        sink.serialize_batch(&batch).unwrap();
+        assert!(sink.batch_buf.is_empty());
+    }
+
+    #[test]
+    fn serialize_clear_buf_between_calls() {
+        // buf from previous call must not leak into next call
+        let mut sink = make_sink();
+        sink.serialize_batch(&batch_with_raw_only(vec!["first"]))
+            .unwrap();
+        assert!(!sink.batch_buf.is_empty());
+        let empty_schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+        let empty_batch = RecordBatch::try_new(
+            empty_schema,
+            vec![Arc::new(StringArray::from(Vec::<&str>::new()))],
+        )
+        .unwrap();
+        sink.serialize_batch(&empty_batch).unwrap();
+        assert!(
+            sink.batch_buf.is_empty(),
+            "buf should be cleared between calls"
+        );
+    }
+}
+
 impl OutputSink for JsonLinesSink {
     fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
         self.serialize_batch(batch)?;

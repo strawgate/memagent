@@ -1,23 +1,21 @@
 //! Async `Sink` trait and `SendResult` for the v2 Arrow pipeline.
 //!
-//! Uses Rust's native async-fn-in-traits (stabilised in 1.75; no `async_trait`
-//! crate required). The workspace MSRV is effectively Rust 1.86+ (edition
-//! 2024), so native async traits are safe to use here.
-//!
-//! Async methods are desugared to `-> impl Future<Output = …> + Send` to keep
-//! the `Send` bound explicit on public trait methods, as required by clippy's
-//! `async_fn_in_trait` lint.
+//! The `Sink` trait uses `Pin<Box<dyn Future>>` return types to remain
+//! dyn-compatible, enabling `Box<dyn Sink>` without the `async_trait` crate.
+//! This costs one heap allocation per call but allows heterogeneous sink
+//! collections in the worker pool.
 //!
 //! The synchronous [`crate::OutputSink`] trait remains in place and coexists
 //! with this new async interface throughout the migration period.
 
 use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
 
-use super::BatchMetadata;
+use super::{BatchMetadata, OutputSink};
 
 // ---------------------------------------------------------------------------
 // SendResult
@@ -41,26 +39,107 @@ pub enum SendResult {
 
 /// Async output sink for the v2 Arrow pipeline.
 ///
-/// Implementors must be `Send` so they can be moved across thread boundaries.
-/// Each async method returns `impl Future + Send` rather than using `async fn`
-/// directly, which makes the `Send` bound on the returned future explicit.
+/// Methods return `Pin<Box<dyn Future>>` so the trait is dyn-compatible and
+/// `Box<dyn Sink>` works without the `async_trait` crate.
 ///
-/// The existing synchronous [`crate::OutputSink`] trait coexists with this
-/// interface during the migration from v1 to v2.
+/// Implementors can define `async fn` wrappers internally and box them:
+/// ```rust,ignore
+/// fn send_batch<'a>(...) -> Pin<Box<dyn Future<...> + Send + 'a>> {
+///     Box::pin(async move { /* impl */ })
+/// }
+/// ```
 pub trait Sink: Send {
     /// Serialize and send a batch of log records.
-    fn send_batch(
-        &mut self,
-        batch: &RecordBatch,
-        metadata: &BatchMetadata,
-    ) -> impl Future<Output = io::Result<SendResult>> + Send;
+    fn send_batch<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>>;
 
     /// Flush any internally buffered data to the destination.
-    fn flush(&mut self) -> impl Future<Output = io::Result<()>> + Send;
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>>;
 
     /// Return the human-readable name of this sink (from config).
     fn name(&self) -> &str;
 
     /// Gracefully shut down the sink, flushing and releasing resources.
-    fn shutdown(&mut self) -> impl Future<Output = io::Result<()>> + Send;
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>>;
+}
+
+// ---------------------------------------------------------------------------
+// SinkFactory trait
+// ---------------------------------------------------------------------------
+
+/// Factory for creating new [`Sink`] instances.
+///
+/// The worker pool holds one `Arc<dyn SinkFactory>` and calls `create()` each
+/// time it spawns a new worker. This lets each worker own an independent HTTP
+/// client (and therefore connection pool) while sharing configuration.
+pub trait SinkFactory: Send + Sync + 'static {
+    /// Create a new sink instance. Called once per worker spawn.
+    fn create(&self) -> io::Result<Box<dyn Sink>>;
+
+    /// Human-readable name for logging.
+    fn name(&self) -> &str;
+
+    /// Returns `true` if the factory wraps a non-replicable resource (e.g. a
+    /// pre-built sync sink) and can successfully call `create()` at most once.
+    ///
+    /// When `true`, the worker pool must use `max_workers = 1` and should set
+    /// a very long (or infinite) idle timeout so the sole worker is never
+    /// evicted — because if it exits, `create()` will return an error and the
+    /// output permanently stops.
+    fn is_single_use(&self) -> bool {
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SyncSinkAdapter
+// ---------------------------------------------------------------------------
+
+/// Wraps a synchronous [`OutputSink`] as an async [`Sink`].
+///
+/// Uses `tokio::task::block_in_place` so the sync call doesn't block the
+/// async executor. Suitable for sinks that haven't yet been ported to reqwest.
+pub struct SyncSinkAdapter {
+    inner: Box<dyn OutputSink>,
+}
+
+impl SyncSinkAdapter {
+    pub fn new(inner: Box<dyn OutputSink>) -> Self {
+        SyncSinkAdapter { inner }
+    }
+}
+
+impl Sink for SyncSinkAdapter {
+    fn send_batch<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+        // SAFETY: block_in_place is safe here because we're within a
+        // multi-threaded tokio runtime (logfwd always uses rt-multi-thread).
+        Box::pin(async move {
+            tokio::task::block_in_place(|| {
+                self.inner
+                    .send_batch(batch, metadata)
+                    .map(|()| SendResult::Ok)
+            })
+        })
+    }
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async move { tokio::task::block_in_place(|| self.inner.flush()) })
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        // Flush buffered data before the worker exits. Sync sinks that buffer
+        // (e.g. file sinks) would silently lose the last batch without this.
+        Box::pin(async move { tokio::task::block_in_place(|| self.inner.flush()) })
+    }
 }
