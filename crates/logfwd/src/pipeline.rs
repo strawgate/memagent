@@ -519,11 +519,11 @@ impl Pipeline {
         self.ack_all_tickets(sending, output_ok);
 
         if output_ok {
-            self.metrics.inc_output_success(num_rows);
+            self.metrics.inc_output_success(result.num_rows() as u64);
         }
 
         self.metrics.record_batch(
-            num_rows,
+            result.num_rows() as u64,
             scan_elapsed.as_nanos() as u64,
             transform_elapsed.as_nanos() as u64,
             output_elapsed.as_nanos() as u64,
@@ -595,9 +595,6 @@ fn input_poll_loop(
         if events.is_empty() {
             std::thread::sleep(poll_interval);
         } else {
-            if !input.buf.is_empty() && buffered_since.is_none() {
-                buffered_since = Some(Instant::now());
-            }
             for event in events {
                 match event {
                     InputEvent::Data { bytes } => {
@@ -2175,6 +2172,214 @@ output:
 
         assert!(result.is_ok(), "concurrent write + shutdown must not hang");
         assert!(result.unwrap().is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // PipelineMachine integration tests (#586, #587)
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a pipeline from a log file path with a custom output sink.
+    fn pipeline_with_sink(log_path: &std::path::Path, sink: Box<dyn OutputSink>) -> Pipeline {
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+output:
+  type: "null"
+"#,
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        Pipeline::from_config("default", pipe_cfg, &test_meter(), None)
+            .unwrap()
+            .with_output(sink)
+    }
+
+    #[test]
+    fn test_machine_initialized_on_construction() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, "").unwrap();
+
+        let pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        assert!(
+            pipeline.machine.is_some(),
+            "PipelineMachine must be initialized in from_config"
+        );
+    }
+
+    #[test]
+    fn test_machine_clean_shutdown_no_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        logfwd_test_utils::generate_json_lines(&log_path, 100, "machine-test");
+
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        let metrics = Arc::clone(pipeline.metrics());
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if metrics.batch_rows_total.load(Ordering::Relaxed) >= 100 {
+                    std::thread::sleep(Duration::from_millis(50));
+                    sd.cancel();
+                    return;
+                }
+                if Instant::now() > deadline {
+                    sd.cancel();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(result.is_ok());
+        assert!(
+            pipeline.machine.is_none(),
+            "machine should be consumed by shutdown drain"
+        );
+    }
+
+    #[test]
+    fn test_flush_batch_with_zero_rows_still_completes() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("empty.log");
+        std::fs::write(&log_path, "").unwrap();
+
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            sd.cancel();
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(result.is_ok(), "empty file should not crash pipeline");
+    }
+
+    #[test]
+    fn test_flush_batch_output_error_machine_still_drains() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        logfwd_test_utils::generate_json_lines(&log_path, 50, "fail-test");
+
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(FailingSink::new(u32::MAX)));
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        let metrics = Arc::clone(pipeline.metrics());
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if metrics.dropped_batches_total.load(Ordering::Relaxed) > 0 {
+                    std::thread::sleep(Duration::from_millis(50));
+                    sd.cancel();
+                    return;
+                }
+                if Instant::now() > deadline {
+                    sd.cancel();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(result.is_ok());
+        assert!(
+            pipeline.machine.is_none(),
+            "machine should be consumed even with output errors"
+        );
+    }
+
+    #[test]
+    fn test_channel_msg_data_carries_checkpoints() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMsg>(4);
+
+        tx.try_send(ChannelMsg::Data {
+            bytes: b"test\n".to_vec(),
+            checkpoints: vec![(SourceId(42), ByteOffset(1000))],
+        })
+        .unwrap();
+
+        tx.try_send(ChannelMsg::PathUpdate(vec![(
+            SourceId(42),
+            PathBuf::from("/var/log/test.log"),
+        )]))
+        .unwrap();
+
+        let msg = rx.try_recv().unwrap();
+        assert!(
+            matches!(&msg, ChannelMsg::Data { checkpoints, .. } if checkpoints.len() == 1)
+        );
+
+        let msg = rx.try_recv().unwrap();
+        assert!(matches!(msg, ChannelMsg::PathUpdate(updates) if updates.len() == 1));
+    }
+
+    #[test]
+    fn test_transform_filter_all_rows_does_not_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        // Write data that will be filtered by the transform
+        logfwd_test_utils::generate_json_lines(&log_path, 50, "filter-test");
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+transform: "SELECT * FROM logs WHERE level_str = 'NONEXISTENT'"
+output:
+  type: "null"
+"#,
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+
+        let metrics = Arc::clone(pipeline.metrics());
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if metrics.batches_total.load(Ordering::Relaxed) > 0 {
+                    std::thread::sleep(Duration::from_millis(50));
+                    sd.cancel();
+                    return;
+                }
+                if Instant::now() > deadline {
+                    sd.cancel();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(result.is_ok(), "pipeline with filtering transform must not crash");
+        assert!(
+            pipeline.machine.is_none(),
+            "machine should drain cleanly even when transform filters all rows"
+        );
     }
 }
 
