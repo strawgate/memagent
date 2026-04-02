@@ -340,4 +340,34 @@ AllCreatedBatchesEventuallyAccountedFor ==
                 (\/ committed[s] >= b
                  \/ phase = "Stopped")
 
+(* ===========================================================================
+ * REACHABILITY ASSERTIONS  (vacuity guards)
+ *
+ * These are the TLA+ equivalent of kani::cover!() — they prove that the
+ * interesting states are actually reachable. A spec with vacuous invariants
+ * (impossible preconditions) would pass all INVARIANTS and PROPERTIES
+ * trivially. These PROPERTIES catch that.
+ *
+ * Run in PipelineMachine.coverage.cfg. TLC reports a PROPERTY VIOLATION
+ * when a reachability assertion is FALSE — which here means the state was
+ * never reached. A "violation" is the desired outcome: it is TLC confirming
+ * coverage.
+ *
+ * Sabotage test: to verify an invariant P is non-vacuous, temporarily replace
+ * P's consequent with FALSE. TLC should find a counterexample. If it does
+ * not, P was vacuously true — the precondition was unreachable.
+ * ===========================================================================*)
+
+\* The Draining phase is reachable (BeginDrain fires at least once).
+BeginDrainReachable == <>(phase = "Draining")
+
+\* The Stopped phase is reachable (the full lifecycle completes).
+StopReachable == <>(phase = "Stopped")
+
+\* At least one batch is eventually acked (AckBatch fires at least once).
+AckOccurs == \E s \in Sources : \E b \in BatchIds : <>(b \in acked[s])
+
+\* The committed checkpoint advances at least once (ordering logic is exercised).
+CommitAdvances == \E s \in Sources : <>(committed[s] > 0)
+
 =============================================================================

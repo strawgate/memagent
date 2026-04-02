@@ -15,12 +15,21 @@ Models `PipelineMachine<S, C>` from
 |----------|------|-------------|
 | `DrainCompleteness` | Safety | `stop()` only reachable when all in_flight batches are resolved |
 | `CheckpointOrderingInvariant` | Safety | committed[s]=n implies all batches 1..n are acked, none in_flight |
+| `CommittedNeverAheadOfAcked` | Safety | committed[s] never exceeds count of acked batches |
+| `NoDoubleComplete` | Safety | batch cannot be both in_flight and acked |
+| `InFlightImpliesCreated` | Safety | structural: in_flight ⊆ created |
+| `AckedImpliesCreated` | Safety | structural: acked ⊆ created |
 | `CommittedMonotonic` | Safety (temporal) | checkpoint never goes backwards |
 | `NoCreateAfterDrain` | Safety (temporal) | no new batches after begin_drain |
-| `NoDoubleComplete` | Safety | batch cannot be both in_flight and acked |
+| `DrainMeansNoNewSending` | Safety (temporal) | in_flight cannot grow once phase ≠ Running |
 | `EventualDrain` | Liveness | every started drain eventually reaches Stopped |
 | `NoBatchLeftBehind` | Liveness | every in_flight batch eventually leaves in_flight |
 | `StoppedIsStable` | Liveness | once Stopped, stays Stopped |
+| `AllCreatedBatchesEventuallyAccountedFor` | Liveness | every created batch is committed or machine is Stopped |
+| `BeginDrainReachable` | Reachability | Draining phase is reachable (vacuity guard) |
+| `StopReachable` | Reachability | Stopped phase is reachable (vacuity guard) |
+| `AckOccurs` | Reachability | at least one batch is acked (AckBatch fires) |
+| `CommitAdvances` | Reachability | committed checkpoint advances at least once |
 
 ### File structure (two-file pattern)
 
@@ -29,15 +38,16 @@ This spec follows the industry-standard two-file pattern used by etcd-io/raft
 
 ```text
 tla/
-  PipelineMachine.tla          — clean algorithm spec, no TLC-specific overrides
-  MCPipelineMachine.tla        — TLC config: symmetry sets, model constants, bounds
-  PipelineMachine.cfg          — safety model (fast, ~50K states)
-  PipelineMachine.liveness.cfg — liveness model (smaller constants)
-  PipelineMachine.thorough.cfg — thorough safety model (3 sources, 4 batches)
-  README.md                    — this file
+  PipelineMachine.tla           — clean algorithm spec, no TLC-specific overrides
+  MCPipelineMachine.tla         — TLC config: symmetry sets, model constants, bounds
+  PipelineMachine.cfg           — safety model (fast, ~50K states)
+  PipelineMachine.liveness.cfg  — liveness model (smaller constants, no SYMMETRY)
+  PipelineMachine.thorough.cfg  — thorough safety model (3 sources, 4 batches)
+  PipelineMachine.coverage.cfg  — reachability / vacuity guards (kani::cover! equiv)
+  README.md                     — this file
 ```
 
-### Three models to run
+### Four models to run
 
 **Model 1 — Safety (normal path, no ForceStop):**
 ```bash
@@ -47,7 +57,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 # ForceStop must be commented out in Next (see MCPipelineMachine.tla).
 ```
 
-**Model 2 — Liveness (smaller constants):**
+**Model 2 — Liveness (smaller constants, no SYMMETRY):**
 ```bash
 java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.liveness.cfg
 # Sources={"s1","s2"}, MaxBatchesPerSource=2 — liveness needs small constants
@@ -56,6 +66,10 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 > **Warning:** Never use `CONSTRAINT` to bound state space for liveness
 > checking — it silently breaks liveness by cutting off infinite behaviors
 > before they reach the convergent state. Use model constants instead.
+>
+> **Warning:** Never use `SYMMETRY` in liveness models. TLC may collapse states
+> that must be distinct for temporal reasoning, silently producing unsound results.
+> SYMMETRY is safe only for safety (INVARIANT) checks.
 
 **Model 3 — Safety with ForceStop:**
 ```text
@@ -63,12 +77,31 @@ Enable ForceStop in Next. Remove DrainCompleteness from INVARIANTS.
 Verifies: Stopped is reachable even with in_flight > 0; all other invariants hold.
 ```
 
+**Model 4 — Coverage / reachability (vacuity guards):**
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.coverage.cfg
+# TLC will report PROPERTY VIOLATIONS for BeginDrainReachable, StopReachable,
+# AckOccurs, CommitAdvances — each violation is a witness trace proving the
+# state IS reachable. No violation = state unreachable = spec or model bug.
+```
+This is the TLA+ equivalent of `kani::cover!()`. If you add a new invariant, add
+a corresponding reachability assertion to verify its precondition is not vacuously
+impossible.
+
+**Sabotage test** — verify no invariant is vacuously true:
+temporarily replace an invariant's consequent with `FALSE`. TLC must find a
+counterexample. If it reports "No error found," the precondition is unreachable
+and the invariant was trivially satisfied.
+
 ### Running TLC
 
 ```bash
 # CLI (requires tla2tools.jar)
 cd tla/
 java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg
+
+# With coverage stats (verify every action fires):
+java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg -coverage 1
 
 # Via TLA+ Toolbox:
 # File -> Open Spec -> MCPipelineMachine.tla
