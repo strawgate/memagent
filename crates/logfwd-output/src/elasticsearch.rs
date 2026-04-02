@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
+use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 
 use logfwd_io::diagnostics::ComponentStats;
@@ -117,10 +118,11 @@ impl ElasticsearchSink {
     /// If `errors: true`, at least one document failed. This implementation
     /// returns an error with a summary of the first failure. Future enhancement:
     /// track per-document errors in metrics (#future).
+    #[allow(clippy::unused_self)]
     fn parse_bulk_response(&self, body: &[u8]) -> io::Result<()> {
         // Lightweight parse: check `"errors":true` without full JSON deserialization.
         // If present, parse fully to extract error details.
-        if !memchr::memmem::find(body, b"\"errors\":true").is_some() {
+        if memchr::memmem::find(body, b"\"errors\":true").is_none() {
             return Ok(());
         }
 
@@ -164,6 +166,95 @@ impl ElasticsearchSink {
         }
 
         Ok(())
+    }
+
+    /// Query Elasticsearch using ES|QL and receive Arrow IPC response.
+    ///
+    /// This method demonstrates ES|QL's ability to return results in Arrow IPC format,
+    /// which is more efficient than JSON for large result sets.
+    ///
+    /// # Arguments
+    /// * `query` - ES|QL query string (e.g., "FROM logs | WHERE level == 'ERROR' | LIMIT 1000")
+    ///
+    /// # Returns
+    /// A vector of `RecordBatch` containing the query results.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use logfwd_output::ElasticsearchSink;
+    /// # use logfwd_io::diagnostics::ComponentStats;
+    /// let mut sink = ElasticsearchSink::new(
+    ///     "test".into(),
+    ///     "http://localhost:9200".into(),
+    ///     "logs".into(),
+    ///     vec![],
+    ///     Arc::new(ComponentStats::default()),
+    /// );
+    /// let batches = sink.query_arrow("FROM logs | LIMIT 100").unwrap();
+    /// ```
+    pub fn query_arrow(&self, query: &str) -> io::Result<Vec<RecordBatch>> {
+        // Build ES|QL query request body
+        let query_body = serde_json::json!({
+            "query": query
+        });
+        let query_bytes = serde_json::to_vec(&query_body).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to serialize ES|QL query: {e}"),
+            )
+        })?;
+
+        // Build request URL for ES|QL endpoint
+        let url = format!("{}/_query", self.endpoint);
+
+        // Retry with exponential backoff for transient failures
+        let build_req = || {
+            let mut req = self.http_agent.post(&url);
+            for (k, v) in &self.headers {
+                req = req.header(k.as_str(), v.as_str());
+            }
+            // Request Arrow IPC stream format
+            req.header("Content-Type", "application/json")
+                .header("Accept", "application/vnd.apache.arrow.stream")
+        };
+
+        let mut delay_ms: u64 = HTTP_RETRY_INITIAL_DELAY_MS;
+        let mut attempt: u32 = 0;
+        loop {
+            match build_req().send(&query_bytes) {
+                Ok(response) => {
+                    // Read response body as Arrow IPC stream
+                    let body = response.into_body().read_to_vec().map_err(|e| {
+                        io::Error::other(format!("failed to read ES|QL response: {e}"))
+                    })?;
+
+                    // Parse Arrow IPC stream
+                    let cursor = io::Cursor::new(body);
+                    let reader = StreamReader::try_new(cursor, None).map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("failed to parse Arrow IPC stream: {e}"),
+                        )
+                    })?;
+
+                    // Collect all batches
+                    let batches: Result<Vec<RecordBatch>, _> = reader.collect();
+                    return batches.map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("failed to read Arrow IPC batch: {e}"),
+                        )
+                    });
+                }
+                Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_error(&e) => {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    delay_ms *= 2;
+                    attempt += 1;
+                }
+                Err(e) => return Err(io::Error::other(e.to_string())),
+            }
+        }
     }
 }
 

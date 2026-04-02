@@ -2,6 +2,28 @@
 
 This directory contains example configurations for using logfwd with Elasticsearch.
 
+## Quick Start
+
+### 1. Start Elasticsearch
+
+```bash
+cd examples/elasticsearch
+docker-compose up -d
+```
+
+### 2. Verify Elasticsearch is running
+
+```bash
+curl http://localhost:9200/_cluster/health
+```
+
+## Features
+
+- **Bulk API**: Efficient batch ingestion using Elasticsearch bulk API
+- **ES|QL with Arrow IPC**: Query Elasticsearch and receive results in high-performance Arrow IPC format (see [ARROW_IPC.md](ARROW_IPC.md))
+- **Retry logic**: Automatic retry with exponential backoff for transient failures
+- **Authentication**: Support for bearer tokens and custom headers
+
 ## Basic Elasticsearch Output
 
 Forward JSON logs to Elasticsearch with minimal configuration:

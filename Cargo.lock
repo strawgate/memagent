@@ -2127,6 +2127,7 @@ dependencies = [
  "memchr",
  "serde",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]
