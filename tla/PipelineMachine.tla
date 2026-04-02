@@ -72,19 +72,23 @@ vars == <<phase, created, in_flight, acked, committed, forced>>
 SetMax(S) == CHOOSE n \in S : \A m \in S : n >= m
 
 \* Compute committed checkpoint after acking a batch.
-\* Advances to the largest n s.t. all batches 1..n are acked AND none are
-\* still in_flight. This is the ordered-ack / contiguous-prefix invariant.
 \*
-\* Rust note: record_ack_and_advance() walks pending_acks in BTreeMap order,
-\* stopping when a lower-ID in_flight batch exists. This operator is the
-\* direct functional equivalent. When in_flight[s] = {}, NewCommitted returns
-\* Cardinality(acked[s]) — draining all pending_acks in one step, matching
-\* the Rust behavior (pending_acks is fully consumed when in_flight is empty).
+\* Mirrors record_ack_and_advance() in Rust exactly: advance each pending ack
+\* while no lower-ID batch is still in_flight. Gaps from never-sent batch IDs
+\* (created Queued tickets that were dropped without begin_send) are invisible —
+\* the machine never tracked them, so they cannot block checkpoint advancement.
+\*
+\* ever_sent = acked ∪ in_flight — the set of batches that entered the machine
+\* (via begin_send). Only these participate in ordering. A batch n is eligible
+\* for commitment when all ever-sent batches with ID ≤ n have been acked.
+\*
+\* SetMax safety: eligible always contains 0 (vacuously: no ever_sent batch
+\* has ID ≤ 0), so the set is never empty.
 NewCommitted(new_acked_s, new_in_flight_s) ==
-    LET eligible == {n \in 0..MaxBatchesPerSource :
-            /\ \A i \in 1..n : i \in new_acked_s
-            /\ \A i \in 1..n : i \notin new_in_flight_s}
-    IN SetMax(eligible)  \* 0 is always eligible (vacuous), so set is non-empty
+    LET ever_sent == new_acked_s \cup new_in_flight_s
+        eligible  == {n \in (ever_sent \cup {0}) :
+                        \A b \in ever_sent : b <= n => b \in new_acked_s}
+    IN SetMax(eligible)
 
 (* ---------------------------------------------------------------------------
  * Type invariant
@@ -172,25 +176,20 @@ BeginDrain ==
 
 \* stop: THE DRAIN GUARANTEE.
 \* Rust: PipelineMachine<Draining, C>::stop() returns Err(self) if not drained.
-\* Rust's is_drained() checks BOTH in_flight.all_empty() AND pending_acks.all_empty().
+\* Rust's is_drained() = in_flight.all_empty() && pending_acks.all_empty().
 \*
-\* TLA+ models both conditions explicitly:
-\*   (1) in_flight[s] = {} — no batch is actively being sent
-\*   (2) acked[s] ⊆ 1..committed[s] — no acked batch is awaiting commit (≡ pending_acks empty)
+\* With the corrected NewCommitted formula (ever_sent-based), when in_flight[s] = {}
+\* the last ack drains all of pending_acks atomically: the loop finds no lower-ID
+\* in_flight batch, so every remaining pending ack is consumed in sequence.
+\* Therefore in_flight[s] = {} ≡ is_drained() — the single guard is sufficient.
 \*
-\* Why (2) is necessary: consider batch 1 created-but-never-sent, batch 2 sent+acked.
-\*   in_flight = {}, acked = {2}, committed = 0.
-\*   NewCommitted({2}, {}) = 0 because batch 1 was never acked (gap at position 1).
-\*   In Rust: pending_acks = {2: ...}, is_drained() = false — stop() returns Err(self).
-\*   Without guard (2), TLA+ Stop would fire here, diverging from the Rust behavior.
-\*
-\* Why (2) is sufficient: if acked[s] ⊆ 1..committed[s] AND in_flight[s] = {},
-\*   then committed[s] = Cardinality(acked[s]) and all acked batches are committed,
-\*   which exactly corresponds to pending_acks[s] being empty in Rust.
+\* Previously a second guard `acked[s] ⊆ 1..committed[s]` was added to handle a
+\* spurious liveness hole caused by the old NewCommitted requiring all IDs 1..n to
+\* be acked (including gaps from never-sent tickets). The corrected formula makes
+\* that guard redundant: when in_flight = {}, NewCommitted advances past all gaps.
 Stop ==
     /\ phase = "Draining"
-    /\ \A s \in Sources : in_flight[s] = {}                    \* no active sends
-    /\ \A s \in Sources : acked[s] \subseteq 1..committed[s]  \* no pending_acks (≡ is_drained())
+    /\ \A s \in Sources : in_flight[s] = {}    \* THE DRAIN GUARD (≡ is_drained())
     /\ phase' = "Stopped"
     /\ UNCHANGED <<created, in_flight, acked, committed, forced>>
 
@@ -293,21 +292,27 @@ CommittedMonotonic ==
     [][\A s \in Sources : committed[s]' >= committed[s]]_vars
 
 \* THE CHECKPOINT ORDERING INVARIANT:
-\* committed[s] = n implies all batches 1..n for source s are acked AND
-\* none are still in_flight.
+\* committed[s] = n implies every SENT batch with ID ≤ n is acked and none
+\* are still in_flight. "Sent" = ever passed through begin_send (ever_sent).
 \*
-\* This is the at-least-once delivery invariant. On restart, the pipeline
-\* re-reads from position corresponding to batch n. Since all of 1..n are
-\* acked, no data before n was skipped.
+\* Scoped to ever-sent batches — not all IDs 1..n — because gaps from
+\* Queued tickets that were dropped without begin_send are invisible to the
+\* machine and do not affect checkpoint ordering. A created-but-never-sent
+\* ticket has no checkpoint and no machine state; it cannot be committed or
+\* skipped. Only begin_send'd batches participate in ordered-ack.
 \*
-\* Equivalent to the "consistent prefix" invariant from the distributed
-\* database literature and Kafka Streams' checkpointable-offsets invariant.
+\* Equivalent to: "no sent batch below the committed watermark is in_flight."
+\* This is the at-least-once delivery invariant: on restart from committed[s],
+\* no sent data is re-read before the checkpoint.
 CheckpointOrderingInvariant ==
     \A s \in Sources :
-        LET n == committed[s] IN
-        n > 0 =>
-            /\ \A i \in 1..n : i \in acked[s]
-            /\ \A i \in 1..n : i \notin in_flight[s]
+        LET n        == committed[s]
+            ever_sent_s == in_flight[s] \cup acked[s]
+        IN n > 0 =>
+            \A i \in ever_sent_s :
+                i <= n =>
+                    /\ i \in acked[s]
+                    /\ i \notin in_flight[s]
 
 \* committed[s] never exceeds the count of acked batches.
 CommittedNeverAheadOfAcked ==
@@ -321,7 +326,8 @@ AckedImpliesCreated ==
     \A s \in Sources : acked[s] \subseteq created[s]
 
 (* ===========================================================================
- * LIVENESS PROPERTIES (hold under Fairness; require no ForceStop)
+ * LIVENESS PROPERTIES (hold under Fairness; ForceStop always in Next but
+ * WF(ForceStop) intentionally absent — normal path must work without it)
  * ===========================================================================
  *
  * IMPORTANT: use `<>[]P` (eventually-stable) for convergence properties,
@@ -381,5 +387,8 @@ AckOccurs == \E s \in Sources : \E b \in BatchIds : <>(b \in acked[s])
 
 \* The committed checkpoint advances at least once (ordering logic is exercised).
 CommitAdvances == \E s \in Sources : <>(committed[s] > 0)
+
+\* ForceStop is reachable (the kill-switch path is exercised).
+ForcedReachable == <>(forced = TRUE)
 
 =============================================================================
