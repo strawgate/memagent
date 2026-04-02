@@ -102,6 +102,7 @@ fn otlp_encode_stable_across_batches() {
         OtlpProtocol::Http,
         logfwd_output::Compression::None,
         vec![],
+        Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
     );
 
     let batch = make_batch(500);

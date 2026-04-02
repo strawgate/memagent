@@ -107,7 +107,6 @@ impl OtlpReceiverInput {
 
                     let body = match content_encoding.as_deref() {
                         Some("zstd") => {
-                            use std::io::Read;
                             let decoder = match zstd::Decoder::new(&body[..]) {
                                 Ok(d) => d,
                                 Err(_) => {
