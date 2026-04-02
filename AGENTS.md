@@ -36,6 +36,8 @@ Library-specific guides — read the relevant ones before working on related cod
 | [`docs/references/opentelemetry-otlp.md`](docs/references/opentelemetry-otlp.md) | MeterProvider, OTLP protobuf nesting, HTTP vs gRPC |
 | [`docs/references/notify-memchr-zstd.md`](docs/references/notify-memchr-zstd.md) | File watcher events, SIMD search, zstd compression |
 | [`docs/references/kani-verification.md`](docs/references/kani-verification.md) | Kani proofs, function contracts, solver selection, Bolero |
+| [`docs/VERIFICATION_GUIDE.md`](docs/VERIFICATION_GUIDE.md) | When to add proofs, proof quality requirements, practical guidelines |
+| [`docs/KANI_PATTERNS.md`](docs/KANI_PATTERNS.md) | Reusable proof templates from codebase, anti-patterns, checklist |
 
 ## Architecture Decisions
 
@@ -77,3 +79,92 @@ Key decisions:
 - No new dependencies without justification
 - Public functions need doc comments
 - Kani proofs for pure logic in logfwd-core
+
+## Kani Verification Requirements
+
+### When Kani Proofs are REQUIRED
+
+Add Kani proofs when implementing or modifying:
+
+1. **Parsers** — Any code handling raw bytes (`framer.rs`, `cri.rs`, `json_scanner.rs`)
+   - MUST have `verify_<function>_no_panic` proof
+   - SHOULD have correctness proof against oracle if feasible
+
+2. **Wire Formats** — Protobuf encoding, varint encoding, size calculations
+   - MUST prove no panic on all inputs within bounded size
+   - MUST verify size limits are respected
+
+3. **Bitmask Operations** — SIMD structural character detection (`structural.rs`)
+   - MUST have oracle-based correctness proof
+   - Example: `verify_compute_real_quotes` with byte-by-byte oracle
+
+4. **Byte Search Primitives** — Low-level search operations (`byte_search.rs`)
+   - MUST prove correctness matches naive implementation
+
+5. **State Machines** — Protocol state transitions (P/F flags, aggregation)
+   - MUST prove state invariants hold across all transitions
+   - Test all valid state sequences (P+F, P+P+F, etc.)
+
+### When Kani Proofs are NOT Required
+
+Do NOT add Kani proofs for:
+
+- I/O operations (file/network — not pure)
+- Async runtime logic (not supported by Kani)
+- Complex state machines > 8-10 transitions (use proptest)
+- Heap-heavy Vec/HashMap code (use proptest + Miri)
+- Simple getters/setters
+- Integration tests across crates
+
+### Proof Quality Requirements
+
+Every Kani proof MUST:
+
+1. Use `#[cfg(kani)]` to isolate from regular builds
+2. Follow naming: `verify_<function>_<property>`
+3. Add `#[kani::unwind(N)]` for any loops (N = iterations + 2)
+4. Use appropriate input sizes (8-32 bytes for parsing, full range for bitmasks)
+5. Add `kani::cover!()` if using `kani::assume()` to guard against vacuity
+
+### Quick Reference
+
+```rust
+// Pattern 1: No-panic proof
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(34)]
+fn verify_my_parser_no_panic() {
+    let input: [u8; 32] = kani::any();
+    let _ = my_parser(&input);
+}
+
+// Pattern 2: Oracle-based correctness
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(N)]
+fn verify_my_function_correct() {
+    let input = symbolic_input();
+    let result = optimized_impl(input);
+    let expected = naive_oracle(input);
+    assert_eq!(result, expected);
+}
+
+// Pattern 3: Property proof with covers
+#[cfg(kani)]
+#[kani::proof]
+fn verify_size_limit() {
+    let max: usize = kani::any();
+    kani::assume(max >= 1 && max <= 32);
+    let input: [u8; 16] = kani::any();
+
+    let result = process(&input, max);
+    assert!(result.len() <= max);
+
+    // Guard vacuity
+    kani::cover!(result.len() > 0, "non-empty output");
+    kani::cover!(result.len() == max, "max size reached");
+}
+```
+
+See `docs/KANI_PATTERNS.md` for complete pattern library and `docs/VERIFICATION_GUIDE.md` for detailed guidelines.
+
