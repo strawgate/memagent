@@ -673,6 +673,15 @@ impl SqlTransform {
         ctx.register_udf(ScalarUDF::from(FloatCastUdf::new()));
         ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
         ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
+        ctx.register_udf(ScalarUDF::from(crate::udf::JsonExtractUdf::new(
+            crate::udf::JsonExtractMode::Str,
+        )));
+        ctx.register_udf(ScalarUDF::from(crate::udf::JsonExtractUdf::new(
+            crate::udf::JsonExtractMode::Int,
+        )));
+        ctx.register_udf(ScalarUDF::from(crate::udf::JsonExtractUdf::new(
+            crate::udf::JsonExtractMode::Float,
+        )));
         if let Some(ref db) = self.geo_database {
             ctx.register_udf(ScalarUDF::from(crate::udf::geo_lookup::GeoLookupUdf::new(
                 Arc::clone(db),
