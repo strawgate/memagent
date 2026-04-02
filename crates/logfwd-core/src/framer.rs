@@ -309,7 +309,10 @@ mod verification {
             let (start_j, _) = output.line_ranges[i + 1];
             // Next line must start strictly after the newline terminating this one.
             // end_i is the position of the newline, so next start >= end_i + 1.
-            assert!(start_j > end_i, "line ranges overlap or are not separated by newline");
+            assert!(
+                start_j > end_i,
+                "line ranges overlap or are not separated by newline"
+            );
             i += 1;
         }
 
@@ -325,7 +328,10 @@ mod verification {
     fn verify_newline_framer_count_bounded() {
         let input: [u8; 16] = kani::any();
         let output = NewlineFramer.frame(&input);
-        assert!(output.count <= MAX_LINES_PER_FRAME, "count exceeded MAX_LINES_PER_FRAME");
+        assert!(
+            output.count <= MAX_LINES_PER_FRAME,
+            "count exceeded MAX_LINES_PER_FRAME"
+        );
     }
 
     // find_byte proofs are in byte_search.rs

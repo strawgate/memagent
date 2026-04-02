@@ -89,6 +89,7 @@ jobs:
         uses: rustsec/audit-check@v2
         with:
           token: ${{ github.token }}
+          args: "--deny=vuln --deny=unsound --deny=yanked"
 
   # -------------------------------------------------------------------------
   # Tests — Linux and macOS in parallel
@@ -117,6 +118,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-dashboard
+      - uses: mozilla-actions/sccache-action@v0.0.7
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2

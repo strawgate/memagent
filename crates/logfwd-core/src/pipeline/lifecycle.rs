@@ -967,10 +967,16 @@ mod verification {
         let _s1 = running.begin_send(t1); // leave it in-flight
 
         let draining = running.begin_drain();
-        assert!(!draining.is_drained(), "one batch in-flight, should not be drained");
+        assert!(
+            !draining.is_drained(),
+            "one batch in-flight, should not be drained"
+        );
 
         // stop() must refuse — not all batches resolved
-        assert!(draining.stop().is_err(), "stop() must block while in-flight batches remain");
+        assert!(
+            draining.stop().is_err(),
+            "stop() must block while in-flight batches remain"
+        );
     }
 
     /// reject() advances the checkpoint just like ack().
