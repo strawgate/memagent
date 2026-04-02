@@ -810,10 +810,10 @@ mod verification {
             assert!(a1.checkpoint.is_some(), "advanced but no checkpoint");
         }
 
-        let a2 = running.apply_ack(r_b);
+        let _a2 = running.apply_ack(r_b);
         assert_eq!(running.in_flight_count(), 2);
 
-        let a3 = running.apply_ack(r_c);
+        let _a3 = running.apply_ack(r_c);
         assert_eq!(running.in_flight_count(), 1);
 
         let a4 = running.apply_ack(r_d);

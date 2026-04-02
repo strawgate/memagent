@@ -267,5 +267,10 @@ mod verification {
             let b = buf[result];
             assert!(b != b' ' && b != b'\t' && b != b'\r' && b != b'\n');
         }
+
+        // Guard vacuity: verify whitespace skip logic works
+        kani::cover!(result == start, "no whitespace to skip");
+        kani::cover!(result > start, "skipped whitespace");
+        kani::cover!(result == end, "buffer is all whitespace");
     }
 }
