@@ -22,8 +22,9 @@ test:
     cargo test
 
 # Run Kani formal verification proofs (logfwd-core only)
+# Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:
-    cargo kani -p logfwd-core
+    RUSTC_WRAPPER="" cargo kani -p logfwd-core
 
 # Run all tests with nextest (parallel, faster)
 nextest:
