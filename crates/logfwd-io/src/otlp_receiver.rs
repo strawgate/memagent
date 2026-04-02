@@ -145,7 +145,16 @@ impl OtlpReceiverInput {
                                 }
                             }
                         }
-                        _ => body, // no compression or unknown — pass through
+                        None | Some("identity") => body,
+                        Some(other) => {
+                            let _ = request.respond(
+                                tiny_http::Response::from_string(format!(
+                                    "unsupported content-encoding: {other}"
+                                ))
+                                .with_status_code(415),
+                            );
+                            continue;
+                        }
                     };
 
                     // Determine content type — accept protobuf and JSON.
