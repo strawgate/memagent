@@ -544,6 +544,11 @@ mod verification {
         };
         if let Some(output) = r.feed(&full) {
             assert!(output.len() <= max_size, "P+F output exceeds max_line_size");
+
+            // Guard vacuity: verify constraint allows meaningful cases
+            kani::cover!(output.len() > 8, "P+F concatenation occurred");
+            kani::cover!(output.len() == max_size, "output truncated at max");
+            kani::cover!(output.len() < max_size, "output under max");
         }
     }
 
@@ -569,6 +574,11 @@ mod verification {
                 output.len() <= max_size,
                 "F-only output exceeds max_line_size"
             );
+
+            // Guard vacuity: verify fast path coverage
+            kani::cover!(output.len() == 8, "full message fits");
+            kani::cover!(output.len() < 8, "message truncated");
+            kani::cover!(max_size >= 8, "max allows full message");
         }
     }
 
