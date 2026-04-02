@@ -594,13 +594,14 @@ fn streaming_builder_group_by_and_order_by() {
 // Section 5: Conflict-schema normalization (bare-name SQL on conflict batches)
 // ===========================================================================
 //
-// When the scanner detects a type conflict for a field it emits suffixed
-// columns (`status_int: Int64, status_str: Utf8View`). Before handing the
-// batch to DataFusion, SqlTransform calls normalize_conflict_columns() which
-// adds a bare `status: Utf8` column so that user SQL using bare names resolves
-// correctly against both clean and conflict batches.
+// When the scanner detects a type conflict for a field it emits
+// double-underscore suffixed columns (`status__int: Int64, status__str: Utf8View`).
+// Before handing the batch to DataFusion, SqlTransform calls
+// normalize_conflict_columns() which adds a bare `status: Utf8` column so that
+// user SQL using bare names resolves correctly against both clean and conflict
+// batches.
 
-/// Conflict batch: `status_int` + `status_str` both present.
+/// Conflict batch: `status__int` + `status__str` both present.
 /// SQL `SELECT status FROM logs` must resolve the synthesised bare column.
 #[test]
 fn conflict_batch_bare_select() {
