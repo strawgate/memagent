@@ -72,9 +72,12 @@ impl FieldColumns {
 ///
 /// Numeric values (int, float) are parsed during scanning and stored directly.
 ///
+/// When `keep_raw` is true, a `_raw` column is emitted in each batch as a
+/// zero-copy `StringViewArray` containing the full unparsed line per row.
+///
 /// # Usage
 /// ```ignore
-/// let mut builder = StreamingBuilder::new();
+/// let mut builder = StreamingBuilder::new(false);
 /// builder.begin_batch(bytes::Bytes::from(buf));
 /// // ... scan fields, call append_*_by_idx ...
 /// let batch = builder.finish_batch();
@@ -89,22 +92,29 @@ pub struct StreamingBuilder {
     /// Reference-counted buffer. Stored here to compute offsets safely
     /// and shared with Arrow StringViewArrays in finish_batch.
     buf: bytes::Bytes,
+    /// When true, `append_raw` stores (offset, len) views for the `_raw` column.
+    keep_raw: bool,
+    /// Raw line views: (offset_in_buf, len) per row, in row order.
+    /// Populated only when `keep_raw` is true.
+    raw_views: Vec<(u32, u32)>,
 }
 
 impl Default for StreamingBuilder {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
 impl StreamingBuilder {
-    pub fn new() -> Self {
+    pub fn new(keep_raw: bool) -> Self {
         StreamingBuilder {
             fields: Vec::with_capacity(32),
             field_index: HashMap::with_capacity(32),
             row_count: 0,
             written_bits: 0,
             buf: bytes::Bytes::new(),
+            keep_raw,
+            raw_views: Vec::new(),
         }
     }
 
@@ -126,6 +136,7 @@ impl StreamingBuilder {
         for fc in &mut self.fields {
             fc.clear();
         }
+        self.raw_views.clear();
     }
 
     #[inline(always)]
@@ -228,9 +239,17 @@ impl StreamingBuilder {
         let _ = check_dup_bits(&mut self.written_bits, idx);
     }
 
-    /// No-op: StreamingBuilder does not support _raw column.
-    /// Use StorageBuilder (SimdScanner) if keep_raw is needed.
-    pub fn append_raw(&mut self, _line: &[u8]) {}
+    /// Store a zero-copy view of the raw unparsed line.
+    ///
+    /// Only has effect when the builder was created with `keep_raw: true`.
+    /// The line must be a subslice of the buffer passed to `begin_batch`.
+    #[inline(always)]
+    pub fn append_raw(&mut self, line: &[u8]) {
+        if self.keep_raw {
+            let offset = self.offset_of(line);
+            self.raw_views.push((offset, line.len() as u32));
+        }
+    }
 
     /// Build a RecordBatch with zero-copy StringViewArrays.
     ///
@@ -308,6 +327,32 @@ impl StreamingBuilder {
             }
         }
 
+        if self.keep_raw && !self.raw_views.is_empty() {
+            debug_assert_eq!(
+                self.raw_views.len(),
+                num_rows,
+                "raw_views must have exactly one entry per row: {} views for {} rows",
+                self.raw_views.len(),
+                num_rows
+            );
+            let mut builder = StringViewBuilder::new();
+            let block = builder.append_block(arrow_buf.clone());
+
+            for row in 0..num_rows {
+                if row < self.raw_views.len() {
+                    let (offset, len) = self.raw_views[row];
+                    builder
+                        .try_append_view(block, offset, len)
+                        .expect("raw view offset/len must be within buffer");
+                } else {
+                    builder.append_null();
+                }
+            }
+
+            schema_fields.push(Field::new("_raw", DataType::Utf8View, true));
+            arrays.push(Arc::new(builder.finish()) as ArrayRef);
+        }
+
         let schema = Arc::new(Schema::new(schema_fields));
         let opts = RecordBatchOptions::new().with_row_count(Some(num_rows));
         RecordBatch::try_new_with_options(schema, arrays, &opts)
@@ -327,7 +372,7 @@ mod tests {
     fn test_basic_string_and_int() {
         let json = br#"not used directly"#;
         let buf = bytes::Bytes::from(json.to_vec());
-        let mut b = StreamingBuilder::new();
+        let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf.clone());
 
         let idx_name = b.resolve_field(b"name");
@@ -349,7 +394,7 @@ mod tests {
     fn test_zero_copy_string_content() {
         let data = b"hello world foobar";
         let buf = bytes::Bytes::from(data.to_vec());
-        let mut b = StreamingBuilder::new();
+        let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf.clone());
 
         let idx = b.resolve_field(b"msg");
@@ -377,7 +422,7 @@ mod tests {
     fn test_missing_fields_produce_nulls() {
         let data = b"aabb";
         let buf = bytes::Bytes::from(data.to_vec());
-        let mut b = StreamingBuilder::new();
+        let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf.clone());
 
         let idx_a = b.resolve_field(b"a");
@@ -404,7 +449,7 @@ mod tests {
     fn test_duplicate_key_first_writer_wins() {
         let data = b"firstsecond";
         let buf = bytes::Bytes::from(data.to_vec());
-        let mut b = StreamingBuilder::new();
+        let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf.clone());
 
         let idx = b.resolve_field(b"val");
@@ -426,7 +471,7 @@ mod tests {
     #[test]
     fn test_empty_batch() {
         let buf = bytes::Bytes::from_static(b"");
-        let mut b = StreamingBuilder::new();
+        let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf);
         let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 0);
@@ -436,7 +481,7 @@ mod tests {
     fn test_batch_reuse() {
         let data1 = bytes::Bytes::from_static(b"hello");
         let data2 = bytes::Bytes::from_static(b"world");
-        let mut b = StreamingBuilder::new();
+        let mut b = StreamingBuilder::new(false);
 
         b.begin_batch(data1.clone());
         let idx = b.resolve_field(b"x");
@@ -457,7 +502,7 @@ mod tests {
     #[test]
     fn test_float_values() {
         let buf = bytes::Bytes::from_static(b"unused");
-        let mut b = StreamingBuilder::new();
+        let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf);
 
         let idx = b.resolve_field(b"lat");
@@ -483,7 +528,7 @@ mod tests {
         // Build a buffer large enough to hold all the "val" strings we'll write.
         let payload = b"aabbccdd";
         let buf = bytes::Bytes::from(payload.to_vec());
-        let mut b = StreamingBuilder::new();
+        let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf.clone());
 
         // Resolve 65 fields so the 65th field has index 64 (>= 64).
@@ -507,5 +552,58 @@ mod tests {
         let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert!(batch.column_by_name("field64_str").is_some());
+    }
+
+    /// `append_raw` stores zero-copy views into the buffer when `keep_raw` is true.
+    #[test]
+    fn test_append_raw_keep_raw_true() {
+        let data = b"hello world\ngoodbye world\n";
+        let buf = bytes::Bytes::from(data.to_vec());
+        let mut b = StreamingBuilder::new(true);
+        b.begin_batch(buf.clone());
+
+        let idx = b.resolve_field(b"msg");
+
+        b.begin_row();
+        b.append_raw(&buf[0..11]); // "hello world"
+        b.append_str_by_idx(idx, &buf[0..5]); // "hello"
+        b.end_row();
+
+        b.begin_row();
+        b.append_raw(&buf[12..25]); // "goodbye world"
+        b.append_str_by_idx(idx, &buf[12..19]); // "goodbye"
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let raw_col = batch
+            .column_by_name("_raw")
+            .expect("_raw column must be present when keep_raw=true");
+        let raw_arr = raw_col
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("_raw must be StringViewArray");
+        assert_eq!(raw_arr.value(0), "hello world");
+        assert_eq!(raw_arr.value(1), "goodbye world");
+    }
+
+    /// `append_raw` is a no-op when `keep_raw` is false — `_raw` column absent.
+    #[test]
+    fn test_append_raw_keep_raw_false() {
+        let data = b"hello world\n";
+        let buf = bytes::Bytes::from(data.to_vec());
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf.clone());
+
+        b.begin_row();
+        b.append_raw(&buf[0..11]);
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert!(
+            batch.column_by_name("_raw").is_none(),
+            "_raw must not be present when keep_raw=false"
+        );
     }
 }
