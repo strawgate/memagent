@@ -1074,16 +1074,25 @@ mod tests {
     use std::io::Read;
     use std::net::TcpListener;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU16, Ordering};
 
     /// Serialize diagnostics tests to prevent port collisions.
-    /// free_port() releases the port before the server binds — running
-    /// tests in parallel means another test can grab the same port.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Pick an available port by binding to :0.
+    /// Pick a port that is both free AND unique within this test run.
+    ///
+    /// Using :0 (OS-assigned) alone has a TOCTOU race: previous test servers
+    /// stay bound after the test ends (JoinHandle drop detaches, not stops),
+    /// and macOS can re-assign the same port on the next :0 bind.  A
+    /// monotonically-increasing counter ensures we never repeat a port.
     fn free_port() -> u16 {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
+        static NEXT: AtomicU16 = AtomicU16::new(19100);
+        loop {
+            let port = NEXT.fetch_add(1, Ordering::Relaxed);
+            if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                return port;
+            }
+        }
     }
 
     /// Build a server with one pipeline pre-populated with known counter values.
