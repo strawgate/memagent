@@ -37,6 +37,11 @@ impl OtlpReceiverInput {
     /// Bind an HTTP server on `addr` (e.g. "0.0.0.0:4318").
     /// Spawns a background thread to handle requests.
     pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
+        Self::new_with_capacity(name, addr, CHANNEL_BOUND)
+    }
+
+    /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
+    fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
         let server = tiny_http::Server::http(addr)
             .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
 
@@ -47,7 +52,7 @@ impl OtlpReceiverInput {
             }
         };
 
-        let (tx, rx) = mpsc::sync_channel(CHANNEL_BOUND);
+        let (tx, rx) = mpsc::sync_channel(capacity);
 
         let handle = std::thread::Builder::new()
             .name("otlp-receiver".into())
@@ -182,20 +187,41 @@ impl OtlpReceiverInput {
                         }
                     };
 
-                    if !json_lines.is_empty() {
-                        // Send to the pipeline. If the channel is full/closed, drop.
-                        let _ = tx.try_send(json_lines);
-                    }
+                    let send_result = if json_lines.is_empty() {
+                        Ok(())
+                    } else {
+                        tx.try_send(json_lines)
+                    };
 
-                    // Return standard OTLP success response with Content-Type header.
-                    let response = tiny_http::Response::from_string("{}")
-                        .with_header(
-                            "Content-Type: application/json"
-                                .parse::<tiny_http::Header>()
-                                .unwrap(),
-                        )
-                        .with_status_code(200);
-                    let _ = request.respond(response);
+                    match send_result {
+                        Ok(()) => {
+                            // Return standard OTLP success response with Content-Type header.
+                            let response = tiny_http::Response::from_string("{}")
+                                .with_header(
+                                    "Content-Type: application/json"
+                                        .parse::<tiny_http::Header>()
+                                        .unwrap(),
+                                )
+                                .with_status_code(200);
+                            let _ = request.respond(response);
+                        }
+                        Err(mpsc::TrySendError::Full(_)) => {
+                            let _ = request.respond(
+                                tiny_http::Response::from_string(
+                                    "too many requests: pipeline backpressure",
+                                )
+                                .with_status_code(429),
+                            );
+                        }
+                        Err(mpsc::TrySendError::Disconnected(_)) => {
+                            let _ = request.respond(
+                                tiny_http::Response::from_string(
+                                    "service unavailable: pipeline disconnected",
+                                )
+                                .with_status_code(503),
+                            );
+                        }
+                    }
                 }
             })
             .map_err(io::Error::other)?;
@@ -760,5 +786,59 @@ mod tests {
         let json_str = format!("{{{text}}}");
         serde_json::from_str::<serde_json::Value>(&json_str)
             .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json_str}"));
+    }
+
+    /// Regression test: when the pipeline channel is full the receiver must
+    /// return 429 rather than silently dropping the payload and returning 200.
+    #[test]
+    fn returns_429_when_channel_full_not_200() {
+        // Use a tiny channel so it fills up after 2 sends.
+        let mut receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 2).unwrap();
+        let addr = receiver.local_addr();
+        let url = format!("http://{addr}/v1/logs");
+
+        let body = serde_json::json!({
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{"body": {"stringValue": "x"}}]
+                }]
+            }]
+        })
+        .to_string();
+
+        // Fill the channel (capacity = 2 so two sends succeed).
+        for i in 0..2 {
+            let resp = ureq::post(&url)
+                .header("content-type", "application/json")
+                .send(body.as_bytes())
+                .unwrap_or_else(|e| panic!("request {i} failed: {e}"));
+            assert_eq!(
+                resp.status(),
+                200,
+                "expected 200 while channel has capacity (request {i})"
+            );
+        }
+
+        // The channel is now full; the next request must not return 200.
+        let result = ureq::post(&url)
+            .header("content-type", "application/json")
+            .send(body.as_bytes());
+
+        let status: u16 = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_ne!(
+            status, 200,
+            "channel-full request must not return 200 (got {status})"
+        );
+        assert!(
+            status == 429 || status == 503,
+            "expected 429 or 503 for backpressure, got {status}"
+        );
+
+        // Drain the two buffered entries so the receiver is valid.
+        let _ = receiver.poll().unwrap();
     }
 }

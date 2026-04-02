@@ -387,6 +387,13 @@ impl Config {
                     }
                     InputType::Otlp | InputType::Generator => {}
                 }
+
+                // Reject input formats that are not yet implemented.
+                if let Some(fmt @ (Format::Logfmt | Format::Syslog)) = &input.format {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{name}' input '{label}': format {fmt:?} is not yet implemented",
+                    )));
+                }
             }
 
             for (i, output) in pipe.outputs.iter().enumerate() {
@@ -623,10 +630,10 @@ pipelines:
         type: file
         path: /var/log/pods/**/*.log
         format: cri
-      - name: syslog_in
+      - name: raw_in
         type: udp
         listen: 0.0.0.0:514
-        format: syslog
+        format: raw
     transform: |
       SELECT * EXCEPT (stack_trace) FROM logs WHERE level != 'DEBUG'
     outputs:
@@ -837,6 +844,38 @@ output:
                 msg.contains(otype),
                 "error message should include the type name '{otype}': {msg}"
             );
+        }
+    }
+
+    #[test]
+    fn validation_unimplemented_input_format() {
+        // Unimplemented input formats must be rejected at config validation time,
+        // not silently treated as JSON which would corrupt data.
+        for format in ["logfmt", "syslog"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\n  format: {format}\noutput:\n  type: stdout\n"
+            );
+            let result = Config::load_str(&yaml);
+            assert!(
+                result.is_err(),
+                "validation should reject unimplemented format '{format}'"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("not yet implemented"),
+                "error message should mention 'not yet implemented' for '{format}': {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_input_formats() {
+        // Implemented input formats should parse and validate successfully.
+        for format in ["cri", "json", "raw", "auto"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\n  format: {format}\noutput:\n  type: stdout\n"
+            );
+            Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for format '{format}': {e}"));
         }
     }
 

@@ -1,8 +1,10 @@
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use logfwd_core::pipeline::SourceId;
 
 use crate::filter_hints::FilterHints;
-use crate::tail::{FileTailer, TailConfig, TailEvent};
+use crate::tail::{ByteOffset, FileTailer, TailConfig, TailEvent};
 
 /// Events produced by an input source.
 #[non_exhaustive]
@@ -26,6 +28,25 @@ pub trait InputSource: Send {
     /// pushdown use these to skip data early (e.g., XDP severity filtering).
     /// Default implementation ignores hints — correct but slower.
     fn apply_hints(&mut self, _hints: &FilterHints) {}
+
+    /// Return checkpoint data for all active sources.
+    ///
+    /// For file inputs, returns `(SourceId, ByteOffset)` per tailed file.
+    /// Default: empty (push sources, generators).
+    fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
+        vec![]
+    }
+
+    /// Return identity-to-path mappings for checkpoint persistence.
+    ///
+    /// Called on file open/rotation, not per-batch.
+    /// Default: empty (push sources, generators).
+    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+        vec![]
+    }
+
+    /// Restore a file offset from checkpoint. Default: no-op.
+    fn set_offset(&mut self, _path: &Path, _offset: u64) {}
 }
 
 /// An input source backed by a `FileTailer`.
@@ -73,5 +94,19 @@ impl InputSource for FileInput {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
+        self.tailer.file_offsets()
+    }
+
+    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+        self.tailer.file_paths()
+    }
+
+    fn set_offset(&mut self, path: &Path, offset: u64) {
+        if let Err(e) = self.tailer.set_offset(path, offset) {
+            eprintln!("warn: failed to restore offset for {}: {e}", path.display());
+        }
     }
 }

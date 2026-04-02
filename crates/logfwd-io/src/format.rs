@@ -7,7 +7,7 @@
 
 use crate::diagnostics::ComponentStats;
 use logfwd_core::aggregator::{AggregateResult, CriAggregator};
-use logfwd_core::cri::parse_cri_line;
+use logfwd_core::cri::{json_escape_bytes, parse_cri_line};
 use std::sync::Arc;
 
 /// Processes framed input lines according to the configured format.
@@ -120,8 +120,8 @@ fn extract_cri_messages(
 /// If `msg` starts with `{`, produces:
 ///   `{"_timestamp":"<ts>","_stream":"<stream>",<rest of msg>}\n`
 ///
-/// Otherwise writes `msg\n` verbatim so that non-JSON CRI messages (plain
-/// text log lines) pass through unchanged.
+/// Otherwise wraps the plain-text message so no content is lost:
+///   `{"_timestamp":"<ts>","_stream":"<stream>","_raw":"<json-escaped msg>"}\n`
 ///
 /// # Safety invariants
 ///
@@ -148,7 +148,15 @@ fn inject_cri_metadata(msg: &[u8], timestamp: &[u8], stream: &[u8], out: &mut Ve
         out.extend_from_slice(b"\",");
         out.extend_from_slice(&msg[1..]);
     } else {
-        out.extend_from_slice(msg);
+        // Plain text: wrap as {"_timestamp":"...","_stream":"...","_raw":"<escaped>"}
+        // so that message content is preserved and the scanner can ingest the record.
+        out.extend_from_slice(b"{\"_timestamp\":\"");
+        out.extend_from_slice(timestamp);
+        out.extend_from_slice(b"\",\"_stream\":\"");
+        out.extend_from_slice(stream);
+        out.extend_from_slice(b"\",\"_raw\":\"");
+        json_escape_bytes(msg, out);
+        out.extend_from_slice(b"\"}");
     }
     out.push(b'\n');
 }
@@ -193,9 +201,12 @@ mod tests {
         proc.process_lines(b"2024-01-15T10:30:00Z stdout P hello \n", &mut out);
         assert!(out.is_empty(), "partial should not emit");
 
-        // Full line completes the message
+        // Full line completes the message — plain text → wrapped as _raw
         proc.process_lines(b"2024-01-15T10:30:00Z stdout F world\n", &mut out);
-        assert_eq!(out, b"hello world\n");
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"hello world\"}\n"
+        );
     }
 
     #[test]
@@ -245,9 +256,15 @@ mod tests {
 
         proc.process_lines(b"2024-01-15T10:30:00Z stdout P hello \n", &mut out);
         proc.process_lines(b"not a cri line\n", &mut out);
+        // "world" is plain text → wrapped as _raw
         proc.process_lines(b"2024-01-15T10:30:00Z stdout F world\n", &mut out);
 
-        assert_eq!(out, b"not a cri line\nworld\n");
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"not a cri line\n");
+        expected.extend_from_slice(
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"world\"}\n",
+        );
+        assert_eq!(out, expected);
     }
 
     #[test]
@@ -263,9 +280,12 @@ mod tests {
         // Reset (simulating rotation)
         proc.reset();
 
-        // Next full line should not contain the old partial
+        // Next full line should not contain the old partial — plain text → wrapped as _raw
         proc.process_lines(b"2024-01-15T10:30:00Z stdout F world\n", &mut out);
-        assert_eq!(out, b"world\n");
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"world\"}\n"
+        );
     }
 
     #[test]
@@ -313,13 +333,32 @@ mod tests {
     }
 
     #[test]
-    fn cri_non_json_message_passes_through_verbatim() {
-        // Non-JSON CRI messages (plain text) must not have metadata injected.
+    fn cri_non_json_message_wrapped_as_raw() {
+        // Non-JSON CRI messages (plain text) must be wrapped as
+        // {"_timestamp":"...","_stream":"...","_raw":"<text>"} so that message
+        // content is not silently lost when the scanner sees a non-JSON line.
         let stats = make_stats();
         let mut proc = FormatProcessor::cri(2 * 1024 * 1024, stats);
         let input = b"2024-01-15T10:30:00Z stdout F plain text message\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
-        assert_eq!(out, b"plain text message\n");
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"plain text message\"}\n"
+        );
+    }
+
+    #[test]
+    fn cri_non_json_message_escapes_special_chars() {
+        // Plain text containing JSON-special characters must be properly escaped.
+        let stats = make_stats();
+        let mut proc = FormatProcessor::cri(2 * 1024 * 1024, stats);
+        let input = b"2024-01-15T10:30:00Z stdout F say \"hello\"\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"say \\\"hello\\\"\"}\n"
+        );
     }
 }

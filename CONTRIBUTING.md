@@ -53,7 +53,7 @@ just bench
 
 ## Code Style
 
-See `CODE_STYLE.md` for style preferences enforced during review.
+See `dev-docs/CODE_STYLE.md` for style preferences enforced during review.
 
 ## Architecture
 
@@ -81,5 +81,5 @@ cargo test -p logfwd-core  # Fast single-crate iteration
 ## Getting Help
 
 - File an issue at https://github.com/strawgate/memagent/issues
-- Read `docs/references/` for library-specific guides
+- Read `dev-docs/references/` for library-specific guides
 - Read `dev-docs/research/` for design research

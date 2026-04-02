@@ -90,10 +90,10 @@ impl ScanBuilder for StreamingBuilder {
         self.append_null_by_idx(idx);
     }
     #[inline(always)]
-    fn append_raw(&mut self, _line: &[u8]) {
-        // StreamingBuilder does not support _raw column.
-        // ScanConfig.keep_raw should not be used with StreamingSimdScanner.
-        // TODO: return error or assert in StreamingSimdScanner::scan if keep_raw is set.
+    fn append_raw(&mut self, line: &[u8]) {
+        // Explicitly call the inherent method to avoid any ambiguity
+        // with this trait method of the same name.
+        StreamingBuilder::append_raw(self, line);
     }
 }
 
@@ -152,7 +152,7 @@ impl StreamingSimdScanner {
     /// Create a new streaming scanner with the given configuration.
     pub fn new(config: ScanConfig) -> Self {
         StreamingSimdScanner {
-            builder: StreamingBuilder::new(),
+            builder: StreamingBuilder::new(config.keep_raw),
             config,
         }
     }
@@ -430,6 +430,29 @@ mod tests {
             .scan(bytes::Bytes::from_static(b"{\"x\":\"b\"}\n"))
             .unwrap();
         assert_eq!(b.num_rows(), 1);
+    }
+
+    #[test]
+    fn test_streaming_keep_raw() {
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            keep_raw: true,
+            validate_utf8: false,
+        };
+        let batch = StreamingSimdScanner::new(config)
+            .scan(bytes::Bytes::from_static(b"{\"msg\":\"hi\"}\n"))
+            .unwrap();
+        assert!(
+            batch.column_by_name("_raw").is_some(),
+            "_raw column must be present when keep_raw=true"
+        );
+        let raw_col = batch.column_by_name("_raw").unwrap();
+        let raw_arr = raw_col
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("_raw must be StringViewArray in StreamingSimdScanner");
+        assert_eq!(raw_arr.value(0), "{\"msg\":\"hi\"}");
     }
 
     // --- validate_utf8 option ---

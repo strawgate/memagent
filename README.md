@@ -1,53 +1,144 @@
 # logfwd
 
-A high-performance log forwarder. Tails log files, parses JSON and CRI container format, transforms with SQL, and ships to OTLP, HTTP, or stdout.
+A Rust log forwarder that tails files, parses JSON and Kubernetes CRI logs with portable SIMD, transforms with SQL, and ships to any OTLP-compatible collector — at 1.7 million lines/second on a single ARM64 core.
 
-## Quick Start (Interactive Benchmark)
+---
 
-You can try `logfwd` locally using its built-in test data generator and "blackhole" collector.
+## What it does
 
-1. **Build the binary**:
-   ```bash
-   cargo build --release -p logfwd
-   ```
+logfwd reads log files (including Kubernetes container logs in CRI format), applies a SQL filter/transform, and forwards records as OTLP protobuf to an OpenTelemetry collector or compatible backend.
 
-2. **Generate test logs**:
-   ```bash
-   ./target/release/logfwd --generate-json 100000 logs.json
-   ```
+```
+log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → your collector
+```
 
-3. **Start the OTLP blackhole** (collector that discards data):
-   ```bash
-   ./target/release/logfwd --blackhole &
-   ```
+logfwd needs an OTLP receiver to send to. Options: [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/), [Grafana Alloy](https://grafana.com/oss/alloy/), or logfwd's own built-in blackhole sink for testing (ships with the binary).
 
-4. **Run a filtered pipeline**:
-   Create `config.yaml`:
-   ```yaml
-   input:
-     type: file
-     path: logs.json  # paths may be relative to this config file
-     format: json
+---
 
-   transform: |
-     SELECT * FROM logs WHERE duration_ms_int > 50
+## Why logfwd?
 
-   output:
-     type: otlp
-     endpoint: http://127.0.0.1:4318
-     compression: zstd
-   ```
+| What | How |
+|------|-----|
+| **Fast SIMD parsing** | One pass per buffer using the [`wide`](https://crates.io/crates/wide) crate for portable SIMD — 10 sequential broadcast-compare operations per 64-byte block, no hand-rolled intrinsics, runs on x86_64, ARM64, or any LLVM-supported target |
+| **Low-copy pipeline** | Apache Arrow `StringViewArray` stores views into the read buffer — string data isn't copied from scanner to RecordBatch |
+| **SQL transforms** | Every parsed batch runs through a DataFusion SQL query before anything hits the wire. Filter, reshape, regex-extract, join enrichment tables — all in standard SQL |
+| **OTLP native** | Encodes directly to OTLP protobuf. Any OpenTelemetry Collector, Grafana Alloy, or OTLP-speaking backend works out of the box |
+| **Kani-verified core** | `framer.rs`, `aggregator.rs`, and wire-format primitives in `otlp.rs` are verified with the [Kani bounded model checker](https://github.com/model-checking/kani) — exhaustive bounded verification, not just fuzzing |
+| **Single static binary** | One file. No JVM, no Python, no Lua, no runtime dependencies |
 
-   Run the forwarder:
-   ```bash
-   ./target/release/logfwd --config config.yaml
-   ```
+---
+
+## Install
+
+Download the latest release from [GitHub Releases](https://github.com/strawgate/memagent/releases) or build from source:
+
+```bash
+# From source (requires Rust toolchain)
+cargo build --release -p logfwd
+cp target/release/logfwd /usr/local/bin/
+```
+
+---
+
+## Quick Start
+
+### Try it in 60 seconds — no collector needed
+
+logfwd ships a test-data generator and a built-in OTLP "blackhole" — accepts data and discards it immediately, a perfectly reliable drain for your benchmarks.
+
+```bash
+# 1. Generate 100,000 synthetic JSON log lines
+logfwd --generate-json 100000 logs.json
+
+# 2. Start the blackhole receiver (listens on :4318)
+logfwd --blackhole &
+
+# 3. Create config.yaml
+cat > config.yaml << 'EOF'
+input:
+  type: file
+  path: logs.json
+  format: json
+
+transform: |
+  SELECT * FROM logs WHERE duration_ms_int > 50
+
+output:
+  type: otlp
+  endpoint: http://127.0.0.1:4318
+  compression: zstd
+EOF
+
+# 4. Run
+logfwd --config config.yaml
+```
+
+### Or just print to stdout
+
+No collector, no config ceremony:
+
+```yaml
+input:
+  type: file
+  path: /var/log/app/app.log
+  format: json
+
+output:
+  type: stdout
+  format: console
+```
+
+```bash
+logfwd --config config.yaml
+```
+
+---
+
+## SQL Transforms
+
+The transform is the main reason to use logfwd over a plain forwarder. Every batch of parsed log records is a DataFusion SQL table named `logs`.
+
+```sql
+-- Forward only errors and slow requests
+SELECT level_str, msg_str, duration_ms_int, status_int
+FROM logs
+WHERE level_str = 'ERROR'
+   OR duration_ms_int > 1000
+```
+
+```sql
+-- Extract a field with regex, rename columns
+SELECT
+  level_str,
+  msg_str,
+  regexp_extract(msg_str, 'request_id=([a-f0-9-]+)', 1) AS request_id_str,
+  status_int
+FROM logs
+WHERE level_str IN ('ERROR', 'WARN')
+  AND status_int >= 400
+```
+
+**Column naming:** JSON fields are suffixed with their detected type — JSON types change between log sources; suffixes keep your SQL from breaking.
+
+| JSON type      | Column suffix | Example                                         |
+|----------------|---------------|-------------------------------------------------|
+| String         | `_str`        | `level_str`                                     |
+| Integer        | `_int`        | `status_int`                                    |
+| Float          | `_float`      | `latency_ms_float`                              |
+| Boolean        | `_str`        | `enabled_str` — stored as `"true"` / `"false"` |
+| Object / Array | `_str`        | `metadata_str` — raw JSON string                |
+
+> Nested objects are stored as raw JSON strings, not expanded into sub-fields.
+
+**Built-in UDFs:** `int()`, `float()`, `grok()`, `regexp_extract()` — see [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md).
+
+---
 
 ## Configuration
 
-logfwd uses YAML configuration with two modes:
+### Simple — one pipeline
 
-**Simple** (single pipeline):
 ```yaml
 input:
   type: file
@@ -59,9 +150,11 @@ transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 4
 output:
   type: otlp
   endpoint: http://otel-collector:4318
+  compression: zstd
 ```
 
-**Advanced** (multiple pipelines):
+### Advanced — multiple named pipelines
+
 ```yaml
 pipelines:
   errors:
@@ -74,47 +167,115 @@ pipelines:
       type: otlp
       endpoint: http://otel-collector:4318
 
-  all-logs:
+  debug:
     input:
       type: file
       path: /var/log/pods/**/*.log
       format: cri
     output:
       type: stdout
-      format: json
+      format: console
 ```
 
-## SQL Column Naming
+See [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) for all YAML fields, input/output types, and enrichment tables.
 
-All JSON fields are automatically suffixed with their type (`_str`, `_int`, `_float`) to ensure schema stability. 
+---
+
+## Kubernetes (CRI) Support
+
+Point logfwd at `/var/log/pods/**/*.log` with `format: cri` and it handles timestamp parsing, stdout/stderr routing, and multi-line log reassembly (CRI partial-log flags).
+
+Every CRI record gets these extra columns:
+
+| Column | Description |
+|--------|-------------|
+| `_file_str` | Absolute path of the source log file |
+| `_time_ns_int` | CRI timestamp in nanoseconds |
+| `_stream_str` | `stdout` or `stderr` |
+
+Use `_file_str` to identify which pod and container generated a record, or filter by stream:
 
 ```sql
--- Filter by level
-SELECT * FROM logs WHERE level_str = 'ERROR'
-
--- Extract integer fields
-SELECT status_int, duration_ms_int FROM logs
+SELECT _time_ns_int, _stream_str, level_str, msg_str
+FROM logs
+WHERE _stream_str = 'stderr'
+  AND level_str = 'ERROR'
 ```
 
-For more details, see [docs/COLUMN_NAMING.md](docs/COLUMN_NAMING.md).
+> **Coming soon:** Kubernetes namespace/pod/container metadata enrichment (`k8s_path`) is implemented in the pipeline but not yet wired into the YAML config schema.
 
-## CLI
+---
+
+## Output destinations
+
+| Output          | Status         | Description |
+|-----------------|----------------|-------------|
+| `otlp`          | ✅ Implemented  | OTLP protobuf over HTTP or gRPC — works with any OpenTelemetry-compatible receiver |
+| `http`          | ✅ Implemented  | JSON lines over HTTP POST, optional zstd compression |
+| `stdout`        | ✅ Implemented  | JSON or colored console output — great for local debugging |
+| `elasticsearch` | 🚧 Stub         | Struct exists; Elasticsearch bulk API not yet implemented |
+| `loki`          | 🚧 Stub         | Struct exists; Loki push API not yet implemented |
+| `parquet`       | 🚧 Stub         | Struct exists; Parquet file writing not yet implemented |
+
+---
+
+## CLI Reference
 
 ```
-logfwd --config <config.yaml>        Run pipeline
-logfwd --config <config.yaml> --check      Validate config without running
-logfwd --blackhole [bind_addr]       OTLP collector for benchmarks
-logfwd --generate-json <n> <file>    Generate synthetic test data
-logfwd --version                     Print version
+logfwd --config <config.yaml>             Run the pipeline
+logfwd --config <config.yaml> --validate  Parse and validate config only
+logfwd --config <config.yaml> --dry-run   Build pipeline objects, check SQL syntax
+logfwd --blackhole [bind_addr]            Start OTLP blackhole for testing
+logfwd --generate-json <n> <file>         Generate synthetic test data
+logfwd --version                          Print version
 ```
+
+---
+
+## Deployment
+
+### Docker
+
+```bash
+docker run -d \
+  --name logfwd \
+  -v /var/log:/var/log:ro \
+  -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
+  logfwd:latest --config /etc/logfwd/config.yaml
+```
+
+### Kubernetes DaemonSet
+
+A ready-to-apply manifest ships at `deploy/daemonset.yml`. It runs one logfwd pod per node and reads all container logs from `/var/log`.
+
+```bash
+kubectl apply -f deploy/daemonset.yml
+kubectl -n collectors rollout status daemonset/logfwd
+```
+
+Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full details, resource sizing, and OTLP collector integration examples.
+
+---
 
 ## Documentation
+
+### User guides (`docs/`)
 
 | Guide | Description |
 |-------|-------------|
 | [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
-| [docs/COLUMN_NAMING.md](docs/COLUMN_NAMING.md) | How JSON fields map to SQL columns (suffixes) |
+| [docs/COLUMN_NAMING.md](docs/COLUMN_NAMING.md) | How JSON fields map to SQL column names |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, Kubernetes DaemonSet, resource sizing, OTLP integration |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common errors, absolute paths, /api/pipelines, debug mode |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Pipeline data flow, crate map, scanner internals |
-| [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands; hard-won implementation notes |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common errors, debug mode, diagnostics API |
+
+### Developer guides (`dev-docs/`)
+
+| Guide | Description |
+|-------|-------------|
+| [dev-docs/ARCHITECTURE.md](dev-docs/ARCHITECTURE.md) | Pipeline data flow, SIMD stages, crate map |
+| [dev-docs/DECISIONS.md](dev-docs/DECISIONS.md) | Settled architecture decisions with rationale |
+| [dev-docs/CODE_STYLE.md](dev-docs/CODE_STYLE.md) | Code style conventions enforced during review |
+| [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute — PR process, pre-commit checks |

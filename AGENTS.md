@@ -30,12 +30,12 @@ Library-specific guides — read the relevant ones before working on related cod
 
 | Doc | When to read |
 |-----|-------------|
-| [`docs/references/arrow-v54.md`](docs/references/arrow-v54.md) | RecordBatch construction, StringViewArray zero-copy, schema evolution |
-| [`docs/references/datafusion-v45.md`](docs/references/datafusion-v45.md) | SessionContext, MemTable, UDF creation, SQL execution |
-| [`docs/references/tokio-async-patterns.md`](docs/references/tokio-async-patterns.md) | Runtime, bounded channels, CancellationToken, select! safety |
-| [`docs/references/opentelemetry-otlp.md`](docs/references/opentelemetry-otlp.md) | MeterProvider, OTLP protobuf nesting, HTTP vs gRPC |
-| [`docs/references/notify-memchr-zstd.md`](docs/references/notify-memchr-zstd.md) | File watcher events, SIMD search, zstd compression |
-| [`docs/references/kani-verification.md`](docs/references/kani-verification.md) | Kani proofs, function contracts, solver selection, Bolero |
+| [`dev-docs/references/arrow-v54.md`](dev-docs/references/arrow-v54.md) | RecordBatch construction, StringViewArray zero-copy, schema evolution |
+| [`dev-docs/references/datafusion-v45.md`](dev-docs/references/datafusion-v45.md) | SessionContext, MemTable, UDF creation, SQL execution |
+| [`dev-docs/references/tokio-async-patterns.md`](dev-docs/references/tokio-async-patterns.md) | Runtime, bounded channels, CancellationToken, select! safety |
+| [`dev-docs/references/opentelemetry-otlp.md`](dev-docs/references/opentelemetry-otlp.md) | MeterProvider, OTLP protobuf nesting, HTTP vs gRPC |
+| [`dev-docs/references/notify-memchr-zstd.md`](dev-docs/references/notify-memchr-zstd.md) | File watcher events, SIMD search, zstd compression |
+| [`dev-docs/references/kani-verification.md`](dev-docs/references/kani-verification.md) | Kani proofs, function contracts, solver selection, Bolero |
 
 ## Architecture Decisions
 

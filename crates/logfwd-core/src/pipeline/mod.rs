@@ -25,9 +25,13 @@
 
 mod batch;
 mod lifecycle;
+mod registry;
 
 // Batch ticket types
 pub use batch::{AckReceipt, BatchId, BatchTicket, Queued, Sending, SourceId};
 
 // Pipeline lifecycle types
 pub use lifecycle::{CommitAdvance, Draining, PipelineMachine, Running, Starting, Stopped};
+
+// Source registry types
+pub use registry::{SourceEntry, SourceRegistry, SourceState};

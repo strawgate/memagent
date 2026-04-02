@@ -17,6 +17,12 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use logfwd_core::pipeline::SourceId;
+
+/// Byte offset within a file. Newtype prevents mixing with SourceId.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ByteOffset(pub u64);
+
 /// Identity of a file based on device + inode + content fingerprint.
 /// Survives renames. Detects inode reuse via fingerprint mismatch.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -547,6 +553,35 @@ impl FileTailer {
     /// Number of files currently being tailed.
     pub fn num_files(&self) -> usize {
         self.files.len()
+    }
+
+    /// Hot path: source identity + offset for all tailed files.
+    ///
+    /// Skips empty files (fingerprint 0) — they have no data to checkpoint.
+    /// Called on every channel send (~100ms). No PathBuf allocation.
+    pub fn file_offsets(&self) -> Vec<(SourceId, ByteOffset)> {
+        self.files
+            .iter()
+            .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
+            .map(|(_, tailed)| {
+                (
+                    SourceId(tailed.identity.fingerprint),
+                    ByteOffset(tailed.offset),
+                )
+            })
+            .collect()
+    }
+
+    /// Cold path: source identity + canonical path for all tailed files.
+    ///
+    /// Called on file open/close/rotate, not per-batch. PathBuf cloning is
+    /// acceptable here since this runs infrequently.
+    pub fn file_paths(&self) -> Vec<(SourceId, PathBuf)> {
+        self.files
+            .iter()
+            .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
+            .map(|(path, tailed)| (SourceId(tailed.identity.fingerprint), path.clone()))
+            .collect()
     }
 }
 
@@ -1214,5 +1249,116 @@ mod tests {
             0,
             "deleted file should be removed from the files map"
         );
+    }
+
+    #[test]
+    fn test_file_offsets_returns_fingerprint_and_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, r#"{{"msg":"hello"}}"#).unwrap();
+            writeln!(f, r#"{{"msg":"world"}}"#).unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = tailer.poll().unwrap();
+
+        let offsets = tailer.file_offsets();
+        assert_eq!(offsets.len(), 1, "should have one file");
+        let (sid, byte_off) = &offsets[0];
+        assert_ne!(
+            sid.0, 0,
+            "fingerprint should be non-zero for file with content"
+        );
+        assert!(byte_off.0 > 0, "offset should be > 0 after reading data");
+    }
+
+    #[test]
+    fn test_file_offsets_skips_empty_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("empty.log");
+        File::create(&log_path).unwrap(); // empty file
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = tailer.poll().unwrap();
+
+        let offsets = tailer.file_offsets();
+        assert!(
+            offsets.is_empty(),
+            "empty files (fp=0) should be filtered out"
+        );
+    }
+
+    #[test]
+    fn test_file_offsets_multiple_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.log");
+        let path_b = dir.path().join("b.log");
+        {
+            let mut f = File::create(&path_a).unwrap();
+            writeln!(f, "aaaa").unwrap();
+        }
+        {
+            let mut f = File::create(&path_b).unwrap();
+            writeln!(f, "bbbb").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(&[path_a, path_b], config).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = tailer.poll().unwrap();
+
+        let offsets = tailer.file_offsets();
+        assert_eq!(offsets.len(), 2, "should have two files");
+        let sids: Vec<_> = offsets.iter().map(|(s, _)| s.0).collect();
+        assert_ne!(
+            sids[0], sids[1],
+            "distinct files should have distinct fingerprints"
+        );
+    }
+
+    #[test]
+    fn test_file_paths_matches_offsets() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "data").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = tailer.poll().unwrap();
+
+        let offsets = tailer.file_offsets();
+        let paths = tailer.file_paths();
+        assert_eq!(offsets.len(), paths.len());
+        // SourceIds should match between the two calls
+        let offset_sids: Vec<_> = offsets.iter().map(|(s, _)| s.0).collect();
+        let path_sids: Vec<_> = paths.iter().map(|(s, _)| s.0).collect();
+        assert_eq!(offset_sids, path_sids);
     }
 }

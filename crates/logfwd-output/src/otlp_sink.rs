@@ -19,6 +19,15 @@ use super::{
 };
 
 // ---------------------------------------------------------------------------
+// InstrumentationScope constants
+// ---------------------------------------------------------------------------
+
+/// Name emitted in the OTLP `InstrumentationScope.name` field of every `ScopeLogs`.
+const SCOPE_NAME: &[u8] = b"logfwd";
+/// Version emitted in the OTLP `InstrumentationScope.version` field (from Cargo.toml).
+const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
+
+// ---------------------------------------------------------------------------
 // OtlpSink
 // ---------------------------------------------------------------------------
 
@@ -39,6 +48,7 @@ pub struct OtlpSink {
     headers: Vec<(String, String)>,
     pub(crate) encoder_buf: Vec<u8>,
     compress_buf: Vec<u8>,
+    grpc_buf: Vec<u8>,
     compressor: Option<ChunkCompressor>,
     http_agent: ureq::Agent,
     stats: Arc<ComponentStats>,
@@ -71,6 +81,7 @@ impl OtlpSink {
             headers,
             encoder_buf: Vec::with_capacity(64 * 1024),
             compress_buf: Vec::with_capacity(64 * 1024),
+            grpc_buf: Vec::new(),
             compressor,
             http_agent,
             stats,
@@ -100,8 +111,11 @@ impl OtlpSink {
         }
 
         // Phase 2: compute sizes bottom-up.
-        // ScopeLogs inner = repeated field 2 (LogRecord) entries
-        let mut scope_logs_inner_size = 0usize;
+        // ScopeLogs inner = field 1 (InstrumentationScope) + repeated field 2 (LogRecord) entries
+        let instrumentation_scope_inner_size =
+            bytes_field_size(1, SCOPE_NAME.len()) + bytes_field_size(2, SCOPE_VERSION.len());
+
+        let mut scope_logs_inner_size = bytes_field_size(1, instrumentation_scope_inner_size);
         for &(start, end) in &record_ranges {
             let record_len = end - start;
             // tag for field 2 wire type 2 + varint length + payload
@@ -142,6 +156,15 @@ impl OtlpSink {
         // ScopeLogs (field 2 of ResourceLogs)
         encode_tag(&mut self.encoder_buf, 2, 2);
         encode_varint(&mut self.encoder_buf, scope_logs_inner_size as u64);
+
+        // InstrumentationScope (field 1 of ScopeLogs)
+        encode_tag(&mut self.encoder_buf, 1, 2);
+        encode_varint(
+            &mut self.encoder_buf,
+            instrumentation_scope_inner_size as u64,
+        );
+        encode_bytes_field(&mut self.encoder_buf, 1, SCOPE_NAME);
+        encode_bytes_field(&mut self.encoder_buf, 2, SCOPE_VERSION);
 
         // LogRecords (field 2 of ScopeLogs, repeated)
         for &(start, end) in &record_ranges {
@@ -186,10 +209,10 @@ impl OutputSink for OtlpSink {
         // gRPC wire protocol. Note: ureq uses HTTP/1.1; a true gRPC endpoint requires
         // HTTP/2. Use a reverse proxy (e.g. Envoy) or `protocol: http` when the
         // collector does not accept HTTP/1.1 upgrades.
-        let grpc_buf: Vec<u8>;
+        let compressed = self.compression == Compression::Zstd;
         let payload: &[u8] = if self.protocol == OtlpProtocol::Grpc {
-            grpc_buf = grpc_frame(payload);
-            &grpc_buf
+            write_grpc_frame(&mut self.grpc_buf, payload, compressed);
+            &self.grpc_buf
         } else {
             payload
         };
@@ -243,6 +266,7 @@ enum AttrArray<'a> {
     Str(&'a dyn Array),
     Int(&'a PrimitiveArray<Int64Type>),
     Float(&'a PrimitiveArray<Float64Type>),
+    Bool(&'a arrow::array::BooleanArray),
 }
 
 /// Pre-resolved column roles and downcast arrays for one RecordBatch.
@@ -357,6 +381,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         let attr = match field.data_type() {
             DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
             DataType::Float64 => AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>()),
+            DataType::Boolean => AttrArray::Bool(batch.column(idx).as_boolean()),
             _ => AttrArray::Str(batch.column(idx).as_ref()),
         };
         attribute_cols.push((field_name.to_string(), attr));
@@ -464,6 +489,11 @@ fn encode_row_as_log_record(
                     encode_key_value_double(buf, field_name.as_bytes(), arr.value(row));
                 }
             }
+            AttrArray::Bool(arr) => {
+                if !arr.is_null(row) {
+                    encode_key_value_bool(buf, field_name.as_bytes(), arr.value(row));
+                }
+            }
             AttrArray::Str(arr) => {
                 if !arr.is_null(row) {
                     encode_key_value_string(
@@ -552,20 +582,32 @@ fn encode_key_value_double(buf: &mut Vec<u8>, key: &[u8], value: f64) {
     encode_fixed64(buf, 4, value.to_bits());
 }
 
-/// Wrap a protobuf payload in a gRPC length-prefixed message frame.
+/// Encode a KeyValue with boolean AnyValue (field 2 of AnyValue = bool_value).
+fn encode_key_value_bool(buf: &mut Vec<u8>, key: &[u8], value: bool) {
+    let anyvalue_inner = 1 + 1; // tag(1 byte) + varint(1 byte)
+    let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
+    encode_tag(buf, 6, 2);
+    encode_varint(buf, kv_inner as u64);
+    encode_bytes_field(buf, 1, key);
+    encode_tag(buf, 2, 2);
+    encode_varint(buf, anyvalue_inner as u64);
+    // AnyValue.bool_value = field 2, wire type 0 (varint)
+    encode_varint_field(buf, 2, u64::from(value));
+}
+
+/// Write a gRPC length-prefixed message frame into `buf`.
 ///
 /// gRPC wire format (per the [gRPC over HTTP/2 specification](https://grpc.io/docs/what-is-grpc/core-concepts/)):
 /// ```text
-/// [1 byte: compressed flag (0x00 = not compressed)]
+/// [1 byte: compressed flag (0 = not compressed, 1 = compressed)]
 /// [4 bytes: big-endian message length]
 /// [N bytes: protobuf message]
 /// ```
-fn grpc_frame(payload: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(5 + payload.len());
-    buf.push(0x00); // compressed flag: not compressed
+fn write_grpc_frame(buf: &mut Vec<u8>, payload: &[u8], compressed: bool) {
+    buf.clear();
+    buf.push(if compressed { 1 } else { 0 });
     buf.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     buf.extend_from_slice(payload);
-    buf
 }
 
 #[cfg(test)]
@@ -734,7 +776,8 @@ mod tests {
     #[test]
     fn grpc_frame_prepends_five_byte_header() {
         let proto_payload = [0x0a, 0x02, 0x08, 0x01];
-        let framed = grpc_frame(&proto_payload);
+        let mut framed = Vec::new();
+        write_grpc_frame(&mut framed, &proto_payload, false);
         assert_eq!(framed.len(), 5 + proto_payload.len());
         assert_eq!(framed[0], 0x00, "compressed flag must be 0x00");
         let msg_len = u32::from_be_bytes(framed[1..5].try_into().unwrap());
@@ -743,15 +786,80 @@ mod tests {
             proto_payload.len(),
             "length field must match payload length"
         );
-        assert_eq!(&framed[5..], &proto_payload, "payload bytes must follow header");
+        assert_eq!(
+            &framed[5..],
+            &proto_payload,
+            "payload bytes must follow header"
+        );
     }
 
     #[test]
     fn grpc_frame_empty_payload() {
-        let framed = grpc_frame(&[]);
+        let mut framed = Vec::new();
+        write_grpc_frame(&mut framed, &[], false);
         assert_eq!(framed.len(), 5);
         assert_eq!(framed[0], 0x00, "compressed flag must be 0x00");
         let msg_len = u32::from_be_bytes(framed[1..5].try_into().unwrap());
         assert_eq!(msg_len, 0, "length field must be zero for empty payload");
+    }
+
+    #[test]
+    fn grpc_frame_compressed_flag() {
+        let proto_payload = [0x0a, 0x02];
+        let mut framed = Vec::new();
+        write_grpc_frame(&mut framed, &proto_payload, true);
+        assert_eq!(framed[0], 0x01, "compressed flag must be 0x01");
+    }
+
+    #[test]
+    fn scope_logs_has_instrumentation_scope() {
+        let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
+        let arr = StringArray::from(vec!["hello"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        // The InstrumentationScope name "logfwd" must be present in the encoded bytes.
+        assert!(
+            contains_bytes(&sink.encoder_buf, b"logfwd"),
+            "InstrumentationScope name 'logfwd' not found in encoded output"
+        );
+
+        // The InstrumentationScope version (from CARGO_PKG_VERSION) must also be present.
+        let version = env!("CARGO_PKG_VERSION").as_bytes();
+        assert!(
+            contains_bytes(&sink.encoder_buf, version),
+            "InstrumentationScope version not found in encoded output"
+        );
+    }
+
+    #[test]
+    fn encode_boolean_as_attribute() {
+        use arrow::array::BooleanArray;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "active",
+            DataType::Boolean,
+            true,
+        )]));
+        let arr = BooleanArray::from(vec![Some(true)]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        // LogRecord field 6 tag: (6 << 3) | 2 = 0x32
+        // KeyValue field 1 key tag: (1 << 3) | 2 = 0x0A, then "active"
+        // KeyValue field 2 value AnyValue tag: (2 << 3) | 2 = 0x12
+        // AnyValue field 2 bool_value tag: (2 << 3) | 0 = 0x10, then 0x01
+        let expected = [0x10u8, 0x01];
+        assert!(
+            contains_bytes(&sink.encoder_buf, &expected),
+            "boolean attribute not found in encoded output"
+        );
+        assert!(
+            contains_bytes(&sink.encoder_buf, b"active"),
+            "attribute key 'active' not found"
+        );
     }
 }
