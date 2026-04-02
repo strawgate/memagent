@@ -100,7 +100,7 @@ fn generate_log_batch(num_rows: usize) -> RecordBatch {
 /// Index a batch of data into Elasticsearch.
 fn index_batch(sink: &mut ElasticsearchSink, batch: &RecordBatch) -> Result<(), std::io::Error> {
     let metadata = BatchMetadata {
-        resource_attrs: vec![],
+        resource_attrs: Arc::new(vec![]),
         observed_time_ns: 0,
     };
     sink.send_batch(batch, &metadata)

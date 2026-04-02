@@ -88,7 +88,7 @@ fn elasticsearch_sink_sends_bulk_data() {
     );
 
     let metadata = BatchMetadata {
-        resource_attrs: vec![],
+        resource_attrs: Arc::new(vec![]),
         observed_time_ns: 0,
     };
 
@@ -136,7 +136,7 @@ fn elasticsearch_sink_handles_empty_batch() {
     );
 
     let metadata = BatchMetadata {
-        resource_attrs: vec![],
+        resource_attrs: Arc::new(vec![]),
         observed_time_ns: 0,
     };
 
@@ -176,7 +176,7 @@ fn elasticsearch_sink_multiple_batches() {
     );
 
     let metadata = BatchMetadata {
-        resource_attrs: vec![],
+        resource_attrs: Arc::new(vec![]),
         observed_time_ns: 0,
     };
 

@@ -254,7 +254,7 @@ install-hooks:
     set -euo pipefail
     HOOKS_DIR=$(git rev-parse --git-common-dir)/hooks
     mkdir -p "$HOOKS_DIR"
-    printf '#!/bin/sh\nset -e\nRUSTC_WRAPPER="" cargo fmt --check\nRUSTC_WRAPPER="" cargo clippy -- -D warnings\n' \
+    printf '#!/bin/sh\nset -e\nRUSTC_WRAPPER="" cargo fmt --check\nRUSTC_WRAPPER="" cargo clippy -- -D warnings\nRUSTC_WRAPPER="" cargo check --all-targets\n' \
         > "$HOOKS_DIR/pre-commit"
     chmod +x "$HOOKS_DIR/pre-commit"
     echo "Pre-commit hook installed ($HOOKS_DIR/pre-commit)"
