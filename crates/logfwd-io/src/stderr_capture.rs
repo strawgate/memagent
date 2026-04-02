@@ -222,8 +222,11 @@ fn reader_loop(read_fd: i32, orig_fd: i32, state: &CaptureState) {
         }
     }
 
-    // Cleanup.
+    // Restore stderr to the original fd before closing it, so any eprintln!()
+    // calls after this thread exits still go to the terminal rather than the
+    // now-broken pipe.
     unsafe {
+        libc::dup2(orig_fd, 2);
         libc::close(read_fd);
         libc::close(orig_fd);
     }
