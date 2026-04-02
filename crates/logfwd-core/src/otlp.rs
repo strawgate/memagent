@@ -241,8 +241,9 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         return None;
     }
 
-    // Reject years that would overflow u64 nanos (year > ~584 from epoch)
-    if year > 2554 {
+    // Reject years that would overflow u64 nanos (year > ~584 from epoch).
+    // Year 2554 can exceed u64::MAX nanos; 2553-12-31T23:59:59.999999999Z fits.
+    if year > 2553 {
         return None;
     }
 
@@ -535,6 +536,7 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
+    use alloc::{vec, vec::Vec};
 
     /// Prove varint_len matches encode_varint output length for ALL u64 values.
     ///
@@ -1004,8 +1006,8 @@ mod verification {
 
         // If it parsed successfully, the result must be bounded
         if let Some(nanos) = result {
-            // Year 2554 upper bound: force u64 to avoid intermediate overflow.
-            const MAX_NANOS: u64 = 80_763_609_600_000_000_000;
+            // Year 2553 upper bound (2553-12-31T23:59:59.999999999Z).
+            const MAX_NANOS: u64 = 18_429_292_799_999_999_999;
             assert!(nanos <= MAX_NANOS);
         }
     }

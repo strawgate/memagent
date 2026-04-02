@@ -120,7 +120,6 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
-    use alloc::{vec, vec::Vec};
 
     /// Prove find_byte returns the FIRST match and never panics.
     /// Tested on 16-byte inputs — function is a trivial loop, so
