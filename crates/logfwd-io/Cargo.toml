@@ -16,6 +16,8 @@ libc = "0.2"
 memchr = "2"
 notify = "8"
 opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+tracing = { workspace = true }
 opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-messages"] }
 prost = "0.14"
 serde = { workspace = true }

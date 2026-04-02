@@ -358,6 +358,8 @@ pub struct DiagnosticsServer {
     stderr: crate::stderr_capture::StderrCapture,
     /// Server-side metric history (1 hour, reducing precision).
     history: Arc<crate::metric_history::MetricHistory>,
+    /// Ring buffer of recent batch spans for /api/traces.
+    trace_buf: Option<crate::span_exporter::SpanBuffer>,
 }
 
 impl DiagnosticsServer {
@@ -371,7 +373,13 @@ impl DiagnosticsServer {
             config_path: String::new(),
             stderr: crate::stderr_capture::StderrCapture::new(),
             history: Arc::new(crate::metric_history::MetricHistory::new()),
+            trace_buf: None,
         }
+    }
+
+    /// Attach a span buffer so `/api/traces` can serve batch trace data.
+    pub fn set_trace_buffer(&mut self, buf: crate::span_exporter::SpanBuffer) {
+        self.trace_buf = Some(buf);
     }
 
     /// Store the raw config YAML and file path for the /api/config endpoint.
@@ -446,6 +454,7 @@ impl DiagnosticsServer {
             "/api/config" => self.serve_config(request),
             "/api/logs" => self.serve_logs(request),
             "/api/history" => self.serve_history(request),
+            "/api/traces" => self.serve_traces(request),
             // Prometheus /metrics removed — use OTLP metrics push instead.
             // The /api/pipelines endpoint provides the same data as JSON.
             _ => {
@@ -626,6 +635,91 @@ impl DiagnosticsServer {
             "false"
         });
         body.push('}');
+
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        let resp = tiny_http::Response::from_string(body).with_header(header);
+        request.respond(resp)?;
+        Ok(())
+    }
+
+    fn serve_traces(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::span_exporter::TraceSpan;
+        use std::collections::HashMap;
+
+        let body = if let Some(ref buf) = self.trace_buf {
+            let all_spans = buf.get_spans();
+
+            // Group child spans by trace_id, and collect root spans separately.
+            let mut roots: Vec<&TraceSpan> = Vec::new();
+            let mut children: HashMap<&str, Vec<&TraceSpan>> = HashMap::new();
+            let root_marker = "0000000000000000";
+
+            for span in &all_spans {
+                if span.parent_id == root_marker {
+                    roots.push(span);
+                } else {
+                    children.entry(&span.trace_id).or_default().push(span);
+                }
+            }
+
+            // Build JSON — newest first, cap at 500 traces.
+            let mut out = String::with_capacity(64 * 1024);
+            out.push_str(r#"{"traces":["#);
+            let mut first = true;
+            for root in roots.iter().rev().take(500) {
+                if !first {
+                    out.push(',');
+                }
+                first = false;
+
+                // Pull stage durations from child spans.
+                let mut scan_ns = 0u64;
+                let mut transform_ns = 0u64;
+                let mut output_ns = 0u64;
+                if let Some(kids) = children.get(root.trace_id.as_str()) {
+                    for kid in kids.iter() {
+                        match kid.name.as_str() {
+                            "scan" => scan_ns = kid.duration_ns,
+                            "transform" => transform_ns = kid.duration_ns,
+                            "output" => output_ns = kid.duration_ns,
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Extract well-known attributes from root span.
+                let attr = |key: &str| -> &str {
+                    root.attrs
+                        .iter()
+                        .find(|kv| kv[0] == key)
+                        .map_or("", |kv| kv[1].as_str())
+                };
+                let pipeline = attr("pipeline");
+                let input_rows = attr("input_rows");
+                let output_rows = attr("output_rows");
+                let errors = attr("errors");
+
+                out.push_str(&format!(
+                    r#"{{"trace_id":"{tid}","pipeline":"{pl}","start_unix_ns":{st},"total_ns":{tot},"scan_ns":{scan},"transform_ns":{xfm},"output_ns":{out_ns},"input_rows":{ir},"output_rows":{or},"errors":{err},"status":"{status}"}}"#,
+                    tid = root.trace_id,
+                    pl = esc(pipeline),
+                    st = root.start_unix_ns,
+                    tot = root.duration_ns,
+                    scan = scan_ns,
+                    xfm = transform_ns,
+                    out_ns = output_ns,
+                    ir = input_rows,
+                    or = output_rows,
+                    err = errors,
+                    status = root.status,
+                ));
+            }
+            out.push_str(r#"]}"#);
+            out
+        } else {
+            r#"{"traces":[]}"#.to_string()
+        };
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;

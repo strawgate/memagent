@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use opentelemetry::metrics::Meter;
+use tracing::Instrument;
 
 use logfwd_arrow::scanner::StreamingSimdScanner as Scanner;
 use logfwd_config::{
@@ -396,6 +397,16 @@ impl Pipeline {
     /// Creates BatchTickets from checkpoint metadata for each contributing
     /// file source. Tickets are Queued before scan/transform (safe to drop
     /// on error), then begin_send after (must ack or reject).
+    #[tracing::instrument(
+        name = "batch",
+        skip_all,
+        fields(
+            pipeline = %self.name,
+            input_rows = tracing::field::Empty,
+            output_rows = tracing::field::Empty,
+            errors = 0u64,
+        )
+    )]
     async fn flush_batch(
         &mut self,
         scan_buf: &mut Vec<u8>,
@@ -428,16 +439,19 @@ impl Pipeline {
         // Scan (CPU-bound, ~1-5ms per 4MB batch). block_in_place tells
         // tokio to move other tasks off this worker while scanning.
         let t0 = Instant::now();
-        let batch = match tokio::task::block_in_place(|| self.scanner.scan(combined.into())) {
-            Ok(b) => b,
-            Err(e) => {
-                // Queued tickets dropped here — safe, not tracked by machine.
-                self.metrics.inc_scan_error();
-                self.metrics.inc_dropped_batch();
-                eprintln!("pipeline: scan error (batch dropped): {e}");
-                return;
+        let batch = {
+            let _scan_span = tracing::info_span!("scan", pipeline = %self.name).entered();
+            match tokio::task::block_in_place(|| self.scanner.scan(combined.into())) {
+                Ok(b) => b,
+                Err(e) => {
+                    // Queued tickets dropped here — safe, not tracked by machine.
+                    self.metrics.inc_scan_error();
+                    self.metrics.inc_dropped_batch();
+                    eprintln!("pipeline: scan error (batch dropped): {e}");
+                    return;
+                }
             }
-        };
+        }; // _scan_span drops here → span ends
         let scan_elapsed = t0.elapsed();
 
         // begin_send all tickets — machine now tracks them, MUST ack or reject.
@@ -459,14 +473,22 @@ impl Pipeline {
         let num_rows = batch.num_rows() as u64;
         self.metrics.transform_in.inc_lines(num_rows);
 
+        tracing::Span::current().record("input_rows", num_rows);
+
         // Transform (already async).
         let t1 = Instant::now();
-        let result = match self.transform.execute(batch).await {
+        let result = match self
+            .transform
+            .execute(batch)
+            .instrument(tracing::info_span!("transform", pipeline = %self.name))
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 self.metrics.inc_transform_error();
                 self.metrics.inc_dropped_batch();
                 eprintln!("pipeline: transform error (batch dropped): {e}");
+                tracing::Span::current().record("errors", 1u64);
                 // Reject tickets — transform failed, data not delivered.
                 self.ack_all_tickets(sending, false);
                 return;
@@ -491,13 +513,17 @@ impl Pipeline {
             return;
         }
 
+        tracing::Span::current().record("output_rows", result.num_rows() as u64);
+
         // Output (block_in_place wraps the sync HTTP send).
         let t2 = Instant::now();
         let metadata = BatchMetadata {
             resource_attrs: self.resource_attrs.clone(),
             observed_time_ns: now_nanos(),
         };
-        let output_ok =
+        let output_ok = {
+            let _out_span =
+                tracing::info_span!("output", pipeline = %self.name).entered();
             match tokio::task::block_in_place(|| self.output.send_batch(&result, &metadata)) {
                 Ok(()) => true,
                 Err(e) => {
@@ -515,8 +541,13 @@ impl Pipeline {
                     eprintln!("pipeline: output error (batch dropped): {e}");
                     false
                 }
-            };
+            }
+        }; // _out_span drops here → output span ends
         let output_elapsed = t2.elapsed();
+
+        if !output_ok {
+            tracing::Span::current().record("errors", 1u64);
+        }
 
         // Ack or reject all tickets based on output result.
         self.ack_all_tickets(sending, output_ok);

@@ -59,3 +59,21 @@ export interface ConfigResponse {
   raw_yaml: string;
 }
 
+
+export interface TraceRecord {
+  trace_id: string;
+  pipeline: string;
+  start_unix_ns: number;
+  total_ns: number;
+  scan_ns: number;
+  transform_ns: number;
+  output_ns: number;
+  input_rows: number;
+  output_rows: number;
+  errors: number;
+  status: "ok" | "error" | "unset";
+}
+
+export interface TracesResponse {
+  traces: TraceRecord[];
+}

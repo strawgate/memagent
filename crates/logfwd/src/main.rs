@@ -347,6 +347,8 @@ async fn run_pipelines(
 ) -> Result<(), CliError> {
     use logfwd::pipeline::Pipeline;
     use logfwd_io::diagnostics::DiagnosticsServer;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     let shutdown = CancellationToken::new();
 
     // Listen for SIGINT (Ctrl-C) and SIGTERM to trigger graceful shutdown.
@@ -405,6 +407,17 @@ async fn run_pipelines(
     let meter_provider = build_meter_provider(&config)?;
     let meter = meter_provider.meter("logfwd");
 
+    // Set up the tracing subscriber with an OTel layer that routes spans
+    // to our in-process ring buffer (and optionally to an OTLP endpoint).
+    let trace_buf = logfwd_io::span_exporter::SpanBuffer::new();
+    let tracer_provider = build_tracer_provider(trace_buf.clone(), &config)?;
+    let tracer = opentelemetry::trace::TracerProvider::tracer(&tracer_provider, "logfwd");
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let _ = tracing_subscriber::registry()
+        .with(otel_layer)
+        .try_init(); // ignore error if a subscriber is already installed (e.g. in tests)
+    opentelemetry::global::set_tracer_provider(tracer_provider);
+
     let mut pipelines = Vec::new();
     for (name, pipe_cfg) in &config.pipelines {
         match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
@@ -420,6 +433,7 @@ async fn run_pipelines(
     let diag_handle = if let Some(ref addr) = config.server.diagnostics {
         let mut server = DiagnosticsServer::new(addr);
         server.set_config(config_path, config_yaml);
+        server.set_trace_buffer(trace_buf);
         for p in &pipelines {
             server.add_pipeline(Arc::clone(p.metrics()));
         }
@@ -564,6 +578,38 @@ fn build_meter_provider(
     } else {
         Ok(SdkMeterProvider::builder().build())
     }
+}
+
+// ---------------------------------------------------------------------------
+// OTel tracing + in-process span buffer
+// ---------------------------------------------------------------------------
+
+/// Build a `SdkTracerProvider` that writes completed spans into `buf`.
+/// If `config.server.traces_endpoint` is set, also pushes via OTLP.
+pub fn build_tracer_provider(
+    buf: logfwd_io::span_exporter::SpanBuffer,
+    config: &logfwd_config::Config,
+) -> io::Result<opentelemetry_sdk::trace::SdkTracerProvider> {
+    use logfwd_io::span_exporter::RingBufferExporter;
+    use opentelemetry_sdk::trace::{SdkTracerProvider, SimpleSpanProcessor};
+
+    let ring_processor = SimpleSpanProcessor::new(RingBufferExporter::new(buf));
+
+    let mut builder = SdkTracerProvider::builder().with_span_processor(ring_processor);
+
+    if let Some(ref endpoint) = config.server.traces_endpoint {
+        let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .with_endpoint(endpoint)
+            .build()
+            .map_err(|e| io::Error::other(format!("OTLP trace exporter: {e}")))?;
+        builder = builder.with_span_processor(
+            opentelemetry_sdk::trace::BatchSpanProcessor::builder(otlp_exporter).build(),
+        );
+        eprintln!("  {}traces push{}: {endpoint}", dim(), reset());
+    }
+
+    Ok(builder.build())
 }
 
 // ---------------------------------------------------------------------------

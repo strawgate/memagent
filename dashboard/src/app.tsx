@@ -10,6 +10,7 @@ import { ChartGrid } from "./components/ChartGrid";
 import { PipelineView } from "./components/PipelineView";
 import { ConfigView } from "./components/ConfigView";
 import { LogViewer } from "./components/LogViewer";
+import { TraceExplorer } from "./components/TraceExplorer";
 
 const POLL_MS = 2000;
 
@@ -207,6 +208,7 @@ export function App() {
         </div>
 
         <LogViewer />
+        <TraceExplorer />
 
         {pipes?.pipelines.map((p) => (
           <PipelineView key={p.name} pipeline={p} />

@@ -9,6 +9,7 @@ pub mod generator;
 pub mod input;
 pub mod metric_history;
 pub mod otlp_receiver;
+pub mod span_exporter;
 pub mod stderr_capture;
 pub mod tail;
 pub mod tcp_input;

@@ -489,3 +489,133 @@ main {
     flex-direction: column;
   }
 }
+
+/* === Trace explorer === */
+.trace-box {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.trace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--t3);
+}
+.trace-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.trace-count {
+  color: var(--t4);
+  font-size: 10px;
+  font-family: var(--mono);
+}
+.trace-body {
+  padding: 10px 14px;
+}
+.trace-legend {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 10px;
+  font-size: 10px;
+  color: var(--t3);
+}
+.trace-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.trace-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.trace-row {
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  transition: background 0.1s;
+}
+.trace-row:hover {
+  background: var(--card-hover);
+}
+.trace-row-selected {
+  border-color: var(--border);
+  background: var(--card-hover);
+}
+.trace-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+.trace-pipeline {
+  color: var(--t2);
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.trace-duration {
+  color: var(--t3);
+  font-family: var(--mono);
+}
+.trace-rows {
+  color: var(--t4);
+  font-family: var(--mono);
+}
+.trace-error-badge {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.trace-bar-track {
+  display: flex;
+  height: 8px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg);
+  gap: 1px;
+}
+.trace-segment {
+  height: 100%;
+  min-width: 1px;
+  border-radius: 1px;
+  transition: opacity 0.1s;
+}
+.trace-segment:hover {
+  opacity: 0.8;
+}
+.trace-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--t3);
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.trace-detail b {
+  color: var(--t1);
+  font-weight: 600;
+  margin-left: 2px;
+}

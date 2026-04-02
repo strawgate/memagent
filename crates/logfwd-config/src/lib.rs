@@ -243,6 +243,9 @@ pub struct ServerConfig {
     pub metrics_endpoint: Option<String>,
     /// OTLP push interval in seconds. Default: 60.
     pub metrics_interval_secs: Option<u64>,
+    /// OTLP endpoint for trace push (e.g. "http://localhost:4318").
+    /// If not set, traces are only buffered in-process for the dashboard.
+    pub traces_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

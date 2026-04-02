@@ -1,4 +1,4 @@
-import type { PipelinesResponse, StatsResponse, ConfigResponse } from "./types";
+import type { PipelinesResponse, StatsResponse, ConfigResponse, TracesResponse } from "./types";
 
 async function get<T>(url: string): Promise<T | null> {
   try {
@@ -17,4 +17,5 @@ export const api = {
   stats: () => get<StatsResponse>("/api/stats"),
   config: () => get<ConfigResponse>("/api/config"),
   history: () => get<HistoryResponse>("/api/history"),
+  traces: () => get<TracesResponse>("/api/traces"),
 };
