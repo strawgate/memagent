@@ -604,22 +604,18 @@ impl Pipeline {
         // Submit to the async worker pool. The pool worker will send an
         // AckItem back via the ack channel; the select! loop calls
         // apply_pool_ack to advance the machine and record metrics.
-        let t2 = Instant::now();
         let metadata = BatchMetadata {
             resource_attrs: Arc::clone(&self.resource_attrs),
             observed_time_ns: now_nanos(),
         };
-        self.metrics.record_batch(
-            result.num_rows() as u64,
-            scan_elapsed.as_nanos() as u64,
-            transform_elapsed.as_nanos() as u64,
-            t2.elapsed().as_nanos() as u64, // submission time (near zero)
-        );
+        let submitted_at = std::time::Instant::now();
         self.pool
             .submit(WorkItem {
+                num_rows: result.num_rows() as u64,
                 batch: result,
                 metadata,
                 tickets: sending,
+                submitted_at,
             })
             .await;
     }
@@ -629,10 +625,12 @@ impl Pipeline {
     /// Called from the `select!` loop when a pool worker finishes a batch.
     fn apply_pool_ack(&mut self, ack: AckItem) {
         if ack.success {
-            // Row count is not tracked here (it's recorded at submit time).
-            // inc_output_success tracks delivered rows; we'd need to store
-            // the row count in AckItem for accurate per-batch success metrics.
-            // For now, track success/failure at batch granularity.
+            self.metrics.record_batch(
+                ack.num_rows,
+                0, // scan/transform elapsed not available here; recorded at flush_batch
+                0,
+                ack.submitted_at.elapsed().as_nanos() as u64,
+            );
         } else {
             self.metrics.inc_dropped_batch();
             self.metrics.output_error(self.name.as_str());

@@ -60,6 +60,10 @@ pub struct WorkItem {
     pub batch: RecordBatch,
     pub metadata: BatchMetadata,
     pub tickets: Vec<BatchTicket<Sending, u64>>,
+    /// Number of rows in the batch (for metrics recording at ack time).
+    pub num_rows: u64,
+    /// When this item was submitted to the pool (set by the caller, not submit()).
+    pub submitted_at: std::time::Instant,
 }
 
 /// Result from a worker after processing one [`WorkItem`].
@@ -69,6 +73,10 @@ pub struct AckItem {
     /// `true` if the batch was successfully delivered, `false` otherwise
     /// (permanent rejection, timeout, or panic recovery).
     pub success: bool,
+    /// Passed through from WorkItem for metrics recording.
+    pub num_rows: u64,
+    /// When the corresponding WorkItem was submitted.
+    pub submitted_at: std::time::Instant,
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +138,10 @@ pub struct OutputWorkerPool {
 impl OutputWorkerPool {
     /// Create a new pool. No workers are spawned until the first `submit`.
     pub fn new(factory: Arc<dyn SinkFactory>, max_workers: usize, idle_timeout: Duration) -> Self {
-        assert!(max_workers >= 1, "max_workers must be at least 1");
+        assert!(
+            max_workers >= 1,
+            "OutputWorkerPool::new: max_workers must be >= 1, got {max_workers}"
+        );
         let (ack_tx, ack_rx) = mpsc::unbounded_channel();
         OutputWorkerPool {
             workers: VecDeque::with_capacity(max_workers),
@@ -161,7 +172,28 @@ impl OutputWorkerPool {
     ///
     /// Panics if the pool has already been drained (cancel token fired).
     pub async fn submit(&mut self, item: WorkItem) {
-        debug_assert!(!self.cancel.is_cancelled(), "submit called after drain");
+        if self.cancel.is_cancelled() {
+            // Pool has been drained — reject the item immediately rather than
+            // silently losing it. This keeps the at-least-once invariant intact
+            // even for callers that mistakenly submit after drain.
+            eprintln!("worker_pool: submit after drain — rejecting batch immediately");
+            let ticket_count = item.tickets.len();
+            if self
+                .ack_tx
+                .send(AckItem {
+                    tickets: item.tickets,
+                    success: false,
+                    num_rows: item.num_rows,
+                    submitted_at: item.submitted_at,
+                })
+                .is_err()
+            {
+                eprintln!(
+                    "worker_pool: ack channel closed, batch lost permanently (ticket_count={ticket_count})"
+                );
+            }
+            return;
+        }
 
         let mut msg = WorkerMsg::Work(item);
 
@@ -207,10 +239,21 @@ impl OutputWorkerPool {
             if let Err(mpsc::error::SendError(WorkerMsg::Work(item))) = tx.send(msg).await {
                 // Rare race: worker closed its channel between clone and send.
                 // Reject explicitly rather than silently dropping.
-                let _ = self.ack_tx.send(AckItem {
-                    tickets: item.tickets,
-                    success: false,
-                });
+                let ticket_count = item.tickets.len();
+                if self
+                    .ack_tx
+                    .send(AckItem {
+                        tickets: item.tickets,
+                        success: false,
+                        num_rows: item.num_rows,
+                        submitted_at: item.submitted_at,
+                    })
+                    .is_err()
+                {
+                    eprintln!(
+                        "worker_pool: ack channel closed, batch lost permanently (ticket_count={ticket_count})"
+                    );
+                }
             }
             return;
         }
@@ -220,10 +263,21 @@ impl OutputWorkerPool {
         // after its first worker exits). Silently dropping would lose the ack.
         if let WorkerMsg::Work(item) = msg {
             eprintln!("worker_pool: no workers available, rejecting batch");
-            let _ = self.ack_tx.send(AckItem {
-                tickets: item.tickets,
-                success: false,
-            });
+            let ticket_count = item.tickets.len();
+            if self
+                .ack_tx
+                .send(AckItem {
+                    tickets: item.tickets,
+                    success: false,
+                    num_rows: item.num_rows,
+                    submitted_at: item.submitted_at,
+                })
+                .is_err()
+            {
+                eprintln!(
+                    "worker_pool: ack channel closed, batch lost permanently (ticket_count={ticket_count})"
+                );
+            }
         }
     }
 
@@ -361,6 +415,8 @@ async fn worker_task(
                     None => break, // idle timeout or channel closed
                     Some(WorkerMsg::Shutdown) => break,
                     Some(WorkerMsg::Work(item)) => {
+                        let num_rows = item.num_rows;
+                        let submitted_at = item.submitted_at;
                         let success = process_item(
                             id, &mut *sink, item.batch.clone(), &item.metadata, max_retry_delay,
                         )
@@ -368,6 +424,8 @@ async fn worker_task(
                         let _ = ack_tx.send(AckItem {
                             tickets: item.tickets,
                             success,
+                            num_rows,
+                            submitted_at,
                         });
                     }
                 }
@@ -400,7 +458,7 @@ async fn process_item(
     metadata: &BatchMetadata,
     max_retry_delay: Duration,
 ) -> bool {
-    const MAX_ATTEMPTS: u32 = 4; // 1 initial + 3 retries
+    const MAX_RETRIES: u32 = 3; // 1 initial + 3 retries = 4 total attempts
     const BATCH_TIMEOUT_SECS: u64 = 60;
 
     let mut delay = Duration::from_millis(100);
@@ -426,8 +484,8 @@ async fn process_item(
                 return false;
             }
             Ok(Ok(SendResult::RetryAfter(retry_dur))) => {
-                if attempts >= MAX_ATTEMPTS {
-                    eprintln!("worker_pool: worker {worker_id} RetryAfter exceeded max attempts");
+                if attempts >= MAX_RETRIES {
+                    eprintln!("worker_pool: worker {worker_id} RetryAfter exceeded max retries");
                     return false;
                 }
                 let sleep_for = retry_dur.min(max_retry_delay);
@@ -435,15 +493,16 @@ async fn process_item(
                     "worker_pool: worker {worker_id} rate-limited, retrying after {sleep_for:?}"
                 );
                 tokio::time::sleep(sleep_for).await;
-                delay = (delay * 2).min(max_retry_delay);
+                // Reset delay to initial — server specified the backoff, don't compound it.
+                delay = Duration::from_millis(100);
                 attempts += 1;
             }
             // Future SendResult variants (#[non_exhaustive]) — treat as failure.
             Ok(Ok(_)) => return false,
             Ok(Err(e)) => {
-                if attempts >= MAX_ATTEMPTS {
+                if attempts >= MAX_RETRIES {
                     eprintln!(
-                        "worker_pool: worker {worker_id} gave up after {MAX_ATTEMPTS} attempts: {e}"
+                        "worker_pool: worker {worker_id} gave up after {MAX_RETRIES} retries: {e}"
                     );
                     return false;
                 }
@@ -878,6 +937,8 @@ mod tests {
             batch: make_batch(),
             metadata: make_metadata(),
             tickets: vec![],
+            num_rows: 0,
+            submitted_at: std::time::Instant::now(),
         }
     }
 

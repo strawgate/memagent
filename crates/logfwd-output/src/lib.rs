@@ -1430,3 +1430,179 @@ mod write_row_json_tests {
         assert_eq!(v1["note"], "text");
     }
 }
+
+#[cfg(test)]
+mod write_row_json_proptests {
+    use super::*;
+    use arrow::array::{Float64Array, Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use proptest::prelude::*;
+    use std::sync::Arc;
+
+    fn render_row(batch: &RecordBatch, row: usize) -> String {
+        let cols = build_col_infos(batch);
+        let mut out = Vec::new();
+        write_row_json(batch, row, &cols, &mut out).expect("write_row_json failed");
+        String::from_utf8(out).expect("output must be valid UTF-8")
+    }
+
+    proptest! {
+        /// Every output of write_row_json must be valid JSON.
+        #[test]
+        fn prop_write_row_json_always_valid_json(
+            values in prop::collection::vec(any::<Option<i64>>(), 1..20usize),
+        ) {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("count_int", DataType::Int64, true),
+            ]));
+            let arr: Int64Array = values.iter().map(|v| *v).collect();
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![Arc::new(arr)],
+            ).unwrap();
+
+            for row in 0..batch.num_rows() {
+                let json_str = render_row(&batch, row);
+                let parsed: serde_json::Value = serde_json::from_str(&json_str)
+                    .expect(&format!("row {row} must produce valid JSON, got: {json_str}"));
+                prop_assert!(parsed.is_object(), "output must be a JSON object");
+            }
+        }
+
+        /// Type-suffix stripping: _int suffix → field name without suffix.
+        #[test]
+        fn prop_int_field_name_strips_suffix(
+            raw_values in prop::collection::vec(any::<i64>(), 1..5usize),
+            // Only lowercase ASCII + underscore, no leading digit
+            field_base in "[a-z][a-z0-9_]{0,15}",
+        ) {
+            let field_name = format!("{field_base}_int");
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(&field_name, DataType::Int64, false),
+            ]));
+            let arr = Int64Array::from(raw_values.clone());
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+            for (row, &expected_val) in raw_values.iter().enumerate() {
+                let json_str = render_row(&batch, row);
+                let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+                let obj = parsed.as_object().unwrap();
+                // Normalized name must exist, raw name must NOT exist
+                prop_assert!(
+                    obj.contains_key(field_base.as_str()),
+                    "normalized field '{field_base}' must be present; got keys: {:?}",
+                    obj.keys().collect::<Vec<_>>()
+                );
+                prop_assert!(
+                    !obj.contains_key(field_name.as_str()),
+                    "raw field '{field_name}' must NOT appear in output"
+                );
+                // Value must round-trip
+                prop_assert_eq!(
+                    obj[field_base.as_str()].as_i64(),
+                    Some(expected_val),
+                    "integer value must round-trip"
+                );
+            }
+        }
+
+        /// Type-suffix stripping: _str suffix → field name without suffix.
+        #[test]
+        fn prop_str_field_name_strips_suffix(
+            raw_values in prop::collection::vec(
+                proptest::option::of("[^\n\r]{0,50}"),
+                1..5usize,
+            ),
+            field_base in "[a-z][a-z0-9_]{0,15}",
+        ) {
+            let field_name = format!("{field_base}_str");
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(&field_name, DataType::Utf8, true),
+            ]));
+            let arr: StringArray = raw_values.iter().map(|v| v.as_deref()).collect();
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+            for (row, expected_val) in raw_values.iter().enumerate() {
+                let json_str = render_row(&batch, row);
+                let parsed: serde_json::Value = serde_json::from_str(&json_str)
+                    .expect(&format!("row {row}: invalid JSON: {json_str}"));
+                let obj = parsed.as_object().unwrap();
+                prop_assert!(
+                    obj.contains_key(field_base.as_str()),
+                    "normalized field '{field_base}' must be present"
+                );
+                match expected_val {
+                    Some(s) => prop_assert_eq!(
+                        obj[field_base.as_str()].as_str(),
+                        Some(s.as_str()),
+                        "string value must round-trip"
+                    ),
+                    None => prop_assert!(
+                        obj[field_base.as_str()].is_null(),
+                        "null must serialize as JSON null"
+                    ),
+                }
+            }
+        }
+
+        /// float field round-trip: _float suffix stripped, value preserved.
+        #[test]
+        fn prop_float_field_roundtrip(
+            raw_values in prop::collection::vec(
+                // Exclude NaN and inf which don't round-trip through JSON
+                (-1e15f64..1e15f64).prop_filter("finite", |v| v.is_finite()),
+                1..5usize,
+            ),
+            field_base in "[a-z][a-z0-9_]{0,15}",
+        ) {
+            let field_name = format!("{field_base}_float");
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(&field_name, DataType::Float64, false),
+            ]));
+            let arr = Float64Array::from(raw_values.clone());
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+            for (row, &expected_val) in raw_values.iter().enumerate() {
+                let json_str = render_row(&batch, row);
+                let parsed: serde_json::Value = serde_json::from_str(&json_str)
+                    .expect(&format!("row {row}: invalid JSON: {json_str}"));
+                let obj = parsed.as_object().unwrap();
+                prop_assert!(obj.contains_key(field_base.as_str()));
+                let got = obj[field_base.as_str()].as_f64().unwrap();
+                // Allow small floating-point round-trip epsilon
+                prop_assert!(
+                    (got - expected_val).abs() <= expected_val.abs() * 1e-10 + 1e-10,
+                    "float value diverged: expected {expected_val}, got {got}"
+                );
+            }
+        }
+
+        /// No internal newlines in JSON document output (bulk format requires single-line docs).
+        #[test]
+        fn prop_no_internal_newlines(
+            // Include values with embedded newlines to ensure they're escaped
+            values in prop::collection::vec(
+                proptest::option::of(".*"),
+                1..10usize,
+            ),
+        ) {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("msg_str", DataType::Utf8, true),
+            ]));
+            let arr: StringArray = values.iter().map(|v| v.as_deref()).collect();
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+            let cols = build_col_infos(&batch);
+            let mut out = Vec::new();
+            for row in 0..batch.num_rows() {
+                out.clear();
+                write_row_json(&batch, row, &cols, &mut out).unwrap();
+                let s = String::from_utf8(out.clone()).unwrap();
+                prop_assert!(
+                    !s.contains('\n') && !s.contains('\r'),
+                    "row {row}: JSON output must not contain unescaped newlines, got: {s:?}"
+                );
+            }
+        }
+    }
+}

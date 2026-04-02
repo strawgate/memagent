@@ -62,18 +62,35 @@ type StreamMap = HashMap<String, Vec<LokiEntry>>;
 /// Loki rejects any push where `entries[i].timestamp <= entries[i-1].timestamp`
 /// within the same stream. We fix this by sorting then nudging duplicates up by 1 ns.
 ///
+/// # Overflow behaviour
+///
+/// If `entries[i-1].0 == u64::MAX`, there is no valid strictly-larger timestamp to
+/// assign. In that case all remaining entries from index `i` onward are truncated.
+/// This is an extremely rare edge case (requires nanosecond-resolution timestamps at
+/// or beyond the year 2554, or a malformed batch), so silent truncation is acceptable.
+///
 /// # Invariant (tested with proptest)
 ///
 /// After calling this function, `entries[i].0 > entries[i-1].0` for all `i > 0`.
-pub fn sort_and_dedup_timestamps(entries: &mut [LokiEntry]) {
+pub fn sort_and_dedup_timestamps(entries: &mut Vec<LokiEntry>) {
     if entries.len() <= 1 {
         return;
     }
     entries.sort_unstable_by_key(|(ts, _)| *ts);
-    for i in 1..entries.len() {
+    let mut i = 1;
+    while i < entries.len() {
         if entries[i].0 <= entries[i - 1].0 {
-            entries[i].0 = entries[i - 1].0 + 1;
+            match entries[i - 1].0.checked_add(1) {
+                Some(next) => entries[i].0 = next,
+                None => {
+                    // Overflow: cannot assign a timestamp beyond u64::MAX.
+                    // Drop all remaining entries — they cannot be given unique timestamps.
+                    entries.truncate(i);
+                    break;
+                }
+            }
         }
+        i += 1;
     }
 }
 
@@ -558,6 +575,57 @@ mod tests {
         sort_and_dedup_timestamps(&mut entries);
         assert!(entries.is_empty());
     }
+
+    #[test]
+    fn sort_dedup_overflow_truncates_at_u64_max() {
+        // Entry at u64::MAX cannot be given a successor — subsequent entries must be dropped.
+        let mut entries: Vec<LokiEntry> = vec![
+            (u64::MAX, "at max".into()),
+            (u64::MAX, "also at max".into()),
+            (u64::MAX, "third at max".into()),
+        ];
+        sort_and_dedup_timestamps(&mut entries);
+        // First entry stays; remaining entries cannot be assigned a valid timestamp.
+        assert_eq!(
+            entries.len(),
+            1,
+            "entries beyond u64::MAX must be truncated"
+        );
+        assert_eq!(entries[0].0, u64::MAX);
+    }
+
+    #[test]
+    fn stream_key_encoding_roundtrip_with_special_chars() {
+        // These characters were lossy in the old k=v,... format.
+        let labels = vec![
+            ("env".to_string(), "prod=us-east,eu-west".to_string()),
+            ("app".to_string(), r#"my"app"#.to_string()),
+            ("path".to_string(), r"C:\Users\log".to_string()),
+            ("normal".to_string(), "value".to_string()),
+        ];
+
+        // Encode to stream key (same logic as build_stream_map).
+        let stream_key = {
+            let pairs: Vec<String> = labels
+                .iter()
+                .map(|(k, v)| format!("[\"{}\",\"{}\"]", escape_json(k), escape_json(v)))
+                .collect();
+            format!("[{}]", pairs.join(","))
+        };
+
+        // Parse back (same logic as serialize_loki_json).
+        let parsed: Vec<[String; 2]> =
+            serde_json::from_str(&stream_key).expect("stream_key must be valid JSON array");
+
+        assert_eq!(parsed.len(), labels.len(), "label count must be preserved");
+        for (i, [k, v]) in parsed.iter().enumerate() {
+            assert_eq!(k, &labels[i].0, "key {i} must round-trip");
+            assert_eq!(
+                v, &labels[i].1,
+                "value {i} must round-trip through JSON encoding"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -591,10 +659,11 @@ mod proptest_loki {
             }
         }
 
-        /// sort_and_dedup never changes the number of entries.
+        /// sort_and_dedup never changes the number of entries when all timestamps
+        /// are far enough from u64::MAX that nudging cannot overflow.
         #[test]
         fn prop_entry_count_preserved(
-            raw_timestamps in proptest::collection::vec(0u64..u64::MAX, 0..50)
+            raw_timestamps in proptest::collection::vec(0u64..u64::MAX - 10000, 0..50)
         ) {
             let original_len = raw_timestamps.len();
             let mut entries: Vec<LokiEntry> = raw_timestamps
@@ -604,6 +673,35 @@ mod proptest_loki {
                 .collect();
             sort_and_dedup_timestamps(&mut entries);
             prop_assert_eq!(entries.len(), original_len);
+        }
+
+        /// When all entries have the same timestamp, they must be assigned consecutive
+        /// timestamps starting at the original value. This is the "minimal displacement"
+        /// invariant: we perturb timestamps by the smallest amount that makes them unique.
+        #[test]
+        fn prop_minimal_displacement_on_duplicates(
+            base_ts in 0u64..u64::MAX - 10000,
+            count in 1usize..100,
+        ) {
+            let mut entries: Vec<LokiEntry> = (0..count)
+                .map(|i| (base_ts, format!("line {i}")))
+                .collect();
+
+            sort_and_dedup_timestamps(&mut entries);
+
+            // All entries must have been preserved (no overflow possible since
+            // base_ts + count - 1 <= u64::MAX - 10000 + 99 < u64::MAX).
+            prop_assert_eq!(entries.len(), count, "entries must not be dropped for non-overflow case");
+
+            // Must be strictly monotonic starting at base_ts.
+            for (i, (ts, _)) in entries.iter().enumerate() {
+                prop_assert_eq!(
+                    *ts,
+                    base_ts + i as u64,
+                    "Minimal displacement violated at index {}: expected {}, got {}",
+                    i, base_ts + i as u64, ts
+                );
+            }
         }
     }
 }

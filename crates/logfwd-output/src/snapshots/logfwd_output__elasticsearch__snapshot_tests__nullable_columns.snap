@@ -1,0 +1,10 @@
+---
+source: crates/logfwd-output/src/elasticsearch.rs
+expression: output
+---
+{"index":{"_index":"test-index"}}
+{"msg":"hello","code":1}
+{"index":{"_index":"test-index"}}
+{"msg":null,"code":2}
+{"index":{"_index":"test-index"}}
+{"msg":"world","code":null}

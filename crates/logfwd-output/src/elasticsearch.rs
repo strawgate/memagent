@@ -401,7 +401,12 @@ impl ElasticsearchAsyncSink {
                 // Replace trailing `}\n` with `,"@timestamp":"..."}` + `\n`.
                 let len = self.batch_buf.len();
                 // Remove the trailing `}\n` (2 bytes).
-                debug_assert!(self.batch_buf.ends_with(b"}\n"), "JSON must end with }}\\n");
+                if !self.batch_buf.ends_with(b"}\n") {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "serialize_batch: JSON document did not end with '}\\n' — internal invariant violated",
+                    ));
+                }
                 let trim_to = len - 2;
                 // For the first field (empty doc `{}`), emit `{"@timestamp":"..."}`
                 if trim_to == doc_start + 1 {
@@ -537,7 +542,7 @@ impl super::sink::Sink for ElasticsearchAsyncSink {
             if self.batch_buf.is_empty() {
                 return Ok(super::sink::SendResult::Ok);
             }
-            let body = self.batch_buf.clone();
+            let body = std::mem::replace(&mut self.batch_buf, Vec::with_capacity(64 * 1024));
             let byte_len = body.len();
             let row_count = batch.num_rows() as u64;
             let result = self.do_send(body).await?;
@@ -952,6 +957,133 @@ mod tests {
         let response = br#"{"took":1,"errors":false,"items":[{"index":{"_id":"1","status":200}}]}"#;
         sink.parse_bulk_response(response)
             .expect("errors:false must succeed");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot tests (insta)
+// ---------------------------------------------------------------------------
+//
+// NOTE: Snapshot files are auto-generated on the first run via `cargo insta test`.
+// Until then, the tests will fail with "snapshot not found" — run:
+//   cargo insta test --review
+// to accept the initial snapshots.
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use arrow::array::{Float64Array, Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use std::sync::Arc;
+
+    fn make_stats() -> Arc<logfwd_io::diagnostics::ComponentStats> {
+        Arc::new(logfwd_io::diagnostics::ComponentStats::default())
+    }
+
+    fn make_sync_sink() -> ElasticsearchSink {
+        ElasticsearchSink::new(
+            "test".to_string(),
+            "http://localhost:9200".to_string(),
+            "test-index".to_string(),
+            vec![],
+            make_stats(),
+        )
+    }
+
+    /// Snapshot: basic multi-type batch (level_str, status_int, duration_float).
+    /// Regression guard: field name normalization + type serialization.
+    #[test]
+    fn snapshot_basic_multi_type_batch() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level_str", DataType::Utf8, false),
+            Field::new("status_int", DataType::Int64, false),
+            Field::new("duration_ms_float", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["ERROR", "INFO", "WARN"])),
+                Arc::new(Int64Array::from(vec![500i64, 200, 404])),
+                Arc::new(Float64Array::from(vec![125.5f64, 3.2, 87.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = make_sync_sink();
+        sink.serialize_batch(&batch).unwrap();
+        let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
+        insta::assert_snapshot!("basic_multi_type", output);
+    }
+
+    /// Snapshot: nullable columns — null values must appear as JSON null.
+    #[test]
+    fn snapshot_nullable_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("msg_str", DataType::Utf8, true),
+            Field::new("code_int", DataType::Int64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("hello"), None, Some("world")])),
+                Arc::new(Int64Array::from(vec![Some(1i64), Some(2), None])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = make_sync_sink();
+        sink.serialize_batch(&batch).unwrap();
+        let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
+        insta::assert_snapshot!("nullable_columns", output);
+    }
+
+    /// Snapshot: strings with special JSON characters (quotes, backslash, newlines).
+    /// Regression guard: escape_json correctness.
+    #[test]
+    fn snapshot_special_char_strings() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "msg_str",
+            DataType::Utf8,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![
+                r#"say "hello" world"#,
+                "line1\nline2\ttab",
+                r"back\slash",
+                "control\x00char",
+            ]))],
+        )
+        .unwrap();
+
+        let mut sink = make_sync_sink();
+        sink.serialize_batch(&batch).unwrap();
+        let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
+        insta::assert_snapshot!("special_char_strings", output);
+    }
+
+    /// Snapshot: single row with all-null nullable fields produces valid output.
+    #[test]
+    fn snapshot_all_null_fields() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("msg_str", DataType::Utf8, true),
+            Field::new("code_int", DataType::Int64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![None as Option<&str>])),
+                Arc::new(Int64Array::from(vec![None as Option<i64>])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = make_sync_sink();
+        sink.serialize_batch(&batch).unwrap();
+        let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
+        insta::assert_snapshot!("all_null_fields", output);
     }
 }
 
