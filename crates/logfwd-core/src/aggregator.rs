@@ -300,7 +300,7 @@ mod verification {
                 // Guard vacuity: verify 3-part aggregation works
                 kani::cover!(out.len() > 16, "multi-partial concatenation");
                 kani::cover!(out.len() == max_size, "truncation at limit");
-                kani::cover!(out.len() < 24, "all parts fit");
+                kani::cover!(out.len() == 24, "all parts fit");
             }
             AggregateResult::Pending => panic!("F line should produce Complete"),
         }
