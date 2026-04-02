@@ -600,11 +600,18 @@ mod verification {
 
     /// Prove write_json_line with prefix correctly injects after opening brace,
     /// and wraps non-JSON messages as {"_raw":"..."}.
+    ///
+    /// Vec::with_capacity pre-allocates enough for the worst case (8-byte input
+    /// all control chars → 60-byte escaped output) so CBMC sees only one
+    /// allocation path rather than the 7 realloc steps of Vec::new().
     #[kani::proof]
+    #[kani::unwind(10)]
     fn verify_write_json_line_prefix_injection() {
         let msg: [u8; 8] = kani::any();
         let prefix: [u8; 4] = kani::any();
-        let mut out = Vec::new();
+        // Pre-allocate: { (1) + prefix (4) + msg[1..] (7) + \n (1) = 13 bytes JSON path;
+        // or {"_raw":"..."} path up to 64 bytes. Capacity 64 avoids all reallocs.
+        let mut out = Vec::with_capacity(64);
 
         write_json_line(&msg, Some(&prefix), &mut out);
 
@@ -624,11 +631,16 @@ mod verification {
     }
 
     /// Prove write_json_line without prefix passes JSON through and wraps plain text.
+    ///
+    /// unwind(10) covers the 8-iteration json_escape_bytes loop with margin.
+    /// Vec::with_capacity(64) pre-allocates for the worst-case 60-byte output
+    /// (8 control chars × 6 bytes each + prefix/suffix), eliminating the 7
+    /// Vec realloc paths (0→1→2→4→8→16→32→64) that caused the 28-minute timeout.
     #[kani::proof]
-    #[kani::unwind(60)]
+    #[kani::unwind(10)]
     fn verify_write_json_line_no_prefix() {
         let msg: [u8; 8] = kani::any();
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(64);
 
         write_json_line(&msg, None, &mut out);
 

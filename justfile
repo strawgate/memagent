@@ -248,17 +248,21 @@ install-tools:
     @echo "Optional: cargo install cargo-nextest inferno"
     @echo "Install just: https://just.systems/man/en/installation.html"
 
-# Set up git pre-commit hook
+# Set up git pre-commit hook (works from any worktree)
 install-hooks:
-    @echo '#!/bin/sh' > .git/hooks/pre-commit
-    @echo 'set -e' >> .git/hooks/pre-commit
-    @echo 'cargo fmt --check' >> .git/hooks/pre-commit
-    @echo 'cargo clippy -- -D warnings' >> .git/hooks/pre-commit
-    @chmod +x .git/hooks/pre-commit
-    @echo "Pre-commit hook installed (.git/hooks/pre-commit)"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    HOOKS_DIR=$(git rev-parse --git-common-dir)/hooks
+    mkdir -p "$HOOKS_DIR"
+    printf '#!/bin/sh\nset -e\nRUSTC_WRAPPER="" cargo fmt --check\nRUSTC_WRAPPER="" cargo clippy -- -D warnings\n' \
+        > "$HOOKS_DIR/pre-commit"
+    chmod +x "$HOOKS_DIR/pre-commit"
+    echo "Pre-commit hook installed ($HOOKS_DIR/pre-commit)"
 
 # Remove git pre-commit hook
 uninstall-hooks:
-    @rm -f .git/hooks/pre-commit
-    @echo "Pre-commit hook removed"
+    #!/usr/bin/env bash
+    HOOKS_DIR=$(git rev-parse --git-common-dir)/hooks
+    rm -f "$HOOKS_DIR/pre-commit"
+    echo "Pre-commit hook removed"
 
