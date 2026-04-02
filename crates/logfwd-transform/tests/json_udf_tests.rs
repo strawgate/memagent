@@ -74,13 +74,18 @@ fn make_ctx(batch: RecordBatch) -> SessionContext {
     ctx
 }
 
-/// Run SQL and collect the first (and usually only) result batch.
+/// Run SQL and collect all result batches, concatenating them into one.
 /// Returns `None` when the result set is empty (0 batches or only empty batches).
 async fn query(sql: &str, batch: RecordBatch) -> Option<RecordBatch> {
     let ctx = make_ctx(batch);
     let df = ctx.sql(sql).await.unwrap();
     let batches = df.collect().await.unwrap();
-    batches.into_iter().find(|b| b.num_rows() > 0)
+    let non_empty: Vec<RecordBatch> = batches.into_iter().filter(|b| b.num_rows() > 0).collect();
+    if non_empty.is_empty() {
+        return None;
+    }
+    let schema = non_empty[0].schema();
+    Some(arrow::compute::concat_batches(&schema, &non_empty).expect("concat batches"))
 }
 
 /// Convenience: run SQL expecting exactly one non-empty batch.
@@ -273,9 +278,10 @@ async fn null_raw_row_causes_scanner_mismatch() {
         .await;
 
     // Document the current behaviour: this errors due to row count mismatch.
+    let err = result.expect_err("NULL _raw rows must cause a scanner row-count mismatch error");
     assert!(
-        result.is_err(),
-        "NULL _raw rows currently cause a scanner row-count mismatch error"
+        err.to_string().contains("scanner row count mismatch"),
+        "expected 'scanner row count mismatch' in error, got: {err}"
     );
 }
 
@@ -789,9 +795,10 @@ async fn mixed_valid_invalid_null_rows_errors() {
         .unwrap()
         .collect()
         .await;
+    let err = result.expect_err("NULL _raw rows must cause a scanner row-count mismatch error");
     assert!(
-        result.is_err(),
-        "NULL _raw rows currently cause a scanner row-count mismatch error"
+        err.to_string().contains("scanner row count mismatch"),
+        "expected 'scanner row count mismatch' in error, got: {err}"
     );
 }
 

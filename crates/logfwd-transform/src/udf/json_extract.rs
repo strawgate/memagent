@@ -57,12 +57,14 @@ impl JsonExtractMode {
     }
 
     /// Column-name suffixes to try, in preference order, when looking up the
-    /// scanner output for this mode.
+    /// scanner output for this mode. The scanner always emits type-suffixed
+    /// column names (`_str`, `_int`, `_float`), so bare-name (`""`) entries
+    /// are omitted — they would never match any scanner output.
     fn suffix_order(self) -> &'static [&'static str] {
         match self {
-            Self::Str => &["_str", "", "_int", "_float"],
-            Self::Int => &["_int", ""],
-            Self::Float => &["_float", "_int", ""],
+            Self::Str => &["_str", "_int", "_float"],
+            Self::Int => &["_int"],
+            Self::Float => &["_float", "_int"],
         }
     }
 }
@@ -73,6 +75,17 @@ impl JsonExtractMode {
 
 /// Reconstruct an NDJSON buffer from `raw_array`, run the scanner for
 /// `field_name`, and return the resulting [`RecordBatch`].
+///
+/// # NULL handling limitation
+///
+/// When `raw_array` contains NULL entries, this function emits an empty line
+/// for each NULL (a bare `\n`) before calling the scanner. The scanner skips
+/// empty lines and therefore produces fewer output rows than the length of
+/// `raw_array`. The row-count check at the end of this function will catch
+/// that mismatch and return a `DataFusionError::Execution` containing the
+/// text `"scanner row count mismatch"`. This is a known limitation: callers
+/// (and tests) that need to handle NULL `_raw` rows must either pre-filter
+/// NULLs or treat the resulting error as expected.
 fn parse_raw(raw_array: &StringArray, field_name: &str) -> Result<RecordBatch, DataFusionError> {
     let mut buf = Vec::with_capacity(raw_array.len() * 128);
     for i in 0..raw_array.len() {
@@ -231,7 +244,10 @@ impl ScalarUDFImpl for JsonExtractUdf {
                     } else {
                         // Try parsing strings as i64; unparseable → null.
                         let str_arr = arrow::compute::cast(&arr, &DataType::Utf8)?;
-                        let str_arr = str_arr.as_any().downcast_ref::<StringArray>().unwrap();
+                        let str_arr = str_arr
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .expect("cast to Utf8 must yield StringArray in Int path");
                         let mut builder = Int64Builder::with_capacity(str_arr.len());
                         for i in 0..str_arr.len() {
                             if str_arr.is_null(i) {
@@ -253,7 +269,10 @@ impl ScalarUDFImpl for JsonExtractUdf {
                         arrow::compute::cast(&arr, &DataType::Float64)?
                     } else {
                         let str_arr = arrow::compute::cast(&arr, &DataType::Utf8)?;
-                        let str_arr = str_arr.as_any().downcast_ref::<StringArray>().unwrap();
+                        let str_arr = str_arr
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .expect("cast to Utf8 must yield StringArray in Float path");
                         let mut builder = Float64Builder::with_capacity(str_arr.len());
                         for i in 0..str_arr.len() {
                             if str_arr.is_null(i) {

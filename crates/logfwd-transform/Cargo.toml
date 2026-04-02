@@ -22,8 +22,6 @@ logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 bytes = "1"
 
-[dev-dependencies]
-bytes = "1"
 
 [lints]
 workspace = true
