@@ -81,7 +81,7 @@ impl OtlpSink {
             headers,
             encoder_buf: Vec::with_capacity(64 * 1024),
             compress_buf: Vec::with_capacity(64 * 1024),
-            grpc_buf: Vec::new(),
+            grpc_buf: Vec::with_capacity(64 * 1024),
             compressor,
             http_agent,
             stats,
@@ -209,9 +209,15 @@ impl OutputSink for OtlpSink {
         // gRPC wire protocol. Note: ureq uses HTTP/1.1; a true gRPC endpoint requires
         // HTTP/2. Use a reverse proxy (e.g. Envoy) or `protocol: http` when the
         // collector does not accept HTTP/1.1 upgrades.
-        let compressed = self.compression == Compression::Zstd;
+        //
+        // The compressed flag reflects whether this specific payload is compressed
+        // (i.e. Zstd was configured AND the compressor is present). If the compressor
+        // was not initialized for some reason, the payload falls back to uncompressed
+        // and the flag must be 0x00.
+        let payload_is_compressed =
+            self.compression == Compression::Zstd && self.compressor.is_some();
         let payload: &[u8] = if self.protocol == OtlpProtocol::Grpc {
-            write_grpc_frame(&mut self.grpc_buf, payload, compressed);
+            write_grpc_frame(&mut self.grpc_buf, payload, payload_is_compressed);
             &self.grpc_buf
         } else {
             payload
@@ -228,7 +234,7 @@ impl OutputSink for OtlpSink {
                 req = req.header(k.as_str(), v.as_str());
             }
             req = req.header("Content-Type", content_type);
-            if self.compression == Compression::Zstd {
+            if payload_is_compressed {
                 req = req.header("Content-Encoding", "zstd");
             }
             req
@@ -606,7 +612,11 @@ fn encode_key_value_bool(buf: &mut Vec<u8>, key: &[u8], value: bool) {
 fn write_grpc_frame(buf: &mut Vec<u8>, payload: &[u8], compressed: bool) {
     buf.clear();
     buf.push(u8::from(compressed));
-    buf.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    buf.extend_from_slice(
+        &u32::try_from(payload.len())
+            .expect("gRPC message payload must be < 4 GiB")
+            .to_be_bytes(),
+    );
     buf.extend_from_slice(payload);
 }
 
@@ -809,6 +819,49 @@ mod tests {
         let mut framed = Vec::new();
         write_grpc_frame(&mut framed, &proto_payload, true);
         assert_eq!(framed[0], 0x01, "compressed flag must be 0x01");
+    }
+
+    /// Verify that `encode_batch` + `write_grpc_frame` produce a valid 5-byte gRPC frame header
+    /// followed by the exact protobuf payload. Tests the encode-and-frame path directly without
+    /// making a real network call.
+    #[test]
+    fn encode_and_frame_payload() {
+        let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
+        let arr = StringArray::from(vec!["hello"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        // Encode the batch the same way send_batch would, then frame it manually.
+        let mut sink = OtlpSink::new(
+            "test".into(),
+            "http://localhost:4318".into(),
+            OtlpProtocol::Grpc,
+            Compression::None,
+            vec![],
+            Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
+        );
+        sink.encode_batch(&batch, &make_metadata());
+        let proto_payload = sink.encoder_buf.clone();
+
+        // Frame as send_batch would.
+        let mut framed = Vec::new();
+        write_grpc_frame(&mut framed, &proto_payload, false);
+
+        // The frame header must be 5 bytes followed by the exact protobuf payload.
+        assert_eq!(
+            framed[0], 0x00,
+            "compressed flag must be 0x00 for uncompressed gRPC"
+        );
+        let msg_len = u32::from_be_bytes(framed[1..5].try_into().unwrap());
+        assert_eq!(
+            msg_len as usize,
+            proto_payload.len(),
+            "gRPC length field must match protobuf payload length"
+        );
+        assert_eq!(
+            &framed[5..],
+            proto_payload.as_slice(),
+            "protobuf payload must follow the frame header"
+        );
     }
 
     #[test]
