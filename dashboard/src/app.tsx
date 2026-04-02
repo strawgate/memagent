@@ -44,7 +44,6 @@ const HISTORY_MAP: Record<string, { series: string; mode: "gauge" | "counter" }>
   input_lines: { series: "lps", mode: "counter" },
   input_bytes: { series: "bps", mode: "counter" },
   output_errors: { series: "err", mode: "counter" },
-  cpu_user_ms: { series: "cpu", mode: "counter" },
   mem_allocated: { series: "mem", mode: "gauge" },
 };
 
@@ -92,6 +91,29 @@ export function App() {
           }
         }
       }
+      // CPU: sum cpu_user_ms + cpu_sys_ms deltas to match live path.
+      const cpuUser = hist["cpu_user_ms"];
+      const cpuSys = hist["cpu_sys_ms"];
+      if (cpuUser && cpuSys && cpuUser.length >= 2 && cpuSys.length >= 2) {
+        const cpuS = series.find((s) => s.id === "cpu");
+        if (cpuS) {
+          // Build a map from time → value for cpuSys for quick lookup.
+          const sysMap = new Map<number, number>(cpuSys.map(([t, v]) => [t, v]));
+          const latestT = cpuUser[cpuUser.length - 1][0];
+          for (let i = 1; i < cpuUser.length; i++) {
+            const dt = cpuUser[i][0] - cpuUser[i - 1][0];
+            if (dt <= 0) continue;
+            const prevSys = sysMap.get(cpuUser[i - 1][0]);
+            const curSys = sysMap.get(cpuUser[i][0]);
+            if (prevSys == null || curSys == null) continue;
+            const totalMs = (cpuUser[i][1] - cpuUser[i - 1][1]) + (curSys - prevSys);
+            let rate = totalMs / dt / 10; // ms/s → %
+            if (rate < 0) rate = 0;
+            cpuS.ring.pushRaw(now - (latestT - cpuUser[i][0]) * 1000, rate);
+          }
+        }
+      }
+
       forceUpdate((n) => n + 1);
     });
   }, []);
