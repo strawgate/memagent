@@ -793,8 +793,7 @@ mod tests {
     #[test]
     fn returns_429_when_channel_full_not_200() {
         // Use a tiny channel so it fills up after 2 sends.
-        let mut receiver =
-            OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 2).unwrap();
+        let mut receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 2).unwrap();
         let addr = receiver.local_addr();
         let url = format!("http://{addr}/v1/logs");
 
