@@ -726,7 +726,11 @@ mod tests {
     #[test]
     fn encode_boolean_as_attribute() {
         use arrow::array::BooleanArray;
-        let schema = Arc::new(Schema::new(vec![Field::new("active", DataType::Boolean, true)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "active",
+            DataType::Boolean,
+            true,
+        )]));
         let arr = BooleanArray::from(vec![Some(true)]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
 

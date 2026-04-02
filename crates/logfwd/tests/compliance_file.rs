@@ -145,7 +145,7 @@ fn compliance_file_rotate_create() {
 /// NOTE: copytruncate has a known race condition where data written between
 /// the copy and the truncate can be lost. This test may fail in CI.
 #[test]
-#[ignore] // Known issue: copytruncate can lose data between copy and truncate
+#[ignore = "Known issue: copytruncate can lose data between copy and truncate"]
 fn compliance_file_rotate_copytruncate() {
     let dir = tempfile::tempdir().unwrap();
     let log_path = dir.path().join("test.log");

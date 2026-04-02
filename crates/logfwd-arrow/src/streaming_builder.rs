@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_basic_string_and_int() {
-        let json = br#"not used directly"#;
+        let json = br"not used directly";
         let buf = bytes::Bytes::from(json.to_vec());
         let mut b = StreamingBuilder::new();
         b.begin_batch(buf.clone());

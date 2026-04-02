@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn simple_config() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/pods/**/*.log
@@ -592,7 +592,7 @@ server:
 
 storage:
   data_dir: /var/lib/logfwd
-"#;
+";
         let cfg = Config::load_str(yaml).expect("should parse simple config");
         assert_eq!(cfg.pipelines.len(), 1);
         let pipe = &cfg.pipelines["default"];
@@ -615,7 +615,7 @@ storage:
 
     #[test]
     fn advanced_config() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   app_logs:
     inputs:
@@ -642,7 +642,7 @@ pipelines:
 server:
   diagnostics: 0.0.0.0:9090
   log_level: info
-"#;
+";
         let cfg = Config::load_str(yaml).expect("should parse advanced config");
         assert_eq!(cfg.pipelines.len(), 1);
         let pipe = &cfg.pipelines["app_logs"];
@@ -660,14 +660,14 @@ server:
         // SAFETY: this test is not run concurrently with other tests that
         // depend on the same environment variable.
         unsafe { std::env::set_var("LOGFWD_TEST_ENDPOINT", "http://my-collector:4317") };
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/test.log
 output:
   type: otlp
   endpoint: ${LOGFWD_TEST_ENDPOINT}
-"#;
+";
         let cfg = Config::load_str(yaml).expect("env var substitution");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(
@@ -679,14 +679,14 @@ output:
 
     #[test]
     fn unset_env_var_preserved() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/test.log
 output:
   type: otlp
   endpoint: ${LOGFWD_NONEXISTENT_VAR_12345}
-"#;
+";
         let cfg = Config::load_str(yaml).expect("unset env preserved");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(
@@ -705,12 +705,12 @@ output:
 
     #[test]
     fn validation_missing_input_path() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
 output:
   type: stdout
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("path"), "expected 'path' in error: {msg}");
@@ -718,13 +718,13 @@ output:
 
     #[test]
     fn validation_missing_output_endpoint() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/test.log
 output:
   type: otlp
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -735,7 +735,7 @@ output:
 
     #[test]
     fn validation_otlp_gzip_not_implemented() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/test.log
@@ -743,7 +743,7 @@ output:
   type: otlp
   endpoint: http://collector:4318
   compression: gzip
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("gzip"), "expected 'gzip' in error: {msg}");
@@ -755,12 +755,12 @@ output:
 
     #[test]
     fn validation_udp_requires_listen() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: udp
 output:
   type: stdout
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
@@ -768,7 +768,7 @@ output:
 
     #[test]
     fn validation_mixed_simple_and_pipelines() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /tmp/x.log
@@ -781,7 +781,7 @@ pipelines:
         path: /tmp/y.log
     outputs:
       - type: stdout
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("mix"), "expected 'mix' in error: {msg}");
@@ -789,10 +789,10 @@ pipelines:
 
     #[test]
     fn validation_no_pipelines() {
-        let yaml = r#"
+        let yaml = r"
 server:
   log_level: info
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -803,13 +803,13 @@ server:
 
     #[test]
     fn file_out_requires_path() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/test.log
 output:
   type: file_out
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("path"), "expected 'path' in error: {msg}");
@@ -926,11 +926,11 @@ output:
         let auth = pipe.outputs[0].auth.as_ref().expect("auth present");
         assert_eq!(auth.bearer_token, None);
         assert_eq!(
-            auth.headers.get("X-API-Key").map(|s| s.as_str()),
+            auth.headers.get("X-API-Key").map(String::as_str),
             Some("supersecret")
         );
         assert_eq!(
-            auth.headers.get("X-Tenant").map(|s| s.as_str()),
+            auth.headers.get("X-Tenant").map(String::as_str),
             Some("acme")
         );
     }
@@ -958,14 +958,14 @@ output:
 
     #[test]
     fn auth_absent_is_none() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/test.log
 output:
   type: http
   endpoint: http://localhost:9200
-"#;
+";
         let cfg = Config::load_str(yaml).expect("no auth");
         let pipe = &cfg.pipelines["default"];
         assert!(pipe.outputs[0].auth.is_none());
@@ -1012,14 +1012,14 @@ output:
     fn validation_endpoint_unexpanded_env_var_skipped() {
         // An endpoint whose value is still an unexpanded placeholder must not
         // fail URL validation — the user may supply the value at runtime.
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/test.log
 output:
   type: otlp
   endpoint: ${LOGFWD_NONEXISTENT_ENDPOINT_VAR}
-"#;
+";
         // Should succeed (unexpanded placeholder passes through without error).
         Config::load_str(yaml).expect("unexpanded env var in endpoint should not fail validation");
     }
@@ -1062,7 +1062,7 @@ resource_attrs:
 
     #[test]
     fn resource_attrs_advanced_form() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   app_logs:
     resource_attrs:
@@ -1074,7 +1074,7 @@ pipelines:
     outputs:
       - type: otlp
         endpoint: http://otel-collector:4317
-"#;
+";
         let cfg = Config::load_str(yaml).expect("should parse advanced config with resource_attrs");
         let pipe = &cfg.pipelines["app_logs"];
         assert_eq!(
@@ -1091,14 +1091,14 @@ pipelines:
 
     #[test]
     fn resource_attrs_absent_is_empty() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/app.log
 output:
   type: otlp
   endpoint: http://otel-collector:4317
-"#;
+";
         let cfg = Config::load_str(yaml).expect("should parse config without resource_attrs");
         let pipe = &cfg.pipelines["default"];
         assert!(pipe.resource_attrs.is_empty());

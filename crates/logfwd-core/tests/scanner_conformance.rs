@@ -84,7 +84,7 @@ fn assert_values_correct(input: &[u8]) {
 
         // Check each field from the sonic-rs parse
         let mut seen_keys = std::collections::HashSet::new();
-        for (key_str, val) in obj.iter() {
+        for (key_str, val) in obj {
             // Skip duplicate keys (first-writer-wins in our scanner)
             if !seen_keys.insert(key_str.to_string()) {
                 continue;
@@ -135,8 +135,7 @@ fn assert_values_correct(input: &[u8]) {
                 {
                     let actual = arr.value(row);
                     assert!(
-                        actual == expected
-                            || (actual - expected).abs() < 1e-6
+                        (actual - expected).abs() < 1e-6
                             || (actual.is_nan() && expected.is_nan()),
                         "Float value mismatch at {col_name}[{row}]: expected={expected}, actual={actual}.\nInput: {:?}",
                         String::from_utf8_lossy(line)

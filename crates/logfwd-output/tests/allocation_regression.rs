@@ -66,20 +66,20 @@ fn write_row_json_stable_across_batches() {
     let mut buf = Vec::with_capacity(4096);
 
     for row in 0..batch.num_rows() {
-        write_row_json(&batch, row, &cols, &mut buf);
+        let _ = write_row_json(&batch, row, &cols, &mut buf);
     }
     buf.clear();
 
-    let reg1 = Region::new(&GLOBAL);
+    let reg1 = Region::new(GLOBAL);
     for row in 0..batch.num_rows() {
-        write_row_json(&batch, row, &cols, &mut buf);
+        let _ = write_row_json(&batch, row, &cols, &mut buf);
     }
     let stats1 = reg1.change();
     buf.clear();
 
-    let reg2 = Region::new(&GLOBAL);
+    let reg2 = Region::new(GLOBAL);
     for row in 0..batch.num_rows() {
-        write_row_json(&batch, row, &cols, &mut buf);
+        let _ = write_row_json(&batch, row, &cols, &mut buf);
     }
     let stats2 = reg2.change();
 
@@ -115,13 +115,13 @@ fn otlp_encode_stable_across_batches() {
         sink.encode_batch(&batch, &meta);
     }
 
-    let reg1 = Region::new(&GLOBAL);
+    let reg1 = Region::new(GLOBAL);
     for _ in 0..5 {
         sink.encode_batch(&batch, &meta);
     }
     let stats1 = reg1.change();
 
-    let reg2 = Region::new(&GLOBAL);
+    let reg2 = Region::new(GLOBAL);
     for _ in 0..5 {
         sink.encode_batch(&batch, &meta);
     }

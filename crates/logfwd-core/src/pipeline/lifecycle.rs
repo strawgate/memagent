@@ -898,7 +898,7 @@ mod proptests {
             }
 
             // in_flight_count matches our tracking
-            let our_count: usize = sending.values().map(|v| v.len()).sum();
+            let our_count: usize = sending.values().map(Vec::len).sum();
             prop_assert_eq!(running.in_flight_count(), our_count);
         }
 
@@ -917,8 +917,8 @@ mod proptests {
             let src = SourceId(0);
 
             let mut tickets = alloc::vec::Vec::new();
-            for i in 0..n {
-                let t = running.create_batch(src, checkpoints[i]);
+            for checkpoint in checkpoints.iter().take(n) {
+                let t = running.create_batch(src, *checkpoint);
                 tickets.push(running.begin_send(t));
             }
             let expected_final = checkpoints[n - 1];
@@ -959,8 +959,8 @@ mod proptests {
             let src = SourceId(0);
 
             let mut sending = alloc::vec::Vec::new();
-            for i in 0..n {
-                let t = running.create_batch(src, checkpoints[i]);
+            for checkpoint in checkpoints.iter().take(n) {
+                let t = running.create_batch(src, *checkpoint);
                 sending.push(running.begin_send(t));
             }
 

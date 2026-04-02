@@ -158,8 +158,7 @@ fn bench_cri(c: &mut Criterion) {
                 let mut start = 0;
                 while start < data.len() {
                     let end = memchr::memchr(b'\n', &data[start..])
-                        .map(|p| start + p)
-                        .unwrap_or(data.len());
+                        .map_or(data.len(), |p| start + p);
                     if parse_cri_line(&data[start..end]).is_some() {
                         count += 1;
                     }
@@ -177,8 +176,7 @@ fn bench_cri(c: &mut Criterion) {
                 let mut start = 0;
                 while start < data.len() {
                     let end = memchr::memchr(b'\n', &data[start..])
-                        .map(|p| start + p)
-                        .unwrap_or(data.len());
+                        .map_or(data.len(), |p| start + p);
                     if let Some(cri) = parse_cri_line(&data[start..end])
                         && let Some(msg) = reassembler.feed(&cri)
                     {
@@ -188,7 +186,7 @@ fn bench_cri(c: &mut Criterion) {
                     start = end + 1;
                 }
                 json_buf
-            })
+            });
         });
     }
 
@@ -211,14 +209,14 @@ fn bench_transform(c: &mut Criterion) {
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("select_star", |b| {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
+        b.iter(|| { transform.execute_blocking(batch.clone()).unwrap(); });
     });
 
     // Filter
     group.bench_function("where_filter", |b| {
         let mut transform =
             SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
+        b.iter(|| { transform.execute_blocking(batch.clone()).unwrap(); });
     });
 
     // Projection + computed column
@@ -227,7 +225,7 @@ fn bench_transform(c: &mut Criterion) {
             "SELECT level_str, message_str, status_int, duration_ms_int FROM logs",
         )
         .unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
+        b.iter(|| { transform.execute_blocking(batch.clone()).unwrap(); });
     });
 
     // regexp_extract
@@ -237,7 +235,7 @@ fn bench_transform(c: &mut Criterion) {
              regexp_extract(message_str, '(GET|POST) (\\S+)', 2) AS path FROM logs",
         )
         .unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
+        b.iter(|| { transform.execute_blocking(batch.clone()).unwrap(); });
     });
 
     // grok
@@ -246,7 +244,7 @@ fn bench_transform(c: &mut Criterion) {
             "SELECT grok(message_str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed FROM logs",
         )
         .unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap())
+        b.iter(|| { transform.execute_blocking(batch.clone()).unwrap(); });
     });
 
     group.finish();
@@ -292,7 +290,7 @@ fn bench_output(c: &mut Criterion) {
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("null_sink", |b| {
         let mut sink = NullSink;
-        b.iter(|| sink.send_batch(&batch, &meta).unwrap())
+        b.iter(|| { sink.send_batch(&batch, &meta).unwrap(); });
     });
 
     // JSON serialization via write_row_json (measures build_col_infos + per-row dispatch)
@@ -302,7 +300,7 @@ fn bench_output(c: &mut Criterion) {
         b.iter(|| {
             buf.clear();
             for row in 0..batch.num_rows() {
-                logfwd_output::write_row_json(&batch, row, &cols, &mut buf);
+                let _ = logfwd_output::write_row_json(&batch, row, &cols, &mut buf);
                 buf.push(b'\n');
             }
             criterion::black_box(buf.len());
@@ -334,7 +332,7 @@ fn bench_end_to_end(c: &mut Criterion) {
             let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
-        })
+        });
     });
 
     // Full pipeline: scan → filter → capture sink
@@ -347,7 +345,7 @@ fn bench_end_to_end(c: &mut Criterion) {
             let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
-        })
+        });
     });
 
     // Full pipeline: scan → grok + filter → capture sink
@@ -363,7 +361,7 @@ fn bench_end_to_end(c: &mut Criterion) {
             let batch = scanner.scan(&data).expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
-        })
+        });
     });
 
     group.finish();

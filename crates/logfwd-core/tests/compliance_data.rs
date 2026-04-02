@@ -174,9 +174,9 @@ fn compliance_special_chars_in_values() {
         let val = get_str(batch, "msg_str", 0).expect("msg_str should exist");
         // Scanner stores raw escape sequences, so the value should contain
         // the literal backslash-n, backslash-t etc.
-        assert!(val.contains(r#"\n"#), "missing \\n in: {val}");
-        assert!(val.contains(r#"\t"#), "missing \\t in: {val}");
-        assert!(val.contains(r#"\\"#), "missing \\\\ in: {val}");
+        assert!(val.contains(r"\n"), "missing \\n in: {val}");
+        assert!(val.contains(r"\t"), "missing \\t in: {val}");
+        assert!(val.contains(r"\\"), "missing \\\\ in: {val}");
     });
 }
 

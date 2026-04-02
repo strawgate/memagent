@@ -138,7 +138,7 @@ mod tests {
             false,
         )]));
         let values: Vec<String> = (0..n).map(|i| format!("row-{i}")).collect();
-        let refs: Vec<&str> = values.iter().map(|s| s.as_str()).collect();
+        let refs: Vec<&str> = values.iter().map(String::as_str).collect();
         let array = StringArray::from(refs);
         RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
     }
@@ -199,16 +199,11 @@ mod tests {
         // Give OS a moment.
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        loop {
-            match receiver.recv(&mut buf) {
-                Ok(n) => {
-                    assert!(n <= MAX_DATAGRAM_PAYLOAD, "datagram too large: {n}");
-                    let text = std::str::from_utf8(&buf[..n]).unwrap();
-                    total_lines += text.lines().count();
-                    dgram_count += 1;
-                }
-                Err(_) => break,
-            }
+        while let Ok(n) = receiver.recv(&mut buf) {
+            assert!(n <= MAX_DATAGRAM_PAYLOAD, "datagram too large: {n}");
+            let text = std::str::from_utf8(&buf[..n]).unwrap();
+            total_lines += text.lines().count();
+            dgram_count += 1;
         }
 
         assert_eq!(total_lines, 100);

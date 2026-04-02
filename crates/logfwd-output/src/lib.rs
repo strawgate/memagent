@@ -487,7 +487,7 @@ mod tests {
         sink.write_batch_to(&batch, &meta, &mut out).unwrap();
 
         let output = String::from_utf8(out).unwrap();
-        let lines: Vec<&str> = output.trim().split('\n').collect();
+        let lines: Vec<&str> = output.lines().collect();
         assert_eq!(lines.len(), 2);
         // First row: level=ERROR, status=500
         assert!(
@@ -668,7 +668,7 @@ mod tests {
         sink.serialize_batch(&batch).unwrap();
 
         let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
-        let lines: Vec<&str> = output.trim().split('\n').collect();
+        let lines: Vec<&str> = output.lines().collect();
         assert_eq!(lines.len(), 2);
         // Should be the original JSON, not re-serialized.
         assert_eq!(lines[0], r#"{"ts":"2024-01-15","msg":"hello"}"#);

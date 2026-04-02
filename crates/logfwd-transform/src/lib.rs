@@ -1060,7 +1060,7 @@ mod tests {
         let a = QueryAnalyzer::new("SELECT * FROM logs WHERE facility IN (1, 4, 16)").unwrap();
         let h = a.filter_hints();
         let mut facs = h.facilities.unwrap();
-        facs.sort();
+        facs.sort_unstable();
         assert_eq!(facs, vec![1, 4, 16]);
     }
 

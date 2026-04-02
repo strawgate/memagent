@@ -597,7 +597,7 @@ mod tests {
                 scope_logs: vec![ScopeLogs {
                     log_records: vec![
                         LogRecord {
-                            time_unix_nano: 1705314600_000_000_000,
+                            time_unix_nano: 1_705_314_600_000_000_000,
                             severity_text: "INFO".into(),
                             body: Some(AnyValue {
                                 value: Some(Value::StringValue("hello world".into())),
@@ -637,7 +637,7 @@ mod tests {
         let body = make_test_request();
         let json = decode_otlp_logs(&body).unwrap();
         let text = String::from_utf8(json).unwrap();
-        let lines: Vec<&str> = text.trim().split('\n').collect();
+        let lines: Vec<&str> = text.lines().collect();
 
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"level\":\"INFO\""), "got: {}", lines[0]);
