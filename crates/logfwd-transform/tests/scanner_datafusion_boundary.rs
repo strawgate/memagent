@@ -762,8 +762,6 @@ fn single_suffixed_column_not_treated_as_conflict() {
 /// to the numeric value in both cases.
 #[test]
 fn cross_batch_int_udf_works_on_clean_and_conflict_batches() {
-    use logfwd_transform::udf;
-
     // --- Clean batch: status is always Int64 (no conflict) ---
     let clean_schema = Arc::new(Schema::new(vec![Field::new(
         "status",
