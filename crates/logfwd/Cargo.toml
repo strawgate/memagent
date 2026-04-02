@@ -22,7 +22,6 @@ memchr = "2"
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
-tiny_http = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
 tokio-util = { version = "0.7" }
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }

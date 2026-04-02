@@ -9,7 +9,6 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 use std::env;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::WithExportConfig;
@@ -117,7 +116,7 @@ async fn main_inner() -> i32 {
 
     let result = match args[1].as_str() {
         "--config" | "-c" => cmd_config(&args).await,
-        "--blackhole" => cmd_blackhole(&args),
+        "--blackhole" => cmd_blackhole(&args).await,
         "--generate-json" => cmd_generate_json(&args),
         other => {
             eprintln!("{}error{}: unknown command: {other}", red(), reset());
@@ -153,7 +152,7 @@ fn print_usage() {
     eprintln!("  -c, --config <path>    Run pipeline from YAML config");
     eprintln!("      --validate         Validate config and exit (alias: --check)");
     eprintln!("      --dry-run          Build pipelines without running");
-    eprintln!("      --blackhole [addr] Start blackhole sink (default: 127.0.0.1:4318)");
+    eprintln!("      --blackhole [addr] OTLP blackhole receiver (default: 127.0.0.1:4318)");
     eprintln!("      --generate-json    Generate synthetic JSON log file");
     eprintln!("  -h, --help             Show this help");
     eprintln!("  -V, --version          Show version");
@@ -239,11 +238,31 @@ async fn cmd_config(args: &[String]) -> Result<(), CliError> {
     run_pipelines(config, base_path, config_path, &config_yaml).await
 }
 
-fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
+async fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
     let addr = args
         .get(2)
         .map_or("127.0.0.1:4318", std::string::String::as_str);
-    run_blackhole(addr).map_err(CliError::Runtime)
+
+    // Validate addr looks like host:port — reject anything that could inject YAML.
+    if !addr.contains(':') || addr.contains('\n') || addr.contains(' ') {
+        return Err(CliError::Config(format!("invalid bind address: {addr}")));
+    }
+
+    let yaml = format!(
+        "input:\n  type: otlp\n  listen: {addr}\noutput:\n  type: null\nserver:\n  diagnostics: 127.0.0.1:9090\n"
+    );
+    let config = logfwd_config::Config::load_str(&yaml)
+        .map_err(|e| CliError::Config(format!("internal config error: {e}")))?;
+
+    eprintln!(
+        "{}logfwd blackhole{} starting on {}{addr}{}",
+        bold(),
+        reset(),
+        bold(),
+        reset(),
+    );
+
+    run_pipelines(config, None, "<blackhole>", &yaml).await
 }
 
 fn cmd_generate_json(args: &[String]) -> Result<(), CliError> {
@@ -472,121 +491,6 @@ async fn run_pipelines(
         );
     }
 
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Blackhole sink
-// ---------------------------------------------------------------------------
-
-fn run_blackhole(addr: &str) -> io::Result<()> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    eprintln!(
-        "{}logfwd blackhole{} listening on {}{}{}",
-        bold(),
-        reset(),
-        bold(),
-        addr,
-        reset(),
-    );
-    eprintln!(
-        "  {}POST any path -> 200 OK (counts bytes/lines){}",
-        dim(),
-        reset(),
-    );
-    eprintln!("  {}GET /stats -> JSON counters{}", dim(), reset());
-
-    let server = tiny_http::Server::http(addr).map_err(|e| io::Error::other(e.to_string()))?;
-
-    let total_requests = Arc::new(AtomicU64::new(0));
-    let total_bytes = Arc::new(AtomicU64::new(0));
-    let total_lines = Arc::new(AtomicU64::new(0));
-    let start = Instant::now();
-
-    let reqs_clone = Arc::clone(&total_requests);
-    let bytes_clone = Arc::clone(&total_bytes);
-    let lines_clone = Arc::clone(&total_lines);
-    std::thread::spawn(move || {
-        let mut prev_lines = 0u64;
-        let mut prev_bytes = 0u64;
-        loop {
-            std::thread::sleep(Duration::from_secs(1));
-            let reqs = reqs_clone.load(Ordering::Relaxed);
-            let lines = lines_clone.load(Ordering::Relaxed);
-            let bytes = bytes_clone.load(Ordering::Relaxed);
-            let d_lines = lines - prev_lines;
-            let d_bytes = bytes - prev_bytes;
-            if d_lines > 0 || d_bytes > 0 {
-                eprint!(
-                    "\r  {} reqs | {} lines ({}/s) | {:.1} MB ({:.1} MB/s)    ",
-                    reqs,
-                    lines,
-                    d_lines,
-                    bytes as f64 / (1024.0 * 1024.0),
-                    d_bytes as f64 / (1024.0 * 1024.0),
-                );
-                io::stderr().flush().ok();
-            }
-            prev_lines = lines;
-            prev_bytes = bytes;
-        }
-    });
-
-    let es_bulk_response = r#"{"took":0,"errors":false,"items":[]}"#;
-    let stats_reqs = Arc::clone(&total_requests);
-    let stats_bytes = Arc::clone(&total_bytes);
-    let stats_lines = Arc::clone(&total_lines);
-
-    for mut request in server.incoming_requests() {
-        if request.method() == &tiny_http::Method::Get && request.url() == "/stats" {
-            let body = format!(
-                r#"{{"requests":{},"lines":{},"bytes":{}}}"#,
-                stats_reqs.load(Ordering::Relaxed),
-                stats_lines.load(Ordering::Relaxed),
-                stats_bytes.load(Ordering::Relaxed),
-            );
-            let header =
-                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-                    .map_err(|()| io::Error::other("invalid HTTP header"))?;
-            let resp = tiny_http::Response::from_string(body)
-                .with_status_code(200)
-                .with_header(header);
-            let _ = request.respond(resp);
-            continue;
-        }
-
-        let content_len = request.body_length().unwrap_or(0);
-        let mut body = Vec::with_capacity(content_len);
-        request.as_reader().read_to_end(&mut body).ok();
-
-        let line_count = memchr::memchr_iter(b'\n', &body).count() as u64;
-        total_bytes.fetch_add(body.len() as u64, Ordering::Relaxed);
-        total_lines.fetch_add(line_count, Ordering::Relaxed);
-        total_requests.fetch_add(1, Ordering::Relaxed);
-
-        let is_bulk = request.url().contains("/_bulk");
-        let resp_body = if is_bulk { es_bulk_response } else { "{}" };
-
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(resp_body)
-            .with_status_code(200)
-            .with_header(header);
-        let _ = request.respond(resp);
-    }
-
-    let elapsed = start.elapsed().as_secs_f64();
-    let reqs = total_requests.load(Ordering::Relaxed);
-    let bytes = total_bytes.load(Ordering::Relaxed);
-    let lines = total_lines.load(Ordering::Relaxed);
-    eprintln!(
-        "\nDone: {} requests, {} lines, {:.1} MB in {:.1}s",
-        reqs,
-        lines,
-        bytes as f64 / (1024.0 * 1024.0),
-        elapsed,
-    );
     Ok(())
 }
 

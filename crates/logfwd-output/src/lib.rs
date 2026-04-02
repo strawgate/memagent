@@ -176,6 +176,7 @@ pub(crate) fn str_value(col: &dyn Array, row: usize) -> &str {
     match col.data_type() {
         DataType::Utf8 => col.as_string::<i32>().value(row),
         DataType::Utf8View => col.as_string_view().value(row),
+        DataType::LargeUtf8 => col.as_string::<i64>().value(row),
         _ => "",
     }
 }
@@ -219,6 +220,14 @@ fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -> io::Resul
                 out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
             } else {
                 out.extend_from_slice(b"null");
+            }
+        }
+        DataType::Boolean => {
+            if arr.is_null(row) {
+                out.extend_from_slice(b"null");
+            } else {
+                let v = arr.as_boolean().value(row);
+                out.extend_from_slice(if v { b"true" } else { b"false" });
             }
         }
         _ => {
@@ -482,7 +491,7 @@ mod tests {
         sink.write_batch_to(&batch, &meta, &mut out).unwrap();
 
         let output = String::from_utf8(out).unwrap();
-        let lines: Vec<&str> = output.trim().split('\n').collect();
+        let lines: Vec<&str> = output.lines().collect();
         assert_eq!(lines.len(), 2);
         // First row: level=ERROR, status=500
         assert!(
@@ -663,7 +672,7 @@ mod tests {
         sink.serialize_batch(&batch).unwrap();
 
         let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
-        let lines: Vec<&str> = output.trim().split('\n').collect();
+        let lines: Vec<&str> = output.lines().collect();
         assert_eq!(lines.len(), 2);
         // Should be the original JSON, not re-serialized.
         assert_eq!(lines[0], r#"{"ts":"2024-01-15","msg":"hello"}"#);
@@ -1242,5 +1251,36 @@ mod write_row_json_tests {
         // Boolean columns go through str_value fallback, which returns ""
         // for non-Utf8 types. This is existing behavior — the point is no panic.
         let _: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+    }
+
+    #[test]
+    fn boolean_and_large_utf8_serialization() {
+        use arrow::array::{BooleanArray, LargeStringArray};
+        let batch = make_batch(vec![
+            (
+                "active",
+                Arc::new(BooleanArray::from(vec![Some(true), Some(false), None])),
+            ),
+            (
+                "note",
+                Arc::new(LargeStringArray::from(vec![
+                    Some("large"),
+                    Some("text"),
+                    None,
+                ])),
+            ),
+        ]);
+
+        // Row 0: true, "large"
+        let json0 = render(&batch, 0);
+        let v0: serde_json::Value = serde_json::from_str(&json0).unwrap();
+        assert_eq!(v0["active"], true);
+        assert_eq!(v0["note"], "large");
+
+        // Row 1: false, "text"
+        let json1 = render(&batch, 1);
+        let v1: serde_json::Value = serde_json::from_str(&json1).unwrap();
+        assert_eq!(v1["active"], false);
+        assert_eq!(v1["note"], "text");
     }
 }

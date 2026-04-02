@@ -252,6 +252,7 @@ enum AttrArray<'a> {
     Str(&'a dyn Array),
     Int(&'a PrimitiveArray<Int64Type>),
     Float(&'a PrimitiveArray<Float64Type>),
+    Bool(&'a arrow::array::BooleanArray),
 }
 
 /// Pre-resolved column roles and downcast arrays for one RecordBatch.
@@ -366,6 +367,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         let attr = match field.data_type() {
             DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
             DataType::Float64 => AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>()),
+            DataType::Boolean => AttrArray::Bool(batch.column(idx).as_boolean()),
             _ => AttrArray::Str(batch.column(idx).as_ref()),
         };
         attribute_cols.push((field_name.to_string(), attr));
@@ -473,6 +475,11 @@ fn encode_row_as_log_record(
                     encode_key_value_double(buf, field_name.as_bytes(), arr.value(row));
                 }
             }
+            AttrArray::Bool(arr) => {
+                if !arr.is_null(row) {
+                    encode_key_value_bool(buf, field_name.as_bytes(), arr.value(row));
+                }
+            }
             AttrArray::Str(arr) => {
                 if !arr.is_null(row) {
                     encode_key_value_string(
@@ -559,6 +566,19 @@ fn encode_key_value_double(buf: &mut Vec<u8>, key: &[u8], value: f64) {
     encode_varint(buf, anyvalue_inner as u64);
     // AnyValue.double_value = field 4, wire type 1 (64-bit fixed)
     encode_fixed64(buf, 4, value.to_bits());
+}
+
+/// Encode a KeyValue with boolean AnyValue (field 2 of AnyValue = bool_value).
+fn encode_key_value_bool(buf: &mut Vec<u8>, key: &[u8], value: bool) {
+    let anyvalue_inner = 1 + 1; // tag(1 byte) + varint(1 byte)
+    let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
+    encode_tag(buf, 6, 2);
+    encode_varint(buf, kv_inner as u64);
+    encode_bytes_field(buf, 1, key);
+    encode_tag(buf, 2, 2);
+    encode_varint(buf, anyvalue_inner as u64);
+    // AnyValue.bool_value = field 2, wire type 0 (varint)
+    encode_varint_field(buf, 2, u64::from(value));
 }
 
 #[cfg(test)]
@@ -744,6 +764,35 @@ mod tests {
         assert!(
             contains_bytes(&sink.encoder_buf, version),
             "InstrumentationScope version not found in encoded output"
+        );
+    }
+
+    #[test]
+    fn encode_boolean_as_attribute() {
+        use arrow::array::BooleanArray;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "active",
+            DataType::Boolean,
+            true,
+        )]));
+        let arr = BooleanArray::from(vec![Some(true)]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        // LogRecord field 6 tag: (6 << 3) | 2 = 0x32
+        // KeyValue field 1 key tag: (1 << 3) | 2 = 0x0A, then "active"
+        // KeyValue field 2 value AnyValue tag: (2 << 3) | 2 = 0x12
+        // AnyValue field 2 bool_value tag: (2 << 3) | 0 = 0x10, then 0x01
+        let expected = [0x10u8, 0x01];
+        assert!(
+            contains_bytes(&sink.encoder_buf, &expected),
+            "boolean attribute not found in encoded output"
+        );
+        assert!(
+            contains_bytes(&sink.encoder_buf, b"active"),
+            "attribute key 'active' not found"
         );
     }
 }

@@ -3,9 +3,8 @@ name: E2E
 on:
   push:
     branches: [master]
-  pull_request:
-    branches: [master]
-    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: '0 6 * * *'
 
 concurrency:
   group: e2e-${{ github.head_ref || github.run_id }}
@@ -13,11 +12,11 @@ concurrency:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   e2e:
     name: KIND e2e
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -32,3 +31,13 @@ jobs:
 
       - name: Run e2e test
         run: bash tests/e2e/run.sh
+
+      - name: Create issue on failure
+        if: failure() && github.event_name == 'schedule'
+        run: |
+          gh issue create \
+            --title "Nightly e2e test failed ($(date +%Y-%m-%d))" \
+            --body "The KIND e2e test failed on the nightly run.\n\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nPlease investigate." \
+            --label "bug"
+        env:
+          GH_TOKEN: ${{ github.token }}

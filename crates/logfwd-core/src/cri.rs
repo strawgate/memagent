@@ -223,11 +223,43 @@ pub fn process_cri_to_buf(
     (count, errors)
 }
 
+/// Append `src` to `dst` with JSON string escaping (no surrounding quotes).
+///
+/// Handles all characters that must be escaped in a JSON string value:
+/// double-quote, backslash, and ASCII control characters (U+0000–U+001F, U+007F).
+#[inline]
+pub fn json_escape_bytes(src: &[u8], dst: &mut Vec<u8>) {
+    for &b in src {
+        match b {
+            b'"' => dst.extend_from_slice(b"\\\""),
+            b'\\' => dst.extend_from_slice(b"\\\\"),
+            0x08 => dst.extend_from_slice(b"\\b"),
+            b'\t' => dst.extend_from_slice(b"\\t"),
+            b'\n' => dst.extend_from_slice(b"\\n"),
+            0x0C => dst.extend_from_slice(b"\\f"),
+            b'\r' => dst.extend_from_slice(b"\\r"),
+            0x00..=0x1F | 0x7F => {
+                dst.extend_from_slice(b"\\u00");
+                let hi = (b >> 4) & 0x0F;
+                let lo = b & 0x0F;
+                dst.push(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 });
+                dst.push(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 });
+            }
+            _ => dst.push(b),
+        }
+    }
+}
+
 /// Write a single message into the output buffer with optional JSON prefix injection.
+///
+/// If `msg` starts with `{` it is treated as a JSON object and the optional
+/// `json_prefix` is injected after the opening brace.  Otherwise `msg` is
+/// plain text and is written as `{"_raw":"<json-escaped msg>"}` so that no
+/// content is silently lost when the downstream scanner processes the line.
 #[inline]
 fn write_json_line(msg: &[u8], json_prefix: Option<&[u8]>, out: &mut Vec<u8>) {
-    if let Some(prefix) = json_prefix {
-        if msg.first() == Some(&b'{') {
+    if msg.first() == Some(&b'{') {
+        if let Some(prefix) = json_prefix {
             out.push(b'{');
             out.extend_from_slice(prefix);
             out.extend_from_slice(&msg[1..]);
@@ -235,7 +267,11 @@ fn write_json_line(msg: &[u8], json_prefix: Option<&[u8]>, out: &mut Vec<u8>) {
             out.extend_from_slice(msg);
         }
     } else {
-        out.extend_from_slice(msg);
+        // Non-JSON plain text: wrap as {"_raw":"<escaped>"} so the scanner
+        // sees a valid JSON object and message content is preserved.
+        out.extend_from_slice(b"{\"_raw\":\"");
+        json_escape_bytes(msg, out);
+        out.extend_from_slice(b"\"}");
     }
     out.push(b'\n');
 }
@@ -332,6 +368,38 @@ mod tests {
         let (count, errors) = process_cri_to_buf(chunk, &mut reassembler, None, &mut out);
         assert_eq!(count, 1);
         assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn test_write_json_line_plain_text_wrapped_as_raw() {
+        // Plain-text (non-JSON) messages must be wrapped as {"_raw":"..."}.
+        let mut out = Vec::new();
+        write_json_line(b"application started", None, &mut out);
+        assert_eq!(out, b"{\"_raw\":\"application started\"}\n");
+    }
+
+    #[test]
+    fn test_write_json_line_plain_text_escapes_special_chars() {
+        // JSON-special characters in the message must be escaped.
+        let mut out = Vec::new();
+        write_json_line(b"say \"hello\"", None, &mut out);
+        assert_eq!(out, b"{\"_raw\":\"say \\\"hello\\\"\"}\n");
+    }
+
+    #[test]
+    fn test_process_cri_to_buf_plain_text_wrapped() {
+        // Plain-text CRI messages should be emitted as {"_raw":"..."} lines.
+        let chunk = b"2024-01-15T10:30:00Z stdout F application started\n\
+                       2024-01-15T10:30:01Z stdout F {\"msg\":\"ok\"}\n";
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut out = Vec::new();
+        let (count, errors) = process_cri_to_buf(chunk, &mut reassembler, None, &mut out);
+        assert_eq!(count, 2);
+        assert_eq!(errors, 0);
+        assert_eq!(
+            out,
+            b"{\"_raw\":\"application started\"}\n{\"msg\":\"ok\"}\n"
+        );
     }
 
     #[test]
@@ -520,7 +588,8 @@ mod verification {
         assert!(result.is_none(), "partial line should not produce output");
     }
 
-    /// Prove write_json_line with prefix correctly injects after opening brace.
+    /// Prove write_json_line with prefix correctly injects after opening brace,
+    /// and wraps non-JSON messages as {"_raw":"..."}.
     #[kani::proof]
     fn verify_write_json_line_prefix_injection() {
         let msg: [u8; 8] = kani::any();
@@ -537,14 +606,14 @@ mod verification {
             assert_eq!(out[12], b'\n');
             assert_eq!(out.len(), 13);
         } else {
-            // Output should be: msg + \n
-            assert_eq!(&out[..8], &msg);
-            assert_eq!(out[8], b'\n');
-            assert_eq!(out.len(), 9);
+            // Non-JSON: wrapped as {"_raw":"..."}\n — ends with \n
+            assert_eq!(out[out.len() - 1], b'\n');
+            // Output starts with {"_raw":"
+            assert_eq!(&out[..9], b"{\"_raw\":\"");
         }
     }
 
-    /// Prove write_json_line without prefix is just msg + newline.
+    /// Prove write_json_line without prefix passes JSON through and wraps plain text.
     #[kani::proof]
     fn verify_write_json_line_no_prefix() {
         let msg: [u8; 8] = kani::any();
@@ -552,8 +621,16 @@ mod verification {
 
         write_json_line(&msg, None, &mut out);
 
-        assert_eq!(&out[..8], &msg);
-        assert_eq!(out[8], b'\n');
-        assert_eq!(out.len(), 9);
+        if msg[0] == b'{' {
+            // JSON message passed through: msg + \n
+            assert_eq!(&out[..8], &msg);
+            assert_eq!(out[8], b'\n');
+            assert_eq!(out.len(), 9);
+        } else {
+            // Non-JSON: wrapped as {"_raw":"..."}\n — ends with \n
+            assert_eq!(out[out.len() - 1], b'\n');
+            // Output starts with {"_raw":"
+            assert_eq!(&out[..9], b"{\"_raw\":\"");
+        }
     }
 }

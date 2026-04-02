@@ -256,13 +256,15 @@ impl ScalarUDFImpl for GrokUdf {
                     })
                     .collect();
 
+                let fields_and_arrays = fields
+                    .into_iter()
+                    .zip(values)
+                    .map(|(f, v)| Ok((Arc::new(f), v.to_array()? as ArrayRef)))
+                    .collect::<Result<Vec<_>, arrow::error::ArrowError>>()?;
+
                 Ok(ColumnarValue::Scalar(
                     datafusion::common::ScalarValue::Struct(Arc::new(StructArray::from(
-                        fields
-                            .into_iter()
-                            .zip(values)
-                            .map(|(f, v)| (Arc::new(f), v.to_array().unwrap() as ArrayRef))
-                            .collect::<Vec<_>>(),
+                        fields_and_arrays,
                     ))),
                 ))
             }
