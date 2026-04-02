@@ -197,11 +197,17 @@ reviews:
 
 
           KANI PROOFS — WHEN REQUIRED.
-          Any new public function added to logfwd-core requires at least one Kani proof,
-          unless it falls into an explicitly exempt category: async code (Kani does not
-          support async), heap-heavy Vec or HashMap code (use proptest instead), and
-          simple getters or setters on fields with no logic. For any function that does
-          NOT qualify for an exemption, the absence of a proof is a hard fail.
+          Any new public function added to logfwd-core requires at least one Kani proof.
+          Three categories are exempt from Kani and require proptest or type-level
+          verification instead: (1) async functions (Kani does not support async runtimes;
+          use proptest for event-sequence properties instead), (2) heap-heavy code that
+          creates Vec, HashMap, or BTreeMap proportional to input size (Kani state-space
+          explodes; use proptest), and (3) trivial getters or setters with no logic beyond
+          a field read/write (no invariant to prove). These are the ONLY exemptions. Any
+          function with logic — parsing, encoding, bit manipulation, state transitions,
+          arithmetic — is NOT exempt. For any non-exempt function, the absence of a proof
+          is a hard fail. These exemptions mirror the ones in CRATE_RULES.md and are the
+          same exemptions referenced by the Crate Boundary check's Rule 5.
 
           By function category the requirements are:
 
@@ -294,20 +300,38 @@ reviews:
           TLA+ REQUIREMENTS.
           Any PR that modifies pipeline/lifecycle.rs, PipelineMachine state transitions,
           the drain protocol, checkpoint ordering, batch sequence numbering, or the
-          ordered-ACK mechanism MUST address TLA+ coverage. The relevant TLA+ spec is
-          tla/PipelineMachine.tla (currently on feat/tla-pipeline-machine branch, PR #651).
-          The eight safety invariants that must hold are: DrainCompleteness (stop() only
-          reachable when all in-flight batches resolved), CheckpointOrderingInvariant
-          (committed[s]=n implies batches 1..n all acked), CommittedMonotonic (checkpoint
-          never decreases), NoCreateAfterDrain (no new batches after begin_drain),
-          NoDoubleComplete (batch cannot be both in-flight and acked), and three more
-          detailed in tla/PipelineMachine.tla. The four liveness properties: EventualDrain,
-          NoBatchLeftBehind, StoppedIsStable, and CheckpointEventuallyAdvances. For any
-          PR touching this area, require either: (a) explicit confirmation that the change
-          does not affect the modeled properties, with reasoning, OR (b) updated TLA+ spec
-          and TLC output showing all properties still hold. NEVER use CONSTRAINT to bound
-          state space for liveness checking — it silently breaks liveness by cutting off
-          infinite behaviors before they converge; use model constants instead.
+          ordered-ACK mechanism MUST address TLA+ coverage. The spec lives at
+          tla/PipelineMachine.tla in this repository. The TLC configurations are
+          PipelineMachine.cfg (safety model, ~50K states) and PipelineMachine.liveness.cfg
+          (liveness model, ~5K states).
+
+          Safety invariants checked in PipelineMachine.cfg (INVARIANTS block):
+          TypeOK (well-typed state), NoDoubleComplete (a batch cannot be both in-flight
+          and acked simultaneously), DrainCompleteness (stop() only reachable when all
+          in-flight batches are resolved), CheckpointOrderingInvariant (committed[s]=n
+          implies all batches 1..n are acked), CommittedNeverAheadOfAcked (committed never
+          exceeds the acked frontier), InFlightImpliesCreated (in-flight batches were
+          created), AckedImpliesCreated (acked batches were created).
+
+          Temporal action properties also checked in PipelineMachine.cfg (PROPERTIES block,
+          safe to check at full model size): NoCreateAfterDrain (no CreateBatch action
+          while Draining or Stopped), CommittedMonotonic (committed never decreases),
+          DrainMeansNoNewSending (no BeginSend while Draining).
+
+          Liveness properties checked in PipelineMachine.liveness.cfg (PROPERTIES block,
+          require Fairness in Spec): EventualDrain (Draining always leads to Stopped),
+          NoBatchLeftBehind (every in-flight batch eventually leaves in-flight),
+          StoppedIsStable (once Stopped, stays Stopped),
+          AllCreatedBatchesEventuallyAccountedFor (every created batch eventually acked
+          or rejected).
+
+          For any PR touching this area, require either: (a) explicit confirmation that
+          the change does not affect any of the above properties with reasoning, OR (b)
+          updated TLA+ spec and TLC output showing all properties still hold under both
+          cfg files. NEVER use CONSTRAINT to bound state space for liveness checking —
+          it silently breaks liveness by cutting off infinite behaviors before they reach
+          the convergent state. Use model constants (MaxBatchesPerSource, Sources set
+          size) instead.
 
 
           PROPTEST REQUIREMENTS.
@@ -332,8 +356,8 @@ reviews:
           Any PR that adds, removes, or modifies Kani proofs MUST update the per-module
           verification status table in dev-docs/VERIFICATION.md. The table columns are:
           Module, What it does, Verification. The proof count in the Verification column
-          must be accurate. If a PR adds 3 proofs to otlp.rs, the "(25 proofs)" count must
-          become "(28 proofs)". PRs that add proofs without updating this table will confuse
+          must be accurate — count the proofs in the changed module and verify the table
+          entry matches. PRs that add proofs without updating this table will confuse
           future reviewers about coverage completeness. If a module moves from Tier 2
           (bounded) to Tier 1 (exhaustive), update the tier classification and the tier
           descriptions at the bottom of the file.
@@ -368,16 +392,15 @@ reviews:
           An ADR is required when: a PR introduces a new architectural pattern not
           previously in the codebase, chooses between two viable approaches after
           deliberation, deliberately departs from an existing convention, or makes a
-          decision that future contributors will likely question. The format is: a numbered
-          decision title, a Context section explaining what problem was being solved,
-          a Decision section stating what was chosen and why alternatives were rejected,
-          and a Consequences section noting trade-offs accepted. DESIGN.md currently
-          documents 11 settled decisions. Examples of ADR-worthy decisions: choosing
-          deferred builder over incremental null-padding (already recorded), choosing
-          first-writer-wins over last-writer-wins for duplicate keys (already recorded),
-          choosing kani::any_where over any+assume, choosing double-underscore for type
-          conflict suffixes over single-underscore. If this PR makes a design choice that
-          required deliberation, an ADR belongs in DESIGN.md.
+          decision that future contributors will likely question. Read the "Architecture
+          decisions" section of DESIGN.md to understand the existing decision format
+          (named heading, context paragraph, decision made, consequences/trade-offs) and
+          to verify whether the PR's design is already covered by an existing decision.
+          Examples of ADR-worthy decisions: choosing deferred builder over incremental
+          null-padding (already recorded), choosing opaque checkpoints over typed offsets
+          (already recorded), choosing suffix-only-on-type-conflict (already recorded).
+          If this PR makes a design choice that required deliberation, an ADR belongs
+          in DESIGN.md under the "Architecture decisions" section.
 
 
           VERIFICATION.md (dev-docs/VERIFICATION.md).
@@ -443,10 +466,9 @@ reviews:
           The roadmap is the shared understanding of project direction between human
           maintainers and AI agents. Out-of-date phase status causes agents to implement
           work that is already done or skip work that is next in sequence. If this PR
-          completes a phase task, that task must be marked done in PHASES.md. Current in-
-          progress phases as of this review: Phase 5 (Pipeline state machine), Phase 7
-          (TLA+ pipeline spec), Phase 10 (Type suffix redesign). Phase 2 (StructuralIndex)
-          is the next major unstarted phase.
+          completes a phase task, that task must be marked done in PHASES.md. Read
+          PHASES.md to determine current phase status rather than relying on any
+          cached snapshot.
 
 
           SCANNER_CONTRACT.md (dev-docs/SCANNER_CONTRACT.md).
@@ -484,14 +506,14 @@ reviews:
           REFERENCES (dev-docs/references/).
           Update required when: a major dependency version is bumped (arrow, datafusion,
           tokio, opentelemetry-otlp). The references directory contains API pattern guides
-          for: datafusion-v45.md (SessionContext, MemTable, UDF registration, schema
-          evolution), arrow-v54.md (RecordBatch, StringViewArray, IpcWriteOptions,
-          CompressionType), tokio-async-patterns.md (bounded channels, CancellationToken,
-          block_in_place, select! safety), opentelemetry-otlp.md (protobuf nesting, HTTP
-          vs gRPC, resource attributes), kani-verification.md (proof API, solver selection,
-          function contracts). When a major version bump changes any of these patterns —
-          new APIs, deprecated APIs, behavior changes — the relevant reference doc must be
-          updated so agents and reviewers have accurate API guidance.
+          for the key dependencies: DataFusion (SessionContext, MemTable, UDF registration),
+          Arrow (RecordBatch, StringViewArray, IpcWriteOptions), Tokio (bounded channels,
+          CancellationToken, block_in_place, select! safety), OpenTelemetry OTLP (protobuf
+          nesting, HTTP vs gRPC, resource attributes), and Kani (proof API, solver selection,
+          function contracts). Reference file names include the major version number. When a
+          major version bump changes API patterns — new APIs, deprecated APIs, behavior
+          changes — the relevant reference doc must be renamed to the new version and updated
+          so agents and reviewers have accurate API guidance.
 
       - name: Crate Boundary and Dependency Integrity
         mode: error
@@ -536,16 +558,22 @@ reviews:
           dependency belongs in logfwd-arrow or another satellite crate, and logfwd-core
           should expose a trait that the satellite implements.
 
-          Rule 4: No panics — clippy denies unwrap_used, panic, indexing_slicing. These
-          clippy lints are set to deny in the workspace config, which is inherited by all
-          crates. Any PR that adds .unwrap(), panic!(), or direct index access (slice[i]
-          without bounds check) in logfwd-core is a CI failure. Require .get(i)? or
-          .get(i).ok_or(Error::OutOfBounds)? instead of direct indexing.
+          Rule 4: No panics in logfwd-core. CRATE_RULES.md specifies that
+          clippy::unwrap_used, clippy::panic, and clippy::indexing_slicing must be denied
+          for logfwd-core, but these are review-enforced rather than currently in the
+          workspace Cargo.toml. The workspace lint config uses clippy::pedantic = warn;
+          the per-crate deny rules for logfwd-core are enforced by code review. Flag any
+          PR that adds .unwrap(), panic!(), or unchecked direct slice indexing (slice[i]
+          without a prior bounds check or .get()) in logfwd-core. Require .get(i)? or
+          .get(i).ok_or(Error::OutOfBounds)? instead. If a PR adds these patterns and CI
+          passes without objection, the lint is not yet enforced at the compiler level —
+          that is a separate issue (#todo: add per-crate deny to Cargo.toml), but it does
+          not make the violation acceptable.
 
-          Rule 5: Every public function has a Kani proof. CI runs a proof coverage script
-          that counts public functions versus proof harnesses. Any PR that adds a public
-          function to logfwd-core without a proof is a CI failure. (See the Formal
-          Verification Coverage check for proof quality requirements.)
+          Rule 5: Every public function has a Kani proof (with the same three exemptions
+          as the Formal Verification Coverage check: async functions, heap-heavy Vec/HashMap
+          code, and trivial getters/setters with no logic). CI runs a proof coverage script.
+          For proof quality requirements, see the Formal Verification Coverage check.
 
           Rule 6: No IO, no threads, no async. These are structurally blocked by no_std
           (the relevant std APIs do not exist on thumbv6m-none-eabi). Flag any creative
@@ -555,20 +583,23 @@ reviews:
           that works around this intent violates the architectural contract.
 
 
-          DEPENDENCY DIRECTION — THE HIERARCHY IS STRICT.
-          Allowed direction (dependencies flow downward only):
-          logfwd-core ← logfwd-arrow ← logfwd-io ← logfwd-transform ← logfwd-output ← logfwd
-          (logfwd-config is depended upon by logfwd and logfwd-transform; it depends on
-          logfwd-core for types.)
+          DEPENDENCY DIRECTION — NO CYCLES, NO UPWARD DEPS.
+          The core rule is that dependencies must only flow toward lower-level crates.
+          The actual dependency graph (verify against Cargo.toml):
+          logfwd-core is the foundation: no sibling crate deps, only memchr and wide.
+          logfwd-arrow depends on logfwd-core.
+          logfwd-io depends on logfwd-core and logfwd-arrow.
+          logfwd-transform depends on logfwd-core, logfwd-arrow, and logfwd-io.
+          logfwd-output depends on logfwd-core, logfwd-arrow, logfwd-io, and logfwd-config.
+          logfwd-config depends on serde; it does not depend on other workspace crates.
+          logfwd (binary) depends on all other crates.
 
-          Hard violations:
-          logfwd-core must not depend on any sibling crate. logfwd-arrow may depend only
-          on logfwd-core plus arrow and bytes. logfwd-io may depend on logfwd-core,
-          logfwd-arrow, and IO libraries (notify, tempfile) but not on logfwd-transform or
-          logfwd-output. logfwd-transform may depend on logfwd-core, logfwd-arrow, and
-          DataFusion but not on logfwd-output. logfwd-output may depend on logfwd-core,
-          logfwd-arrow, and HTTP/serialization libraries but not on logfwd-transform.
-          The binary (logfwd) may depend on all crates. No circular dependencies.
+          Hard violations that must be rejected regardless of current graph state:
+          logfwd-core depending on ANY sibling crate. logfwd-arrow depending on logfwd-io,
+          logfwd-transform, logfwd-output, or logfwd. logfwd-config depending on any crate
+          that processes data (logfwd-arrow, logfwd-io, logfwd-transform, logfwd-output).
+          Any circular dependency. Any dependency that goes from a lower-level crate to
+          a higher-level one (e.g., logfwd-io depending on logfwd-transform).
 
           The binary crate must contain ONLY async orchestration: config loading, channel
           wiring, signal handling, spawning tasks. No parsing logic, no encoding logic, no
@@ -576,28 +607,29 @@ reviews:
           that belongs in a library crate, flag it and require extraction.
 
 
-          PER-CRATE DEPENDENCY RULES.
-          logfwd-arrow: allowed deps are logfwd-core, arrow (with ipc_compression feature),
-          bytes. Any other dependency requires explicit justification and maintainer approval.
-          logfwd-arrow is the only crate where unsafe is permitted for SIMD, and every
-          unsafe block must have a SAFETY comment.
+          PER-CRATE STRUCTURAL RULES.
+          Rather than maintaining a complete allowed-dependency list here (which will go
+          stale as dependencies are added), verify new dependencies against the principles
+          in CRATE_RULES.md. The structural rules that ARE invariant and must be enforced:
 
-          logfwd-io: allowed deps are logfwd-core, logfwd-arrow, notify, serde, bytes,
-          tempfile (in dev-dependencies only). Tests in logfwd-io must use tempfile-based
-          temp directories, not real filesystem paths, to avoid test interference.
+          logfwd-arrow: unsafe is permitted only for SIMD implementations. Every unsafe
+          block must have a SAFETY comment. Any unsafe for non-SIMD purposes is a violation.
+          The workspace arrow dependency (arrow = { workspace = true }) includes the
+          ipc_compression feature; do not add a separate arrow dep with different features.
 
-          logfwd-transform: allowed deps are logfwd-core, logfwd-arrow, datafusion (the
-          SQL engine; do not add a second SQL engine). DataFusion is the only query engine.
+          logfwd-io: IO is expected here. Tests must use temp directories (via tempfile
+          or similar) rather than real filesystem paths to avoid test interference.
+
+          logfwd-transform: DataFusion is the SQL engine. Do not add a second SQL engine.
           Enrichment tables must implement Arrow's RecordBatchReader for compatibility.
 
-          logfwd-output: allowed deps are logfwd-core, logfwd-arrow, and one HTTP client
-          (currently ureq or reqwest — do not add both). Transport and serialization must
-          remain separate: the OTLP encoder in logfwd-core produces bytes; logfwd-output
-          only handles transport. Do not move protobuf encoding into logfwd-output.
+          logfwd-output: Transport and serialization must remain separate. The OTLP
+          protobuf encoder lives in logfwd-core; logfwd-output only handles transport.
+          Do not move encoding logic into logfwd-output.
 
-          logfwd-config: allowed deps are serde, serde_yaml, logfwd-core (for shared types).
-          All config parsing and validation happens here. Config structs must be validated
-          at deserialization time — the rest of the codebase receives already-validated types.
+          logfwd-config: All config parsing and validation happens here. Config structs
+          must be validated at deserialization time so the rest of the codebase receives
+          already-validated types.
 
 
           WORKSPACE DEPENDENCY MANAGEMENT.
@@ -675,29 +707,26 @@ reviews:
 
 
           PHASE ALIGNMENT — IS THIS THE RIGHT TIME.
-          logfwd has a 10-phase roadmap in dev-docs/PHASES.md. The current in-progress
-          phases are Phase 5 (Pipeline state machine — 5c wiring PipelineMachine into
-          pipeline.rs is the next task), Phase 7 (TLA+ pipeline spec — 7b PipelineBatch.tla
-          is next), and Phase 10 (Type suffix redesign — all four tasks are TODO).
-          Phase 2 (StructuralIndex) is the next major unstarted phase.
+          logfwd has a 10-phase roadmap. Read dev-docs/PHASES.md to determine which phases
+          are currently in-progress (marked without ✅ DONE), which tasks within each
+          in-progress phase are next (listed without ✅ DONE under the phase), and which
+          phases are not yet started. The "Parallel work" table at the bottom of PHASES.md
+          lists production-severity issues that take priority over phase work.
 
-          Flag PRs that: implement a future phase task while an earlier phase is incomplete
-          (skipping is acceptable only when the earlier phase has a known blocker and the
-          future work is independent), add scope that is explicitly deferred in the roadmap
-          ("defer X until Phase N" in PHASES.md means it is not Phase N yet), or revert
-          completed phase work without a documented reason.
+          Using the live content of dev-docs/PHASES.md:
+          Flag PRs that implement a future-phase task while an earlier phase has incomplete
+          tasks (skipping is acceptable only when the earlier phase has a documented
+          blocker and the future work is independent). Flag PRs that add scope explicitly
+          deferred to a later phase ("after Phase N" language in PHASES.md). Flag PRs that
+          revert completed (✅ DONE) phase work without a reason.
 
-          If the PR references a phase ("implements Phase 5c"), verify the implementation
-          matches the phase description and sub-task definition in PHASES.md. If it
-          completes a task, the task must be marked ✅ DONE in PHASES.md.
+          If the PR references a specific phase or task ("implements Phase 5c"), verify
+          the implementation matches the sub-task description in PHASES.md. If it
+          completes a task, the task must be marked ✅ DONE with the PR number.
 
-          Production issues tagged in the "Parallel work" section of PHASES.md take
-          priority over phase work when they affect running deployments:
-          #491 (transform/output errors kill pipeline — production severity),
-          #318 (retry with backoff — production reliability),
-          #319 (AsyncFanout with circuit breaker — production reliability).
-          Flag any PR that adds non-critical features while these issues remain open,
-          and ask whether this PR is more important than fixing them.
+          Check the "Parallel work" table in PHASES.md for open production-severity issues.
+          If any are listed without a resolution, flag any PR adding non-critical features
+          and ask whether this PR is more urgent than those issues.
 
 
           PERFORMANCE AND HOT PATH RISK.
