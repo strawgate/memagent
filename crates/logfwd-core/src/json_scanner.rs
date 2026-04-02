@@ -667,6 +667,11 @@ mod verification {
             let b = buf[result];
             assert!(b != b' ' && b != b'\t' && b != b'\r');
         }
+
+        // Guard vacuity: verify bounds work correctly
+        kani::cover!(result == start, "no whitespace at start");
+        kani::cover!(result > start, "skipped some whitespace");
+        kani::cover!(result == end, "all whitespace");
     }
 
     /// skip_bare_value returns a position in [start, end].
@@ -688,6 +693,11 @@ mod verification {
             assert!(b != b',' && b != b'}' && b != b' ' && b != b'\t' && b != b'\r' && b != b'\n');
             i += 1;
         }
+
+        // Guard vacuity: verify value scanning works
+        kani::cover!(result > start, "found non-delimiter bytes");
+        kani::cover!(result == start, "delimiter at start");
+        kani::cover!(result == end, "no delimiter found");
     }
 
     /// is_json_delimiter covers all JSON value delimiters exhaustively.
@@ -746,6 +756,11 @@ mod verification {
 
         let result = skip_nested(&buf, pos, end, &blocks);
         assert!(result >= pos && result <= end);
+
+        // Guard vacuity: verify nested structure handling
+        kani::cover!(result > pos, "skipped nested structure");
+        kani::cover!(result == pos, "no structure to skip");
+        kani::cover!(result == end, "structure extends to end");
     }
 
     /// next_quote on a single block: if found, the position has a set bit

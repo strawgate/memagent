@@ -155,6 +155,11 @@ mod verification {
                 }
             }
         }
+
+        // Guard vacuity: verify from constraint is meaningful
+        kani::cover!(result.is_some(), "needle found");
+        kani::cover!(result.is_none(), "needle not found");
+        kani::cover!(from > 0, "non-zero start position");
     }
 
     /// Prove rfind_byte returns the LAST match and never panics.
@@ -188,6 +193,11 @@ mod verification {
                 }
             }
         }
+
+        // Guard vacuity: verify end constraint is meaningful
+        kani::cover!(result.is_some(), "needle found in reverse");
+        kani::cover!(result.is_none(), "needle not found in reverse");
+        kani::cover!(end < 16, "non-full end position");
     }
 
     /// Prove find_byte_iter yields ALL positions of needle, in ascending
