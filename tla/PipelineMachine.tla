@@ -39,11 +39,9 @@ EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
     Sources,               \* Set of source identifiers (use symmetry in MC file)
-    MaxBatchesPerSource,   \* Max batch IDs to explore per source
-    EnableForceStop        \* TRUE to model emergency hard-kill; FALSE for normal-path proofs
+    MaxBatchesPerSource    \* Max batch IDs to explore per source
 
 ASSUME MaxBatchesPerSource \in Nat /\ MaxBatchesPerSource >= 1
-ASSUME EnableForceStop \in BOOLEAN
 
 BatchIds == 1..MaxBatchesPerSource
 
@@ -61,9 +59,10 @@ VARIABLES
     created,     \* [Sources -> SUBSET BatchIds] — assigned via create_batch
     in_flight,   \* [Sources -> SUBSET BatchIds] — after begin_send, before apply_ack
     acked,       \* [Sources -> SUBSET BatchIds] — after apply_ack (ack or reject)
-    committed    \* [Sources -> Nat]  — highest committed batch sequence (0 = none)
+    committed,   \* [Sources -> Nat]  — highest committed batch sequence (0 = none)
+    forced       \* BOOLEAN — TRUE if ForceStop was used (data loss accepted)
 
-vars == <<phase, created, in_flight, acked, committed>>
+vars == <<phase, created, in_flight, acked, committed, forced>>
 
 (* ---------------------------------------------------------------------------
  * Helper operators
@@ -93,6 +92,7 @@ NewCommitted(new_acked_s, new_in_flight_s) ==
 
 TypeOK ==
     /\ phase \in {"Running", "Draining", "Stopped"}
+    /\ forced \in BOOLEAN
     /\ \A s \in Sources :
         /\ created[s]   \subseteq BatchIds
         /\ in_flight[s] \subseteq created[s]
@@ -111,6 +111,7 @@ Init ==
     /\ in_flight  = [s \in Sources |-> {}]
     /\ acked      = [s \in Sources |-> {}]
     /\ committed  = [s \in Sources |-> 0]
+    /\ forced     = FALSE
 
 (* ---------------------------------------------------------------------------
  * Actions
@@ -123,7 +124,7 @@ CreateBatch(s) ==
     /\ phase = "Running"
     /\ next_id \in BatchIds
     /\ created'   = [created   EXCEPT ![s] = created[s] \cup {next_id}]
-    /\ UNCHANGED <<phase, in_flight, acked, committed>>
+    /\ UNCHANGED <<phase, in_flight, acked, committed, forced>>
 
 \* begin_send: machine takes ownership of batch b for source s.
 \* A Queued ticket dropped before begin_send has no machine state — safe.
@@ -137,7 +138,7 @@ BeginSend(s, b) ==
     /\ b \notin in_flight[s]
     /\ b \notin acked[s]
     /\ in_flight' = [in_flight EXCEPT ![s] = in_flight[s] \cup {b}]
-    /\ UNCHANGED <<phase, created, acked, committed>>
+    /\ UNCHANGED <<phase, created, acked, committed, forced>>
 
 \* apply_ack (ack OR reject): batch leaves in_flight, checkpoint may advance.
 \*
@@ -159,7 +160,7 @@ AckBatch(s, b) ==
        /\ in_flight' = [in_flight EXCEPT ![s] = new_in_flight_s]
        /\ acked'     = [acked     EXCEPT ![s] = new_acked_s]
        /\ committed' = [committed EXCEPT ![s] = NewCommitted(new_acked_s, new_in_flight_s)]
-    /\ UNCHANGED <<phase, created>>
+    /\ UNCHANGED <<phase, created, forced>>
 
 RejectBatch(s, b) == AckBatch(s, b)
 
@@ -167,7 +168,7 @@ RejectBatch(s, b) == AckBatch(s, b)
 BeginDrain ==
     /\ phase = "Running"
     /\ phase' = "Draining"
-    /\ UNCHANGED <<created, in_flight, acked, committed>>
+    /\ UNCHANGED <<created, in_flight, acked, committed, forced>>
 
 \* stop: THE DRAIN GUARANTEE.
 \* Rust: PipelineMachine<Draining, C>::stop() returns Err(self) if not drained.
@@ -191,7 +192,7 @@ Stop ==
     /\ \A s \in Sources : in_flight[s] = {}                    \* no active sends
     /\ \A s \in Sources : acked[s] \subseteq 1..committed[s]  \* no pending_acks (≡ is_drained())
     /\ phase' = "Stopped"
-    /\ UNCHANGED <<created, in_flight, acked, committed>>
+    /\ UNCHANGED <<created, in_flight, acked, committed, forced>>
 
 \* force_stop: emergency shutdown when grace period expires.
 \* Discards in-flight state. Every production system has an equivalent:
@@ -199,17 +200,18 @@ Stop ==
 \*   Fluent Bit: grace timer expiry → flb_engine_shutdown()
 \*   OTel: context.WithTimeout cancellation
 \*
-\* Properties that hold after ForceStop: TypeOK (still in Stopped phase).
-\* Properties that DO NOT hold after ForceStop: DrainCompleteness (in_flight
-\* may have been non-empty). This is intentional — ForceStop is the
-\* explicit policy decision to accept data loss in exchange for liveness.
+\* ForceStop is always in Next (production reality: the kill switch always exists).
+\* The `forced` flag records that it fired so DrainCompleteness can be conditioned on
+\* ~forced. All other invariants hold regardless.
 \*
-\* Controlled by the EnableForceStop constant in .cfg files — no manual spec edits
-\* needed. Normal-path configs set EnableForceStop = FALSE; ForceStop model sets TRUE.
-\* With ForceStop enabled, DrainCompleteness is NOT checked (remove from INVARIANTS).
+\* NOTE: WF(ForceStop) is intentionally NOT in Fairness. ForceStop is an escape
+\* hatch, not a scheduled event. Without WF, liveness checks (EventualDrain,
+\* NoBatchLeftBehind) still require the normal path to work — TLC cannot satisfy
+\* them by always choosing the ForceStop shortcut.
 ForceStop ==
     /\ phase = "Draining"
     /\ phase' = "Stopped"
+    /\ forced' = TRUE
     /\ UNCHANGED <<created, in_flight, acked, committed>>
 
 (* ---------------------------------------------------------------------------
@@ -224,7 +226,7 @@ Next ==
           b \in BatchIds        : AckBatch(s, b)
     \/ BeginDrain
     \/ Stop
-    \/ EnableForceStop /\ ForceStop    \* controlled by model constant in .cfg
+    \/ ForceStop
 
 (*
  * Fairness:
@@ -261,10 +263,12 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 NoDoubleComplete ==
     \A s \in Sources : in_flight[s] \cap acked[s] = {}
 
-\* THE DRAIN GUARANTEE: Stopped implies in_flight is empty for all sources.
-\* Violated by ForceStop. Include this invariant ONLY in the no-ForceStop model.
+\* THE DRAIN GUARANTEE: normal-path Stop implies in_flight is empty for all sources.
+\* Conditioned on ~forced: ForceStop intentionally bypasses this guarantee (data
+\* loss accepted in exchange for liveness). The `forced` flag records which path
+\* was taken so this invariant can be checked unconditionally in all configs.
 DrainCompleteness ==
-    phase = "Stopped" => \A s \in Sources : in_flight[s] = {}
+    (phase = "Stopped" /\ ~forced) => \A s \in Sources : in_flight[s] = {}
 
 \* in_flight cannot grow once drain begins.
 \* This is what makes WF(Stop) sufficient — once in_flight[s] = {} is reached

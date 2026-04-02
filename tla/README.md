@@ -73,12 +73,12 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 > that must be distinct for temporal reasoning, silently producing unsound results.
 > SYMMETRY is safe only for safety (INVARIANT) checks.
 
-**Model 3 — Safety with ForceStop (EnableForceStop=TRUE):**
+**Model 3 — Safety with ForceStop:**
 
-```text
-Set EnableForceStop = TRUE in constants. Remove DrainCompleteness from INVARIANTS.
-Verifies: Stopped is reachable even with in_flight > 0; all other invariants hold.
-```
+ForceStop is always in `Next` — no separate config needed. The `forced` flag
+records when it fired, and `DrainCompleteness` is conditioned on `~forced`, so
+all configs check it unconditionally. To verify ForceStop-specific behavior, run
+the safety config and inspect the `forced=TRUE` traces in TLC's error output.
 
 **Model 4 — Coverage / reachability (vacuity guards):**
 
