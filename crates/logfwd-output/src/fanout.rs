@@ -75,16 +75,19 @@ impl OutputSink for FanOut {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        let mut failed_sinks = Vec::new();
         let mut first_err: Option<io::Error> = None;
         for sink in &mut self.sinks {
-            if let Err(e) = sink.flush()
-                && first_err.is_none()
-            {
-                first_err = Some(e);
+            if let Err(e) = sink.flush() {
+                eprintln!("fanout: sink '{}' failed to flush: {e}", sink.name());
+                failed_sinks.push(sink.name().to_string());
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
             }
         }
         match first_err {
-            Some(e) => Err(e),
+            Some(e) => Err(io::Error::other(FanOutError::new(failed_sinks, e))),
             None => Ok(()),
         }
     }
@@ -260,6 +263,43 @@ mod tests {
         let b = b_base.with_fail_flush();
         let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
         assert!(fanout.flush().is_err());
+    }
+
+    #[test]
+    fn flush_all_fail_all_names_captured() {
+        // Both sinks fail to flush — both names must appear in the error.
+        let (a_base, _, _) = MockSink::new("alice", false);
+        let (b_base, _, _) = MockSink::new("bob", false);
+        let a = a_base.with_fail_flush();
+        let b = b_base.with_fail_flush();
+        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
+        let err = fanout.flush().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("alice") && msg.contains("bob"),
+            "both sink names expected in flush error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn flush_first_fails_second_still_called() {
+        // FanOut flush must NOT short-circuit — both sinks must be called even if the first fails.
+        let (a_base, _, a_flush) = MockSink::new("a", false);
+        let (b_base, _, b_flush) = MockSink::new("b", false);
+        let a = a_base.with_fail_flush();
+        let b = b_base.with_fail_flush();
+        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
+        fanout.flush().unwrap_err();
+        assert_eq!(
+            a_flush.load(Ordering::Relaxed),
+            1,
+            "first sink must be flushed"
+        );
+        assert_eq!(
+            b_flush.load(Ordering::Relaxed),
+            1,
+            "second sink must be flushed even after first fails"
+        );
     }
 
     #[test]
