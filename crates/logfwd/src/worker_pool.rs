@@ -897,7 +897,7 @@ mod tests {
             Box::pin(async move {
                 calls.fetch_add(1, Ordering::Relaxed);
                 if fail {
-                    Err(io::Error::new(io::ErrorKind::Other, "injected failure"))
+                    Err(io::Error::other("injected failure"))
                 } else {
                     Ok(SendResult::Ok)
                 }
@@ -935,7 +935,7 @@ mod tests {
             }))
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "counting"
         }
     }

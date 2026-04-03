@@ -1101,7 +1101,7 @@ mod tests {
         std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
 
         let yaml = format!(
-            r#"
+            r"
 input:
   type: file
   path: {}
@@ -1109,7 +1109,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
             log_path.display()
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
@@ -1163,7 +1163,7 @@ output:
         std::fs::write(&log_path, data.as_bytes()).unwrap();
 
         let yaml = format!(
-            r#"
+            r"
 input:
   type: file
   path: {}
@@ -1171,7 +1171,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
             log_path.display()
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
@@ -1220,7 +1220,7 @@ output:
         std::fs::write(&log_path, data.as_bytes()).unwrap();
 
         let yaml = format!(
-            r#"
+            r"
 input:
   type: file
   path: {}
@@ -1228,7 +1228,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
             log_path.display()
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();

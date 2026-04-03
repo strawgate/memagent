@@ -235,9 +235,9 @@ fn compliance_special_chars_in_values() {
         let val = get_str(batch, "msg", 0).expect("msg should exist");
         // Scanner stores raw escape sequences, so the value should contain
         // the literal backslash-n, backslash-t etc.
-        assert!(val.contains(r#"\n"#), "missing \\n in: {val}");
-        assert!(val.contains(r#"\t"#), "missing \\t in: {val}");
-        assert!(val.contains(r#"\\"#), "missing \\\\ in: {val}");
+        assert!(val.contains(r"\n"), "missing \\n in: {val}");
+        assert!(val.contains(r"\t"), "missing \\t in: {val}");
+        assert!(val.contains(r"\\"), "missing \\\\ in: {val}");
     });
 }
 
@@ -645,7 +645,7 @@ fn compliance_very_long_key() {
     let input = format!("{{\"{key}\":\"val\"}}\n");
     assert_both_scanners(input.as_bytes(), |batch| {
         assert_eq!(batch.num_rows(), 1);
-        let col_name = format!("{key}");
+        let col_name = key.to_string();
         assert_eq!(get_str(batch, &col_name, 0), Some("val".to_string()));
     });
 }

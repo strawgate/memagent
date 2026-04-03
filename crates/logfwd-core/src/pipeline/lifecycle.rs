@@ -1181,7 +1181,7 @@ mod proptests {
             }
 
             // in_flight_count matches our tracking
-            let our_count: usize = sending.values().map(|v| v.len()).sum();
+            let our_count: usize = sending.values().map(alloc::vec::Vec::len).sum();
             prop_assert_eq!(running.in_flight_count(), our_count);
         }
 

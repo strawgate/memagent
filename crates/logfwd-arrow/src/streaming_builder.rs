@@ -430,7 +430,7 @@ impl StreamingBuilder {
                 num_rows
             );
             let mut builder = StringViewBuilder::new();
-            let block = builder.append_block(arrow_buf.clone());
+            let block = builder.append_block(arrow_buf);
 
             for row in 0..num_rows {
                 if row < self.raw_views.len() {
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_basic_string_and_int() {
-        let json = br#"not used directly"#;
+        let json = br"not used directly";
         let buf = bytes::Bytes::from(json.to_vec());
         let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf.clone());

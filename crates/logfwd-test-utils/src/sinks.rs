@@ -175,7 +175,7 @@ mod tests {
 
         // Release the token from another thread after a short delay.
         let release_delay = Duration::from_millis(100);
-        let t = token.clone();
+        let t = token;
         let handle = std::thread::spawn(move || {
             std::thread::sleep(release_delay);
             t.cancel();

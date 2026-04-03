@@ -784,7 +784,7 @@ mod tests {
     fn test_simple_passthrough() {
         let batch = make_test_batch();
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
-        let result = transform.execute_blocking(batch.clone()).unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
         assert_eq!(result.num_rows(), 4);
         assert_eq!(result.num_columns(), 3);
         // Verify data matches.
@@ -1065,7 +1065,7 @@ mod tests {
         let a = QueryAnalyzer::new("SELECT * FROM logs WHERE facility IN (1, 4, 16)").unwrap();
         let h = a.filter_hints();
         let mut facs = h.facilities.unwrap();
-        facs.sort();
+        facs.sort_unstable();
         assert_eq!(facs, vec![1, 4, 16]);
     }
 

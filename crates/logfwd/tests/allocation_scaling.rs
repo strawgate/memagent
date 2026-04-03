@@ -68,7 +68,7 @@ output:
         }
     });
 
-    let reg = Region::new(&GLOBAL);
+    let reg = Region::new(GLOBAL);
     pipeline.run(&shutdown).unwrap();
     let stats = reg.change();
 

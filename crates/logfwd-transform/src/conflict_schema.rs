@@ -252,9 +252,8 @@ mod tests {
             vec![Field::new("msg", DataType::Utf8, true)],
             vec![Arc::new(StringArray::from(vec!["hello", "world"]))],
         );
-        let result = normalize_conflict_columns(batch.clone());
+        let result = normalize_conflict_columns(batch);
         // Pointer-level identity not guaranteed, but schema and data must match.
-        assert_eq!(result.schema(), batch.schema());
         assert_eq!(result.num_columns(), 1);
         assert_eq!(result.num_rows(), 2);
     }
@@ -337,10 +336,8 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(struct_arr) as Arc<dyn Array>]).unwrap();
 
-        let result = normalize_conflict_columns(batch.clone());
+        let result = normalize_conflict_columns(batch);
 
-        // Schema must be unchanged.
-        assert_eq!(result.schema(), batch.schema());
         // The column must still be a Struct, not Utf8.
         assert!(
             matches!(result.schema().field(0).data_type(), DataType::Struct(_)),

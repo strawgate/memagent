@@ -92,7 +92,7 @@ fn test_query_arrow_all_documents() {
         ES_ENDPOINT.to_string(),
         TEST_INDEX.to_string(),
         vec![],
-        stats.clone(),
+        stats,
     );
 
     // Setup test data
@@ -106,7 +106,7 @@ fn test_query_arrow_all_documents() {
         Ok(batches) => {
             assert!(!batches.is_empty(), "expected at least one batch");
 
-            let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            let total_rows: usize = batches.iter().map(arrow::array::RecordBatch::num_rows).sum();
             assert_eq!(total_rows, 5, "expected 5 rows in query result");
 
             // Verify schema contains expected fields
@@ -158,7 +158,7 @@ fn test_query_arrow_with_filter() {
         ES_ENDPOINT.to_string(),
         TEST_INDEX.to_string(),
         vec![],
-        stats.clone(),
+        stats,
     );
 
     // Setup test data
@@ -173,7 +173,7 @@ fn test_query_arrow_with_filter() {
 
     match result {
         Ok(batches) => {
-            let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            let total_rows: usize = batches.iter().map(arrow::array::RecordBatch::num_rows).sum();
             assert_eq!(total_rows, 2, "expected 2 ERROR rows");
 
             println!(
@@ -211,7 +211,7 @@ fn test_query_arrow_with_projection() {
         ES_ENDPOINT.to_string(),
         TEST_INDEX.to_string(),
         vec![],
-        stats.clone(),
+        stats,
     );
 
     // Setup test data
@@ -272,7 +272,7 @@ fn test_query_arrow_empty_result() {
         ES_ENDPOINT.to_string(),
         TEST_INDEX.to_string(),
         vec![],
-        stats.clone(),
+        stats,
     );
 
     // Query non-existent index (should return empty or error gracefully)
@@ -281,7 +281,7 @@ fn test_query_arrow_empty_result() {
 
     match result {
         Ok(batches) => {
-            let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            let total_rows: usize = batches.iter().map(arrow::array::RecordBatch::num_rows).sum();
             assert_eq!(total_rows, 0, "expected 0 rows from non-existent index");
             println!("✓ Empty result handled correctly");
         }

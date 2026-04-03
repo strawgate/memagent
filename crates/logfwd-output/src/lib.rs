@@ -1897,7 +1897,7 @@ mod write_row_json_proptests {
             let schema = Arc::new(Schema::new(vec![
                 Field::new("count_int", DataType::Int64, true),
             ]));
-            let arr: Int64Array = values.iter().map(|v| *v).collect();
+            let arr: Int64Array = values.iter().copied().collect();
             let batch = RecordBatch::try_new(
                 schema,
                 vec![Arc::new(arr)],
@@ -1906,7 +1906,7 @@ mod write_row_json_proptests {
             for row in 0..batch.num_rows() {
                 let json_str = render_row(&batch, row);
                 let parsed: serde_json::Value = serde_json::from_str(&json_str)
-                    .expect(&format!("row {row} must produce valid JSON, got: {json_str}"));
+                    .unwrap_or_else(|_| panic!("row {row} must produce valid JSON, got: {json_str}"));
                 prop_assert!(parsed.is_object(), "output must be a JSON object");
             }
         }
@@ -1967,7 +1967,7 @@ mod write_row_json_proptests {
             for (row, expected_val) in raw_values.iter().enumerate() {
                 let json_str = render_row(&batch, row);
                 let parsed: serde_json::Value = serde_json::from_str(&json_str)
-                    .expect(&format!("row {row}: invalid JSON: {json_str}"));
+                    .unwrap_or_else(|_| panic!("row {row}: invalid JSON: {json_str}"));
                 let obj = parsed.as_object().unwrap();
                 prop_assert!(
                     obj.contains_key(field_base.as_str()),
@@ -2007,7 +2007,7 @@ mod write_row_json_proptests {
             for (row, &expected_val) in raw_values.iter().enumerate() {
                 let json_str = render_row(&batch, row);
                 let parsed: serde_json::Value = serde_json::from_str(&json_str)
-                    .expect(&format!("row {row}: invalid JSON: {json_str}"));
+                    .unwrap_or_else(|_| panic!("row {row}: invalid JSON: {json_str}"));
                 let obj = parsed.as_object().unwrap();
                 prop_assert!(obj.contains_key(field_base.as_str()));
                 let got = obj[field_base.as_str()].as_f64().unwrap();

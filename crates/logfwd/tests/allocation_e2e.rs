@@ -83,7 +83,7 @@ output:
     });
 
     // Run the pipeline and measure total allocations.
-    let reg = Region::new(&GLOBAL);
+    let reg = Region::new(GLOBAL);
     pipeline.run(&shutdown).unwrap();
     let stats = reg.change();
 

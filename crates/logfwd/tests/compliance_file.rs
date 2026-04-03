@@ -41,7 +41,7 @@ fn build_pipeline(yaml: &str) -> Pipeline {
 /// Build a simple pipeline config YAML for a single file input.
 fn file_pipeline_yaml(log_path: &std::path::Path) -> String {
     format!(
-        r#"
+        r"
 input:
   type: file
   path: {}
@@ -49,7 +49,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
         log_path.display()
     )
 }
@@ -331,7 +331,7 @@ fn compliance_file_grows_while_running() {
     std::thread::sleep(Duration::from_millis(300));
 
     // Append 100 lines every 50ms for 2 seconds (40 iterations).
-    let log_path_clone = log_path.clone();
+    let log_path_clone = log_path;
     let writer_handle = std::thread::spawn(move || {
         for batch in 0..40 {
             let start = 100 + batch * 100;

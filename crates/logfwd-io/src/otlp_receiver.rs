@@ -1062,7 +1062,7 @@ mod tests {
         let port = receiver.local_addr().port();
         let url = format!("http://127.0.0.1:{port}/v1/logs");
 
-        let bad_bodies = [r#"{}"#, r#"{"foo":"bar"}"#, r#"{"resourceLogs":null}"#];
+        let bad_bodies = [r"{}", r#"{"foo":"bar"}"#, r#"{"resourceLogs":null}"#];
         for body in &bad_bodies {
             let result = ureq::post(&url)
                 .header("content-type", "application/json")

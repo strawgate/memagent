@@ -68,7 +68,7 @@ fn test_happy_path_json_output() {
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
     let yaml = format!(
-        r#"
+        r"
 input:
   type: file
   path: {}
@@ -76,7 +76,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
         log_path.display()
     );
     let config = Config::load_str(&yaml).unwrap();
@@ -120,7 +120,7 @@ fn test_cri_format_parsing() {
     std::fs::write(&log_path, cri_data.as_bytes()).unwrap();
 
     let yaml = format!(
-        r#"
+        r"
 input:
   type: file
   path: {}
@@ -128,7 +128,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
         log_path.display()
     );
     let config = Config::load_str(&yaml).unwrap();
@@ -316,7 +316,7 @@ fn test_file_rotation_no_data_loss() {
     std::fs::write(&log_path, pre_data.as_bytes()).unwrap();
 
     let yaml = format!(
-        r#"
+        r"
 input:
   type: file
   path: {}
@@ -324,7 +324,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
         log_path.display()
     );
     let config = Config::load_str(&yaml).unwrap();
@@ -333,7 +333,7 @@ output:
 
     let shutdown = CancellationToken::new();
     let sd_run = shutdown.clone();
-    let sd_write = shutdown.clone();
+    let sd_write = shutdown;
 
     // Write post-rotation data in a background thread.
     std::thread::spawn(move || {
@@ -388,12 +388,12 @@ fn test_config_validation_errors() {
     assert!(!msg.is_empty(), "error message should not be empty");
 
     // Missing required 'path' for a file input.
-    let missing_path = r#"
+    let missing_path = r"
 input:
   type: file
 output:
   type: stdout
-"#;
+";
     let result = Config::load_str(missing_path);
     assert!(
         result.is_err(),
@@ -410,13 +410,13 @@ output:
     let dummy = dir.path().join("x.log");
     std::fs::write(&dummy, b"").unwrap();
     let missing_endpoint = format!(
-        r#"
+        r"
 input:
   type: file
   path: {}
 output:
   type: otlp
-"#,
+",
         dummy.display()
     );
     let result = Config::load_str(&missing_endpoint);
@@ -435,7 +435,7 @@ output:
     let log = dir.path().join("app.log");
     std::fs::write(&log, b"").unwrap();
     let valid = format!(
-        r#"
+        r"
 input:
   type: file
   path: {}
@@ -443,7 +443,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
         log.display()
     );
     assert!(Config::load_str(&valid).is_ok(), "valid config should load");
