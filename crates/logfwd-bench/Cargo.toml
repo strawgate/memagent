@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = "1"
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+pprof = { version = "0.14", features = ["flamegraph"] }
 
 [[bench]]
 name = "pipeline"
@@ -25,6 +26,10 @@ harness = false
 [[bench]]
 name = "elasticsearch_arrow"
 harness = false
+
+[[bin]]
+name = "es-throughput"
+path = "src/es_throughput.rs"
 
 [lints]
 workspace = true
