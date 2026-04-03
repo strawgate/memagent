@@ -59,7 +59,11 @@ impl ElasticsearchAsyncSink {
     /// Each row produces two lines:
     /// 1. Action: `{"index":{"_index":"<index>"}}`
     /// 2. Document: JSON-serialized record, with `@timestamp` injected if absent.
-    pub fn serialize_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()> {
+    pub fn serialize_batch(
+        &mut self,
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+    ) -> io::Result<()> {
         self.batch_buf.clear();
         let num_rows = batch.num_rows();
         if num_rows == 0 {
@@ -185,7 +189,11 @@ impl ElasticsearchAsyncSink {
         for (k, v) in &self.config.headers {
             req = req.header(k.clone(), v.clone());
         }
-        let response = req.body(query_bytes).send().await.map_err(io::Error::other)?;
+        let response = req
+            .body(query_bytes)
+            .send()
+            .await
+            .map_err(io::Error::other)?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -213,7 +221,8 @@ impl ElasticsearchAsyncSink {
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
         depth: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>>
+    {
         Box::pin(async move {
             const MAX_SPLIT_DEPTH: usize = 6; // up to 64 sub-batches
 
@@ -249,9 +258,10 @@ impl ElasticsearchAsyncSink {
                     Ok(result)
                 }
                 // Reactive split on 413 — server limit lower than our max_bulk_bytes.
-                Err(e) if e.kind() == io::ErrorKind::InvalidInput
-                    && n > 1
-                    && depth < MAX_SPLIT_DEPTH =>
+                Err(e)
+                    if e.kind() == io::ErrorKind::InvalidInput
+                        && n > 1
+                        && depth < MAX_SPLIT_DEPTH =>
                 {
                     self.send_split_halves(batch, metadata, depth).await
                 }
@@ -352,9 +362,7 @@ impl super::sink::Sink for ElasticsearchAsyncSink {
         metadata: &'a BatchMetadata,
     ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>>
     {
-        Box::pin(async move {
-            self.send_batch_inner(batch, metadata, 0).await
-        })
+        Box::pin(async move { self.send_batch_inner(batch, metadata, 0).await })
     }
 
     fn flush(&mut self) -> std::pin::Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
@@ -575,8 +583,7 @@ mod tests {
     #[test]
     fn parse_bulk_response_success() {
         let response = br#"{"took":5,"errors":false,"items":[{"index":{"_id":"1","status":201}}]}"#;
-        ElasticsearchAsyncSink::parse_bulk_response(response)
-            .expect("should not error on success");
+        ElasticsearchAsyncSink::parse_bulk_response(response).expect("should not error on success");
     }
 
     #[test]
@@ -698,8 +705,7 @@ mod tests {
     #[test]
     fn parse_bulk_response_empty_items_array() {
         let response = br#"{"took":0,"errors":false,"items":[]}"#;
-        ElasticsearchAsyncSink::parse_bulk_response(response)
-            .expect("empty items should succeed");
+        ElasticsearchAsyncSink::parse_bulk_response(response).expect("empty items should succeed");
     }
 
     #[test]
@@ -721,8 +727,7 @@ mod tests {
     fn parse_bulk_response_errors_false_does_not_error() {
         // errors:false means success even if items have non-200 status
         let response = br#"{"took":1,"errors":false,"items":[{"index":{"_id":"1","status":200}}]}"#;
-        ElasticsearchAsyncSink::parse_bulk_response(response)
-            .expect("errors:false must succeed");
+        ElasticsearchAsyncSink::parse_bulk_response(response).expect("errors:false must succeed");
     }
 }
 

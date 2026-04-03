@@ -612,11 +612,9 @@ pub fn build_output_sink(
                 .map(|s| Box::new(s) as Box<dyn OutputSink>)
                 .map_err(|e| format!("output '{name}': udp_out bind failed: {e}"))
         }
-        OutputType::Elasticsearch => {
-            Err(format!(
-                "output '{name}': elasticsearch requires the async pipeline — use build_sink_factory() instead"
-            ))
-        }
+        OutputType::Elasticsearch => Err(format!(
+            "output '{name}': elasticsearch requires the async pipeline — use build_sink_factory() instead"
+        )),
         _ => Err(format!(
             "output '{name}': type {:?} not yet supported",
             cfg.output_type

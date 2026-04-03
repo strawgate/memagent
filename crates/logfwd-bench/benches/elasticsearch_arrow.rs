@@ -125,11 +125,7 @@ fn reset_index(rt: &Runtime) {
 }
 
 /// Benchmark Arrow IPC query performance.
-fn bench_arrow_query(
-    rt: &Runtime,
-    query: &str,
-    iterations: usize,
-) -> (f64, usize, f64) {
+fn bench_arrow_query(rt: &Runtime, query: &str, iterations: usize) -> (f64, usize, f64) {
     let client = reqwest::Client::new();
     let query_body = serde_json::json!({ "query": query });
     let query_bytes = serde_json::to_vec(&query_body).expect("serialize query");
@@ -176,7 +172,12 @@ fn bench_arrow_query(
 }
 
 /// Benchmark JSON query performance for comparison.
-fn bench_json_query(rt: &Runtime, endpoint: &str, query: &str, iterations: usize) -> (f64, usize, f64) {
+fn bench_json_query(
+    rt: &Runtime,
+    endpoint: &str,
+    query: &str,
+    iterations: usize,
+) -> (f64, usize, f64) {
     let client = reqwest::Client::new();
     let query_body = serde_json::json!({
         "query": query

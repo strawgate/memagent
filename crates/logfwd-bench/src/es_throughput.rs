@@ -70,6 +70,7 @@ fn gen_json_lines(n: usize) -> Vec<u8> {
     s.into_bytes()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_worker(
     worker_id: usize,
     index: String,
@@ -90,7 +91,10 @@ fn run_worker(
     let stats = Arc::new(ComponentStats::default());
     let name = format!("es-bench-{worker_id}");
     let endpoint = es_endpoint();
-    let headers = vec![("Authorization".to_string(), format!("ApiKey {}", es_api_key()))];
+    let headers = vec![(
+        "Authorization".to_string(),
+        format!("ApiKey {}", es_api_key()),
+    )];
 
     let factory = ElasticsearchSinkFactory::new(name, endpoint, index, headers, compress, stats)
         .expect("failed to create sink factory");
@@ -174,14 +178,25 @@ fn run_scenario(
     let start = Instant::now();
     let mut handles = vec![];
     for i in 0..workers {
-        let ev = Arc::clone(&total_events);
-        let ba = Arc::clone(&total_batches);
-        let er = Arc::clone(&total_errors);
-        let rb = Arc::clone(&total_raw_bytes);
-        let wb = Arc::clone(&total_wire_bytes);
+        let cnt_ev = Arc::clone(&total_events);
+        let cnt_bat = Arc::clone(&total_batches);
+        let cnt_err = Arc::clone(&total_errors);
+        let cnt_raw = Arc::clone(&total_raw_bytes);
+        let cnt_wire = Arc::clone(&total_wire_bytes);
         let index = indices[i % indices.len()].clone();
         handles.push(std::thread::spawn(move || {
-            run_worker(i, index, duration, batch_lines, compress, ev, ba, er, rb, wb);
+            run_worker(
+                i,
+                index,
+                duration,
+                batch_lines,
+                compress,
+                cnt_ev,
+                cnt_bat,
+                cnt_err,
+                cnt_raw,
+                cnt_wire,
+            );
         }));
     }
     for h in handles {
