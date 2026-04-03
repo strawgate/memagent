@@ -2428,6 +2428,7 @@ dependencies = [
  "logfwd-output",
  "opentelemetry",
  "proptest",
+ "tokio",
  "tokio-util",
 ]
 

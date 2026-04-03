@@ -3,6 +3,8 @@
 //! Run with: cargo bench -p logfwd-bench
 //! JSON output: cargo bench -p logfwd-bench -- --output-format bencher 2>/dev/null
 
+#![allow(deprecated)] // Benchmarks use sync OutputSink; migration tracked separately.
+
 use std::fmt::Write;
 use std::sync::Arc;
 

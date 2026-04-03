@@ -6,14 +6,16 @@
 //!
 //! The framework consists of:
 //!   - **Generator**: writes NDJSON test data with sequence IDs
-//!   - **CaptureSink**: an `OutputSink` that captures RecordBatches in memory
+//!   - **CaptureSink**: a [`Sink`] that captures RecordBatches in memory
 //!   - **Verifier**: extracts sequence IDs from captured batches and checks
 //!     for gaps, duplicates, and ordering violations
 //!   - **Pipeline helper**: builds a pipeline from YAML config with an
 //!     injected CaptureSink
 
 use std::collections::HashSet;
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,7 +24,8 @@ use arrow::record_batch::RecordBatch;
 
 use logfwd::pipeline::Pipeline;
 use logfwd_config::Config;
-use logfwd_output::{BatchMetadata, OutputSink};
+use logfwd_output::sink::{SendResult, Sink};
+use logfwd_output::BatchMetadata;
 use logfwd_test_utils::{generate_json_lines, test_meter};
 use tokio_util::sync::CancellationToken;
 
@@ -30,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 // CaptureSink (thread-safe, usable from integration tests)
 // ---------------------------------------------------------------------------
 
-/// An `OutputSink` that stores all received `RecordBatch`es in a shared
+/// A [`Sink`] that stores all received `RecordBatch`es in a shared
 /// `Arc<Mutex<Vec<RecordBatch>>>` for post-run verification.
 struct CaptureSink {
     name: String,
@@ -48,21 +51,29 @@ impl CaptureSink {
     }
 }
 
-impl OutputSink for CaptureSink {
-    fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
+impl Sink for CaptureSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        _metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
         self.batches
             .lock()
             .expect("CaptureSink lock poisoned")
             .push(batch.clone());
-        Ok(())
+        Box::pin(async { Ok(SendResult::Ok) })
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -235,7 +246,7 @@ fn run_compliance_pipeline(yaml: &str, timeout: Duration) -> Vec<RecordBatch> {
         .expect("failed to build pipeline");
 
     let (sink, captured) = CaptureSink::new("compliance-capture");
-    let mut pipeline = pipeline.with_output(Box::new(sink));
+    let mut pipeline = pipeline.with_sink(Box::new(sink));
 
     let shutdown = CancellationToken::new();
     let sd = shutdown.clone();

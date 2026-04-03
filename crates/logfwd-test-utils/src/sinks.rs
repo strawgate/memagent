@@ -1,9 +1,11 @@
 //! Reusable test sink implementations for the logfwd pipeline.
 //!
-//! These sinks implement [`OutputSink`] and simulate various output behaviors:
-//! discarding, slow I/O, frozen connections, and transient failures.
+//! These sinks implement the async [`Sink`] trait and simulate various output
+//! behaviors: discarding, slow I/O, frozen connections, and transient failures.
 
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -13,20 +15,31 @@ use std::time::Duration;
 use arrow::record_batch::RecordBatch;
 use tokio_util::sync::CancellationToken;
 
-use logfwd_output::{BatchMetadata, OutputSink};
+use logfwd_output::sink::{SendResult, Sink};
+use logfwd_output::BatchMetadata;
 
 /// A sink that discards all data.
 pub struct DevNullSink;
 
-impl OutputSink for DevNullSink {
-    fn send_batch(&mut self, _batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
-        Ok(())
+impl Sink for DevNullSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        _batch: &'a RecordBatch,
+        _metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+        Box::pin(async { Ok(SendResult::Ok) })
     }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
-    fn name(&self) -> &'static str {
+
+    fn name(&self) -> &str {
         "devnull"
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -36,16 +49,28 @@ pub struct SlowSink {
     pub delay: Duration,
 }
 
-impl OutputSink for SlowSink {
-    fn send_batch(&mut self, _batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
-        std::thread::sleep(self.delay);
-        Ok(())
+impl Sink for SlowSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        _batch: &'a RecordBatch,
+        _metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+        Box::pin(async move {
+            tokio::time::sleep(self.delay).await;
+            Ok(SendResult::Ok)
+        })
     }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
-    fn name(&self) -> &'static str {
+
+    fn name(&self) -> &str {
         "slow"
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -56,20 +81,28 @@ pub struct FrozenSink {
     pub release: CancellationToken,
 }
 
-impl OutputSink for FrozenSink {
-    fn send_batch(&mut self, _batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
-        // Block until released. In a real scenario this would be a
-        // hung HTTP connection or a deadlocked mutex.
-        while !self.release.is_cancelled() {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        Ok(())
+impl Sink for FrozenSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        _batch: &'a RecordBatch,
+        _metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+        Box::pin(async move {
+            self.release.cancelled().await;
+            Ok(SendResult::Ok)
+        })
     }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
-    fn name(&self) -> &'static str {
+
+    fn name(&self) -> &str {
         "frozen"
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -91,22 +124,35 @@ impl FailingSink {
     }
 }
 
-impl OutputSink for FailingSink {
-    fn send_batch(&mut self, _batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
+impl Sink for FailingSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        _batch: &'a RecordBatch,
+        _metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
         self.calls += 1;
-        if self.calls <= self.fail_count {
-            return Err(io::Error::other(format!(
-                "simulated output failure {}/{}",
-                self.calls, self.fail_count
-            )));
-        }
-        Ok(())
+        let calls = self.calls;
+        let fail_count = self.fail_count;
+        Box::pin(async move {
+            if calls <= fail_count {
+                return Err(io::Error::other(format!(
+                    "simulated output failure {calls}/{fail_count}",
+                )));
+            }
+            Ok(SendResult::Ok)
+        })
     }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
-    fn name(&self) -> &'static str {
+
+    fn name(&self) -> &str {
         "failing"
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -123,17 +169,27 @@ impl CountingSink {
     }
 }
 
-impl OutputSink for CountingSink {
-    fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
+impl Sink for CountingSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        _metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
         self.counter
             .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-        Ok(())
+        Box::pin(async { Ok(SendResult::Ok) })
     }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
-    fn name(&self) -> &'static str {
+
+    fn name(&self) -> &str {
         "counting"
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -156,47 +212,49 @@ mod tests {
         }
     }
 
-    #[test]
-    fn devnull_accepts_all() {
+    #[tokio::test]
+    async fn devnull_accepts_all() {
         let mut sink = DevNullSink;
-        assert!(sink.send_batch(&dummy_batch(), &dummy_metadata()).is_ok());
-        assert!(sink.flush().is_ok());
+        let batch = dummy_batch();
+        let meta = dummy_metadata();
+        assert!(sink.send_batch(&batch, &meta).await.is_ok());
+        assert!(sink.flush().await.is_ok());
         assert_eq!(sink.name(), "devnull");
     }
 
-    #[test]
-    fn failing_sink_fails_then_succeeds() {
+    #[tokio::test]
+    async fn failing_sink_fails_then_succeeds() {
         let mut sink = FailingSink::new(2);
         let batch = dummy_batch();
         let meta = dummy_metadata();
 
-        assert!(sink.send_batch(&batch, &meta).is_err()); // call 1
-        assert!(sink.send_batch(&batch, &meta).is_err()); // call 2
-        assert!(sink.send_batch(&batch, &meta).is_ok()); // call 3 — success
-        assert!(sink.send_batch(&batch, &meta).is_ok()); // call 4 — success
+        assert!(sink.send_batch(&batch, &meta).await.is_err()); // call 1
+        assert!(sink.send_batch(&batch, &meta).await.is_err()); // call 2
+        assert!(sink.send_batch(&batch, &meta).await.is_ok()); // call 3 — success
+        assert!(sink.send_batch(&batch, &meta).await.is_ok()); // call 4 — success
     }
 
-    #[test]
-    fn slow_sink_delays_send() {
+    #[tokio::test]
+    async fn slow_sink_delays_send() {
         let delay = Duration::from_millis(50);
         let mut sink = SlowSink { delay };
         let batch = dummy_batch();
         let meta = dummy_metadata();
 
         let start = std::time::Instant::now();
-        assert!(sink.send_batch(&batch, &meta).is_ok());
+        assert!(sink.send_batch(&batch, &meta).await.is_ok());
         assert!(
             start.elapsed() >= delay,
             "SlowSink should sleep at least {:?}, but only {:?} elapsed",
             delay,
             start.elapsed()
         );
-        assert!(sink.flush().is_ok());
+        assert!(sink.flush().await.is_ok());
         assert_eq!(sink.name(), "slow");
     }
 
-    #[test]
-    fn frozen_sink_blocks_until_released() {
+    #[tokio::test]
+    async fn frozen_sink_blocks_until_released() {
         let token = CancellationToken::new();
         let mut sink = FrozenSink {
             release: token.clone(),
@@ -204,16 +262,16 @@ mod tests {
         let batch = dummy_batch();
         let meta = dummy_metadata();
 
-        // Release the token from another thread after a short delay.
+        // Release the token from a spawned task after a short delay.
         let release_delay = Duration::from_millis(100);
         let t = token.clone();
-        let handle = std::thread::spawn(move || {
-            std::thread::sleep(release_delay);
+        tokio::spawn(async move {
+            tokio::time::sleep(release_delay).await;
             t.cancel();
         });
 
         let start = std::time::Instant::now();
-        assert!(sink.send_batch(&batch, &meta).is_ok());
+        assert!(sink.send_batch(&batch, &meta).await.is_ok());
         // Allow 20% scheduling jitter below the release delay.
         let min_expected = release_delay * 80 / 100;
         assert!(
@@ -221,8 +279,19 @@ mod tests {
             "FrozenSink should block until released, but only {:?} elapsed (expected >= {min_expected:?})",
             start.elapsed()
         );
-        handle.join().expect("release thread should not panic");
-        assert!(sink.flush().is_ok());
+        assert!(sink.flush().await.is_ok());
         assert_eq!(sink.name(), "frozen");
+    }
+
+    #[tokio::test]
+    async fn counting_sink_counts_rows() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let mut sink = CountingSink::new(Arc::clone(&counter));
+        let batch = dummy_batch();
+        let meta = dummy_metadata();
+
+        sink.send_batch(&batch, &meta).await.unwrap();
+        sink.send_batch(&batch, &meta).await.unwrap();
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
     }
 }
