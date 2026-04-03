@@ -750,12 +750,7 @@ impl FileTailer {
         self.files
             .iter()
             .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
-            .map(|(_, tailed)| {
-                (
-                    tailed.identity.source_id(),
-                    ByteOffset(tailed.offset),
-                )
-            })
+            .map(|(_, tailed)| (tailed.identity.source_id(), ByteOffset(tailed.offset)))
             .collect()
     }
 
