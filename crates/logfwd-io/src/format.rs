@@ -527,3 +527,87 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani proofs
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// inject_cri_metadata always produces a non-empty output ending with '\n'.
+    ///
+    /// This holds for both JSON messages (starts with '{') and plain-text
+    /// messages (wraps as _raw).  The trailing newline is required so that the
+    /// downstream scanner can split on line boundaries.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verify_inject_cri_metadata_ends_with_newline() {
+        let msg: [u8; 4] = kani::any();
+        let ts = b"TS";
+        let stream = b"S";
+        let mut out = Vec::new();
+        inject_cri_metadata(&msg, ts, stream, &mut out);
+        assert!(!out.is_empty(), "output must be non-empty");
+        assert_eq!(*out.last().unwrap(), b'\n', "output must end with newline");
+        kani::cover!(msg[0] == b'{', "JSON message path exercised");
+        kani::cover!(msg[0] != b'{', "plain text path exercised");
+    }
+
+    /// inject_cri_metadata always produces output starting with '{'.
+    ///
+    /// Both the JSON injection path and the _raw wrapper path open with '{'
+    /// so the downstream scanner always sees a well-formed JSON object start.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verify_inject_cri_metadata_starts_with_brace() {
+        let msg: [u8; 4] = kani::any();
+        let ts = b"TS";
+        let stream = b"S";
+        let mut out = Vec::new();
+        inject_cri_metadata(&msg, ts, stream, &mut out);
+        assert_eq!(out[0], b'{', "output must start with '{'");
+        kani::cover!(msg[0] == b'{', "JSON path exercised");
+        kani::cover!(msg[0] != b'{', "plain text path exercised");
+    }
+
+    /// For JSON messages (starting with '{'), inject_cri_metadata injects the
+    /// _timestamp and _stream fields at the front of the object.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verify_inject_json_msg_gets_metadata_prefix() {
+        let mut msg = [0u8; 4];
+        msg[0] = b'{';
+        msg[1] = kani::any();
+        msg[2] = kani::any();
+        msg[3] = kani::any();
+        let ts = b"TS";
+        let stream = b"S";
+        let mut out = Vec::new();
+        inject_cri_metadata(&msg, ts, stream, &mut out);
+        // Output must start with the timestamp+stream injection prefix.
+        assert!(out.starts_with(b"{\"_timestamp\":\"TS\",\"_stream\":\"S\","));
+        kani::cover!(true, "JSON path metadata prefix verified");
+    }
+
+    /// For non-JSON messages (not starting with '{'), inject_cri_metadata wraps
+    /// the content in a {"_raw":"..."} object so no message content is lost.
+    ///
+    /// This is the Auto-mode fallthrough path: when CRI parsing succeeds but
+    /// the message body is not a JSON object, the plain text is preserved in
+    /// the _raw field rather than being silently discarded.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verify_inject_non_json_msg_uses_raw_key() {
+        let msg: [u8; 4] = kani::any();
+        kani::assume(msg[0] != b'{');
+        let ts = b"TS";
+        let stream = b"S";
+        let mut out = Vec::new();
+        inject_cri_metadata(&msg, ts, stream, &mut out);
+        // Output must start with the _raw wrapper prefix (no message content is lost).
+        assert!(out.starts_with(b"{\"_timestamp\":\"TS\",\"_stream\":\"S\",\"_raw\":\""));
+        kani::cover!(true, "plain text path _raw wrapper verified");
+    }
+}

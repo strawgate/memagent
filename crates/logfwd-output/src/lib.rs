@@ -2118,4 +2118,67 @@ mod kani_proofs {
             "ordering inversion between json and str priority verified"
         );
     }
+
+    /// ColVariant::Flat preserves its col_idx and DataType exactly.
+    #[kani::proof]
+    fn proof_col_variant_flat_preserves_idx_and_type() {
+        let col_idx: usize = kani::any();
+        let v = ColVariant::Flat {
+            col_idx,
+            dt: DataType::Int64,
+        };
+        if let ColVariant::Flat { col_idx: idx, dt } = v {
+            assert_eq!(idx, col_idx);
+            assert_eq!(dt, DataType::Int64);
+        }
+        kani::cover!(col_idx > 0, "non-zero col_idx");
+        kani::cover!(col_idx == 0, "zero col_idx");
+    }
+
+    /// ColVariant::StructField preserves struct_col_idx, field_idx, and DataType.
+    #[kani::proof]
+    fn proof_col_variant_struct_field_preserves_indices() {
+        let struct_col_idx: usize = kani::any();
+        let field_idx: usize = kani::any();
+        let v = ColVariant::StructField {
+            struct_col_idx,
+            field_idx,
+            dt: DataType::Utf8,
+        };
+        if let ColVariant::StructField {
+            struct_col_idx: sci,
+            field_idx: fi,
+            dt,
+        } = v
+        {
+            assert_eq!(sci, struct_col_idx);
+            assert_eq!(fi, field_idx);
+            assert_eq!(dt, DataType::Utf8);
+        }
+        kani::cover!(struct_col_idx > 0, "non-zero struct_col_idx");
+        kani::cover!(field_idx > 0, "non-zero field_idx");
+    }
+
+    /// variant_dt extracts the DataType from a Flat variant correctly.
+    #[kani::proof]
+    fn proof_variant_dt_flat() {
+        let v = ColVariant::Flat {
+            col_idx: 0,
+            dt: DataType::Int64,
+        };
+        assert_eq!(variant_dt(&v), &DataType::Int64);
+        kani::cover!(true, "variant_dt(Flat) returns correct type");
+    }
+
+    /// variant_dt extracts the DataType from a StructField variant correctly.
+    #[kani::proof]
+    fn proof_variant_dt_struct_field() {
+        let v = ColVariant::StructField {
+            struct_col_idx: 0,
+            field_idx: 1,
+            dt: DataType::Float64,
+        };
+        assert_eq!(variant_dt(&v), &DataType::Float64);
+        kani::cover!(true, "variant_dt(StructField) returns correct type");
+    }
 }

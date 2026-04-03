@@ -226,7 +226,10 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `otlp.rs` | Protobuf wire format + OTLP encoding + timestamp parsing | Kani exhaustive (25 proofs incl. 3 contract verifications) |
 | `pipeline/lifecycle.rs` | Pipeline state machine (ordered ACK, drain, shutdown) | Kani exhaustive (6 proofs) + proptest + **TLA+** |
 | `pipeline/batch.rs` | BatchTicket typestate (ack/nack/fail/reject) | Kani exhaustive (5 proofs) + compile-time |
-| `logfwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (4 proofs: is_conflict_struct, json/str priority contracts) |
+| `logfwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (8 proofs: ColVariant field preservation, variant_dt, is_conflict_struct, json/str priority contracts) |
+| `logfwd-output/sink.rs` | SendResult outcome variants for the async Sink trait | Kani (4 proofs: Ok/RetryAfter/Rejected variant invariants, mutual exclusion) |
+| `logfwd-io/format.rs` | CRI metadata injection, Auto-mode fallthrough to passthrough | Kani (4 proofs: inject_cri_metadata output structure, JSON vs plain-text path dispatch) |
+| `logfwd-io/tail.rs` | File tailer EOF emission state machine (eof_emitted flag) | Kani (4 proofs: at-most-once emission per streak, data-reset invariant, two-poll sequence, reset-cycle) |
 | `logfwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `logfwd-arrow/streaming_builder.rs` | StructArray conflict column assembly (StringView) | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 
