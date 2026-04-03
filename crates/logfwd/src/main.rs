@@ -399,14 +399,9 @@ async fn run_pipelines(
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    // Acquire exclusive lock only when tailing files — OTLP-only and
-    // blackhole pipelines don't need filesystem locking (#737).
-    let has_file_inputs = config.pipelines.values().any(|pipe| {
-        pipe.inputs
-            .iter()
-            .any(|input| matches!(input.input_type, logfwd_config::InputType::File))
-    });
-    let _lock_guard = if has_file_inputs {
+    // Acquire exclusive lock to prevent multiple instances processing
+    // the same files (#737). The lock is held until this function returns.
+    let _lock_guard = if config_uses_file_input(&config) {
         acquire_instance_lock(&config)?
     } else {
         None
@@ -632,6 +627,15 @@ async fn run_pipelines(
 // Instance lock (#737)
 // ---------------------------------------------------------------------------
 
+fn config_uses_file_input(config: &logfwd_config::Config) -> bool {
+    config.pipelines.values().any(|pipeline| {
+        pipeline
+            .inputs
+            .iter()
+            .any(|input| matches!(input.input_type, logfwd_config::InputType::File))
+    })
+}
+
 /// Acquire an exclusive lock file to prevent multiple logfwd instances from
 /// processing the same data directory. Returns a guard that holds the lock
 /// for the lifetime of the caller.
@@ -674,7 +678,11 @@ fn acquire_instance_lock(
     }
 
     #[cfg(not(unix))]
-    eprintln!("warn: file-based instance locking not supported on this platform");
+    eprintln!(
+        "{}warning{}: file-based instance locking not supported on this platform",
+        yellow(),
+        reset(),
+    );
 
     // Return the File so the lock is held until the caller drops it.
     Ok(Some(lock_file))
@@ -861,4 +869,41 @@ fn jemalloc_stats() -> Option<logfwd_io::diagnostics::MemoryStats> {
         allocated,
         active,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_uses_file_input;
+
+    #[test]
+    fn detects_file_backed_pipelines() {
+        let config = logfwd_config::Config::load_str(
+            r#"
+input:
+  type: file
+  path: app.log
+output:
+  type: null
+"#,
+        )
+        .expect("config should parse");
+
+        assert!(config_uses_file_input(&config));
+    }
+
+    #[test]
+    fn ignores_non_file_pipelines() {
+        let config = logfwd_config::Config::load_str(
+            r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+output:
+  type: null
+"#,
+        )
+        .expect("config should parse");
+
+        assert!(!config_uses_file_input(&config));
+    }
 }
