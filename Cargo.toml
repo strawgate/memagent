@@ -18,7 +18,7 @@ edition = "2024"
 rust-version = "1.85"
 
 [workspace.dependencies]
-arrow = { version = "54", default-features = false, features = ["ipc_compression"] }
+arrow = { version = "55", default-features = false, features = ["ipc_compression"] }
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-client", "trace", "metrics"] }

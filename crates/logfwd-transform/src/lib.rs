@@ -267,7 +267,10 @@ fn expr_as_column(expr: &SqlExpr) -> Option<String> {
 /// Extract a small integer literal from a SQL expression.
 fn expr_as_u8_literal(expr: &SqlExpr) -> Option<u8> {
     match expr {
-        SqlExpr::Value(sqlast::Value::Number(s, _)) => s.parse::<u8>().ok(),
+        SqlExpr::Value(v) => match &v.value {
+            sqlast::Value::Number(s, _) => s.parse::<u8>().ok(),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -352,18 +355,15 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
         SqlExpr::Case {
             operand,
             conditions,
-            results,
             else_result,
             ..
         } => {
             if let Some(op) = operand {
                 collect_column_refs(op, cols);
             }
-            for c in conditions {
-                collect_column_refs(c, cols);
-            }
-            for r in results {
-                collect_column_refs(r, cols);
+            for cw in conditions {
+                collect_column_refs(&cw.condition, cols);
+                collect_column_refs(&cw.result, cols);
             }
             if let Some(e) = else_result {
                 collect_column_refs(e, cols);

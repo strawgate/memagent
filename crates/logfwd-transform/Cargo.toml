@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 arrow = { workspace = true }
-datafusion = { version = "45", default-features = false, features = [
+datafusion = { version = "48", default-features = false, features = [
     "string_expressions",
     "unicode_expressions",
     "regex_expressions",
