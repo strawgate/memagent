@@ -387,6 +387,11 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
             DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
             DataType::Float64 => AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>()),
             DataType::Boolean => AttrArray::Bool(batch.column(idx).as_boolean()),
+            // Struct conflict columns (status: Struct { int, str }) cannot be encoded as
+            // a single typed OTLP attribute without coalescing. Skip them here; a SQL
+            // transform with normalize_conflict_columns() produces a flat Utf8 column
+            // that encodes correctly via the fallback arm below.
+            DataType::Struct(_) => continue,
             _ => AttrArray::Str(batch.column(idx).as_ref()),
         };
         attribute_cols.push((field_name.to_string(), attr));
@@ -628,6 +633,45 @@ mod tests {
     use arrow::record_batch::RecordBatch;
 
     use super::*;
+
+    /// Struct conflict columns (status: Struct { int, str }) must be skipped
+    /// by the OTLP attribute encoder rather than emitting an empty-string attribute.
+    #[test]
+    fn struct_conflict_column_is_skipped_not_emitted_as_empty_string() {
+        use arrow::array::{Int64Array as I64A, StructArray};
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{Field as F, Fields};
+
+        let int_arr: Arc<dyn arrow::array::Array> = Arc::new(I64A::from(vec![Some(200i64), None]));
+        let str_arr: Arc<dyn arrow::array::Array> =
+            Arc::new(StringArray::from(vec![None::<&str>, Some("OK")]));
+        let child_fields = Fields::from(vec![
+            Arc::new(F::new("int", DataType::Int64, true)),
+            Arc::new(F::new("str", DataType::Utf8, true)),
+        ]);
+        let validity = NullBuffer::from(vec![true, true]);
+        let struct_arr: Arc<dyn arrow::array::Array> = Arc::new(StructArray::new(
+            child_fields.clone(),
+            vec![Arc::clone(&int_arr), Arc::clone(&str_arr)],
+            Some(validity),
+        ));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "status",
+            DataType::Struct(child_fields),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![struct_arr]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        // The struct column must NOT appear in the encoded output —
+        // no "status" key and no empty-string value.
+        assert!(
+            !contains_bytes(&sink.encoder_buf, b"status"),
+            "struct conflict column 'status' must not be encoded as an OTLP attribute"
+        );
+    }
 
     fn make_sink() -> OtlpSink {
         OtlpSink::new(

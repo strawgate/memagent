@@ -887,6 +887,104 @@ mod tests {
         assert_eq!(arr.value(1), 2);
         assert_eq!(arr.value(2), 3);
     }
+
+    /// A 3-way conflict (int + float + str in the same field across rows) must
+    /// produce a StructArray with all three children present.
+    #[test]
+    fn test_three_way_conflict_int_float_str() {
+        let buf = bytes::Bytes::from_static(b"unused");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf.clone());
+        let idx = b.resolve_field(b"mixed");
+
+        b.begin_row();
+        b.append_int_by_idx(idx, b"42");
+        b.end_row();
+
+        b.begin_row();
+        b.append_float_by_idx(idx, b"3.14");
+        b.end_row();
+
+        b.begin_row();
+        b.append_str_by_idx(idx, &buf[0..0]); // empty-but-valid string view
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 3);
+
+        let col = batch.column_by_name("mixed").expect("mixed must exist");
+        assert!(
+            matches!(col.data_type(), DataType::Struct(_)),
+            "3-way conflict must produce Struct, got {:?}",
+            col.data_type()
+        );
+        let sa = col.as_any().downcast_ref::<StructArray>().unwrap();
+        let names: Vec<&str> = sa.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(names.contains(&"int"), "int child missing");
+        assert!(names.contains(&"float"), "float child missing");
+        assert!(names.contains(&"str"), "str child missing");
+
+        // Row 0: int=42, float=null, str=null
+        let int_idx = sa.fields().iter().position(|f| f.name() == "int").unwrap();
+        let int_col = sa
+            .column(int_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(int_col.value(0), 42);
+        assert!(int_col.is_null(1));
+        assert!(int_col.is_null(2));
+
+        // Struct-level null: no row should be all-null here
+        assert!(!col.is_null(0));
+        assert!(!col.is_null(1));
+        assert!(!col.is_null(2));
+    }
+
+    /// After a conflict batch (struct column), a second batch with only a single
+    /// type for the same field must emit a flat column — not a struct.
+    #[test]
+    fn test_batch_reuse_conflict_then_single_type_emits_flat() {
+        let buf = bytes::Bytes::from_static(b"unused");
+        let mut b = StreamingBuilder::new(false);
+
+        // Batch 1: conflict → struct
+        b.begin_batch(buf.clone());
+        let idx = b.resolve_field(b"status");
+        b.begin_row();
+        b.append_int_by_idx(idx, b"200");
+        b.end_row();
+        b.begin_row();
+        b.append_str_by_idx(idx, &buf[0..0]);
+        b.end_row();
+        let b1 = b.finish_batch().unwrap();
+        assert!(
+            matches!(
+                b1.column_by_name("status").unwrap().data_type(),
+                DataType::Struct(_)
+            ),
+            "batch 1 must be struct"
+        );
+
+        // Batch 2: only int — must be flat Int64
+        b.begin_batch(buf.clone());
+        let idx = b.resolve_field(b"status");
+        b.begin_row();
+        b.append_int_by_idx(idx, b"404");
+        b.end_row();
+        b.begin_row();
+        b.append_int_by_idx(idx, b"500");
+        b.end_row();
+        let b2 = b.finish_batch().unwrap();
+        assert!(
+            matches!(
+                b2.column_by_name("status").unwrap().data_type(),
+                DataType::Int64
+            ),
+            "batch 2 must be flat Int64 after clean data, got {:?}",
+            b2.column_by_name("status").unwrap().data_type()
+        );
+    }
 }
 
 #[cfg(kani)]
