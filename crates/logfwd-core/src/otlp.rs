@@ -601,6 +601,7 @@ mod verification {
     /// Prove encode_varint never panics for any u64 input.
     #[kani::proof]
     #[kani::unwind(12)]
+    #[kani::solver(kissat)] // arithmetic-heavy varint bit ops: kissat outperforms cadical
     fn verify_varint_no_panic() {
         let value: u64 = kani::any();
         let mut buf = Vec::with_capacity(10); // varint max 10 bytes — no realloc paths
@@ -610,6 +611,7 @@ mod verification {
     /// Prove encode_tag produces correct field_number and wire_type encoding.
     #[kani::proof]
     #[kani::unwind(12)]
+    #[kani::solver(kissat)] // arithmetic-heavy varint bit ops: kissat outperforms cadical
     fn verify_encode_tag() {
         let field_number: u32 = kani::any();
         let wire_type: u8 = kani::any();

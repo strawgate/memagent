@@ -891,6 +891,7 @@ mod verification {
     /// Oracle proof: prefix_xor matches naive bit-by-bit running XOR
     /// for ALL u64 inputs. Exhaustive — no gap.
     #[kani::proof]
+    #[kani::unwind(65)] // proof loop: while i < 64
     fn verify_prefix_xor() {
         let input: u64 = kani::any();
         let result = prefix_xor(input);
@@ -991,6 +992,7 @@ mod verification {
     /// Crash-freedom: process_block never panics for any combination
     /// of 10 arbitrary u64 bitmasks and any block_len 0..=64.
     #[kani::proof]
+    #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
     fn verify_process_block_no_panic() {
         let raw = RawBlockMasks {
             newline: kani::any(),
@@ -1012,6 +1014,7 @@ mod verification {
 
     /// Tail masking: no bits set beyond block_len in any output field.
     #[kani::proof]
+    #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
     fn verify_process_block_tail_mask() {
         let raw = RawBlockMasks {
             newline: kani::any(),
@@ -1042,6 +1045,7 @@ mod verification {
     /// no-backslash case — with escapes, the exclusion is verified
     /// by the compositional proof below.
     #[kani::proof]
+    #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
     fn verify_in_string_exclusion() {
         let raw = RawBlockMasks {
             newline: 0, // no newlines for simplicity
@@ -1140,6 +1144,7 @@ mod verification {
     /// Adapted from agent audit (feat/kani-audit-and-verification).
     #[kani::proof]
     #[kani::unwind(65)]
+    #[kani::solver(kissat)] // bitmask + two while-i<64 loops: kissat outperforms cadical
     fn verify_next_quote_correct() {
         let buf: [u8; 64] = kani::any();
         let (idx, _) = StructuralIndex::new(&buf);
@@ -1172,6 +1177,7 @@ mod verification {
     /// Adapted from agent audit (feat/kani-audit-and-verification).
     #[kani::proof]
     #[kani::unwind(65)]
+    #[kani::solver(kissat)] // bitmask + while-i<pos loop: kissat outperforms cadical
     fn verify_is_in_string_correct() {
         let buf: [u8; 64] = kani::any();
         let (idx, _) = StructuralIndex::new(&buf);
