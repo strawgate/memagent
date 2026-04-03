@@ -47,7 +47,7 @@ pub enum BuilderState {
 /// objects. The call sequence per batch is:
 ///
 /// ```text
-/// begin_batch()
+/// // caller calls begin_batch() on the concrete type (not via this trait)
 ///   begin_row()
 ///     resolve_field(key) → idx
 ///     append_str_by_idx(idx, value)   // or int, float, null
@@ -56,6 +56,13 @@ pub enum BuilderState {
 ///   ...more rows...
 /// // caller invokes finish on the implementor directly
 /// ```
+///
+/// **Initialization**: `begin_batch` is intentionally NOT part of this trait.
+/// Each implementor has its own `begin_batch` method with a type-specific
+/// signature (`StorageBuilder::begin_batch()` takes no args;
+/// `StreamingBuilder::begin_batch(buf: Bytes)` takes the input buffer for
+/// zero-copy view construction).  Callers must invoke `begin_batch` on the
+/// concrete type before passing it to `scan_into` or `scan_streaming`.
 ///
 /// - `resolve_field`: maps a field name to a column index. Must be stable
 ///   within a batch (same key → same index). May create new columns.
@@ -67,8 +74,6 @@ pub enum BuilderState {
 ///
 /// Implementations live in `logfwd-arrow` (`StorageBuilder`, `StreamingBuilder`).
 pub trait ScanBuilder {
-    /// Initialize state for a new batch.
-    fn begin_batch(&mut self);
     /// Start a new row.
     fn begin_row(&mut self);
     /// Finish the current row.
@@ -101,6 +106,8 @@ pub trait ScanBuilder {
 /// # Preconditions
 /// - `buf` must be valid UTF-8 (debug-asserted, not checked in release)
 /// - Lines are newline-delimited (`\n`)
+/// - The caller must have already invoked `begin_batch` on the builder before
+///   this call (see [`ScanBuilder`] for the initialization contract).
 ///
 /// # Type parameter
 /// - `B`: Any implementation of `ScanBuilder` (e.g., `StorageBuilder`,
@@ -112,7 +119,6 @@ pub fn scan_into<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: &mut 
         "Scanner input must be valid UTF-8"
     );
     let (index, line_ranges) = StructuralIndex::new(buf);
-    builder.begin_batch();
     for (start, end) in line_ranges {
         scan_line(buf, start, end, &index, config, builder);
     }
