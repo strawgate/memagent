@@ -1486,4 +1486,170 @@ mod tests {
         let path_sids: Vec<_> = paths.iter().map(|(s, _)| s.0).collect();
         assert_eq!(offset_sids, path_sids);
     }
+
+    // -----------------------------------------------------------------------
+    // Bug fix regression tests
+    // -----------------------------------------------------------------------
+
+    /// #796: Copytruncate must emit TailEvent::Truncated before new data.
+    #[test]
+    fn test_truncation_emits_truncated_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("trunc_event.log");
+
+        // Write initial data.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            for i in 0..50 {
+                writeln!(f, "original line {i}").unwrap();
+            }
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        // Read all initial data.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+
+        // Truncate and write new data (copytruncate).
+        {
+            let mut f = File::create(&log_path).unwrap(); // truncates
+            writeln!(f, "after truncate").unwrap();
+        }
+
+        // Poll should emit Truncated THEN Data.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+
+        let has_truncated = events
+            .iter()
+            .any(|e| matches!(e, TailEvent::Truncated { .. }));
+        assert!(
+            has_truncated,
+            "must emit TailEvent::Truncated on copytruncate"
+        );
+
+        let has_data = events.iter().any(|e| matches!(e, TailEvent::Data { .. }));
+        assert!(has_data, "must emit data after truncation");
+
+        // Truncated must come BEFORE Data in the event list.
+        let trunc_idx = events
+            .iter()
+            .position(|e| matches!(e, TailEvent::Truncated { .. }))
+            .unwrap();
+        let data_idx = events
+            .iter()
+            .position(|e| matches!(e, TailEvent::Data { .. }))
+            .unwrap();
+        assert!(
+            trunc_idx < data_idx,
+            "Truncated event must precede Data event"
+        );
+    }
+
+    /// #800: read_new_data must not exceed MAX_READ_PER_POLL.
+    #[test]
+    fn test_read_cap_prevents_oom() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("large.log");
+
+        // Write more than MAX_READ_PER_POLL (64 MiB) — use 65 MiB.
+        let target_size = 65 * 1024 * 1024;
+        {
+            let mut f = File::create(&log_path).unwrap();
+            let line = "x".repeat(1023) + "\n"; // 1 KiB per line
+            let lines_needed = target_size / 1024;
+            for _ in 0..lines_needed {
+                f.write_all(line.as_bytes()).unwrap();
+            }
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        // First poll should read at most MAX_READ_PER_POLL bytes.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+
+        let total_bytes: usize = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.len()),
+                _ => None,
+            })
+            .sum();
+
+        assert!(
+            total_bytes <= FileTailer::MAX_READ_PER_POLL + 256 * 1024, // allow one extra read_buf
+            "read should be capped near 64 MiB, got {} bytes",
+            total_bytes
+        );
+        assert!(total_bytes > 0, "should read some data");
+
+        // Second poll should read the remaining data.
+        std::thread::sleep(Duration::from_millis(50));
+        let events2 = tailer.poll().unwrap();
+        let total_bytes2: usize = events2
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.len()),
+                _ => None,
+            })
+            .sum();
+        assert!(total_bytes2 > 0, "second poll should read remaining data");
+    }
+
+    /// #656: set_offset must reset to 0 if offset > file size.
+    #[test]
+    fn test_set_offset_validates_against_file_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("stale.log");
+
+        // Write a small file (100 bytes).
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "small file content").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        // Try to set offset beyond file size (stale checkpoint).
+        tailer.set_offset(&log_path, 999_999).unwrap();
+
+        // Offset should be reset to 0, not 999_999.
+        let offset = tailer.get_offset(&log_path).unwrap();
+        assert_eq!(offset, 0, "stale offset should reset to 0");
+    }
+
+    /// #730: Non-existent file paths should not prevent construction.
+    #[test]
+    fn test_nonexistent_path_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does_not_exist.log");
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+
+        // Should succeed — missing files are warned but not fatal.
+        let tailer = FileTailer::new(std::slice::from_ref(&missing), config);
+        assert!(tailer.is_ok(), "missing path should not fail construction");
+        assert_eq!(tailer.unwrap().num_files(), 0);
+    }
 }
