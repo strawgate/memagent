@@ -11,6 +11,8 @@ extern crate alloc;
 
 /// CRI partial line aggregator (P/F reassembly).
 pub mod aggregator;
+/// Checkpoint-remainder coordination (Kani-proven).
+pub mod checkpoint_tracker;
 /// Proven byte search (alternative to memchr for Kani).
 pub mod byte_search;
 /// CRI log format parsing.
