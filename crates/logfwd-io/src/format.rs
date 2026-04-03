@@ -12,12 +12,19 @@ use std::sync::Arc;
 
 /// Processes framed input lines according to the configured format.
 ///
-/// - `Passthrough`: lines are already scanner-ready (JSON, Raw)
+/// - `Passthrough`: lines are already scanner-ready (Raw — no JSON validation)
+/// - `PassthroughJson`: lines are expected to be JSON objects; non-JSON lines
+///   are still forwarded but counted as `parse_errors`
 /// - `Cri`: parse CRI container log format, extract message body
 /// - `Auto`: try CRI, fall through to passthrough on parse failure
 #[non_exhaustive]
 pub enum FormatProcessor {
-    Passthrough,
+    Passthrough {
+        stats: Arc<ComponentStats>,
+    },
+    PassthroughJson {
+        stats: Arc<ComponentStats>,
+    },
     Cri {
         aggregator: CriAggregator,
         stats: Arc<ComponentStats>,
@@ -29,6 +36,23 @@ pub enum FormatProcessor {
 }
 
 impl FormatProcessor {
+    /// Create a passthrough processor for raw (non-JSON) input.
+    ///
+    /// Lines are forwarded verbatim. Non-JSON-object lines are **not** counted
+    /// as parse errors because raw format intentionally carries plain-text data.
+    pub fn passthrough(stats: Arc<ComponentStats>) -> Self {
+        Self::Passthrough { stats }
+    }
+
+    /// Create a passthrough processor for JSON input.
+    ///
+    /// Lines are forwarded verbatim, but any non-empty line that does not begin
+    /// with `{` (i.e. is not a JSON object) increments the `parse_errors`
+    /// counter so data-quality issues are surfaced in diagnostics.
+    pub fn passthrough_json(stats: Arc<ComponentStats>) -> Self {
+        Self::PassthroughJson { stats }
+    }
+
     /// Create a CRI format processor with the given max message size.
     pub fn cri(max_message_size: usize, stats: Arc<ComponentStats>) -> Self {
         Self::Cri {
@@ -51,7 +75,11 @@ impl FormatProcessor {
     /// handles remainder splitting — this function only sees complete lines.
     pub fn process_lines(&mut self, chunk: &[u8], out: &mut Vec<u8>) {
         match self {
-            Self::Passthrough => {
+            Self::Passthrough { .. } => {
+                out.extend_from_slice(chunk);
+            }
+            Self::PassthroughJson { stats } => {
+                count_json_parse_errors(chunk, stats);
                 out.extend_from_slice(chunk);
             }
             Self::Cri { aggregator, stats } => {
@@ -66,11 +94,35 @@ impl FormatProcessor {
     /// Reset internal state (e.g. after file rotation or truncation).
     pub fn reset(&mut self) {
         match self {
-            Self::Passthrough => {}
+            Self::Passthrough { .. } | Self::PassthroughJson { .. } => {}
             Self::Cri { aggregator, .. } | Self::Auto { aggregator, .. } => {
                 aggregator.reset();
             }
         }
+    }
+}
+
+/// Count non-JSON lines in `chunk` and increment the parse-error counter.
+///
+/// A line is considered a JSON object if, after stripping leading ASCII
+/// whitespace (`' '`, `'\t'`, `'\r'`), it begins with `{`.  Empty lines
+/// are ignored.  Lines are forwarded to `out` unchanged — this function
+/// only updates the counter.
+fn count_json_parse_errors(chunk: &[u8], stats: &ComponentStats) {
+    let mut pos = 0;
+    while pos < chunk.len() {
+        let eol = memchr::memchr(b'\n', &chunk[pos..]).map_or(chunk.len(), |o| pos + o);
+        let line = &chunk[pos..eol];
+        if !line.is_empty() {
+            let first_nonws = line
+                .iter()
+                .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'));
+            let is_json_obj = first_nonws.is_some_and(|p| line[p] == b'{');
+            if !is_json_obj {
+                stats.inc_parse_errors(1);
+            }
+        }
+        pos = eol + 1;
     }
 }
 
@@ -171,7 +223,8 @@ mod tests {
 
     #[test]
     fn passthrough_copies_verbatim() {
-        let mut proc = FormatProcessor::Passthrough;
+        let stats = make_stats();
+        let mut proc = FormatProcessor::passthrough(stats);
         let input = b"line1\nline2\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -359,6 +412,95 @@ mod tests {
         assert_eq!(
             out,
             b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"say \\\"hello\\\"\"}\n"
+        );
+    }
+
+    #[test]
+    fn passthrough_json_valid_line_no_error() {
+        // A valid JSON-object line must NOT increment parse_errors.
+        let stats = make_stats();
+        let mut proc = FormatProcessor::passthrough_json(Arc::clone(&stats));
+        let input = b"{\"msg\":\"hello\"}\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(out, input, "line must be forwarded verbatim");
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "valid JSON must not increment parse_errors"
+        );
+    }
+
+    #[test]
+    fn passthrough_json_non_json_line_counts_error() {
+        // A non-JSON line must be forwarded AND increment parse_errors.
+        let stats = make_stats();
+        let mut proc = FormatProcessor::passthrough_json(Arc::clone(&stats));
+        let input = b"not json at all\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(out, input, "invalid line must still be forwarded verbatim");
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "non-JSON line must increment parse_errors"
+        );
+    }
+
+    #[test]
+    fn passthrough_json_empty_line_no_error() {
+        // Empty lines must not increment parse_errors.
+        let stats = make_stats();
+        let mut proc = FormatProcessor::passthrough_json(Arc::clone(&stats));
+        let input = b"\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "empty line must not increment parse_errors"
+        );
+    }
+
+    #[test]
+    fn passthrough_json_counts_multiple_invalid_lines() {
+        // Each invalid line in a batch increments parse_errors independently.
+        let stats = make_stats();
+        let mut proc = FormatProcessor::passthrough_json(Arc::clone(&stats));
+        let input = b"bad line\n{\"ok\":1}\nanother bad\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(out, input, "all lines must be forwarded verbatim");
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "two non-JSON lines must increment parse_errors by 2"
+        );
+    }
+
+    #[test]
+    fn passthrough_raw_never_counts_errors() {
+        // Raw passthrough must never increment parse_errors regardless of content.
+        let stats = make_stats();
+        let mut proc = FormatProcessor::passthrough(Arc::clone(&stats));
+        let input = b"not json at all\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(out, input, "raw passthrough must forward verbatim");
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "raw passthrough must never increment parse_errors"
         );
     }
 }

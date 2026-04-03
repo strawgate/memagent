@@ -204,7 +204,11 @@ mod tests {
     fn passthrough_complete_lines() {
         let stats = make_stats();
         let source = MockSource::from_chunks(vec![b"line1\nline2\n"]);
-        let mut framed = FramedInput::new(Box::new(source), FormatProcessor::Passthrough, stats);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatProcessor::passthrough(Arc::clone(&stats)),
+            stats,
+        );
 
         let events = framed.poll().unwrap();
         assert_eq!(collect_data(events), b"line1\nline2\n");
@@ -214,7 +218,11 @@ mod tests {
     fn remainder_across_polls() {
         let stats = make_stats();
         let source = MockSource::from_chunks(vec![b"hello\nwor", b"ld\n"]);
-        let mut framed = FramedInput::new(Box::new(source), FormatProcessor::Passthrough, stats);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatProcessor::passthrough(Arc::clone(&stats)),
+            stats,
+        );
 
         // First poll: "hello\n" is complete, "wor" is remainder
         let events1 = framed.poll().unwrap();
@@ -231,7 +239,7 @@ mod tests {
         let source = MockSource::from_chunks(vec![b"partial", b"more\n"]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::Passthrough,
+            FormatProcessor::passthrough(Arc::clone(&stats)),
             Arc::clone(&stats),
         );
 
@@ -252,7 +260,7 @@ mod tests {
         let source = MockSource::from_chunks(vec![&big]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::Passthrough,
+            FormatProcessor::passthrough(Arc::clone(&stats)),
             Arc::clone(&stats),
         );
 
@@ -274,7 +282,7 @@ mod tests {
         let source = MockSource::from_chunks(vec![&chunk]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::Passthrough,
+            FormatProcessor::passthrough(Arc::clone(&stats)),
             Arc::clone(&stats),
         );
 
@@ -300,7 +308,11 @@ mod tests {
                 bytes: b"fresh\n".to_vec(),
             }],
         ]);
-        let mut framed = FramedInput::new(Box::new(source), FormatProcessor::Passthrough, stats);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatProcessor::passthrough(Arc::clone(&stats)),
+            stats,
+        );
 
         // Partial goes to remainder
         let _ = framed.poll().unwrap();
@@ -341,7 +353,7 @@ mod tests {
         let source_full = MockSource::from_chunks(vec![full_input.as_slice()]);
         let mut framed_full = FramedInput::new(
             Box::new(source_full),
-            FormatProcessor::Passthrough,
+            FormatProcessor::passthrough(Arc::clone(&stats)),
             Arc::clone(&stats),
         );
         let reference = collect_data(framed_full.poll().unwrap());
@@ -352,8 +364,11 @@ mod tests {
             let chunk1 = &full_input[..split_at];
             let chunk2 = &full_input[split_at..];
             let source = MockSource::from_chunks(vec![chunk1, chunk2]);
-            let mut framed =
-                FramedInput::new(Box::new(source), FormatProcessor::Passthrough, stats2);
+            let mut framed = FramedInput::new(
+                Box::new(source),
+                FormatProcessor::passthrough(Arc::clone(&stats2)),
+                stats2,
+            );
 
             let mut collected = collect_data(framed.poll().unwrap());
             collected.extend_from_slice(&collect_data(framed.poll().unwrap()));
