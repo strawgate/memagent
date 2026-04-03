@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 
@@ -9,11 +10,23 @@ use crate::tail::{ByteOffset, FileTailer, TailConfig, TailEvent};
 /// Events produced by an input source.
 pub enum InputEvent {
     /// New data read from the source.
-    Data { bytes: Vec<u8> },
+    ///
+    /// `source_id` identifies which logical source produced the data (e.g.,
+    /// which tailed file). `None` for push sources that don't track identity.
+    Data {
+        bytes: Vec<u8>,
+        source_id: Option<SourceId>,
+    },
     /// The underlying file was rotated (new inode).
-    Rotated,
+    ///
+    /// `source_id` identifies the source that was rotated. `None` for push
+    /// sources or when the source identity is unknown.
+    Rotated { source_id: Option<SourceId> },
     /// The underlying file was truncated.
-    Truncated,
+    ///
+    /// `source_id` identifies the source that was truncated. `None` for push
+    /// sources or when the source identity is unknown.
+    Truncated { source_id: Option<SourceId> },
     /// The source has been fully consumed and has no new data.
     ///
     /// Emitted once per "caught-up" transition (i.e., after the first poll
@@ -21,7 +34,10 @@ pub enum InputEvent {
     /// `FramedInput`) use this to flush any partial-line remainder that was
     /// not terminated by a newline — a common situation for static files and
     /// for the last line written before a log rotation.
-    EndOfFile,
+    ///
+    /// `source_id` identifies the source that reached EOF. `None` for push
+    /// sources or when the source identity is unknown.
+    EndOfFile { source_id: Option<SourceId> },
 }
 
 /// Trait for input sources that produce raw bytes.
@@ -76,21 +92,57 @@ impl FileInput {
 
 impl InputSource for FileInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        // Snapshot path-to-source_id mapping BEFORE polling. This is
+        // critical because `tailer.poll()` may mutate internal state
+        // (e.g., re-open a rotated file with a new fingerprint), which
+        // would cause `source_id_for_path` to return the NEW identity
+        // for bytes that were read from the OLD file.
+        let source_id_snapshot: HashMap<PathBuf, Option<SourceId>> = self
+            .tailer
+            .file_paths()
+            .into_iter()
+            .map(|(sid, path)| (path, Some(sid)))
+            .collect();
+
         let tail_events = self.tailer.poll()?;
         let mut events = Vec::with_capacity(tail_events.len());
         for te in tail_events {
             match te {
-                TailEvent::Data { bytes, .. } => {
-                    events.push(InputEvent::Data { bytes });
+                TailEvent::Data { path, bytes } => {
+                    // Use the snapshot for data events — the bytes were
+                    // read from the file as it existed before poll().
+                    // Fall back to live lookup for files opened during
+                    // this poll (new files discovered by glob rescan).
+                    let source_id = source_id_snapshot
+                        .get(&path)
+                        .copied()
+                        .flatten()
+                        .or_else(|| self.tailer.source_id_for_path(&path));
+                    events.push(InputEvent::Data { bytes, source_id });
                 }
-                TailEvent::Rotated { .. } => {
-                    events.push(InputEvent::Rotated);
+                TailEvent::Rotated { path } => {
+                    // After rotation, the old source_id is in the snapshot;
+                    // the live tailer now has the new file's identity.
+                    let source_id = source_id_snapshot
+                        .get(&path)
+                        .copied()
+                        .flatten()
+                        .or_else(|| self.tailer.source_id_for_path(&path));
+                    events.push(InputEvent::Rotated { source_id });
                 }
-                TailEvent::Truncated { .. } => {
-                    events.push(InputEvent::Truncated);
+                TailEvent::Truncated { path } => {
+                    let source_id = source_id_snapshot
+                        .get(&path)
+                        .copied()
+                        .flatten()
+                        .or_else(|| self.tailer.source_id_for_path(&path));
+                    events.push(InputEvent::Truncated { source_id });
                 }
-                TailEvent::EndOfFile { .. } => {
-                    events.push(InputEvent::EndOfFile);
+                TailEvent::EndOfFile { path } => {
+                    // EndOfFile comes from the live state (no-data poll),
+                    // so live lookup is fine here — the file wasn't mutated.
+                    let source_id = self.tailer.source_id_for_path(&path);
+                    events.push(InputEvent::EndOfFile { source_id });
                 }
             }
         }

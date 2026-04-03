@@ -183,7 +183,10 @@ impl InputSource for GeneratorInput {
         // Swap buffers to preserve capacity (avoid realloc every batch).
         let mut out = Vec::with_capacity(self.config.batch_size * 512);
         std::mem::swap(&mut self.buf, &mut out);
-        Ok(vec![InputEvent::Data { bytes: out }])
+        Ok(vec![InputEvent::Data {
+            bytes: out,
+            source_id: None,
+        }])
     }
 
     fn name(&self) -> &str {
@@ -209,7 +212,7 @@ mod tests {
         let events = input.poll().unwrap();
         assert_eq!(events.len(), 1);
 
-        if let InputEvent::Data { bytes } = &events[0] {
+        if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
             let lines: Vec<&str> = text.trim().split('\n').collect();
             assert_eq!(lines.len(), 20);
@@ -246,7 +249,7 @@ mod tests {
         let events = input.poll().unwrap();
         assert_eq!(events.len(), 1);
 
-        if let InputEvent::Data { bytes } = &events[0] {
+        if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
             let lines: Vec<&str> = text.trim().split('\n').collect();
             assert_eq!(lines.len(), 50);
@@ -314,7 +317,7 @@ mod tests {
         );
 
         let events = input.poll().unwrap();
-        if let InputEvent::Data { bytes } = &events[0] {
+        if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
             let lines: Vec<&str> = text.trim().split('\n').collect();
             let ts0 = lines[0]
@@ -349,7 +352,7 @@ mod tests {
             let events = generator.poll().unwrap();
             assert_eq!(events.len(), 1, "poll() must produce exactly one Data event (offset={offset})");
             match &events[0] {
-                InputEvent::Data { bytes } => {
+                InputEvent::Data { bytes, .. } => {
                     assert!(!bytes.is_empty(), "generator produced empty data (offset={offset})");
                     let text = String::from_utf8(bytes.clone()).unwrap();
                     let line_count = text.trim().lines().count();
@@ -382,7 +385,7 @@ mod tests {
             let events = generator.poll().unwrap();
             assert_eq!(events.len(), 1, "poll() must produce exactly one Data event (offset={offset})");
             match &events[0] {
-                InputEvent::Data { bytes } => {
+                InputEvent::Data { bytes, .. } => {
                     assert!(!bytes.is_empty(), "generator produced empty data (offset={offset})");
                     let text = String::from_utf8(bytes.clone()).unwrap();
                     let line_count = text.trim().lines().count();
@@ -434,7 +437,7 @@ mod tests {
                 break;
             }
             for event in &events {
-                if let InputEvent::Data { bytes } = event {
+                if let InputEvent::Data { bytes, .. } = event {
                     let text = String::from_utf8_lossy(bytes);
                     total_lines += text.trim().lines().count() as u64;
                 }

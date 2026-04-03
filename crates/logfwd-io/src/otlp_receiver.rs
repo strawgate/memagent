@@ -268,7 +268,10 @@ impl InputSource for OtlpReceiverInput {
         if all.is_empty() {
             Ok(vec![])
         } else {
-            Ok(vec![InputEvent::Data { bytes: all }])
+            Ok(vec![InputEvent::Data {
+                bytes: all,
+                source_id: None,
+            }])
         }
     }
 

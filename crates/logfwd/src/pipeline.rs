@@ -767,18 +767,18 @@ fn input_poll_loop(
         } else {
             for event in events {
                 match event {
-                    InputEvent::Data { bytes } => {
+                    InputEvent::Data { bytes, .. } => {
                         input.buf.extend_from_slice(&bytes);
                     }
-                    InputEvent::Rotated => {
+                    InputEvent::Rotated { .. } => {
                         input.stats.inc_rotations();
                         tracing::info!(input = input.source.name(), "input.file_rotated");
                     }
-                    InputEvent::Truncated => {
+                    InputEvent::Truncated { .. } => {
                         input.stats.inc_rotations();
                         tracing::info!(input = input.source.name(), "input.file_truncated");
                     }
-                    InputEvent::EndOfFile => {}
+                    InputEvent::EndOfFile { .. } => {}
                 }
             }
             if buffered_since.is_none() && !input.buf.is_empty() {

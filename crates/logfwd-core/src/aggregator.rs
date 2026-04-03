@@ -103,6 +103,11 @@ impl CriAggregator {
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
+
+    /// Returns the configured maximum message size.
+    pub fn max_message_size(&self) -> usize {
+        self.max_message_size
+    }
 }
 
 #[cfg(test)]

@@ -134,7 +134,10 @@ impl InputSource for UdpInput {
         }
 
         match total {
-            Some(bytes) => Ok(vec![InputEvent::Data { bytes }]),
+            Some(bytes) => Ok(vec![InputEvent::Data {
+                bytes,
+                source_id: None,
+            }]),
             None => Ok(Vec::new()),
         }
     }
@@ -163,7 +166,7 @@ mod tests {
 
         let events = input.poll().unwrap();
         assert_eq!(events.len(), 1);
-        if let InputEvent::Data { bytes } = &events[0] {
+        if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
             assert!(text.contains("hello world"), "got: {text}");
             assert!(text.contains("second line"), "got: {text}");
@@ -183,7 +186,7 @@ mod tests {
 
         let events = input.poll().unwrap();
         assert_eq!(events.len(), 1);
-        if let InputEvent::Data { bytes } = &events[0] {
+        if let InputEvent::Data { bytes, .. } = &events[0] {
             assert!(bytes.ends_with(b"\n"), "expected trailing newline");
         }
     }
@@ -200,7 +203,7 @@ mod tests {
 
         let events = input.poll().unwrap();
         assert_eq!(events.len(), 1);
-        if let InputEvent::Data { bytes } = &events[0] {
+        if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
             assert_eq!(text.matches('\n').count(), 3);
         }
@@ -260,7 +263,7 @@ mod tests {
         let mut all_bytes = Vec::new();
         for _ in 0..50 {
             for event in input.poll().unwrap() {
-                if let InputEvent::Data { bytes } = event {
+                if let InputEvent::Data { bytes, .. } = event {
                     all_bytes.extend_from_slice(&bytes);
                 }
             }
@@ -299,7 +302,7 @@ mod tests {
         // but the "after" datagram should arrive.
         let mut all = Vec::new();
         for event in events {
-            if let InputEvent::Data { bytes } = event {
+            if let InputEvent::Data { bytes, .. } = event {
                 all.extend_from_slice(&bytes);
             }
         }

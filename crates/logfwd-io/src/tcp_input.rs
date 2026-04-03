@@ -200,7 +200,10 @@ impl InputSource for TcpInput {
 
         let mut events = Vec::new();
         if !all_data.is_empty() {
-            events.push(InputEvent::Data { bytes: all_data });
+            events.push(InputEvent::Data {
+                bytes: all_data,
+                source_id: None,
+            });
         }
 
         Ok(events)
@@ -234,7 +237,7 @@ mod tests {
 
         // Should have accepted the connection and read data.
         assert_eq!(events.len(), 1);
-        if let InputEvent::Data { bytes } = &events[0] {
+        if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
             assert!(text.contains("hello"), "got: {text}");
             assert!(text.contains("world"), "got: {text}");

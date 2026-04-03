@@ -28,7 +28,7 @@ fn poll_until_data(input: &mut dyn InputSource, timeout: Duration) -> Vec<u8> {
 
     while std::time::Instant::now() < deadline {
         for event in input.poll().unwrap() {
-            if let InputEvent::Data { bytes } = event {
+            if let InputEvent::Data { bytes, .. } = event {
                 all.extend_from_slice(&bytes);
             }
         }
@@ -37,7 +37,7 @@ fn poll_until_data(input: &mut dyn InputSource, timeout: Duration) -> Vec<u8> {
             // between the last poll and now.
             thread::sleep(backoff);
             for event in input.poll().unwrap() {
-                if let InputEvent::Data { bytes } = event {
+                if let InputEvent::Data { bytes, .. } = event {
                     all.extend_from_slice(&bytes);
                 }
             }
@@ -62,7 +62,7 @@ where
 
     while std::time::Instant::now() < deadline {
         for event in input.poll().unwrap() {
-            if let InputEvent::Data { bytes } = event {
+            if let InputEvent::Data { bytes, .. } = event {
                 all.extend_from_slice(&bytes);
             }
         }
@@ -210,7 +210,7 @@ fn tcp_client_disconnect_mid_stream() {
         events.is_empty()
             || events
                 .iter()
-                .all(|e| matches!(e, InputEvent::Data { bytes } if bytes.is_empty()))
+                .all(|e| matches!(e, InputEvent::Data { bytes, .. } if bytes.is_empty()))
     );
 }
 

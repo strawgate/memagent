@@ -27,6 +27,7 @@ impl MockSource {
             .map(|_| {
                 vec![InputEvent::Data {
                     bytes: chunk.to_vec(),
+                    source_id: None,
                 }]
             })
             .collect();

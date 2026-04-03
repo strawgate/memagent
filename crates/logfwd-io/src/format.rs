@@ -69,6 +69,29 @@ impl FormatProcessor {
         }
     }
 
+    /// Create a new instance with fresh state but the same format and stats.
+    ///
+    /// Used to create per-source format processors so that stateful formats
+    /// (CRI P/F aggregation) do not cross-contaminate between sources.
+    pub fn new_instance(&self) -> Self {
+        match self {
+            Self::Passthrough { stats } => Self::Passthrough {
+                stats: Arc::clone(stats),
+            },
+            Self::PassthroughJson { stats } => Self::PassthroughJson {
+                stats: Arc::clone(stats),
+            },
+            Self::Cri { aggregator, stats } => Self::Cri {
+                aggregator: CriAggregator::new(aggregator.max_message_size()),
+                stats: Arc::clone(stats),
+            },
+            Self::Auto { aggregator, stats } => Self::Auto {
+                aggregator: CriAggregator::new(aggregator.max_message_size()),
+                stats: Arc::clone(stats),
+            },
+        }
+    }
+
     /// Process a chunk of complete, newline-delimited lines into scanner-ready output.
     ///
     /// The input `chunk` must end at a line boundary (after `\n`). The caller

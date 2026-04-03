@@ -87,7 +87,7 @@ pub mod common;
 ///         while let Some(raw) = self.ring_buf.next() {
 ///             let event: &PipeWriteEvent = unsafe { &*(raw.as_ptr() as *const _) };
 ///             let data = event.data[..event.captured_len as usize].to_vec();
-///             events.push(InputEvent::Data { bytes: data });
+///             events.push(InputEvent::Data { bytes: data, source_id: None });
 ///         }
 ///         Ok(events)
 ///     }

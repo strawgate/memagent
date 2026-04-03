@@ -635,6 +635,20 @@ impl FileTailer {
         }
 
         tailed.last_read = Instant::now();
+
+        // Re-fingerprint files that started empty (fingerprint 0). Without
+        // this, files that were empty at open time never acquire a real
+        // fingerprint and stay invisible to source-aware checkpointing.
+        if tailed.identity.fingerprint == 0 {
+            let current_pos = tailed.file.stream_position()?;
+            tailed.file.seek(SeekFrom::Start(0))?;
+            let new_fp = compute_fingerprint(&mut tailed.file, self.config.fingerprint_bytes)?;
+            tailed.file.seek(SeekFrom::Start(current_pos))?;
+            if new_fp != 0 {
+                tailed.identity.fingerprint = new_fp;
+            }
+        }
+
         Ok(if was_truncated {
             ReadResult::TruncatedThenData(result)
         } else {
@@ -690,6 +704,20 @@ impl FileTailer {
     /// Number of files currently being tailed.
     pub fn num_files(&self) -> usize {
         self.files.len()
+    }
+
+    /// Look up the `SourceId` for a given path.
+    ///
+    /// Returns `None` if the path is not currently tailed or is an empty file
+    /// (fingerprint 0).
+    pub fn source_id_for_path(&self, path: &Path) -> Option<SourceId> {
+        self.files.get(path).and_then(|tailed| {
+            if tailed.identity.fingerprint != 0 {
+                Some(SourceId(tailed.identity.fingerprint))
+            } else {
+                None
+            }
+        })
     }
 
     /// Hot path: source identity + offset for all tailed files.
