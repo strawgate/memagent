@@ -419,7 +419,7 @@ The optional `server` block controls the diagnostics server and observability se
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `diagnostics` | string | none | `host:port` to listen for HTTP diagnostics. Exposes `/metrics` and `/api/pipelines`. |
+| `diagnostics` | string | none | `host:port` to listen for HTTP diagnostics. See [Diagnostics API](#diagnostics-api) for available routes. |
 | `log_level` | string | `info` | Log verbosity. One of `error`, `warn`, `info`, `debug`, `trace`. |
 | `metrics_endpoint` | string | none | OTLP endpoint for periodic metrics push, e.g. `http://otel-collector:4318`. |
 | `metrics_interval_secs` | integer | `60` | Push interval for OTLP metrics in seconds. |
@@ -431,6 +431,26 @@ server:
   metrics_endpoint: http://otel-collector:4318
   metrics_interval_secs: 30
 ```
+
+---
+
+## Diagnostics API
+
+When the `server.diagnostics` address is configured, logfwd exposes several HTTP
+endpoints for monitoring, health checks, and debugging.
+
+| Route | Status | Description |
+|-------|--------|-------------|
+| `/` | 200 | Interactive dashboard (HTML). |
+| `/health` | 200 | Liveness probe. Returns 200 OK as long as the process is running. |
+| `/ready` | 200/503 | Readiness probe. Returns 200 OK once pipelines are initialized, 503 otherwise. |
+| `/api/pipelines` | 200 | Detailed metrics for each pipeline, including input/output counters and system memory stats. |
+| `/api/stats` | 200 | Aggregate statistics (uptime, CPU/RSS, total lines, stages timing) as a flat JSON object. |
+| `/api/config` | 200 | The active YAML configuration and its file path. |
+| `/api/logs` | 200 | Recent log lines captured from stderr (up to 1 MiB). |
+| `/api/history` | 200 | Time-series history of metrics used by the dashboard. |
+| `/api/traces` | 200 | Recent batch processing spans (up to 500) for detailed performance tracing. |
+| `/metrics` | 410 | Removed. Returns 410 Gone with a pointer to `/api/pipelines`. |
 
 ---
 
