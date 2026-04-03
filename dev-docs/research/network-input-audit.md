@@ -225,6 +225,37 @@ whether to inject it as a column or use it for routing.
 
 ---
 
+## Industry Comparison
+
+| Aspect | logfwd | Industry standard |
+|--------|--------|-------------------|
+| **TCP conn model** | Single-threaded poll loop, all conns read sequentially | Task/goroutine/callback per connection |
+| **TCP per-conn buffer** | None (all merged) | Yes — every collector has per-connection buffers |
+| **TCP framing** | Newline only (in FramedInput, shared) | Per-connection: newline, octet-counting, length-prefix, JSON streaming, regex multiline |
+| **TCP conn limit** | 1024 hard cap | Configurable (semaphore or unlimited) |
+| **TCP backpressure** | Kernel TCP flow control only | Explicit: semaphore, pause/resume callbacks, or goroutine-blocks-on-write |
+| **TCP TLS** | No | Yes (all three) |
+| **TCP ack** | No | Optional write-back supported |
+| **TCP shutdown** | Drop all immediately | Grace period (30s), half-close, drain |
+| **UDP buffer** | 65507 bytes, 8 MiB SO_RCVBUF | 32-100 KiB app buffer, configurable SO_RCVBUF |
+| **UDP framing** | Append `\n` if missing | Configurable: JSON streaming, separator, whole-datagram, regex |
+| **UDP async** | No | Optional N readers + M processors (OTel) |
+| **Source attribution** | No | IP/port attached to events |
+
+### Key gaps
+
+1. **Per-connection TCP framing is universal.** Every production collector
+   maintains per-connection state. logfwd merges all connections.
+
+2. **TLS is table stakes.** All three support it for TCP.
+
+3. **TCP shutdown grace period.** Production collectors give connections
+   time to drain (30s in one implementation). logfwd drops immediately.
+
+4. **Framing options.** Production collectors support octet-counting
+   (RFC 5425), length-prefix, JSON streaming, and regex multiline.
+   logfwd only does newline splitting.
+
 ## Summary: Priority Order
 
 | Priority | Issue | Protocol | Fix | Effort |
