@@ -722,7 +722,7 @@ fn input_poll_loop(
                         known_sources.clear();
                         tracing::info!(input = input.source.name(), "input.file_truncated");
                     }
-                    _ => {}
+                    InputEvent::EndOfFile => {}
                 }
             }
             if buffered_since.is_none() && !input.buf.is_empty() {
