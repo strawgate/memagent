@@ -190,7 +190,7 @@ mod tests {
             str_vals.len(),
             "int_vals and str_vals must have the same length"
         );
-        let num_rows = int_vals.len();
+        let _num_rows = int_vals.len();
 
         let int_arr: Arc<dyn Array> = Arc::new(Int64Array::from(int_vals));
 

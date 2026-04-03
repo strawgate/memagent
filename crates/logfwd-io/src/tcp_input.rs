@@ -293,25 +293,21 @@ mod tests {
         });
 
         // Interleave polls so the kernel send buffer can drain and the
-        // writer thread makes progress.
+        // writer thread makes progress. The connection lifecycle may complete
+        // within a single poll() call (all data in one kernel buffer read), so
+        // we cannot rely on client_count() transitioning through >0; instead we
+        // poll until the writer finishes and client_count drops to zero.
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut was_connected = false;
         while Instant::now() < deadline {
             let _ = input.poll().unwrap();
-            if input.client_count() > 0 {
-                was_connected = true;
-            }
-            if was_connected && input.client_count() == 0 {
+            if input.client_count() == 0 && writer.is_finished() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        assert!(
-            was_connected,
-            "connect→disconnect transition was never observed"
-        );
-        let _ = writer.join();
+        // Joining the writer verifies it successfully connected (panics on error).
+        writer.join().expect("writer thread should have connected and completed");
 
         assert_eq!(
             input.client_count(),
@@ -336,23 +332,16 @@ mod tests {
         });
 
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut was_connected = false;
         while Instant::now() < deadline {
             let _ = input.poll().unwrap();
-            if input.client_count() > 0 {
-                was_connected = true;
-            }
-            if was_connected && input.client_count() == 0 {
+            if input.client_count() == 0 && writer.is_finished() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        assert!(
-            was_connected,
-            "connect→disconnect transition was never observed"
-        );
-        let _ = writer.join();
+        // Joining the writer verifies it successfully connected (panics on error).
+        writer.join().expect("writer thread should have connected and completed");
 
         assert_eq!(
             input.client_count(),
