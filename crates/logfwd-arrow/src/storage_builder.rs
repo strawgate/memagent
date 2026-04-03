@@ -16,6 +16,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
 use logfwd_core::scan_config::{parse_float_fast, parse_int_fast};
+use logfwd_core::scanner::BuilderState;
 
 use crate::check_dup_bits;
 
@@ -83,6 +84,8 @@ pub struct StorageBuilder {
     /// Tracks which fields (by index) were written in the current row.
     /// Only covers the first 64 fields (indices 0-63); see `check_dup_bits`.
     written_bits: u64,
+    /// Protocol state — enforced via `debug_assert` in each method.
+    state: BuilderState,
 }
 
 impl StorageBuilder {
@@ -95,10 +98,16 @@ impl StorageBuilder {
             row_count: 0,
             keep_raw,
             written_bits: 0,
+            state: BuilderState::Idle,
         }
     }
 
     pub fn begin_batch(&mut self) {
+        debug_assert_ne!(
+            self.state,
+            BuilderState::InRow,
+            "begin_batch called while inside a row (missing end_row)"
+        );
         self.row_count = 0;
         // Only clear the slots that were active in the previous batch.
         // This preserves the inner-Vec capacity of each FieldCollector for
@@ -113,23 +122,40 @@ impl StorageBuilder {
         self.field_index.clear();
         self.num_active = 0;
         self.raw_values.clear();
+        self.state = BuilderState::InBatch;
     }
 
     #[inline(always)]
     pub fn begin_row(&mut self) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InBatch,
+            "begin_row called outside of a batch (call begin_batch first)"
+        );
         self.written_bits = 0;
+        self.state = BuilderState::InRow;
     }
 
     #[inline(always)]
     pub fn end_row(&mut self) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "end_row called without a matching begin_row"
+        );
         self.row_count = self
             .row_count
             .checked_add(1)
             .expect("row_count overflow: batch exceeds u32::MAX rows");
+        self.state = BuilderState::InBatch;
     }
 
     #[inline]
     pub fn resolve_field(&mut self, key: &[u8]) -> usize {
+        debug_assert!(
+            self.state == BuilderState::InBatch || self.state == BuilderState::InRow,
+            "resolve_field called outside of an active batch"
+        );
         if let Some(&idx) = self.field_index.get(key) {
             return idx;
         }
@@ -154,6 +180,11 @@ impl StorageBuilder {
 
     #[inline(always)]
     pub fn append_str_by_idx(&mut self, idx: usize, value: &[u8]) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_str_by_idx called outside of a row"
+        );
         if self.check_dup(idx) {
             return;
         }
@@ -170,6 +201,11 @@ impl StorageBuilder {
 
     #[inline(always)]
     pub fn append_int_by_idx(&mut self, idx: usize, value: &[u8]) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_int_by_idx called outside of a row"
+        );
         if self.check_dup(idx) {
             return;
         }
@@ -182,6 +218,11 @@ impl StorageBuilder {
 
     #[inline(always)]
     pub fn append_float_by_idx(&mut self, idx: usize, value: &[u8]) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_float_by_idx called outside of a row"
+        );
         if self.check_dup(idx) {
             return;
         }
@@ -194,6 +235,11 @@ impl StorageBuilder {
 
     #[inline(always)]
     pub fn append_null_by_idx(&mut self, idx: usize) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_null_by_idx called outside of a row"
+        );
         // Mark as written so duplicate keys are detected.
         // Null values are implicit (absence of a record = null at finish_batch).
         self.check_dup(idx);
@@ -201,12 +247,22 @@ impl StorageBuilder {
 
     #[inline]
     pub fn append_raw(&mut self, line: &[u8]) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_raw called outside of a row"
+        );
         if self.keep_raw {
             self.raw_values.push(line.to_vec());
         }
     }
 
     pub fn finish_batch(&mut self) -> Result<RecordBatch, ArrowError> {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InBatch,
+            "finish_batch called outside of a batch (call begin_batch first, and ensure all rows are closed with end_row)"
+        );
         let num_rows = self.row_count as usize;
         let mut schema_fields: Vec<Field> = Vec::with_capacity(self.num_active + 1);
         let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.num_active + 1);
@@ -371,7 +427,9 @@ impl StorageBuilder {
 
         let schema = Arc::new(Schema::new(schema_fields));
         let opts = RecordBatchOptions::new().with_row_count(Some(num_rows));
-        RecordBatch::try_new_with_options(schema, arrays, &opts)
+        let result = RecordBatch::try_new_with_options(schema, arrays, &opts);
+        self.state = BuilderState::Idle;
+        result
     }
 }
 
@@ -785,6 +843,94 @@ mod tests {
                 .value(0),
             "web2"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Protocol-violation tests: debug_assert fires on mis-wired callers.
+    // These are only meaningful in debug builds where debug_assert is active.
+    // -----------------------------------------------------------------------
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "begin_row called outside of a batch")]
+    fn test_begin_row_without_batch_panics() {
+        let mut b = StorageBuilder::new(false);
+        b.begin_row(); // no begin_batch — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "end_row called without a matching begin_row")]
+    fn test_end_row_without_begin_row_panics() {
+        let mut b = StorageBuilder::new(false);
+        b.begin_batch();
+        b.end_row(); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "begin_batch called while inside a row")]
+    fn test_begin_batch_inside_row_panics() {
+        let mut b = StorageBuilder::new(false);
+        b.begin_batch();
+        b.begin_row();
+        b.begin_batch(); // inside a row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "append_str_by_idx called outside of a row")]
+    fn test_append_str_outside_row_panics() {
+        let mut b = StorageBuilder::new(false);
+        b.begin_batch();
+        let idx = b.resolve_field(b"x");
+        b.append_str_by_idx(idx, b"val"); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "append_int_by_idx called outside of a row")]
+    fn test_append_int_outside_row_panics() {
+        let mut b = StorageBuilder::new(false);
+        b.begin_batch();
+        let idx = b.resolve_field(b"n");
+        b.append_int_by_idx(idx, b"42"); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "append_float_by_idx called outside of a row")]
+    fn test_append_float_outside_row_panics() {
+        let mut b = StorageBuilder::new(false);
+        b.begin_batch();
+        let idx = b.resolve_field(b"f");
+        b.append_float_by_idx(idx, b"1.5"); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "append_null_by_idx called outside of a row")]
+    fn test_append_null_outside_row_panics() {
+        let mut b = StorageBuilder::new(false);
+        b.begin_batch();
+        let idx = b.resolve_field(b"n");
+        b.append_null_by_idx(idx); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "finish_batch called outside of a batch")]
+    fn test_finish_batch_without_batch_panics() {
+        let mut b = StorageBuilder::new(false);
+        let _ = b.finish_batch(); // no begin_batch — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "resolve_field called outside of an active batch")]
+    fn test_resolve_field_without_batch_panics() {
+        let mut b = StorageBuilder::new(false);
+        b.resolve_field(b"x"); // no begin_batch — must panic
     }
 }
 

@@ -17,6 +17,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
 use logfwd_core::scan_config::{parse_float_fast, parse_int_fast};
+use logfwd_core::scanner::BuilderState;
 
 use crate::check_dup_bits;
 
@@ -103,6 +104,8 @@ pub struct StreamingBuilder {
     /// Raw line views: (offset_in_buf, len) per row, in row order.
     /// Populated only when `keep_raw` is true.
     raw_views: Vec<(u32, u32)>,
+    /// Protocol state — enforced via `debug_assert` in each method.
+    state: BuilderState,
 }
 
 impl Default for StreamingBuilder {
@@ -122,6 +125,7 @@ impl StreamingBuilder {
             buf: bytes::Bytes::new(),
             keep_raw,
             raw_views: Vec::new(),
+            state: BuilderState::Idle,
         }
     }
 
@@ -133,6 +137,11 @@ impl StreamingBuilder {
     /// offsets are stored as u32.  Buffers larger than 4 GiB would produce
     /// silently truncated offsets without this guard.
     pub fn begin_batch(&mut self, buf: bytes::Bytes) {
+        debug_assert_ne!(
+            self.state,
+            BuilderState::InRow,
+            "begin_batch called while inside a row (missing end_row)"
+        );
         debug_assert!(
             u32::try_from(buf.len()).is_ok(),
             "StreamingBuilder buffer too large for u32 offsets ({} bytes)",
@@ -153,23 +162,40 @@ impl StreamingBuilder {
         self.field_index.clear();
         self.num_active = 0;
         self.raw_views.clear();
+        self.state = BuilderState::InBatch;
     }
 
     #[inline(always)]
     pub fn begin_row(&mut self) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InBatch,
+            "begin_row called outside of a batch (call begin_batch first)"
+        );
         self.written_bits = 0;
+        self.state = BuilderState::InRow;
     }
 
     #[inline(always)]
     pub fn end_row(&mut self) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "end_row called without a matching begin_row"
+        );
         self.row_count = self
             .row_count
             .checked_add(1)
             .expect("row_count overflow: batch exceeds u32::MAX rows");
+        self.state = BuilderState::InBatch;
     }
 
     #[inline]
     pub fn resolve_field(&mut self, key: &[u8]) -> usize {
+        debug_assert!(
+            self.state == BuilderState::InBatch || self.state == BuilderState::InRow,
+            "resolve_field called outside of an active batch"
+        );
         if let Some(&idx) = self.field_index.get(key) {
             return idx;
         }
@@ -216,6 +242,11 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_str_by_idx(&mut self, idx: usize, value: &[u8]) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_str_by_idx called outside of a row"
+        );
         if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
@@ -234,6 +265,11 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_int_by_idx(&mut self, idx: usize, value: &[u8]) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_int_by_idx called outside of a row"
+        );
         if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
@@ -246,6 +282,11 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_float_by_idx(&mut self, idx: usize, value: &[u8]) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_float_by_idx called outside of a row"
+        );
         if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
@@ -258,6 +299,11 @@ impl StreamingBuilder {
 
     #[inline(always)]
     pub fn append_null_by_idx(&mut self, idx: usize) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_null_by_idx called outside of a row"
+        );
         // Nulls are represented by gaps -- no value record needed.
         // But mark as written for duplicate-key detection.
         let _ = check_dup_bits(&mut self.written_bits, idx);
@@ -269,6 +315,11 @@ impl StreamingBuilder {
     /// The line must be a subslice of the buffer passed to `begin_batch`.
     #[inline(always)]
     pub fn append_raw(&mut self, line: &[u8]) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_raw called outside of a row"
+        );
         if self.keep_raw {
             let offset = self.offset_of(line);
             self.raw_views.push((offset, line.len() as u32));
@@ -279,7 +330,12 @@ impl StreamingBuilder {
     ///
     /// The resulting RecordBatch shares the input buffer via Bytes reference
     /// counting -- no string data is copied.
-    pub fn finish_batch(&self) -> Result<RecordBatch, ArrowError> {
+    pub fn finish_batch(&mut self) -> Result<RecordBatch, ArrowError> {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InBatch,
+            "finish_batch called outside of a batch (call begin_batch first, and ensure all rows are closed with end_row)"
+        );
         let num_rows = self.row_count as usize;
         let arrow_buf = Buffer::from(self.buf.clone());
 
@@ -473,7 +529,9 @@ impl StreamingBuilder {
 
         let schema = Arc::new(Schema::new(schema_fields));
         let opts = RecordBatchOptions::new().with_row_count(Some(num_rows));
-        RecordBatch::try_new_with_options(schema, arrays, &opts)
+        let result = RecordBatch::try_new_with_options(schema, arrays, &opts);
+        self.state = BuilderState::Idle;
+        result
     }
 }
 
@@ -1123,6 +1181,100 @@ mod tests {
                 .value(0),
             "web2"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Protocol-violation tests: debug_assert fires on mis-wired callers.
+    // These are only meaningful in debug builds where debug_assert is active.
+    // -----------------------------------------------------------------------
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "begin_row called outside of a batch")]
+    fn test_begin_row_without_batch_panics() {
+        let mut b = StreamingBuilder::new(false);
+        b.begin_row(); // no begin_batch — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "end_row called without a matching begin_row")]
+    fn test_end_row_without_begin_row_panics() {
+        let buf = bytes::Bytes::from_static(b"x");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf);
+        b.end_row(); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "begin_batch called while inside a row")]
+    fn test_begin_batch_inside_row_panics() {
+        let buf = bytes::Bytes::from_static(b"x");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf.clone());
+        b.begin_row();
+        b.begin_batch(buf); // inside a row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "append_str_by_idx called outside of a row")]
+    fn test_append_str_outside_row_panics() {
+        let buf = bytes::Bytes::from_static(b"val");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf.clone());
+        let idx = b.resolve_field(b"x");
+        b.append_str_by_idx(idx, &buf[0..3]); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "append_int_by_idx called outside of a row")]
+    fn test_append_int_outside_row_panics() {
+        let buf = bytes::Bytes::from_static(b"42");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf);
+        let idx = b.resolve_field(b"n");
+        b.append_int_by_idx(idx, b"42"); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "append_float_by_idx called outside of a row")]
+    fn test_append_float_outside_row_panics() {
+        let buf = bytes::Bytes::from_static(b"1.5");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf);
+        let idx = b.resolve_field(b"f");
+        b.append_float_by_idx(idx, b"1.5"); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "append_null_by_idx called outside of a row")]
+    fn test_append_null_outside_row_panics() {
+        let buf = bytes::Bytes::from_static(b"x");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf);
+        let idx = b.resolve_field(b"n");
+        b.append_null_by_idx(idx); // no begin_row — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "finish_batch called outside of a batch")]
+    fn test_finish_batch_without_batch_panics() {
+        let mut b = StreamingBuilder::new(false);
+        let _ = b.finish_batch(); // no begin_batch — must panic
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "resolve_field called outside of an active batch")]
+    fn test_resolve_field_without_batch_panics() {
+        let mut b = StreamingBuilder::new(false);
+        b.resolve_field(b"x"); // no begin_batch — must panic
     }
 }
 

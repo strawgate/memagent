@@ -9,6 +9,35 @@ use crate::scan_config::parse_int_fast;
 use crate::structural::StructuralIndex;
 
 // ---------------------------------------------------------------------------
+// Protocol state
+// ---------------------------------------------------------------------------
+
+/// Protocol state for [`ScanBuilder`] implementations.
+///
+/// Tracks the current phase of a batch build cycle to let implementors
+/// enforce the required call sequence with `debug_assert`:
+///
+/// ```text
+/// Idle → begin_batch() → InBatch
+///   InBatch → begin_row() → InRow
+///     InRow → end_row() → InBatch
+///   InBatch → finish_batch() → Idle
+/// ```
+///
+/// `resolve_field` is legal in both `InBatch` and `InRow` states (field
+/// indices may be pre-registered between rows).  All `append_*` calls are
+/// only legal while `InRow`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuilderState {
+    /// No active batch. Initial state and state after `finish_batch`.
+    Idle,
+    /// A batch has been started via `begin_batch` but no row is open.
+    InBatch,
+    /// A row is open via `begin_row`; `end_row` has not yet been called.
+    InRow,
+}
+
+// ---------------------------------------------------------------------------
 // ScanBuilder trait — shared interface for both builders
 // ---------------------------------------------------------------------------
 
