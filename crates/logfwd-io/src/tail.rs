@@ -237,7 +237,7 @@ impl FileTailer {
         // Open existing files. Warn about missing paths (#730).
         for path in paths {
             if path.exists() {
-                if let Err(e) = tailer.open_file(path) {
+                if let Err(e) = tailer.open_file_at(path, tailer.config.start_from_end) {
                     tracing::warn!(path = %path.display(), error = %e, "tail.open_failed");
                 }
             } else {
@@ -321,28 +321,29 @@ impl FileTailer {
                 tracing::warn!(path = %parent.display(), error = %e, "tail.watch_dir_failed");
             }
 
-            // Open the file (new files from glob discovery always read from the beginning).
-            let saved = self.config.start_from_end;
-            self.config.start_from_end = false;
-            if let Err(e) = self.open_file(&path) {
+            // New files from glob discovery always read from the beginning.
+            if let Err(e) = self.open_file_at(&path, false) {
                 tracing::warn!(path = %path.display(), error = %e, "tail.open_failed");
             }
-            self.config.start_from_end = saved;
 
             self.watch_paths.push(path);
         }
     }
 
-    /// Open and start tailing a file. If start_from_end is true, seeks to EOF.
-    /// If the file was previously evicted from the LRU cache, restores the
-    /// saved offset so reads resume where they left off.
-    fn open_file(&mut self, path: &Path) -> io::Result<()> {
+    /// Open and start tailing a file.
+    ///
+    /// If `start_from_end` is true, seeks to EOF. If the file was previously
+    /// evicted from the LRU cache, restores the saved offset instead.
+    ///
+    /// Takes `start_from_end` as a parameter (Bug E) instead of reading
+    /// from `self.config` to avoid the fragile save/restore pattern.
+    fn open_file_at(&mut self, path: &Path, start_from_end: bool) -> io::Result<()> {
         let identity = identify_file(path, self.config.fingerprint_bytes)?;
         let mut file = File::open(path)?;
 
         let offset = if let Some(saved) = self.evicted_offsets.remove(path) {
             file.seek(SeekFrom::Start(saved))?
-        } else if self.config.start_from_end {
+        } else if start_from_end {
             file.seek(SeekFrom::End(0))?
         } else {
             0
@@ -455,20 +456,13 @@ impl FileTailer {
                 // and switch to the new file.
                 events.push(TailEvent::Rotated { path: path.clone() });
                 let _ = self.files.remove(path);
-                let saved_start_from_end = self.config.start_from_end;
-                self.config.start_from_end = false; // read new file from beginning
-                if let Err(e) = self.open_file(path) {
+                if let Err(e) = self.open_file_at(path, false) {
                     tracing::warn!(path = %path.display(), error = %e, "tail.open_after_rotation_failed");
                 }
-                self.config.start_from_end = saved_start_from_end;
             } else if is_new {
-                // New file appeared.
-                let saved = self.config.start_from_end;
-                self.config.start_from_end = false; // new files read from beginning
-                if let Err(e) = self.open_file(path) {
+                if let Err(e) = self.open_file_at(path, false) {
                     tracing::warn!(path = %path.display(), error = %e, "tail.open_new_file_failed");
                 }
-                self.config.start_from_end = saved;
             }
         }
 
@@ -557,6 +551,7 @@ impl FileTailer {
                 }
             }
             self.files.remove(path);
+            self.evicted_offsets.remove(path); // Bug G: prevent unbounded leak
         }
 
         // Evict least-recently-read files when over the open-file limit.
@@ -599,8 +594,9 @@ impl FileTailer {
         let was_truncated = current_size < tailed.offset;
         if was_truncated {
             // File was truncated (copytruncate rotation) (#796).
-            // Reset offset and recompute fingerprint.
+            // Reset offset, fingerprint, and eof flag.
             tailed.offset = 0;
+            tailed.eof_emitted = false; // Bug A: allow fresh EndOfFile after truncation
             tailed.file.seek(SeekFrom::Start(0))?;
             tailed.identity.fingerprint =
                 compute_fingerprint(&mut tailed.file, self.config.fingerprint_bytes)?;
