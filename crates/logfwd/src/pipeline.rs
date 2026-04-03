@@ -1011,42 +1011,12 @@ fn now_nanos() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
     use std::sync::atomic::Ordering;
 
     use logfwd_config::{Format, OutputConfig, OutputType};
     use logfwd_io::diagnostics::ComponentStats;
     use logfwd_test_utils::sinks::{CountingSink, DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::{append_json_lines, test_meter};
-
-    struct NamedSink<T> {
-        name: &'static str,
-        inner: T,
-    }
-
-    impl<T> NamedSink<T> {
-        fn new(name: &'static str, inner: T) -> Self {
-            Self { name, inner }
-        }
-    }
-
-    impl<T: OutputSink> OutputSink for NamedSink<T> {
-        fn send_batch(
-            &mut self,
-            batch: &arrow::record_batch::RecordBatch,
-            metadata: &BatchMetadata,
-        ) -> io::Result<()> {
-            self.inner.send_batch(batch, metadata)
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.inner.flush()
-        }
-
-        fn name(&self) -> &str {
-            self.name
-        }
-    }
 
     #[test]
     fn test_build_output_sink_stdout() {
