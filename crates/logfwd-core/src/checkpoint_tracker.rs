@@ -127,6 +127,19 @@ impl CheckpointTracker {
         self.remainder_len = 0;
     }
 
+    /// Flush or discard the remainder without advancing read_offset.
+    ///
+    /// Called when FramedInput flushes partial data on EndOfFile (emitting
+    /// the remainder as a final line) or discards it on overflow/rotation.
+    /// This collapses `remainder_len` into `processed_offset` so that
+    /// `checkpointable_offset()` advances to cover the flushed/discarded
+    /// bytes. Without this, idle sources with flushed remainders would
+    /// have a permanently stale `remainder_len`.
+    pub fn apply_remainder_consumed(&mut self) {
+        self.processed_offset = self.read_offset;
+        self.remainder_len = 0;
+    }
+
     /// The offset that should be checkpointed.
     ///
     /// This is always at a newline boundary -- the last byte position

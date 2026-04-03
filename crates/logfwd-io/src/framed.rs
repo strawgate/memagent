@@ -80,7 +80,6 @@ impl FramedInput {
             stats,
         }
     }
-
 }
 
 impl InputSource for FramedInput {
@@ -148,6 +147,7 @@ impl InputSource for FramedInput {
                                     // Drop the oversized remainder and reset format.
                                     let state = self.sources.get_mut(&key).expect("just inserted");
                                     state.format.reset();
+                                    state.tracker.apply_remainder_consumed();
                                 } else {
                                     let state = self.sources.get_mut(&key).expect("just inserted");
                                     state.remainder = tail;
@@ -161,6 +161,7 @@ impl InputSource for FramedInput {
                                 self.stats.inc_parse_errors(1);
                                 let state = self.sources.get_mut(&key).expect("just inserted");
                                 state.format.reset();
+                                state.tracker.apply_remainder_consumed();
                             } else {
                                 let state = self.sources.get_mut(&key).expect("just inserted");
                                 state.remainder = chunk;
@@ -233,6 +234,13 @@ impl InputSource for FramedInput {
                                 state.format.process_lines(&remainder, &mut self.out_buf);
 
                                 self.stats.inc_lines(1);
+
+                                // Remainder was flushed — update tracker so
+                                // checkpointable_offset advances past the
+                                // flushed bytes.
+                                let state =
+                                    self.sources.get_mut(&key).expect("just checked existence");
+                                state.tracker.apply_remainder_consumed();
 
                                 if !self.out_buf.is_empty() {
                                     let data = std::mem::take(&mut self.out_buf);
