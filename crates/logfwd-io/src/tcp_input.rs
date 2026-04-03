@@ -307,6 +307,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
 
+        assert!(
+            was_connected,
+            "connect→disconnect transition was never observed"
+        );
         let _ = writer.join();
 
         assert_eq!(
@@ -344,6 +348,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
 
+        assert!(
+            was_connected,
+            "connect→disconnect transition was never observed"
+        );
         let _ = writer.join();
 
         assert_eq!(
