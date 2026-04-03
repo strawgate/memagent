@@ -19,6 +19,13 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 arrow = { version = "55", default-features = false, features = ["ipc_compression"] }
+arrow-json = "55"
+datafusion = { version = "48", default-features = false, features = [
+    "string_expressions",
+    "unicode_expressions",
+    "regex_expressions",
+    "recursive_protection",
+] }
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-client", "trace", "metrics"] }

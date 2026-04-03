@@ -118,6 +118,12 @@ impl ScalarUDFImpl for GrokUdf {
         Ok(DataType::Utf8)
     }
 
+    /// Determine the return type at planning time based on the grok pattern.
+    ///
+    /// If the pattern argument is a string literal, compiles the grok pattern
+    /// and returns a nullable Struct type with one Utf8 field per named capture
+    /// group. Falls back to nullable Utf8 if the pattern is not a literal or
+    /// compilation fails.
     fn return_field_from_args(
         &self,
         args: datafusion::logical_expr::ReturnFieldArgs,
