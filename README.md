@@ -158,21 +158,21 @@ output:
 ```yaml
 pipelines:
   errors:
-    input:
+    inputs:
       type: file
       path: /var/log/pods/**/*.log
       format: cri
     transform: SELECT * FROM logs WHERE level_str = 'ERROR'
-    output:
+    outputs:
       type: otlp
       endpoint: http://otel-collector:4318
 
   debug:
-    input:
+    inputs:
       type: file
       path: /var/log/pods/**/*.log
       format: cri
-    output:
+    outputs:
       type: stdout
       format: console
 ```
@@ -213,7 +213,7 @@ WHERE _stream_str = 'stderr'
 | `otlp`          | ✅ Implemented  | OTLP protobuf over HTTP or gRPC — works with any OpenTelemetry-compatible receiver |
 | `http`          | ✅ Implemented  | JSON lines over HTTP POST, optional zstd compression |
 | `stdout`        | ✅ Implemented  | JSON or colored console output — great for local debugging |
-| `elasticsearch` | ✅ Implemented  | Elasticsearch bulk API with retry logic, per-document error handling |
+| `elasticsearch` | 🔜 Planned      | Elasticsearch bulk API with retry logic, per-document error handling |
 | `loki`          | 🚧 Stub         | Struct exists; Loki push API not yet implemented |
 | `parquet`       | 🚧 Stub         | Struct exists; Parquet file writing not yet implemented |
 

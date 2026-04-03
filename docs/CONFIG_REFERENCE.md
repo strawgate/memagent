@@ -138,6 +138,7 @@ No extra fields required; the listen address will be configurable in a future re
 | Value | Status | Description |
 |-------|--------|-------------|
 | `file` | Implemented | Tail files matching a glob pattern. |
+| `generator` | Implemented | Synthetic data generator for benchmarking. Produces JSON log lines without external data sources. No extra fields required. |
 | `udp` | Planned | Receive log lines over UDP. |
 | `tcp` | Planned | Accept log lines over TCP. |
 | `otlp` | Planned | Receive OTLP logs. |
@@ -311,9 +312,8 @@ Special columns added by the scanner:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `_file_str` | string | Absolute path of the source file (file inputs only). |
 | `_raw_str` | string | Original JSON line (only when `keep_raw: true`). |
-| `_time_ns_int` | int64 | Timestamp from CRI header in nanoseconds (CRI inputs only). |
+| `_timestamp_str` | string | Timestamp from CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream_str` | string | CRI stream name (`stdout`/`stderr`). |
 
 ### Built-in UDFs
