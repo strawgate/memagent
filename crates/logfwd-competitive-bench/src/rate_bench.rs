@@ -385,7 +385,7 @@ pub fn write_rate_json_file(results: &[RateBenchResult], path: &Path) {
 
     let commit = std::env::var("GITHUB_SHA")
         .or_else(|_| {
-            std::process::Command::new("git")
+            Command::new("git")
                 .args(["rev-parse", "HEAD"])
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

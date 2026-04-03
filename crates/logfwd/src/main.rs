@@ -268,9 +268,7 @@ async fn cmd_config(args: &[String]) -> Result<(), CliError> {
 }
 
 async fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
-    let addr = args
-        .get(2)
-        .map_or("127.0.0.1:4318", std::string::String::as_str);
+    let addr = args.get(2).map_or("127.0.0.1:4318", String::as_str);
 
     // Validate addr is a parseable socket address before injecting into YAML.
     addr.parse::<std::net::SocketAddr>()

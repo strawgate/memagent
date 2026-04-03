@@ -104,7 +104,7 @@ impl std::fmt::Display for ComplianceReport {
             self.malformed,
         )?;
         if !self.gaps.is_empty() {
-            let show: Vec<String> = self.gaps.iter().take(20).map(|id| id.to_string()).collect();
+            let show: Vec<String> = self.gaps.iter().take(20).map(ToString::to_string).collect();
             write!(f, "\n  first gaps: [{}]", show.join(", "))?;
         }
         if !self.duplicates.is_empty() {
@@ -112,7 +112,7 @@ impl std::fmt::Display for ComplianceReport {
                 .duplicates
                 .iter()
                 .take(20)
-                .map(|id| id.to_string())
+                .map(ToString::to_string)
                 .collect();
             write!(f, "\n  first duplicates: [{}]", show.join(", "))?;
         }
@@ -147,7 +147,9 @@ fn verify_batches(
             .expect("sequence_id should be Int64");
 
         // Optional source_id filter.
-        let source_filter: Option<Vec<bool>> = if !source_id.is_empty() {
+        let source_filter: Option<Vec<bool>> = if source_id.is_empty() {
+            None
+        } else {
             batch.column_by_name("source_id").map(|col| {
                 (0..batch.num_rows())
                     .map(|row| {
@@ -163,8 +165,6 @@ fn verify_batches(
                     })
                     .collect()
             })
-        } else {
-            None
         };
 
         for row in 0..batch.num_rows() {
@@ -200,7 +200,7 @@ fn verify_batches(
             duplicates.push(id as u64);
         }
     }
-    duplicates.sort();
+    duplicates.sort_unstable();
     duplicates.dedup();
 
     // Check for gaps: which IDs from 0..expected_count are missing?
@@ -210,7 +210,7 @@ fn verify_batches(
         .difference(&received_set)
         .map(|&id| id as u64)
         .collect();
-    gaps.sort();
+    gaps.sort_unstable();
 
     ComplianceReport {
         lines_generated: expected_count as u64,
@@ -266,7 +266,7 @@ fn compliance_happy_path() {
     generate_json_lines(&log_path, count, "src1");
 
     let yaml = format!(
-        r#"
+        r"
 input:
   type: file
   path: {}
@@ -274,7 +274,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
         log_path.display()
     );
 
@@ -306,7 +306,7 @@ fn compliance_multi_source() {
     }
 
     let yaml = format!(
-        r#"
+        r"
 pipelines:
   default:
     inputs:
@@ -314,7 +314,7 @@ pipelines:
     outputs:
       - type: stdout
         format: json
-"#,
+",
         input_yaml_parts.join("\n")
     );
 
@@ -466,7 +466,7 @@ fn compliance_large_batch() {
     generate_json_lines(&log_path, count, "src1");
 
     let yaml = format!(
-        r#"
+        r"
 input:
   type: file
   path: {}
@@ -474,7 +474,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
         log_path.display()
     );
 

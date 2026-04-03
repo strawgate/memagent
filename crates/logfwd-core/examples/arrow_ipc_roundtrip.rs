@@ -173,7 +173,7 @@ fn read_ipc_mmap(path: &std::path::Path) -> Vec<RecordBatch> {
 /// Panics if `original` and the concatenated `roundtrip` batches are not
 /// bit-identical (same schema, same row count, same column data).
 fn verify_roundtrip(original: &RecordBatch, roundtrip: &[RecordBatch]) {
-    let total_rows: usize = roundtrip.iter().map(|b| b.num_rows()).sum();
+    let total_rows: usize = roundtrip.iter().map(RecordBatch::num_rows).sum();
     assert_eq!(
         original.num_rows(),
         total_rows,
@@ -299,7 +299,7 @@ fn main() {
     println!(
         "done ({} batches, {} rows)",
         rt_uncmp.len(),
-        rt_uncmp.iter().map(|b| b.num_rows()).sum::<usize>()
+        rt_uncmp.iter().map(RecordBatch::num_rows).sum::<usize>()
     );
     println!("  Throughput: {read_seq_uncmp_mb_s:.0} MB/s");
 
@@ -327,7 +327,7 @@ fn main() {
     println!(
         "done ({} batches, {} rows)",
         rt_zstd.len(),
-        rt_zstd.iter().map(|b| b.num_rows()).sum::<usize>()
+        rt_zstd.iter().map(RecordBatch::num_rows).sum::<usize>()
     );
     println!("  Throughput: {read_seq_zstd_mb_s:.0} MB/s (uncompressed-equivalent)");
 
@@ -359,7 +359,7 @@ fn main() {
     println!(
         "done ({} batches, {} rows)",
         rt_mmap.len(),
-        rt_mmap.iter().map(|b| b.num_rows()).sum::<usize>()
+        rt_mmap.iter().map(RecordBatch::num_rows).sum::<usize>()
     );
     println!("  Throughput: {read_mmap_mb_s:.0} MB/s");
 

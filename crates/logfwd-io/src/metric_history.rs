@@ -221,7 +221,7 @@ mod tests {
         }
         let points = buf.points();
         // Should have points from all tiers, deduplicated
-        assert!(points.len() > 0);
+        assert!(!points.is_empty());
         assert!(points.len() < 200); // some dedup happened
     }
 }

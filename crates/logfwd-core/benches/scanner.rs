@@ -242,7 +242,7 @@ fn sonic_rs_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
         if let Ok(val) = sonic_rs::from_slice::<sonic_rs::Value>(line)
             && let Some(obj) = val.as_object()
         {
-            for (key_str, val) in obj.iter() {
+            for (key_str, val) in obj {
                 let key = key_str.as_bytes();
                 let idx = builder.resolve_field(key);
                 if let Some(s) = val.as_str() {

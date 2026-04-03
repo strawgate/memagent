@@ -672,19 +672,19 @@ impl SqlTransform {
         // Register custom UDFs once — they persist across batches.
         ctx.register_udf(ScalarUDF::from(IntCastUdf::new()));
         ctx.register_udf(ScalarUDF::from(FloatCastUdf::new()));
-        ctx.register_udf(ScalarUDF::from(crate::udf::RegexpExtractUdf::new()));
-        ctx.register_udf(ScalarUDF::from(crate::udf::GrokUdf::new()));
-        ctx.register_udf(ScalarUDF::from(crate::udf::JsonExtractUdf::new(
-            crate::udf::JsonExtractMode::Str,
+        ctx.register_udf(ScalarUDF::from(udf::RegexpExtractUdf::new()));
+        ctx.register_udf(ScalarUDF::from(udf::GrokUdf::new()));
+        ctx.register_udf(ScalarUDF::from(udf::JsonExtractUdf::new(
+            udf::JsonExtractMode::Str,
         )));
-        ctx.register_udf(ScalarUDF::from(crate::udf::JsonExtractUdf::new(
-            crate::udf::JsonExtractMode::Int,
+        ctx.register_udf(ScalarUDF::from(udf::JsonExtractUdf::new(
+            udf::JsonExtractMode::Int,
         )));
-        ctx.register_udf(ScalarUDF::from(crate::udf::JsonExtractUdf::new(
-            crate::udf::JsonExtractMode::Float,
+        ctx.register_udf(ScalarUDF::from(udf::JsonExtractUdf::new(
+            udf::JsonExtractMode::Float,
         )));
         if let Some(ref db) = self.geo_database {
-            ctx.register_udf(ScalarUDF::from(crate::udf::geo_lookup::GeoLookupUdf::new(
+            ctx.register_udf(ScalarUDF::from(udf::geo_lookup::GeoLookupUdf::new(
                 Arc::clone(db),
             )));
         }
@@ -1065,7 +1065,7 @@ mod tests {
         let a = QueryAnalyzer::new("SELECT * FROM logs WHERE facility IN (1, 4, 16)").unwrap();
         let h = a.filter_hints();
         let mut facs = h.facilities.unwrap();
-        facs.sort();
+        facs.sort_unstable();
         assert_eq!(facs, vec![1, 4, 16]);
     }
 

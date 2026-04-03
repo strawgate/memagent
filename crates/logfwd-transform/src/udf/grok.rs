@@ -306,7 +306,7 @@ mod tests {
             Some("no match here"),
             None,
         ]));
-        arrow::record_batch::RecordBatch::try_new(schema, vec![msgs]).unwrap()
+        RecordBatch::try_new(schema, vec![msgs]).unwrap()
     }
 
     #[test]
@@ -401,7 +401,7 @@ mod tests {
             Some("Connection from 192.168.1.100 port 22"),
             Some("Request from 10.0.0.1 port 443"),
         ]));
-        let batch = arrow::record_batch::RecordBatch::try_new(schema, vec![logs]).unwrap();
+        let batch = RecordBatch::try_new(schema, vec![logs]).unwrap();
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

@@ -60,6 +60,7 @@ assigning_clones = "allow"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unused_qualifications = "warn"
 
 [profile.release]
 opt-level = 3

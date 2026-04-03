@@ -127,7 +127,7 @@ fn bench_arrow_query(
             Ok(batches) => {
                 let elapsed = start.elapsed();
                 total_duration += elapsed;
-                total_rows += batches.iter().map(|b| b.num_rows()).sum::<usize>();
+                total_rows += batches.iter().map(RecordBatch::num_rows).sum::<usize>();
             }
             Err(e) => {
                 eprintln!("Arrow query failed: {}", e);

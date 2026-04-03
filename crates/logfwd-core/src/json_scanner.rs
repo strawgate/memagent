@@ -444,18 +444,18 @@ mod tests {
         }
         fn append_str_by_idx(&mut self, idx: usize, val: &[u8]) {
             let name = self.field_names[idx].clone();
-            let val_str = alloc::string::String::from_utf8_lossy(val).to_string();
+            let val_str = String::from_utf8_lossy(val).to_string();
             self.current_row.push((name, val_str));
         }
         fn append_int_by_idx(&mut self, idx: usize, val: &[u8]) {
             let name = self.field_names[idx].clone();
-            let val_str = alloc::string::String::from_utf8_lossy(val).to_string();
+            let val_str = String::from_utf8_lossy(val).to_string();
             self.current_row
                 .push((name, alloc::format!("int:{val_str}")));
         }
         fn append_float_by_idx(&mut self, idx: usize, val: &[u8]) {
             let name = self.field_names[idx].clone();
-            let val_str = alloc::string::String::from_utf8_lossy(val).to_string();
+            let val_str = String::from_utf8_lossy(val).to_string();
             self.current_row
                 .push((name, alloc::format!("float:{val_str}")));
         }
@@ -464,7 +464,7 @@ mod tests {
             self.current_row.push((name, "null".to_string()));
         }
         fn append_raw(&mut self, val: &[u8]) {
-            self.current_raw = Some(alloc::string::String::from_utf8_lossy(val).to_string());
+            self.current_raw = Some(String::from_utf8_lossy(val).to_string());
         }
     }
 

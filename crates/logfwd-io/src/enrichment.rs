@@ -370,7 +370,7 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
         .headers()
         .map_err(|e| format!("CSV header error: {e}"))?
         .iter()
-        .map(std::string::ToString::to_string)
+        .map(ToString::to_string)
         .collect();
 
     if headers.is_empty() {
@@ -494,7 +494,7 @@ fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String>
 
     // First pass: discover all keys and collect rows.
     let mut all_keys: Vec<String> = Vec::new();
-    let mut key_set = std::collections::HashSet::new();
+    let mut key_set = HashSet::new();
     let mut rows: Vec<BTreeMap<String, String>> = Vec::new();
 
     for line in reader.lines() {
@@ -541,7 +541,7 @@ fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String>
         .map(|key| {
             let arr: StringArray = rows
                 .iter()
-                .map(|row| row.get(key).map(std::string::String::as_str))
+                .map(|row| row.get(key).map(String::as_str))
                 .collect();
             Arc::new(arr) as _
         })

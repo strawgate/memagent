@@ -104,7 +104,7 @@ impl Pipeline {
         for enrichment in &config.enrichment {
             match enrichment {
                 EnrichmentConfig::GeoDatabase(geo_cfg) => {
-                    let mut path = std::path::PathBuf::from(&geo_cfg.path);
+                    let mut path = PathBuf::from(&geo_cfg.path);
                     if path.is_relative()
                         && let Some(base) = base_path
                     {
@@ -155,7 +155,7 @@ impl Pipeline {
         for (i, input_cfg) in config.inputs.iter().enumerate() {
             let mut resolved_cfg = input_cfg.clone();
             if let Some(path_str) = &input_cfg.path {
-                let mut path = std::path::PathBuf::from(path_str);
+                let mut path = PathBuf::from(path_str);
                 if path.is_relative()
                     && let Some(base) = base_path
                 {
@@ -608,7 +608,7 @@ impl Pipeline {
             resource_attrs: Arc::clone(&self.resource_attrs),
             observed_time_ns: now_nanos(),
         };
-        let submitted_at = std::time::Instant::now();
+        let submitted_at = Instant::now();
         self.pool
             .submit(WorkItem {
                 num_rows: result.num_rows() as u64,
@@ -1101,7 +1101,7 @@ mod tests {
         std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
 
         let yaml = format!(
-            r#"
+            r"
 input:
   type: file
   path: {}
@@ -1109,7 +1109,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
             log_path.display()
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
@@ -1163,7 +1163,7 @@ output:
         std::fs::write(&log_path, data.as_bytes()).unwrap();
 
         let yaml = format!(
-            r#"
+            r"
 input:
   type: file
   path: {}
@@ -1171,7 +1171,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
             log_path.display()
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
@@ -1220,7 +1220,7 @@ output:
         std::fs::write(&log_path, data.as_bytes()).unwrap();
 
         let yaml = format!(
-            r#"
+            r"
 input:
   type: file
   path: {}
@@ -1228,7 +1228,7 @@ input:
 output:
   type: stdout
   format: json
-"#,
+",
             log_path.display()
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();

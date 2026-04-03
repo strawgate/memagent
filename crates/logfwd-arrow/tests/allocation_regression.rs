@@ -53,13 +53,13 @@ fn storage_scanner_no_leak_across_batches() {
         drop(scanner.scan(&data).unwrap());
     }
 
-    let reg1 = Region::new(&GLOBAL);
+    let reg1 = Region::new(GLOBAL);
     for _ in 0..10 {
         drop(scanner.scan(&data).unwrap());
     }
     let stats1 = reg1.change();
 
-    let reg2 = Region::new(&GLOBAL);
+    let reg2 = Region::new(GLOBAL);
     for _ in 0..10 {
         drop(scanner.scan(&data).unwrap());
     }
@@ -83,13 +83,13 @@ fn streaming_scanner_no_leak_across_batches() {
         drop(scanner.scan(input.clone()).unwrap());
     }
 
-    let reg1 = Region::new(&GLOBAL);
+    let reg1 = Region::new(GLOBAL);
     for _ in 0..10 {
         drop(scanner.scan(input.clone()).unwrap());
     }
     let stats1 = reg1.change();
 
-    let reg2 = Region::new(&GLOBAL);
+    let reg2 = Region::new(GLOBAL);
     for _ in 0..10 {
         drop(scanner.scan(input.clone()).unwrap());
     }
@@ -111,12 +111,12 @@ fn scanner_allocs_scale_linearly() {
     let _ = scanner.scan(&make_ndjson(1000)).unwrap();
 
     let data_500 = make_ndjson(500);
-    let reg_500 = Region::new(&GLOBAL);
+    let reg_500 = Region::new(GLOBAL);
     let _ = scanner.scan(&data_500).unwrap();
     let stats_500 = reg_500.change();
 
     let data_5000 = make_ndjson(5000);
-    let reg_5000 = Region::new(&GLOBAL);
+    let reg_5000 = Region::new(GLOBAL);
     let _ = scanner.scan(&data_5000).unwrap();
     let stats_5000 = reg_5000.change();
 
@@ -135,11 +135,11 @@ fn scanner_allocs_scale_linearly() {
         .scan(bytes::Bytes::from(make_ndjson(1000)))
         .unwrap();
 
-    let reg_s500 = Region::new(&GLOBAL);
+    let reg_s500 = Region::new(GLOBAL);
     let _ = streaming.scan(bytes::Bytes::from(data_500)).unwrap();
     let stats_s500 = reg_s500.change();
 
-    let reg_s5000 = Region::new(&GLOBAL);
+    let reg_s5000 = Region::new(GLOBAL);
     let _ = streaming.scan(bytes::Bytes::from(data_5000)).unwrap();
     let stats_s5000 = reg_s5000.change();
 

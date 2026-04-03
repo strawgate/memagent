@@ -668,8 +668,8 @@ impl OnceFactory {
     }
 }
 
-impl sink::SinkFactory for OnceFactory {
-    fn create(&self) -> io::Result<Box<dyn sink::Sink>> {
+impl SinkFactory for OnceFactory {
+    fn create(&self) -> io::Result<Box<dyn Sink>> {
         let mut guard = self
             .inner
             .lock()
@@ -703,9 +703,9 @@ impl sink::SinkFactory for OnceFactory {
 /// sinks are limited to one worker.
 pub fn build_sink_factory(
     name: &str,
-    cfg: &logfwd_config::OutputConfig,
+    cfg: &OutputConfig,
     stats: Arc<ComponentStats>,
-) -> Result<Arc<dyn sink::SinkFactory>, String> {
+) -> Result<Arc<dyn SinkFactory>, String> {
     use logfwd_config::OutputType;
 
     let auth_headers = build_auth_headers(cfg.auth.as_ref());
@@ -1401,15 +1401,14 @@ mod write_row_json_tests {
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
 
-    fn make_batch(fields: Vec<(&str, Arc<dyn arrow::array::Array>)>) -> RecordBatch {
+    fn make_batch(fields: Vec<(&str, Arc<dyn Array>)>) -> RecordBatch {
         let schema = Schema::new(
             fields
                 .iter()
                 .map(|(name, arr)| Field::new(*name, arr.data_type().clone(), true))
                 .collect::<Vec<_>>(),
         );
-        let arrays: Vec<Arc<dyn arrow::array::Array>> =
-            fields.into_iter().map(|(_, a)| a).collect();
+        let arrays: Vec<Arc<dyn Array>> = fields.into_iter().map(|(_, a)| a).collect();
         RecordBatch::try_new(Arc::new(schema), arrays).unwrap()
     }
 
@@ -1610,7 +1609,7 @@ mod write_row_json_tests {
         use arrow::array::BooleanArray;
         let batch = make_batch(vec![(
             "active",
-            Arc::new(BooleanArray::from(vec![true])) as Arc<dyn arrow::array::Array>,
+            Arc::new(BooleanArray::from(vec![true])) as Arc<dyn Array>,
         )]);
         let json = render(&batch, 0);
         // Boolean columns go through str_value fallback, which returns ""
@@ -1656,7 +1655,7 @@ mod write_row_json_tests {
         use arrow::array::NullArray;
         let batch = make_batch(vec![(
             "empty_val",
-            Arc::new(NullArray::new(1)) as Arc<dyn arrow::array::Array>,
+            Arc::new(NullArray::new(1)) as Arc<dyn Array>,
         )]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
@@ -1741,7 +1740,7 @@ mod write_row_json_tests {
         let batch = make_batch(vec![
             (
                 "i8",
-                Arc::new(Int8Array::from(vec![-1_i8])) as Arc<dyn arrow::array::Array>,
+                Arc::new(Int8Array::from(vec![-1_i8])) as Arc<dyn Array>,
             ),
             ("i16", Arc::new(Int16Array::from(vec![1000_i16]))),
             ("u8", Arc::new(UInt8Array::from(vec![255_u8]))),
@@ -1897,7 +1896,7 @@ mod write_row_json_proptests {
             let schema = Arc::new(Schema::new(vec![
                 Field::new("count_int", DataType::Int64, true),
             ]));
-            let arr: Int64Array = values.iter().map(|v| *v).collect();
+            let arr: Int64Array = values.iter().copied().collect();
             let batch = RecordBatch::try_new(
                 schema,
                 vec![Arc::new(arr)],
@@ -1906,7 +1905,7 @@ mod write_row_json_proptests {
             for row in 0..batch.num_rows() {
                 let json_str = render_row(&batch, row);
                 let parsed: serde_json::Value = serde_json::from_str(&json_str)
-                    .expect(&format!("row {row} must produce valid JSON, got: {json_str}"));
+                    .unwrap_or_else(|_| panic!("row {row} must produce valid JSON, got: {json_str}"));
                 prop_assert!(parsed.is_object(), "output must be a JSON object");
             }
         }
@@ -1967,7 +1966,7 @@ mod write_row_json_proptests {
             for (row, expected_val) in raw_values.iter().enumerate() {
                 let json_str = render_row(&batch, row);
                 let parsed: serde_json::Value = serde_json::from_str(&json_str)
-                    .expect(&format!("row {row}: invalid JSON: {json_str}"));
+                    .unwrap_or_else(|_| panic!("row {row}: invalid JSON: {json_str}"));
                 let obj = parsed.as_object().unwrap();
                 prop_assert!(
                     obj.contains_key(field_base.as_str()),
@@ -2007,7 +2006,7 @@ mod write_row_json_proptests {
             for (row, &expected_val) in raw_values.iter().enumerate() {
                 let json_str = render_row(&batch, row);
                 let parsed: serde_json::Value = serde_json::from_str(&json_str)
-                    .expect(&format!("row {row}: invalid JSON: {json_str}"));
+                    .unwrap_or_else(|_| panic!("row {row}: invalid JSON: {json_str}"));
                 let obj = parsed.as_object().unwrap();
                 prop_assert!(obj.contains_key(field_base.as_str()));
                 let got = obj[field_base.as_str()].as_f64().unwrap();

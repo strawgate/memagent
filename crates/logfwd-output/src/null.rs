@@ -77,7 +77,7 @@ mod tests {
         let mut sink = NullSink::new("blackhole", Arc::new(ComponentStats::new()));
         assert_eq!(sink.name(), "blackhole");
 
-        let schema = std::sync::Arc::new(arrow::datatypes::Schema::empty());
+        let schema = Arc::new(arrow::datatypes::Schema::empty());
         let batch = RecordBatch::new_empty(schema);
         let meta = BatchMetadata {
             resource_attrs: Arc::default(),

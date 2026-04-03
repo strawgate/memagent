@@ -578,7 +578,7 @@ fn procfs_stats(pid: u32) -> (u64, u64, u64) {
 fn clock_ticks_per_second() -> u64 {
     static TICKS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *TICKS.get_or_init(|| {
-        std::process::Command::new("getconf")
+        Command::new("getconf")
             .arg("CLK_TCK")
             .output()
             .ok()

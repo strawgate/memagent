@@ -680,7 +680,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
-            Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
+            Arc::new(ComponentStats::new()),
         )
     }
 
@@ -880,7 +880,7 @@ mod tests {
             OtlpProtocol::Grpc,
             Compression::None,
             vec![],
-            Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
+            Arc::new(ComponentStats::new()),
         );
         sink.encode_batch(&batch, &make_metadata());
         let proto_payload = sink.encoder_buf.clone();

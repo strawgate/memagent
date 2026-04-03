@@ -1143,7 +1143,7 @@ mod proptests {
         fn in_flight_consistent(actions in proptest::collection::vec(action_strategy(), 1..50)) {
             let mut running: PipelineMachine<Running, u64> =
                 PipelineMachine::<Starting, u64>::new().start();
-            let mut sending: alloc::collections::BTreeMap<u32, alloc::vec::Vec<super::super::BatchTicket<super::super::Sending, u64>>> = alloc::collections::BTreeMap::new();
+            let mut sending: BTreeMap<u32, alloc::vec::Vec<BatchTicket<Sending, u64>>> = BTreeMap::new();
 
             for action in actions {
                 match action {
@@ -1181,7 +1181,7 @@ mod proptests {
             }
 
             // in_flight_count matches our tracking
-            let our_count: usize = sending.values().map(|v| v.len()).sum();
+            let our_count: usize = sending.values().map(alloc::vec::Vec::len).sum();
             prop_assert_eq!(running.in_flight_count(), our_count);
         }
 
@@ -1215,7 +1215,7 @@ mod proptests {
                 indices.swap(i, j);
             }
 
-            let mut ticket_map: alloc::collections::BTreeMap<usize, super::super::BatchTicket<super::super::Sending, u64>> = alloc::collections::BTreeMap::new();
+            let mut ticket_map: BTreeMap<usize, BatchTicket<Sending, u64>> = BTreeMap::new();
             for (i, t) in tickets.into_iter().enumerate() {
                 ticket_map.insert(i, t);
             }
@@ -1274,8 +1274,8 @@ mod proptests {
             let mut running: PipelineMachine<Running, u64> =
                 PipelineMachine::<Starting, u64>::new().start();
 
-            let mut expected_checkpoints: alloc::collections::BTreeMap<u32, u64> = alloc::collections::BTreeMap::new();
-            let mut sending_queues: alloc::collections::BTreeMap<u32, alloc::vec::Vec<super::super::BatchTicket<super::super::Sending, u64>>> = alloc::collections::BTreeMap::new();
+            let mut expected_checkpoints: BTreeMap<u32, u64> = BTreeMap::new();
+            let mut sending_queues: BTreeMap<u32, alloc::vec::Vec<BatchTicket<Sending, u64>>> = BTreeMap::new();
 
             let n = batches_per_source.min(checkpoints.len() / num_sources.max(1));
             if n == 0 { return Ok(()); }
@@ -1346,16 +1346,16 @@ mod proptests {
         ) {
             let mut running: PipelineMachine<Running, u64> =
                 PipelineMachine::<Starting, u64>::new().start();
-            let mut sending: alloc::collections::BTreeMap<
+            let mut sending: BTreeMap<
                 u32,
-                alloc::vec::Vec<super::super::BatchTicket<super::super::Sending, u64>>,
-            > = alloc::collections::BTreeMap::new();
+                alloc::vec::Vec<BatchTicket<Sending, u64>>,
+            > = BTreeMap::new();
             // Monotonically increasing counter per source (simulates advancing byte offset).
-            let mut next_checkpoint: alloc::collections::BTreeMap<u32, u64> =
-                alloc::collections::BTreeMap::new();
+            let mut next_checkpoint: BTreeMap<u32, u64> =
+                BTreeMap::new();
             // Maximum committed value seen per source — must never decrease.
-            let mut max_committed: alloc::collections::BTreeMap<u64, u64> =
-                alloc::collections::BTreeMap::new();
+            let mut max_committed: BTreeMap<u64, u64> =
+                BTreeMap::new();
 
             for action in actions {
                 match action {
@@ -1457,10 +1457,10 @@ mod proptests {
                 indices.swap(i, j);
             }
 
-            let mut ticket_map: alloc::collections::BTreeMap<
+            let mut ticket_map: BTreeMap<
                 usize,
-                super::super::BatchTicket<super::super::Sending, u64>,
-            > = alloc::collections::BTreeMap::new();
+                BatchTicket<Sending, u64>,
+            > = BTreeMap::new();
             for (i, t) in tickets.into_iter().enumerate() {
                 ticket_map.insert(i, t);
             }

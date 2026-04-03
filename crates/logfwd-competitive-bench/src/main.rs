@@ -95,7 +95,7 @@ fn main() {
     // Resolve which agents to run.
     let all = all_agents();
     let agents: Vec<&dyn Agent> = if args.agents.is_empty() {
-        all.iter().map(std::convert::AsRef::as_ref).collect()
+        all.iter().map(AsRef::as_ref).collect()
     } else {
         let mut selected = Vec::new();
         for name in &args.agents {
@@ -477,7 +477,7 @@ fn find_logfwd_binary() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if let Ok(output) = std::process::Command::new("which").arg("logfwd").output()
+    if let Ok(output) = process::Command::new("which").arg("logfwd").output()
         && output.status.success()
     {
         let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -581,7 +581,7 @@ fn resolve_binary(
     }
 
     // Check PATH.
-    if let Ok(output) = std::process::Command::new("which")
+    if let Ok(output) = process::Command::new("which")
         .arg(agent.binary_name())
         .output()
         && output.status.success()
@@ -715,7 +715,7 @@ fn build_json_report(results: &[BenchResult], lines: usize, file_size: u64, args
 
     let commit = std::env::var("GITHUB_SHA")
         .or_else(|_| {
-            std::process::Command::new("git")
+            process::Command::new("git")
                 .args(["rev-parse", "HEAD"])
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -1021,10 +1021,7 @@ impl Args {
                         eprintln!("ERROR: --agents requires a value");
                         process::exit(1);
                     }
-                    result.agents = args[i]
-                        .split(',')
-                        .map(std::string::ToString::to_string)
-                        .collect();
+                    result.agents = args[i].split(',').map(ToString::to_string).collect();
                 }
                 "--scenarios" => {
                     i += 1;
@@ -1041,7 +1038,7 @@ impl Args {
                                     "Available: {}",
                                     Scenario::all()
                                         .iter()
-                                        .map(agents::Scenario::name)
+                                        .map(Scenario::name)
                                         .collect::<Vec<_>>()
                                         .join(", ")
                                 );

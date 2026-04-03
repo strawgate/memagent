@@ -227,7 +227,7 @@ mod tests {
         client.write_all(b"{\"msg\":\"world\"}\n").unwrap();
         client.flush().unwrap();
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
 
         let mut input = input; // make mutable
         let events = input.poll().unwrap();
@@ -251,7 +251,7 @@ mod tests {
             client.write_all(b"line1\n").unwrap();
         } // client drops here → connection closed
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
 
         let events = input.poll().unwrap();
         assert_eq!(events.len(), 1);

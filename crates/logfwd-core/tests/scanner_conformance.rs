@@ -97,7 +97,7 @@ fn assert_values_correct(input: &[u8]) {
 
         // Check each field from the sonic-rs parse
         let mut seen_keys = std::collections::HashSet::new();
-        for (key_str, val) in obj.iter() {
+        for (key_str, val) in obj {
             // Skip duplicate keys (first-writer-wins in our scanner)
             if !seen_keys.insert(key_str.to_string()) {
                 continue;
