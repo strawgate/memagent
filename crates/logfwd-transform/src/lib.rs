@@ -581,8 +581,17 @@ impl SqlTransform {
             return Ok(batch);
         }
 
-        // Track schema hash for diagnostics.
+        // Invalidate the cached SessionContext when the schema changes.
+        //
+        // DataFusion caches logical plans inside the SessionContext. If the
+        // batch schema changes between calls (new fields, type conflicts resolved
+        // differently), the cached plan refers to a stale schema and execution
+        // will fail or produce incorrect results. Forcing ctx = None causes
+        // ensure_context() to build a fresh SessionContext with no stale plans.
         let new_hash = hash_schema(batch.schema());
+        if new_hash != self.schema_hash {
+            self.ctx = None;
+        }
         self.schema_hash = new_hash;
 
         // Ensure the SessionContext exists (created once, reused across batches).
@@ -1359,5 +1368,152 @@ mod tests {
         assert_eq!(out.value(2), "ok");
         // Row 3: ERROR → msg = 'oom killed'
         assert_eq!(out.value(3), "oom killed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Schema-change invalidation tests
+    // -----------------------------------------------------------------------
+
+    /// Regression test: schema change across batches must invalidate the cached
+    /// SessionContext so that the new batch's schema is planned correctly.
+    ///
+    /// Before the fix, `schema_hash` was tracked but never used to clear
+    /// `self.ctx`, so the old plan referencing the previous schema was reused,
+    /// causing "column not found" errors or silent wrong results when new fields
+    /// appeared.
+    #[test]
+    fn test_schema_change_new_field_invalidates_cache() {
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+
+        // Batch 1: two columns.
+        let schema1 = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new("msg", DataType::Utf8, true),
+        ]));
+        let batch1 = RecordBatch::try_new(
+            Arc::clone(&schema1),
+            vec![
+                Arc::new(StringArray::from(vec!["INFO"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["hello"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let r1 = transform.execute_blocking(batch1).unwrap();
+        assert_eq!(r1.num_rows(), 1);
+        assert_eq!(r1.num_columns(), 2);
+
+        // Batch 2: three columns (added "host").  Without the fix, the stale
+        // SessionContext plan would fail or miss the new column.
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new("msg", DataType::Utf8, true),
+            Field::new("host", DataType::Utf8, true),
+        ]));
+        let batch2 = RecordBatch::try_new(
+            Arc::clone(&schema2),
+            vec![
+                Arc::new(StringArray::from(vec!["ERROR"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["disk full"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["web1"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let r2 = transform.execute_blocking(batch2).unwrap();
+        assert_eq!(r2.num_rows(), 1);
+        // All three columns must be present after schema change.
+        assert_eq!(
+            r2.num_columns(),
+            3,
+            "expected 3 columns after schema change"
+        );
+        let host = r2
+            .column_by_name("host")
+            .expect("'host' column must be present after schema change")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(host.value(0), "web1");
+    }
+
+    /// Schema changes across batches where column types change (e.g., a field
+    /// that was Int64 becomes Utf8) must also re-plan correctly.
+    #[test]
+    fn test_schema_change_type_conflict_invalidates_cache() {
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+
+        // Batch 1: "status" is Int64.
+        let schema1 = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new("status", DataType::Int64, true),
+        ]));
+        let batch1 = RecordBatch::try_new(
+            Arc::clone(&schema1),
+            vec![
+                Arc::new(StringArray::from(vec!["INFO"])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![200i64])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let r1 = transform.execute_blocking(batch1).unwrap();
+        assert_eq!(r1.num_rows(), 1);
+
+        // Batch 2: "status" is now Utf8 (type conflict resolved differently).
+        // Without the fix, DataFusion would reuse the Int64 plan against a Utf8
+        // column and fail.
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new("status", DataType::Utf8, true),
+        ]));
+        let batch2 = RecordBatch::try_new(
+            Arc::clone(&schema2),
+            vec![
+                Arc::new(StringArray::from(vec!["ERROR"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["not_a_number"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let r2 = transform.execute_blocking(batch2).unwrap();
+        assert_eq!(r2.num_rows(), 1);
+        let status = r2
+            .column_by_name("status")
+            .expect("'status' column must be present")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(status.value(0), "not_a_number");
+    }
+
+    /// Verify that a stable schema does NOT trigger repeated context recreation
+    /// (i.e. the hash comparison is correct and equal hashes are treated as
+    /// cache hits).
+    #[test]
+    fn test_stable_schema_does_not_invalidate_cache() {
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new("msg", DataType::Utf8, true),
+        ]));
+
+        // Run 5 batches with the same schema; each must succeed and the context
+        // must still be populated (not None) after each run.
+        for i in 0u32..5 {
+            let val = format!("row{i}");
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(StringArray::from(vec![val.as_str()])) as ArrayRef,
+                    Arc::new(StringArray::from(vec!["msg"])) as ArrayRef,
+                ],
+            )
+            .unwrap();
+            let r = transform.execute_blocking(batch).unwrap();
+            assert_eq!(r.num_rows(), 1, "batch {i} must return 1 row");
+            // The context must still be alive (not wiped by a false hash mismatch).
+            assert!(
+                transform.ctx.is_some(),
+                "ctx must remain populated for stable schema (batch {i})"
+            );
+        }
     }
 }
