@@ -21,6 +21,7 @@ use std::path::Path;
 /// Supports bearer tokens and arbitrary key/value header pairs.
 /// All values support `${ENV_VAR}` expansion at config-load time.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AuthConfig {
     /// Sets the `Authorization: Bearer <token>` header on every request.
     pub bearer_token: Option<String>,
@@ -176,6 +177,7 @@ pub enum Format {
 
 /// A single input source.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InputConfig {
     /// Optional friendly name (used in multi-input pipelines).
     pub name: Option<String>,
@@ -192,6 +194,7 @@ pub struct InputConfig {
 
 /// A single output destination.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     pub name: Option<String>,
     #[serde(rename = "type")]
@@ -235,6 +238,7 @@ pub enum GeoDatabaseFormat {
 ///     refresh_interval: 86400
 /// ```
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GeoDatabaseConfig {
     /// Database format.
     pub format: GeoDatabaseFormat,
@@ -261,6 +265,7 @@ pub enum EnrichmentConfig {
 
 /// One logical pipeline (inputs -> SQL transform -> outputs).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
     pub inputs: Vec<InputConfig>,
@@ -290,6 +295,7 @@ pub struct PipelineConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub diagnostics: Option<String>,
     pub log_level: Option<String>,
@@ -304,6 +310,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct StorageConfig {
     pub data_dir: Option<String>,
 }
@@ -315,6 +322,7 @@ pub struct StorageConfig {
 /// Raw top-level YAML — we use a flat struct with Options so serde can
 /// deserialise either layout, then we normalise into [`Config`].
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawConfig {
     // Simple form
     input: Option<InputConfig>,
