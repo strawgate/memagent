@@ -1,5 +1,5 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use logfwd_core::pipeline::SourceId;
 
@@ -45,21 +45,10 @@ pub trait InputSource: Send {
         vec![]
     }
 
-    /// Return identity-to-path mappings for checkpoint persistence.
-    ///
-    /// Called on file open/rotation, not per-batch.
-    /// Default: empty (push sources, generators).
-    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
-        vec![]
-    }
-
-    /// Restore a file offset from checkpoint. Default: no-op.
-    fn set_offset(&mut self, _path: &Path, _offset: u64) {}
-
     /// Restore a file offset by SourceId (fingerprint). Default: no-op.
     ///
-    /// Preferred over `set_offset` — does not require path, which eliminates
-    /// the need for PathUpdate messages and source_paths tracking.
+    /// Used for checkpoint restore — the checkpoint stores fingerprint + offset.
+    /// The input source finds the matching file by fingerprint, not path.
     fn set_offset_by_source(&mut self, _source_id: SourceId, _offset: u64) {}
 }
 
@@ -115,16 +104,6 @@ impl InputSource for FileInput {
 
     fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
         self.tailer.file_offsets()
-    }
-
-    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
-        self.tailer.file_paths()
-    }
-
-    fn set_offset(&mut self, path: &Path, offset: u64) {
-        if let Err(e) = self.tailer.set_offset(path, offset) {
-            eprintln!("warn: failed to restore offset for {}: {e}", path.display());
-        }
     }
 
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {

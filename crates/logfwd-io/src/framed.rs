@@ -12,7 +12,6 @@ use crate::input::{InputEvent, InputSource};
 use crate::tail::ByteOffset;
 use logfwd_core::pipeline::SourceId;
 use std::io;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Maximum remainder buffer size before discarding (prevents OOM on
@@ -159,14 +158,6 @@ impl InputSource for FramedInput {
 
     fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
         self.inner.checkpoint_data()
-    }
-
-    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
-        self.inner.source_paths()
-    }
-
-    fn set_offset(&mut self, path: &Path, offset: u64) {
-        self.inner.set_offset(path, offset);
     }
 
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {

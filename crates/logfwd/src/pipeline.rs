@@ -154,15 +154,24 @@ impl Pipeline {
 
         let mut metrics = PipelineMetrics::new(name, transform_sql, meter);
 
-        // Open checkpoint store and load any previously saved offsets.
-        // Errors are logged but not fatal — we start from the beginning instead.
-        let checkpoint_store = match FileCheckpointStore::open(default_data_dir()) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                eprintln!("warn: could not open checkpoint store: {e} — starting from beginning");
+        // Open checkpoint store scoped to this pipeline name.
+        // Only create the directory if LOGFWD_DATA_DIR is explicitly set
+        // (prevents tests from polluting the default data dir).
+        let checkpoint_dir = default_data_dir().join(name);
+        let checkpoint_store =
+            if checkpoint_dir.exists() || std::env::var_os("LOGFWD_DATA_DIR").is_some() {
+                match FileCheckpointStore::open(&checkpoint_dir) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        eprintln!(
+                            "warn: could not open checkpoint store: {e} — starting from beginning"
+                        );
+                        None
+                    }
+                }
+            } else {
                 None
-            }
-        };
+            };
         let saved_checkpoints: Vec<SourceCheckpoint> = checkpoint_store
             .as_ref()
             .map(FileCheckpointStore::load_all)
@@ -702,12 +711,12 @@ impl Pipeline {
             }
         }
         // Flush to disk at most once per 5 seconds to amortize fsync cost.
+        // Advance the timer even on failure to prevent retry flooding.
         if any_advanced && self.last_checkpoint_flush.elapsed() >= Duration::from_secs(5) {
+            self.last_checkpoint_flush = Instant::now();
             if let Some(ref mut store) = self.checkpoint_store {
                 if let Err(e) = store.flush() {
                     eprintln!("pipeline: checkpoint flush error: {e}");
-                } else {
-                    self.last_checkpoint_flush = Instant::now();
                 }
             }
         }
@@ -2525,7 +2534,8 @@ output:
         logfwd_test_utils::generate_json_lines(&log_path, 50, "cp-test");
 
         // Override data dir so checkpoints land in our temp dir.
-        // SAFETY: single-threaded test; no concurrent env reads.
+        // SAFETY: serialised by CHECKPOINT_ENV_MUTEX; spawned thread only
+        // accesses metrics/shutdown, not environment variables.
         unsafe {
             std::env::set_var("LOGFWD_DATA_DIR", dir.path());
         }
@@ -2554,18 +2564,20 @@ output:
 
         pipeline.run(&shutdown).unwrap();
 
-        // checkpoints.json must exist and contain a non-zero offset.
+        // checkpoints.json must exist under the pipeline-scoped subdirectory.
+        let cp_dir = dir.path().join("default");
         assert!(
-            dir.path().join("checkpoints.json").exists(),
+            cp_dir.join("checkpoints.json").exists(),
             "checkpoints.json must exist after clean shutdown"
         );
         // Re-open the store to verify the checkpoints are readable.
-        let store = logfwd_io::checkpoint::FileCheckpointStore::open(dir.path()).unwrap();
+        let store = logfwd_io::checkpoint::FileCheckpointStore::open(&cp_dir).unwrap();
         let cps = store.load_all();
         assert!(!cps.is_empty(), "at least one checkpoint must be written");
         assert!(cps[0].offset > 0, "checkpoint offset must be non-zero");
 
-        // SAFETY: single-threaded test; no concurrent env reads.
+        // SAFETY: serialised by CHECKPOINT_ENV_MUTEX; spawned thread only
+        // accesses metrics/shutdown, not environment variables.
         unsafe {
             std::env::remove_var("LOGFWD_DATA_DIR");
         }
@@ -2577,7 +2589,8 @@ output:
     fn test_pipeline_resumes_from_checkpoint() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("resume.log");
-        // SAFETY: single-threaded test; no concurrent env reads.
+        // SAFETY: serialised by CHECKPOINT_ENV_MUTEX; spawned thread only
+        // accesses metrics/shutdown, not environment variables.
         unsafe {
             std::env::set_var("LOGFWD_DATA_DIR", dir.path());
         }
@@ -2656,7 +2669,8 @@ output:
             );
         }
 
-        // SAFETY: single-threaded test; no concurrent env reads.
+        // SAFETY: serialised by CHECKPOINT_ENV_MUTEX; spawned thread only
+        // accesses metrics/shutdown, not environment variables.
         unsafe {
             std::env::remove_var("LOGFWD_DATA_DIR");
         }

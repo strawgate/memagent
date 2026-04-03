@@ -34,7 +34,7 @@ pub fn generate_json_lines(path: &Path, count: usize, source_id: &str) {
 }
 
 /// Append `count` NDJSON lines to an existing file.
-/// Sequence IDs start from `start_seq`. Used by resume tests to simulate
+/// Sequence IDs continue from the current line count. Used by resume tests to simulate
 /// new data appearing after the initial batch.
 pub fn append_json_lines(path: &Path, count: usize, source_id: &str) {
     // Determine starting sequence from current line count in the file.
