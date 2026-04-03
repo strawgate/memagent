@@ -367,12 +367,20 @@ SendBatch ==
     /\ in_flight_batch = <<>>
     /\ in_flight_batch'  = pipeline_batch
     /\ in_flight_source' = framer_source
-    \* The offset to checkpoint is the read position for this source.
-    \* For current file: read_offset. For rotated file: rotated_offset.
+    \* The offset to checkpoint is the source's read position MINUS the
+    \* lines still waiting in framer_buf. This is the correct "committed
+    \* through" offset: read_offset counts all lines read from the source,
+    \* framer_buf holds lines not yet dispatched, and pipeline_batch is
+    \* being moved to in_flight right now. So the ack should advance the
+    \* checkpoint to (read_offset - Len(framer_buf)), not read_offset.
+    \*
+    \* Bug found by TLC: using read_offset directly caused the checkpoint
+    \* to jump ahead of actual emission when BatchSize < lines in buffer,
+    \* leading to data loss on crash (lines skipped on restart).
     /\ in_flight_offset' = IF framer_source = file_identity
-                           THEN read_offset
+                           THEN read_offset - Len(framer_buf)
                            ELSE IF framer_source = rotated_identity
-                                THEN rotated_offset
+                                THEN rotated_offset - Len(framer_buf)
                                 ELSE 0
     /\ pipeline_batch' = <<>>
     /\ UNCHANGED <<file_content, file_identity, next_line_id, next_identity,
