@@ -669,9 +669,9 @@ mod tests {
     fn label_extraction_from_struct_conflict_column() {
         // status: Struct{int=200, str=null} — label should be "200" (int cast to str).
         let batch = make_status_struct_batch(Some(200), None);
-        let cols = super::build_col_infos(&batch);
+        let cols = build_col_infos(&batch);
         let status_info = cols.iter().find(|c| c.field_name == "status").unwrap();
-        let val = super::coalesce_as_str(&batch, 0, status_info);
+        let val = coalesce_as_str(&batch, 0, status_info);
         assert_eq!(val.as_deref(), Some("200"), "int label must be stringified");
     }
 
@@ -679,9 +679,9 @@ mod tests {
     fn label_extraction_prefers_str_over_int() {
         // status: Struct{int=200, str="OK"} — str wins in str_variants ordering.
         let batch = make_status_struct_batch(Some(200), Some("OK"));
-        let cols = super::build_col_infos(&batch);
+        let cols = build_col_infos(&batch);
         let status_info = cols.iter().find(|c| c.field_name == "status").unwrap();
-        let val = super::coalesce_as_str(&batch, 0, status_info);
+        let val = coalesce_as_str(&batch, 0, status_info);
         assert_eq!(
             val.as_deref(),
             Some("OK"),

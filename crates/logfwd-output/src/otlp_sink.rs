@@ -642,15 +642,14 @@ mod tests {
         use arrow::buffer::NullBuffer;
         use arrow::datatypes::{Field as F, Fields};
 
-        let int_arr: Arc<dyn arrow::array::Array> = Arc::new(I64A::from(vec![Some(200i64), None]));
-        let str_arr: Arc<dyn arrow::array::Array> =
-            Arc::new(StringArray::from(vec![None::<&str>, Some("OK")]));
+        let int_arr: Arc<dyn Array> = Arc::new(I64A::from(vec![Some(200i64), None]));
+        let str_arr: Arc<dyn Array> = Arc::new(StringArray::from(vec![None::<&str>, Some("OK")]));
         let child_fields = Fields::from(vec![
             Arc::new(F::new("int", DataType::Int64, true)),
             Arc::new(F::new("str", DataType::Utf8, true)),
         ]);
         let validity = NullBuffer::from(vec![true, true]);
-        let struct_arr: Arc<dyn arrow::array::Array> = Arc::new(StructArray::new(
+        let struct_arr: Arc<dyn Array> = Arc::new(StructArray::new(
             child_fields.clone(),
             vec![Arc::clone(&int_arr), Arc::clone(&str_arr)],
             Some(validity),
