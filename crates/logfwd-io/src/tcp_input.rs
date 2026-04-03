@@ -141,7 +141,7 @@ impl InputSource for TcpInput {
                         if let Some(first_nl) = memchr::memchr(b'\n', chunk) {
                             // Line length = accumulated + bytes up to first \n.
                             let line_len = client.bytes_since_newline + first_nl;
-                            if line_len > MAX_LINE_LENGTH {
+                            if line_len >= MAX_LINE_LENGTH {
                                 alive[i] = false;
                                 break;
                             }
@@ -151,7 +151,7 @@ impl InputSource for TcpInput {
                             }
                         } else {
                             client.bytes_since_newline += n;
-                            if client.bytes_since_newline > MAX_LINE_LENGTH {
+                            if client.bytes_since_newline >= MAX_LINE_LENGTH {
                                 alive[i] = false;
                                 break;
                             }
@@ -307,12 +307,57 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
 
+        assert!(
+            was_connected,
+            "connect→disconnect transition was never observed"
+        );
         let _ = writer.join();
 
         assert_eq!(
             input.client_count(),
             0,
             "client exceeding max_line_length should be disconnected"
+        );
+    }
+
+    #[test]
+    fn tcp_max_line_length_exact_boundary() {
+        // A line of exactly MAX_LINE_LENGTH bytes (content only, excluding \n)
+        // must be rejected — the check is `>=`, so the boundary is exclusive.
+        let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+
+        let writer = std::thread::spawn(move || {
+            let mut client = StdTcpStream::connect(addr).unwrap();
+            // Exactly MAX_LINE_LENGTH content bytes followed by a newline.
+            let mut line = vec![b'A'; MAX_LINE_LENGTH];
+            line.push(b'\n');
+            let _ = client.write_all(&line);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut was_connected = false;
+        while Instant::now() < deadline {
+            let _ = input.poll().unwrap();
+            if input.client_count() > 0 {
+                was_connected = true;
+            }
+            if was_connected && input.client_count() == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            was_connected,
+            "connect→disconnect transition was never observed"
+        );
+        let _ = writer.join();
+
+        assert_eq!(
+            input.client_count(),
+            0,
+            "client sending a line of exactly MAX_LINE_LENGTH bytes should be disconnected"
         );
     }
 
