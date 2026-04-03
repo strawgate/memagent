@@ -205,14 +205,62 @@ fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
 
 /// Write a single Arrow value as JSON, dispatching on the actual Arrow DataType.
 ///
-/// Int64 → unquoted integer, Float64 → unquoted number (null for non-finite),
-/// everything else → quoted string. This preserves JSON type fidelity on
-/// roundtrip without relying on column name suffixes.
+/// Integer types → unquoted integer, float types → unquoted number (null for
+/// non-finite), Null → JSON null, Boolean → true/false/null, everything else →
+/// quoted string. This preserves JSON type fidelity on roundtrip without
+/// relying on column name suffixes.
 fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -> io::Result<()> {
     match arr.data_type() {
+        DataType::Null => {
+            out.extend_from_slice(b"null");
+        }
+        DataType::Int8 => {
+            let v = arr.as_primitive::<arrow::datatypes::Int8Type>().value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Int16 => {
+            let v = arr.as_primitive::<arrow::datatypes::Int16Type>().value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Int32 => {
+            let v = arr.as_primitive::<arrow::datatypes::Int32Type>().value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
         DataType::Int64 => {
             let v = arr.as_primitive::<arrow::datatypes::Int64Type>().value(row);
             out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::UInt8 => {
+            let v = arr.as_primitive::<arrow::datatypes::UInt8Type>().value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::UInt16 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::UInt16Type>()
+                .value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::UInt32 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::UInt32Type>()
+                .value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::UInt64 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::UInt64Type>()
+                .value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Float32 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::Float32Type>()
+                .value(row);
+            if v.is_finite() {
+                out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
+            } else {
+                out.extend_from_slice(b"null");
+            }
         }
         DataType::Float64 => {
             let v = arr
@@ -1428,5 +1476,113 @@ mod write_row_json_tests {
         let v1: serde_json::Value = serde_json::from_str(&json1).unwrap();
         assert_eq!(v1["active"], false);
         assert_eq!(v1["note"], "text");
+    }
+
+    /// Regression: `SELECT NULL AS empty_val` produces a DataType::Null column.
+    /// Must serialize as JSON null, not empty string.
+    #[test]
+    fn null_literal_type_serializes_as_null() {
+        use arrow::array::NullArray;
+        let batch = make_batch(vec![(
+            "empty_val",
+            Arc::new(NullArray::new(1)) as Arc<dyn arrow::array::Array>,
+        )]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert!(
+            v["empty_val"].is_null(),
+            "DataType::Null should serialize as JSON null, got {json}"
+        );
+    }
+
+    /// Regression: `ROW_NUMBER() OVER ()` and `COUNT(*)` produce UInt64 columns.
+    /// Must serialize as JSON number, not empty string.
+    #[test]
+    fn uint64_serializes_as_number() {
+        use arrow::array::UInt64Array;
+        let batch = make_batch(vec![("row_num", Arc::new(UInt64Array::from(vec![1_u64])))]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert_eq!(
+            v["row_num"], 1,
+            "UInt64 should serialize as JSON number, got {json}"
+        );
+    }
+
+    /// Regression: `CAST(status AS INT)` produces an Int32 column.
+    /// Must serialize as JSON number, not empty string.
+    #[test]
+    fn int32_serializes_as_number() {
+        use arrow::array::Int32Array;
+        let batch = make_batch(vec![("s", Arc::new(Int32Array::from(vec![42_i32])))]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert_eq!(
+            v["s"], 42,
+            "Int32 should serialize as JSON number, got {json}"
+        );
+    }
+
+    /// Regression: Float32 columns must serialize as JSON number, not empty string.
+    #[test]
+    fn float32_serializes_as_number() {
+        use arrow::array::Float32Array;
+        let batch = make_batch(vec![("val", Arc::new(Float32Array::from(vec![3.14_f32])))]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert!(
+            v["val"].is_number(),
+            "Float32 should serialize as JSON number, got {json}"
+        );
+        let diff = (v["val"].as_f64().unwrap() - 3.14_f64).abs();
+        assert!(
+            diff < 0.001,
+            "Float32 value should be ~3.14, got {}",
+            v["val"]
+        );
+    }
+
+    /// Float32 infinity and NaN must emit JSON null (matches Float64 behavior).
+    #[test]
+    fn float32_nonfinite_emits_null() {
+        use arrow::array::Float32Array;
+        let batch = make_batch(vec![(
+            "val",
+            Arc::new(Float32Array::from(vec![f32::INFINITY, f32::NAN])),
+        )]);
+        for row in 0..2 {
+            let json = render(&batch, row);
+            let v: serde_json::Value = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("row {row}: invalid JSON: {json} — {e}"));
+            assert!(
+                v["val"].is_null(),
+                "row {row}: Float32 inf/nan should be null, got {}",
+                v["val"]
+            );
+        }
+    }
+
+    /// All small integer types (Int8, Int16, UInt8, UInt16, UInt32) must
+    /// serialize as JSON numbers.
+    #[test]
+    fn small_integer_types_serialize_as_numbers() {
+        use arrow::array::{Int8Array, Int16Array, UInt8Array, UInt16Array, UInt32Array};
+        let batch = make_batch(vec![
+            (
+                "i8",
+                Arc::new(Int8Array::from(vec![-1_i8])) as Arc<dyn arrow::array::Array>,
+            ),
+            ("i16", Arc::new(Int16Array::from(vec![1000_i16]))),
+            ("u8", Arc::new(UInt8Array::from(vec![255_u8]))),
+            ("u16", Arc::new(UInt16Array::from(vec![65535_u16]))),
+            ("u32", Arc::new(UInt32Array::from(vec![1_000_000_u32]))),
+        ]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert_eq!(v["i8"], -1, "Int8 should be number");
+        assert_eq!(v["i16"], 1000, "Int16 should be number");
+        assert_eq!(v["u8"], 255, "UInt8 should be number");
+        assert_eq!(v["u16"], 65535, "UInt16 should be number");
+        assert_eq!(v["u32"], 1_000_000, "UInt32 should be number");
     }
 }
