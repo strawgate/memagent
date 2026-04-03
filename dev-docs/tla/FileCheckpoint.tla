@@ -85,6 +85,8 @@ VARIABLES
 
     \* === Pipeline state (in-memory, lost on crash) ===
     pipeline_batch,     \* Seq(LineValues): batch being formed
+    pipeline_source,    \* SourceIds \cup {0}: source identity when batch was formed
+    pipeline_offset,    \* Nat: checkpoint offset to use when batch is acked
     in_flight_batch,    \* Seq(LineValues): batch sent, awaiting ack
     in_flight_source,   \* Nat: source identity of the in-flight batch
     in_flight_offset,   \* Nat: offset to checkpoint on ack
@@ -106,7 +108,8 @@ vars == <<file_content, file_identity, next_line_id, next_identity,
           rotated_content, rotated_identity,
           read_offset, rotated_offset, rotated_active,
           framer_buf, framer_source,
-          pipeline_batch, in_flight_batch, in_flight_source, in_flight_offset,
+          pipeline_batch, pipeline_source, pipeline_offset,
+          in_flight_batch, in_flight_source, in_flight_offset,
           checkpoints, emitted, alive, crash_count, rotation_count>>
 
 (*------------------------------------------------------------------------
@@ -143,6 +146,8 @@ TypeOK ==
     /\ framer_buf \in Seq(LineValues)
     /\ framer_source \in 0..MaxSourceIds
     /\ pipeline_batch \in Seq(LineValues)
+    /\ pipeline_source \in 0..MaxSourceIds
+    /\ pipeline_offset \in 0..MaxLines
     /\ in_flight_batch \in Seq(LineValues)
     /\ in_flight_source \in 0..MaxSourceIds
     /\ in_flight_offset \in 0..MaxLines
@@ -169,6 +174,8 @@ Init ==
     /\ framer_buf       = <<>>
     /\ framer_source    = 0
     /\ pipeline_batch   = <<>>
+    /\ pipeline_source  = 0
+    /\ pipeline_offset  = 0
     /\ in_flight_batch  = <<>>
     /\ in_flight_source = 0
     /\ in_flight_offset = 0
@@ -191,12 +198,21 @@ AppendLine ==
                    rotated_content, rotated_identity,
                    read_offset, rotated_offset, rotated_active,
                    framer_buf, framer_source,
-                   pipeline_batch, in_flight_batch, in_flight_source,
+                   pipeline_batch, pipeline_source, pipeline_offset,
+                   in_flight_batch, in_flight_source,
                    in_flight_offset, checkpoints, emitted,
                    alive, crash_count, rotation_count>>
 
 \* File rotation: current file renamed away, new empty file created.
 \* New file gets a new identity (different fingerprint).
+\*
+\* Known limitation (Gap 3): The guard `rotated_active = FALSE` prevents
+\* a second rotation while the first rotated file is still being drained.
+\* The real system can handle multiple rapid rotations (it holds an fd to
+\* each rotated file), but this spec models only a single rotated-file
+\* slot for state-space tractability. If multiple rotations occur before
+\* the first rotated file is fully drained, intermediate data could be
+\* lost in the real system — the spec intentionally does not explore this.
 RotateFile ==
     /\ alive
     /\ rotation_count < MaxRotations
@@ -219,7 +235,8 @@ RotateFile ==
     \* In reality, the framer keeps its buffer (data already read is not
     \* re-read). But the framer_source must update if we're switching files.
     /\ UNCHANGED <<next_line_id, framer_buf, framer_source,
-                   pipeline_batch, in_flight_batch, in_flight_source,
+                   pipeline_batch, pipeline_source, pipeline_offset,
+                   in_flight_batch, in_flight_source,
                    in_flight_offset, checkpoints, emitted,
                    alive, crash_count>>
 
@@ -243,7 +260,8 @@ CopyTruncate ==
     \* as a separate fd — the content is gone after truncation)
     /\ UNCHANGED <<next_line_id, rotated_content, rotated_identity,
                    rotated_offset, rotated_active,
-                   pipeline_batch, in_flight_batch, in_flight_source,
+                   pipeline_batch, pipeline_source, pipeline_offset,
+                   in_flight_batch, in_flight_source,
                    in_flight_offset, checkpoints, emitted,
                    alive, crash_count>>
 
@@ -271,7 +289,8 @@ TailerRead ==
     /\ UNCHANGED <<file_content, file_identity, next_line_id, next_identity,
                    rotated_content, rotated_identity,
                    rotated_offset, rotated_active,
-                   pipeline_batch, in_flight_batch, in_flight_source,
+                   pipeline_batch, pipeline_source, pipeline_offset,
+                   in_flight_batch, in_flight_source,
                    in_flight_offset, checkpoints, emitted,
                    alive, crash_count, rotation_count>>
 
@@ -291,7 +310,8 @@ TailerReadRotated ==
     /\ UNCHANGED <<file_content, file_identity, next_line_id, next_identity,
                    rotated_content, rotated_identity,
                    read_offset, rotated_active,
-                   pipeline_batch, in_flight_batch, in_flight_source,
+                   pipeline_batch, pipeline_source, pipeline_offset,
+                   in_flight_batch, in_flight_source,
                    in_flight_offset, checkpoints, emitted,
                    alive, crash_count, rotation_count>>
 
@@ -309,7 +329,8 @@ TailerFinishRotated ==
     /\ rotated_offset'   = 0
     /\ UNCHANGED <<file_content, file_identity, next_line_id, next_identity,
                    read_offset, framer_buf, framer_source,
-                   pipeline_batch, in_flight_batch, in_flight_source,
+                   pipeline_batch, pipeline_source, pipeline_offset,
+                   in_flight_batch, in_flight_source,
                    in_flight_offset, checkpoints, emitted,
                    alive, crash_count, rotation_count>>
 
@@ -327,6 +348,15 @@ FormBatch ==
            rest  == SubSeqFromTo(framer_buf, BatchSize + 1, Len(framer_buf))
        IN
        /\ pipeline_batch' = batch
+       /\ pipeline_source' = framer_source  \* Capture source BEFORE clearing framer_source
+       \* Compute the checkpoint offset at batch-formation time, when we still
+       \* know which source the framer_buf belongs to and how many lines remain.
+       \* offset = (lines read from source) - (lines remaining in framer after batch)
+       /\ pipeline_offset' = IF framer_source = file_identity
+                             THEN read_offset - Len(rest)
+                             ELSE IF framer_source = rotated_identity
+                                  THEN rotated_offset - Len(rest)
+                                  ELSE 0
        /\ framer_buf' = rest
        /\ IF Len(rest) = 0
           THEN framer_source' = 0
@@ -347,6 +377,13 @@ FlushPartialBatch ==
     \* Only flush when caught up (EndOfFile condition)
     /\ read_offset = Len(file_content)
     /\ pipeline_batch' = framer_buf
+    /\ pipeline_source' = framer_source  \* Capture source BEFORE clearing framer_source
+    \* Flush drains the entire framer_buf, so remaining = 0.
+    /\ pipeline_offset' = IF framer_source = file_identity
+                          THEN read_offset
+                          ELSE IF framer_source = rotated_identity
+                               THEN rotated_offset
+                               ELSE 0
     /\ framer_buf' = <<>>
     /\ framer_source' = 0
     /\ UNCHANGED <<file_content, file_identity, next_line_id, next_identity,
@@ -366,23 +403,16 @@ SendBatch ==
     /\ Len(pipeline_batch) > 0
     /\ in_flight_batch = <<>>
     /\ in_flight_batch'  = pipeline_batch
-    /\ in_flight_source' = framer_source
-    \* The offset to checkpoint is the source's read position MINUS the
-    \* lines still waiting in framer_buf. This is the correct "committed
-    \* through" offset: read_offset counts all lines read from the source,
-    \* framer_buf holds lines not yet dispatched, and pipeline_batch is
-    \* being moved to in_flight right now. So the ack should advance the
-    \* checkpoint to (read_offset - Len(framer_buf)), not read_offset.
-    \*
-    \* Bug found by TLC: using read_offset directly caused the checkpoint
-    \* to jump ahead of actual emission when BatchSize < lines in buffer,
-    \* leading to data loss on crash (lines skipped on restart).
-    /\ in_flight_offset' = IF framer_source = file_identity
-                           THEN read_offset - Len(framer_buf)
-                           ELSE IF framer_source = rotated_identity
-                                THEN rotated_offset - Len(framer_buf)
-                                ELSE 0
-    /\ pipeline_batch' = <<>>
+    /\ in_flight_source' = pipeline_source
+    \* Gap 18 fix: pipeline_offset was computed at batch-formation time
+    \* (FormBatch / FlushPartialBatch), when the framer still knew the
+    \* correct source and remaining-line count. SendBatch just passes it
+    \* through — reading framer_source here would be stale (cleared to 0
+    \* when the framer buffer was fully drained).
+    /\ in_flight_offset' = pipeline_offset
+    /\ pipeline_batch'   = <<>>
+    /\ pipeline_source'  = 0
+    /\ pipeline_offset'  = 0
     /\ UNCHANGED <<file_content, file_identity, next_line_id, next_identity,
                    rotated_content, rotated_identity,
                    read_offset, rotated_offset, rotated_active,
@@ -409,7 +439,8 @@ AckBatch ==
     /\ UNCHANGED <<file_content, file_identity, next_line_id, next_identity,
                    rotated_content, rotated_identity,
                    read_offset, rotated_offset, rotated_active,
-                   framer_buf, framer_source, pipeline_batch,
+                   framer_buf, framer_source,
+                   pipeline_batch, pipeline_source, pipeline_offset,
                    alive, crash_count, rotation_count>>
 
 (*========================================================================
@@ -428,6 +459,8 @@ Crash ==
     /\ framer_buf'       = <<>>
     /\ framer_source'    = 0
     /\ pipeline_batch'   = <<>>
+    /\ pipeline_source'  = 0
+    /\ pipeline_offset'  = 0
     /\ in_flight_batch'  = <<>>
     /\ in_flight_source' = 0
     /\ in_flight_offset' = 0
@@ -451,7 +484,8 @@ Restart ==
     /\ rotated_offset'   = 0
     /\ UNCHANGED <<file_content, file_identity, next_line_id, next_identity,
                    framer_buf, framer_source,
-                   pipeline_batch, in_flight_batch, in_flight_source,
+                   pipeline_batch, pipeline_source, pipeline_offset,
+                   in_flight_batch, in_flight_source,
                    in_flight_offset, checkpoints, emitted,
                    crash_count, rotation_count>>
 
