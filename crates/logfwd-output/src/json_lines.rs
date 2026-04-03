@@ -164,7 +164,7 @@ impl OutputSink for JsonLinesSink {
             match build_req().send(payload) {
                 Ok(_) => {
                     self.stats.inc_lines(batch.num_rows() as u64);
-                    self.stats.inc_bytes(self.batch_buf.len() as u64);
+                    self.stats.inc_bytes(payload.len() as u64);
                     return Ok(());
                 }
                 Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_error(&e) => {
