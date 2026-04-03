@@ -72,16 +72,20 @@ fn gen_json_lines(n: usize) -> Vec<u8> {
     s.into_bytes()
 }
 
+struct WorkerCounters {
+    events: Arc<AtomicU64>,
+    batches: Arc<AtomicU64>,
+    errors: Arc<AtomicU64>,
+    raw_bytes: Arc<AtomicU64>,
+    wire_bytes: Arc<AtomicU64>,
+}
+
 fn run_worker(
     worker_id: usize,
     duration: std::time::Duration,
     batch_lines: usize,
     _compress: bool,
-    total_events: Arc<AtomicU64>,
-    total_batches: Arc<AtomicU64>,
-    total_errors: Arc<AtomicU64>,
-    total_raw_bytes: Arc<AtomicU64>,
-    total_wire_bytes: Arc<AtomicU64>,
+    counters: &WorkerCounters,
 ) {
     // NOTE: compress path is not implemented in this sync-sink baseline.
     // The async rewrite (see HANDOFF.md §5) will handle gzip automatically
@@ -91,7 +95,10 @@ fn run_worker(
         format!("es-bench-{worker_id}"),
         es_endpoint(),
         es_index(),
-        vec![("Authorization".to_string(), format!("ApiKey {}", es_api_key()))],
+        vec![(
+            "Authorization".to_string(),
+            format!("ApiKey {}", es_api_key()),
+        )],
         stats,
     );
 
@@ -110,7 +117,7 @@ fn run_worker(
             Ok(b) => b,
             Err(e) => {
                 eprintln!("[worker {worker_id}] scan error: {e}");
-                total_errors.fetch_add(1, Ordering::Relaxed);
+                counters.errors.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
         };
@@ -119,7 +126,7 @@ fn run_worker(
             Ok(b) => b,
             Err(e) => {
                 eprintln!("[worker {worker_id}] transform error: {e}");
-                total_errors.fetch_add(1, Ordering::Relaxed);
+                counters.errors.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
         };
@@ -129,12 +136,12 @@ fn run_worker(
 
         if let Err(e) = sink.send_batch(&result, &meta) {
             eprintln!("[worker {worker_id}] send_batch error: {e}");
-            total_errors.fetch_add(1, Ordering::Relaxed);
+            counters.errors.fetch_add(1, Ordering::Relaxed);
         } else {
-            total_raw_bytes.fetch_add(raw as u64, Ordering::Relaxed);
-            total_wire_bytes.fetch_add(raw as u64, Ordering::Relaxed);
-            total_events.fetch_add(rows, Ordering::Relaxed);
-            total_batches.fetch_add(1, Ordering::Relaxed);
+            counters.raw_bytes.fetch_add(raw as u64, Ordering::Relaxed);
+            counters.wire_bytes.fetch_add(raw as u64, Ordering::Relaxed);
+            counters.events.fetch_add(rows, Ordering::Relaxed);
+            counters.batches.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -152,23 +159,27 @@ fn run_scenario(
         if compress { "gzip" } else { "none" }
     );
 
-    let total_events = Arc::new(AtomicU64::new(0));
-    let total_batches = Arc::new(AtomicU64::new(0));
-    let total_errors = Arc::new(AtomicU64::new(0));
-    let total_raw_bytes = Arc::new(AtomicU64::new(0));
-    let total_wire_bytes = Arc::new(AtomicU64::new(0));
+    let counters = WorkerCounters {
+        events: Arc::new(AtomicU64::new(0)),
+        batches: Arc::new(AtomicU64::new(0)),
+        errors: Arc::new(AtomicU64::new(0)),
+        raw_bytes: Arc::new(AtomicU64::new(0)),
+        wire_bytes: Arc::new(AtomicU64::new(0)),
+    };
     let duration = std::time::Duration::from_secs(duration_secs);
 
     let start = Instant::now();
     let mut handles = vec![];
     for i in 0..workers {
-        let ev = Arc::clone(&total_events);
-        let ba = Arc::clone(&total_batches);
-        let er = Arc::clone(&total_errors);
-        let rb = Arc::clone(&total_raw_bytes);
-        let wb = Arc::clone(&total_wire_bytes);
+        let c = WorkerCounters {
+            events: Arc::clone(&counters.events),
+            batches: Arc::clone(&counters.batches),
+            errors: Arc::clone(&counters.errors),
+            raw_bytes: Arc::clone(&counters.raw_bytes),
+            wire_bytes: Arc::clone(&counters.wire_bytes),
+        };
         handles.push(std::thread::spawn(move || {
-            run_worker(i, duration, batch_lines, compress, ev, ba, er, rb, wb);
+            run_worker(i, duration, batch_lines, compress, &c);
         }));
     }
     for h in handles {
@@ -176,11 +187,11 @@ fn run_scenario(
     }
     let elapsed = start.elapsed().as_secs_f64();
 
-    let events = total_events.load(Ordering::Relaxed);
-    let batches = total_batches.load(Ordering::Relaxed);
-    let errors = total_errors.load(Ordering::Relaxed);
-    let raw_mb = total_raw_bytes.load(Ordering::Relaxed) as f64 / 1024.0 / 1024.0;
-    let wire_mb = total_wire_bytes.load(Ordering::Relaxed) as f64 / 1024.0 / 1024.0;
+    let events = counters.events.load(Ordering::Relaxed);
+    let batches = counters.batches.load(Ordering::Relaxed);
+    let errors = counters.errors.load(Ordering::Relaxed);
+    let raw_mb = counters.raw_bytes.load(Ordering::Relaxed) as f64 / 1024.0 / 1024.0;
+    let wire_mb = counters.wire_bytes.load(Ordering::Relaxed) as f64 / 1024.0 / 1024.0;
     let eps = events as f64 / elapsed;
     let avg_lat_ms = if batches > 0 {
         elapsed * 1000.0 * workers as f64 / batches as f64
