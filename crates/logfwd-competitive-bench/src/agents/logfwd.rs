@@ -22,14 +22,15 @@ impl Agent for Logfwd {
 
     fn write_config(&self, ctx: &BenchContext, scenario: Scenario) -> Result<PathBuf, String> {
         let cfg_path = ctx.bench_dir.join("logfwd.yaml");
-        // logfwd's scanner creates type-suffixed columns: level_str, duration_ms_int, etc.
+        // Since the type-suffix redesign (#684), columns are only suffixed on
+        // type conflict. With uniform test data, columns are unsuffixed.
         let transform = match scenario {
             Scenario::Passthrough => "SELECT * FROM logs".to_string(),
             Scenario::JsonParse => {
-                "SELECT timestamp_str, level_str, message_str, duration_ms_int AS latency_ms, request_id_str, service_str FROM logs".to_string()
+                "SELECT timestamp, level, message, duration_ms AS latency_ms, request_id, service FROM logs".to_string()
             }
             Scenario::Filter => {
-                "SELECT * FROM logs WHERE level_str IN ('WARN', 'ERROR')".to_string()
+                "SELECT * FROM logs WHERE level IN ('WARN', 'ERROR')".to_string()
             }
         };
         let config = format!(
