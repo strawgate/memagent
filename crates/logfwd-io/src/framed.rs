@@ -415,7 +415,11 @@ mod tests {
             }],
             vec![InputEvent::EndOfFile],
         ]);
-        let mut framed = FramedInput::new(Box::new(source), FormatProcessor::Passthrough, stats);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatProcessor::passthrough(stats.clone()),
+            stats,
+        );
 
         // First poll: data with no newline — goes to remainder, nothing emitted.
         let events1 = framed.poll().unwrap();
@@ -437,7 +441,11 @@ mod tests {
             }],
             vec![InputEvent::EndOfFile],
         ]);
-        let mut framed = FramedInput::new(Box::new(source), FormatProcessor::Passthrough, stats);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatProcessor::passthrough(stats.clone()),
+            stats,
+        );
 
         // First poll: "complete\n" is emitted; "partial" stays in remainder.
         let events1 = framed.poll().unwrap();
@@ -458,7 +466,11 @@ mod tests {
             }],
             vec![InputEvent::EndOfFile],
         ]);
-        let mut framed = FramedInput::new(Box::new(source), FormatProcessor::Passthrough, stats);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatProcessor::passthrough(stats.clone()),
+            stats,
+        );
 
         let events1 = framed.poll().unwrap();
         assert_eq!(collect_data(events1), b"line\n");

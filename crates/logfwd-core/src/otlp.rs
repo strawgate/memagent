@@ -638,6 +638,10 @@ mod verification {
         let decoded_field = (tag_value >> 3) as u32;
         assert!(decoded_wire == wire_type, "wire type mismatch");
         assert!(decoded_field == field_number, "field number mismatch");
+
+        // Confirm both extremes of the constrained space are reachable
+        kani::cover!(field_number == 1 && wire_type == 0);
+        kani::cover!(field_number == 0x1FFFFFFF && wire_type == 5);
     }
 
     /// Prove days_from_civil never panics and produces reasonable values
@@ -713,6 +717,10 @@ mod verification {
             buf.len() == predicted,
             "bytes_field_size disagrees with encode_bytes_field"
         );
+
+        // Confirm both boundary cases are reachable
+        kani::cover!(field_number == 1 && data_len == 0);
+        kani::cover!(field_number == 1000 && data_len == 256);
     }
 
     // NOTE: parse_timestamp_nanos proofs deferred — Kani has trouble with
