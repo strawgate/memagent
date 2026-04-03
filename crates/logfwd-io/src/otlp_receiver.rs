@@ -1001,8 +1001,7 @@ mod tests {
     // Bug #687: Content-Type: Application/JSON (capital A) should be treated as JSON.
     #[test]
     fn content_type_matching_is_case_insensitive() {
-        let mut receiver =
-            OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
+        let mut receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
         let port = receiver.local_addr().port();
         let url = format!("http://127.0.0.1:{port}/v1/logs");
 
@@ -1093,6 +1092,9 @@ mod tests {
             Err(ureq::Error::StatusCode(code)) => code,
             Err(e) => panic!("unexpected error: {e}"),
         };
-        assert_eq!(status, 200, "valid OTLP JSON should return 200, got {status}");
+        assert_eq!(
+            status, 200,
+            "valid OTLP JSON should return 200, got {status}"
+        );
     }
 }
