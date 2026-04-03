@@ -1,123 +1,306 @@
-# File Tailing Audit — Comparison with Industry Collectors
+# File Tailing Audit
 
 Date: 2026-04-02
-Context: End-to-end audit of logfwd's file reading path, compared with
-Vector, OTel Collector filelog, and Fluent Bit in_tail.
+Context: End-to-end audit of logfwd's file reading path. Research into
+how production collectors solve each problem informs the options below.
 
-## Critical Findings
+## Data Flow Diagram
 
-### 1. Shared remainder buffer across files (#797)
+```text
+                        ┌─────────────────────────────────────────┐
+                        │              FileTailer                  │
+                        │                                         │
+  ┌──────────┐    ①     │  ┌──────────┐  ②   ┌────────────────┐  │
+  │ Disk     │─────────►│  │ File fd  │─────►│ read_new_data  │  │
+  │ (files)  │          │  │ (per-file│      │ (shared 256KB  │  │
+  └──────────┘          │  │  offset) │      │  read buffer)  │  │
+       │                │  └──────────┘      └───────┬────────┘  │
+       │                │                            │           │
+       │  ⑥ Glob       │                     ③ TailEvent::Data  │
+       │  rescan        │                            │           │
+       │                └────────────────────────────┼───────────┘
+       │                                             │
+       │                ┌────────────────────────────▼───────────┐
+       │                │           FramedInput                  │
+       │         ④      │                                        │
+       └───────────────►│  ┌────────────┐  ⑤  ┌──────────────┐  │
+         identify_file  │  │ remainder  │────►│ split on \n   │  │
+         (fingerprint)  │  │ (SHARED!)  │     │ + CRI parse   │  │
+                        │  └────────────┘     └──────┬────────┘  │
+                        └────────────────────────────┼───────────┘
+                                                     │
+                                              InputEvent::Data
+                                              (complete lines)
+                                                     │
+                        ┌────────────────────────────▼───────────┐
+                        │        input_poll_loop (OS thread)     │
+                        │                                        │
+                        │  ┌────────────┐  ⑦  ┌──────────────┐  │
+                        │  │ input.buf  │────►│ batch by size │  │
+                        │  │ (accumulate│     │ or timeout    │  │
+                        │  │  lines)    │     └──────┬────────┘  │
+                        │  └────────────┘            │           │
+                        └────────────────────────────┼───────────┘
+                                                     │
+                                          ⑧ mpsc channel (cap 16)
+                                                     │
+                        ┌────────────────────────────▼───────────┐
+                        │         run_async (tokio)              │
+                        │                                        │
+                        │  scan_buf → flush_batch → transform    │
+                        │              → output sinks            │
+                        └────────────────────────────────────────┘
+```
 
-**Every other collector has per-file buffers.** Vector uses per-FileWatcher
-`BytesMut`, OTel has per-file Reader with own decoder/split function,
-Fluent Bit has per-file `buf_data` heap allocation. logfwd uses a single
-`FramedInput` remainder buffer shared across all files in a glob input.
+Each numbered point is a decision point with options below.
 
-**Impact**: If file A writes a partial line (no `\n`) and file B's data
-arrives next, file A's bytes are prepended to file B's data, producing
-a corrupted merged line.
+---
 
-**Fix**: Per-file remainder tracking, keyed by SourceId or path.
+## ① File Discovery + Identity
 
-### 2. TailEvent::Truncated never emitted (#796)
+**Current**: xxh64 hash of first 1024 bytes. Glob dedup by `PathBuf` string.
 
-**Fluent Bit explicitly clears the per-file buffer on truncation** (sets
-`buf_len = 0`). OTel Collector has configurable truncation behavior
-(ignore/read_whole/read_new). logfwd detects truncation in `read_new_data`
-but never emits `TailEvent::Truncated`, so `FramedInput` never clears
-its remainder.
+**Problem**: Hash collisions cause checkpoint misattribution (#798).
+Symlinks bypass path-string dedup (#799).
 
-**Impact**: On copytruncate rotation, stale partial-line bytes from the
-old file content get prepended to new content.
+### Options
 
-**Fix**: Emit `TailEvent::Truncated` when truncation detected.
+**A. Keep xxh64 hash, add (dev, inode) to SourceId**
+- Pro: Minimal change, hash stays fast, inode breaks collisions
+- Con: Inode changes on copy (not rename), so copytruncate needs care
+- Industry: Fluent Bit uses dev+inode as primary identity
 
-### 3. Unbounded read in read_new_data
+**B. Switch to raw-bytes fingerprint (no hash)**
+- Pro: No collision possible, prefix-match supports growing files
+- Con: Stores 1 KB per file in checkpoint, comparison is O(n) not O(1)
+- Industry: OTel Collector uses raw first 1000 bytes
 
-**Vector limits reads to 2 KiB per file per poll cycle.** Fluent Bit
-limits to one chunk (32 KB default) with configurable batch limits
-(50 MB). OTel Collector reads to EOF but per-file in goroutines.
-logfwd reads ALL available data from a file into an unbounded `Vec<u8>`.
+**C. CRC-64 of first line + dev+inode fallback**
+- Pro: Survives renames (CRC stable), inode prevents collision
+- Con: Requires at least one complete line to fingerprint
+- Industry: Vector uses CRC-64 of first line, falls back to dev+inode
 
-**Impact**: A file that grows by 10 GB between polls causes a 10 GB
-allocation in a single `read_new_data` call.
+**Recommendation**: A — add `(dev, inode)` to the SourceId hash. Simplest,
+most robust. Use `(dev, inode)` for glob dedup too.
 
-**Fix**: Cap `read_new_data` to a configurable max (e.g., 16 MiB).
+---
 
-### 4. Glob dedup by PathBuf string (#799)
+## ② Read from Disk
 
-**Vector deduplicates by fingerprint.** Fluent Bit deduplicates by
-`dev_id:inode` hash. OTel Collector deduplicates by fingerprint (raw
-bytes). logfwd deduplicates by `PathBuf` string comparison.
+**Current**: `read_new_data` reads ALL available bytes into unbounded
+`Vec<u8>`. Shared 256 KB read buffer, but result Vec grows without limit.
 
-**Impact**: Symlinks or different relative/absolute paths to the same
-file bypass dedup, causing duplicate reads.
+**Problem**: 10 GB log burst → 10 GB allocation (#800). One chatty file
+starves others (#801).
 
-**Fix**: Deduplicate by `(device, inode)` pair.
+### Options
 
-### 5. Fingerprint collision causes checkpoint misattribution (#798)
+**A. Cap per-read to configurable max (e.g., 16 MiB)**
+- Pro: Simple, prevents OOM, leftover data read next poll
+- Con: Doesn't address fairness across files
+- Industry: Fluent Bit caps at `Static_Batch_Size` (50 MB)
 
-**Fluent Bit uses dev+inode (no collision possible).** Vector uses CRC-64
-with mtime tiebreaker. OTel uses raw bytes (no hash, exact comparison).
-logfwd uses xxh64 hash only — collision = silent misattribution.
+**B. Per-file read budget per poll cycle (e.g., 256 KiB)**
+- Pro: Prevents OOM AND ensures fairness across files
+- Con: May add latency for single-file inputs (extra poll cycles)
+- Industry: Vector uses 2 KiB per file per cycle
 
-**Fix**: Include `(device, inode)` in SourceId hash.
+**C. Read into fixed ring buffer, yield when full**
+- Pro: Zero allocation, bounded memory
+- Con: Complex, needs careful lifetime management
+- Industry: None of the three do this
 
-## Medium Findings
+**Recommendation**: B — per-file read budget. Set default high enough
+(256 KiB) that single-file inputs don't notice, but multi-file inputs
+get fair scheduling. Also acts as an OOM cap.
 
-### 6. No partial line flush timer
+---
 
-OTel Collector has a 500ms per-file timer that flushes partial data if
-no new data arrives. This is persisted in checkpoints. Vector and Fluent
-Bit have no timer (partial data sits until file is deleted/rotated).
-logfwd flushes on EndOfFile event, which requires a full poll cycle with
-no new data.
+## ③ Truncation + Rotation Events
 
-The OTel approach is the gold standard — guarantees partial lines are
-emitted within 500ms of the last write.
+**Current**: Truncation detected in `read_new_data` (offset > file size),
+but `TailEvent::Truncated` is never emitted (#796). Rotation detected by
+dev/inode change, old fd drained before `TailEvent::Rotated`.
 
-### 7. Partial line lost on shutdown
+**Problem**: On copytruncate, the remainder buffer is not cleared.
+Stale partial-line bytes from old content corrupt new content.
 
-Vector handles this elegantly: the `file_position` is not advanced past
-the BufReader's internal buffer, so partial data is re-read on restart.
-OTel Collector flushes with a 5s timeout. Fluent Bit and logfwd both
-discard partial lines on shutdown.
+### Options
 
-### 8. No per-file read fairness
+**A. Emit TailEvent::Truncated when detected (one-line fix)**
+- Pro: FramedInput already handles it (clears remainder + resets format)
+- Con: None — this is a bug fix, not a design choice
+- Industry: Fluent Bit clears buffer, OTel has configurable behavior
 
-Vector reads max 2 KiB per file per cycle for fairness. Fluent Bit
-reads one chunk per file. logfwd reads ALL available data from each
-file before moving to the next.
+**B. Also add configurable truncation behavior (like OTel)**
+- `ignore`: keep old offset (skip re-reading, risk missing data)
+- `read_whole`: reset to 0, re-read everything (current behavior + event)
+- `read_new`: set offset to current size, only read new data
+- Pro: Flexibility for different deployment patterns
+- Con: More config surface, `read_whole` (current) is the right default
 
-**Impact**: One chatty file can starve quiet files of processing time.
+**Recommendation**: A now, B later. The one-line fix is urgent. Configurable
+behavior can come when we add a config schema for file inputs.
 
-## Comparison Table
+---
 
-| Aspect | Vector | OTel Collector | Fluent Bit | logfwd |
-|--------|--------|---------------|------------|--------|
-| Per-file buffer | BytesMut per watcher | Per-file Reader | Per-file buf_data | **Shared** |
-| Partial flush timer | No | 500ms per-file | No | No |
-| Truncation handling | No explicit detection | Configurable | Detect + clear buffer | **Detect, no event** |
-| File identity | CRC-64 first line / dev+inode | Raw first 1000 bytes | dev+inode | xxh64 first 1024 bytes |
-| Read budget/file | 2 KiB/cycle | Full file (goroutine) | 32 KB chunk | **Unbounded** |
-| Glob dedup | By fingerprint | By fingerprint | By dev:inode | **By path string** |
-| Checkpoint | JSON, atomic rename | Protobuf, per-poll | SQLite WAL, per-chunk | JSON, 5s interval |
-| Max line | 100 KiB | 1 MiB | 32 KB | 2 MiB |
-| Backpressure | Channel cap 2 | Blocking emit | Pause collectors | Channel cap 16 |
+## ④ File Identity for Checkpoints
 
-## Priority Fixes
+See ① — same issue. The checkpoint store maps fingerprint → offset.
+A collision means one file's offset overwrites another's.
 
-1. Per-file remainder buffers (#797) — CRITICAL
-2. Emit TailEvent::Truncated (#796) — CRITICAL, one-line fix
-3. Bound read_new_data — HIGH, new issue needed
-4. Glob dedup by inode (#799) — HIGH
-5. Fingerprint collision (#798) — HIGH
-6. Per-file read fairness budget — MEDIUM
-7. Partial line flush timer — MEDIUM (OTel pattern)
+---
 
-## References
+## ⑤ Remainder Buffer (Line Splitting)
 
-- Vector: `lib/file-source/src/file_watcher/mod.rs`, `lib/file-source-common/src/buffer.rs`
-- OTel Collector: `pkg/stanza/fileconsumer/`, `pkg/stanza/flush/flush.go`
-- Fluent Bit: `plugins/in_tail/tail_file.c`, `plugins/in_tail/tail_fs_inotify.c`
-- logfwd: `crates/logfwd-io/src/tail.rs`, `crates/logfwd-io/src/framed.rs`
+**Current**: Single `FramedInput` remainder buffer shared across all
+files in a glob input (#797).
+
+**Problem**: Partial line from file A corrupts data from file B when
+writes interleave.
+
+### Options
+
+**A. Per-file remainder in FramedInput**
+- Store `HashMap<SourceId, Vec<u8>>` for remainders
+- Requires `TailEvent::Data` to carry source identity (it already has `path`)
+- Pro: Correct, matches every other collector
+- Con: Needs `InputEvent::Data` to carry `SourceId` through the stack
+
+**B. Per-file FramedInput (one per file)**
+- Each file gets its own `FramedInput` with own remainder, format state
+- Pro: Clean separation, each file has independent CRI aggregator too
+- Con: Larger refactor — `FileInput` currently wraps one `FileTailer`
+
+**C. Move framing into FileTailer (per-file)**
+- Each `TailedFile` holds its own line buffer
+- `poll()` returns complete lines only, never partial data
+- Pro: Eliminates the FramedInput layer entirely
+- Con: Moves framing logic into the I/O layer, mixes concerns
+
+**Recommendation**: A for now, consider C long-term. A is the minimal fix —
+add source identity to events and key the remainder by it. C is cleaner
+architecturally but a bigger refactor.
+
+---
+
+## ⑥ Glob Rescan + Dedup
+
+**Current**: Rescan every 5s, dedup by `PathBuf` string comparison.
+
+**Problem**: Symlinks and non-canonical paths bypass dedup (#799).
+
+### Options
+
+**A. Dedup by (dev, inode)**
+- Pro: Correct on all Unix systems, survives symlinks and relative paths
+- Con: Doesn't work cross-filesystem (dev differs)
+- Industry: Fluent Bit uses this
+
+**B. Canonicalize paths before comparison**
+- Pro: Resolves symlinks and relative paths
+- Con: `canonicalize()` follows symlinks, so symlink and target are same
+       path. But: `canonicalize()` can fail (permission, broken link).
+       And: doesn't handle hard links.
+
+**C. Dedup by fingerprint**
+- Pro: Content-based, works regardless of path gymnastics
+- Con: Requires reading file content for every glob match every rescan
+- Industry: Vector and OTel use this
+
+**Recommendation**: A — `(dev, inode)` dedup is cheapest (one `stat()` call)
+and handles the common cases (symlinks, relative paths). Fingerprint dedup
+(C) is overkill for glob matching.
+
+---
+
+## ⑦ Batch Accumulation
+
+**Current**: `input.buf` accumulates lines until `batch_target_bytes`
+(4 MiB) or `batch_timeout` (100ms).
+
+**No issues found here.** The batching logic is correct and well-tested.
+Shutdown properly drains the buffer.
+
+---
+
+## ⑧ Channel + Backpressure
+
+**Current**: `tokio::sync::mpsc::channel(16)`. Input thread blocks on
+`blocking_send` when full. Async side drains on shutdown.
+
+**No major issues.** The shutdown drain sequence is correct (verified
+in the audit). Channel capacity of 16 is reasonable.
+
+**Minor**: Could reduce to 2-4 for tighter backpressure (Vector uses 2).
+Lower capacity means the input thread blocks sooner, which means files
+stop being read sooner, which means less memory buffered in the pipeline.
+
+---
+
+## Partial Line Flush Timer (not in diagram — cross-cutting)
+
+**Current**: No timer. Partial lines flush only on EndOfFile event
+(next poll cycle with no new data).
+
+### Options
+
+**A. Per-file flush timer (500ms like OTel)**
+- After 500ms of no new data for a file, flush remainder as complete line
+- Pro: Guarantees partial lines emitted promptly
+- Con: Requires per-file timer tracking (need per-file remainder first)
+- Industry: OTel persists flush state in checkpoint
+
+**B. Flush on EndOfFile only (current)**
+- Pro: Simple, no timer complexity
+- Con: Partial data can sit for up to `poll_interval` (250ms) before
+       EndOfFile fires. Worse if file keeps getting tiny writes.
+
+**C. Flush all remainders on timeout (global timer)**
+- Pro: Simpler than per-file timers
+- Con: Flushes ALL files' partials at once, even ones actively receiving data
+
+**Recommendation**: A after per-file remainders are implemented. The
+per-file remainder (#797 fix) is a prerequisite.
+
+---
+
+## Partial Line on Shutdown (not in diagram — edge case)
+
+**Current**: Silently dropped.
+
+### Options
+
+**A. Don't advance checkpoint past partial data (Vector approach)**
+- The checkpoint offset stays at the last complete line
+- On restart, the partial data is re-read from the file
+- Pro: No data loss, at-least-once semantics
+- Con: Requires checkpoint to track "last complete line offset"
+       separately from "bytes read offset"
+
+**B. Flush partial as complete line on shutdown (OTel approach)**
+- Pro: Data is delivered, not lost
+- Con: May produce malformed records if the partial was genuinely
+       incomplete (e.g., mid-JSON-object)
+
+**C. Drop partial on shutdown (current, same as Fluent Bit)**
+- Pro: Simple, no malformed records
+- Con: Data loss (usually just one line per file)
+
+**Recommendation**: A is ideal but requires checkpoint redesign. For now,
+C is acceptable — the data loss is minimal (one partial line per file
+at shutdown time).
+
+---
+
+## Summary: Priority Order
+
+| Priority | Issue | Fix | Effort |
+|----------|-------|-----|--------|
+| 1 | #796 Truncation event | Emit TailEvent::Truncated | 1 line |
+| 2 | #797 Per-file remainder | HashMap keyed by SourceId | Medium |
+| 3 | #800 Unbounded read | Per-file read budget | Small |
+| 4 | #799 Glob dedup | Use (dev, inode) | Small |
+| 5 | #798 Fingerprint collision | Add (dev, inode) to hash | Small |
+| 6 | #801 Read fairness | Per-file budget (same as #800) | Small |
+| 7 | Flush timer | Per-file 500ms timer | Medium (after #797) |
