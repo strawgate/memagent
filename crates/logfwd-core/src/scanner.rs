@@ -418,7 +418,10 @@ mod kani_proofs {
             if let Some(next) = transition(state, ops[i]) {
                 if op == 5 {
                     // append succeeded — state must be InRow
-                    assert!(state == BuilderState::InRow, "append must only succeed in InRow");
+                    assert!(
+                        state == BuilderState::InRow,
+                        "append must only succeed in InRow"
+                    );
                     append_called = true;
                 }
                 state = next;
