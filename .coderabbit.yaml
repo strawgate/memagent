@@ -37,170 +37,83 @@ reviews:
       - name: Formal Verification Coverage
         mode: error
         instructions: >-
-          You are reviewing formal verification coverage for logfwd, a project that
-          uses a four-tier verification strategy as a core differentiator. The project
-          targets 80+ Kani proofs in logfwd-core, TLA+ for temporal protocol properties,
-          proptest for statistical coverage of complex inputs, and Rust's type system for
-          compile-time invariants. Fail this check if required verification is absent,
-          of insufficient quality, or if VERIFICATION.md has not been updated to reflect
-          new or changed proofs.
+          Fail if required verification is absent, of insufficient quality, or
+          VERIFICATION.md is not updated. Full guidance: docs/ci/formal-verification-coverage.md
 
 
-          KANI PROOFS — WHEN REQUIRED.
-          Any new public function added to logfwd-core requires at least one Kani proof.
-          Three categories are exempt from Kani and require proptest or type-level
-          verification instead: (1) async functions (Kani does not support async runtimes;
-          use proptest for event-sequence properties instead), (2) heap-heavy code that
-          creates Vec, HashMap, or BTreeMap proportional to input size (Kani state-space
-          explodes; use proptest), and (3) trivial getters or setters with no logic beyond
-          a field read/write (no invariant to prove). These are the ONLY exemptions. Any
-          function with logic — parsing, encoding, bit manipulation, state transitions,
-          arithmetic — is NOT exempt. For any non-exempt function, the absence of a proof
-          is a hard fail. These exemptions mirror the ones in CRATE_RULES.md and are the
-          same exemptions referenced by the Crate Boundary check's Rule 5.
+          KANI — WHEN REQUIRED. Every new non-exempt public function in logfwd-core needs
+          a Kani proof. Exemptions (ONLY these three): async functions; heap-heavy code
+          creating Vec/HashMap/BTreeMap proportional to input size; trivial getters/setters
+          with no logic. Any function with logic (parsing, encoding, bit ops, state
+          transitions, arithmetic) is NOT exempt.
 
-          By function category the requirements are:
-
-          PARSERS (any code that handles raw bytes: framer.rs, cri.rs, json_scanner.rs,
-          scan_config.rs, aggregator.rs): MUST have a verify_<fn>_no_panic proof using
-          kani::any() inputs within a bounded slice size (8–32 bytes for most parsers,
-          up to 256 bytes where larger inputs change behavior). SHOULD have a correctness
-          proof comparing output against an independently-computed oracle. The oracle must
-          be a simple, obviously-correct reference implementation, not the production code
-          rewritten — an oracle that calls the same function it is testing is not an oracle.
-
-          WIRE FORMAT ENCODERS (otlp.rs, varint encoding, protobuf size calculation):
-          MUST prove no panic on all inputs within bounded message size. MUST verify that
-          the encoded byte length equals the predicted size (this class of bug was the
-          source of protobuf framing errors found during development). MUST prove varint
-          encoding roundtrips: decode(encode(x)) == x for all x in the type's range.
-
-          BITMASK OPERATIONS (structural.rs, structural_iter.rs, chunk_classify.rs):
-          MUST have oracle-based correctness proofs. The oracle for structural detection
-          is the scalar byte-by-byte reference implementation. The proof must verify that
-          for ALL inputs (kani::any::<u64>() bitmasks, kani::any::<[u8; 64]>() chunks),
-          the SIMD-equivalent and scalar paths produce identical results. kani::cover!()
-          must confirm that both "some bits set" and "zero bits" cases are reachable —
-          an all-zeros input is trivially correct and does not prove the interesting paths.
-
-          BYTE SEARCH PRIMITIVES (byte_search.rs): MUST prove correctness against a naive
-          implementation (linear scan). Both find_byte and rfind_byte must have oracle
-          proofs. The proof must verify: found index is within bounds, byte at that index
-          equals target, all preceding bytes (for find) or following bytes (for rfind)
-          do not equal target.
-
-          STATE MACHINE TRANSITIONS (pipeline/lifecycle.rs, pipeline/batch.rs,
-          pipeline/registry.rs): MUST prove all valid state transitions preserve invariants.
-          For lifecycle: no batch creation after drain begins, committed checkpoint is
-          monotonically non-decreasing, stopped state is terminal. For batch typestate:
-          Queued → Sending is the only allowed first transition, Sending → Acked and
-          Sending → Rejected are the only allowed completions. For registry: sequence
-          numbers are strictly monotonic, no duplicate batch IDs.
+          By category: PARSERS — verify_<fn>_no_panic with kani::any() inputs on a
+          bounded slice (8–32 bytes), plus an oracle correctness proof where the oracle is
+          an independent reference impl, not the function under test rewritten.
+          WIRE FORMAT ENCODERS (otlp.rs, varint) — no panic on bounded inputs; encoded
+          length == predicted length; decode(encode(x)) == x for all x.
+          BITMASK OPS (structural.rs, structural_iter.rs, chunk_classify.rs) — oracle
+          proofs against scalar reference; kani::cover!() must confirm both "some bits
+          set" and "zero bits" paths are reachable.
+          BYTE SEARCH (byte_search.rs) — oracle proofs against naive linear scan for both
+          find_byte and rfind_byte.
+          STATE MACHINE TRANSITIONS (lifecycle.rs, batch.rs, registry.rs) — prove valid
+          transitions preserve invariants; committed is monotone; stopped is terminal;
+          Queued→Sending is the only first transition; sequence numbers are strictly
+          monotonic.
 
 
-          KANI PROOF QUALITY REQUIREMENTS — EVERY PROOF MUST.
-          1. Live in a #[cfg(kani)] mod verification {} block at the bottom of the
-          module file, NOT in #[cfg(test)]. Function contracts (#[cfg_attr(kani,
-          kani::requires(...))] and #[cfg_attr(kani, kani::ensures(...))]) annotate
-          production code directly, but the proof harnesses themselves are in
-          #[cfg(kani)].
-          2. Follow the naming convention verify_<function_name>_<property_being_proved>.
-          Examples: verify_encode_varint_roundtrip, verify_parse_cri_line_no_panic,
-          verify_prefix_xor_matches_scalar.
-          3. Carry #[kani::unwind(N)] for EVERY loop in the proof or in functions called
-          by the proof. N = maximum number of loop iterations + 1 or 2. A proof with an
-          unbounded loop will either time out or be unsound. Reject proofs with loops but
-          no unwind annotation.
-          4. Include kani::cover!() statements to guard against vacuous proofs. Every
-          proof that uses kani::assume() or constrains inputs must have at least two
-          cover! calls confirming that interesting paths are actually reachable.
-          UNSATISFIABLE cover! = vacuous proof; fix before merging.
-          5. Build oracles independently. The oracle must compute the expected result
-          from the raw input without calling through to the function under test. For
-          iterator-based proofs, count expected items by scanning the input buffer
-          directly rather than trusting an iterator's bitmask output.
-          6. Prefer kani::any_where() over kani::any() + kani::assume() when constraints
-          can be expressed at value generation time. Reserve assume() for constraints
-          that span multiple variables or depend on computed intermediate state.
+          PROOF QUALITY — EVERY PROOF MUST.
+          (1) Live in #[cfg(kani)] mod verification {}, NOT #[cfg(test)].
+          (2) Be named verify_<function>_<property>.
+          (3) Carry #[kani::unwind(N)] for every loop; missing unwind = unsound.
+          (4) Include ≥2 kani::cover!() guards when using assume(); UNSATISFIABLE
+          cover! = vacuous proof, reject it.
+          (5) Use independent oracles — the oracle must not call the function under test.
+          (6) Prefer kani::any_where() over any() + assume() for single-variable constraints.
 
 
-          SOLVER SELECTION.
-          Proofs that run longer than 10 seconds must carry #[kani::solver(kissat)] with
-          a comment explaining why: "kissat chosen: default cadical times out on this
-          bitmask-heavy proof". For arithmetic-heavy proofs (varint, integer parsing
-          with overflow), try z3 or bitwuzla if cadical is slow. Document the solver
-          choice. The CI Kani job has a 30-minute timeout; any proof expected to approach
-          this limit must use kissat or another fast solver and carry a comment.
+          ALLOCATION IN HARNESSES. Never use Vec::new(), Vec::with_capacity(kani::any()),
+          or vec![x; kani::any()] in a #[cfg(kani)] block — these cause tens of thousands
+          of spurious "aborting path on assume(false)" messages from alloc internals.
+          Use kani::any::<[u8; N]>() for byte inputs; kani::vec::any_vec::<T, N>() when
+          a Vec is required; Vec::with_capacity(N) for output buffers where N is the
+          statically known max encoded size. N must match the #[kani::unwind(N+1)] bound.
 
 
-          COMPOSITIONAL PROOFS FOR DEEP CALL CHAINS.
-          For functions in logfwd-core that are called from multiple other functions in
-          the hot path (e.g., scan_string, skip_nested, byte_search primitives), add
-          #[cfg_attr(kani, kani::requires(...))] and #[cfg_attr(kani, kani::ensures(...))]
-          contracts to the leaf function. Verify these contracts with proof_for_contract.
-          Then callers can use stub_verified to replace the callee with its contract —
-          bounding state-space explosion to N independent proofs over slices of the call
-          graph rather than one exponentially expensive monolithic proof. Reject PRs that
-          add deeply nested pure logic to logfwd-core hot-path functions without contracts
-          on the leaf functions, when those functions are called from multiple sites.
+          SOLVER. Proofs >10s must carry #[kani::solver(kissat)] with a comment. CI
+          timeout is 30 min; use kissat or bitwuzla for arithmetic-heavy proofs.
 
 
-          TLA+ REQUIREMENTS.
-          Any PR that modifies pipeline/lifecycle.rs, PipelineMachine state transitions,
-          the drain protocol, checkpoint ordering, batch sequence numbering, or the
-          ordered-ACK mechanism MUST address TLA+ coverage. The spec lives at
-          tla/PipelineMachine.tla in this repository. The TLC configurations are
-          PipelineMachine.cfg (safety model, ~50K states) and PipelineMachine.liveness.cfg
-          (liveness model, ~5K states).
-
-          Safety invariants checked in PipelineMachine.cfg (INVARIANTS block):
-          TypeOK, NoDoubleComplete, DrainCompleteness, CheckpointOrderingInvariant,
-          CommittedNeverAheadOfAcked, InFlightImpliesCreated, AckedImpliesCreated.
-
-          Temporal action properties also checked in PipelineMachine.cfg (PROPERTIES block,
-          safe to check at full model size): NoCreateAfterDrain, CommittedMonotonic,
-          DrainMeansNoNewSending.
-
-          Liveness properties checked in PipelineMachine.liveness.cfg (PROPERTIES block,
-          require Fairness in Spec): EventualDrain, NoBatchLeftBehind, StoppedIsStable,
-          AllCreatedBatchesEventuallyAccountedFor.
-
-          For any PR touching this area, require either: (a) explicit confirmation that
-          the change does not affect any of the above properties with reasoning, OR (b)
-          updated TLA+ spec and TLC output showing all properties still hold under both
-          cfg files. NEVER use CONSTRAINT to bound state space for liveness checking —
-          it silently breaks liveness by cutting off infinite behaviors before they reach
-          the convergent state. Use model constants (MaxBatchesPerSource, Sources set
-          size) instead.
+          COMPOSITIONAL PROOFS. Hot-path leaf functions called from multiple sites must
+          have #[cfg_attr(kani, kani::requires/ensures)] contracts verified with
+          proof_for_contract so callers can use stub_verified. Reject deeply nested logic
+          added to logfwd-core hot paths without contracts on the leaves.
 
 
-          PROPTEST REQUIREMENTS.
-          New SIMD code in logfwd-arrow MUST have a proptest oracle test comparing SIMD
-          output == scalar output for random inputs. PROPTEST_CASES=2000 minimum. This is
-          non-negotiable — it is the conformance guarantee that makes SIMD safe to deploy.
-          New scanner behavior (field extraction, type detection, duplicate key handling,
-          CRI parsing) MUST have proptest coverage for the following known bug-triggering
-          cases: escape sequences crossing 64-byte SIMD block boundaries, fields appearing
-          in different orders across records, duplicate keys with same type (first-write-wins
-          must be preserved), duplicate keys with different types (must produce two separate
-          suffixed columns for the current phase, or single promoted-type column after Phase
-          10). New async pipeline code MUST have proptest tests for: event sequences arriving
-          in arbitrary order, acks arriving in a different order than submits (ordered-ACK
-          must still advance checkpoint correctly), drain requested while batches in-flight.
-          Oracle tests for the scanner compare against sonic-rs as ground truth. Our scanner
-          uses first-writer-wins for duplicate keys; sonic-rs uses last-writer-wins. Oracle
-          tests must skip duplicate-key inputs or explicitly document the deviation.
+          TLA+. Any PR touching lifecycle.rs, PipelineMachine transitions, drain, checkpoint
+          ordering, or batch sequencing MUST address TLA+ coverage (tla/PipelineMachine.tla).
+          Configs: PipelineMachine.cfg (safety, ~50K states), PipelineMachine.liveness.cfg
+          (liveness, ~5K states). Safety invariants: TypeOK, NoDoubleComplete,
+          DrainCompleteness, CheckpointOrderingInvariant, CommittedNeverAheadOfAcked,
+          InFlightImpliesCreated, AckedImpliesCreated. Temporal: NoCreateAfterDrain,
+          CommittedMonotonic, DrainMeansNoNewSending. Liveness: EventualDrain,
+          NoBatchLeftBehind, StoppedIsStable, AllCreatedBatchesEventuallyAccountedFor.
+          Require (a) explicit no-impact reasoning OR (b) updated spec + TLC output.
+          NEVER use CONSTRAINT for liveness — use model constants instead.
 
 
-          VERIFICATION.md UPDATES.
-          Any PR that adds, removes, or modifies Kani proofs MUST update the per-module
-          verification status table in dev-docs/VERIFICATION.md. The table columns are:
-          Module, What it does, Verification. The proof count in the Verification column
-          must be accurate — count the proofs in the changed module and verify the table
-          entry matches. PRs that add proofs without updating this table will confuse
-          future reviewers about coverage completeness. If a module moves from Tier 2
-          (bounded) to Tier 1 (exhaustive), update the tier classification and the tier
-          descriptions at the bottom of the file.
+          PROPTEST. New SIMD code in logfwd-arrow MUST have a proptest oracle
+          (SIMD == scalar, PROPTEST_CASES=2000). New scanner behavior MUST cover: escape
+          sequences crossing 64-byte boundaries; fields in different orders; duplicate
+          keys same type (first-write-wins); duplicate keys different types (two suffixed
+          columns). New async pipeline code MUST cover: arbitrary event ordering; acks
+          out of order; drain while in-flight. Scanner oracle is sonic-rs (last-writer-wins
+          vs our first-writer-wins — skip duplicate-key inputs or document the deviation).
+
+
+          VERIFICATION.md. Any PR adding/removing/modifying proofs MUST update the
+          per-module table in dev-docs/VERIFICATION.md with accurate proof counts.
 
       - name: Documentation Thoroughly Updated
         mode: warning
