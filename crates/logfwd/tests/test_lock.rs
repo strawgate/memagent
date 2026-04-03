@@ -53,8 +53,9 @@ storage:
         .output()
         .expect("failed to start second logfwd instance");
 
-    // Clean up first instance.
+    // Clean up first instance — wait after kill to reap the process and prevent zombies.
     let _ = child1.kill();
+    let _ = child1.wait();
 
     let stderr = String::from_utf8_lossy(&output2.stderr);
     assert!(

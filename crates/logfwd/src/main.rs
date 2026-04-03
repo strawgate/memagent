@@ -437,6 +437,9 @@ async fn run_pipelines(
     {
         use std::os::unix::io::AsRawFd;
         // Attempt an exclusive lock. LOCK_NB means "non-blocking" — fail if already locked.
+        // SAFETY: `lock_file` is an open `File`, so `as_raw_fd()` returns a valid file
+        // descriptor. `libc::flock` is safe to call on any valid fd and does not mutate
+        // memory — it only manipulates the kernel-level advisory lock on the file.
         let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if ret != 0 {
             let err = io::Error::last_os_error();
@@ -451,6 +454,14 @@ async fn run_pipelines(
             }
             return Err(CliError::Runtime(err));
         }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tracing::warn!(
+            "file-based instance locking is not supported on this platform; \
+             skipping lock acquisition"
+        );
     }
 
     tokio::spawn(async move {
