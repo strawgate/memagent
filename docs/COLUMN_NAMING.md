@@ -51,8 +51,8 @@ SELECT status FROM logs
 -- Filter on the integer variant:
 SELECT * FROM logs WHERE int(status) > 400
 
--- Get the string variant explicitly:
-SELECT * FROM logs WHERE status = 'OK'
+-- Get the string variant explicitly (direct variant access, not the synthesized bare column):
+SELECT * FROM logs WHERE status__str = 'OK'
 ```
 
 The conflict group is recorded in the Arrow schema under the

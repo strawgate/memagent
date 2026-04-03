@@ -774,7 +774,10 @@ fn cross_batch_int_udf_works_on_clean_and_conflict_batches() {
     )
     .unwrap();
 
-    let mut t = SqlTransform::new("SELECT int(status) AS status_int FROM logs").unwrap();
+    let mut t = SqlTransform::new(
+        "SELECT int(status) AS status_int FROM logs ORDER BY status_int NULLS LAST",
+    )
+    .unwrap();
     let clean_result = t.execute_blocking(clean_batch).unwrap();
     let clean_col = clean_result
         .column_by_name("status_int")
@@ -809,7 +812,10 @@ fn cross_batch_int_udf_works_on_clean_and_conflict_batches() {
     )
     .unwrap();
 
-    let mut t2 = SqlTransform::new("SELECT int(status) AS status_int FROM logs").unwrap();
+    let mut t2 = SqlTransform::new(
+        "SELECT int(status) AS status_int FROM logs ORDER BY status_int NULLS LAST",
+    )
+    .unwrap();
     let conflict_result = t2.execute_blocking(conflict_batch).unwrap();
     let conflict_col = conflict_result
         .column_by_name("status_int")
