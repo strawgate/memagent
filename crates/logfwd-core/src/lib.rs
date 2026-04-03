@@ -13,6 +13,8 @@ extern crate alloc;
 pub mod aggregator;
 /// Proven byte search (alternative to memchr for Kani).
 pub mod byte_search;
+/// Pure state machine for checkpoint-remainder coordination (Kani-proven).
+pub mod checkpoint_tracker;
 /// CRI log format parsing.
 pub mod cri;
 /// Newline framing (Kani-proven).
