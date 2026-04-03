@@ -1,0 +1,188 @@
+{
+  "agents": [
+    "filebeat",
+    "logfwd",
+    "otelcol",
+    "vector",
+    "vlagent"
+  ],
+  "commit": "875f97aab8503a175c863d2eee06743481a21b7b",
+  "date": "2026-04-03T07:46:15Z",
+  "id": "23936535094",
+  "scenario_names": [
+    "filter",
+    "json_parse",
+    "passthrough"
+  ],
+  "scenarios": {
+    "filter": {
+      "filebeat": {
+        "avg_lps": 37190,
+        "avg_max_cpu": 106.66666666666667,
+        "avg_max_rss": 140649813,
+        "avg_ms": 268946,
+        "iterations": 3,
+        "lines_done": 10002174,
+        "lps": [
+          33555.812034060946,
+          42178.21907412092,
+          36822.91129732994
+        ],
+        "mode": "binary",
+        "stddev_ms": 30524
+      },
+      "otelcol": {
+        "avg_lps": 0,
+        "avg_max_cpu": 0.0,
+        "avg_max_rss": 0,
+        "avg_ms": 300032,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 8
+      },
+      "vector": {
+        "avg_lps": 91510,
+        "avg_max_cpu": 150.0,
+        "avg_max_rss": 184680448,
+        "avg_ms": 109278,
+        "iterations": 3,
+        "lines_done": 10000000,
+        "lps": [
+          89862.60008447083,
+          92789.34036057937,
+          91926.97321248
+        ],
+        "mode": "binary",
+        "stddev_ms": 1807
+      }
+    },
+    "json_parse": {
+      "filebeat": {
+        "avg_lps": 47019,
+        "avg_max_cpu": 106.0,
+        "avg_max_rss": 136615253,
+        "avg_ms": 300037,
+        "iterations": 3,
+        "lines_done": 14107429,
+        "lps": [
+          48740.09685665814,
+          45415.71565699659,
+          46900.93951321285
+        ],
+        "mode": "binary",
+        "stddev_ms": 10
+      },
+      "logfwd": {
+        "avg_lps": 0,
+        "avg_max_cpu": 103.33333333333333,
+        "avg_max_rss": 7735132160,
+        "avg_ms": 300049,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 57
+      },
+      "otelcol": {
+        "avg_lps": 0,
+        "avg_max_cpu": 0.0,
+        "avg_max_rss": 0,
+        "avg_ms": 300079,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 6
+      },
+      "vector": {
+        "avg_lps": 149116,
+        "avg_max_cpu": 170.66666666666666,
+        "avg_max_rss": 192410965,
+        "avg_ms": 134124,
+        "iterations": 3,
+        "lines_done": 20000000,
+        "lps": [
+          146897.8839359819,
+          149791.41545398033,
+          150710.22192080176
+        ],
+        "mode": "binary",
+        "stddev_ms": 1800
+      }
+    },
+    "passthrough": {
+      "filebeat": {
+        "avg_lps": 42575,
+        "avg_max_cpu": 106.0,
+        "avg_max_rss": 138712405,
+        "avg_ms": 300045,
+        "iterations": 3,
+        "lines_done": 12774319,
+        "lps": [
+          41590.67383414595,
+          44504.37773504288,
+          41628.74578801948
+        ],
+        "mode": "binary",
+        "stddev_ms": 12
+      },
+      "otelcol": {
+        "avg_lps": 0,
+        "avg_max_cpu": 0.0,
+        "avg_max_rss": 0,
+        "avg_ms": 300041,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 2
+      },
+      "vector": {
+        "avg_lps": 182091,
+        "avg_max_cpu": 145.0,
+        "avg_max_rss": 179673770,
+        "avg_ms": 109835,
+        "iterations": 3,
+        "lines_done": 20000000,
+        "lps": [
+          179422.08147556722,
+          183029.5043561022,
+          183882.68284834275
+        ],
+        "mode": "binary",
+        "stddev_ms": 1437
+      },
+      "vlagent": {
+        "avg_lps": 18018,
+        "avg_max_cpu": 103.0,
+        "avg_max_rss": 79659008,
+        "avg_ms": 59595,
+        "iterations": 1,
+        "lines_done": 1073784,
+        "lps": [
+          18018.02164611125
+        ],
+        "mode": "binary",
+        "stddev_ms": 0
+      }
+    }
+  }
+}
