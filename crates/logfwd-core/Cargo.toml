@@ -13,7 +13,7 @@ wide = { version = "1.2.0", default-features = false }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 arrow = { workspace = true }
-arrow-json = "54"
+arrow-json = { workspace = true }
 bytes = "1"
 chrono = { version = "0.4.44", default-features = false }
 criterion = { version = "0.7", features = ["html_reports"] }

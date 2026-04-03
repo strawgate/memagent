@@ -8,12 +8,7 @@ publish = false
 [dependencies]
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 arrow = { workspace = true }
-datafusion = { version = "45", default-features = false, features = [
-    "string_expressions",
-    "unicode_expressions",
-    "regex_expressions",
-    "recursive_protection",
-] }
+datafusion = { workspace = true }
 grok = { version = "2.4", default-features = false, features = ["fancy-regex"] }
 maxminddb = "0.27"
 regex = "1"
