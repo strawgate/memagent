@@ -411,7 +411,7 @@ impl StreamingBuilder {
         } else {
             let mut meta = HashMap::new();
             meta.insert(
-                crate::storage_builder::CONFLICT_GROUPS_METADATA_KEY.to_string(),
+                crate::CONFLICT_GROUPS_METADATA_KEY.to_string(),
                 conflict_meta.join(";"),
             );
             Arc::new(Schema::new_with_metadata(schema_fields, meta))

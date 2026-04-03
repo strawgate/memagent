@@ -224,10 +224,10 @@ mod tests {
     #[test]
     fn test_type_conflict() {
         let batch = default_scanner(4)
-            .scan(b"{\"s\":200}\n{\"s\":\"OK\"}\n")
+            .scan(b"{\"status\":200}\n{\"status\":\"OK\"}\n")
             .unwrap();
-        assert!(batch.column_by_name("s__int").is_some());
-        assert!(batch.column_by_name("s__str").is_some());
+        assert!(batch.column_by_name("status__int").is_some());
+        assert!(batch.column_by_name("status__str").is_some());
     }
     #[test]
     fn test_missing_fields() {

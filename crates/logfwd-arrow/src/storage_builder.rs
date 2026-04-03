@@ -195,6 +195,9 @@ impl StorageBuilder {
 
         // Detect duplicate output column names before building the schema.
         let mut emitted_names = std::collections::HashSet::new();
+        // Pre-reserve "_raw" only when it will actually be emitted — same condition
+        // as the raw column construction below (!self.raw_values.is_empty()). This
+        // prevents a user field named "_raw" from colliding with the reserved column.
         if self.keep_raw && !self.raw_values.is_empty() {
             emitted_names.insert("_raw".to_string());
         }

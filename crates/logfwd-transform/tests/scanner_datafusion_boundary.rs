@@ -751,3 +751,75 @@ fn single_suffixed_column_not_treated_as_conflict() {
         "bare 'error' column must not be synthesized from a lone 'error__str'"
     );
 }
+
+/// Cross-batch type stability: documents that `int(status) > 400` is the
+/// safe SQL idiom for numeric comparison across both clean and conflict batches.
+///
+/// A clean batch has `status: Int64` (bare name, numeric type).
+/// A conflict batch has `status__int + status__str` and a synthesized
+/// `status: Utf8` (string type). The `WHERE status > 400` predicate has
+/// different semantics across the two batches. `int(status)` resolves
+/// to the numeric value in both cases.
+#[test]
+fn cross_batch_int_udf_works_on_clean_and_conflict_batches() {
+    // --- Clean batch: status is always Int64 (no conflict) ---
+    let clean_schema = Arc::new(Schema::new(vec![Field::new(
+        "status",
+        DataType::Int64,
+        true,
+    )]));
+    let clean_batch = RecordBatch::try_new(
+        clean_schema,
+        vec![Arc::new(Int64Array::from(vec![200i64, 404, 500])) as ArrayRef],
+    )
+    .unwrap();
+
+    let mut t = SqlTransform::new("SELECT int(status) AS status_int FROM logs").unwrap();
+    let clean_result = t.execute_blocking(clean_batch).unwrap();
+    let clean_col = clean_result
+        .column_by_name("status_int")
+        .expect("int(status) must resolve on clean batch");
+    // int() on a plain Int64 column returns the value directly.
+    let arr = clean_col
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("int(status) result must be Int64");
+    assert_eq!(arr.value(0), 200);
+    assert_eq!(arr.value(1), 404);
+
+    // --- Conflict batch: status__int + status__str + synthesized status: Utf8 ---
+    let mut meta = std::collections::HashMap::new();
+    meta.insert(
+        "logfwd.conflict_groups".to_string(),
+        "status:int,str".to_string(),
+    );
+    let conflict_schema = Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("status__int", DataType::Int64, true),
+            Field::new("status__str", DataType::Utf8, true),
+        ],
+        meta,
+    ));
+    let conflict_batch = RecordBatch::try_new(
+        conflict_schema,
+        vec![
+            Arc::new(Int64Array::from(vec![Some(503i64), None])) as ArrayRef,
+            Arc::new(StringArray::from(vec![None, Some("OK")])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    let mut t2 = SqlTransform::new("SELECT int(status) AS status_int FROM logs").unwrap();
+    let conflict_result = t2.execute_blocking(conflict_batch).unwrap();
+    let conflict_col = conflict_result
+        .column_by_name("status_int")
+        .expect("int(status) must resolve on conflict batch");
+    let arr2 = conflict_col
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("int(status) result must be Int64");
+    // Row 0: integer row → 503
+    assert_eq!(arr2.value(0), 503);
+    // Row 1: string row → null (no integer value)
+    assert!(arr2.is_null(1));
+}
