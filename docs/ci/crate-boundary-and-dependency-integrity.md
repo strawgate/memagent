@@ -55,13 +55,16 @@ crate, and `logfwd-core` should expose a trait that the satellite implements.
 `clippy::indexing_slicing` must be denied for `logfwd-core`, but these are
 review-enforced rather than currently in the workspace `Cargo.toml`. The workspace
 lint config uses `clippy::pedantic = warn`; the per-crate deny rules for
-`logfwd-core` are enforced by code review. Flag any PR that adds `.unwrap()`,
-`panic!()`, or unchecked direct slice indexing (`slice[i]` without a prior bounds
-check or `.get()`) in `logfwd-core`. Require `.get(i)?` or
+`logfwd-core` are enforced by code review.
+
+**This rule applies to new changes.** Existing `.unwrap()` and `panic!()` calls in
+the codebase are known violations that pre-date enforcement. Flag only PRs that
+*introduce* new `.unwrap()`, `panic!()`, or unchecked direct slice indexing
+(`slice[i]` without a prior bounds check or `.get()`). Require `.get(i)?` or
 `.get(i).ok_or(Error::OutOfBounds)?` instead. If a PR adds these patterns and CI
 passes without objection, the lint is not yet enforced at the compiler level —
 that is a separate issue (#todo: add per-crate deny to `Cargo.toml`), but it does
-not make the violation acceptable.
+not make the new violation acceptable.
 
 ### Rule 5: Every public function has a Kani proof
 

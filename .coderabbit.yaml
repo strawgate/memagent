@@ -28,7 +28,7 @@ reviews:
           a real invariant explanation; (2) no .clone()/allocation inside hot-path
           loops without a benchmark justification comment; (3) all unsafe blocks outside
           logfwd-core have a // SAFETY: comment stating the specific invariant; (4) new
-          state machines use the typestate pattern; (5) no feature flags for behavior,
+          state machines use the typestate pattern (except when the PR justifies why typestate is impractical for that specific case); (5) no feature flags for behavior,
           no speculative traits, no sentinel values where Option applies; (6) all new
           public items have /// doc comments describing behavior, not just the name.
           Fail if any of the above are violated in changed code.
@@ -38,7 +38,7 @@ reviews:
         mode: error
         instructions: |
           Pass if: (1) every new non-exempt public function in logfwd-core has a Kani
-          proof (exemptions: async, heap-heavy Vec/HashMap code, trivial getters); (2)
+          proof (exemptions: async, heap-heavy Vec/HashMap/BTreeMap code, trivial getters); (2)
           all proofs are in #[cfg(kani)] mod verification {}, named
           verify_<fn>_<property>, carry #[kani::unwind(N)], and include kani::cover!()
           guards against vacuous proofs; (3) any PR touching pipeline lifecycle, drain,

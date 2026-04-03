@@ -64,6 +64,10 @@ pub struct WorkItem {
     pub num_rows: u64,
     /// When this item was submitted to the pool (set by the caller, not submit()).
     pub submitted_at: std::time::Instant,
+    /// Nanoseconds spent in the scan stage (passed through for metrics at ack time).
+    pub scan_ns: u64,
+    /// Nanoseconds spent in the transform stage (passed through for metrics at ack time).
+    pub transform_ns: u64,
 }
 
 /// Result from a worker after processing one [`WorkItem`].
@@ -77,6 +81,10 @@ pub struct AckItem {
     pub num_rows: u64,
     /// When the corresponding WorkItem was submitted.
     pub submitted_at: std::time::Instant,
+    /// Nanoseconds spent in the scan stage (passed through from WorkItem).
+    pub scan_ns: u64,
+    /// Nanoseconds spent in the transform stage (passed through from WorkItem).
+    pub transform_ns: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +193,8 @@ impl OutputWorkerPool {
                     success: false,
                     num_rows: item.num_rows,
                     submitted_at: item.submitted_at,
+                    scan_ns: item.scan_ns,
+                    transform_ns: item.transform_ns,
                 })
                 .is_err()
             {
@@ -247,6 +257,8 @@ impl OutputWorkerPool {
                         success: false,
                         num_rows: item.num_rows,
                         submitted_at: item.submitted_at,
+                        scan_ns: item.scan_ns,
+                        transform_ns: item.transform_ns,
                     })
                     .is_err()
                 {
@@ -271,6 +283,8 @@ impl OutputWorkerPool {
                     success: false,
                     num_rows: item.num_rows,
                     submitted_at: item.submitted_at,
+                    scan_ns: item.scan_ns,
+                    transform_ns: item.transform_ns,
                 })
                 .is_err()
             {
@@ -417,16 +431,30 @@ async fn worker_task(
                     Some(WorkerMsg::Work(item)) => {
                         let num_rows = item.num_rows;
                         let submitted_at = item.submitted_at;
+                        let scan_ns = item.scan_ns;
+                        let transform_ns = item.transform_ns;
                         let success = process_item(
                             id, &mut *sink, item.batch.clone(), &item.metadata, max_retry_delay,
                         )
                         .await;
-                        let _ = ack_tx.send(AckItem {
-                            tickets: item.tickets,
-                            success,
-                            num_rows,
-                            submitted_at,
-                        });
+                        if ack_tx
+                            .send(AckItem {
+                                tickets: item.tickets,
+                                success,
+                                num_rows,
+                                submitted_at,
+                                scan_ns,
+                                transform_ns,
+                            })
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                worker_id = id,
+                                num_rows,
+                                success,
+                                "worker: ack channel closed, ack lost"
+                            );
+                        }
                     }
                 }
             }
@@ -939,6 +967,8 @@ mod tests {
             tickets: vec![],
             num_rows: 0,
             submitted_at: std::time::Instant::now(),
+            scan_ns: 0,
+            transform_ns: 0,
         }
     }
 

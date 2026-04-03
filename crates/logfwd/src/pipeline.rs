@@ -616,6 +616,8 @@ impl Pipeline {
                 metadata,
                 tickets: sending,
                 submitted_at,
+                scan_ns: scan_elapsed.as_nanos() as u64,
+                transform_ns: transform_elapsed.as_nanos() as u64,
             })
             .await;
     }
@@ -627,8 +629,8 @@ impl Pipeline {
         if ack.success {
             self.metrics.record_batch(
                 ack.num_rows,
-                0, // scan/transform elapsed not available here; recorded at flush_batch
-                0,
+                ack.scan_ns,
+                ack.transform_ns,
                 ack.submitted_at.elapsed().as_nanos() as u64,
             );
         } else {

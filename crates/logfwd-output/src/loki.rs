@@ -67,14 +67,21 @@ type StreamMap = HashMap<String, Vec<LokiEntry>>;
 /// If `entries[i-1].0 == u64::MAX`, there is no valid strictly-larger timestamp to
 /// assign. In that case all remaining entries from index `i` onward are truncated.
 /// This is an extremely rare edge case (requires nanosecond-resolution timestamps at
-/// or beyond the year 2554, or a malformed batch), so silent truncation is acceptable.
+/// or beyond the year 2554, or a malformed batch).
+///
+/// # Return value
+///
+/// Returns the number of entries retained. This will be less than the original length
+/// only when an overflow truncation occurs. Callers must use this count for metrics
+/// rather than the original entry count, so that dropped entries are not reported as
+/// successfully delivered.
 ///
 /// # Invariant (tested with proptest)
 ///
 /// After calling this function, `entries[i].0 > entries[i-1].0` for all `i > 0`.
-pub fn sort_and_dedup_timestamps(entries: &mut Vec<LokiEntry>) {
+pub fn sort_and_dedup_timestamps(entries: &mut Vec<LokiEntry>) -> usize {
     if entries.len() <= 1 {
-        return;
+        return entries.len();
     }
     entries.sort_unstable_by_key(|(ts, _)| *ts);
     let mut i = 1;
@@ -92,6 +99,7 @@ pub fn sort_and_dedup_timestamps(entries: &mut Vec<LokiEntry>) {
         }
         i += 1;
     }
+    entries.len()
 }
 
 // ---------------------------------------------------------------------------
@@ -230,14 +238,19 @@ impl LokiAsyncSink {
     }
 
     /// Serialize `stream_map` to Loki push JSON payload.
+    ///
+    /// Returns `(payload, retained_row_count)`. The retained count may be less than
+    /// the original row count if overflow truncation occurred in any stream
+    /// (see [`sort_and_dedup_timestamps`]).
     fn serialize_loki_json(
         stream_map: &mut StreamMap,
         static_labels: &[(String, String)],
-    ) -> String {
+    ) -> (String, u64) {
         let mut streams_json = Vec::new();
+        let mut retained: u64 = 0;
 
         for (stream_key, entries) in stream_map.iter_mut() {
-            sort_and_dedup_timestamps(entries);
+            retained += sort_and_dedup_timestamps(entries) as u64;
 
             // Parse stream_key (JSON array of [key, value] pairs) back into label map.
             let mut labels_map: HashMap<String, String> = static_labels.iter().cloned().collect();
@@ -265,7 +278,10 @@ impl LokiAsyncSink {
             ));
         }
 
-        format!("{{\"streams\":[{}]}}", streams_json.join(","))
+        (
+            format!("{{\"streams\":[{}]}}", streams_json.join(",")),
+            retained,
+        )
     }
 
     async fn do_send(
@@ -336,10 +352,10 @@ impl super::sink::Sink for LokiAsyncSink {
             if batch.num_rows() == 0 {
                 return Ok(super::sink::SendResult::Ok);
             }
-            let row_count = batch.num_rows() as u64;
             let mut stream_map = self.build_stream_map(batch, metadata)?;
-            let payload = Self::serialize_loki_json(&mut stream_map, &self.config.static_labels);
-            self.do_send(payload, row_count).await
+            let (payload, retained_rows) =
+                Self::serialize_loki_json(&mut stream_map, &self.config.static_labels);
+            self.do_send(payload, retained_rows).await
         })
     }
 

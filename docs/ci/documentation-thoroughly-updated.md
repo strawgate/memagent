@@ -158,7 +158,9 @@ for the key dependencies: DataFusion (`SessionContext`, `MemTable`, UDF registra
 Arrow (`RecordBatch`, `StringViewArray`, `IpcWriteOptions`), Tokio (bounded channels,
 `CancellationToken`, `block_in_place`, `select!` safety), OpenTelemetry OTLP (protobuf
 nesting, HTTP vs gRPC, resource attributes), and Kani (proof API, solver selection,
-function contracts). Reference file names include the major version number. When a
-major version bump changes API patterns — new APIs, deprecated APIs, behavior
-changes — the relevant reference doc must be renamed to the new version and updated
-so agents and reviewers have accurate API guidance.
+function contracts). Only Arrow and DataFusion reference files are versioned by major
+version number (`arrow-v54.md`, `datafusion-v45.md`); other reference files
+(`tokio-async-patterns.md`, `opentelemetry-otlp.md`, `kani-verification.md`, etc.)
+are unversioned and updated in-place. When a major version bump changes API patterns
+for Arrow or DataFusion, rename the relevant reference doc to the new version and
+update it. For unversioned reference files, update in-place.

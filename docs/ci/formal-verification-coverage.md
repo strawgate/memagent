@@ -36,6 +36,14 @@ proof comparing output against an independently-computed oracle. The oracle must
 be a simple, obviously-correct reference implementation, not the production code
 rewritten — an oracle that calls the same function it is testing is not an oracle.
 
+`aggregator.rs` additionally requires explicit state-machine invariant proofs: the
+`P`/`F` flags and partial-line accumulation state must have a
+`verify_aggregator_state_invariants` proof using a bounded symbolic trace (bounded
+sequence of `push` and `finish` calls) that checks: `P` is set iff a partial line
+is currently buffered, `F` is set iff the previous line was a partial that was
+continued, and the output line count is non-decreasing. Use a bounded trace length
+(e.g. 4 operations) and `kani::any::<[u8; 8]>()` for each chunk input.
+
 ### Wire Format Encoders
 
 `otlp.rs`, varint encoding, protobuf size calculation. MUST prove no panic on all
