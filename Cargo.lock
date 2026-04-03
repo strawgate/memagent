@@ -2191,6 +2191,7 @@ dependencies = [
  "logfwd-output",
  "logfwd-transform",
  "memchr",
+ "pprof",
  "serde",
  "serde_json",
  "ureq",
