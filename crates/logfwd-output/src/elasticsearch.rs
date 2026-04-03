@@ -202,6 +202,56 @@ impl ElasticsearchAsyncSink {
             .map_err(io::Error::other)
     }
 
+    /// Send a batch, splitting on 413 Payload Too Large up to `MAX_SPLIT_DEPTH`
+    /// times. Each split halves the Arrow RecordBatch and re-serializes.
+    fn send_batch_recursive<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        metadata: &'a BatchMetadata,
+        depth: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>> {
+        Box::pin(async move {
+        const MAX_SPLIT_DEPTH: usize = 4; // split up to 16 sub-batches
+
+        self.serialize_batch(batch, metadata)?;
+        if self.batch_buf.is_empty() {
+            return Ok(super::sink::SendResult::Ok);
+        }
+        let body = std::mem::replace(&mut self.batch_buf, Vec::with_capacity(64 * 1024));
+        let byte_len = body.len();
+        let row_count = batch.num_rows() as u64;
+
+        match self.do_send(body).await {
+            Ok(result) => {
+                if matches!(result, super::sink::SendResult::Ok) {
+                    self.stats.inc_lines(row_count);
+                    self.stats.inc_bytes(byte_len as u64);
+                }
+                Ok(result)
+            }
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput && depth < MAX_SPLIT_DEPTH => {
+                // 413 Payload Too Large — split the batch in half and retry.
+                let n = batch.num_rows();
+                if n <= 1 {
+                    return Err(io::Error::other(
+                        "ES 413: single-row batch still too large",
+                    ));
+                }
+                let mid = n / 2;
+                let left = batch.slice(0, mid);
+                let right = batch.slice(mid, n - mid);
+                // Send left half, then right half.
+                let r1 = self.send_batch_recursive(&left, metadata, depth + 1).await?;
+                if !matches!(r1, super::sink::SendResult::Ok) {
+                    return Ok(r1);
+                }
+                self.send_batch_recursive(&right, metadata, depth + 1).await
+            }
+            Err(e) => Err(e),
+        }
+        })
+    }
+
     async fn do_send(&self, body: Vec<u8>) -> io::Result<super::sink::SendResult> {
         let url = format!("{}/_bulk", self.config.endpoint);
 
@@ -242,6 +292,15 @@ impl ElasticsearchAsyncSink {
             ));
         }
 
+        if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+            // 413: payload exceeds server limit. Return a transient error so the
+            // caller can split the batch and retry smaller halves.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ES returned 413 Payload Too Large",
+            ));
+        }
+
         if status.is_client_error() {
             return Ok(super::sink::SendResult::Rejected(format!(
                 "ES rejected batch with HTTP {status}"
@@ -266,19 +325,7 @@ impl super::sink::Sink for ElasticsearchAsyncSink {
     ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>>
     {
         Box::pin(async move {
-            self.serialize_batch(batch, metadata)?;
-            if self.batch_buf.is_empty() {
-                return Ok(super::sink::SendResult::Ok);
-            }
-            let body = std::mem::replace(&mut self.batch_buf, Vec::with_capacity(64 * 1024));
-            let byte_len = body.len();
-            let row_count = batch.num_rows() as u64;
-            let result = self.do_send(body).await?;
-            if matches!(result, super::sink::SendResult::Ok) {
-                self.stats.inc_lines(row_count);
-                self.stats.inc_bytes(byte_len as u64);
-            }
-            Ok(result)
+            self.send_batch_recursive(batch, metadata, 0).await
         })
     }
 
