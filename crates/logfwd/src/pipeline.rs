@@ -3,7 +3,7 @@
 //! Single thread per pipeline. All components are already built and tested;
 //! this module wires them together.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,9 +46,6 @@ enum ChannelMsg {
         /// queue wait time (time data sat in channel before processing).
         queued_at: Instant,
     },
-    /// Path mapping updates. Sent on file open/rotation.
-    /// Must arrive before the first Data referencing a new SourceId.
-    PathUpdate(Vec<(SourceId, PathBuf)>),
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +311,6 @@ impl Pipeline {
 
         let mut scan_buf = Vec::with_capacity(self.batch_target_bytes);
         let mut batch_checkpoints: HashMap<SourceId, ByteOffset> = HashMap::new();
-        let mut source_paths: HashMap<SourceId, PathBuf> = HashMap::new();
         // Oldest queued_at in the current accumulating batch — reset after each flush.
         let mut batch_queued_at: Option<Instant> = None;
         let mut flush_interval = tokio::time::interval(self.batch_timeout);
@@ -341,11 +337,6 @@ impl Pipeline {
                                 self.metrics.inc_flush_by_size();
                                 self.flush_batch(&mut scan_buf, &mut batch_checkpoints, "size", batch_queued_at.take()).await;
                                 flush_interval.reset();
-                            }
-                        }
-                        Some(ChannelMsg::PathUpdate(updates)) => {
-                            for (sid, path) in updates {
-                                source_paths.insert(sid, path);
                             }
                         }
                         None => {
@@ -398,11 +389,6 @@ impl Pipeline {
                             batch_queued_at.take(),
                         )
                         .await;
-                    }
-                }
-                ChannelMsg::PathUpdate(updates) => {
-                    for (sid, path) in updates {
-                        source_paths.insert(sid, path);
                     }
                 }
             }
@@ -682,9 +668,6 @@ fn input_poll_loop(
     // arrived in this batch", preventing tiny flushes after idle periods.
     let mut buffered_since: Option<Instant> = None;
 
-    // Track known source IDs to detect new files (for PathUpdate messages).
-    let mut known_sources: HashSet<SourceId> = HashSet::new();
-
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -714,12 +697,10 @@ fn input_poll_loop(
                     InputEvent::Rotated => {
                         // FramedInput already resets its internal state on these events.
                         input.stats.inc_rotations();
-                        known_sources.clear();
                         tracing::info!(input = input.source.name(), "input.file_rotated");
                     }
                     InputEvent::Truncated => {
                         input.stats.inc_rotations();
-                        known_sources.clear();
                         tracing::info!(input = input.source.name(), "input.file_truncated");
                     }
                     _ => {}
@@ -741,37 +722,6 @@ fn input_poll_loop(
 
             // Snapshot file offsets (hot path — no PathBuf allocation).
             let checkpoints = input.source.checkpoint_data();
-
-            // Detect new sources and send PathUpdate before first Data.
-            let current_sources: HashSet<SourceId> = checkpoints.iter().map(|(s, _)| *s).collect();
-            if current_sources != known_sources {
-                let new_sources: Vec<SourceId> = current_sources
-                    .difference(&known_sources)
-                    .copied()
-                    .collect();
-                if !new_sources.is_empty() {
-                    let paths: Vec<_> = input
-                        .source
-                        .source_paths()
-                        .into_iter()
-                        .filter(|(s, _)| new_sources.contains(s))
-                        .collect();
-                    if !paths.is_empty() {
-                        tracing::info!(
-                            input = input.source.name(),
-                            files = paths.len(),
-                            "input.new_files"
-                        );
-                        let _ = blocking_send_channel_msg(
-                            input.source.name(),
-                            &tx,
-                            &metrics,
-                            ChannelMsg::PathUpdate(paths),
-                        );
-                    }
-                }
-                known_sources = current_sources;
-            }
 
             let msg = ChannelMsg::Data {
                 bytes: data,
@@ -2441,17 +2391,8 @@ output:
         })
         .unwrap();
 
-        tx.try_send(ChannelMsg::PathUpdate(vec![(
-            SourceId(42),
-            PathBuf::from("/var/log/test.log"),
-        )]))
-        .unwrap();
-
         let msg = rx.try_recv().unwrap();
         assert!(matches!(&msg, ChannelMsg::Data { checkpoints, .. } if checkpoints.len() == 1));
-
-        let msg = rx.try_recv().unwrap();
-        assert!(matches!(msg, ChannelMsg::PathUpdate(updates) if updates.len() == 1));
     }
 
     #[test]
