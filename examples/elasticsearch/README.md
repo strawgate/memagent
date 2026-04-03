@@ -75,7 +75,7 @@ transform: |
     _time_ns_int,
     _stream_str,
     level_str,
-    msg_str,
+    message_str,
     status_int,
     duration_ms_float,
     regexp_extract(_file_str, '/([^/]+)/[^/]+\\.log$', 1) AS pod_name_str
@@ -157,7 +157,7 @@ transform: |
     _time_ns_int AS timestamp_ns_int,
     _stream_str AS stream_str,
     level_str,
-    msg_str,
+    message_str,
     _file_str AS source_file_str
   FROM logs
 

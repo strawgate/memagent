@@ -22,7 +22,7 @@ input:
   path: /var/log/app/*.log
   format: json
 
-transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level_str, message_str, status_int FROM logs WHERE status_int >= 400
 
 output:
   type: otlp
@@ -273,7 +273,7 @@ The optional `transform` field contains a DataFusion SQL query that is applied t
 Arrow `RecordBatch` produced by the scanner. The source table is always named `logs`.
 
 ```yaml
-transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level_str, message_str, status_int FROM logs WHERE status_int >= 400
 ```
 
 Multi-line SQL is supported with YAML block scalars:
@@ -282,8 +282,8 @@ Multi-line SQL is supported with YAML block scalars:
 transform: |
   SELECT
     level_str,
-    msg_str,
-    regexp_extract(msg_str, 'request_id=([a-f0-9-]+)', 1) AS request_id_str,
+    message_str,
+    regexp_extract(message_str, 'request_id=([a-f0-9-]+)', 1) AS request_id_str,
     status_int
   FROM logs
   WHERE level_str IN ('ERROR', 'WARN')
@@ -332,10 +332,10 @@ Examples:
 SELECT int(status_str) AS status_int FROM logs
 
 -- Extract a field with Grok
-SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', msg_str) AS parsed_str FROM logs
+SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', message_str) AS parsed_str FROM logs
 
 -- Extract a named group with regex
-SELECT regexp_extract(msg_str, 'user=([a-z]+)', 1) AS user_str FROM logs
+SELECT regexp_extract(message_str, 'user=([a-z]+)', 1) AS user_str FROM logs
 
 -- Type-cast from environment-injected string
 SELECT float(duration_str) AS duration_ms_float FROM logs
@@ -369,7 +369,7 @@ Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
 
 ```sql
-SELECT l.level_str, l.msg_str, k.namespace, k.pod_name, k.container_name
+SELECT l.level_str, l.message_str, k.namespace, k.pod_name, k.container_name
 FROM logs l
 JOIN k8s k ON l._file_str = k.log_path_prefix
 ```
@@ -480,7 +480,7 @@ pipelines:
     transform: |
       SELECT
         l.level_str,
-        l.msg_str,
+        l.message_str,
         l.status_int,
         k.namespace,
         k.pod_name,

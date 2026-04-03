@@ -349,7 +349,7 @@ input:
   format: json
 
 transform: |
-  SELECT level_str, msg_str FROM logs WHERE status_int >= 500
+  SELECT level_str, message_str FROM logs WHERE status_int >= 500
 
 output:
   type: stdout

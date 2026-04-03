@@ -39,7 +39,7 @@ input:
   path: /var/log/app/*.log
   format: json
 
-transform: SELECT level_str, msg_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level_str, message_str, status_int FROM logs WHERE status_int >= 400
 
 output:
   type: otlp
@@ -105,7 +105,7 @@ SELECT level_str, status_int, duration_ms_float FROM logs
 SELECT int(status_str) AS status_int FROM logs
 
 -- Pattern matching
-SELECT grok('%{IP:client_ip} %{WORD:method}', msg_str) FROM logs
+SELECT grok('%{IP:client_ip} %{WORD:method}', message_str) FROM logs
 ```
 
 Available UDFs: `int()`, `float()`, `grok()`, `regexp_extract()`.

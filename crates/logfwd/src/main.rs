@@ -739,16 +739,18 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
         let id = 10000 + (i * 7) % 90000;
         let dur = 1 + (i * 13) % 500;
         let rid = format!("{:016x}", (i as u64).wrapping_mul(0x517cc1b727220a95));
+        let status = [200, 201, 400, 404, 500, 503][i % 6];
 
         write!(
             writer,
-            r#"{{"timestamp":"2024-01-15T10:30:00.{:03}Z","level":"{}","message":"request handled GET {}/{}","duration_ms":{},"request_id":"{}","service":"myapp"}}"#,
+            r#"{{"timestamp":"2024-01-15T10:30:00.{:03}Z","level":"{}","message":"request handled GET {}/{}","duration_ms":{},"request_id":"{}","service":"myapp","status":{}}}"#,
             i % 1000,
             level,
             path,
             id,
             dur,
             rid,
+            status,
         )?;
         writer.write_all(b"\n")?;
     }

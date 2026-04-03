@@ -6,7 +6,7 @@ input:
 transform: |
   SELECT
     level_str,
-    msg_str,
+    message_str,
     status_int,
     duration_ms_float
   FROM logs
