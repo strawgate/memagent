@@ -10,3 +10,7 @@ book/book/
 .DS_Store
 crates/logfwd-io/src/dashboard-dist/
 .playwright-mcp/
+dev-docs/tla/states/
+dev-docs/tla/*.bin
+dev-docs/tla/*_TTrace*
+dev-docs/tla/*.jar
