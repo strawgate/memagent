@@ -821,11 +821,12 @@ impl DiagnosticsServer {
                 .collect();
 
             let lines_in = pm.transform_in.lines();
-            // lines_out is the number of lines actually delivered — derived from
-            // output-sink stats so the counter has a single increment path
-            // (each sink calls inc_lines once on success). For fan-out pipelines
-            // this is the maximum across all outputs, which equals the number of
-            // distinct lines that reached at least one output.
+            // lines_out: derived from output-sink stats (single increment path —
+            // each sink calls inc_lines once on successful delivery). For fan-out
+            // pipelines, the maximum across all outputs is used as a proxy for
+            // "lines delivered to the most successful output". This may undercount
+            // in partial-failure fan-out scenarios where outputs succeed at
+            // different rates.
             let lines_out: u64 = pm
                 .outputs
                 .iter()

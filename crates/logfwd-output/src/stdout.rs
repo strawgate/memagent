@@ -32,12 +32,6 @@ impl<W: Write> Write for ByteCounter<W> {
         Ok(n)
     }
 
-    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.inner.write_all(buf)?;
-        self.written += buf.len() as u64;
-        Ok(())
-    }
-
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
     }
