@@ -22,7 +22,7 @@ pub use json_lines::JsonLinesSink;
 pub use loki::{LokiAsyncSink, LokiSinkFactory};
 pub use null::NullSink;
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
-pub use sink::{SendResult, Sink, SinkFactory, SyncSinkAdapter};
+pub use sink::{OnceAsyncFactory, SendResult, Sink, SinkFactory, SyncSinkAdapter};
 use stdout::*;
 pub use tcp_sink::TcpSink;
 pub use udp_sink::UdpSink;
@@ -74,7 +74,13 @@ pub struct BatchMetadata {
     pub observed_time_ns: u64,
 }
 
-/// Every output implements this trait.
+/// Synchronous output sink trait.
+///
+/// Deprecated: use the async [`Sink`] trait instead. New sinks should
+/// implement [`Sink`] directly. Existing sync sinks will be migrated
+/// incrementally. The [`SyncSinkAdapter`] bridges legacy `OutputSink`
+/// implementations into the async pipeline.
+#[deprecated(note = "use the async `Sink` trait instead")]
 pub trait OutputSink: Send {
     /// Serialize and send a batch.
     fn send_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()>;
@@ -537,6 +543,7 @@ fn build_auth_headers(auth: Option<&AuthConfig>) -> Vec<(String, String)> {
 // ---------------------------------------------------------------------------
 
 /// Build an output sink from configuration.
+#[allow(deprecated)]
 pub fn build_output_sink(
     name: &str,
     cfg: &OutputConfig,
@@ -635,11 +642,16 @@ pub fn build_output_sink(
 ///
 /// For most sync sinks (Stdout, TCP, UDP) a single worker is correct —
 /// there is only one connection or file handle anyway.
+///
+/// For new code, prefer [`OnceAsyncFactory`] with a sink implementing the
+/// async [`Sink`] trait directly.
+#[allow(deprecated)]
 pub struct OnceFactory {
     name: String,
     inner: Mutex<Option<Box<dyn OutputSink>>>,
 }
 
+#[allow(deprecated)]
 impl OnceFactory {
     pub fn new(name: String, sink: Box<dyn OutputSink>) -> Self {
         OnceFactory {
@@ -682,6 +694,7 @@ impl SinkFactory for OnceFactory {
 /// creates a fresh reqwest-based sink per worker. For all other sinks it
 /// builds the sink synchronously and wraps it in a [`OnceFactory`] — those
 /// sinks are limited to one worker.
+#[allow(deprecated)]
 pub fn build_sink_factory(
     name: &str,
     cfg: &OutputConfig,
@@ -762,6 +775,7 @@ impl CaptureSink {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 impl OutputSink for CaptureSink {
     fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
         self.batches.push(batch.clone());
@@ -782,6 +796,7 @@ impl OutputSink for CaptureSink {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
@@ -894,6 +909,7 @@ mod tests {
         name: &'static str,
     }
 
+    #[allow(deprecated)]
     impl OutputSink for AlwaysFailSink {
         fn send_batch(
             &mut self,

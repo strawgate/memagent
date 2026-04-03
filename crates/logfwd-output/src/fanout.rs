@@ -2,6 +2,7 @@ use std::io;
 
 use arrow::record_batch::RecordBatch;
 
+#[allow(deprecated)]
 use super::{BatchMetadata, OutputSink};
 
 // ---------------------------------------------------------------------------
@@ -9,6 +10,7 @@ use super::{BatchMetadata, OutputSink};
 // ---------------------------------------------------------------------------
 
 /// Multiplexes output to multiple sinks.
+#[allow(deprecated)]
 pub struct FanOut {
     sinks: Vec<Box<dyn OutputSink>>,
 }
@@ -48,12 +50,14 @@ impl std::error::Error for FanOutError {
     }
 }
 
+#[allow(deprecated)]
 impl FanOut {
     pub fn new(sinks: Vec<Box<dyn OutputSink>>) -> Self {
         FanOut { sinks }
     }
 }
 
+#[allow(deprecated)]
 impl OutputSink for FanOut {
     fn send_batch(&mut self, batch: &RecordBatch, meta: &BatchMetadata) -> io::Result<()> {
         // Try ALL sinks before returning an error. Don't short-circuit.
@@ -102,6 +106,7 @@ impl OutputSink for FanOut {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use arrow::array::StringArray;
@@ -155,6 +160,7 @@ mod tests {
         }
     }
 
+    #[allow(deprecated)]
     impl OutputSink for MockSink {
         fn send_batch(&mut self, _batch: &RecordBatch, _meta: &BatchMetadata) -> io::Result<()> {
             self.send_calls.fetch_add(1, Ordering::Relaxed);

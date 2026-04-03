@@ -14,6 +14,7 @@ use logfwd_core::otlp::{
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::diagnostics::ComponentStats;
 
+#[allow(deprecated)]
 use super::{
     BatchMetadata, Compression, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink,
     is_transient_error, str_value,
@@ -190,6 +191,7 @@ impl OtlpSink {
     }
 }
 
+#[allow(deprecated)]
 impl OutputSink for OtlpSink {
     fn send_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()> {
         self.encode_batch(batch, metadata);

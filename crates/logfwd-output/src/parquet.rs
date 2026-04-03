@@ -2,6 +2,7 @@ use std::io;
 
 use arrow::record_batch::RecordBatch;
 
+#[allow(deprecated)]
 use super::{BatchMetadata, OutputSink};
 
 // ---------------------------------------------------------------------------
@@ -20,6 +21,7 @@ impl ParquetSink {
     }
 }
 
+#[allow(deprecated)]
 impl OutputSink for ParquetSink {
     fn send_batch(&mut self, _batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
         // TODO: implement Parquet writing

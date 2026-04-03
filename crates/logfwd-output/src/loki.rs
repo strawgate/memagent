@@ -456,6 +456,7 @@ impl LokiSink {
     }
 }
 
+#[allow(deprecated)]
 impl super::OutputSink for LokiSink {
     fn send_batch(&mut self, _batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
         Ok(())

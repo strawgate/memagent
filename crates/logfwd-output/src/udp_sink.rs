@@ -12,6 +12,7 @@ use arrow::record_batch::RecordBatch;
 
 use logfwd_io::diagnostics::ComponentStats;
 
+#[allow(deprecated)]
 use crate::{BatchMetadata, OutputSink, build_col_infos, write_row_json};
 
 /// Safe MTU-friendly payload limit. Ethernet MTU is 1500; minus 20 (IP) and
@@ -67,6 +68,7 @@ impl UdpSink {
     }
 }
 
+#[allow(deprecated)]
 impl OutputSink for UdpSink {
     fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
         if batch.num_rows() == 0 {
@@ -123,6 +125,7 @@ impl OutputSink for UdpSink {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use arrow::array::StringArray;
