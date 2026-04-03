@@ -26,7 +26,7 @@ test:
 kani:
     RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
 
-# Run all tests with nextest (parallel, faster)
+# Run all tests with nextest (parallel, faster output)
 nextest:
     cargo nextest run
 
@@ -244,8 +244,8 @@ bench-rate *ARGS:
 
 # Install development tools
 install-tools:
-    cargo install taplo-cli cargo-deny cargo-audit
-    @echo "Optional: cargo install cargo-nextest inferno"
+    cargo install taplo-cli cargo-deny cargo-audit cargo-nextest
+    @echo "Optional: cargo install inferno"
     @echo "Install just: https://just.systems/man/en/installation.html"
 
 # Set up git pre-commit hook (works from any worktree)

@@ -21,6 +21,24 @@ env:
 
 jobs:
   # -------------------------------------------------------------------------
+  # Path filter — determine which crates changed (used to scope expensive jobs)
+  # -------------------------------------------------------------------------
+  changes:
+    name: Detect changed paths
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@61f87a10cd2c304679af17bb73ef192addf33c1c
+        id: filter
+        with:
+          filters: |
+            core:
+              - 'crates/logfwd-core/**'
+
+  # -------------------------------------------------------------------------
   # Fast checks: format, TOML, typos, actionlint — no Rust build, fail fast
   # -------------------------------------------------------------------------
   fast-checks:
@@ -103,13 +121,14 @@ jobs:
       - uses: ./.github/actions/build-dashboard
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
 
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Tests
-        run: cargo test
+        run: cargo nextest run --profile ci
 
   test-macos:
     name: Test (macOS)
@@ -120,13 +139,14 @@ jobs:
       - uses: ./.github/actions/build-dashboard
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
 
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Tests
-        run: cargo test
+        run: cargo nextest run --profile ci
         env:
           RUSTC_WRAPPER: ""
 
@@ -180,7 +200,11 @@ jobs:
   # -------------------------------------------------------------------------
   kani:
     name: Kani proofs
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    needs: [changes]
+    # Always run on push to master; on PRs only when logfwd-core changed.
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.core == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
