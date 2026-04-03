@@ -238,7 +238,7 @@ stop being read sooner, which means less memory buffered in the pipeline.
 
 ---
 
-## Partial Line Flush Timer (not in diagram — cross-cutting)
+## Partial Line Flush Timer (not in diagram — cross-cutting, no issue filed)
 
 **Current**: No timer. Partial lines flush only on EndOfFile event
 (next poll cycle with no new data).
@@ -265,7 +265,7 @@ per-file remainder (#797 fix) is a prerequisite.
 
 ---
 
-## Partial Line on Shutdown (not in diagram — edge case)
+## Partial Line on Shutdown (not in diagram — edge case, no issue filed)
 
 **Current**: Silently dropped.
 
@@ -303,4 +303,4 @@ at shutdown time).
 | 4 | #799 Glob dedup | Use (dev, inode) | Small |
 | 5 | #798 Fingerprint collision | Add (dev, inode) to hash | Small |
 | 6 | #801 Read fairness | Per-file budget (same as #800) | Small |
-| 7 | Flush timer | Per-file 500ms timer | Medium (after #797) |
+| 7 | Flush timer (no issue — future enhancement) | Per-file 500ms timer | Medium (after #797) |
