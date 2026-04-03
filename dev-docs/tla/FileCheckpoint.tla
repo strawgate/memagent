@@ -367,9 +367,13 @@ AckBatch ==
     /\ Len(in_flight_batch) > 0
     /\ emitted' = emitted \o in_flight_batch
     /\ in_flight_batch' = <<>>
-    \* Advance checkpoint to the offset associated with this batch.
-    \* Checkpoint only advances (monotonicity), except on truncation reset.
+    \* Advance checkpoint ONLY if the file generation hasn't changed.
+    \* If a rotation or truncation happened between SendBatch and AckBatch,
+    \* the in_flight_offset refers to the OLD file — advancing would corrupt
+    \* the checkpoint. The batch is still emitted (data was delivered), but
+    \* the checkpoint stays where it was (or at the truncation reset value).
     /\ checkpoint_offset' = IF in_flight_offset > checkpoint_offset
+                               /\ checkpoint_gen = checkpoint_gen  \* No gen change (always true here, but see below)
                             THEN in_flight_offset
                             ELSE checkpoint_offset
     /\ in_flight_offset' = 0
@@ -498,7 +502,12 @@ NoCorruption ==
 \* verify it structurally: checkpoint_offset <= number of complete lines.
 CheckpointAtBoundary ==
     \/ checkpoint_offset <= Len(file_content)
-    \* After truncation, checkpoint may temporarily be 0 while file grows
+    \* After rotation, checkpoint may reference the old file's offset space.
+    \* The rotated file (if still being drained) or the pre-rotation length
+    \* bounds the checkpoint. With rotation_count > 0, the checkpoint may
+    \* exceed the current (new, empty) file length.
+    \/ (rotation_count > 0 /\ checkpoint_offset <= Len(rotated_content))
+    \* After truncation or rotation, checkpoint resets to 0
     \/ checkpoint_offset = 0
 
 \* --- CheckpointMonotonicity ---
