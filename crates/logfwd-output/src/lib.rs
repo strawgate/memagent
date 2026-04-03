@@ -484,10 +484,8 @@ pub fn write_row_json(
         }
         first = false;
 
-        // Key
-        out.push(b'"');
-        out.extend_from_slice(col.field_name.as_bytes());
-        out.push(b'"');
+        // Key — escape to produce valid JSON if field_name contains special chars.
+        write_json_string(out, &col.field_name)?;
         out.push(b':');
 
         let Some(v) = variant else {
@@ -1499,6 +1497,41 @@ mod write_row_json_tests {
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
         assert_eq!(v["msg"], "line1\nline2\ttab\rreturn");
+    }
+
+    /// Regression: field names containing `"`, `\`, and control characters must
+    /// be JSON-escaped in the key position, not written raw.  A raw `"` in the
+    /// key would produce `{"a"b": …}` — structurally invalid JSON.
+    #[test]
+    fn field_name_special_chars_are_escaped() {
+        // Column name `a"b` (with a literal double-quote) must appear in the
+        // output as the JSON key `"a\"b"`, not as raw `"a"b"`.
+        let batch = make_batch(vec![(r#"a"b"#, Arc::new(StringArray::from(vec!["val"])))]);
+        let json = render(&batch, 0);
+        // The output must parse as valid JSON.
+        let v: serde_json::Value =
+            serde_json::from_str(&json).expect("field name with quote must produce valid JSON");
+        // The unescaped key round-trips correctly.
+        assert_eq!(v[r#"a"b"#], "val");
+    }
+
+    #[test]
+    fn field_name_backslash_escaped() {
+        let batch = make_batch(vec![(r"a\b", Arc::new(StringArray::from(vec!["val"])))]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value =
+            serde_json::from_str(&json).expect("field name with backslash must produce valid JSON");
+        assert_eq!(v[r"a\b"], "val");
+    }
+
+    #[test]
+    fn field_name_control_char_escaped() {
+        // A field name containing a newline must be \n-escaped in the key.
+        let batch = make_batch(vec![("a\nb", Arc::new(StringArray::from(vec!["val"])))]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value =
+            serde_json::from_str(&json).expect("field name with newline must produce valid JSON");
+        assert_eq!(v["a\nb"], "val");
     }
 
     #[test]
