@@ -1,0 +1,5 @@
+[profile.ci]
+# Only print failing tests inline; suppress the wall of passing test names.
+status-level = "fail"
+final-status-level = "fail"
+failure-output = "immediate"
