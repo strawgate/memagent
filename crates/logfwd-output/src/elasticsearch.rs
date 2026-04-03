@@ -253,6 +253,7 @@ impl ElasticsearchAsyncSink {
     }
 
     async fn do_send(&self, body: Vec<u8>) -> io::Result<super::sink::SendResult> {
+        let body_len = body.len();
         let url = format!("{}/_bulk", self.config.endpoint);
 
         let mut req = self
@@ -295,9 +296,10 @@ impl ElasticsearchAsyncSink {
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             // 413: payload exceeds server limit. Return a transient error so the
             // caller can split the batch and retry smaller halves.
+            let detail = response.text().await.unwrap_or_default();
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "ES returned 413 Payload Too Large",
+                format!("ES returned 413 Payload Too Large (body {body_len} bytes): {detail}"),
             ));
         }
 
