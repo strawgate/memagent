@@ -441,12 +441,17 @@ impl FileTailer {
                         });
                     }
                     Ok(ReadResult::TruncatedThenData(data)) => {
+                        // Emit Truncated before Data so downstream clears remainder (#816).
+                        events.push(TailEvent::Truncated { path: path.clone() });
                         events.push(TailEvent::Data {
                             path: path.clone(),
                             bytes: data,
                         });
                     }
-                    Ok(ReadResult::Truncated) | Ok(ReadResult::NoData) => {}
+                    Ok(ReadResult::Truncated) => {
+                        events.push(TailEvent::Truncated { path: path.clone() });
+                    }
+                    Ok(ReadResult::NoData) => {}
                     Err(e) => {
                         tracing::warn!(path = %path.display(), error = %e, "tail.drain_rotated_error");
                     }
@@ -540,12 +545,16 @@ impl FileTailer {
                     });
                 }
                 Ok(ReadResult::TruncatedThenData(data)) => {
+                    events.push(TailEvent::Truncated { path: path.clone() });
                     events.push(TailEvent::Data {
                         path: path.clone(),
                         bytes: data,
                     });
                 }
-                Ok(ReadResult::Truncated) | Ok(ReadResult::NoData) => {}
+                Ok(ReadResult::Truncated) => {
+                    events.push(TailEvent::Truncated { path: path.clone() });
+                }
+                Ok(ReadResult::NoData) => {}
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "tail.drain_deleted_error");
                 }
