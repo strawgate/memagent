@@ -13,6 +13,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read  # needed by dorny/paths-filter to list changed files on bot PRs
 
 # Tool versions — bump these to upgrade across all jobs.
 env:
@@ -39,18 +40,22 @@ jobs:
               - 'crates/logfwd-core/**'
 
   # -------------------------------------------------------------------------
-  # Fast checks: format, TOML, typos, actionlint — no Rust build, fail fast
+  # Lint: fast checks (fmt, TOML, typos, actionlint) then clippy + audits.
+  # Combined into one job to save a runner — fast checks fail-fast before
+  # the expensive clippy build starts.
   # -------------------------------------------------------------------------
-  fast-checks:
-    name: Fast checks (fmt / TOML / typos / actionlint)
+  lint:
+    name: Lint
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: clippy, rustfmt
 
       - name: Format check
         run: cargo fmt --check
@@ -72,21 +77,7 @@ jobs:
       - name: Actionlint
         run: ./actionlint
 
-  # -------------------------------------------------------------------------
-  # Clippy + dependency audits (needs a Rust build, runs in parallel with tests)
-  # -------------------------------------------------------------------------
-  lint:
-    name: Lint (clippy / deny / audit)
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/build-dashboard
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # --- Expensive steps below — only reached if fast checks pass ---
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -151,25 +142,13 @@ jobs:
           RUSTC_WRAPPER: ""
 
   # -------------------------------------------------------------------------
-  # Build checks — release + cross-compile as a matrix (one job definition)
+  # Build check — aarch64 cross-compile only (release check removed:
+  # clippy already does a full debug build that catches the same errors)
   # -------------------------------------------------------------------------
   build-check:
-    name: Build check (${{ matrix.name }})
+    name: Build check (aarch64)
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - name: release
-            extra_targets: ""
-            apt: ""
-            linker: ""
-            cargo_args: "--release"
-          - name: aarch64
-            extra_targets: "aarch64-unknown-linux-gnu"
-            apt: "gcc-aarch64-linux-gnu libc6-dev-arm64-cross"
-            linker: "aarch64-linux-gnu-gcc"
-            cargo_args: "--target aarch64-unknown-linux-gnu"
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
@@ -177,23 +156,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.extra_targets }}
+          targets: aarch64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-          key: ${{ matrix.name }}
+          key: aarch64
 
       - name: Install cross-compilation toolchain
-        if: matrix.apt != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Check
-        run: cargo check ${{ matrix.cargo_args }}
+        run: cargo check --target aarch64-unknown-linux-gnu
         env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
   # -------------------------------------------------------------------------
   # Kani formal verification

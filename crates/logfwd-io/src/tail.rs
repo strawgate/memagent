@@ -686,6 +686,21 @@ impl FileTailer {
         Ok(())
     }
 
+    /// Restore a file offset by SourceId (fingerprint), not path.
+    ///
+    /// Scans all tailed files for a matching fingerprint. Used for checkpoint
+    /// restore — the checkpoint stores fingerprint + offset, not path.
+    pub fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) -> io::Result<()> {
+        for tailed in self.files.values_mut() {
+            if SourceId(tailed.identity.fingerprint) == source_id {
+                tailed.offset = offset;
+                tailed.file.seek(SeekFrom::Start(offset))?;
+                return Ok(());
+            }
+        }
+        Ok(()) // source not found — file may not exist yet
+    }
+
     /// Number of files currently being tailed.
     pub fn num_files(&self) -> usize {
         self.files.len()

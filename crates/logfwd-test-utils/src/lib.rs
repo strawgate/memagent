@@ -6,6 +6,9 @@
 pub mod json;
 pub mod sinks;
 
+pub use sinks::CountingSink;
+
+use std::io::Write as _;
 use std::path::Path;
 
 /// Return a no-op OpenTelemetry Meter for tests.
@@ -28,4 +31,27 @@ pub fn generate_json_lines(path: &Path, count: usize, source_id: &str) {
         data.push('\n');
     }
     std::fs::write(path, data.as_bytes()).expect("failed to write test data");
+}
+
+/// Append `count` NDJSON lines to an existing file.
+/// Sequence IDs continue from the current line count. Used by resume tests to simulate
+/// new data appearing after the initial batch.
+pub fn append_json_lines(path: &Path, count: usize, source_id: &str) {
+    // Determine starting sequence from current line count in the file.
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let start_seq = existing.lines().count();
+
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("failed to open file for appending");
+
+    for i in start_seq..start_seq + count {
+        let level = if i % 2 == 0 { "INFO" } else { "ERROR" };
+        writeln!(
+            file,
+            r#"{{"sequence_id":{i},"source_id":"{source_id}","level":"{level}","message":"test line {i}","generated_at":"2024-01-01T00:00:00Z"}}"#,
+        )
+        .expect("failed to append test data");
+    }
 }

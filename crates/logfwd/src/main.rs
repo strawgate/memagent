@@ -398,6 +398,20 @@ async fn run_pipelines(
     use logfwd_io::diagnostics::DiagnosticsServer;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+
+    // Acquire exclusive lock only when tailing files — OTLP-only and
+    // blackhole pipelines don't need filesystem locking (#737).
+    let has_file_inputs = config.pipelines.values().any(|pipe| {
+        pipe.inputs
+            .iter()
+            .any(|input| matches!(input.input_type, logfwd_config::InputType::File))
+    });
+    let _lock_guard = if has_file_inputs {
+        acquire_instance_lock(&config)?
+    } else {
+        None
+    };
+
     let shutdown = CancellationToken::new();
 
     // Listen for SIGINT (Ctrl-C) and SIGTERM to trigger graceful shutdown.
@@ -611,6 +625,59 @@ async fn run_pipelines(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Instance lock (#737)
+// ---------------------------------------------------------------------------
+
+/// Acquire an exclusive lock file to prevent multiple logfwd instances from
+/// processing the same data directory. Returns a guard that holds the lock
+/// for the lifetime of the caller.
+///
+/// On non-Unix platforms, logs a warning and returns a dummy guard.
+fn acquire_instance_lock(
+    config: &logfwd_config::Config,
+) -> Result<Option<std::fs::File>, CliError> {
+    let data_dir = config.storage.data_dir.as_ref().map_or_else(
+        logfwd_io::checkpoint::default_data_dir,
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&data_dir)?;
+    let lock_path = data_dir.join("logfwd.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: `lock_file` is an open `File`, so `as_raw_fd()` returns a valid
+        // file descriptor. `libc::flock` is safe to call on any valid fd — it only
+        // manipulates the kernel-level advisory lock, no memory mutation.
+        let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if ret != 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock || err.raw_os_error() == Some(libc::EAGAIN) {
+                return Err(CliError::Runtime(io::Error::other(format!(
+                    "another logfwd instance is already running (lock: {})",
+                    lock_path.display()
+                ))));
+            }
+            return Err(CliError::Runtime(err));
+        }
+        // Note: tracing subscriber not yet initialized at this point.
+    }
+
+    #[cfg(not(unix))]
+    eprintln!("warn: file-based instance locking not supported on this platform");
+
+    // Return the File so the lock is held until the caller drops it.
+    Ok(Some(lock_file))
 }
 
 // ---------------------------------------------------------------------------

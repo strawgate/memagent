@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use logfwd_core::pipeline::SourceId;
 
@@ -8,7 +8,6 @@ use crate::filter_hints::FilterHints;
 use crate::tail::{ByteOffset, FileTailer, TailConfig, TailEvent};
 
 /// Events produced by an input source.
-#[non_exhaustive]
 pub enum InputEvent {
     /// New data read from the source.
     ///
@@ -61,16 +60,11 @@ pub trait InputSource: Send {
         vec![]
     }
 
-    /// Return identity-to-path mappings for checkpoint persistence.
+    /// Restore a file offset by SourceId (fingerprint). Default: no-op.
     ///
-    /// Called on file open/rotation, not per-batch.
-    /// Default: empty (push sources, generators).
-    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
-        vec![]
-    }
-
-    /// Restore a file offset from checkpoint. Default: no-op.
-    fn set_offset(&mut self, _path: &Path, _offset: u64) {}
+    /// Used for checkpoint restore — the checkpoint stores fingerprint + offset.
+    /// The input source finds the matching file by fingerprint, not path.
+    fn set_offset_by_source(&mut self, _source_id: SourceId, _offset: u64) {}
 }
 
 /// An input source backed by a `FileTailer`.
@@ -163,13 +157,12 @@ impl InputSource for FileInput {
         self.tailer.file_offsets()
     }
 
-    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
-        self.tailer.file_paths()
-    }
-
-    fn set_offset(&mut self, path: &Path, offset: u64) {
-        if let Err(e) = self.tailer.set_offset(path, offset) {
-            eprintln!("warn: failed to restore offset for {}: {e}", path.display());
+    fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {
+        if let Err(e) = self.tailer.set_offset_by_source(source_id, offset) {
+            eprintln!(
+                "warn: failed to restore offset for source {}: {e}",
+                source_id.0
+            );
         }
     }
 }

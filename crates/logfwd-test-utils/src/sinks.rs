@@ -4,6 +4,10 @@
 //! discarding, slow I/O, frozen connections, and transient failures.
 
 use std::io;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
@@ -103,6 +107,33 @@ impl OutputSink for FailingSink {
     }
     fn name(&self) -> &'static str {
         "failing"
+    }
+}
+
+/// A sink that counts the total number of rows received.
+/// The counter is shared via an `Arc<AtomicU64>` so tests can inspect it
+/// after the pipeline shuts down.
+pub struct CountingSink {
+    counter: Arc<AtomicU64>,
+}
+
+impl CountingSink {
+    pub fn new(counter: Arc<AtomicU64>) -> Self {
+        Self { counter }
+    }
+}
+
+impl OutputSink for CountingSink {
+    fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
+        self.counter
+            .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn name(&self) -> &'static str {
+        "counting"
     }
 }
 
