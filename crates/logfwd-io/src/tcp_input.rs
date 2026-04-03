@@ -39,6 +39,8 @@ pub struct TcpInput {
     clients: Vec<Client>,
     buf: Vec<u8>,
     idle_timeout: Duration,
+    /// Total connections accepted since creation (never decreases).
+    connections_accepted: u64,
 }
 
 impl TcpInput {
@@ -61,6 +63,7 @@ impl TcpInput {
             clients: Vec::new(),
             buf: vec![0u8; READ_BUF_SIZE],
             idle_timeout,
+            connections_accepted: 0,
         })
     }
 
@@ -72,6 +75,14 @@ impl TcpInput {
     /// Returns the number of currently tracked client connections.
     pub fn client_count(&self) -> usize {
         self.clients.len()
+    }
+
+    /// Returns the total number of connections accepted since creation.
+    /// Monotonically increasing — useful for tests that need to verify a
+    /// connection was accepted even if it was immediately disconnected.
+    #[cfg(test)]
+    pub fn connections_accepted(&self) -> u64 {
+        self.connections_accepted
     }
 }
 
@@ -101,6 +112,7 @@ impl InputSource for TcpInput {
                         .with_interval(Duration::from_secs(10));
                     let _ = sock_ref.set_tcp_keepalive(&keepalive);
 
+                    self.connections_accepted += 1;
                     self.clients.push(Client {
                         stream,
                         last_data: Instant::now(),
@@ -292,27 +304,25 @@ mod tests {
             let _ = client.write_all(&big);
         });
 
-        // Interleave polls so the kernel send buffer can drain and the
-        // writer thread makes progress.
+        // Poll until the writer finishes (connection accepted and data read) or
+        // deadline. The accept and disconnect may happen in the same poll() call
+        // when the data arrives faster than the poll loop iterates, so we track
+        // total connections_accepted() rather than the transient client_count().
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut was_connected = false;
         while Instant::now() < deadline {
             let _ = input.poll().unwrap();
-            if input.client_count() > 0 {
-                was_connected = true;
-            }
-            if was_connected && input.client_count() == 0 {
+            if input.connections_accepted() > 0 && input.client_count() == 0 {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        assert!(
-            was_connected,
-            "connect→disconnect transition was never observed"
-        );
         let _ = writer.join();
 
+        assert!(
+            input.connections_accepted() > 0,
+            "server must have accepted the connection"
+        );
         assert_eq!(
             input.client_count(),
             0,
@@ -336,24 +346,20 @@ mod tests {
         });
 
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut was_connected = false;
         while Instant::now() < deadline {
             let _ = input.poll().unwrap();
-            if input.client_count() > 0 {
-                was_connected = true;
-            }
-            if was_connected && input.client_count() == 0 {
+            if input.connections_accepted() > 0 && input.client_count() == 0 {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        assert!(
-            was_connected,
-            "connect→disconnect transition was never observed"
-        );
         let _ = writer.join();
 
+        assert!(
+            input.connections_accepted() > 0,
+            "server must have accepted the connection"
+        );
         assert_eq!(
             input.client_count(),
             0,
