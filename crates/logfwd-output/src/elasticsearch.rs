@@ -70,7 +70,7 @@ impl ElasticsearchAsyncSink {
         let ts_secs = ts_nanos / 1_000_000_000;
         let ts_frac = ts_nanos % 1_000_000_000;
         let ts_str = format!(
-            "\",\"@timestamp\":\"{}.{:09}Z\"}}",
+            ",\"@timestamp\":\"{}.{:09}Z\"}}",
             format_unix_timestamp_utc(ts_secs),
             ts_frac
         );
