@@ -133,20 +133,6 @@ reviews:
           this limit must use kissat or another fast solver and carry a comment.
 
 
-          ALLOCATION IN HARNESSES.
-          Kani harnesses must not use unbounded Vec construction: Vec::new(),
-          Vec::with_capacity(kani::any()), or vec![x; kani::any()] all cause the
-          symbolic executor to explore realloc paths up to isize::MAX, producing tens
-          of thousands of spurious "aborting path on assume(false)" messages from alloc
-          internals without changing proof results. Use instead: kani::any::<[u8; N]>()
-          for byte-slice inputs (exhaustive, zero allocation); kani::vec::any_vec::<T,
-          N>() when the harness genuinely needs a Vec; Vec::with_capacity(N) for output
-          buffers where N is the statically known maximum encoded size. N must match the
-          #[kani::unwind(N+1)] bound — they express the same constraint at different
-          levels. Reject any harness that introduces Vec::new() or unbounded dynamic
-          allocation in a #[cfg(kani)] block.
-
-
           COMPOSITIONAL PROOFS FOR DEEP CALL CHAINS.
           For functions in logfwd-core that are called from multiple other functions in
           the hot path (e.g., scan_string, skip_nested, byte_search primitives), add
