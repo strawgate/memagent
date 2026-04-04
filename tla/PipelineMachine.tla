@@ -225,6 +225,9 @@ Next ==
     \/ BeginDrain
     \/ Stop
     \/ ForceStop
+    \* Terminal state: Stopped is final, nothing more can happen.
+    \* Explicit stuttering prevents TLC from reporting a false deadlock.
+    \/ (phase = "Stopped" /\ UNCHANGED vars)
 
 (*
  * Fairness:

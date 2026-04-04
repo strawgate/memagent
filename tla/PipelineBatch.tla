@@ -217,6 +217,8 @@ Next ==
     \/ RejectBatch
     \/ MarkDoneProducing
     \/ Stop
+    \* Terminal: Stopped is final.
+    \/ (phase = "Stopped" /\ UNCHANGED vars)
 
 (* -----------------------------------------------------------------------
  * Fairness

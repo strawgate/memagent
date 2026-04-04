@@ -316,6 +316,8 @@ Next ==
     \/ DrainPool
     \/ NormalStop
     \/ ForceStop
+    \* Terminal: machine_stopped is final.
+    \/ (machine_stopped /\ UNCHANGED vars)
 
 (* -----------------------------------------------------------------------
  * Fairness
