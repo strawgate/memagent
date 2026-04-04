@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(cri.timestamp, b"2024-01-15T10:30:00Z");
         assert_eq!(cri.stream, b"stdout");
         assert!(cri.is_full);
-        assert_eq!(cri.message, b"" as &[u8]);
+        assert_eq!(cri.message, b"");
     }
 
     #[test]
@@ -439,7 +439,7 @@ mod tests {
         let cri = parse_cri_line(line).unwrap();
         assert_eq!(cri.stream, b"stderr");
         assert!(!cri.is_full);
-        assert_eq!(cri.message, b"" as &[u8]);
+        assert_eq!(cri.message, b"");
     }
 
     #[test]
@@ -455,7 +455,7 @@ mod tests {
         });
         assert_eq!(count, 2);
         assert_eq!(errors, 0);
-        assert_eq!(lines[0], b"" as &[u8]);
+        assert_eq!(lines[0], b"");
         assert_eq!(lines[1], b"has content");
     }
 
