@@ -519,7 +519,16 @@ impl Config {
     // Normalise the two layout variants into a single representation.
     fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
         let pipelines = match (raw.pipelines, raw.input, raw.output) {
-            (Some(p), None, None) => p,
+            (Some(p), None, None) => {
+                if !raw.enrichment.is_empty() {
+                    return Err(ConfigError::Validation(
+                        "top-level `enrichment` is not supported when using `pipelines:` form \
+                         — move enrichment configuration inside each pipeline"
+                            .into(),
+                    ));
+                }
+                p
+            }
             (None, Some(input), Some(output)) => {
                 let pipeline = PipelineConfig {
                     inputs: vec![input],
@@ -2035,6 +2044,37 @@ server:
         assert!(
             msg.contains("not a recognised log level"),
             "expected 'not a recognised log level' in error: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Top-level enrichment rejected with pipelines: form
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn top_level_enrichment_rejected_with_pipelines_form() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+enrichment:
+  - type: geo_database
+    format: mmdb
+    path: /tmp/geo.mmdb
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("top-level `enrichment`"),
+            "error should mention top-level enrichment: {msg}"
+        );
+        assert!(
+            msg.contains("pipelines"),
+            "error should mention pipelines form: {msg}"
         );
     }
 }
