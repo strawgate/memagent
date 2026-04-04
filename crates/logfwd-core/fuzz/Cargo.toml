@@ -53,3 +53,8 @@ doc = false
 name = "fuzz_scanner_transform"
 path = "fuzz_targets/scanner_transform.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_cri"
+path = "fuzz_targets/cri.rs"
+doc = false
