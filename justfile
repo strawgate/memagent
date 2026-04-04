@@ -110,12 +110,12 @@ bench-self seconds="10":
 
 # TCP end-to-end
 bench-tcp seconds="10":
-    @echo "==> TCP benchmark (generator → tcp_out → tcp → null)"
+    @echo "==> TCP benchmark (generator → tcp → tcp → null)"
     just _bench-pair tcp bench/scenarios/tcp-receiver.yaml bench/scenarios/tcp-sender.yaml {{seconds}}
 
 # UDP end-to-end
 bench-udp seconds="10":
-    @echo "==> UDP benchmark (generator → udp_out → udp → null)"
+    @echo "==> UDP benchmark (generator → udp → udp → null)"
     just _bench-pair udp bench/scenarios/udp-receiver.yaml bench/scenarios/udp-sender.yaml {{seconds}}
 
 # OTLP end-to-end

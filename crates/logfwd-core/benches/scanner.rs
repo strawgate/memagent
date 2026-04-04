@@ -286,7 +286,7 @@ macro_rules! bench_scenario {
             let mut group = c.benchmark_group($group_name);
             group.throughput(Throughput::Bytes(data.len() as u64));
 
-            group.bench_function("SIMD scanner", |b| {
+            group.bench_function("CopyScanner", |b| {
                 let mut scanner = CopyScanner::new($config());
                 b.iter(|| {
                     black_box(

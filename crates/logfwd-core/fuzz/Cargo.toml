@@ -30,8 +30,8 @@ path = "fuzz_targets/pipe_event.rs"
 doc = false
 
 [[bin]]
-name = "fuzz_streaming_scanner"
-path = "fuzz_targets/streaming_scanner.rs"
+name = "fuzz_zero_copy_scanner"
+path = "fuzz_targets/zero_copy_scanner.rs"
 doc = false
 
 [[bin]]

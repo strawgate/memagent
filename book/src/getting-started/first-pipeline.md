@@ -35,7 +35,7 @@ server:
 
 **What each section does:**
 
-- **input** — Tails all `.log` files matching the glob. `format: json` tells the SIMD scanner to parse JSON. New files matching the glob are picked up automatically.
+- **input** — Tails all `.log` files matching the glob. `format: json` tells the scanner to parse JSON. New files matching the glob are picked up automatically.
 - **transform** — SQL filter applied to every batch. Only `ERROR` and `WARN` records pass through. The `SELECT` also controls which columns are forwarded — here we keep five fields and drop the rest.
 - **output** — Encodes to OTLP protobuf, compresses with zstd, and sends over HTTP. Replace `otel-collector` with your actual collector hostname.
 - **server.diagnostics** — Starts a diagnostics HTTP server for health checks and metrics.

@@ -24,7 +24,7 @@
 # Architecture
 
 - [Pipeline Design](./architecture/pipeline.md)
-- [SIMD Scanner](./architecture/scanner.md)
+- [Scanner](./architecture/scanner.md)
 - [Performance](./architecture/performance.md)
 
 # Troubleshooting

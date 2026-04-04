@@ -1,17 +1,17 @@
 #![allow(clippy::collapsible_if)]
 //! Scanner conformance test suite.
 //!
-//! Proves the SIMD scanner produces identical Arrow output to the scalar scanner
+//! Proves the scanner produces identical Arrow output to the scalar scanner
 //! across thousands of generated inputs plus curated edge cases.
 //!
 //! Run:
-//!   cargo test --features simd-scanner -p logfwd-core --test scanner_conformance
+//!   cargo test -p logfwd-core --test scanner_conformance
 //!
 //! Scale up (10K+ cases):
-//!   PROPTEST_CASES=10000 cargo test --features simd-scanner -p logfwd-core --test scanner_conformance
+//!   PROPTEST_CASES=10000 cargo test -p logfwd-core --test scanner_conformance
 //!
 //! Find minimal failing case:
-//!   cargo test --features simd-scanner -p logfwd-core --test scanner_conformance -- --nocapture
+//!   cargo test -p logfwd-core --test scanner_conformance -- --nocapture
 
 use arrow::array::{Array, Float64Array, Int64Array, StringArray, StructArray};
 use logfwd_arrow::scanner::CopyScanner;
@@ -36,7 +36,7 @@ fn get_struct_child<'a>(
     Some(sa.column(idx).as_ref())
 }
 
-/// Verify the SIMD scanner produces correct values by comparing against
+/// Verify the scanner produces correct values by comparing against
 /// sonic-rs (a known-correct JSON parser) as the ground-truth oracle.
 fn assert_values_correct(input: &[u8]) {
     use sonic_rs::{JsonContainerTrait, JsonValueTrait};

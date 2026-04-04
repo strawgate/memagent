@@ -10,7 +10,7 @@ Sources (file / TCP / UDP / OTLP receiver)
 Format Parser (CRI / JSON / Raw)  ─per source─
     │  strips CRI timestamp/stream prefix, accumulates NDJSON
     ▼
-SIMD Scanner  ─per source─
+Scanner  ─per source─
     │  one pass classifies entire buffer via ChunkIndex
     │  walks structural positions directly into Arrow columns
     │  injects _resource_* columns from source metadata
@@ -260,7 +260,7 @@ The pipeline runs on a tokio multi-thread runtime. Key components:
 
 ## What's implemented vs not yet
 
-**Implemented:** file input, CRI/JSON/Raw parsing, SIMD scanner, two
+**Implemented:** file input, CRI/JSON/Raw parsing, zero-copy scanner, two
 builder backends (StreamingBuilder default), DataFusion SQL transforms
 (async), custom UDFs (grok, regexp_extract, int, float), enrichment
 (K8s path, host info, static labels), OTLP output, JSON lines output,

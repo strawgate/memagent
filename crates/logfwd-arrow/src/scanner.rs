@@ -97,7 +97,7 @@ impl ScanBuilder for StreamingBuilder {
 // CopyScanner — StorageBuilder (self-contained, compressible)
 // ---------------------------------------------------------------------------
 
-/// SIMD scanner producing self-contained `RecordBatch` via `StorageBuilder`.
+/// Scanner producing self-contained `RecordBatch` via `StorageBuilder`.
 ///
 /// Output owns all its data — the input buffer can be freed after `scan()`.
 pub struct CopyScanner {
@@ -135,7 +135,7 @@ impl CopyScanner {
 // ZeroCopyScanner — StreamingBuilder (zero-copy hot path)
 // ---------------------------------------------------------------------------
 
-/// SIMD scanner producing zero-copy `RecordBatch` via `StreamingBuilder`.
+/// Zero-copy scanner producing `RecordBatch` via `StreamingBuilder`.
 ///
 /// String values are `StringViewArray` views into the reference-counted input
 /// buffer (`bytes::Bytes`). The input buffer must stay alive while the

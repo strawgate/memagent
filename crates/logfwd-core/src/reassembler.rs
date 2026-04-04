@@ -1,4 +1,4 @@
-//! CRI partial line aggregator.
+//! CRI partial line reassembler.
 //!
 //! Merges CRI partial ("P") and full ("F") lines into complete messages.
 //!
@@ -273,7 +273,7 @@ mod proptests {
         /// partial-line sequences. The truncation invariant must hold regardless
         /// of how many P chunks accumulate before the final F.
         #[test]
-        fn aggregator_output_never_exceeds_max_size(
+        fn reassembler_output_never_exceeds_max_size(
             max_size in 1..256usize,
             sequence in proptest::collection::vec(
                 (proptest::collection::vec(proptest::num::u8::ANY, 0..64usize), proptest::bool::ANY),
@@ -303,7 +303,7 @@ mod proptests {
         /// until a Full line arrives. Tests the pending buffer growth without
         /// accidental early output.
         #[test]
-        fn aggregator_p_only_stays_pending(
+        fn reassembler_p_only_stays_pending(
             max_size in 1..256usize,
             p_chunks in proptest::collection::vec(
                 proptest::collection::vec(proptest::num::u8::ANY, 0..32usize),
@@ -326,7 +326,7 @@ mod proptests {
         /// Verifies that reset() is a true reset: the next F line takes the
         /// zero-copy fast path and ignores any prior pending data.
         #[test]
-        fn aggregator_reset_is_clean_slate(
+        fn reassembler_reset_is_clean_slate(
             max_size in 1..256usize,
             p_chunk in proptest::collection::vec(proptest::num::u8::ANY, 0..32usize),
             f_chunk in proptest::collection::vec(proptest::num::u8::ANY, 0..32usize),
@@ -360,7 +360,7 @@ mod verification {
 
     /// Prove CriReassembler::feed respects max_message_size for F-only lines.
     #[kani::proof]
-    fn verify_aggregator_f_only_max_size() {
+    fn verify_reassembler_f_only_max_size() {
         let max_size: usize = kani::any();
         kani::assume(max_size >= 1 && max_size <= 32);
 
@@ -382,7 +382,7 @@ mod verification {
 
     /// Prove CriReassembler::feed respects max_message_size for P+F sequences.
     #[kani::proof]
-    fn verify_aggregator_pf_max_size() {
+    fn verify_reassembler_pf_max_size() {
         let max_size: usize = kani::any();
         kani::assume(max_size >= 1 && max_size <= 32);
 
@@ -409,7 +409,7 @@ mod verification {
 
     /// Prove P lines never produce output.
     #[kani::proof]
-    fn verify_aggregator_p_returns_pending() {
+    fn verify_reassembler_p_returns_pending() {
         let mut agg = CriReassembler::new(1024);
         let msg: [u8; 8] = kani::any();
         match agg.feed(&msg, false) {
@@ -422,7 +422,7 @@ mod verification {
 
     /// Prove 3-step P+P+F respects max_message_size.
     #[kani::proof]
-    fn verify_aggregator_ppf_max_size() {
+    fn verify_reassembler_ppf_max_size() {
         let max_size: usize = kani::any();
         kani::assume(max_size >= 1 && max_size <= 32);
 
@@ -452,7 +452,7 @@ mod verification {
 
     /// Prove reset after Complete allows a clean new sequence.
     #[kani::proof]
-    fn verify_aggregator_reset_clears_state() {
+    fn verify_reassembler_reset_clears_state() {
         let mut agg = CriReassembler::new(64);
 
         let msg1: [u8; 4] = kani::any();
@@ -478,7 +478,7 @@ mod verification {
     /// Edge case: zero-sized limit. P lines return Pending (no allocation),
     /// F lines return Truncated(&[]) without slicing panics.
     #[kani::proof]
-    fn verify_aggregator_max_size_zero() {
+    fn verify_reassembler_max_size_zero() {
         let mut agg = CriReassembler::new(0);
         let msg: [u8; 8] = kani::any();
 
@@ -502,9 +502,9 @@ mod verification {
     /// F-only fast path: when no partials are pending, output is a byte-for-byte
     /// prefix of the input (zero-copy — no data transformation or allocation).
     #[kani::proof]
-    fn verify_aggregator_f_only_is_input_prefix() {
+    fn verify_reassembler_f_only_is_input_prefix() {
         let max_size: usize = kani::any();
-        kani::assume(max_size >= 1 && max_size <= 32); // consistent with other aggregator proofs
+        kani::assume(max_size >= 1 && max_size <= 32); // consistent with other reassembler proofs
         let mut agg = CriReassembler::new(max_size);
         assert!(!agg.has_pending()); // fast path requires no pending
 
@@ -531,7 +531,7 @@ mod verification {
     /// P+F slow path: output is a byte-for-byte prefix of the P chunk followed
     /// by a prefix of the F chunk, bounded by max_message_size.
     #[kani::proof]
-    fn verify_aggregator_pf_content_correct() {
+    fn verify_reassembler_pf_content_correct() {
         let max_size: usize = kani::any_where(|&s: &usize| s >= 1 && s <= 16);
         let mut agg = CriReassembler::new(max_size);
 
