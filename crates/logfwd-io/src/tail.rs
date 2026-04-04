@@ -1839,7 +1839,10 @@ mod tests {
 
         // All offsets should be non-zero (we read data from all 3 files).
         for (sid, off) in &offsets {
-            assert!(sid.0 != 0, "SourceId should be non-zero for files with data");
+            assert!(
+                sid.0 != 0,
+                "SourceId should be non-zero for files with data"
+            );
             assert!(off.0 > 0, "offset should be non-zero after reading data");
         }
     }
