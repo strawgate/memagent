@@ -250,9 +250,10 @@ MonotonicCheckpoints ==
     [][\A s \in Sources : committed[s]' >= committed[s]]_vars
 
 \* No double-flush: at most one batch in-flight at a time.
-\* (Simplified from full PipelineMachine which supports multiple.)
+\* Enforced structurally: FlushBatch/TimeoutFlush require in_flight_id = 0.
+\* The scalar in_flight_id is always 0 (none) or a previously-assigned batch ID.
 SingleInFlight ==
-    in_flight_id > 0 => buf_count < BatchThreshold
+    in_flight_id < next_batch_id
 
 \* Reject advances checkpoint (same as ack — design decision).
 \* This is modeled by RejectBatch having the same committed update as AckBatch.
