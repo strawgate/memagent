@@ -1,7 +1,8 @@
 # Arrow IPC Feasibility Investigation
 
-**Status:** Confirmed feasible — all success criteria met.
-**Phase:** Architecture spec Phase 0 (DiskQueue spike).
+> **Status:** Completed
+> **Date:** 2026-03
+> **Context:** Feasibility spike for Arrow IPC as DiskQueue segment format; all success criteria met.
 
 ## Summary
 

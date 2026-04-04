@@ -1,5 +1,9 @@
 # Building a proven kernel crate in Rust with formal verification
 
+> **Status:** Historical
+> **Date:** 2026-03
+> **Context:** Research on no_std + Kani + bolero mechanics for a proven kernel crate.
+
 **A `logfwd-core` crate can enforce purity, safety, and formal verification through a combination of `#![no_std]` + `alloc`, Kani proofs gated behind `#[cfg(kani)]`, bolero for unified test/fuzz/proof harnesses, cargo-vet for per-crate dependency auditing, and a layered CI pipeline.** The approach is battle-tested: AWS's s2n-quic uses this exact pattern with bolero + Kani across dozens of modules in production. The migration from logfwd-core should proceed as five small PRs, starting with the lowest-dependency pure-logic modules and using `pub use` re-exports to maintain backward compatibility throughout.
 
 ---

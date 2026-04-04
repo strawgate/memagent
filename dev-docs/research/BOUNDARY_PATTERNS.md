@@ -1,5 +1,9 @@
 # Kernel boundary design patterns in Rust
 
+> **Status:** Historical
+> **Date:** 2026-03
+> **Context:** Research on trait-based visitor and type-based IR patterns for kernel boundary design.
+
 **The trait-based visitor pattern and the type-based intermediate representation are not competing choices — the best Rust systems offer both.** Serde proves this definitively: its primary path uses trait method calls that compile to zero-overhead monomorphized code with no intermediate allocation, while `serde_json::Value` provides a concrete enum for dynamic cases. For a log parser like logfwd processing 1M+ lines/sec, the practical answer is to define the kernel boundary as a visitor trait for the hot path, backed by concrete kernel types for testing, debugging, and flexible consumers. Real-world evidence from rustls, wasmtime, simd-json, and arrow-rs converges on the same architecture: a thin boundary-defining crate or module that owns the shared vocabulary (newtypes, error enums, traits), with everything else hidden behind `pub(crate)` and private dependencies.
 
 ## The visitor pattern eliminates allocations entirely — serde proves it

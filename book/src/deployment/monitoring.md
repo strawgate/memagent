@@ -9,12 +9,18 @@ server:
 
 ## Endpoints
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | Health check (uptime, version) |
-| `GET /metrics` | Prometheus exposition format |
-| `GET /api/pipelines` | Detailed JSON with per-stage metrics |
-| `GET /` | HTML dashboard |
+| Route | Status | Description |
+|-------|--------|-------------|
+| `/` | 200 | Interactive dashboard (HTML) |
+| `/health` | 200 | Liveness probe |
+| `/ready` | 200/503 | Readiness probe (200 once pipelines initialized) |
+| `/api/pipelines` | 200 | Per-pipeline metrics |
+| `/api/stats` | 200 | Aggregate statistics (uptime, CPU/RSS, total lines) |
+| `/api/config` | 200 | Active YAML configuration |
+| `/api/logs` | 200 | Recent stderr log lines (up to 1 MiB) |
+| `/api/history` | 200 | Time-series metrics history for dashboard |
+| `/api/traces` | 200 | Recent batch processing spans (up to 500) |
+| `/metrics` | 410 | Removed — returns pointer to `/api/pipelines` |
 
 ## Key metrics
 

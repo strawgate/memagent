@@ -4,13 +4,17 @@
 
 ```
 crates/
-  logfwd/              Binary crate. CLI, pipeline orchestration.
-  logfwd-core/         Scanner, builders, parsers, diagnostics. The hot path.
+  logfwd/              Binary crate. CLI, async pipeline orchestration.
+  logfwd-core/         Proven kernel. Scanner, parsers, pipeline state machine, OTLP encoding. no_std.
+  logfwd-arrow/        Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
   logfwd-config/       YAML config parsing and validation.
-  logfwd-transform/    DataFusion SQL transforms, UDFs (grok, regexp_extract).
-  logfwd-output/       Output sinks (OTLP, JSON lines, HTTP, stdout).
+  logfwd-io/           I/O layer. File tailing, TCP/UDP/OTLP inputs, checkpointing, diagnostics.
+  logfwd-transform/    DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup).
+  logfwd-output/       Output sinks (OTLP, Elasticsearch, Loki, JSON lines, stdout).
   logfwd-bench/        Criterion benchmarks for the scanner pipeline.
   logfwd-competitive-bench/  Comparative benchmarks vs other log agents.
+  logfwd-test-utils/   Shared test utilities.
+  logfwd-ebpf-proto/   eBPF log capture protocol definitions (experimental).
 ```
 
 ## Build, test, lint, bench, fuzz
@@ -25,11 +29,70 @@ RUSTFLAGS="-C target-cpu=native" cargo bench --bench scanner -p logfwd-core
 cd crates/logfwd-core && cargo +nightly fuzz run scanner -- -max_total_time=300
 ```
 
+## Compile caching with sccache
+
+[sccache](https://github.com/mozilla/sccache) caches Rust compilation artefacts to speed up builds. The project is configured to use it (`.cargo/config.toml` sets `rustc-wrapper = "sccache"`).
+
+**CI and Copilot agents:** sccache is installed automatically — no action needed.
+
+**Local development:** install sccache once:
+
+```bash
+cargo install sccache --locked
+```
+
+After that, every `cargo build` / `cargo test` / `just clippy` will use the cache automatically via the project's `.cargo/config.toml`.
+
+To temporarily **disable** sccache (e.g. for debugging):
+
+```bash
+RUSTC_WRAPPER="" cargo build
+```
+
+## Local CPU profiling (macOS)
+
+The `cpu-profiling` feature works locally on macOS, but the shutdown path matters:
+the profiled `logfwd` process must receive `SIGTERM` directly so it can build and
+write `flamegraph.svg` before exiting.
+
+The easiest way to run the full File -> OTLP path locally is:
+
+```bash
+just profile-otlp-local
+```
+
+This recipe:
+
+- builds `logfwd` with `--features cpu-profiling`
+- generates a JSON input file
+- starts a local OTLP blackhole on a fresh port
+- runs `logfwd` with a file input and OTLP output
+- sends `SIGTERM` to the real `logfwd` child process after a short run
+- leaves a temp directory containing `config.yaml`, `logs.json`, `pipeline.log`,
+  `blackhole.log`, and `flamegraph.svg`
+
+Useful variants:
+
+```bash
+just profile-otlp-local 1000000 10
+```
+
+Caveats:
+
+- Avoid reusing a diagnostics port from another local run; the helper recipe
+  omits diagnostics entirely to keep the profile loop simple.
+- If the `cpu-profiling` release build fails with `No space left on device`,
+  run `RUSTC_WRAPPER= cargo clean` and retry. The profiled release build is
+  large because `release` keeps debug info for flamegraphs.
+- Killing a wrapper shell is not sufficient; the `SIGTERM` must reach the
+  actual `logfwd` process.
+
 ---
 
 ## Things that will bite you
 
 Hard-won lessons from building the scanner and builder pipeline.
+See also `dev-docs/ARCHITECTURE.md` for pipeline data flow.
 
 ### The deferred builder pattern exists because incremental null-padding is broken
 
@@ -44,7 +107,7 @@ The deferred pattern is correct by construction: each column is built independen
 We tried three approaches:
 1. **Per-line SIMD**: load 16 bytes, compare for `"` and `\`. Slower than scalar on short strings.
 2. **sonic-rs DOM**: SIMD JSON parser builds a DOM per line. The DOM allocation is the bottleneck.
-3. **Chunk-level classification** (`ChunkIndex`): one NEON/SSE pass over the entire buffer at ~16 GiB/s, pre-computes all quote positions. Then `scan_string` is a single `trailing_zeros` bit-scan.
+3. **Chunk-level classification** (`StructuralIndex`): one portable SIMD pass (via `wide` crate) over the entire buffer, detecting 10 structural characters simultaneously. Then `scan_string` is a single `trailing_zeros` bit-scan.
 
 Approach 3 wins everywhere because classification is amortized across all strings and per-string lookup is O(1).
 
@@ -74,9 +137,9 @@ Compressed Arrow IPC is `StreamWriter` with `IpcWriteOptions::try_with_compressi
 
 The `_raw` column stores the full JSON line. Larger than all other columns combined. Default is `keep_raw: false`.
 
-### CI clippy catches things local clippy misses
+### Always use `just clippy`, never bare `cargo clippy`
 
-Conditional SIMD compilation means dead code warnings differ between aarch64 (macOS) and x86_64 (CI Linux). Always check CI.
+CI runs `cargo clippy -- -D warnings` (all warnings are errors). Bare `cargo clippy` only shows warnings, so code that looks clean locally fails in CI. The `just clippy` recipe matches CI exactly. Additionally, conditional SIMD compilation means warnings differ between aarch64 (macOS) and x86_64 (CI Linux).
 
 ### proptest finds bugs unit tests can't
 

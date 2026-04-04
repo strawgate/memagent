@@ -1,8 +1,8 @@
-> **Historical reference** from the v1 implementation. See [ARCHITECTURE.md](../ARCHITECTURE.md) for the current design.
-
----
-
 # Research Benchmarks
+
+> **Status:** Historical
+> **Date:** 2026-03
+> **Context:** Prototyping benchmarks from the v1 DataFusion integration, superseded by current implementation.
 
 Findings from prototyping the DataFusion integration. All Python benchmarks
 (PyArrow 23.0.1 + DataFusion 52.3.0) validated directional claims. Rust

@@ -1,5 +1,9 @@
 # StructuralIndex Research Findings
 
+> **Status:** Historical
+> **Date:** 2026-03-30
+> **Context:** SIMD verification, architecture, and memory layout research that informed StructuralIndex.
+
 Research conducted 2026-03-30. Three areas investigated: Kani SIMD
 verification, architecture design, and memory layout.
 

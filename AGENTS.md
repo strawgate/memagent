@@ -22,6 +22,9 @@
 | [`dev-docs/references/tokio-async-patterns.md`](dev-docs/references/tokio-async-patterns.md) | Runtime, bounded channels, CancellationToken, select! safety |
 | [`dev-docs/references/opentelemetry-otlp.md`](dev-docs/references/opentelemetry-otlp.md) | OTLP protobuf nesting, HTTP vs gRPC |
 | [`dev-docs/references/kani-verification.md`](dev-docs/references/kani-verification.md) | Kani proofs, function contracts, solver selection |
+| [`dev-docs/DOCS_STANDARDS.md`](dev-docs/DOCS_STANDARDS.md) | Doc taxonomy, lifecycle rules, anti-drift measures |
+| [`tla/README.md`](tla/README.md) | PipelineMachine TLA+ spec, TLC models, running instructions |
+| [`dev-docs/tla/README.md`](dev-docs/tla/README.md) | FileCheckpoint TLA+ spec, crash recovery model |
 
 ## User docs
 
