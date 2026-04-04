@@ -34,6 +34,9 @@ use alloc::vec::Vec;
 pub struct CriAggregator {
     pending: Vec<u8>,
     max_message_size: usize,
+    /// Set to `true` when any chunk in the current P/F sequence was truncated
+    /// due to `max_message_size`. Reset in [`reset`].
+    truncated: bool,
 }
 
 /// Result of feeding a line to the aggregator.
@@ -42,6 +45,10 @@ pub enum AggregateResult<'a> {
     /// (zero-copy F line) or to the aggregator's internal buffer
     /// (concatenated P+F).
     Complete(&'a [u8]),
+    /// Complete but truncated message ready: one or more chunks exceeded
+    /// `max_message_size` and were silently dropped in the original code.
+    /// Callers should log a warning and/or increment a diagnostics counter.
+    Truncated(&'a [u8]),
     /// Partial line buffered. No output yet.
     Pending,
 }
@@ -56,6 +63,7 @@ impl CriAggregator {
         CriAggregator {
             pending: Vec::new(),
             max_message_size,
+            truncated: false,
         }
     }
 
@@ -67,24 +75,42 @@ impl CriAggregator {
     ///
     /// For the common case (F line, no pending partials), returns a
     /// reference to the input `message` with zero copies.
+    ///
+    /// Returns [`AggregateResult::Truncated`] instead of
+    /// [`AggregateResult::Complete`] when any chunk in the current P/F
+    /// sequence exceeded `max_message_size`. Callers should log a warning.
     pub fn feed<'a>(&'a mut self, message: &'a [u8], is_full: bool) -> AggregateResult<'a> {
         if is_full {
             if self.pending.is_empty() {
-                // Fast path: F line, no partials. Zero copy.
-                // Enforce max size even on single F lines.
+                // Fast path: F line, no partials. Zero copy when not truncated.
                 let end = message.len().min(self.max_message_size);
-                AggregateResult::Complete(&message[..end])
+                let was_truncated = end < message.len();
+                if was_truncated {
+                    AggregateResult::Truncated(&message[..end])
+                } else {
+                    AggregateResult::Complete(&message[..end])
+                }
             } else {
                 // Append final chunk, respecting max size.
                 let remaining = self.max_message_size.saturating_sub(self.pending.len());
                 let to_add = message.len().min(remaining);
+                if to_add < message.len() {
+                    self.truncated = true;
+                }
                 self.pending.extend_from_slice(&message[..to_add]);
-                AggregateResult::Complete(&self.pending)
+                if self.truncated {
+                    AggregateResult::Truncated(&self.pending)
+                } else {
+                    AggregateResult::Complete(&self.pending)
+                }
             }
         } else {
             // P line: copy into buffer, frees the read buffer.
             let remaining = self.max_message_size.saturating_sub(self.pending.len());
             let to_add = message.len().min(remaining);
+            if to_add < message.len() {
+                self.truncated = true;
+            }
             self.pending.extend_from_slice(&message[..to_add]);
             AggregateResult::Pending
         }
@@ -92,11 +118,12 @@ impl CriAggregator {
 
     /// Reset the aggregator after consuming a complete message.
     ///
-    /// Must be called after each `AggregateResult::Complete` before
-    /// feeding the next line. Clears the internal buffer but preserves
-    /// its allocated capacity.
+    /// Must be called after each `AggregateResult::Complete` or
+    /// `AggregateResult::Truncated` before feeding the next line. Clears the
+    /// internal buffer and truncation flag but preserves allocated capacity.
     pub fn reset(&mut self) {
         self.pending.clear();
+        self.truncated = false;
     }
 
     /// Returns true if there are pending partial lines.
@@ -124,6 +151,7 @@ mod tests {
                 // Verify zero-copy: output points to the same memory as input
                 assert!(core::ptr::eq(out.as_ptr(), msg.as_ptr()));
             }
+            AggregateResult::Truncated(_) => panic!("expected Complete, not Truncated"),
             AggregateResult::Pending => panic!("expected Complete"),
         }
         agg.reset();
@@ -144,6 +172,7 @@ mod tests {
 
         match agg.feed(b"!", true) {
             AggregateResult::Complete(out) => assert_eq!(out, b"hello world!"),
+            AggregateResult::Truncated(out) => panic!("unexpected truncation: {:?}", out),
             AggregateResult::Pending => panic!("expected Complete"),
         }
         agg.reset();
@@ -156,13 +185,16 @@ mod tests {
         // P line with 8 bytes
         agg.feed(b"12345678", false);
 
-        // F line with 8 bytes — only 2 should fit
+        // F line with 8 bytes — only 2 should fit; result is Truncated
         match agg.feed(b"abcdefgh", true) {
-            AggregateResult::Complete(out) => {
+            AggregateResult::Truncated(out) => {
                 assert_eq!(out.len(), 10);
                 assert_eq!(out, b"12345678ab");
             }
-            AggregateResult::Pending => panic!("expected Complete"),
+            AggregateResult::Complete(out) => {
+                panic!("expected Truncated, got Complete: {:?}", out)
+            }
+            AggregateResult::Pending => panic!("expected Truncated"),
         }
         agg.reset();
     }
@@ -171,10 +203,13 @@ mod tests {
     fn max_size_f_only() {
         let mut agg = CriAggregator::new(5);
         match agg.feed(b"truncated", true) {
-            AggregateResult::Complete(out) => {
+            AggregateResult::Truncated(out) => {
                 assert_eq!(out, b"trunc");
             }
-            AggregateResult::Pending => panic!("expected Complete"),
+            AggregateResult::Complete(out) => {
+                panic!("expected Truncated, got Complete: {:?}", out)
+            }
+            AggregateResult::Pending => panic!("expected Truncated"),
         }
         agg.reset();
     }
@@ -187,6 +222,7 @@ mod tests {
         agg.reset();
         assert_eq!(agg.pending.capacity(), cap_before);
         assert!(agg.pending.is_empty());
+        assert!(!agg.truncated);
     }
 
     #[test]
@@ -247,7 +283,7 @@ mod proptests {
             let mut agg = CriAggregator::new(max_size);
             for (msg, is_full) in sequence {
                 match agg.feed(&msg, is_full) {
-                    AggregateResult::Complete(out) => {
+                    AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                         prop_assert!(
                             out.len() <= max_size,
                             "output {} exceeded max_size {}",
@@ -278,8 +314,8 @@ mod proptests {
             for chunk in p_chunks {
                 match agg.feed(&chunk, false) {
                     AggregateResult::Pending => {}
-                    AggregateResult::Complete(_) => {
-                        prop_assert!(false, "P line must not produce Complete");
+                    AggregateResult::Complete(_) | AggregateResult::Truncated(_) => {
+                        prop_assert!(false, "P line must not produce Complete or Truncated");
                     }
                 }
             }
@@ -301,11 +337,12 @@ mod proptests {
             let _ = agg.feed(&p_chunk, false);
             agg.reset();
             prop_assert!(!agg.has_pending(), "reset should clear pending");
+            prop_assert!(!agg.truncated, "reset should clear truncated flag");
 
             // After reset, F line takes fast path: output matches f_chunk[..min(len, max_size)]
+            let expected_len = f_chunk.len().min(max_size);
             match agg.feed(&f_chunk, true) {
-                AggregateResult::Complete(out) => {
-                    let expected_len = f_chunk.len().min(max_size);
+                AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                     prop_assert_eq!(out.len(), expected_len);
                     for i in 0..out.len() {
                         prop_assert_eq!(out[i], f_chunk[i], "byte {} mismatch after reset", i);
@@ -331,7 +368,7 @@ mod verification {
         let msg: [u8; 16] = kani::any();
 
         match agg.feed(&msg, true) {
-            AggregateResult::Complete(out) => {
+            AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                 assert!(out.len() <= max_size, "F-only output exceeds max");
 
                 // Guard vacuity: verify constraint doesn't eliminate all paths
@@ -356,7 +393,7 @@ mod verification {
 
         let msg2: [u8; 8] = kani::any();
         match agg.feed(&msg2, true) {
-            AggregateResult::Complete(out) => {
+            AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                 assert!(out.len() <= max_size, "P+F output exceeds max");
 
                 // Guard vacuity: verify constraint allows meaningful paths.
@@ -377,7 +414,9 @@ mod verification {
         let msg: [u8; 8] = kani::any();
         match agg.feed(&msg, false) {
             AggregateResult::Pending => {} // expected
-            AggregateResult::Complete(_) => panic!("P line should not produce Complete"),
+            AggregateResult::Complete(_) | AggregateResult::Truncated(_) => {
+                panic!("P line should not produce Complete or Truncated")
+            }
         }
     }
 
@@ -397,7 +436,7 @@ mod verification {
 
         let msg3: [u8; 8] = kani::any();
         match agg.feed(&msg3, true) {
-            AggregateResult::Complete(out) => {
+            AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                 assert!(out.len() <= max_size, "P+P+F output exceeds max");
 
                 // Guard vacuity: confirm interesting multi-partial cases are explored.
@@ -422,11 +461,12 @@ mod verification {
 
         agg.reset();
         assert!(!agg.has_pending());
+        assert!(!agg.truncated, "reset must clear truncated flag");
 
         // After reset, a new F line works as zero-copy
         let msg2: [u8; 4] = kani::any();
         match agg.feed(&msg2, true) {
-            AggregateResult::Complete(out) => {
+            AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                 assert_eq!(out.len(), 4);
             }
             AggregateResult::Pending => panic!("F line should produce Complete"),
@@ -436,7 +476,7 @@ mod verification {
     /// max_message_size=0 never panics — output is always empty.
     ///
     /// Edge case: zero-sized limit. P lines return Pending (no allocation),
-    /// F lines return Complete(&[]) without slicing panics.
+    /// F lines return Truncated(&[]) without slicing panics.
     #[kani::proof]
     fn verify_aggregator_max_size_zero() {
         let mut agg = CriAggregator::new(0);
@@ -445,15 +485,17 @@ mod verification {
         // P line: no output, no panic
         match agg.feed(&msg, false) {
             AggregateResult::Pending => {}
-            AggregateResult::Complete(_) => panic!("P should not produce Complete"),
+            AggregateResult::Complete(_) | AggregateResult::Truncated(_) => {
+                panic!("P should not produce Complete or Truncated")
+            }
         }
 
-        // F line: output must be empty (not a slice panic)
+        // F line with max=0: any non-empty message is truncated to empty.
         match agg.feed(&msg, true) {
-            AggregateResult::Complete(out) => {
+            AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                 assert!(out.is_empty(), "max_size=0 must produce empty output");
             }
-            AggregateResult::Pending => panic!("F should produce Complete"),
+            AggregateResult::Pending => panic!("F should produce Complete or Truncated"),
         }
     }
 
@@ -468,7 +510,7 @@ mod verification {
 
         let msg: [u8; 8] = kani::any();
         match agg.feed(&msg, true) {
-            AggregateResult::Complete(out) => {
+            AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                 let expected_len = msg.len().min(max_size);
                 assert_eq!(out.len(), expected_len, "output length incorrect");
 
@@ -498,7 +540,7 @@ mod verification {
 
         let f_msg: [u8; 4] = kani::any();
         match agg.feed(&f_msg, true) {
-            AggregateResult::Complete(out) => {
+            AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                 assert!(out.len() <= max_size);
 
                 // First out.len().min(4) bytes must match p_msg

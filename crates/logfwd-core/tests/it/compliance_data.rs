@@ -549,7 +549,7 @@ fn compliance_cri_partial_lines() {
     let cri_f = parse_cri_line(f_line).unwrap();
     assert!(cri_f.is_full);
     match agg.feed(cri_f.message, cri_f.is_full) {
-        AggregateResult::Complete(msg) => {
+        AggregateResult::Complete(msg) | AggregateResult::Truncated(msg) => {
             let output = String::from_utf8_lossy(msg);
             assert!(
                 output.contains("hel") && output.contains("lo"),

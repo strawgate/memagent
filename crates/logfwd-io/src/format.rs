@@ -168,8 +168,23 @@ fn extract_cri_messages(
         let eol = memchr::memchr(b'\n', &input[pos..]).map_or(input.len(), |o| pos + o);
         let line = &input[pos..eol];
         if let Some(cri) = parse_cri_line(line) {
+            let max_message_size = aggregator.max_message_size();
             match aggregator.feed(cri.message, cri.is_full) {
                 AggregateResult::Complete(msg) => {
+                    inject_cri_metadata(msg, cri.timestamp, cri.stream, out);
+                    aggregator.reset();
+                }
+                AggregateResult::Truncated(msg) => {
+                    // The assembled message exceeded max_message_size; some bytes
+                    // were silently dropped by the aggregator. Emit the truncated
+                    // output so the record is not lost entirely, but signal data
+                    // loss via the parse-error counter and a warning log.
+                    tracing::warn!(
+                        max_message_size,
+                        "cri.message_truncated — assembled CRI message exceeded \
+                         max_message_size; output is truncated"
+                    );
+                    stats.inc_parse_errors(1);
                     inject_cri_metadata(msg, cri.timestamp, cri.stream, out);
                     aggregator.reset();
                 }
@@ -524,6 +539,30 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             0,
             "raw passthrough must never increment parse_errors"
+        );
+    }
+
+    /// A CRI F-only line whose message exceeds max_message_size must be emitted
+    /// as a truncated (but non-empty) record, and the parse_errors counter must
+    /// be incremented so the data loss is not silent.
+    #[test]
+    fn cri_truncated_message_emitted_and_counted_as_error() {
+        let stats = make_stats();
+        // max_message_size = 5 bytes — much smaller than the actual message.
+        let mut proc = FormatProcessor::cri(5, Arc::clone(&stats));
+        let input = b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hello world\"}\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+
+        // Truncated output must still be emitted (not silently dropped).
+        assert!(!out.is_empty(), "truncated message must still be emitted");
+        // parse_errors must be incremented to signal data loss.
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "truncated CRI message must increment parse_errors"
         );
     }
 }

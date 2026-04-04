@@ -11,7 +11,7 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::scanner::SimdScanner;
-use logfwd_core::cri::{CriReassembler, parse_cri_line};
+use logfwd_core::cri::{CriReassembler, ReassembleResult, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::diagnostics::ComponentStats;
@@ -183,11 +183,15 @@ fn bench_cri(c: &mut Criterion) {
                 while start < data.len() {
                     let end =
                         memchr::memchr(b'\n', &data[start..]).map_or(data.len(), |p| start + p);
-                    if let Some(cri) = parse_cri_line(&data[start..end])
-                        && let Some(msg) = reassembler.feed(&cri)
-                    {
-                        json_buf.extend_from_slice(msg);
-                        json_buf.push(b'\n');
+                    if let Some(cri) = parse_cri_line(&data[start..end]) {
+                        match reassembler.feed(&cri) {
+                            ReassembleResult::Complete(msg) | ReassembleResult::Truncated(msg) => {
+                                json_buf.extend_from_slice(msg);
+                                json_buf.push(b'\n');
+                                reassembler.reset();
+                            }
+                            ReassembleResult::Pending => {}
+                        }
                     }
                     start = end + 1;
                 }
