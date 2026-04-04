@@ -739,7 +739,10 @@ impl Config {
             for (j, enrichment) in pipe.enrichment.iter().enumerate() {
                 match enrichment {
                     EnrichmentConfig::GeoDatabase(geo_cfg) => {
-                        if !Path::new(&geo_cfg.path).exists() {
+                        // Only check existence for absolute paths; relative paths
+                        // are resolved against base_path in Pipeline::from_config.
+                        let p = Path::new(&geo_cfg.path);
+                        if p.is_absolute() && !p.exists() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' enrichment #{j}: geo database file not found: {}",
                                 geo_cfg.path,
@@ -754,7 +757,8 @@ impl Config {
                         }
                     }
                     EnrichmentConfig::Csv(cfg) => {
-                        if !Path::new(&cfg.path).exists() {
+                        let p = Path::new(&cfg.path);
+                        if p.is_absolute() && !p.exists() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' enrichment #{j}: csv file not found: {}",
                                 cfg.path,
@@ -762,7 +766,8 @@ impl Config {
                         }
                     }
                     EnrichmentConfig::Jsonl(cfg) => {
-                        if !Path::new(&cfg.path).exists() {
+                        let p = Path::new(&cfg.path);
+                        if p.is_absolute() && !p.exists() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' enrichment #{j}: jsonl file not found: {}",
                                 cfg.path,
@@ -1777,6 +1782,32 @@ pipelines:
             "expected 'not found' in error: {msg}"
         );
         assert!(msg.contains("jsonl"), "expected 'jsonl' in error: {msg}");
+    }
+
+    #[test]
+    fn enrichment_relative_path_accepted_at_validation_time() {
+        // Relative paths are resolved against base_path in Pipeline::from_config,
+        // so Config::validate() must not reject them.
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: csv
+        table_name: assets
+        path: data/assets.csv
+      - type: jsonl
+        table_name: ips
+        path: data/ips.jsonl
+      - type: geo_database
+        format: mmdb
+        path: data/GeoLite2-City.mmdb
+";
+        Config::load_str(yaml).expect("relative enrichment paths should pass validation");
     }
 
     #[test]
