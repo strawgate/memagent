@@ -1261,6 +1261,46 @@ mod verification {
         assert!(stopped.was_forced());
         assert_eq!(stopped.abandoned_count(), 1);
     }
+
+    /// Dropped Queued ticket (created-but-never-sent) does not block
+    /// checkpoint advancement or drain.
+    ///
+    /// This is the gap scenario that broke the TLA+ TypeOK invariant:
+    /// batch 1 created, ticket dropped (scan error), batch 2 sent and acked.
+    /// Committed must advance to batch 2's checkpoint, and drain must succeed.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn verify_dropped_ticket_does_not_block() {
+        let mut running: PipelineMachine<Running, u64> =
+            PipelineMachine::<Starting, u64>::new().start();
+        let src = SourceId(0);
+
+        let cp1: u64 = kani::any();
+        let cp2: u64 = kani::any();
+
+        // Create batch 1 — then DROP the Queued ticket (simulates scan error)
+        let _dropped = running.create_batch(src, cp1);
+        // Queued ticket goes out of scope — never sent, not tracked
+
+        // Create batch 2 — this one succeeds
+        let t2 = running.create_batch(src, cp2);
+        let s2 = running.begin_send(t2);
+
+        // Ack batch 2
+        let adv = running.apply_ack(s2.ack());
+
+        // Committed must advance to cp2 (batch 1 was never in_flight,
+        // so it doesn't block the ordered-ack watermark)
+        assert!(adv.advanced);
+        assert_eq!(adv.checkpoint, Some(cp2));
+
+        // Drain must succeed — only batch 2 was ever in_flight, and it's acked
+        let draining = running.begin_drain();
+        assert!(draining.is_drained());
+        assert!(draining.stop().is_ok());
+
+        kani::cover!(adv.advanced, "checkpoint advances past dropped ticket");
+    }
 }
 
 // ---------------------------------------------------------------------------

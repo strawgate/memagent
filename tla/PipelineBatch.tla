@@ -288,4 +288,8 @@ StopReachable == ~(phase = "Stopped")
 MultiSourceBatch == ~(\E s1, s2 \in Sources :
     s1 /= s2 /\ buf_offsets[s1] > 0 /\ buf_offsets[s2] > 0)
 
+\* done_producing is reachable — without this, EventualStop and
+\* StoppedIsStable are vacuously true (their antecedent never holds).
+DoneProducingReachable == ~done_producing
+
 ======================================================================

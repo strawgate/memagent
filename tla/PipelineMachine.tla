@@ -396,4 +396,9 @@ CommitAdvances == ~(\E s \in Sources : committed[s] > 0)
 \* ForceStop is reachable (the kill-switch path is exercised).
 ForcedReachable == ~(forced = TRUE)
 
+\* At least one batch is created (CreateBatch fires).
+\* Covers NoBatchLeftBehind and AllCreatedBatchesEventuallyAccountedFor
+\* antecedents — without this, those properties are vacuously true.
+CreateOccurs == ~(\E s \in Sources : created[s] /= {})
+
 =============================================================================
