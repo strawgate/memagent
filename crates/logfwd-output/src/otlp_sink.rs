@@ -203,11 +203,14 @@ impl OutputSink for OtlpSink {
                 if let Some(ref mut compressor) = self.compressor {
                     // Produce raw zstd frames — no logfwd-internal header.
                     // OTLP receivers expect standard zstd per HTTP Content-Encoding.
+                    // Reuse compress_buf to avoid per-batch allocation.
+                    let bound = zstd::zstd_safe::compress_bound(self.encoder_buf.len());
                     self.compress_buf.clear();
-                    let compressed = compressor
-                        .compress(&self.encoder_buf)
+                    self.compress_buf.reserve(bound);
+                    let compressed_len = compressor
+                        .compress_to_buffer(&self.encoder_buf, &mut self.compress_buf)
                         .map_err(io::Error::other)?;
-                    self.compress_buf = compressed;
+                    self.compress_buf.truncate(compressed_len);
                     &self.compress_buf
                 } else {
                     &self.encoder_buf
@@ -239,7 +242,7 @@ impl OutputSink for OtlpSink {
         let payload_is_compressed =
             self.compression == Compression::Zstd && self.compressor.is_some();
         let payload: &[u8] = if self.protocol == OtlpProtocol::Grpc {
-            write_grpc_frame(&mut self.grpc_buf, payload, payload_is_compressed);
+            write_grpc_frame(&mut self.grpc_buf, payload, payload_is_compressed)?;
             &self.grpc_buf
         } else {
             payload
@@ -638,15 +641,18 @@ fn encode_key_value_bool(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value
 /// [4 bytes: big-endian message length]
 /// [N bytes: protobuf message]
 /// ```
-fn write_grpc_frame(buf: &mut Vec<u8>, payload: &[u8], compressed: bool) {
+fn write_grpc_frame(buf: &mut Vec<u8>, payload: &[u8], compressed: bool) -> io::Result<()> {
+    let len = u32::try_from(payload.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gRPC message payload must be < 4 GiB",
+        )
+    })?;
     buf.clear();
     buf.push(u8::from(compressed));
-    buf.extend_from_slice(
-        &u32::try_from(payload.len())
-            .expect("gRPC message payload must be < 4 GiB")
-            .to_be_bytes(),
-    );
+    buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(payload);
+    Ok(())
 }
 
 #[cfg(test)]
