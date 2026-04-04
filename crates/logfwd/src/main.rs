@@ -412,6 +412,7 @@ async fn run_pipelines(
     use logfwd_io::diagnostics::DiagnosticsServer;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::Layer;
 
     // Acquire exclusive lock only when tailing files — OTLP-only and
     // blackhole pipelines don't need filesystem locking (#737).
@@ -510,9 +511,9 @@ async fn run_pipelines(
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_writer(io::stderr)
         .with_target(false);
+    // Apply env_filter only to the fmt layer so it doesn't suppress OTel spans.
     let _ = tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
+        .with(fmt_layer.with_filter(env_filter))
         .with(otel_layer)
         .try_init(); // ignore error if a subscriber is already installed (e.g. in tests)
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
