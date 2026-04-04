@@ -1,32 +1,211 @@
 # Quick Start
 
-## Generate test data
+Get a working logfwd pipeline in 60 seconds, then build on it.
+
+## Prerequisites
+
+You need the `logfwd` binary. See [Installation](./installation.md) for all options, or grab it quickly:
 
 ```bash
-logfwd --generate-json 10000 /tmp/test.jsonl
+# Download the latest release (macOS Apple Silicon shown)
+curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd-darwin-arm64 -o logfwd
+chmod +x logfwd
+
+# Or build from source (Rust 1.86+)
+cargo build --release -p logfwd && cp target/release/logfwd .
 ```
 
-## Process with SQL and output to console
+Verify it works:
+
+```bash
+./logfwd --version
+```
+
+---
+
+## Stage 1: See log output
+
+Generate synthetic JSON log lines and print them to your terminal.
+
+**Generate test data:**
+
+```bash
+./logfwd --generate-json 10000 logs.json
+```
+
+This creates 10,000 JSON log lines with fields like `level`, `message`, `status`, `duration_ms`, and `service`.
+
+**Create a config file:**
 
 ```yaml
-# pipeline.yaml
+# config.yaml
 input:
   type: file
-  path: /tmp/test.jsonl
+  path: logs.json
   format: json
-transform: "SELECT * FROM logs WHERE level = 'ERROR'"
+
 output:
   type: stdout
   format: console
 ```
 
+**Run it:**
+
 ```bash
-logfwd --config pipeline.yaml
+./logfwd --config config.yaml
 ```
 
-You'll see colored output:
+You'll see colored output for every log line:
 
 ```
-10:30:00.003Z  ERROR  request handled GET /health/10021  duration_ms=40 service=myapp
-10:30:00.007Z  ERROR  request handled GET /api/v2/products/10049  duration_ms=92 ...
+10:30:00.001Z  INFO   request handled GET /api/v1/users/10001  duration_ms=12 status=200 service=myapp
+10:30:00.002Z  WARN   request handled POST /api/v2/orders/10015  duration_ms=87 status=429 service=myapp
+10:30:00.003Z  ERROR  request handled GET /health/10021  duration_ms=40 status=503 service=myapp
+10:30:00.004Z  DEBUG  request handled GET /api/v1/users/10033  duration_ms=3 status=200 service=myapp
+...
 ```
+
+logfwd parsed every JSON line, detected field types automatically (strings, integers, floats), built Arrow RecordBatches, and printed them in a human-readable format. All 10,000 lines stream through in under a second.
+
+> **Note:** logfwd exits when it reaches the end of a finite file. In production you'd point it at a log file that's actively being appended to, and logfwd will tail it continuously — like `tail -f`, but with parsing and SQL.
+
+---
+
+## Stage 2: Filter with SQL
+
+Now add a SQL transform to keep only what matters. This is the core reason to use logfwd — every batch of parsed records becomes a DataFusion SQL table named `logs`.
+
+**Update your config:**
+
+```yaml
+# config.yaml
+input:
+  type: file
+  path: logs.json
+  format: json
+
+transform: |
+  SELECT level, message, status, duration_ms
+  FROM logs
+  WHERE level = 'ERROR' AND duration_ms > 50
+
+output:
+  type: stdout
+  format: console
+```
+
+**Run it again:**
+
+```bash
+./logfwd --config config.yaml
+```
+
+Now you see far fewer lines — only errors with slow durations:
+
+```
+10:30:00.007Z  ERROR  request handled GET /api/v2/products/10049  duration_ms=92 status=500 service=myapp
+10:30:00.019Z  ERROR  request handled POST /api/v1/orders/10121  duration_ms=78 status=503 service=myapp
+...
+```
+
+Everything else was filtered out before it reached the output. In production, this means you only ship the logs you care about — saving bandwidth, storage, and money.
+
+**Try a more advanced transform:**
+
+```yaml
+transform: |
+  SELECT
+    level,
+    regexp_extract(message, '(GET|POST|PUT|DELETE) (\S+)', 2) AS path,
+    status,
+    duration_ms
+  FROM logs
+  WHERE status >= 400
+  ORDER BY duration_ms DESC
+```
+
+This extracts the URL path from the message with a regex, keeps only 4xx/5xx responses, and orders by slowest first. Full SQL — `JOIN`, `GROUP BY`, `HAVING`, subqueries — all works.
+
+Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`, `geo_lookup()`. See the [SQL Transforms guide](../config/sql-transforms.md) for the complete reference.
+
+---
+
+## Stage 3: Ship to a collector
+
+In production, logfwd sends OTLP protobuf to an OpenTelemetry Collector, Grafana Alloy, or any OTLP-compatible backend. Let's try it with logfwd's built-in blackhole receiver — it accepts OTLP data and discards it, so you can test the full pipeline without external infrastructure.
+
+**Start the blackhole receiver:**
+
+```bash
+./logfwd --blackhole &
+# OTLP receiver listening on 127.0.0.1:4318
+```
+
+**Update your config to send OTLP:**
+
+```yaml
+# config.yaml
+input:
+  type: file
+  path: logs.json
+  format: json
+
+transform: |
+  SELECT level, message, status, duration_ms
+  FROM logs
+  WHERE level IN ('ERROR', 'WARN')
+
+output:
+  type: otlp
+  endpoint: http://127.0.0.1:4318
+  compression: zstd
+```
+
+**Run it:**
+
+```bash
+./logfwd --config config.yaml
+```
+
+logfwd parses the JSON, runs the SQL filter, encodes matching records as OTLP protobuf with zstd compression, and ships them over HTTP. The blackhole receiver accepts everything.
+
+To ship to a real collector, replace the endpoint:
+
+```yaml
+output:
+  type: otlp
+  endpoint: http://otel-collector:4318   # your real collector
+  compression: zstd
+```
+
+logfwd works out of the box with:
+- [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/)
+- [Grafana Alloy](https://grafana.com/oss/alloy/)
+- Any backend that speaks OTLP over HTTP or gRPC
+
+---
+
+## Validate before deploying
+
+Before running in production, verify your config. `--validate` catches YAML errors; `--dry-run` goes further and compiles the SQL against the Arrow schema, catching column name typos and type mismatches before any data flows.
+
+```bash
+./logfwd --config config.yaml --validate
+# config ok: 1 pipeline(s)
+
+./logfwd --config config.yaml --dry-run
+# pipeline default: 1 input(s) -> SELECT ... -> 1 output(s)
+# dry run ok: 1 pipeline(s) constructed
+```
+
+---
+
+## What's next
+
+| Guide | What you'll learn |
+|-------|-------------------|
+| [Your First Pipeline](./first-pipeline.md) | Production config with monitoring, multi-pipeline setup, CRI format |
+| [SQL Transforms](../config/sql-transforms.md) | Full SQL reference — JOINs, UDFs, enrichment tables, column naming |
+| [Configuration Reference](../config/reference.md) | Every YAML field, input/output type, and option |
+| [Kubernetes Deployment](../deployment/kubernetes.md) | DaemonSet, resource sizing, OTLP collector integration |
+| [Troubleshooting](../troubleshooting.md) | Common errors, debug mode, diagnostics API |

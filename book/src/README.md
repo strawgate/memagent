@@ -1,153 +1,35 @@
 # logfwd
 
-A high-performance log forwarder. Tails log files, parses JSON and CRI container format, transforms with SQL, and ships to OTLP, HTTP, or stdout.
-
-## Quick start
-
-```bash
-cargo build --release -p logfwd
-```
-
-Create `config.yaml`:
-
-```yaml
-input:
-  type: file
-  path: /var/log/pods/**/*.log
-  format: cri
-
-output:
-  type: stdout
-  format: json
-```
-
-Run:
-
-```bash
-./target/release/logfwd --config config.yaml
-```
-
-## Configuration
-
-logfwd uses YAML configuration with two modes:
-
-**Simple** (single pipeline):
-
-```yaml
-input:
-  type: file
-  path: /var/log/app/*.log
-  format: json
-
-transform: SELECT level, message, status FROM logs WHERE status >= 400
-
-output:
-  type: otlp
-  endpoint: otel-collector:4317
-```
-
-**Advanced** (multiple pipelines):
-
-```yaml
-pipelines:
-  errors:
-    input:
-      type: file
-      path: /var/log/pods/**/*.log
-      format: cri
-    transform: SELECT * FROM logs WHERE level = 'ERROR'
-    output:
-      type: otlp
-      endpoint: otel-collector:4317
-
-  all-logs:
-    input:
-      type: file
-      path: /var/log/pods/**/*.log
-      format: cri
-    output:
-      type: stdout
-      format: json
-```
-
-### Input types
-
-| Type | Description | Status |
-|------|-------------|--------|
-| `file` | Tail log files by glob pattern | Implemented |
-| `generator` | Synthetic data for benchmarking | Implemented |
-| `tcp` | TCP listener | Implemented |
-| `udp` | UDP listener | Implemented |
-| `otlp` | Receive OTLP logs | Implemented |
-
-### Output types
-
-| Type | Description | Status |
-|------|-------------|--------|
-| `otlp` | OTLP protobuf over HTTP/gRPC | Implemented |
-| `http` | JSON lines over HTTP | Implemented |
-| `stdout` | Print to stdout (json or text) | Implemented |
-| `elasticsearch` | Elasticsearch bulk API | Implemented |
-| `loki` | Grafana Loki push API | Implemented |
-| `parquet` | Parquet files | Stub |
-
-### SQL transforms
-
-Transforms use DataFusion SQL. Column names use bare field names by default:
-
-```sql
--- Filter by level
-SELECT * FROM logs WHERE level = 'ERROR'
-
--- Extract fields
-SELECT level, status, duration_ms FROM logs
-
--- Type casting
-SELECT int(status) AS status_code FROM logs
-
--- Pattern matching
-SELECT grok('%{IP:client_ip} %{WORD:method}', message) FROM logs
-```
-
-Available UDFs: `int()`, `float()`, `grok()`, `regexp_extract()`.
-
-### Enrichment
-
-Enrichment tables are available as DataFusion tables for SQL JOINs:
-
-```yaml
-enrichment:
-  static_labels:
-    type: static
-    fields:
-      environment: production
-      cluster: us-east-1
-
-  k8s:
-    type: k8s_path
-```
-
-```sql
-SELECT l.*, k.namespace, k.pod_name
-FROM logs l JOIN k8s k ON l._source_path = k.log_path_prefix
-```
-
-## CLI
+A high-performance log forwarder built in Rust. Tails log files, parses JSON and Kubernetes CRI format with portable SIMD, transforms every batch with DataFusion SQL, and ships to OTLP, Elasticsearch, Loki, HTTP, or stdout.
 
 ```
-logfwd --config <config.yaml>        Run pipeline
-logfwd --config <config.yaml> --validate   Validate config without running
-logfwd --config <config.yaml> --dry-run    Build pipelines, don't start
-logfwd --blackhole [bind_addr]       OTLP collector for benchmarks
-logfwd --generate-json <n> <file>    Generate synthetic test data
-logfwd --version                     Print version
+log files → SIMD parse → Arrow RecordBatch → SQL transform → output
 ```
 
-## Documentation
+logfwd is a single static binary with no runtime dependencies. Point it at log files, write a SQL query to filter and reshape the data, and forward the results to any OTLP-compatible collector — or directly to Elasticsearch, Loki, or stdout. SQL transforms are the core idea: instead of learning a vendor-specific DSL, you write standard SQL to control exactly what gets shipped.
 
-| Guide | Description |
-|-------|-------------|
-| [Configuration Reference](./config/reference.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
-| [Deployment](./deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing, OTLP integration |
-| [Troubleshooting](./troubleshooting.md) | Common errors, diagnosing dropped data, diagnostics API, debug mode |
-| [SQL Transforms](./config/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
+## Get started
+
+1. **[Installation](./getting-started/installation.md)** — Binary download, Docker, or build from source
+2. **[Quick Start](./getting-started/quickstart.md)** — Working pipeline in 60 seconds, no external dependencies
+3. **[Your First Pipeline](./getting-started/first-pipeline.md)** — Production config with monitoring and validation
+
+## Configure
+
+- **[Configuration Reference](./config/reference.md)** — All YAML fields, input/output types, enrichment
+- **[Input Types](./config/inputs.md)** — File, TCP, UDP, OTLP receiver, generator
+- **[Output Types](./config/outputs.md)** — OTLP, HTTP, Elasticsearch, Loki, stdout
+- **[SQL Transforms](./config/sql-transforms.md)** — Filter, reshape, extract — full DataFusion SQL
+
+## Deploy
+
+- **[Kubernetes DaemonSet](./deployment/kubernetes.md)** — Manifest, resource sizing, CRI format
+- **[Docker](./deployment/docker.md)** — Container images and compose files
+- **[Monitoring](./deployment/monitoring.md)** — Diagnostics API, Prometheus metrics, health checks
+
+## Learn more
+
+- **[Pipeline Design](./architecture/pipeline.md)** — How data flows from input to output
+- **[SIMD Scanner](./architecture/scanner.md)** — How the parser works
+- **[Performance](./architecture/performance.md)** — Benchmarks and tuning
+- **[Troubleshooting](./troubleshooting.md)** — Common errors and how to fix them
