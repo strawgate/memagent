@@ -11,8 +11,8 @@ use logfwd_core::otlp::{
     encode_varint, encode_varint_field, hex_decode, parse_severity, parse_timestamp_nanos,
     varint_len,
 };
-use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::diagnostics::ComponentStats;
+use zstd::bulk::Compressor as ZstdCompressor;
 
 use super::{
     BatchMetadata, Compression, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink,
@@ -50,7 +50,7 @@ pub struct OtlpSink {
     pub(crate) encoder_buf: Vec<u8>,
     compress_buf: Vec<u8>,
     grpc_buf: Vec<u8>,
-    compressor: Option<ChunkCompressor>,
+    compressor: Option<ZstdCompressor<'static>>,
     http_agent: ureq::Agent,
     stats: Arc<ComponentStats>,
 }
@@ -66,7 +66,7 @@ impl OtlpSink {
     ) -> Self {
         let compressor = match compression {
             Compression::Zstd => {
-                Some(ChunkCompressor::new(1).expect("zstd level 1 is always valid"))
+                Some(ZstdCompressor::new(1).expect("zstd level 1 is always valid"))
             }
             _ => None,
         };
@@ -147,7 +147,8 @@ impl OtlpSink {
         let mut resource_msg: Vec<u8> = Vec::new();
         if !metadata.resource_attrs.is_empty() {
             for (k, v) in metadata.resource_attrs.as_ref() {
-                encode_key_value_string(&mut resource_msg, k.as_bytes(), v.as_bytes());
+                // Resource.attributes is protobuf field 1
+                encode_key_value_string(&mut resource_msg, 1, k.as_bytes(), v.as_bytes());
             }
         }
         if !resource_msg.is_empty() {
@@ -200,9 +201,13 @@ impl OutputSink for OtlpSink {
         let payload: &[u8] = match self.compression {
             Compression::Zstd => {
                 if let Some(ref mut compressor) = self.compressor {
-                    let chunk = compressor.compress(&self.encoder_buf)?;
+                    // Produce raw zstd frames — no logfwd-internal header.
+                    // OTLP receivers expect standard zstd per HTTP Content-Encoding.
                     self.compress_buf.clear();
-                    self.compress_buf.extend_from_slice(&chunk.data);
+                    let compressed = compressor
+                        .compress(&self.encoder_buf)
+                        .map_err(io::Error::other)?;
+                    self.compress_buf = compressed;
                     &self.compress_buf
                 } else {
                     &self.encoder_buf
@@ -508,23 +513,25 @@ fn encode_row_as_log_record(
         match attr {
             AttrArray::Int(arr) => {
                 if !arr.is_null(row) {
-                    encode_key_value_int(buf, field_name.as_bytes(), arr.value(row));
+                    // LogRecord.attributes is protobuf field 6
+                    encode_key_value_int(buf, 6, field_name.as_bytes(), arr.value(row));
                 }
             }
             AttrArray::Float(arr) => {
                 if !arr.is_null(row) {
-                    encode_key_value_double(buf, field_name.as_bytes(), arr.value(row));
+                    encode_key_value_double(buf, 6, field_name.as_bytes(), arr.value(row));
                 }
             }
             AttrArray::Bool(arr) => {
                 if !arr.is_null(row) {
-                    encode_key_value_bool(buf, field_name.as_bytes(), arr.value(row));
+                    encode_key_value_bool(buf, 6, field_name.as_bytes(), arr.value(row));
                 }
             }
             AttrArray::Str(arr) => {
                 if !arr.is_null(row) {
                     encode_key_value_string(
                         buf,
+                        6,
                         field_name.as_bytes(),
                         str_value(*arr, row).as_bytes(),
                     );
@@ -566,13 +573,14 @@ fn encode_row_as_log_record(
     encode_fixed64(buf, 11, metadata.observed_time_ns);
 }
 
-/// Encode a KeyValue with string AnyValue as an attribute (field 6 of LogRecord).
+/// Encode a KeyValue with string AnyValue as an attribute.
+/// `field_number` is the protobuf field tag of the parent message's `attributes` repeated field
+/// (6 for `LogRecord.attributes`, 1 for `Resource.attributes`).
 /// KeyValue: { key (field 1, string), value (field 2, AnyValue { string_value (field 1) }) }
-fn encode_key_value_string(buf: &mut Vec<u8>, key: &[u8], value: &[u8]) {
+fn encode_key_value_string(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value: &[u8]) {
     let anyvalue_inner = bytes_field_size(1, value.len()); // AnyValue.string_value
     let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
-    // LogRecord field 6, wire type 2
-    encode_tag(buf, 6, 2);
+    encode_tag(buf, field_number, 2);
     encode_varint(buf, kv_inner as u64);
     // KeyValue.key = field 1
     encode_bytes_field(buf, 1, key);
@@ -584,10 +592,10 @@ fn encode_key_value_string(buf: &mut Vec<u8>, key: &[u8], value: &[u8]) {
 }
 
 /// Encode a KeyValue with int AnyValue (field 3 of AnyValue = int_value).
-fn encode_key_value_int(buf: &mut Vec<u8>, key: &[u8], value: i64) {
+fn encode_key_value_int(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value: i64) {
     let anyvalue_inner = 1 + varint_len(value as u64); // tag(1 byte) + varint
     let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
-    encode_tag(buf, 6, 2);
+    encode_tag(buf, field_number, 2);
     encode_varint(buf, kv_inner as u64);
     encode_bytes_field(buf, 1, key);
     encode_tag(buf, 2, 2);
@@ -597,10 +605,10 @@ fn encode_key_value_int(buf: &mut Vec<u8>, key: &[u8], value: i64) {
 }
 
 /// Encode a KeyValue with double AnyValue (field 4 of AnyValue = double_value).
-fn encode_key_value_double(buf: &mut Vec<u8>, key: &[u8], value: f64) {
+fn encode_key_value_double(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value: f64) {
     let anyvalue_inner = 1 + 8; // tag(1 byte) + fixed64
     let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
-    encode_tag(buf, 6, 2);
+    encode_tag(buf, field_number, 2);
     encode_varint(buf, kv_inner as u64);
     encode_bytes_field(buf, 1, key);
     encode_tag(buf, 2, 2);
@@ -610,10 +618,10 @@ fn encode_key_value_double(buf: &mut Vec<u8>, key: &[u8], value: f64) {
 }
 
 /// Encode a KeyValue with boolean AnyValue (field 2 of AnyValue = bool_value).
-fn encode_key_value_bool(buf: &mut Vec<u8>, key: &[u8], value: bool) {
+fn encode_key_value_bool(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value: bool) {
     let anyvalue_inner = 1 + 1; // tag(1 byte) + varint(1 byte)
     let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
-    encode_tag(buf, 6, 2);
+    encode_tag(buf, field_number, 2);
     encode_varint(buf, kv_inner as u64);
     encode_bytes_field(buf, 1, key);
     encode_tag(buf, 2, 2);
