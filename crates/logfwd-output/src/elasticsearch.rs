@@ -23,13 +23,15 @@ pub(crate) struct ElasticsearchConfig {
     /// larger than this are split in half and sent as separate `_bulk` requests.
     /// Default: 5 MiB — safe for Elasticsearch Serverless and self-hosted.
     max_bulk_bytes: usize,
+    /// Precomputed `_bulk` URL with `filter_path` to avoid per-request allocation.
+    bulk_url: String,
 }
 
 /// Async Elasticsearch sink using reqwest.
 ///
 /// Implements the [`super::sink::Sink`] trait for use with `OutputWorkerPool`.
-/// Each worker owns its own `reqwest::Client` so idle worker shutdown drops
-/// its connection pool immediately rather than keeping it alive via a shared Arc.
+/// All workers share the same `reqwest::Client` (cloned from the factory) to
+/// reuse connection pools, TLS sessions, and DNS caches.
 pub struct ElasticsearchAsyncSink {
     config: Arc<ElasticsearchConfig>,
     client: reqwest::Client,
@@ -290,11 +292,10 @@ impl ElasticsearchAsyncSink {
 
     async fn do_send(&self, body: Vec<u8>) -> io::Result<super::sink::SendResult> {
         let body_len = body.len();
-        let url = format!("{}/_bulk", self.config.endpoint);
 
         let mut req = self
             .client
-            .post(&url)
+            .post(&self.config.bulk_url)
             .header("Content-Type", "application/x-ndjson");
         for (k, v) in &self.config.headers {
             req = req.header(k.clone(), v.clone());
@@ -304,7 +305,7 @@ impl ElasticsearchAsyncSink {
             use flate2::Compression;
             use flate2::write::GzEncoder;
             use std::io::Write;
-            let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+            let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
             enc.write_all(&body).map_err(io::Error::other)?;
             let compressed = enc.finish().map_err(io::Error::other)?;
             req.header("Content-Encoding", "gzip").body(compressed)
@@ -384,12 +385,13 @@ impl super::sink::Sink for ElasticsearchAsyncSink {
 
 /// Creates `ElasticsearchAsyncSink` instances for the output worker pool.
 ///
-/// Each call to `create()` builds a fresh `reqwest::Client` for the new worker.
-/// This means idle workers release their connection pool when they exit rather
-/// than keeping it alive through a shared `Arc`.
+/// All workers share a single `reqwest::Client` (which is internally
+/// `Arc`-wrapped) so they reuse the same connection pool, TLS sessions,
+/// and DNS cache.
 pub struct ElasticsearchSinkFactory {
     name: String,
     pub(crate) config: Arc<ElasticsearchConfig>,
+    client: reqwest::Client,
     stats: Arc<ComponentStats>,
 }
 
@@ -419,34 +421,44 @@ impl ElasticsearchSinkFactory {
             })
             .collect::<io::Result<Vec<_>>>()?;
 
+        // 30s timeout: generous enough for large bulk responses, short enough to
+        // detect dead connections before the pipeline stalls.
+        // 64 max idle per host: allows all workers (typically ≤16) to keep warm
+        // connections without excessive socket churn.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .pool_max_idle_per_host(64)
+            .build()
+            .map_err(io::Error::other)?;
+
+        let endpoint = endpoint.trim_end_matches('/').to_string();
+        let bulk_url = format!(
+            "{}/_bulk?filter_path=errors,took,items.*.error,items.*.status",
+            endpoint
+        );
+
         Ok(ElasticsearchSinkFactory {
             name,
             config: Arc::new(ElasticsearchConfig {
-                endpoint: endpoint.trim_end_matches('/').to_string(),
+                endpoint,
                 index,
                 headers: parsed_headers,
                 compress,
                 max_bulk_bytes: 5 * 1024 * 1024, // 5 MiB default
+                bulk_url,
             }),
+            client,
             stats,
         })
-    }
-
-    pub(crate) fn build_client() -> io::Result<reqwest::Client> {
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(io::Error::other)
     }
 }
 
 impl super::sink::SinkFactory for ElasticsearchSinkFactory {
     fn create(&self) -> io::Result<Box<dyn super::sink::Sink>> {
-        let client = Self::build_client()?;
         Ok(Box::new(ElasticsearchAsyncSink::new(
             self.name.clone(),
             Arc::clone(&self.config),
-            client,
+            self.client.clone(), // reqwest::Client is Arc-wrapped, clone is cheap
             Arc::clone(&self.stats),
         )))
     }
@@ -538,7 +550,7 @@ mod tests {
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
-        let client = ElasticsearchSinkFactory::build_client().expect("client creation failed");
+        let client = reqwest::Client::new();
         ElasticsearchAsyncSink::new(
             "test".to_string(),
             Arc::clone(&factory.config),
@@ -765,7 +777,7 @@ mod snapshot_tests {
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
-        let client = ElasticsearchSinkFactory::build_client().expect("client creation failed");
+        let client = reqwest::Client::new();
         ElasticsearchAsyncSink::new(
             "test".to_string(),
             Arc::clone(&factory.config),
