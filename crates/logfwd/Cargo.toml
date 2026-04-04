@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+doctest = false
+
 [features]
 dhat-heap = ["dhat"]
 cpu-profiling = ["pprof"]

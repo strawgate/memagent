@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+doctest = false
+
 [dependencies]
 memchr = { version = "2", default-features = false }
 wide = { version = "1.2.0", default-features = false }

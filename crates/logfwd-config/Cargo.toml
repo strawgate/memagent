@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+doctest = false
+
 [dependencies]
 serde = { workspace = true }
 serde_yaml_ng = "0.10"
