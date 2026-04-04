@@ -1,0 +1,75 @@
+name: "Auto: Update work-unit checkboxes"
+
+# When an issue is closed, find any open work-unit issues that reference it
+# in a checkbox line and check the box. If all boxes are checked, close the
+# work-unit automatically.
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  update-checkboxes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update parent work-unit checkboxes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const closedNumber = context.payload.issue.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Find open issues that contain a checkbox referencing this issue.
+            // Search for the pattern "- [ ] #N" in issue bodies.
+            const { data: candidates } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${owner}/${repo} is:issue is:open "#${closedNumber}" in:body`,
+              per_page: 20,
+            });
+
+            for (const candidate of candidates.items) {
+              const { data: issue } = await github.rest.issues.get({
+                owner, repo,
+                issue_number: candidate.number,
+              });
+
+              const body = issue.body || '';
+              // Match unchecked checkboxes that reference this issue number.
+              // Handles patterns like "- [ ] #123", "- [ ] #123 fixed", "- [ ] #123 done"
+              const pattern = new RegExp(
+                `- \\[ \\] #${closedNumber}\\b`,
+                'g'
+              );
+
+              if (!pattern.test(body)) continue;
+
+              // Check the box.
+              const updatedBody = body.replace(pattern, `- [x] #${closedNumber}`);
+
+              await github.rest.issues.update({
+                owner, repo,
+                issue_number: candidate.number,
+                body: updatedBody,
+              });
+
+              console.log(`Checked #${closedNumber} in issue #${candidate.number}`);
+
+              // If all checkboxes are now checked, close the work-unit.
+              const unchecked = (updatedBody.match(/- \[ \] /g) || []).length;
+              if (unchecked === 0 && updatedBody.includes('- [x]')) {
+                await github.rest.issues.createComment({
+                  owner, repo,
+                  issue_number: candidate.number,
+                  body: `All checkboxes complete — closing automatically.\n\nLast resolved: #${closedNumber}.`,
+                });
+                await github.rest.issues.update({
+                  owner, repo,
+                  issue_number: candidate.number,
+                  state: 'closed',
+                });
+                console.log(`All boxes checked — closed work-unit #${candidate.number}`);
+              }
+            }
