@@ -7,8 +7,8 @@ use arrow::record_batch::RecordBatch;
 use logfwd_io::diagnostics::ComponentStats;
 
 use super::{
-    BatchMetadata, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink, build_col_infos,
-    is_transient_error, str_value, write_row_json,
+    BatchMetadata, Compression, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink,
+    build_col_infos, is_transient_error, str_value, write_row_json,
 };
 
 // ---------------------------------------------------------------------------
@@ -21,6 +21,8 @@ pub struct JsonLinesSink {
     url: String,
     headers: Vec<(String, String)>,
     pub(crate) batch_buf: Vec<u8>,
+    compress_buf: Vec<u8>,
+    compression: Compression,
     http_agent: ureq::Agent,
     stats: Arc<ComponentStats>,
 }
@@ -30,6 +32,7 @@ impl JsonLinesSink {
         name: String,
         url: String,
         headers: Vec<(String, String)>,
+        compression: Compression,
         stats: Arc<ComponentStats>,
     ) -> Self {
         let http_agent = ureq::config::Config::builder()
@@ -41,6 +44,8 @@ impl JsonLinesSink {
             url,
             headers,
             batch_buf: Vec::with_capacity(64 * 1024),
+            compress_buf: Vec::new(),
+            compression,
             http_agent,
             stats,
         }
@@ -126,20 +131,43 @@ impl OutputSink for JsonLinesSink {
         // Note: `self.batch_buf` is re-sent as `&[u8]` on each attempt — no
         // allocation, but the full NDJSON payload is retransmitted each time.
         // This is acceptable as a temporary measure until SinkDriver (#319).
+        let payload: &[u8] = match self.compression {
+            Compression::Gzip => {
+                use flate2::Compression as GzLevel;
+                use flate2::write::GzEncoder;
+                use std::io::Write;
+                self.compress_buf.clear();
+                let mut enc = GzEncoder::new(&mut self.compress_buf, GzLevel::default());
+                enc.write_all(&self.batch_buf)
+                    .map_err(|e| io::Error::other(format!("gzip compression failed: {e}")))?;
+                enc.finish().map_err(|e| {
+                    io::Error::other(format!("gzip compression finish failed: {e}"))
+                })?;
+                &self.compress_buf
+            }
+            Compression::None => &self.batch_buf,
+            Compression::Zstd => {
+                unreachable!("zstd is not supported for json_lines; rejected at config validation")
+            }
+        };
         let build_req = || {
             let mut req = self.http_agent.post(&self.url);
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            req.header("Content-Type", "application/x-ndjson")
+            req = req.header("Content-Type", "application/x-ndjson");
+            if self.compression == Compression::Gzip {
+                req = req.header("Content-Encoding", "gzip");
+            }
+            req
         };
         let mut delay_ms: u64 = HTTP_RETRY_INITIAL_DELAY_MS;
         let mut attempt: u32 = 0;
         loop {
-            match build_req().send(&self.batch_buf) {
+            match build_req().send(payload) {
                 Ok(_) => {
                     self.stats.inc_lines(batch.num_rows() as u64);
-                    self.stats.inc_bytes(self.batch_buf.len() as u64);
+                    self.stats.inc_bytes(payload.len() as u64);
                     return Ok(());
                 }
                 Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_error(&e) => {
@@ -177,6 +205,7 @@ mod tests {
             "test".to_string(),
             "http://localhost:1".to_string(), // unreachable — tests only call serialize_batch
             vec![],
+            Compression::None,
             Arc::new(ComponentStats::default()),
         )
     }

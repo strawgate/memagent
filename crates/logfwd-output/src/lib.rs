@@ -584,10 +584,20 @@ pub fn build_output_sink(
                 .endpoint
                 .as_ref()
                 .ok_or_else(|| format!("output '{name}': HTTP requires 'endpoint'"))?;
+            let compression = match cfg.compression.as_deref() {
+                Some("gzip") => Compression::Gzip,
+                Some(other) => {
+                    return Err(format!(
+                        "output '{name}': json_lines HTTP does not support '{other}' compression (use 'gzip')"
+                    ));
+                }
+                None => Compression::None,
+            };
             Ok(Box::new(JsonLinesSink::new(
                 name.to_string(),
                 endpoint.clone(),
                 auth_headers,
+                compression,
                 stats,
             )))
         }
@@ -1007,6 +1017,7 @@ mod tests {
             "test-jsonl".to_string(),
             "http://localhost:9200".to_string(),
             vec![],
+            Compression::None,
             Arc::new(ComponentStats::new()),
         );
         sink.serialize_batch(&batch).unwrap();
@@ -1159,6 +1170,48 @@ mod tests {
         };
         let sink = build_output_sink("es", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "es");
+    }
+
+    #[test]
+    fn test_build_output_sink_http_with_gzip_compression() {
+        let cfg = OutputConfig {
+            name: Some("http-gz".to_string()),
+            output_type: OutputType::Http,
+            endpoint: Some("http://localhost:9200".to_string()),
+            protocol: None,
+            compression: Some("gzip".to_string()),
+            format: None,
+            path: None,
+            index: None,
+            auth: None,
+        };
+        let sink = build_output_sink("http-gz", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        assert_eq!(sink.name(), "http-gz");
+    }
+
+    #[test]
+    fn test_build_output_sink_http_rejects_unknown_compression() {
+        let cfg = OutputConfig {
+            name: Some("http-bad".to_string()),
+            output_type: OutputType::Http,
+            endpoint: Some("http://localhost:9200".to_string()),
+            protocol: None,
+            compression: Some("zstd".to_string()),
+            format: None,
+            path: None,
+            index: None,
+            auth: None,
+        };
+        let result = build_output_sink("http-bad", &cfg, Arc::new(ComponentStats::new()));
+        assert!(
+            result.is_err(),
+            "unsupported compression should be rejected"
+        );
+        let err = result.err().unwrap();
+        assert!(
+            err.contains("zstd"),
+            "error should name the unsupported algorithm, got: {err}"
+        );
     }
 
     #[test]
@@ -1329,6 +1382,7 @@ mod tests {
             "test-jsonl".to_string(),
             "http://localhost:9200".to_string(),
             vec![],
+            Compression::None,
             Arc::new(ComponentStats::new()),
         );
         // Must not panic.

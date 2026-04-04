@@ -359,7 +359,7 @@ impl Config {
 
     /// Load configuration from a YAML string (handy for tests).
     pub fn load_str(yaml: &str) -> Result<Self, ConfigError> {
-        let expanded = expand_env_vars(yaml);
+        let expanded = expand_env_vars(yaml)?;
         let raw: RawConfig = serde_yaml_ng::from_str(&expanded)?;
         Self::from_raw(raw)
     }
@@ -571,12 +571,7 @@ fn output_type_name(t: &OutputType) -> &'static str {
 }
 
 /// Validate that a bind address is a parseable `host:port` socket address.
-///
-/// Accepts values that still contain unexpanded `${VAR}` placeholders.
 fn validate_bind_addr(addr: &str) -> Result<(), String> {
-    if addr.contains("${") {
-        return Ok(());
-    }
     addr.parse::<std::net::SocketAddr>()
         .map(|_| ())
         .map_err(|e| format!("'{addr}' is not a valid host:port address: {e}"))
@@ -585,13 +580,7 @@ fn validate_bind_addr(addr: &str) -> Result<(), String> {
 /// Validate that an endpoint URL has a recognised scheme and a non-empty host.
 ///
 /// Accepts `http://` or `https://` followed by at least one character.
-/// Values that still contain unexpanded `${VAR}` placeholders are skipped
-/// so that the `expand_env_vars` behaviour is not broken.
 fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
-    // Defer validation for values that still contain unexpanded env var placeholders.
-    if endpoint.contains("${") {
-        return Ok(());
-    }
     let rest = if let Some(r) = endpoint.strip_prefix("https://") {
         r
     } else if let Some(r) = endpoint.strip_prefix("http://") {
@@ -610,7 +599,11 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
 }
 
 /// Expand `${VAR}` references in `text` using the process environment.
-fn expand_env_vars(text: &str) -> String {
+///
+/// Returns an error if a referenced variable is not set in the environment.
+/// This catches misspelled env var names at config-load time
+/// instead of producing cryptic runtime failures.
+fn expand_env_vars(text: &str) -> Result<String, ConfigError> {
     let mut result = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
 
@@ -634,10 +627,9 @@ fn expand_env_vars(text: &str) -> String {
             match std::env::var(&var_name) {
                 Ok(val) => result.push_str(&val),
                 Err(_) => {
-                    // Leave the placeholder intact if the var is not set.
-                    result.push_str("${");
-                    result.push_str(&var_name);
-                    result.push('}');
+                    return Err(ConfigError::Validation(format!(
+                        "environment variable '{var_name}' is not set"
+                    )));
                 }
             }
         } else {
@@ -645,7 +637,7 @@ fn expand_env_vars(text: &str) -> String {
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Serde helper: accept either a single `T` or a `Vec<T>`.
@@ -783,7 +775,7 @@ output:
     }
 
     #[test]
-    fn unset_env_var_preserved() {
+    fn unset_env_var_rejected() {
         let yaml = r"
 input:
   type: file
@@ -792,18 +784,22 @@ output:
   type: otlp
   endpoint: ${LOGFWD_NONEXISTENT_VAR_12345}
 ";
-        let cfg = Config::load_str(yaml).expect("unset env preserved");
-        let pipe = &cfg.pipelines["default"];
-        assert_eq!(
-            pipe.outputs[0].endpoint.as_deref(),
-            Some("${LOGFWD_NONEXISTENT_VAR_12345}")
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LOGFWD_NONEXISTENT_VAR_12345"),
+            "error should mention the variable name: {msg}"
+        );
+        assert!(
+            msg.contains("not set"),
+            "error should say variable is not set: {msg}"
         );
     }
 
     #[test]
     fn unterminated_env_var_preserved_as_is() {
         assert_eq!(
-            expand_env_vars("endpoint: ${LOGFWD_TEST_UNTERMINATED"),
+            expand_env_vars("endpoint: ${LOGFWD_TEST_UNTERMINATED").unwrap(),
             "endpoint: ${LOGFWD_TEST_UNTERMINATED"
         );
     }
@@ -1150,9 +1146,9 @@ output:
     }
 
     #[test]
-    fn validation_endpoint_unexpanded_env_var_skipped() {
-        // An endpoint whose value is still an unexpanded placeholder must not
-        // fail URL validation — the user may supply the value at runtime.
+    fn validation_endpoint_unset_env_var_rejected() {
+        // An endpoint referencing an unset env var must fail at config load
+        // time with a clear error message naming the variable.
         let yaml = r"
 input:
   type: file
@@ -1161,8 +1157,12 @@ output:
   type: otlp
   endpoint: ${LOGFWD_NONEXISTENT_ENDPOINT_VAR}
 ";
-        // Should succeed (unexpanded placeholder passes through without error).
-        Config::load_str(yaml).expect("unexpanded env var in endpoint should not fail validation");
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LOGFWD_NONEXISTENT_ENDPOINT_VAR"),
+            "error should mention the variable name: {msg}"
+        );
     }
 
     #[test]
@@ -1335,9 +1335,8 @@ server:
     }
 
     #[test]
-    fn diagnostics_address_with_unexpanded_env_var_accepted() {
-        // Unexpanded ${VAR} placeholders must not be rejected — the real address
-        // may be provided at runtime via the environment.
+    fn diagnostics_address_with_unset_env_var_rejected() {
+        // Unset ${VAR} placeholders must be rejected at config-load time.
         let yaml = r"
 input:
   type: file
@@ -1347,7 +1346,12 @@ output:
 server:
   diagnostics: ${LOGFWD_DIAG_ADDR}
 ";
-        Config::load_str(yaml).expect("unexpanded env var in diagnostics should be accepted");
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LOGFWD_DIAG_ADDR"),
+            "error should mention the variable name: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -131,8 +131,8 @@ impl Pipeline {
                         }
                     };
                     if geo_cfg.refresh_interval.is_some() {
-                        eprintln!(
-                            "warn: geo_database refresh_interval is not yet implemented, database will not auto-reload"
+                        tracing::warn!(
+                            "geo_database refresh_interval is not yet implemented, database will not auto-reload"
                         );
                     }
                     transform.set_geo_database(db);
@@ -158,20 +158,19 @@ impl Pipeline {
         // Only create the directory if LOGFWD_DATA_DIR is explicitly set
         // (prevents tests from polluting the default data dir).
         let checkpoint_dir = default_data_dir().join(name);
-        let checkpoint_store =
-            if checkpoint_dir.exists() || std::env::var_os("LOGFWD_DATA_DIR").is_some() {
-                match FileCheckpointStore::open(&checkpoint_dir) {
-                    Ok(s) => Some(s),
-                    Err(e) => {
-                        eprintln!(
-                            "warn: could not open checkpoint store: {e} — starting from beginning"
-                        );
-                        None
-                    }
+        let checkpoint_store = if checkpoint_dir.exists()
+            || std::env::var_os("LOGFWD_DATA_DIR").is_some()
+        {
+            match FileCheckpointStore::open(&checkpoint_dir) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not open checkpoint store — starting from beginning");
+                    None
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
         let saved_checkpoints: Vec<SourceCheckpoint> = checkpoint_store
             .as_ref()
             .map(FileCheckpointStore::load_all)
@@ -289,6 +288,14 @@ impl Pipeline {
 
     pub fn metrics(&self) -> &Arc<PipelineMetrics> {
         &self.metrics
+    }
+
+    /// Validate the SQL plan by running a probe batch through the transform.
+    ///
+    /// Called by `--dry-run` to surface planning errors (duplicate aliases,
+    /// bad window specs, etc.) before the first real batch arrives.
+    pub fn validate_sql_plan(&mut self) -> Result<(), String> {
+        self.transform.validate_plan()
     }
 
     /// Override the batch flush timeout (for testing).
@@ -439,7 +446,7 @@ impl Pipeline {
         // joined without risking a channel backpressure deadlock.
         for h in input_handles {
             if let Err(e) = h.join() {
-                eprintln!("pipeline: input thread panicked: {e:?}");
+                tracing::error!(error = ?e, "pipeline: input thread panicked");
             }
         }
 
@@ -478,15 +485,14 @@ impl Pipeline {
                             });
                         }
                         if let Err(e) = store.flush() {
-                            eprintln!("pipeline: failed to flush final checkpoints: {e}");
+                            tracing::error!(error = %e, "pipeline: failed to flush final checkpoints");
                         }
                     }
                 }
                 Err(still_draining) => {
-                    eprintln!(
-                        "pipeline: shutdown with {} in-flight batches \
-                         (checkpoint may not reflect latest delivered data)",
-                        still_draining.in_flight_count()
+                    tracing::warn!(
+                        in_flight = still_draining.in_flight_count(),
+                        "pipeline: shutdown with in-flight batches (checkpoint may not reflect latest delivered data)"
                     );
                 }
             }
@@ -565,7 +571,7 @@ impl Pipeline {
                     // Queued tickets dropped here — safe, not tracked by machine.
                     self.metrics.inc_scan_error();
                     self.metrics.inc_dropped_batch();
-                    eprintln!("pipeline: scan error (batch dropped): {e}");
+                    tracing::warn!(error = %e, "pipeline: scan error (batch dropped)");
                     // Must use `span` (the batch root) not `Span::current()` here —
                     // _entered is still live so current() points to the scan child span.
                     span.record("errors", 1u64);
@@ -610,7 +616,7 @@ impl Pipeline {
             Err(e) => {
                 self.metrics.inc_transform_error();
                 self.metrics.inc_dropped_batch();
-                eprintln!("pipeline: transform error (batch dropped): {e}");
+                tracing::warn!(error = %e, "pipeline: transform error (batch dropped)");
                 tracing::Span::current().record("errors", 1u64);
                 // Reject tickets — transform failed, data not delivered.
                 self.ack_all_tickets(sending, false);
@@ -713,7 +719,7 @@ impl Pipeline {
             self.last_checkpoint_flush = Instant::now();
             if let Some(ref mut store) = self.checkpoint_store {
                 if let Err(e) = store.flush() {
-                    eprintln!("pipeline: checkpoint flush error: {e}");
+                    tracing::warn!(error = %e, "pipeline: checkpoint flush error");
                 }
             }
         }
@@ -752,7 +758,6 @@ fn input_poll_loop(
         let events = match input.source.poll() {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("pipeline input: poll error: {e}");
                 tracing::warn!(input = input.source.name(), error = %e, "input.poll_error");
                 std::thread::sleep(Duration::from_millis(100));
                 continue;

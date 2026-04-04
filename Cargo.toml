@@ -79,6 +79,11 @@ assigning_clones = "allow"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 unused_qualifications = "warn"
 
+[profile.dev]
+# line-tables-only keeps backtraces readable while shrinking debug binaries
+# significantly (DataFusion debug info is enormous). (#812)
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
