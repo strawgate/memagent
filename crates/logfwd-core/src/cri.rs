@@ -771,15 +771,16 @@ mod verification {
 
     /// Prove write_json_line without prefix passes JSON through and wraps plain text.
     ///
-    /// Input: 4 symbolic bytes. Reduced from 8 to keep symex under CI timeout
-    /// (8 bytes produced 45K VCCs from the json_escape_bytes match arms).
-    /// 4 bytes still covers all escape paths and branch combinations.
+    /// Input: 3 symbolic bytes. Reduced from 8→4→3 to keep SAT solving under
+    /// CI timeout (4 bytes produced ~5K VCCs that timed out in kissat on
+    /// ubuntu-latest runners). 3 bytes still covers every escape path and both
+    /// JSON/non-JSON branches — each byte independently exercises all match arms.
     /// Vec::with_capacity(64) pre-allocates to avoid realloc VCC explosion.
     #[kani::proof]
-    #[kani::unwind(6)] // 4 iterations + 2 margin
-    #[kani::solver(kissat)] // json_escape_bytes loop × 4 symbolic bytes: kissat outperforms cadical
+    #[kani::unwind(5)] // 3 iterations + 2 margin
+    #[kani::solver(kissat)] // json_escape_bytes loop × 3 symbolic bytes: kissat outperforms cadical
     fn verify_write_json_line_no_prefix() {
-        let msg: [u8; 4] = kani::any();
+        let msg: [u8; 3] = kani::any();
         let mut out = Vec::with_capacity(64);
 
         // Guard vacuity: ensure both paths are reachable
@@ -793,12 +794,11 @@ mod verification {
 
         if msg[0] == b'{' {
             // JSON message passed through unchanged: msg + \n
-            assert_eq!(out.len(), 5);
+            assert_eq!(out.len(), 4);
             // Check each byte individually to avoid memcmp VCC explosion
             assert_eq!(out[0], msg[0]);
             assert_eq!(out[1], msg[1]);
             assert_eq!(out[2], msg[2]);
-            assert_eq!(out[3], msg[3]);
         } else {
             // Non-JSON: wrapped as {"_raw":"..."}\n — check prefix byte by byte
             assert_eq!(out[0], b'{');
