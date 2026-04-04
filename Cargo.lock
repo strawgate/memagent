@@ -2356,6 +2356,7 @@ dependencies = [
  "criterion",
  "logfwd-arrow",
  "logfwd-test-utils",
+ "logfwd-types",
  "memchr",
  "memmap2",
  "proptest",
@@ -2454,6 +2455,13 @@ dependencies = [
  "regex",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "logfwd-types"
+version = "0.1.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]

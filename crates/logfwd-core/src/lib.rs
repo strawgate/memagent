@@ -26,7 +26,9 @@ pub mod json_scanner;
 /// OTLP protobuf encoding helpers and parsers.
 pub mod otlp;
 /// Pipeline state machine — typestate batch lifecycle + ordered offset tracking.
-pub mod pipeline;
+///
+/// Re-exported from [`logfwd_types::pipeline`] for backward compatibility.
+pub use logfwd_types::pipeline;
 /// Scanner configuration and field selection.
 pub mod scan_config;
 /// JSON-to-columnar scan loop.

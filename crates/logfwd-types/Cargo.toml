@@ -1,0 +1,15 @@
+[package]
+name = "logfwd-types"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true
