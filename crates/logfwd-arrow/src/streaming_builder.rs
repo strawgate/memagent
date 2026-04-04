@@ -1694,6 +1694,177 @@ mod tests {
             .unwrap();
         assert_eq!(arr.value(0), "world");
     }
+
+    #[test]
+    fn test_owned_empty_batch() {
+        let buf = bytes::Bytes::from_static(b"\n");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf);
+        let batch = b.finish_batch_owned().unwrap();
+        assert_eq!(batch.num_rows(), 0);
+    }
+
+    #[test]
+    fn test_owned_float_values() {
+        let buf = bytes::Bytes::from_static(b"unused");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf);
+        let idx = b.resolve_field(b"lat");
+        b.begin_row();
+        b.append_float_by_idx(idx, b"3.14");
+        b.end_row();
+        b.begin_row();
+        b.end_row(); // missing → null
+        let batch = b.finish_batch_owned().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        let col = batch
+            .column_by_name("lat")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert!((col.value(0) - 3.14).abs() < 1e-10);
+        assert!(col.is_null(1));
+    }
+
+    #[test]
+    fn test_owned_keep_raw() {
+        let json = b"{\"msg\":\"hi\"}\n";
+        let buf = bytes::Bytes::from(json.to_vec());
+        let mut b = StreamingBuilder::new(true);
+        b.begin_batch(buf.clone());
+        let idx = b.resolve_field(b"msg");
+        b.begin_row();
+        b.append_str_by_idx(idx, &buf[8..10]); // "hi"
+        b.append_raw(&buf[0..12]); // full line
+        b.end_row();
+        let batch = b.finish_batch_owned().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        let raw_col = batch.column_by_name("_raw").unwrap();
+        assert_eq!(*raw_col.data_type(), DataType::Utf8);
+        let arr = raw_col
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        assert_eq!(arr.value(0), "{\"msg\":\"hi\"}");
+    }
+
+    #[test]
+    fn test_owned_decoded_strings() {
+        // Simulate a JSON string with escape sequences that go through
+        // append_decoded_str_by_idx (decoded_buf path).
+        let json = b"hello world padding";
+        let buf = bytes::Bytes::from(json.to_vec());
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf.clone());
+        let idx = b.resolve_field(b"msg");
+        b.begin_row();
+        // Decoded string goes into decoded_buf, not the original buffer
+        b.append_decoded_str_by_idx(idx, b"decoded value");
+        b.end_row();
+        let batch = b.finish_batch_owned().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        let col = batch
+            .column_by_name("msg")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "decoded value");
+    }
+
+    /// Verify that finish_batch() and finish_batch_owned() produce the same
+    /// data (same values, same nulls) just with different string types
+    /// (Utf8View vs Utf8).
+    #[test]
+    fn test_finish_batch_equivalence() {
+        use arrow::array::{Array, StringViewArray};
+
+        let input = b"{\"name\":\"alice\",\"score\":95}\n{\"name\":\"bob\",\"extra\":\"x\"}\n{\"score\":100}\n";
+        let buf = bytes::Bytes::from(input.to_vec());
+
+        // Run through finish_batch (StringViewArray)
+        let mut b1 = StreamingBuilder::new(false);
+        b1.begin_batch(buf.clone());
+        populate_builder(&mut b1, &buf, input);
+        let view_batch = b1.finish_batch().unwrap();
+
+        // Run through finish_batch_owned (StringArray)
+        let mut b2 = StreamingBuilder::new(false);
+        b2.begin_batch(buf.clone());
+        populate_builder(&mut b2, &buf, input);
+        let owned_batch = b2.finish_batch_owned().unwrap();
+
+        // Same shape
+        assert_eq!(view_batch.num_rows(), owned_batch.num_rows());
+        assert_eq!(view_batch.num_columns(), owned_batch.num_columns());
+
+        // Same column names
+        let view_names: Vec<_> = view_batch.schema().fields().iter().map(|f| f.name().clone()).collect();
+        let owned_names: Vec<_> = owned_batch.schema().fields().iter().map(|f| f.name().clone()).collect();
+        assert_eq!(view_names, owned_names);
+
+        // Same values at every position
+        for name in &view_names {
+            let view_col = view_batch.column_by_name(name).unwrap();
+            let owned_col = owned_batch.column_by_name(name).unwrap();
+            assert_eq!(view_col.len(), owned_col.len(), "column {name} length mismatch");
+            for row in 0..view_col.len() {
+                assert_eq!(
+                    view_col.is_null(row),
+                    owned_col.is_null(row),
+                    "column {name} row {row} null mismatch"
+                );
+                if !view_col.is_null(row) {
+                    // Compare as string representation for type-agnostic comparison
+                    let view_val = array_value_to_string(view_col, row);
+                    let owned_val = array_value_to_string(owned_col, row);
+                    assert_eq!(
+                        view_val, owned_val,
+                        "column {name} row {row} value mismatch"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Populate a builder with multi-row input for equivalence testing.
+    fn populate_builder(b: &mut StreamingBuilder, buf: &bytes::Bytes, _input: &[u8]) {
+        // Row 0: {"name":"alice","score":95}
+        let idx_name = b.resolve_field(b"name");
+        let idx_score = b.resolve_field(b"score");
+        let idx_extra = b.resolve_field(b"extra");
+        b.begin_row();
+        b.append_str_by_idx(idx_name, &buf[9..14]); // "alice"
+        b.append_int_by_idx(idx_score, b"95");
+        b.end_row();
+        // Row 1: {"name":"bob","extra":"x"}
+        b.begin_row();
+        b.append_str_by_idx(idx_name, &buf[28..31]); // "bob" (approx offset)
+        b.append_str_by_idx(idx_extra, &buf[0..1]); // just "{"
+        b.end_row();
+        // Row 2: {"score":100}
+        b.begin_row();
+        b.append_int_by_idx(idx_score, b"100");
+        b.end_row();
+    }
+
+    fn array_value_to_string(col: &dyn Array, row: usize) -> String {
+        use arrow::array::StringViewArray;
+        if let Some(a) = col.as_any().downcast_ref::<arrow::array::StringArray>() {
+            return a.value(row).to_string();
+        }
+        if let Some(a) = col.as_any().downcast_ref::<StringViewArray>() {
+            return a.value(row).to_string();
+        }
+        if let Some(a) = col.as_any().downcast_ref::<Int64Array>() {
+            return a.value(row).to_string();
+        }
+        if let Some(a) = col.as_any().downcast_ref::<Float64Array>() {
+            return a.value(row).to_string();
+        }
+        format!("<unknown type at row {row}>")
+    }
 }
 
 #[cfg(kani)]
