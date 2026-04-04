@@ -29,6 +29,13 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Prevents a misbehaving sender from consuming unbounded memory.
 const MAX_LINE_LENGTH: usize = 1024 * 1024; // 1 MiB
 
+/// Maximum total bytes buffered across all client `client_data` vecs within a
+/// single `poll` call.  When this budget is exhausted we stop reading from
+/// further clients in that poll, deferring them to the next call.  This
+/// propagates TCP backpressure to senders and prevents OOM when many clients
+/// flood data faster than the pipeline can drain it (fix for #576).
+const MAX_TOTAL_BUFFERED_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+
 /// Derive a `SourceId` for a TCP connection from a monotonic counter.
 ///
 /// The counter is hashed to avoid trivially predictable identifiers and to
@@ -162,7 +169,19 @@ impl InputSource for TcpInput {
         // Per-client data buffers — only allocated when data arrives.
         let mut client_data: Vec<Option<Vec<u8>>> = vec![None; self.clients.len()];
 
+        // Running total of bytes stored in client_data during this poll.
+        // When this reaches MAX_TOTAL_BUFFERED_BYTES we stop reading from
+        // further clients (backpressure — fix for #576).
+        let mut total_buffered: usize = 0;
+
         for (i, client) in self.clients.iter_mut().enumerate() {
+            // If the global per-poll budget is exhausted, stop reading more
+            // clients this poll.  They will be read on the next poll call,
+            // which propagates TCP flow-control back to the senders.
+            if total_buffered >= MAX_TOTAL_BUFFERED_BYTES {
+                break;
+            }
+
             let mut got_data = false;
             loop {
                 match client.stream.read(&mut self.buf) {
@@ -200,6 +219,16 @@ impl InputSource for TcpInput {
                         client_data[i]
                             .get_or_insert_with(Vec::new)
                             .extend_from_slice(chunk);
+                        total_buffered += n;
+
+                        // We must store bytes we have already read from the
+                        // socket (discarding them would be data loss), so the
+                        // budget check necessarily happens after the increment.
+                        // The maximum overage is one READ_BUF_SIZE chunk
+                        // (64 KiB), which is negligible relative to 256 MiB.
+                        if total_buffered >= MAX_TOTAL_BUFFERED_BYTES {
+                            break;
+                        }
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
@@ -223,6 +252,8 @@ impl InputSource for TcpInput {
         // Build events before removing dead connections — we need client_data
         // indices to match the current clients vec.
         let mut events = Vec::new();
+
+        // Step 1: Data events.
         for (i, data) in client_data.into_iter().enumerate() {
             if let Some(bytes) = data {
                 if !bytes.is_empty() {
@@ -231,6 +262,20 @@ impl InputSource for TcpInput {
                         source_id: Some(self.clients[i].source_id),
                     });
                 }
+            }
+        }
+
+        // Step 2: EndOfFile events for every connection that is dying.
+        //
+        // A dying connection's SourceId may have an associated partial-line
+        // remainder in FramedInput.  Emitting EndOfFile (after any Data for
+        // the same source) signals FramedInput to flush that remainder so the
+        // last unterminated record is not silently dropped — fixes #804/#580.
+        for (i, &is_alive) in alive.iter().enumerate() {
+            if !is_alive {
+                events.push(InputEvent::EndOfFile {
+                    source_id: Some(self.clients[i].source_id),
+                });
             }
         }
 
@@ -295,12 +340,78 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
 
         let events = input.poll().unwrap();
-        assert_eq!(events.len(), 1);
+
+        // After the clean disconnect we expect both a Data event and an
+        // EndOfFile event.  The EndOfFile signals FramedInput to flush any
+        // partial-line remainder held for this SourceId.
+        let data_count = events
+            .iter()
+            .filter(|e| matches!(e, InputEvent::Data { .. }))
+            .count();
+        let eof_count = events
+            .iter()
+            .filter(|e| matches!(e, InputEvent::EndOfFile { .. }))
+            .count();
+        assert_eq!(data_count, 1, "expected 1 data event");
+        assert_eq!(eof_count, 1, "expected 1 EndOfFile event on disconnect");
 
         // Second poll should clean up the closed connection.
         let events = input.poll().unwrap();
         assert!(events.is_empty());
         assert!(input.clients.is_empty());
+    }
+
+    /// A TCP client that sends a partial line (no trailing newline) and then
+    /// disconnects must cause an EndOfFile event so that FramedInput can flush
+    /// the partial remainder — fixes #804 / #580.
+    #[test]
+    fn tcp_partial_line_on_disconnect_emits_eof() {
+        let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+
+        {
+            let mut client = StdTcpStream::connect(addr).unwrap();
+            // Intentionally no trailing newline — this is the partial line.
+            client.write_all(b"partial line without newline").unwrap();
+            client.flush().unwrap();
+        } // client drops here -> EOF
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+
+        let has_data = events
+            .iter()
+            .any(|e| matches!(e, InputEvent::Data { bytes, .. } if !bytes.is_empty()));
+        let has_eof = events
+            .iter()
+            .any(|e| matches!(e, InputEvent::EndOfFile { source_id } if source_id.is_some()));
+
+        assert!(has_data, "should have received the partial line bytes");
+        assert!(
+            has_eof,
+            "should emit EndOfFile on disconnect so FramedInput can flush the partial line"
+        );
+
+        // EndOfFile source_id must match the Data source_id.
+        let data_sid = events.iter().find_map(|e| {
+            if let InputEvent::Data { source_id, .. } = e {
+                *source_id
+            } else {
+                None
+            }
+        });
+        let eof_sid = events.iter().find_map(|e| {
+            if let InputEvent::EndOfFile { source_id } = e {
+                *source_id
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            data_sid, eof_sid,
+            "Data and EndOfFile must carry the same SourceId"
+        );
     }
 
     #[test]
