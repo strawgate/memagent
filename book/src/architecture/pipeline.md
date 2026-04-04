@@ -152,16 +152,17 @@ This design:
 
 ## Column naming conventions
 
-| Prefix | Purpose | Example |
+| Column | Purpose | Example |
 |--------|---------|---------|
-| `{field}_str` | String value from JSON | `message_str` |
-| `{field}_int` | Integer value from JSON | `status_int` |
-| `{field}_float` | Float value from JSON | `latency_float` |
+| `{field}` | Bare name, native Arrow type | `message` (Utf8View), `status` (Int64) |
+| `{field}` (conflict) | StructArray with typed children | `status: Struct { int: Int64, str: Utf8View }` |
 | `_raw` | Raw input line (optional) | `_raw` |
+| `_timestamp` | CRI timestamp (RFC 3339 string) | `_timestamp` |
+| `_stream` | CRI stream name | `_stream` |
 | `_resource_*` | Source/resource metadata | `_resource_k8s_pod_name` |
 
-Type conflicts produce separate columns: `status_int` and `status_str`
-can coexist.
+Type conflicts produce a single `StructArray` column with typed children,
+not separate flat columns.
 
 ## Arrow IPC segment format
 

@@ -16,12 +16,16 @@
 | [`dev-docs/CODE_STYLE.md`](dev-docs/CODE_STYLE.md) | Naming, error handling, hot path rules |
 | [`dev-docs/SCANNER_CONTRACT.md`](dev-docs/SCANNER_CONTRACT.md) | Scanner input requirements, output guarantees, limitations |
 | [`dev-docs/PR_PROCESS.md`](dev-docs/PR_PROCESS.md) | Copilot assignment, PR triage, review criteria, merge process |
-| [`dev-docs/PHASES.md`](dev-docs/PHASES.md) | Roadmap — what's done, what's in progress, what's next |
-| [`dev-docs/references/arrow-v54.md`](dev-docs/references/arrow-v54.md) | RecordBatch, StringViewArray, schema evolution |
-| [`dev-docs/references/datafusion-v45.md`](dev-docs/references/datafusion-v45.md) | SessionContext, MemTable, UDF creation, SQL execution |
+| [Roadmap (GitHub issue #889)](https://github.com/strawgate/memagent/issues/889) | What's done, what's in progress, what's next |
+| [`dev-docs/references/arrow.md`](dev-docs/references/arrow.md) | RecordBatch, StringViewArray, schema evolution |
+| [`dev-docs/references/datafusion.md`](dev-docs/references/datafusion.md) | SessionContext, MemTable, UDF creation, SQL execution |
 | [`dev-docs/references/tokio-async-patterns.md`](dev-docs/references/tokio-async-patterns.md) | Runtime, bounded channels, CancellationToken, select! safety |
 | [`dev-docs/references/opentelemetry-otlp.md`](dev-docs/references/opentelemetry-otlp.md) | OTLP protobuf nesting, HTTP vs gRPC |
 | [`dev-docs/references/kani-verification.md`](dev-docs/references/kani-verification.md) | Kani proofs, function contracts, solver selection |
+
+## User docs
+
+User-facing documentation lives in `book/src/`. See `book/src/SUMMARY.md` for the full table of contents.
 
 ## Issue labels
 

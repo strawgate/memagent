@@ -39,7 +39,7 @@ input:
   path: /var/log/app/*.log
   format: json
 
-transform: SELECT level_str, message_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
@@ -55,7 +55,7 @@ pipelines:
       type: file
       path: /var/log/pods/**/*.log
       format: cri
-    transform: SELECT * FROM logs WHERE level_str = 'ERROR'
+    transform: SELECT * FROM logs WHERE level = 'ERROR'
     output:
       type: otlp
       endpoint: otel-collector:4317
@@ -75,9 +75,9 @@ pipelines:
 | Type | Description | Status |
 |------|-------------|--------|
 | `file` | Tail log files by glob pattern | Implemented |
-| `tcp` | TCP listener | Not yet |
-| `udp` | UDP listener | Not yet |
-| `otlp` | Receive OTLP logs | Not yet |
+| `tcp` | TCP listener | Implemented |
+| `udp` | UDP listener | Implemented |
+| `otlp` | Receive OTLP logs | Implemented |
 
 ### Output types
 
@@ -86,26 +86,26 @@ pipelines:
 | `otlp` | OTLP protobuf over HTTP/gRPC | Implemented |
 | `http` | JSON lines over HTTP | Implemented |
 | `stdout` | Print to stdout (json or text) | Implemented |
-| `elasticsearch` | Elasticsearch bulk API | Stub |
-| `loki` | Grafana Loki push API | Stub |
+| `elasticsearch` | Elasticsearch bulk API | Implemented |
+| `loki` | Grafana Loki push API | Implemented |
 | `parquet` | Parquet files | Stub |
 
 ### SQL transforms
 
-Transforms use DataFusion SQL. Column names follow the pattern `{field}_{type}`:
+Transforms use DataFusion SQL. Column names use bare field names by default:
 
 ```sql
 -- Filter by level
-SELECT * FROM logs WHERE level_str = 'ERROR'
+SELECT * FROM logs WHERE level = 'ERROR'
 
 -- Extract fields
-SELECT level_str, status_int, duration_ms_float FROM logs
+SELECT level, status, duration_ms FROM logs
 
 -- Type casting
-SELECT int(status_str) AS status_int FROM logs
+SELECT int(status) AS status_code FROM logs
 
 -- Pattern matching
-SELECT grok('%{IP:client_ip} %{WORD:method}', message_str) FROM logs
+SELECT grok('%{IP:client_ip} %{WORD:method}', message) FROM logs
 ```
 
 Available UDFs: `int()`, `float()`, `grok()`, `regexp_extract()`.
@@ -128,7 +128,7 @@ enrichment:
 
 ```sql
 SELECT l.*, k.namespace, k.pod_name
-FROM logs l JOIN k8s k ON l._file_str = k.log_path_prefix
+FROM logs l JOIN k8s k ON l._source_path = k.log_path_prefix
 ```
 
 ## CLI
@@ -146,8 +146,7 @@ logfwd --version                     Print version
 
 | Guide | Description |
 |-------|-------------|
-| [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, Kubernetes DaemonSet, resource sizing, OTLP integration |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common errors, diagnosing dropped data, /api/pipelines, debug mode |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Pipeline data flow, crate map, scanner internals |
-| [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands; hard-won implementation notes |
+| [Configuration Reference](./config/reference.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
+| [Deployment](./deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing, OTLP integration |
+| [Troubleshooting](./troubleshooting.md) | Common errors, diagnosing dropped data, diagnostics API, debug mode |
+| [SQL Transforms](./config/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |

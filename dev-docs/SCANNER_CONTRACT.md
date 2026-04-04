@@ -64,16 +64,16 @@ Each JSON field `<name>` produces columns based on observed types:
 | Float (only)    | `<name>`    | `Float64`   |
 | String (only)   | `<name>`    | `Utf8` / `Utf8View` |
 
-**Multiple types (conflict):** suffixed columns per observed type.
+**Multiple types (conflict):** a single `StructArray` column with typed children.
 
-| Observed type   | Column name       | Arrow type  |
-|-----------------|-------------------|-------------|
-| Integer         | `<name>_int`      | `Int64`     |
-| Float           | `<name>_float`    | `Float64`   |
-| String / bool / nested object or array | `<name>_str` | `Utf8` / `Utf8View` |
+| Observed types  | Column name | Arrow type  |
+|-----------------|-------------|-------------|
+| Integer + String | `<name>`   | `Struct { int: Int64, str: Utf8View }` |
+| All three       | `<name>`   | `Struct { int: Int64, float: Float64, str: Utf8View }` |
 
-Suffixed columns only appear when a field has multiple types across rows
-within the same batch.
+Conflict structs are detected by `is_conflict_struct()` (child fields named
+from `{"int", "float", "str", "bool"}`). They only appear when a field has
+multiple types across rows within the same batch.
 
 | Special column  | Description       | Arrow type  |
 |-----------------|-------------------|-------------|
@@ -97,12 +97,12 @@ valid JSON object).
 
 If the same field name appears as different JSON types across rows — for
 example `"status": 200` in one row and `"status": "OK"` in another — the
-scanner produces **separate suffixed columns** for each type that was observed:
-`status_int` and `status_str` in this case.  Within each typed column the rows
-that did not supply that type are null.
+builder produces a single **StructArray conflict column** with typed children:
+`status: Struct { int: Int64, str: Utf8View }`. Within each child array the
+rows that did not supply that type are null.
 
 If a field has only one type across all rows in the batch, it gets a bare
-column name with no suffix (e.g., `status` as `Int64`).
+column name with the native Arrow type (e.g., `status` as `Int64`).
 
 ### Duplicate keys
 
@@ -128,11 +128,9 @@ fields.
 ### Batch reuse
 
 Both `SimdScanner` and `StreamingSimdScanner` can be reused across batches.
-Each call to `scan()` resets the underlying builder (via `begin_batch()` on the
-concrete builder type) and produces an independent `RecordBatch`; schema and
-data from previous batches are not carried over. Note that `begin_batch()` is
-not part of the `ScanBuilder` trait — it is a method on the concrete builder
-types (`StreamingBuilder`, `StorageBuilder`) called by the scanner wrappers.
+Each call to `scan()` resets builder state internally and produces an
+independent `RecordBatch`; schema and data from previous batches are not
+carried over.
 
 ---
 

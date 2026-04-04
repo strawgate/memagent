@@ -87,7 +87,7 @@ let sink = factory.create()?;
 
 **Filter by field:**
 ```
-FROM logs | WHERE status_int >= 500 | LIMIT 100
+FROM logs | WHERE status >= 500 | LIMIT 100
 ```
 
 **Projection (select specific fields):**
@@ -108,7 +108,7 @@ FROM logs
 ```
 FROM logs
 | WHERE timestamp > "2024-01-01"
-| EVAL is_error = status_int >= 400
+| EVAL is_error = status >= 400
 | STATS error_count = count(is_error) BY service
 | SORT error_count DESC
 | LIMIT 10

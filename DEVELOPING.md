@@ -4,13 +4,17 @@
 
 ```
 crates/
-  logfwd/              Binary crate. CLI, pipeline orchestration.
-  logfwd-core/         Scanner, builders, parsers, diagnostics. The hot path.
+  logfwd/              Binary crate. CLI, async pipeline orchestration.
+  logfwd-core/         Proven kernel. Scanner, parsers, pipeline state machine, OTLP encoding. no_std.
+  logfwd-arrow/        Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
   logfwd-config/       YAML config parsing and validation.
-  logfwd-transform/    DataFusion SQL transforms, UDFs (grok, regexp_extract).
-  logfwd-output/       Output sinks (OTLP, JSON lines, HTTP, stdout).
+  logfwd-io/           I/O layer. File tailing, TCP/UDP/OTLP inputs, checkpointing, diagnostics.
+  logfwd-transform/    DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup).
+  logfwd-output/       Output sinks (OTLP, Elasticsearch, Loki, JSON lines, stdout).
   logfwd-bench/        Criterion benchmarks for the scanner pipeline.
   logfwd-competitive-bench/  Comparative benchmarks vs other log agents.
+  logfwd-test-utils/   Shared test utilities.
+  logfwd-ebpf-proto/   eBPF log capture protocol definitions (experimental).
 ```
 
 ## Build, test, lint, bench, fuzz

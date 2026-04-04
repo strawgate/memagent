@@ -91,14 +91,14 @@ as a "fix" — is a behavior change that will silently alter query results for
 operators. Require an explicit ADR in `DESIGN.md`, a `CONFIG_REFERENCE.md` update,
 and an announcement in the PR description that this is a breaking semantic change.
 
-Type conflict column names use double-underscore suffixes: when a field named
-"status" appears as both an integer and a string in the same batch, the columns
-are named `status__int` and `status__str` (not `status_int` / `status_str` — those
-were the old single-underscore names). Any PR that changes the suffix separator,
-the suffix vocabulary, or the conflict detection logic must: (1) update
-`docs/COLUMN_NAMING.md` with examples, (2) update the `logfwd.conflict_groups`
-metadata schema description, and (3) check whether the SQL rewriter (currently
-pending deletion in Phase 10c) or any existing tests reference the old format.
+Type conflict columns use Arrow `StructArray` format: when a field named
+"status" appears as both an integer and a string in the same batch, the column
+is `status: Struct { int: Int64, str: Utf8View }`. Conflict structs are
+detected by `is_conflict_struct()` in `logfwd-arrow/src/conflict_schema.rs`.
+Any PR that changes the conflict detection logic, the child field names, or
+the `normalize_conflict_columns()` SQL flattening must: (1) update the
+"Column naming convention" section in `book/src/config/reference.md` with
+examples, and (2) check whether existing tests reference the old format.
 
 
 ## No Feature Flags, No Dead Code, No Speculative Abstractions
