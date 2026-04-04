@@ -139,7 +139,7 @@ data source is required. The generator produces records with the following field
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `listen` | string | No | `""` (unlimited) | Target events per second as a decimal integer string, e.g. `"50000"`. Omit or leave empty to run as fast as possible. Note: this field reuses the `listen` key shared with network input types. |
+| `listen` | string | No | omitted (unlimited) | Target events per second as a decimal integer string, e.g. `"50000"`. Omit this field to run as fast as possible. Note: this field reuses the `listen` key shared with network input types. |
 
 ```yaml
 input:
