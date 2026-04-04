@@ -86,10 +86,8 @@ impl ElasticsearchAsyncSink {
         );
 
         let cols = build_col_infos(batch);
-        // Check normalized JSON output names (field_name strips type suffixes like
-        // `_str`/`_int`), not raw Arrow field names. A column `@timestamp_str` is
-        // serialized as `@timestamp`, so we must check the normalized name to avoid
-        // injecting a duplicate timestamp key into the document.
+        // Check whether any output field is named `@timestamp` or `_timestamp`
+        // to avoid injecting a duplicate timestamp key into the document.
         let has_timestamp_col = cols
             .iter()
             .any(|c| c.field_name == "@timestamp" || c.field_name == "_timestamp");
@@ -589,8 +587,8 @@ mod tests {
     #[test]
     fn serialize_batch_basic() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("level_str", DataType::Utf8, false),
-            Field::new("status_int", DataType::Int64, false),
+            Field::new("level", DataType::Utf8, false),
+            Field::new("status", DataType::Int64, false),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -643,7 +641,7 @@ mod tests {
     #[test]
     fn empty_batch_produces_empty_output() {
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "level_str",
+            "level",
             DataType::Utf8,
             false,
         )]));
@@ -813,14 +811,14 @@ mod snapshot_tests {
         )
     }
 
-    /// Snapshot: basic multi-type batch (level_str, status_int, duration_float).
-    /// Regression guard: field name normalization + type serialization.
+    /// Snapshot: basic multi-type batch (level, status, duration_ms).
+    /// Regression guard: field name preservation + type serialization.
     #[test]
     fn snapshot_basic_multi_type_batch() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("level_str", DataType::Utf8, false),
-            Field::new("status_int", DataType::Int64, false),
-            Field::new("duration_ms_float", DataType::Float64, false),
+            Field::new("level", DataType::Utf8, false),
+            Field::new("status", DataType::Int64, false),
+            Field::new("duration_ms", DataType::Float64, false),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -843,8 +841,8 @@ mod snapshot_tests {
     #[test]
     fn snapshot_nullable_columns() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("msg_str", DataType::Utf8, true),
-            Field::new("code_int", DataType::Int64, true),
+            Field::new("msg", DataType::Utf8, true),
+            Field::new("code", DataType::Int64, true),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -866,11 +864,7 @@ mod snapshot_tests {
     /// Regression guard: escape_json correctness.
     #[test]
     fn snapshot_special_char_strings() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "msg_str",
-            DataType::Utf8,
-            false,
-        )]));
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)]));
         let batch = RecordBatch::try_new(
             schema,
             vec![Arc::new(StringArray::from(vec![
@@ -893,8 +887,8 @@ mod snapshot_tests {
     #[test]
     fn snapshot_all_null_fields() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("msg_str", DataType::Utf8, true),
-            Field::new("code_int", DataType::Int64, true),
+            Field::new("msg", DataType::Utf8, true),
+            Field::new("code", DataType::Int64, true),
         ]));
         let batch = RecordBatch::try_new(
             schema,

@@ -91,29 +91,6 @@ pub trait OutputSink: Send {
 }
 
 // ---------------------------------------------------------------------------
-// Column naming helpers
-// ---------------------------------------------------------------------------
-
-/// Parse a typed column name into (field_name, type_suffix).
-///
-/// "duration_ms_int" -> ("duration_ms", "int")
-/// "level_str"       -> ("level", "str")
-/// "_raw"            -> ("_raw", "")
-///
-/// Deprecated: the flat-suffix scheme is being replaced by struct conflict
-/// columns.  This function is kept for backward compatibility with
-/// `otlp_sink.rs` column-role detection.
-pub fn parse_column_name(col_name: &str) -> (&str, &str) {
-    if let Some(pos) = col_name.rfind('_') {
-        let suffix = &col_name[pos + 1..];
-        if suffix == "str" || suffix == "int" || suffix == "float" {
-            return (&col_name[..pos], suffix);
-        }
-    }
-    (col_name, "")
-}
-
-// ---------------------------------------------------------------------------
 // Struct conflict column helpers
 // ---------------------------------------------------------------------------
 
@@ -267,10 +244,10 @@ pub(crate) fn coalesce_as_str(batch: &RecordBatch, row: usize, col: &ColInfo) ->
 
 /// Build a grouped, ordered list of output fields from a RecordBatch schema.
 ///
-/// Handles both struct conflict columns (`status: Struct { int, str }`) and
-/// legacy flat typed columns (`status_int`, `status_str`).  The returned
-/// `ColInfo` items contain two independently ordered variant lists for the
-/// two coalesce strategies.
+/// Handles struct conflict columns (`status: Struct { int, str }`) and plain
+/// flat columns.  Flat column names are used verbatim — no suffix stripping.
+/// The returned `ColInfo` items contain two independently ordered variant
+/// lists for the two coalesce strategies (JSON and string).
 pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
     let schema = batch.schema();
     let mut infos: Vec<ColInfo> = Vec::new();
@@ -308,11 +285,13 @@ pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
                 });
             }
             dt => {
-                // Plain flat column (may be a legacy `_int`/`_str` suffixed column
-                // OR a post-SQL Utf8 coalesced column — both handled identically).
-                let (field_name, _) = parse_column_name(field.name().as_str());
-                // Check if there's already a ColInfo for this logical field name
-                // (for legacy flat `status_int` + `status_str` pairs).
+                // Plain flat column — use the column name verbatim.
+                // The scanner no longer produces `_int`/`_str`/`_float` suffixed
+                // flat columns; single-type fields use the bare JSON key name and
+                // multi-type conflicts use StructArray.  User-defined SQL aliases
+                // (e.g. `SELECT duration_ms_int AS dur_int`) must be preserved
+                // exactly — stripping the suffix would mangle the alias (#705).
+                let field_name = field.name().as_str();
                 if let Some(existing) = infos.iter_mut().find(|c| c.field_name == field_name) {
                     existing.json_variants.push(ColVariant::Flat {
                         col_idx,
@@ -816,8 +795,8 @@ mod tests {
 
     fn make_test_batch() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("level_str", DataType::Utf8, true),
-            Field::new("status_int", DataType::Int64, true),
+            Field::new("level", DataType::Utf8, true),
+            Field::new("status", DataType::Int64, true),
         ]));
         let level = StringArray::from(vec![Some("ERROR"), Some("INFO")]);
         let status = Int64Array::from(vec![Some(500), Some(200)]);
@@ -829,18 +808,6 @@ mod tests {
             resource_attrs: Arc::default(),
             observed_time_ns: 1_700_000_000_000_000_000,
         }
-    }
-
-    #[test]
-    fn test_parse_column_name() {
-        assert_eq!(parse_column_name("status_int"), ("status", "int"));
-        assert_eq!(parse_column_name("level_str"), ("level", "str"));
-        assert_eq!(
-            parse_column_name("duration_ms_float"),
-            ("duration_ms", "float")
-        );
-        assert_eq!(parse_column_name("_raw"), ("_raw", ""));
-        assert_eq!(parse_column_name("plain"), ("plain", ""));
     }
 
     #[test]
@@ -961,10 +928,10 @@ mod tests {
     #[test]
     fn test_otlp_encoding() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("timestamp_str", DataType::Utf8, true),
-            Field::new("level_str", DataType::Utf8, true),
-            Field::new("message_str", DataType::Utf8, true),
-            Field::new("status_int", DataType::Int64, true),
+            Field::new("timestamp", DataType::Utf8, true),
+            Field::new("level", DataType::Utf8, true),
+            Field::new("message", DataType::Utf8, true),
+            Field::new("status", DataType::Int64, true),
         ]));
         let ts = StringArray::from(vec![Some("2024-01-15T10:30:00Z")]);
         let level = StringArray::from(vec![Some("ERROR")]);
@@ -1050,7 +1017,7 @@ mod tests {
     fn test_stdout_text_format() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("_raw", DataType::Utf8, true),
-            Field::new("level_str", DataType::Utf8, true),
+            Field::new("level", DataType::Utf8, true),
         ]));
         let raw = StringArray::from(vec![Some("original log line")]);
         let level = StringArray::from(vec![Some("INFO")]);
@@ -1069,8 +1036,10 @@ mod tests {
     }
 
     #[test]
-    fn test_type_preference_dedup() {
-        // When both status_int and status_str exist, int should win.
+    fn test_distinct_column_names_both_emitted() {
+        // Columns with different names are separate fields, even if they share
+        // a base-name prefix.  The old suffix-stripping merged these; now each
+        // column name is preserved verbatim.
         let schema = Arc::new(Schema::new(vec![
             Field::new("status_str", DataType::Utf8, true),
             Field::new("status_int", DataType::Int64, true),
@@ -1089,16 +1058,16 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         sink.write_batch_to(&batch, &meta, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
-        // Should have integer 500, not string "500"
-        assert!(output.contains("\"status\":500"), "got: {}", output);
-        // Should NOT have the string version
-        assert!(!output.contains("\"status\":\"500\""), "got: {}", output);
+        let v: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        // Both fields present under their original column names.
+        assert_eq!(v["status_str"], "500", "got: {output}");
+        assert_eq!(v["status_int"], 500, "got: {output}");
     }
 
     #[test]
     fn test_float_column_json() {
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "duration_ms_float",
+            "duration_ms",
             DataType::Float64,
             true,
         )]));
@@ -1472,10 +1441,7 @@ mod write_row_json_tests {
 
     #[test]
     fn basic_string_field() {
-        let batch = make_batch(vec![(
-            "msg_str",
-            Arc::new(StringArray::from(vec!["hello"])),
-        )]);
+        let batch = make_batch(vec![("msg", Arc::new(StringArray::from(vec!["hello"])))]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
         assert_eq!(v["msg"], "hello");
@@ -1483,7 +1449,7 @@ mod write_row_json_tests {
 
     #[test]
     fn integer_field() {
-        let batch = make_batch(vec![("status_int", Arc::new(Int64Array::from(vec![200])))]);
+        let batch = make_batch(vec![("status", Arc::new(Int64Array::from(vec![200])))]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
         assert_eq!(v["status"], 200);
@@ -1493,7 +1459,7 @@ mod write_row_json_tests {
     fn float_field() {
         let expected = std::f64::consts::PI;
         let batch = make_batch(vec![(
-            "duration_float",
+            "duration",
             Arc::new(Float64Array::from(vec![expected])),
         )]);
         let json = render(&batch, 0);
@@ -1504,7 +1470,7 @@ mod write_row_json_tests {
     #[test]
     fn null_values_preserved() {
         let batch = make_batch(vec![(
-            "msg_str",
+            "msg",
             Arc::new(StringArray::from(vec![Some("hello"), None])),
         )]);
         let json0 = render(&batch, 0);
@@ -1521,7 +1487,7 @@ mod write_row_json_tests {
     #[test]
     fn string_escaping_quotes_and_backslash() {
         let batch = make_batch(vec![(
-            "msg_str",
+            "msg",
             Arc::new(StringArray::from(vec![r#"say "hello" and \ more"#])),
         )]);
         let json = render(&batch, 0);
@@ -1533,7 +1499,7 @@ mod write_row_json_tests {
     fn string_escaping_control_chars() {
         // Null byte and other control chars must be \uXXXX escaped
         let input = "before\x00after\x01\x1f";
-        let batch = make_batch(vec![("msg_str", Arc::new(StringArray::from(vec![input])))]);
+        let batch = make_batch(vec![("msg", Arc::new(StringArray::from(vec![input])))]);
         let json = render(&batch, 0);
         // Must be valid JSON
         let v: serde_json::Value =
@@ -1544,7 +1510,7 @@ mod write_row_json_tests {
     #[test]
     fn string_escaping_newline_tab_cr() {
         let batch = make_batch(vec![(
-            "msg_str",
+            "msg",
             Arc::new(StringArray::from(vec!["line1\nline2\ttab\rreturn"])),
         )]);
         let json = render(&batch, 0);
@@ -1590,7 +1556,7 @@ mod write_row_json_tests {
     #[test]
     fn float_infinity_nan_emit_null() {
         let batch = make_batch(vec![(
-            "val_float",
+            "val",
             Arc::new(Float64Array::from(vec![
                 f64::INFINITY,
                 f64::NEG_INFINITY,
@@ -1617,9 +1583,9 @@ mod write_row_json_tests {
     #[test]
     fn multiple_fields_valid_json() {
         let batch = make_batch(vec![
-            ("level_str", Arc::new(StringArray::from(vec!["INFO"]))),
-            ("status_int", Arc::new(Int64Array::from(vec![200]))),
-            ("duration_float", Arc::new(Float64Array::from(vec![1.5]))),
+            ("level", Arc::new(StringArray::from(vec!["INFO"]))),
+            ("status", Arc::new(Int64Array::from(vec![200]))),
+            ("duration", Arc::new(Float64Array::from(vec![1.5]))),
         ]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
@@ -1628,29 +1594,17 @@ mod write_row_json_tests {
         assert_eq!(v["duration"], 1.5);
     }
 
-    /// Regression: when a field has both int and str variants across rows,
-    /// the old dedup picked one column and silently dropped the other.
-    /// Now both variants are kept, and the first non-null wins per row.
+    /// When a field has both int and str variants, the struct conflict column
+    /// pattern preserves both.  The first non-null variant wins per row.
     #[test]
-    fn mixed_type_field_no_data_loss() {
-        // Row 0: status is integer 200 (int column populated, str null)
-        // Row 1: status is string "ok" (str column populated, int null)
-        let batch = make_batch(vec![
-            (
-                "status_int",
-                Arc::new(Int64Array::from(vec![Some(200), None])),
-            ),
-            (
-                "status_str",
-                Arc::new(StringArray::from(vec![None, Some("ok")])),
-            ),
-        ]);
-        // Row 0: should get the integer value
+    fn mixed_type_struct_conflict_no_data_loss() {
+        // Row 0: status.int=200, status.str=null → integer wins
+        // Row 1: status.int=null, status.str="ok" → string wins
+        let batch = make_int_str_struct_batch(vec![Some(200), None], vec![None, Some("ok")]);
         let json0 = render(&batch, 0);
         let v0: serde_json::Value = serde_json::from_str(&json0).unwrap();
         assert_eq!(v0["status"], 200, "row 0 should be integer 200");
 
-        // Row 1: should get the string value — NOT be missing
         let json1 = render(&batch, 1);
         let v1: serde_json::Value = serde_json::from_str(&json1).unwrap();
         assert_eq!(v1["status"], "ok", "row 1 should be string 'ok'");
@@ -1674,10 +1628,7 @@ mod write_row_json_tests {
     /// Float values like 1.0 should stay as numbers, not become strings.
     #[test]
     fn float_roundtrip_preserves_type() {
-        let batch = make_batch(vec![(
-            "score_float",
-            Arc::new(Float64Array::from(vec![1.0])),
-        )]);
+        let batch = make_batch(vec![("score", Arc::new(Float64Array::from(vec![1.0])))]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(
@@ -1955,6 +1906,32 @@ mod write_row_json_tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["level"], "INFO");
     }
+
+    /// Regression for #705: user-defined SQL aliases ending in `_int`, `_str`,
+    /// or `_float` must appear verbatim in JSON output, not be stripped.
+    #[test]
+    fn user_defined_alias_preserved_verbatim() {
+        let batch = make_batch(vec![
+            ("dur_int", Arc::new(Int64Array::from(vec![42]))),
+            ("label_str", Arc::new(StringArray::from(vec!["hello"]))),
+            ("score_float", Arc::new(Float64Array::from(vec![3.14]))),
+        ]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        // Aliases must NOT be mangled — "dur_int" stays "dur_int", not "dur".
+        assert_eq!(
+            v["dur_int"], 42,
+            "alias 'dur_int' must be preserved, got: {json}"
+        );
+        assert_eq!(
+            v["label_str"], "hello",
+            "alias 'label_str' must be preserved, got: {json}"
+        );
+        assert!(
+            (v["score_float"].as_f64().unwrap() - 3.14).abs() < 0.01,
+            "alias 'score_float' must be preserved, got: {json}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1980,7 +1957,7 @@ mod write_row_json_proptests {
             values in prop::collection::vec(any::<Option<i64>>(), 1..20usize),
         ) {
             let schema = Arc::new(Schema::new(vec![
-                Field::new("count_int", DataType::Int64, true),
+                Field::new("count", DataType::Int64, true),
             ]));
             let arr: Int64Array = values.iter().copied().collect();
             let batch = RecordBatch::try_new(
@@ -1996,9 +1973,9 @@ mod write_row_json_proptests {
             }
         }
 
-        /// Type-suffix stripping: _int suffix → field name without suffix.
+        /// Column names are preserved verbatim — no suffix stripping.
         #[test]
-        fn prop_int_field_name_strips_suffix(
+        fn prop_int_field_name_preserved_verbatim(
             raw_values in prop::collection::vec(any::<i64>(), 1..5usize),
             // Only lowercase ASCII + underscore, no leading digit
             field_base in "[a-z][a-z0-9_]{0,15}",
@@ -2014,28 +1991,24 @@ mod write_row_json_proptests {
                 let json_str = render_row(&batch, row);
                 let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
                 let obj = parsed.as_object().unwrap();
-                // Normalized name must exist, raw name must NOT exist
+                // Column name must appear verbatim (no suffix stripping)
                 prop_assert!(
-                    obj.contains_key(field_base.as_str()),
-                    "normalized field '{field_base}' must be present; got keys: {:?}",
+                    obj.contains_key(field_name.as_str()),
+                    "field '{field_name}' must be present verbatim; got keys: {:?}",
                     obj.keys().collect::<Vec<_>>()
-                );
-                prop_assert!(
-                    !obj.contains_key(field_name.as_str()),
-                    "raw field '{field_name}' must NOT appear in output"
                 );
                 // Value must round-trip
                 prop_assert_eq!(
-                    obj[field_base.as_str()].as_i64(),
+                    obj[field_name.as_str()].as_i64(),
                     Some(expected_val),
                     "integer value must round-trip"
                 );
             }
         }
 
-        /// Type-suffix stripping: _str suffix → field name without suffix.
+        /// Column names are preserved verbatim — no suffix stripping for _str.
         #[test]
-        fn prop_str_field_name_strips_suffix(
+        fn prop_str_field_name_preserved_verbatim(
             raw_values in prop::collection::vec(
                 proptest::option::of("[^\n\r]{0,50}"),
                 1..5usize,
@@ -2055,24 +2028,24 @@ mod write_row_json_proptests {
                     .unwrap_or_else(|_| panic!("row {row}: invalid JSON: {json_str}"));
                 let obj = parsed.as_object().unwrap();
                 prop_assert!(
-                    obj.contains_key(field_base.as_str()),
-                    "normalized field '{field_base}' must be present"
+                    obj.contains_key(field_name.as_str()),
+                    "field '{field_name}' must be present verbatim"
                 );
                 match expected_val {
                     Some(s) => prop_assert_eq!(
-                        obj[field_base.as_str()].as_str(),
+                        obj[field_name.as_str()].as_str(),
                         Some(s.as_str()),
                         "string value must round-trip"
                     ),
                     None => prop_assert!(
-                        obj[field_base.as_str()].is_null(),
+                        obj[field_name.as_str()].is_null(),
                         "null must serialize as JSON null"
                     ),
                 }
             }
         }
 
-        /// float field round-trip: _float suffix stripped, value preserved.
+        /// float field round-trip: column name preserved verbatim, value preserved.
         #[test]
         fn prop_float_field_roundtrip(
             raw_values in prop::collection::vec(
@@ -2094,8 +2067,8 @@ mod write_row_json_proptests {
                 let parsed: serde_json::Value = serde_json::from_str(&json_str)
                     .unwrap_or_else(|_| panic!("row {row}: invalid JSON: {json_str}"));
                 let obj = parsed.as_object().unwrap();
-                prop_assert!(obj.contains_key(field_base.as_str()));
-                let got = obj[field_base.as_str()].as_f64().unwrap();
+                prop_assert!(obj.contains_key(field_name.as_str()));
+                let got = obj[field_name.as_str()].as_f64().unwrap();
                 // Allow small floating-point round-trip epsilon
                 prop_assert!(
                     (got - expected_val).abs() <= expected_val.abs() * 1e-10 + 1e-10,
@@ -2114,7 +2087,7 @@ mod write_row_json_proptests {
             ),
         ) {
             let schema = Arc::new(Schema::new(vec![
-                Field::new("msg_str", DataType::Utf8, true),
+                Field::new("msg", DataType::Utf8, true),
             ]));
             let arr: StringArray = values.iter().map(|v| v.as_deref()).collect();
             let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
