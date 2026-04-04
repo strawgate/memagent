@@ -116,6 +116,21 @@ impl Default for ComponentStats {
 // Pipeline-level metrics (shared between pipeline thread and diagnostics)
 // ---------------------------------------------------------------------------
 
+/// In-flight batch being processed right now.
+pub struct ActiveBatch {
+    pub start_unix_ns: u64,
+    pub scan_ns: u64,
+    pub transform_ns: u64,
+    /// Current stage: "scan" | "transform" | "output"
+    pub stage: &'static str,
+    /// Unix ns when the current stage started (for frontend live duration)
+    pub stage_start_unix_ns: u64,
+    /// Worker id once assigned (-1 = not yet assigned / in queue)
+    pub worker_id: i64,
+    /// Unix ns when the worker actually started processing (0 = not yet)
+    pub output_start_unix_ns: u64,
+}
+
 /// Stats for a full pipeline. Dual-write: atomics for local endpoints,
 /// OTel counters for OTLP push.
 pub struct PipelineMetrics {
@@ -145,6 +160,10 @@ pub struct PipelineMetrics {
     /// Unix timestamp (nanoseconds) of the last successfully processed batch.
     /// Zero means no batch has been processed yet.
     pub last_batch_time_ns: AtomicU64,
+    /// Number of batches currently submitted to workers but not yet acked.
+    pub inflight_batches: AtomicU64,
+    pub active_batches: std::sync::Mutex<std::collections::HashMap<u64, ActiveBatch>>,
+    pub next_batch_id: AtomicU64,
     // OTel counters (for OTLP push)
     meter: Meter,
     otel_attrs: Vec<KeyValue>,
@@ -191,6 +210,9 @@ impl PipelineMetrics {
             transform_nanos_total: AtomicU64::new(0),
             output_nanos_total: AtomicU64::new(0),
             last_batch_time_ns: AtomicU64::new(0),
+            inflight_batches: AtomicU64::new(0),
+            active_batches: std::sync::Mutex::new(std::collections::HashMap::new()),
+            next_batch_id: AtomicU64::new(0),
             otel_transform_errors: meter.u64_counter("logfwd_transform_errors").build(),
             otel_batches: meter.u64_counter("logfwd_batches").build(),
             otel_batch_rows: meter.u64_counter("logfwd_batch_rows").build(),
@@ -317,6 +339,64 @@ impl PipelineMetrics {
     pub fn inc_scan_error(&self) {
         self.scan_errors_total.fetch_add(1, Ordering::Relaxed);
         self.otel_scan_errors.add(1, &self.otel_attrs);
+    }
+
+    pub fn alloc_batch_id(&self) -> u64 {
+        self.next_batch_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn begin_active_batch(&self, id: u64, start_unix_ns: u64) {
+        if let Ok(mut m) = self.active_batches.lock() {
+            m.insert(
+                id,
+                ActiveBatch {
+                    start_unix_ns,
+                    scan_ns: 0,
+                    transform_ns: 0,
+                    stage: "scan",
+                    stage_start_unix_ns: start_unix_ns,
+                    worker_id: -1,
+                    output_start_unix_ns: 0,
+                },
+            );
+        }
+    }
+
+    /// Called by the worker pool when a worker picks up a batch for output.
+    pub fn assign_worker_to_active_batch(&self, batch_id: u64, worker_id: usize, now_unix_ns: u64) {
+        if let Ok(mut m) = self.active_batches.lock() {
+            if let Some(b) = m.get_mut(&batch_id) {
+                b.worker_id = worker_id as i64;
+                b.output_start_unix_ns = now_unix_ns;
+                b.stage_start_unix_ns = now_unix_ns;
+            }
+        }
+    }
+
+    pub fn advance_active_batch(
+        &self,
+        id: u64,
+        next_stage: &'static str,
+        elapsed_ns: u64,
+        now_unix_ns: u64,
+    ) {
+        if let Ok(mut m) = self.active_batches.lock() {
+            if let Some(b) = m.get_mut(&id) {
+                match b.stage {
+                    "scan" => b.scan_ns = elapsed_ns,
+                    "transform" => b.transform_ns = elapsed_ns,
+                    _ => {}
+                }
+                b.stage = next_stage;
+                b.stage_start_unix_ns = now_unix_ns;
+            }
+        }
+    }
+
+    pub fn finish_active_batch(&self, id: u64) {
+        if let Ok(mut m) = self.active_batches.lock() {
+            m.remove(&id);
+        }
     }
 }
 
@@ -573,6 +653,7 @@ impl DiagnosticsServer {
         let mut total_transform_ns: u64 = 0;
         let mut total_output_ns: u64 = 0;
         let mut total_backpressure: u64 = 0;
+        let mut total_inflight: u64 = 0;
 
         for pm in &self.pipelines {
             for (_, _, stats) in &pm.inputs {
@@ -589,6 +670,7 @@ impl DiagnosticsServer {
             total_transform_ns += pm.transform_nanos_total.load(Ordering::Relaxed);
             total_output_ns += pm.output_nanos_total.load(Ordering::Relaxed);
             total_backpressure += pm.backpressure_stalls.load(Ordering::Relaxed);
+            total_inflight += pm.inflight_batches.load(Ordering::Relaxed);
         }
 
         // Include jemalloc stats if available.
@@ -601,7 +683,7 @@ impl DiagnosticsServer {
         };
 
         let body = format!(
-            r#"{{"uptime_sec":{:.3}{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{}{}}}"#,
+            r#"{{"uptime_sec":{:.3}{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{},"inflight_batches":{}{}}}"#,
             uptime_s,
             process_json,
             total_input_lines,
@@ -614,6 +696,7 @@ impl DiagnosticsServer {
             total_transform_ns as f64 / 1e9,
             total_output_ns as f64 / 1e9,
             total_backpressure,
+            total_inflight,
             mem_json,
         );
 
@@ -710,6 +793,15 @@ impl DiagnosticsServer {
                 let mut scan_rows = 0u64;
                 let mut transform_ns = 0u64;
                 let mut output_ns = 0u64;
+                let mut output_start_unix_ns = 0u64;
+                let mut worker_id: i64 = -1;
+                let mut send_ns = 0u64;
+                let mut recv_ns = 0u64;
+                let mut took_ms = 0u64;
+                let mut retries = 0u64;
+                let mut req_bytes = 0u64;
+                let mut cmp_bytes = 0u64;
+                let mut resp_bytes = 0u64;
                 if let Some(kids) = children.get(root.trace_id.as_str()) {
                     for kid in kids {
                         let kid_attr = |key: &str| -> u64 {
@@ -725,7 +817,23 @@ impl DiagnosticsServer {
                                 scan_rows = kid_attr("rows");
                             }
                             "transform" => transform_ns = kid.duration_ns,
-                            "output" => output_ns = kid.duration_ns,
+                            "output" => {
+                                output_ns = kid.duration_ns;
+                                output_start_unix_ns = kid.start_unix_ns;
+                                worker_id = kid
+                                    .attrs
+                                    .iter()
+                                    .find(|kv| kv[0] == "worker_id")
+                                    .and_then(|kv| kv[1].parse().ok())
+                                    .unwrap_or(-1);
+                                send_ns = kid_attr("send_ns");
+                                recv_ns = kid_attr("recv_ns");
+                                took_ms = kid_attr("took_ms");
+                                retries = kid_attr("retries");
+                                req_bytes = kid_attr("req_bytes");
+                                cmp_bytes = kid_attr("cmp_bytes");
+                                resp_bytes = kid_attr("resp_bytes");
+                            }
                             _ => {}
                         }
                     }
@@ -756,11 +864,20 @@ impl DiagnosticsServer {
                         \"scan_ns\":{scan},\
                         \"transform_ns\":{xfm},\
                         \"output_ns\":{out_ns},\
+                        \"output_start_unix_ns\":{out_st},\
                         \"scan_rows\":{sr},\
                         \"input_rows\":{ir},\
                         \"output_rows\":{or},\
                         \"bytes_in\":{bi},\
                         \"queue_wait_ns\":{qw},\
+                        \"worker_id\":{wid},\
+                        \"send_ns\":{snd},\
+                        \"recv_ns\":{rcv},\
+                        \"took_ms\":{tk},\
+                        \"retries\":{ret},\
+                        \"req_bytes\":{rb},\
+                        \"cmp_bytes\":{cb},\
+                        \"resp_bytes\":{rspb},\
                         \"flush_reason\":\"{fr}\",\
                         \"errors\":{err},\
                         \"status\":\"{status}\"\
@@ -772,15 +889,76 @@ impl DiagnosticsServer {
                     scan = scan_ns,
                     xfm = transform_ns,
                     out_ns = output_ns,
+                    out_st = output_start_unix_ns,
                     sr = scan_rows,
                     ir = input_rows,
                     or = output_rows,
                     bi = bytes_in,
                     qw = queue_wait_ns,
+                    wid = worker_id,
+                    snd = send_ns,
+                    rcv = recv_ns,
+                    tk = took_ms,
+                    ret = retries,
+                    rb = req_bytes,
+                    cb = cmp_bytes,
+                    rspb = resp_bytes,
                     fr = esc(flush_reason),
                     err = errors,
                     status = root.status,
                 );
+            }
+            // In-progress batches — live entries shown before completion.
+            for pm in &self.pipelines {
+                if let Ok(active) = pm.active_batches.lock() {
+                    for (id, b) in active.iter() {
+                        if !first {
+                            out.push(',');
+                        }
+                        first = false;
+                        let _ = write!(
+                            out,
+                            "{{\
+                                \"trace_id\":\"live-{id}\",\
+                                \"pipeline\":\"{pl}\",\
+                                \"start_unix_ns\":{st},\
+                                \"total_ns\":0,\
+                                \"scan_ns\":{scan},\
+                                \"transform_ns\":{xfm},\
+                                \"output_ns\":0,\
+                                \"output_start_unix_ns\":{out_st},\
+                                \"scan_rows\":0,\
+                                \"input_rows\":0,\
+                                \"output_rows\":0,\
+                                \"bytes_in\":0,\
+                                \"queue_wait_ns\":0,\
+                                \"worker_id\":{wid},\
+                                \"send_ns\":0,\
+                                \"recv_ns\":0,\
+                                \"took_ms\":0,\
+                                \"retries\":0,\
+                                \"req_bytes\":0,\
+                                \"cmp_bytes\":0,\
+                                \"resp_bytes\":0,\
+                                \"flush_reason\":\"\",\
+                                \"errors\":0,\
+                                \"status\":\"unset\",\
+                                \"in_progress\":true,\
+                                \"stage\":\"{stage}\",\
+                                \"stage_start_unix_ns\":{ss}\
+                            }}",
+                            id = id,
+                            pl = esc(&pm.name),
+                            st = b.start_unix_ns,
+                            scan = b.scan_ns,
+                            xfm = b.transform_ns,
+                            out_st = b.output_start_unix_ns,
+                            wid = b.worker_id,
+                            stage = b.stage,
+                            ss = b.stage_start_unix_ns,
+                        );
+                    }
+                }
             }
             out.push_str("]}");
             out
@@ -1067,10 +1245,13 @@ fn sample_metrics(
     let mut input_lines: u64 = 0;
     let mut input_bytes: u64 = 0;
     let mut output_lines: u64 = 0;
+    let mut output_bytes: u64 = 0;
     let mut output_errors: u64 = 0;
     let mut scan_ns: u64 = 0;
     let mut transform_ns: u64 = 0;
     let mut output_ns: u64 = 0;
+    let mut batches: u64 = 0;
+    let mut inflight_batches: u64 = 0;
 
     for pm in pipelines {
         for (_, _, s) in &pm.inputs {
@@ -1079,20 +1260,26 @@ fn sample_metrics(
         }
         for (_, _, s) in &pm.outputs {
             output_lines += s.lines();
+            output_bytes += s.bytes();
             output_errors += s.errors();
         }
         scan_ns += pm.scan_nanos_total.load(Ordering::Relaxed);
         transform_ns += pm.transform_nanos_total.load(Ordering::Relaxed);
         output_ns += pm.output_nanos_total.load(Ordering::Relaxed);
+        batches += pm.batches_total.load(Ordering::Relaxed);
+        inflight_batches += pm.inflight_batches.load(Ordering::Relaxed);
     }
 
     history.record("input_lines", input_lines as f64);
     history.record("input_bytes", input_bytes as f64);
     history.record("output_lines", output_lines as f64);
+    history.record("output_bytes", output_bytes as f64);
     history.record("output_errors", output_errors as f64);
     history.record("scan_sec", scan_ns as f64 / 1e9);
     history.record("transform_sec", transform_ns as f64 / 1e9);
     history.record("output_sec", output_ns as f64 / 1e9);
+    history.record("batches", batches as f64);
+    history.record("inflight_batches", inflight_batches as f64);
 
     if let Some((rss, cpu_user, cpu_sys)) = process_metrics() {
         history.record("rss_bytes", rss as f64);

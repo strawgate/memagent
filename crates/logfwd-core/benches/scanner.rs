@@ -1,6 +1,7 @@
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use logfwd_arrow::scanner::SimdScanner;
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
+use std::hint::black_box;
 
 // ===========================================================================
 // Data generators

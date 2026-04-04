@@ -251,9 +251,10 @@ impl Pipeline {
         let (max_workers, idle_timeout) = if factory.is_single_use() {
             (1, Duration::MAX) // never idle-expire the sole worker
         } else {
-            (4, Duration::from_secs(30)) // TODO: make configurable (#700)
+            (config.workers.unwrap_or(4), Duration::from_secs(30))
         };
-        let pool = OutputWorkerPool::new(factory, max_workers, idle_timeout);
+        let metrics = Arc::new(metrics);
+        let pool = OutputWorkerPool::new(factory, max_workers, idle_timeout, Arc::clone(&metrics));
 
         // Convert resource_attrs HashMap to a sorted Vec for deterministic output.
         let mut resource_attrs: Vec<(String, String)> = config
@@ -269,9 +270,9 @@ impl Pipeline {
             scanner,
             transform,
             pool,
-            metrics: Arc::new(metrics),
-            batch_target_bytes: 4 * 1024 * 1024,
-            batch_timeout: Duration::from_millis(100),
+            metrics,
+            batch_target_bytes: config.batch_target_bytes.unwrap_or(4 * 1024 * 1024),
+            batch_timeout: Duration::from_millis(config.batch_timeout_ms.unwrap_or(100)),
             poll_interval: Duration::from_millis(10),
             resource_attrs: Arc::new(resource_attrs),
             machine: Some(PipelineMachine::new().start()),
@@ -301,7 +302,12 @@ impl Pipeline {
     pub fn with_output(mut self, output: Box<dyn OutputSink>) -> Self {
         let name = self.name.clone();
         let factory = Arc::new(OnceFactory::new(name, output));
-        self.pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(30));
+        self.pool = OutputWorkerPool::new(
+            factory,
+            1,
+            Duration::from_secs(30),
+            Arc::clone(&self.metrics),
+        );
         self
     }
 
@@ -549,6 +555,9 @@ impl Pipeline {
             return;
         }
 
+        let batch_id = self.metrics.alloc_batch_id();
+        self.metrics.begin_active_batch(batch_id, now_nanos());
+
         let checkpoints = std::mem::take(batch_checkpoints);
 
         // Swap in a pre-allocated buffer to avoid losing the capacity
@@ -594,6 +603,7 @@ impl Pipeline {
                     // Must use `span` (the batch root) not `Span::current()` here —
                     // _entered is still live so current() points to the scan child span.
                     span.record("errors", 1u64);
+                    self.metrics.finish_active_batch(batch_id);
                     return;
                 }
             };
@@ -601,6 +611,12 @@ impl Pipeline {
             b
         }; // _entered and scan_span drop here → span ends
         let scan_elapsed = t0.elapsed();
+        self.metrics.advance_active_batch(
+            batch_id,
+            "transform",
+            scan_elapsed.as_nanos() as u64,
+            now_nanos(),
+        );
 
         // begin_send all tickets — machine now tracks them, MUST ack or reject.
         let sending: Vec<_> = if let Some(ref mut machine) = self.machine {
@@ -615,6 +631,7 @@ impl Pipeline {
         // were consumed. Without this, filtered data causes infinite re-read.
         if batch.num_rows() == 0 {
             self.ack_all_tickets(sending, true);
+            self.metrics.finish_active_batch(batch_id);
             return;
         }
 
@@ -639,10 +656,20 @@ impl Pipeline {
                 tracing::Span::current().record("errors", 1u64);
                 // Reject tickets — transform failed, data not delivered.
                 self.ack_all_tickets(sending, false);
+                self.metrics.finish_active_batch(batch_id);
                 return;
             }
         };
         let transform_elapsed = t1.elapsed();
+        self.metrics.advance_active_batch(
+            batch_id,
+            "output",
+            transform_elapsed.as_nanos() as u64,
+            now_nanos(),
+        );
+        self.metrics
+            .transform_out
+            .inc_lines(result.num_rows() as u64);
 
         // Handle zero-row transform results (SQL WHERE filtered all rows).
         // Still ack — data was processed, just not forwarded.
@@ -655,6 +682,7 @@ impl Pipeline {
                 transform_elapsed.as_nanos() as u64,
                 0,
             );
+            self.metrics.finish_active_batch(batch_id);
             return;
         }
 
@@ -678,21 +706,26 @@ impl Pipeline {
                 submitted_at,
                 scan_ns: scan_elapsed.as_nanos() as u64,
                 transform_ns: transform_elapsed.as_nanos() as u64,
+                batch_id,
+                span: tracing::Span::current(),
             })
             .await;
+        self.metrics
+            .inflight_batches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Apply a pool `AckItem` — ack or reject its tickets and advance the machine.
     ///
     /// Called from the `select!` loop when a pool worker finishes a batch.
     fn apply_pool_ack(&mut self, ack: AckItem) {
+        self.metrics
+            .inflight_batches
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.metrics.finish_active_batch(ack.batch_id);
         if ack.success {
-            self.metrics.record_batch(
-                ack.num_rows,
-                ack.scan_ns,
-                ack.transform_ns,
-                ack.submitted_at.elapsed().as_nanos() as u64,
-            );
+            self.metrics
+                .record_batch(ack.num_rows, ack.scan_ns, ack.transform_ns, ack.output_ns);
         } else {
             self.metrics.inc_dropped_batch();
             self.metrics.output_error(self.name.as_str());
