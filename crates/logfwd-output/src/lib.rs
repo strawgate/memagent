@@ -16,7 +16,9 @@ mod loki;
 #[allow(dead_code)]
 mod parquet;
 
-pub use elasticsearch::{ElasticsearchAsyncSink, ElasticsearchSinkFactory};
+pub use elasticsearch::{
+    ElasticsearchAsyncSink, ElasticsearchRequestMode, ElasticsearchSinkFactory,
+};
 pub use fanout::{FanOut, FanOutError};
 pub use json_lines::JsonLinesSink;
 pub use loki::{LokiAsyncSink, LokiSinkFactory};
@@ -67,6 +69,7 @@ pub(crate) fn is_transient_error(e: &ureq::Error) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Metadata about the batch for output serialization.
+#[derive(Clone)]
 pub struct BatchMetadata {
     /// Resource attributes (k8s pod name, namespace, etc.) — Arc so cloning is cheap.
     pub resource_attrs: Arc<Vec<(String, String)>>,
@@ -706,12 +709,17 @@ pub fn build_sink_factory(
                 .map_or("logs", String::as_str)
                 .to_string();
             let compress = cfg.compression.as_deref() == Some("gzip");
+            let request_mode = match cfg.request_mode.as_deref() {
+                Some("streaming") => ElasticsearchRequestMode::Streaming,
+                _ => ElasticsearchRequestMode::Buffered,
+            };
             let factory = ElasticsearchSinkFactory::new(
                 name.to_string(),
                 endpoint.clone(),
                 index,
                 auth_headers,
                 compress,
+                request_mode,
                 stats,
             )
             .map_err(|e| format!("output '{name}': elasticsearch factory: {e}"))?;

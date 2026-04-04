@@ -15,7 +15,9 @@ use logfwd_core::cri::{CriReassembler, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::diagnostics::ComponentStats;
-use logfwd_output::{BatchMetadata, ElasticsearchSinkFactory, OutputSink};
+use logfwd_output::{
+    BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory, OutputSink,
+};
 use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------
@@ -391,6 +393,7 @@ fn bench_elasticsearch_serialize(c: &mut Criterion) {
         "bench-index".to_string(),
         vec![],
         false,
+        ElasticsearchRequestMode::Buffered,
         Arc::clone(&stats),
     )
     .expect("factory creation failed");

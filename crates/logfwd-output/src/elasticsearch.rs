@@ -1,10 +1,13 @@
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 
 use logfwd_io::diagnostics::ComponentStats;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use super::{BatchMetadata, build_col_infos, write_row_json};
 
@@ -18,15 +21,24 @@ pub(crate) struct ElasticsearchConfig {
     endpoint: String,
     headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
     compress: bool,
+    request_mode: ElasticsearchRequestMode,
     /// Maximum uncompressed bulk payload size in bytes. Batches that serialize
     /// larger than this are split in half and sent as separate `_bulk` requests.
     /// Default: 5 MiB — safe for Elasticsearch Serverless and self-hosted.
     max_bulk_bytes: usize,
+    /// Target chunk size for experimental streaming bodies.
+    stream_chunk_bytes: usize,
     /// Precomputed `_bulk` URL with `filter_path` to avoid per-request allocation.
     bulk_url: String,
     /// Precomputed `{"index":{"_index":"<name>"}}\n` bytes — avoids a `format!`
     /// allocation on every `serialize_batch` call.
     action_bytes: Box<[u8]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElasticsearchRequestMode {
+    Buffered,
+    Streaming,
 }
 
 /// Async Elasticsearch sink using reqwest.
@@ -262,6 +274,23 @@ impl ElasticsearchAsyncSink {
                 return Ok(super::sink::SendResult::Ok);
             }
 
+            if self.config.request_mode == ElasticsearchRequestMode::Streaming {
+                return match self
+                    .do_send_streaming(batch.clone(), metadata.clone())
+                    .await
+                {
+                    Ok(result) => Ok(result),
+                    Err(e)
+                        if e.kind() == io::ErrorKind::InvalidInput
+                            && n > 1
+                            && depth < MAX_SPLIT_DEPTH =>
+                    {
+                        self.send_split_halves(batch, metadata, depth).await
+                    }
+                    Err(e) => Err(e),
+                };
+            }
+
             self.serialize_batch(batch, metadata)?;
             if self.batch_buf.is_empty() {
                 return Ok(super::sink::SendResult::Ok);
@@ -408,6 +437,162 @@ impl ElasticsearchAsyncSink {
         Self::parse_bulk_response(&body)?;
         Ok(super::sink::SendResult::Ok)
     }
+
+    fn send_chunk(
+        tx: &mpsc::Sender<io::Result<Vec<u8>>>,
+        chunk: &mut Vec<u8>,
+        emitted: &AtomicU64,
+        min_capacity: usize,
+    ) -> io::Result<()> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        emitted.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        let next_capacity = chunk.capacity().max(min_capacity);
+        let body = std::mem::replace(chunk, Vec::with_capacity(next_capacity));
+        tx.blocking_send(Ok(body))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ES body receiver dropped"))
+    }
+
+    fn serialize_batch_streaming(
+        batch: RecordBatch,
+        metadata: BatchMetadata,
+        config: Arc<ElasticsearchConfig>,
+        tx: mpsc::Sender<io::Result<Vec<u8>>>,
+        emitted: Arc<AtomicU64>,
+    ) -> io::Result<()> {
+        let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return Ok(());
+        }
+
+        let action_bytes = &config.action_bytes;
+        let ts_nanos = metadata.observed_time_ns;
+        let ts_secs = ts_nanos / 1_000_000_000;
+        let ts_frac = ts_nanos % 1_000_000_000;
+        let mut ts_buf = [0u8; 47];
+        write_ts_suffix(&mut ts_buf, ts_secs, ts_frac);
+        let ts_no_comma = &ts_buf[1..];
+
+        let cols = build_col_infos(&batch);
+        let has_timestamp_col = cols
+            .iter()
+            .any(|c| c.field_name == "@timestamp" || c.field_name == "_timestamp");
+
+        let mut chunk = Vec::with_capacity(config.stream_chunk_bytes.max(64 * 1024));
+        for row in 0..num_rows {
+            chunk.extend_from_slice(action_bytes);
+            let doc_start = chunk.len();
+            write_row_json(&batch, row, &cols, &mut chunk)?;
+            chunk.push(b'\n');
+
+            if !has_timestamp_col {
+                let len = chunk.len();
+                if !chunk.ends_with(b"}\n") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "serialize_batch_streaming: JSON document did not end with '}\\n' — internal invariant violated",
+                    ));
+                }
+                let trim_to = len - 2;
+                if trim_to == doc_start + 1 {
+                    chunk.truncate(doc_start);
+                    chunk.push(b'{');
+                    chunk.extend_from_slice(ts_no_comma);
+                } else {
+                    chunk.truncate(trim_to);
+                    chunk.extend_from_slice(&ts_buf);
+                }
+                chunk.push(b'\n');
+            }
+
+            if chunk.len() >= config.stream_chunk_bytes {
+                Self::send_chunk(&tx, &mut chunk, emitted.as_ref(), config.stream_chunk_bytes)?;
+            }
+        }
+
+        Self::send_chunk(&tx, &mut chunk, emitted.as_ref(), config.stream_chunk_bytes)?;
+        Ok(())
+    }
+
+    async fn do_send_streaming(
+        &self,
+        batch: RecordBatch,
+        metadata: BatchMetadata,
+    ) -> io::Result<super::sink::SendResult> {
+        let (tx, rx) = mpsc::channel::<io::Result<Vec<u8>>>(4);
+        let emitted = Arc::new(AtomicU64::new(0));
+        let producer_emitted = Arc::clone(&emitted);
+        let config = Arc::clone(&self.config);
+        let producer = tokio::task::spawn_blocking(move || {
+            Self::serialize_batch_streaming(batch, metadata, config, tx, producer_emitted)
+        });
+
+        let mut req = self
+            .client
+            .post(&self.config.bulk_url)
+            .header("Content-Type", "application/x-ndjson");
+        for (k, v) in &self.config.headers {
+            req = req.header(k.clone(), v.clone());
+        }
+
+        let body = reqwest::Body::wrap_stream(ReceiverStream::new(rx));
+        let t0 = std::time::Instant::now();
+        let response = req.body(body).send().await.map_err(io::Error::other)?;
+        let send_ns = t0.elapsed().as_nanos() as u64;
+        tracing::Span::current().record("send_ns", send_ns);
+
+        producer
+            .await
+            .map_err(|e| io::Error::other(format!("ES streaming producer task failed: {e}")))??;
+
+        let payload_len = emitted.load(Ordering::Relaxed) as usize;
+        tracing::Span::current().record("req_bytes", payload_len as u64);
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+            return Ok(super::sink::SendResult::RetryAfter(
+                std::time::Duration::from_secs(retry_after),
+            ));
+        }
+
+        if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+            let detail = response.text().await.unwrap_or_default();
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("ES returned 413 Payload Too Large (streamed body {payload_len} bytes): {detail}"),
+            ));
+        }
+
+        if status.is_client_error() {
+            return Ok(super::sink::SendResult::Rejected(format!(
+                "ES rejected batch with HTTP {status}"
+            )));
+        }
+
+        if !status.is_success() {
+            return Err(io::Error::other(format!("ES returned HTTP {status}")));
+        }
+
+        let body = response.bytes().await.map_err(io::Error::other)?;
+        let recv_ns = t0.elapsed().as_nanos() as u64 - send_ns;
+        tracing::Span::current().record("recv_ns", recv_ns);
+        tracing::Span::current().record("resp_bytes", body.len() as u64);
+        if let Some(took) = Self::extract_took(&body) {
+            tracing::Span::current().record("took_ms", took);
+        }
+        Self::parse_bulk_response(&body)?;
+        self.stats.inc_lines(batch.num_rows() as u64);
+        self.stats.inc_bytes(payload_len as u64);
+        Ok(super::sink::SendResult::Ok)
+    }
 }
 
 impl super::sink::Sink for ElasticsearchAsyncSink {
@@ -456,14 +641,23 @@ impl ElasticsearchSinkFactory {
     /// - `index`: Target index name (e.g. `logs`)
     /// - `headers`: Authentication headers (e.g. `Authorization: ApiKey …`)
     /// - `compress`: Enable gzip compression of the request body
+    /// - `request_mode`: Buffered or experimental streaming bulk body mode
     pub fn new(
         name: String,
         endpoint: String,
         index: String,
         headers: Vec<(String, String)>,
         compress: bool,
+        request_mode: ElasticsearchRequestMode,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
+        if compress && request_mode == ElasticsearchRequestMode::Streaming {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "streaming Elasticsearch request mode does not support gzip compression yet",
+            ));
+        }
+
         let parsed_headers = headers
             .into_iter()
             .map(|(k, v)| {
@@ -501,7 +695,9 @@ impl ElasticsearchSinkFactory {
                 endpoint,
                 headers: parsed_headers,
                 compress,
+                request_mode,
                 max_bulk_bytes: 5 * 1024 * 1024, // 5 MiB default
+                stream_chunk_bytes: 64 * 1024,
                 bulk_url,
                 action_bytes: action_line.into_bytes().into_boxed_slice(),
             }),
@@ -681,6 +877,7 @@ mod tests {
             index.to_string(),
             vec![],
             false,
+            ElasticsearchRequestMode::Buffered,
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
@@ -908,6 +1105,7 @@ mod snapshot_tests {
             "test-index".to_string(),
             vec![],
             false,
+            ElasticsearchRequestMode::Buffered,
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");

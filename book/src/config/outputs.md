@@ -51,17 +51,20 @@ output:
   endpoint: https://es-cluster:9200
   index: logs             # default: "logs"
   compression: gzip       # gzip | none (optional)
+  request_mode: buffered  # buffered | streaming (optional, default buffered)
 ```
 
 - **Bulk API**: Per-document error handling with automatic retries.
 - **Batch splitting**: Large payloads are split automatically to stay within Elasticsearch limits.
 - **Compression**: Optional gzip compression for reduced network usage.
+- **Streaming mode**: Experimental chunked HTTP request bodies for benchmarking against hosted/serverless clusters.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Elasticsearch URL |
 | `index` | string | No | `logs` | Target index name |
 | `compression` | string | No | none | `gzip` or `none` |
+| `request_mode` | string | No | `buffered` | `buffered` or experimental `streaming` (streaming currently requires `compression: none`) |
 
 ## Loki
 
