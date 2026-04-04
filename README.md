@@ -100,7 +100,7 @@ FROM logs
 WHERE status >= 400
 ```
 
-Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`, `geo_lookup()`. See the [SQL Transforms guide](book/src/config/sql-transforms.md).
+Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](book/src/config/sql-transforms.md).
 
 ---
 

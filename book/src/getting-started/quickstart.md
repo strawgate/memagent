@@ -135,12 +135,13 @@ transform: |
     duration_ms
   FROM logs
   WHERE status >= 400
-  ORDER BY duration_ms DESC
 ```
 
-This extracts the URL path from the message with a regex, keeps only 4xx/5xx responses, and orders by slowest first. Full SQL — `JOIN`, `GROUP BY`, `HAVING`, subqueries — all works.
+This extracts the URL path from the message with a regex and keeps only 4xx/5xx responses. Full SQL — `JOIN`, `GROUP BY`, `HAVING`, subqueries — all works.
 
-Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`, `geo_lookup()`. See the [SQL Transforms guide](../config/sql-transforms.md) for the complete reference.
+> **Note:** `ORDER BY` is valid SQL and works correctly within each batch. However, logfwd processes data in streaming batches, so ordering only applies within a single batch, not globally across all data.
+
+Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](../config/sql-transforms.md) for the complete reference.
 
 ---
 
