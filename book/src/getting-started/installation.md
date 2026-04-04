@@ -24,14 +24,14 @@ sudo mv logfwd /usr/local/bin/
 docker run --rm \
   -v /var/log:/var/log:ro \
   -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  ghcr.io/strawgate/logfwd:latest --config /etc/logfwd/config.yaml
+  ghcr.io/strawgate/memagent:latest --config /etc/logfwd/config.yaml
 ```
 
-Images are published to `ghcr.io/strawgate/logfwd` for `linux/amd64` and `linux/arm64`. See [Docker deployment](../deployment/docker.md) for compose files and volume configuration.
+Images are published to `ghcr.io/strawgate/memagent` for `linux/amd64` and `linux/arm64`. See [Docker deployment](../deployment/docker.md) for compose files and volume configuration.
 
 ## From source
 
-Requires the Rust stable toolchain (1.86+).
+Requires the Rust stable toolchain (1.85+).
 
 ```bash
 git clone https://github.com/strawgate/memagent.git

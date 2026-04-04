@@ -19,7 +19,7 @@ Try logfwd in 60 seconds — no collector, no infrastructure, just a terminal.
 curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd-darwin-arm64 -o logfwd
 chmod +x logfwd
 
-# Or build from source (Rust 1.86+)
+# Or build from source (Rust 1.85+)
 cargo build --release -p logfwd && cp target/release/logfwd .
 ```
 
@@ -115,9 +115,9 @@ sudo mv logfwd /usr/local/bin/
 
 # Docker
 docker run --rm -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  ghcr.io/strawgate/logfwd:latest --config /etc/logfwd/config.yaml
+  ghcr.io/strawgate/memagent:latest --config /etc/logfwd/config.yaml
 
-# From source (requires Rust 1.86+)
+# From source (requires Rust 1.85+)
 cargo build --release -p logfwd
 ```
 
