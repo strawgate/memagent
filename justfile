@@ -123,6 +123,66 @@ bench-otlp seconds="10":
     @echo "==> OTLP benchmark (generator → otlp → otlp_receiver → null)"
     just _bench-pair otlp bench/scenarios/otlp-receiver.yaml bench/scenarios/otlp-sender.yaml {{seconds}}
 
+# Elasticsearch end-to-end: starts ES in Docker, sends generator output to it, then stops ES.
+# Requires Docker.  Skips gracefully if Docker or the ES image is unavailable.
+bench-es seconds="10":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v docker &>/dev/null; then
+        echo "==> Docker not found — skipping ES benchmark"
+        exit 0
+    fi
+    echo "==> Starting Elasticsearch (Docker)"
+    docker compose -f examples/elasticsearch/docker-compose.yml up -d
+    echo "==> Waiting for Elasticsearch health (up to 120s)..."
+    for i in $(seq 1 60); do
+        if curl -sf http://localhost:9200/_cluster/health > /dev/null 2>&1; then
+            echo "    Elasticsearch ready (${i}×2s)"
+            break
+        fi
+        sleep 2
+    done
+    if ! curl -sf http://localhost:9200/_cluster/health > /dev/null 2>&1; then
+        echo "ERROR: Elasticsearch did not become healthy in time"
+        docker compose -f examples/elasticsearch/docker-compose.yml down
+        exit 1
+    fi
+    cargo build --release -p logfwd
+    echo "==> ES benchmark (generator → elasticsearch)"
+    just _bench-run es bench/scenarios/es-sender.yaml {{seconds}}
+    echo "==> Stopping Elasticsearch"
+    docker compose -f examples/elasticsearch/docker-compose.yml down
+
+# Elasticsearch end-to-end using streaming request bodies.
+# Requires Docker. Skips gracefully if Docker or the ES image is unavailable.
+bench-es-streaming seconds="10":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v docker &>/dev/null; then
+        echo "==> Docker not found — skipping streaming ES benchmark"
+        exit 0
+    fi
+    echo "==> Starting Elasticsearch (Docker)"
+    docker compose -f examples/elasticsearch/docker-compose.yml up -d
+    echo "==> Waiting for Elasticsearch health (up to 120s)..."
+    for i in $(seq 1 60); do
+        if curl -sf http://localhost:9200/_cluster/health > /dev/null 2>&1; then
+            echo "    Elasticsearch ready (${i}×2s)"
+            break
+        fi
+        sleep 2
+    done
+    if ! curl -sf http://localhost:9200/_cluster/health > /dev/null 2>&1; then
+        echo "ERROR: Elasticsearch did not become healthy in time"
+        docker compose -f examples/elasticsearch/docker-compose.yml down
+        exit 1
+    fi
+    cargo build --release -p logfwd
+    echo "==> ES streaming benchmark (generator → elasticsearch)"
+    just _bench-run es-streaming bench/scenarios/es-sender-streaming.yaml {{seconds}}
+    echo "==> Stopping Elasticsearch"
+    docker compose -f examples/elasticsearch/docker-compose.yml down
+
 # Run all pipeline benchmarks (alias: bench-pipelines)
 bench-e2e seconds="10":
     just bench-pipelines {{seconds}}
@@ -265,4 +325,3 @@ uninstall-hooks:
     HOOKS_DIR=$(git rev-parse --git-common-dir)/hooks
     rm -f "$HOOKS_DIR/pre-commit"
     echo "Pre-commit hook removed"
-

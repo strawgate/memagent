@@ -246,6 +246,8 @@ pub struct OutputConfig {
     pub endpoint: Option<String>,
     pub protocol: Option<String>,
     pub compression: Option<String>,
+    /// Elasticsearch bulk request mode. Defaults to buffered.
+    pub request_mode: Option<String>,
     pub format: Option<Format>,
     pub path: Option<String>,
     /// Elasticsearch index name. Defaults to "logs" if not specified.
@@ -573,6 +575,26 @@ impl Config {
                         {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': otlp output does not support 'gzip' compression yet"
+                            )));
+                        }
+                        if output.output_type == OutputType::Elasticsearch {
+                            if let Some(mode) = output.request_mode.as_deref()
+                                && !matches!(mode, "buffered" | "streaming")
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': elasticsearch request_mode must be 'buffered' or 'streaming'"
+                                )));
+                            }
+                            if output.request_mode.as_deref() == Some("streaming")
+                                && output.compression.as_deref() == Some("gzip")
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': elasticsearch request_mode 'streaming' does not support gzip compression yet"
+                                )));
+                            }
+                        } else if output.request_mode.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': request_mode is only supported for elasticsearch outputs"
                             )));
                         }
                     }
@@ -1144,6 +1166,68 @@ output:
         let cfg = Config::load_str(yaml).expect("no auth");
         let pipe = &cfg.pipelines["default"];
         assert!(pipe.outputs[0].auth.is_none());
+    }
+
+    #[test]
+    fn elasticsearch_request_mode_accepts_streaming() {
+        let yaml = r"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: elasticsearch
+  endpoint: http://localhost:9200
+  request_mode: streaming
+";
+        let cfg = Config::load_str(yaml).expect("streaming request_mode should validate");
+        let pipe = &cfg.pipelines["default"];
+        assert_eq!(pipe.outputs[0].request_mode.as_deref(), Some("streaming"));
+    }
+
+    #[test]
+    fn elasticsearch_request_mode_rejects_unknown_value() {
+        let yaml = r"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: elasticsearch
+  endpoint: http://localhost:9200
+  request_mode: fancy
+";
+        let err = Config::load_str(yaml).expect_err("invalid request_mode should fail");
+        assert!(err.to_string().contains("request_mode"));
+    }
+
+    #[test]
+    fn elasticsearch_streaming_rejects_gzip() {
+        let yaml = r"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: elasticsearch
+  endpoint: http://localhost:9200
+  compression: gzip
+  request_mode: streaming
+";
+        let err = Config::load_str(yaml).expect_err("streaming+gzip should fail");
+        assert!(err.to_string().contains("does not support gzip"));
+    }
+
+    #[test]
+    fn non_elasticsearch_request_mode_is_rejected() {
+        let yaml = r"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: http
+  endpoint: http://localhost:9200
+  request_mode: streaming
+";
+        let err = Config::load_str(yaml).expect_err("request_mode should be es-only");
+        assert!(err.to_string().contains("only supported for elasticsearch"));
     }
 
     #[test]

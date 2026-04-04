@@ -9,12 +9,12 @@
 //!   ES_INDEX      — target index base name (default: logfwd-bench)
 //!
 //! Usage:
-//!   ES_URL=https://... ES_API_KEY=... ./es-throughput [duration_secs] [workers] [batch_lines] [compress: 0|1] [indices: default 1]
+//!   ES_URL=https://... ES_API_KEY=... ./es-throughput [duration_secs] [workers] [batch_lines] [compress: 0|1] [indices: default 1] [request_mode: buffered|streaming]
 //!
 //! Examples:
-//!   ./es-throughput 60 16 5000 1 4  # 16 workers, gzip, 5k batch, 4 indices
-//!   ./es-throughput 30 4 5000 1     # 4 workers, gzip, 1 index
-//!   ./es-throughput 30 1 1000 0     # baseline (single worker, no compress)
+//!   ./es-throughput 60 16 5000 1 4 buffered   # 16 workers, gzip, 5k batch, 4 indices
+//!   ./es-throughput 30 4 5000 0 1 streaming   # 4 workers, streamed request body
+//!   ./es-throughput 30 1 1000 0               # baseline (single worker, buffered, no compress)
 
 use std::fmt::Write as FmtWrite;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ use logfwd_arrow::scanner::SimdScanner;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::sink::SinkFactory;
-use logfwd_output::{BatchMetadata, ElasticsearchSinkFactory};
+use logfwd_output::{BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory};
 use logfwd_transform::SqlTransform;
 use pprof::ProfilerGuardBuilder;
 
@@ -41,6 +41,13 @@ fn es_api_key() -> String {
 
 fn es_index() -> String {
     std::env::var("ES_INDEX").unwrap_or_else(|_| "logfwd-bench".to_string())
+}
+
+fn request_mode_name(mode: ElasticsearchRequestMode) -> &'static str {
+    match mode {
+        ElasticsearchRequestMode::Buffered => "buffered",
+        ElasticsearchRequestMode::Streaming => "streaming",
+    }
 }
 
 fn gen_json_lines(n: usize) -> Vec<u8> {
@@ -77,6 +84,7 @@ fn run_worker(
     duration: std::time::Duration,
     batch_lines: usize,
     compress: bool,
+    request_mode: ElasticsearchRequestMode,
     total_events: Arc<AtomicU64>,
     total_batches: Arc<AtomicU64>,
     total_errors: Arc<AtomicU64>,
@@ -96,8 +104,16 @@ fn run_worker(
         format!("ApiKey {}", es_api_key()),
     )];
 
-    let factory = ElasticsearchSinkFactory::new(name, endpoint, index, headers, compress, stats)
-        .expect("failed to create sink factory");
+    let factory = ElasticsearchSinkFactory::new(
+        name,
+        endpoint,
+        index,
+        headers,
+        compress,
+        request_mode,
+        stats,
+    )
+    .expect("failed to create sink factory");
     let mut sink = factory.create().expect("failed to create sink");
 
     let mut scanner = SimdScanner::new(ScanConfig::default());
@@ -150,6 +166,7 @@ fn run_scenario(
     workers: usize,
     batch_lines: usize,
     compress: bool,
+    request_mode: ElasticsearchRequestMode,
     num_indices: usize,
 ) {
     let index_base = es_index();
@@ -163,8 +180,9 @@ fn run_scenario(
 
     println!("\n--- {label} ---");
     println!(
-        "  workers={workers}  batch={batch_lines}  compress={}  indices={}  duration={duration_secs}s",
+        "  workers={workers}  batch={batch_lines}  compress={}  request_mode={}  indices={}  duration={duration_secs}s",
         if compress { "gzip" } else { "none" },
+        request_mode_name(request_mode),
         indices.join(","),
     );
 
@@ -191,6 +209,7 @@ fn run_scenario(
                 duration,
                 batch_lines,
                 compress,
+                request_mode,
                 cnt_ev,
                 cnt_bat,
                 cnt_err,
@@ -238,6 +257,10 @@ fn main() {
     let batch_lines: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
     let compress_flag: u8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(255);
     let num_indices: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(1);
+    let request_mode = match args.get(6).map(String::as_str) {
+        Some("streaming") => ElasticsearchRequestMode::Streaming,
+        _ => ElasticsearchRequestMode::Buffered,
+    };
 
     let endpoint = es_endpoint();
     let index = es_index();
@@ -245,7 +268,10 @@ fn main() {
     println!("=== Elasticsearch Output Throughput Bench ===");
     println!("  endpoint : {endpoint}");
     println!("  index    : {index}");
-    println!("  sink     : async (reqwest, connection pooling, gzip)");
+    println!(
+        "  sink     : async (reqwest, connection pooling, gzip, {})",
+        request_mode_name(request_mode)
+    );
 
     let guard = ProfilerGuardBuilder::default()
         .frequency(997)
@@ -254,16 +280,74 @@ fn main() {
 
     if workers == 0 {
         // Run a progression of scenarios
-        run_scenario("1w/1k/raw/1idx", duration_secs, 1, 1_000, false, 1);
-        run_scenario("1w/5k/raw/1idx", duration_secs, 1, 5_000, false, 1);
-        run_scenario("1w/5k/gzip/1idx", duration_secs, 1, 5_000, true, 1);
-        run_scenario("4w/5k/gzip/1idx", duration_secs, 4, 5_000, true, 1);
-        run_scenario("8w/5k/gzip/2idx", duration_secs, 8, 5_000, true, 2);
-        run_scenario("16w/5k/gzip/4idx", duration_secs, 16, 5_000, true, 4);
+        run_scenario(
+            "1w/1k/raw/1idx",
+            duration_secs,
+            1,
+            1_000,
+            false,
+            request_mode,
+            1,
+        );
+        run_scenario(
+            "1w/5k/raw/1idx",
+            duration_secs,
+            1,
+            5_000,
+            false,
+            request_mode,
+            1,
+        );
+        if request_mode == ElasticsearchRequestMode::Buffered {
+            run_scenario(
+                "1w/5k/gzip/1idx",
+                duration_secs,
+                1,
+                5_000,
+                true,
+                request_mode,
+                1,
+            );
+            run_scenario(
+                "4w/5k/gzip/1idx",
+                duration_secs,
+                4,
+                5_000,
+                true,
+                request_mode,
+                1,
+            );
+            run_scenario(
+                "8w/5k/gzip/2idx",
+                duration_secs,
+                8,
+                5_000,
+                true,
+                request_mode,
+                2,
+            );
+            run_scenario(
+                "16w/5k/gzip/4idx",
+                duration_secs,
+                16,
+                5_000,
+                true,
+                request_mode,
+                4,
+            );
+        }
     } else {
         let compress = compress_flag != 0;
         let bl = if batch_lines == 0 { 1_000 } else { batch_lines };
-        run_scenario("Custom", duration_secs, workers, bl, compress, num_indices);
+        run_scenario(
+            "Custom",
+            duration_secs,
+            workers,
+            bl,
+            compress,
+            request_mode,
+            num_indices,
+        );
     }
 
     // Write flamegraph from the last scenario

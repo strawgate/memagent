@@ -26,7 +26,7 @@ use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::sink::{Sink, SinkFactory};
-use logfwd_output::{BatchMetadata, ElasticsearchSinkFactory};
+use logfwd_output::{BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory};
 use tokio::runtime::Runtime;
 
 const ES_ENDPOINT: &str = "http://localhost:9200";
@@ -248,6 +248,7 @@ fn main() {
         BENCH_INDEX.to_string(),
         vec![],
         false,
+        ElasticsearchRequestMode::Buffered,
         stats.clone(),
     )
     .expect("failed to create sink factory");

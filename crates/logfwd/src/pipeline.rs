@@ -1095,6 +1095,7 @@ mod tests {
             path: None,
             index: None,
             auth: None,
+            request_mode: None,
         };
         let sink = build_output_sink("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "test");
@@ -1112,6 +1113,7 @@ mod tests {
             path: None,
             index: None,
             auth: None,
+            request_mode: None,
         };
         let sink = build_output_sink("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "otel");
@@ -1129,6 +1131,7 @@ mod tests {
             path: None,
             index: None,
             auth: None,
+            request_mode: None,
         };
         let sink = build_output_sink("es", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(sink.name(), "es");
@@ -1146,6 +1149,7 @@ mod tests {
             path: None,
             index: None,
             auth: None,
+            request_mode: None,
         };
         let result = build_output_sink("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());

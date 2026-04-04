@@ -14,7 +14,10 @@ use logfwd_arrow::scanner::SimdScanner;
 use logfwd_core::cri::{CriReassembler, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use logfwd_io::compress::ChunkCompressor;
-use logfwd_output::{BatchMetadata, OutputSink};
+use logfwd_io::diagnostics::ComponentStats;
+use logfwd_output::{
+    BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory, OutputSink,
+};
 use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------
@@ -371,6 +374,57 @@ fn bench_end_to_end(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Elasticsearch bulk serialization benchmark
+// ---------------------------------------------------------------------------
+
+/// Measures the throughput of `ElasticsearchAsyncSink::serialize_batch` —
+/// the hot path that converts Arrow RecordBatches into NDJSON bulk payloads
+/// ready to POST to `/_bulk`.
+///
+/// No network I/O takes place; this isolates the serialization cost.
+fn bench_elasticsearch_serialize(c: &mut Criterion) {
+    let mut group = c.benchmark_group("elasticsearch");
+    group.sample_size(20);
+
+    let stats = Arc::new(ComponentStats::default());
+    let factory = ElasticsearchSinkFactory::new(
+        "bench".to_string(),
+        "http://localhost:9200".to_string(),
+        "bench-index".to_string(),
+        vec![],
+        false,
+        ElasticsearchRequestMode::Buffered,
+        Arc::clone(&stats),
+    )
+    .expect("factory creation failed");
+
+    for &n in &[1_000usize, 10_000, 100_000] {
+        let data = gen_json_lines(n);
+        let mut scanner = SimdScanner::new(ScanConfig::default());
+        let batch = scanner.scan(&data).expect("bench: scan should not fail");
+        let meta = make_metadata();
+
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(
+            BenchmarkId::new("serialize_batch", n),
+            &batch,
+            |b, batch| {
+                let mut sink = factory.create_sink();
+                b.iter(|| {
+                    // serialize_batch calls clear() at the start of every call, so
+                    // the buffer does not grow unboundedly across iterations.
+                    sink.serialize_batch(batch, &meta)
+                        .expect("bench: serialize should not fail");
+                    criterion::black_box(sink.serialized_len());
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -382,5 +436,6 @@ criterion_group!(
     bench_compress,
     bench_output,
     bench_end_to_end,
+    bench_elasticsearch_serialize,
 );
 criterion_main!(benches);

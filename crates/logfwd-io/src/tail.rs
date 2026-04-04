@@ -65,6 +65,14 @@ struct TailedFile {
     eof_emitted: bool,
 }
 
+/// Saved state for a file evicted from the open-file LRU cache.
+struct EvictedFile {
+    identity: FileIdentity,
+    offset: u64,
+    path: PathBuf,
+    source_id: SourceId,
+}
+
 /// Internal result from read_new_data — distinguishes truncation from no-data.
 enum ReadResult {
     /// New data available.
@@ -173,8 +181,8 @@ fn compute_fingerprint(file: &mut File, max_bytes: usize) -> io::Result<u64> {
 
 /// Build a FileIdentity for a path.
 fn identify_file(path: &Path, fingerprint_bytes: usize) -> io::Result<FileIdentity> {
-    let meta = fs::metadata(path)?;
     let mut file = File::open(path)?;
+    let meta = file.metadata()?;
     let fingerprint = compute_fingerprint(&mut file, fingerprint_bytes)?;
     Ok(FileIdentity {
         device: meta.dev(),
@@ -219,10 +227,12 @@ pub struct FileTailer {
     watcher: notify::RecommendedWatcher,
     /// Directories currently registered with the notify watcher.
     watched_dirs: HashSet<PathBuf>,
-    /// Saved offsets for files evicted from the open-file LRU cache.
+    /// Saved state for files evicted from the open-file LRU cache.
     /// When a file is re-opened after eviction, we seek to the saved offset
-    /// to avoid duplicating or losing data.
-    evicted_offsets: HashMap<PathBuf, u64>,
+    /// to avoid duplicating or losing data. The identity is retained so that
+    /// `file_offsets()` can include evicted files in checkpoint data (#697)
+    /// and `open_file_at` can verify the fingerprint still matches (#817).
+    evicted_offsets: HashMap<PathBuf, EvictedFile>,
     /// Channel receiving filesystem events from the watcher.
     fs_events: crossbeam_channel::Receiver<notify::Result<notify::Event>>,
     /// Last time we did a full poll scan.
@@ -377,8 +387,26 @@ impl FileTailer {
         let identity = identify_file(path, self.config.fingerprint_bytes)?;
         let mut file = File::open(path)?;
 
-        let offset = if let Some(saved) = self.evicted_offsets.remove(path) {
-            file.seek(SeekFrom::Start(saved))?
+        let offset = if let Some(evicted) = self.evicted_offsets.remove(path) {
+            // Verify the file identity still matches before restoring the
+            // saved offset. If the file was deleted and a new file appeared
+            // at the same path, the fingerprint will differ and we must not
+            // seek to the stale offset — that would skip data. (#817)
+            if evicted.identity == identity {
+                file.seek(SeekFrom::Start(evicted.offset))?
+            } else {
+                tracing::warn!(
+                    path = %path.display(),
+                    evicted_identity = ?evicted.identity,
+                    current_identity = ?identity,
+                    "evicted offset identity mismatch — ignoring saved offset"
+                );
+                if start_from_end {
+                    file.seek(SeekFrom::End(0))?
+                } else {
+                    0
+                }
+            }
         } else if start_from_end {
             file.seek(SeekFrom::End(0))?
         } else {
@@ -481,13 +509,17 @@ impl FileTailer {
                         });
                     }
                     Ok(ReadResult::TruncatedThenData(data)) => {
+                        events.push(TailEvent::Truncated { path: path.clone() });
                         events.push(TailEvent::Data {
                             path: path.clone(),
                             bytes: data,
                             source_id: pre_rotate_source_id,
                         });
                     }
-                    Ok(ReadResult::Truncated) | Ok(ReadResult::NoData) => {}
+                    Ok(ReadResult::Truncated) => {
+                        events.push(TailEvent::Truncated { path: path.clone() });
+                    }
+                    Ok(ReadResult::NoData) => {}
                     Err(e) => {
                         tracing::warn!(path = %path.display(), error = %e, "tail.drain_rotated_error");
                     }
@@ -612,13 +644,17 @@ impl FileTailer {
                     });
                 }
                 Ok(ReadResult::TruncatedThenData(data)) => {
+                    events.push(TailEvent::Truncated { path: path.clone() });
                     events.push(TailEvent::Data {
                         path: path.clone(),
                         bytes: data,
                         source_id,
                     });
                 }
-                Ok(ReadResult::Truncated) | Ok(ReadResult::NoData) => {}
+                Ok(ReadResult::Truncated) => {
+                    events.push(TailEvent::Truncated { path: path.clone() });
+                }
+                Ok(ReadResult::NoData) => {}
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "tail.drain_deleted_error");
                 }
@@ -648,8 +684,17 @@ impl FileTailer {
             by_age.sort_by_key(|(_, last_read)| *last_read);
             let to_remove = self.files.len() - self.config.max_open_files;
             for (path, _) in by_age.into_iter().take(to_remove) {
-                if let Some(evicted) = self.files.remove(&path) {
-                    self.evicted_offsets.insert(path, evicted.offset);
+                if let Some(tailed) = self.files.remove(&path) {
+                    let source_id = tailed.identity.source_id();
+                    self.evicted_offsets.insert(
+                        path.clone(),
+                        EvictedFile {
+                            identity: tailed.identity,
+                            offset: tailed.offset,
+                            path,
+                            source_id,
+                        },
+                    );
                 }
             }
         }
@@ -802,26 +847,47 @@ impl FileTailer {
 
     /// Hot path: source identity + offset for all tailed files.
     ///
+    /// Includes both actively-tailed files and files evicted from the LRU
+    /// cache (#697). This ensures evicted file offsets are persisted to the
+    /// checkpoint file, surviving crashes while files are in the evicted state.
+    ///
     /// Skips empty files (fingerprint 0) — they have no data to checkpoint.
     /// Called on every channel send (~100ms). No PathBuf allocation.
     pub fn file_offsets(&self) -> Vec<(SourceId, ByteOffset)> {
-        self.files
+        let active = self
+            .files
             .iter()
             .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
-            .map(|(_, tailed)| (tailed.identity.source_id(), ByteOffset(tailed.offset)))
-            .collect()
+            .map(|(_, tailed)| (tailed.identity.source_id(), ByteOffset(tailed.offset)));
+
+        let evicted = self
+            .evicted_offsets
+            .values()
+            .filter(|e| e.identity.fingerprint != 0)
+            .map(|e| (e.source_id, ByteOffset(e.offset)));
+
+        active.chain(evicted).collect()
     }
 
     /// Cold path: source identity + canonical path for all tailed files.
     ///
+    /// Includes evicted files so checkpoint paths stay consistent with offsets.
     /// Called on file open/close/rotate, not per-batch. PathBuf cloning is
     /// acceptable here since this runs infrequently.
     pub fn file_paths(&self) -> Vec<(SourceId, PathBuf)> {
-        self.files
+        let active = self
+            .files
             .iter()
             .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
-            .map(|(path, tailed)| (tailed.identity.source_id(), path.clone()))
-            .collect()
+            .map(|(path, tailed)| (tailed.identity.source_id(), path.clone()));
+
+        let evicted = self
+            .evicted_offsets
+            .values()
+            .filter(|e| e.identity.fingerprint != 0)
+            .map(|e| (e.source_id, e.path.clone()));
+
+        active.chain(evicted).collect()
     }
 }
 
@@ -999,6 +1065,60 @@ mod tests {
             new_str.contains("after rotation"),
             "should read new file content, got: {new_str}"
         );
+    }
+
+    /// #816: Ensure rotated drain path emits Truncated if file was copytruncated before rename
+    #[test]
+    fn test_tail_rotation_drains_truncated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("drain_trunc.log");
+        let rotated_path = dir.path().join("drain_trunc.log.1");
+
+        // Write initial data.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "initial").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        // First poll — drain initial data.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+
+        // Overwrite the file to be smaller than the current offset, simulating copytruncate.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "new").unwrap();
+        }
+
+        // Rotate: rename old file, create new one.
+        fs::rename(&log_path, &rotated_path).unwrap();
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "post-rotation").unwrap();
+        }
+
+        // Poll must detect rotation and emit Truncated THEN Data for the drained bytes.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+
+        let trunc_pos = events
+            .iter()
+            .position(|e| matches!(e, TailEvent::Truncated { .. }))
+            .expect("should have a Truncated event from drain");
+
+        let data_pos = events
+            .iter()
+            .position(|e| matches!(e, TailEvent::Data { .. }))
+            .expect("should have a Data event from drain");
+
+        assert!(trunc_pos < data_pos, "Truncated must precede Data");
     }
 
     /// Regression test: bytes appended to the old file after the last poll but
@@ -1498,6 +1618,54 @@ mod tests {
         );
     }
 
+    /// #816: Ensure deleted drain path emits Truncated if file was copytruncated before deletion
+    #[test]
+    fn test_deleted_file_cleanup_drains_truncated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("delete_trunc.log");
+
+        // Write initial data.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "initial").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        // First poll — drain initial data.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+
+        // Overwrite the file to be smaller than the current offset, simulating copytruncate.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "new").unwrap();
+        }
+
+        fs::remove_file(&log_path).unwrap();
+
+        // Poll must emit Truncated THEN Data for the drained bytes.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+
+        let trunc_pos = events
+            .iter()
+            .position(|e| matches!(e, TailEvent::Truncated { .. }))
+            .expect("should have a Truncated event from drain");
+
+        let data_pos = events
+            .iter()
+            .position(|e| matches!(e, TailEvent::Data { .. }))
+            .expect("should have a Data event from drain");
+
+        assert!(trunc_pos < data_pos, "Truncated must precede Data");
+    }
+
     /// Regression test: glob-discovered file deletions must shrink watch_paths
     /// so the list does not grow unboundedly with file churn. (#810)
     #[test]
@@ -1804,6 +1972,125 @@ mod tests {
         // Offset should be reset to 0, not 999_999.
         let offset = tailer.get_offset(&log_path).unwrap();
         assert_eq!(offset, 0, "stale offset should reset to 0");
+    }
+
+    /// #697: Evicted file offsets must appear in file_offsets() so they are
+    /// included in checkpoint data and survive crashes.
+    #[test]
+    fn test_evicted_offsets_in_checkpoint_data() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 3 files with content; limit to 2 so one is evicted.
+        let mut log_paths = Vec::new();
+        for i in 0..3 {
+            let p = dir.path().join(format!("{i}.log"));
+            {
+                let mut f = File::create(&p).unwrap();
+                writeln!(f, "content for file {i}").unwrap();
+            }
+            log_paths.push(p);
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 60_000,
+            max_open_files: 2,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // Read initial data, then trigger eviction.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(tailer.num_files(), 2, "evicted to max_open_files=2");
+
+        // file_offsets() must include evicted files too.
+        let offsets = tailer.file_offsets();
+        assert_eq!(
+            offsets.len(),
+            3,
+            "file_offsets() must include 2 active + 1 evicted file"
+        );
+
+        // All offsets should be non-zero (we read data from all 3 files).
+        for (sid, off) in &offsets {
+            assert!(
+                sid.0 != 0,
+                "SourceId should be non-zero for files with data"
+            );
+            assert!(off.0 > 0, "offset should be non-zero after reading data");
+        }
+    }
+
+    /// #817: open_file_at must verify fingerprint before restoring evicted offset.
+    /// If a file is evicted, deleted, and a new file appears at the same path,
+    /// the saved offset must be ignored.
+    #[test]
+    fn test_evicted_offset_fingerprint_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 3 files; limit to 2 so one is evicted.
+        let mut log_paths = Vec::new();
+        for i in 0..3 {
+            let p = dir.path().join(format!("{i}.log"));
+            {
+                let mut f = File::create(&p).unwrap();
+                // Write enough data so each file has a unique fingerprint.
+                writeln!(f, "unique content for file number {i} with padding to ensure distinct fingerprints").unwrap();
+            }
+            log_paths.push(p);
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 50,
+            max_open_files: 2,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // Read and trigger eviction.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(tailer.num_files(), 2);
+
+        // Find which file was evicted by checking which path is not in files.
+        let evicted_path = log_paths
+            .iter()
+            .find(|p| tailer.get_offset(p).is_none())
+            .expect("one file should be evicted")
+            .clone();
+
+        // Delete the evicted file and create a new one at the same path
+        // with completely different content.
+        fs::remove_file(&evicted_path).unwrap();
+        {
+            let mut f = File::create(&evicted_path).unwrap();
+            writeln!(f, "THIS IS A COMPLETELY DIFFERENT FILE WITH NEW CONTENT").unwrap();
+        }
+
+        // Wait for glob rescan to pick it up and re-open.
+        std::thread::sleep(Duration::from_millis(150));
+        let events = tailer.poll().unwrap();
+
+        // The new file should be read from the beginning, not from the stale offset.
+        let data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { path, bytes } if path == &evicted_path => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let s = String::from_utf8_lossy(&data);
+        assert!(
+            s.contains("COMPLETELY DIFFERENT FILE"),
+            "new file should be read from beginning, not stale offset. Got: {s}"
+        );
     }
 
     /// #730: Non-existent file paths should not prevent construction.

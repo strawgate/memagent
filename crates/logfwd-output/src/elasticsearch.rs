@@ -1,10 +1,13 @@
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 
 use logfwd_io::diagnostics::ComponentStats;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use super::{BatchMetadata, build_col_infos, write_row_json};
 
@@ -16,15 +19,26 @@ use super::{BatchMetadata, build_col_infos, write_row_json};
 /// the same factory.
 pub(crate) struct ElasticsearchConfig {
     endpoint: String,
-    index: String,
     headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
     compress: bool,
+    request_mode: ElasticsearchRequestMode,
     /// Maximum uncompressed bulk payload size in bytes. Batches that serialize
     /// larger than this are split in half and sent as separate `_bulk` requests.
     /// Default: 5 MiB — safe for Elasticsearch Serverless and self-hosted.
     max_bulk_bytes: usize,
+    /// Target chunk size for experimental streaming bodies.
+    stream_chunk_bytes: usize,
     /// Precomputed `_bulk` URL with `filter_path` to avoid per-request allocation.
     bulk_url: String,
+    /// Precomputed `{"index":{"_index":"<name>"}}\n` bytes — avoids a `format!`
+    /// allocation on every `serialize_batch` call.
+    action_bytes: Box<[u8]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElasticsearchRequestMode {
+    Buffered,
+    Streaming,
 }
 
 /// Async Elasticsearch sink using reqwest.
@@ -51,9 +65,18 @@ impl ElasticsearchAsyncSink {
             name,
             config,
             client,
+            // Start with a modest initial capacity; the buffer will grow to the
+            // right size after the first batch and stay there (via reserve in
+            // send_batch_inner after each send).
             batch_buf: Vec::with_capacity(64 * 1024),
             stats,
         }
+    }
+
+    /// Returns the number of bytes currently serialized in the internal buffer.
+    /// Useful for benchmarks and diagnostics.
+    pub fn serialized_len(&self) -> usize {
+        self.batch_buf.len()
     }
 
     /// Serialize the batch into `self.batch_buf` in Elasticsearch bulk format.
@@ -72,18 +95,23 @@ impl ElasticsearchAsyncSink {
             return Ok(());
         }
 
-        let action_line = format!("{{\"index\":{{\"_index\":\"{}\"}}}}\n", self.config.index);
-        let action_bytes = action_line.as_bytes();
+        // Pre-computed in config — no allocation on the hot path.
+        let action_bytes = &self.config.action_bytes;
 
         // Derive @timestamp from metadata (ISO-8601 UTC).
+        // Computed once per batch using a stack-allocated buffer — no heap allocation.
         let ts_nanos = metadata.observed_time_ns;
         let ts_secs = ts_nanos / 1_000_000_000;
         let ts_frac = ts_nanos % 1_000_000_000;
-        let ts_str = format!(
-            ",\"@timestamp\":\"{}.{:09}Z\"}}",
-            format_unix_timestamp_utc(ts_secs),
-            ts_frac
-        );
+        // Stack buffer: ,"@timestamp":"YYYY-MM-DDTHH:MM:SS.fffffffffZ"}  (47 bytes)
+        let mut ts_buf = [0u8; 47];
+        write_ts_suffix(&mut ts_buf, ts_secs, ts_frac);
+        let ts_no_comma = &ts_buf[1..]; // without leading ',' (for empty-doc case)
+
+        // Pre-reserve capacity to avoid multiple Vec reallocations while writing.
+        // Estimate: action line + ~256 bytes JSON per row.
+        let estimated = num_rows * (action_bytes.len() + 256);
+        self.batch_buf.reserve(estimated);
 
         let cols = build_col_infos(batch);
         // Check whether any output field is named `@timestamp` or `_timestamp`
@@ -116,11 +144,10 @@ impl ElasticsearchAsyncSink {
                     // doc was `{}`; replace with `{"@timestamp":"..."}`.
                     self.batch_buf.truncate(doc_start);
                     self.batch_buf.push(b'{');
-                    self.batch_buf
-                        .extend_from_slice(ts_str.trim_start_matches(',').as_bytes());
+                    self.batch_buf.extend_from_slice(ts_no_comma);
                 } else {
                     self.batch_buf.truncate(trim_to);
-                    self.batch_buf.extend_from_slice(ts_str.as_bytes());
+                    self.batch_buf.extend_from_slice(&ts_buf);
                 }
                 self.batch_buf.push(b'\n');
             }
@@ -247,12 +274,32 @@ impl ElasticsearchAsyncSink {
                 return Ok(super::sink::SendResult::Ok);
             }
 
+            if self.config.request_mode == ElasticsearchRequestMode::Streaming {
+                return match self
+                    .do_send_streaming(batch.clone(), metadata.clone())
+                    .await
+                {
+                    Ok(result) => Ok(result),
+                    Err(e)
+                        if e.kind() == io::ErrorKind::InvalidInput
+                            && n > 1
+                            && depth < MAX_SPLIT_DEPTH =>
+                    {
+                        self.send_split_halves(batch, metadata, depth).await
+                    }
+                    Err(e) => Err(e),
+                };
+            }
+
             self.serialize_batch(batch, metadata)?;
             if self.batch_buf.is_empty() {
                 return Ok(super::sink::SendResult::Ok);
             }
 
             let payload_len = self.batch_buf.len();
+            // Remember the serialized size so we can restore warm capacity after
+            // the buffer is moved into `do_send`.
+            let prev_cap = self.batch_buf.capacity();
             let max_bytes = self.config.max_bulk_bytes;
 
             // Proactive split: if serialized payload exceeds max_bulk_bytes, split
@@ -262,11 +309,18 @@ impl ElasticsearchAsyncSink {
                 return self.send_split_halves(batch, metadata, depth).await;
             }
 
-            let body = std::mem::replace(&mut self.batch_buf, Vec::with_capacity(64 * 1024));
+            // Move the serialized payload out of batch_buf so we can pass it to
+            // do_send without copying.  `mem::take` leaves batch_buf as Vec::new()
+            // (zero capacity, no allocation).  After do_send we restore capacity so
+            // the next serialize_batch call doesn't have to grow from scratch.
+            let body = std::mem::take(&mut self.batch_buf);
             let row_count = n as u64;
 
             match self.do_send(body).await {
                 Ok(result) => {
+                    // Restore warm capacity so the next serialize_batch avoids
+                    // repeated small-step growth.
+                    self.batch_buf.reserve(prev_cap);
                     if matches!(result, super::sink::SendResult::Ok) {
                         self.stats.inc_lines(row_count);
                         self.stats.inc_bytes(payload_len as u64);
@@ -279,9 +333,13 @@ impl ElasticsearchAsyncSink {
                         && n > 1
                         && depth < MAX_SPLIT_DEPTH =>
                 {
+                    self.batch_buf.reserve(prev_cap);
                     self.send_split_halves(batch, metadata, depth).await
                 }
-                Err(e) => Err(e),
+                Err(e) => {
+                    self.batch_buf.reserve(prev_cap);
+                    Err(e)
+                }
             }
         })
     }
@@ -370,13 +428,172 @@ impl ElasticsearchAsyncSink {
         }
 
         let body = response.bytes().await.map_err(io::Error::other)?;
-        let recv_ns = t0.elapsed().as_nanos() as u64 - send_ns;
+        let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
         tracing::Span::current().record("recv_ns", recv_ns);
         tracing::Span::current().record("resp_bytes", body.len() as u64);
         if let Some(took) = Self::extract_took(&body) {
             tracing::Span::current().record("took_ms", took);
         }
         Self::parse_bulk_response(&body)?;
+        Ok(super::sink::SendResult::Ok)
+    }
+
+    fn send_chunk(
+        tx: &mpsc::Sender<io::Result<Vec<u8>>>,
+        chunk: &mut Vec<u8>,
+        emitted: &AtomicU64,
+        min_capacity: usize,
+    ) -> io::Result<()> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        emitted.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        let next_capacity = chunk.capacity().max(min_capacity);
+        let body = std::mem::replace(chunk, Vec::with_capacity(next_capacity));
+        tx.blocking_send(Ok(body))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ES body receiver dropped"))
+    }
+
+    fn serialize_batch_streaming(
+        batch: RecordBatch,
+        metadata: BatchMetadata,
+        config: Arc<ElasticsearchConfig>,
+        tx: mpsc::Sender<io::Result<Vec<u8>>>,
+        emitted: Arc<AtomicU64>,
+    ) -> io::Result<()> {
+        let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return Ok(());
+        }
+
+        let action_bytes = &config.action_bytes;
+        let ts_nanos = metadata.observed_time_ns;
+        let ts_secs = ts_nanos / 1_000_000_000;
+        let ts_frac = ts_nanos % 1_000_000_000;
+        let mut ts_buf = [0u8; 47];
+        write_ts_suffix(&mut ts_buf, ts_secs, ts_frac);
+        let ts_no_comma = &ts_buf[1..];
+
+        let cols = build_col_infos(&batch);
+        let has_timestamp_col = cols
+            .iter()
+            .any(|c| c.field_name == "@timestamp" || c.field_name == "_timestamp");
+
+        let mut chunk = Vec::with_capacity(config.stream_chunk_bytes.max(64 * 1024));
+        for row in 0..num_rows {
+            chunk.extend_from_slice(action_bytes);
+            let doc_start = chunk.len();
+            write_row_json(&batch, row, &cols, &mut chunk)?;
+            chunk.push(b'\n');
+
+            if !has_timestamp_col {
+                let len = chunk.len();
+                if !chunk.ends_with(b"}\n") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "serialize_batch_streaming: JSON document did not end with '}\\n' — internal invariant violated",
+                    ));
+                }
+                let trim_to = len - 2;
+                if trim_to == doc_start + 1 {
+                    chunk.truncate(doc_start);
+                    chunk.push(b'{');
+                    chunk.extend_from_slice(ts_no_comma);
+                } else {
+                    chunk.truncate(trim_to);
+                    chunk.extend_from_slice(&ts_buf);
+                }
+                chunk.push(b'\n');
+            }
+
+            if chunk.len() >= config.stream_chunk_bytes {
+                Self::send_chunk(&tx, &mut chunk, emitted.as_ref(), config.stream_chunk_bytes)?;
+            }
+        }
+
+        Self::send_chunk(&tx, &mut chunk, emitted.as_ref(), config.stream_chunk_bytes)?;
+        Ok(())
+    }
+
+    async fn do_send_streaming(
+        &self,
+        batch: RecordBatch,
+        metadata: BatchMetadata,
+    ) -> io::Result<super::sink::SendResult> {
+        let row_count = batch.num_rows() as u64;
+        let (tx, rx) = mpsc::channel::<io::Result<Vec<u8>>>(4);
+        let emitted = Arc::new(AtomicU64::new(0));
+        let producer_emitted = Arc::clone(&emitted);
+        let config = Arc::clone(&self.config);
+        let producer = tokio::task::spawn_blocking(move || {
+            Self::serialize_batch_streaming(batch, metadata, config, tx, producer_emitted)
+        });
+
+        let mut req = self
+            .client
+            .post(&self.config.bulk_url)
+            .header("Content-Type", "application/x-ndjson");
+        for (k, v) in &self.config.headers {
+            req = req.header(k.clone(), v.clone());
+        }
+
+        let body = reqwest::Body::wrap_stream(ReceiverStream::new(rx));
+        let t0 = std::time::Instant::now();
+        let response = req.body(body).send().await.map_err(io::Error::other)?;
+        let send_ns = t0.elapsed().as_nanos() as u64;
+        tracing::Span::current().record("send_ns", send_ns);
+
+        producer
+            .await
+            .map_err(|e| io::Error::other(format!("ES streaming producer task failed: {e}")))??;
+
+        let payload_len = emitted.load(Ordering::Relaxed) as usize;
+        tracing::Span::current().record("req_bytes", payload_len as u64);
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+            return Ok(super::sink::SendResult::RetryAfter(
+                std::time::Duration::from_secs(retry_after),
+            ));
+        }
+
+        if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+            let detail = response.text().await.unwrap_or_default();
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "ES returned 413 Payload Too Large (streamed body {payload_len} bytes): {detail}"
+                ),
+            ));
+        }
+
+        if status.is_client_error() {
+            return Ok(super::sink::SendResult::Rejected(format!(
+                "ES rejected batch with HTTP {status}"
+            )));
+        }
+
+        if !status.is_success() {
+            return Err(io::Error::other(format!("ES returned HTTP {status}")));
+        }
+
+        let body = response.bytes().await.map_err(io::Error::other)?;
+        let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
+        tracing::Span::current().record("recv_ns", recv_ns);
+        tracing::Span::current().record("resp_bytes", body.len() as u64);
+        if let Some(took) = Self::extract_took(&body) {
+            tracing::Span::current().record("took_ms", took);
+        }
+        Self::parse_bulk_response(&body)?;
+        self.stats.inc_lines(row_count);
+        self.stats.inc_bytes(payload_len as u64);
         Ok(super::sink::SendResult::Ok)
     }
 }
@@ -427,14 +644,23 @@ impl ElasticsearchSinkFactory {
     /// - `index`: Target index name (e.g. `logs`)
     /// - `headers`: Authentication headers (e.g. `Authorization: ApiKey …`)
     /// - `compress`: Enable gzip compression of the request body
+    /// - `request_mode`: Buffered or experimental streaming bulk body mode
     pub fn new(
         name: String,
         endpoint: String,
         index: String,
         headers: Vec<(String, String)>,
         compress: bool,
+        request_mode: ElasticsearchRequestMode,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
+        if compress && request_mode == ElasticsearchRequestMode::Streaming {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "streaming Elasticsearch request mode does not support gzip compression yet",
+            ));
+        }
+
         let parsed_headers = headers
             .into_iter()
             .map(|(k, v)| {
@@ -462,15 +688,21 @@ impl ElasticsearchSinkFactory {
             endpoint
         );
 
+        // Pre-compute the action line bytes once so serialize_batch doesn't have
+        // to allocate a String on every call.
+        let action_line = format!("{{\"index\":{{\"_index\":\"{index}\"}}}}\n");
+
         Ok(ElasticsearchSinkFactory {
             name,
             config: Arc::new(ElasticsearchConfig {
                 endpoint,
-                index,
                 headers: parsed_headers,
                 compress,
+                request_mode,
                 max_bulk_bytes: 5 * 1024 * 1024, // 5 MiB default
+                stream_chunk_bytes: 64 * 1024,
                 bulk_url,
+                action_bytes: action_line.into_bytes().into_boxed_slice(),
             }),
             client,
             stats,
@@ -493,23 +725,36 @@ impl super::sink::SinkFactory for ElasticsearchSinkFactory {
     }
 }
 
+impl ElasticsearchSinkFactory {
+    /// Create a concrete `ElasticsearchAsyncSink` without boxing it.
+    ///
+    /// Intended for benchmarks and tests that need access to
+    /// `serialize_batch` or `serialized_len` directly.
+    pub fn create_sink(&self) -> ElasticsearchAsyncSink {
+        ElasticsearchAsyncSink::new(
+            self.name.clone(),
+            Arc::clone(&self.config),
+            self.client.clone(),
+            Arc::clone(&self.stats),
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // UTC timestamp formatting (no chrono dependency)
 // ---------------------------------------------------------------------------
 
-/// Format a Unix timestamp (seconds) as `YYYY-MM-DDTHH:MM:SS` in UTC.
+/// Write a Unix timestamp (seconds) as `YYYY-MM-DDTHH:MM:SS` directly into
+/// `buf[0..19]`, zero-allocation.
 ///
-/// This minimal implementation handles dates from 1970 to 2100 without pulling
-/// in the chrono crate. The fractional seconds are formatted by the caller.
-fn format_unix_timestamp_utc(secs: u64) -> String {
-    // Days since epoch
+/// Handles dates from 1970 to ~2100 correctly via the Gregorian calendar.
+fn write_unix_timestamp_utc_into(buf: &mut [u8; 19], secs: u64) {
     let days = secs / 86400;
     let time = secs % 86400;
     let h = time / 3600;
     let m = (time % 3600) / 60;
     let s = time % 60;
 
-    // Gregorian calendar calculation
     let mut year = 1970u32;
     let mut remaining = days;
     loop {
@@ -543,8 +788,71 @@ fn format_unix_timestamp_utc(secs: u64) -> String {
         remaining -= md as u64;
         month += 1;
     }
-    let day = remaining + 1;
-    format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}")
+    let day = (remaining + 1) as u32;
+
+    // Write YYYY-MM-DDTHH:MM:SS into the 19-byte buffer.
+    debug_assert!(year <= 9999, "year must be <= 9999, got {year}");
+    buf[0] = b'0' + (year / 1000) as u8;
+    buf[1] = b'0' + (year / 100 % 10) as u8;
+    buf[2] = b'0' + (year / 10 % 10) as u8;
+    buf[3] = b'0' + (year % 10) as u8;
+    buf[4] = b'-';
+    buf[5] = b'0' + (month / 10) as u8;
+    buf[6] = b'0' + (month % 10) as u8;
+    buf[7] = b'-';
+    buf[8] = b'0' + (day / 10) as u8;
+    buf[9] = b'0' + (day % 10) as u8;
+    buf[10] = b'T';
+    buf[11] = b'0' + (h / 10) as u8;
+    buf[12] = b'0' + (h % 10) as u8;
+    buf[13] = b':';
+    buf[14] = b'0' + (m / 10) as u8;
+    buf[15] = b'0' + (m % 10) as u8;
+    buf[16] = b':';
+    buf[17] = b'0' + (s / 10) as u8;
+    buf[18] = b'0' + (s % 10) as u8;
+}
+
+/// Fill `out[0..47]` with the full `@timestamp` suffix used in bulk documents:
+///
+/// ```text
+/// ,"@timestamp":"YYYY-MM-DDTHH:MM:SS.fffffffffZ"}
+/// ```
+///
+/// The leading `,` is at index 0; callers that need the no-comma form
+/// (empty-document case) can simply slice `&out[1..]`.
+///
+/// Zero-allocation: all work happens on the stack-allocated `out` buffer.
+fn write_ts_suffix(out: &mut [u8; 47], secs: u64, frac: u64) {
+    debug_assert!(frac < 1_000_000_000, "frac must be < 1e9, got {frac}");
+    out[0] = b',';
+    out[1..15].copy_from_slice(b"\"@timestamp\":\"");
+    let mut dt = [0u8; 19];
+    write_unix_timestamp_utc_into(&mut dt, secs);
+    out[15..34].copy_from_slice(&dt);
+    out[34] = b'.';
+    // Write 9-digit zero-padded nanosecond fraction.
+    let mut f = frac;
+    for i in (35..44).rev() {
+        out[i] = b'0' + (f % 10) as u8;
+        f /= 10;
+    }
+    out[44] = b'Z';
+    out[45] = b'"';
+    out[46] = b'}';
+}
+
+/// Format a Unix timestamp (seconds) as `YYYY-MM-DDTHH:MM:SS` in UTC.
+///
+/// Wraps [`write_unix_timestamp_utc_into`] for use in unit tests.
+/// Production code uses [`write_ts_suffix`] directly to avoid the String allocation.
+#[cfg(test)]
+fn format_unix_timestamp_utc(secs: u64) -> String {
+    let mut buf = [0u8; 19];
+    write_unix_timestamp_utc_into(&mut buf, secs);
+    // `[u8; 19]` is Copy; Vec::from avoids the extra clone that to_vec() would do.
+    // write_unix_timestamp_utc_into only writes ASCII digits and punctuation.
+    String::from_utf8(Vec::from(buf)).expect("timestamp bytes are valid UTF-8")
 }
 
 fn is_leap_year(y: u32) -> bool {
@@ -572,6 +880,7 @@ mod tests {
             index.to_string(),
             vec![],
             false,
+            ElasticsearchRequestMode::Buffered,
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
@@ -799,6 +1108,7 @@ mod snapshot_tests {
             "test-index".to_string(),
             vec![],
             false,
+            ElasticsearchRequestMode::Buffered,
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
@@ -943,5 +1253,31 @@ mod kani_proofs {
         if y % 4 != 0 {
             assert!(!is_leap_year(y), "not div by 4 must not be leap: {y}");
         }
+    }
+
+    /// Prove write_ts_suffix produces valid ASCII for any representative
+    /// timestamp in the first 16 years of the epoch (bounded for solver speed).
+    #[kani::proof]
+    fn verify_write_ts_suffix_ascii() {
+        // Restrict to first ~16 years (0..504921600) to keep the solver tractable.
+        let secs: u64 = kani::any();
+        kani::assume(secs < 504_921_600); // 1970-01-01 to 1985-12-31
+        let frac: u64 = kani::any();
+        kani::assume(frac < 1_000_000_000);
+
+        let mut buf = [0u8; 47];
+        write_ts_suffix(&mut buf, secs, frac);
+
+        // Every byte must be printable ASCII (32..=126).
+        for &b in &buf {
+            assert!(b >= 32 && b <= 126, "non-printable byte in ts_suffix");
+        }
+        // Structural checks: leading comma, fixed string markers.
+        assert_eq!(buf[0], b',');
+        assert_eq!(buf[1], b'"');
+        assert_eq!(buf[34], b'.');
+        assert_eq!(buf[44], b'Z');
+        assert_eq!(buf[45], b'"');
+        assert_eq!(buf[46], b'}');
     }
 }

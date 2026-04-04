@@ -17,6 +17,10 @@ just bench-udp
 # OTLP end-to-end
 just bench-otlp
 
+# Elasticsearch end-to-end
+just bench-es
+just bench-es-streaming
+
 # All scenarios
 just bench-pipelines
 ```
@@ -29,6 +33,8 @@ just bench-pipelines
 | tcp | generator → tcp_out | tcp → null | TCP serialization + deserialization |
 | udp | generator → udp_out | udp → null | UDP per-datagram overhead |
 | otlp | generator → otlp | otlp → null | OTLP protobuf encode + HTTP + decode |
+| es | generator → elasticsearch | Elasticsearch | Bulk NDJSON serialization + HTTP |
+| es-streaming | generator → elasticsearch (streaming) | Elasticsearch | Chunked bulk streaming vs buffered HTTP |
 
 ## CPU limiting
 

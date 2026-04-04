@@ -14,7 +14,7 @@ use arrow::record_batch::RecordBatch;
 
 use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::sink::SinkFactory;
-use logfwd_output::{BatchMetadata, ElasticsearchSinkFactory};
+use logfwd_output::{BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory};
 
 const ES_ENDPOINT: &str = "http://localhost:9200";
 const TEST_INDEX: &str = "logfwd-test-arrow";
@@ -102,7 +102,8 @@ async fn setup_test_data(sink: &mut Box<dyn logfwd_output::Sink>) -> RecordBatch
     };
 
     // Index the batch
-    sink.send_batch(&batch, &metadata)
+    let _ = sink
+        .send_batch(&batch, &metadata)
         .await
         .expect("failed to index test data");
 
@@ -134,6 +135,7 @@ fn test_query_arrow_all_documents() {
             TEST_INDEX.to_string(),
             vec![],
             false,
+            ElasticsearchRequestMode::Buffered,
             stats.clone(),
         )
         .expect("factory creation failed");
@@ -207,6 +209,7 @@ fn test_query_arrow_with_filter() {
             TEST_INDEX.to_string(),
             vec![],
             false,
+            ElasticsearchRequestMode::Buffered,
             stats.clone(),
         )
         .expect("factory creation failed");
@@ -267,6 +270,7 @@ fn test_query_arrow_with_projection() {
             TEST_INDEX.to_string(),
             vec![],
             false,
+            ElasticsearchRequestMode::Buffered,
             stats.clone(),
         )
         .expect("factory creation failed");
