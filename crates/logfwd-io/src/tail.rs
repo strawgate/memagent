@@ -292,7 +292,7 @@ impl FileDiscovery {
     }
 
     /// Drain filesystem event notifications. Returns whether something changed.
-    fn drain_events(&mut self) -> bool {
+    fn drain_events(&self) -> bool {
         let mut something_changed = false;
         while let Ok(res) = self.fs_events.try_recv() {
             if let Ok(_event) = res {
@@ -307,7 +307,7 @@ impl FileDiscovery {
     /// For rotated files, drains remaining data from the old fd before
     /// switching to the new file. For newly-appeared files, opens them
     /// from the beginning.
-    fn detect_changes(&mut self, reader: &mut FileReader, events: &mut Vec<TailEvent>) {
+    fn detect_changes(&self, reader: &mut FileReader, events: &mut Vec<TailEvent>) {
         let watch_paths = self.watch_paths.clone();
         for path in &watch_paths {
             if !path.exists() {

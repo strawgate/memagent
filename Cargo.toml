@@ -80,6 +80,9 @@ many_single_char_names = "allow"
 large_stack_arrays = "allow"
 cast_possible_wrap = "allow"
 assigning_clones = "allow"
+redundant_clone = "warn"
+cloned_instead_of_copied = "warn"
+needless_pass_by_ref_mut = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
