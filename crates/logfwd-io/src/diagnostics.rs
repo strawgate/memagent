@@ -419,7 +419,7 @@ impl DiagnosticsServer {
         // log lines emitted before the first /api/logs request are not lost.
         // Non-fatal: if capture setup fails (e.g. out of fds), log to real stderr.
         if let Err(e) = self.stderr.start() {
-            eprintln!("logfwd: stderr capture failed: {e}");
+            tracing::warn!(error = %e, "stderr capture failed");
         }
 
         // Background metric sampler — records pipeline + process metrics

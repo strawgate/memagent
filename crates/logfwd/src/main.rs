@@ -498,12 +498,23 @@ async fn run_pipelines(
     let meter = meter_provider.meter("logfwd");
 
     // Set up the tracing subscriber with an OTel layer that routes spans
-    // to our in-process ring buffer (and optionally to an OTLP endpoint).
+    // to our in-process ring buffer (and optionally to an OTLP endpoint),
+    // plus a stderr fmt layer so tracing events are visible on the console.
     let trace_buf = logfwd_io::span_exporter::SpanBuffer::new();
     let tracer_provider = build_tracer_provider(trace_buf.clone(), &config)?;
     let tracer = opentelemetry::trace::TracerProvider::tracer(&tracer_provider, "logfwd");
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-    let _ = tracing_subscriber::registry().with(otel_layer).try_init(); // ignore error if a subscriber is already installed (e.g. in tests)
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_env("LOGFWD_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(io::stderr)
+        .with_target(false);
+    let _ = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .with(otel_layer)
+        .try_init(); // ignore error if a subscriber is already installed (e.g. in tests)
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
 
     let mut pipelines = Vec::new();
