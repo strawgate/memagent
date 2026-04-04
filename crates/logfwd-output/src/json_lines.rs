@@ -146,7 +146,9 @@ impl OutputSink for JsonLinesSink {
                 &self.compress_buf
             }
             Compression::None => &self.batch_buf,
-            Compression::Zstd => unreachable!("zstd is not supported for json_lines; rejected at config validation"),
+            Compression::Zstd => {
+                unreachable!("zstd is not supported for json_lines; rejected at config validation")
+            }
         };
         let build_req = || {
             let mut req = self.http_agent.post(&self.url);
