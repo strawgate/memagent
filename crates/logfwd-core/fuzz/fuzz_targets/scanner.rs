@@ -2,8 +2,8 @@
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
+use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_arrow::scanner::CopyScanner;
 
 fn validate_batch(batch: &arrow::record_batch::RecordBatch, label: &str) {
     let num_rows = batch.num_rows();
@@ -27,8 +27,8 @@ fuzz_target!(|data: &[u8]| {
         keep_raw: true,
         validate_utf8: false,
     };
-    let mut scanner = CopyScanner::new(config);
-    let Ok(batch) = scanner.scan(data) else {
+    let mut scanner = Scanner::new(config);
+    let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else {
         return;
     };
     validate_batch(&batch, "extract_all");
@@ -49,8 +49,8 @@ fuzz_target!(|data: &[u8]| {
         keep_raw: false,
         validate_utf8: false,
     };
-    let mut scanner2 = CopyScanner::new(config2);
-    let Ok(batch2) = scanner2.scan(data) else {
+    let mut scanner2 = Scanner::new(config2);
+    let Ok(batch2) = scanner2.scan_detached(bytes::Bytes::copy_from_slice(data)) else {
         return;
     };
     validate_batch(&batch2, "pushdown");

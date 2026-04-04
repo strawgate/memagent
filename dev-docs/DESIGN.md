@@ -16,7 +16,7 @@ logfwd-core         Proven pure logic. #![no_std], #![forbid(unsafe_code)]
                     Every public function has a Kani proof or proptest.
 
 logfwd-arrow        Arrow integration. Implements core's ScanBuilder trait.
-                    StreamingBuilder, StorageBuilder.
+                    StreamingBuilder, Scanner.
                     Bridge between parsed fields and RecordBatch.
 
 logfwd-io           Produces RecordBatch from external sources.

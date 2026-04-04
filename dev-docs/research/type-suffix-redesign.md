@@ -174,8 +174,7 @@ normalization, replacing the direct MemTable registration used today.
 - Dead `rewriter.rs` deleted
 
 ### Phase 10b (complete — PR #713)
-- Standardized double-underscore suffixes across `StreamingBuilder` and
-  `StorageBuilder`
+- Standardized double-underscore suffixes in `StreamingBuilder`
 - `logfwd.conflict_groups` schema metadata stamped in builders
 - `strip_conflict_suffix` / `suffix_order` updated in `conflict_schema.rs`
   and `json_extract.rs`

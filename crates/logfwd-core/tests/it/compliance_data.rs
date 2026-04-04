@@ -10,7 +10,7 @@ use arrow::array::{Array, Float64Array, Int64Array, StringArray, StructArray};
 use arrow::compute;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
-use logfwd_arrow::scanner::{CopyScanner, ZeroCopyScanner};
+use logfwd_arrow::scanner::Scanner;
 use logfwd_core::aggregator::{AggregateResult, CriReassembler};
 use logfwd_core::cri::parse_cri_line;
 use logfwd_core::scan_config::ScanConfig;
@@ -19,28 +19,29 @@ use logfwd_core::scan_config::ScanConfig;
 // Helpers
 // ===========================================================================
 
-/// Scan with CopyScanner (StorageBuilder) using default config.
+/// Scan with Scanner (detached mode) using default config.
 fn scan_storage(input: &[u8]) -> RecordBatch {
-    let mut s = CopyScanner::new(ScanConfig::default());
-    s.scan(input).expect("StorageBuilder scan failed")
+    let mut s = Scanner::new(ScanConfig::default());
+    s.scan_detached(bytes::Bytes::from(input.to_vec()))
+        .expect("scan_detached failed")
 }
 
-/// Scan with ZeroCopyScanner (StreamingBuilder) using default config.
+/// Scan with Scanner (streaming mode) using default config.
 fn scan_streaming(input: &[u8]) -> RecordBatch {
-    let mut s = ZeroCopyScanner::new(ScanConfig::default());
+    let mut s = Scanner::new(ScanConfig::default());
     s.scan(bytes::Bytes::from(input.to_vec()))
-        .expect("StreamingBuilder scan failed")
+        .expect("scan failed")
 }
 
-/// Scan with CopyScanner using keep_raw=true.
+/// Scan with Scanner (detached mode) using keep_raw=true.
 fn scan_storage_raw(input: &[u8]) -> RecordBatch {
     let config = ScanConfig {
         keep_raw: true,
         ..ScanConfig::default()
     };
-    let mut s = CopyScanner::new(config);
-    s.scan(input)
-        .expect("StorageBuilder scan (keep_raw) failed")
+    let mut s = Scanner::new(config);
+    s.scan_detached(bytes::Bytes::from(input.to_vec()))
+        .expect("scan_detached (keep_raw) failed")
 }
 
 /// Extract a string column value from a RecordBatch.
@@ -159,7 +160,7 @@ fn assert_struct_child_null(batch: &RecordBatch, field: &str, child: &str, row: 
     // Column not existing is also acceptable.
 }
 
-/// Run a test function against both CopyScanner and ZeroCopyScanner,
+/// Run a test function against both scan_detached and scan (streaming),
 /// verifying they produce the same row count and column names.
 fn assert_both_scanners<F>(input: &[u8], check: F)
 where
@@ -572,8 +573,10 @@ fn compliance_raw_format() {
         keep_raw: true,
         validate_utf8: false,
     };
-    let mut scanner = CopyScanner::new(config);
-    let batch = scanner.scan(raw_input).unwrap();
+    let mut scanner = Scanner::new(config);
+    let batch = scanner
+        .scan_detached(bytes::Bytes::from(raw_input.to_vec()))
+        .unwrap();
     assert_eq!(batch.num_rows(), 1);
     assert!(
         batch.schema().field_with_name("_raw").is_ok(),
@@ -707,15 +710,19 @@ fn compliance_negative_zero_integer() {
 fn compliance_batch_reuse_isolation() {
     // Scanning two different inputs with the same scanner should not leak
     // data between batches.
-    let mut s = CopyScanner::new(ScanConfig::default());
-    let b1 = s.scan(b"{\"a\":\"first\"}\n").unwrap();
-    let b2 = s.scan(b"{\"b\":\"second\"}\n").unwrap();
+    let mut s = Scanner::new(ScanConfig::default());
+    let b1 = s
+        .scan_detached(bytes::Bytes::from(b"{\"a\":\"first\"}\n".to_vec()))
+        .unwrap();
+    let b2 = s
+        .scan_detached(bytes::Bytes::from(b"{\"b\":\"second\"}\n".to_vec()))
+        .unwrap();
 
     assert_eq!(b1.num_rows(), 1);
     assert_eq!(b2.num_rows(), 1);
 
     // b2 should NOT contain field "a" from b1.
-    // (StorageBuilder clears collectors on begin_batch, but field_index persists
+    // (StreamingBuilder clears collectors on begin_batch, but field_index persists
     // for schema stability. The column exists but the value should be null.)
     if b2.column_by_name("a").is_some() {
         assert_null(&b2, "a", 0);
@@ -725,7 +732,7 @@ fn compliance_batch_reuse_isolation() {
 
 #[test]
 fn compliance_streaming_batch_reuse_isolation() {
-    let mut s = ZeroCopyScanner::new(ScanConfig::default());
+    let mut s = Scanner::new(ScanConfig::default());
     let b1 = s
         .scan(bytes::Bytes::from_static(b"{\"a\":\"first\"}\n"))
         .unwrap();

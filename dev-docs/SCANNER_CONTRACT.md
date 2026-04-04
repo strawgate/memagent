@@ -1,7 +1,7 @@
 # Scanner Contract
 
 This document formalises the contract between callers and the scanner layer
-(`CopyScanner` / `ZeroCopyScanner`).  It covers input requirements,
+(`Scanner`).  It covers input requirements,
 output guarantees, and known limitations.
 
 ---
@@ -40,7 +40,7 @@ The scanner expects **newline-delimited JSON** (`\n`-separated lines):
 
 ### Size limits
 
-- `StorageBuilder` uses `u32` row counters, so a single batch is limited to
+- `StreamingBuilder` uses `u32` row counters, so a single batch is limited to
   **4 294 967 295 rows**.
 - `StreamingBuilder` stores string positions as `u32` offsets into the input
   buffer, limiting the buffer to **4 GB** (2³² bytes).  In practice, the
@@ -127,8 +127,8 @@ fields.
 
 ### Batch reuse
 
-Both `CopyScanner` and `ZeroCopyScanner` can be reused across batches.
-Each call to `scan()` resets builder state internally and produces an
+`Scanner` can be reused across batches. Each call to `scan()` or
+`scan_detached()` resets builder state internally and produces an
 independent `RecordBatch`; schema and data from previous batches are not
 carried over.
 
@@ -147,6 +147,5 @@ carried over.
 - **No escape decoding of string values** — string values are stored as
   raw bytes (including any JSON escape sequences such as `\n`, `\uXXXX`).
   Callers that need decoded strings must unescape them.
-- **`_raw` column not supported by `ZeroCopyScanner`** — setting
-  `keep_raw = true` with the streaming variant is a no-op; use `CopyScanner`
-  if a `_raw` column is needed.
+- **`_raw` column** — `keep_raw = true` is supported by both `scan()` and
+  `scan_detached()` modes.

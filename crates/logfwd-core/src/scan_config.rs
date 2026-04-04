@@ -1,7 +1,7 @@
 // scanner.rs — Scan configuration types for JSON field extraction.
 //
-// Defines ScanConfig and FieldSpec, used by all scanner implementations
-// (CopyScanner, ZeroCopyScanner) and the SQL transform layer.
+// Defines ScanConfig and FieldSpec, used by the Scanner and the SQL
+// transform layer.
 
 use alloc::{string::String, vec, vec::Vec};
 /// Specification for a single field to extract.

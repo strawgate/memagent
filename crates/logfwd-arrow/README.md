@@ -13,6 +13,5 @@ Arrow integration layer. Implements logfwd-core's ScanBuilder trait to produce R
 ## Key modules
 
 - `streaming_builder.rs` — Zero-copy StringViewArray builder (hot path)
-- `storage_builder.rs` — Owned-buffer builder for persistence
 - `conflict_schema.rs` — StructArray conflict column detection + normalization
-- `scanner.rs` — CopyScanner and ZeroCopyScanner wrappers
+- `scanner.rs` — Scanner wrapper (zero-copy + detached output modes)

@@ -150,29 +150,20 @@ a `StructArray` conflict column (`status: Struct { int, str }`).
 ### 5. Building: typed fields → Arrow RecordBatch
 
 ```
-ScanBuilder callbacks → StreamingBuilder/StorageBuilder → RecordBatch
+ScanBuilder callbacks → StreamingBuilder → RecordBatch
 ```
 
-Two ScanBuilder implementations in logfwd-arrow:
-
 **StreamingBuilder** (`logfwd-arrow/src/streaming_builder.rs`):
-Hot path. Stores `(offset, len)` views into the input `bytes::Bytes`
-buffer. Produces `StringViewArray` — Arrow's zero-copy string type
-that references the original buffer. No string data is copied.
+Implements `ScanBuilder`. Stores `(offset, len)` views into the input
+`bytes::Bytes` buffer. Produces `StringViewArray` (zero-copy) via
+`finish_batch()` or `StringArray` (detached) via `finish_batch_detached()`.
 
-**StorageBuilder** (`logfwd-arrow/src/storage_builder.rs`):
-Persistence path. Copies values into owned buffers. Supports
-dictionary encoding for repeated values. Used when the RecordBatch
-must outlive the input buffer (disk queue, Parquet write).
+**Scanner** (`logfwd-arrow/src/scanner.rs`) wraps StreamingBuilder:
 
-Both produce `RecordBatch` via `finish_batch()`.
-
-**Scanner wrappers** in logfwd-arrow combine classification + scanning
-+ building into one call:
-
-- `CopyScanner::scan(&[u8]) → RecordBatch` (StorageBuilder, copies)
-- `ZeroCopyScanner::scan(Bytes) → RecordBatch` (StreamingBuilder,
-  zero-copy)
+- `Scanner::scan(Bytes) → RecordBatch` — zero-copy `StringViewArray`,
+  buffer must stay alive
+- `Scanner::scan_detached(Bytes) → RecordBatch` — self-contained
+  `StringArray`, buffer can be freed. For persistence/compression.
 
 ### 6. Transform: RecordBatch → RecordBatch
 
@@ -217,7 +208,7 @@ implement:
 logfwd-core defines          logfwd-arrow implements
 ──────────────────────────    ──────────────────────────
 ScanBuilder                   StreamingBuilder
-                              StorageBuilder
+                              Scanner (wrapper)
 
 logfwd-io defines + implements
 ──────────────────────────────────────────

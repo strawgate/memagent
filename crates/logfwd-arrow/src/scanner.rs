@@ -1,6 +1,6 @@
-//! Scanner wrapper types that produce Arrow `RecordBatch` from raw bytes.
+//! Scanner wrapper type that produces Arrow `RecordBatch` from raw bytes.
 //!
-//! These compose logfwd-core's generic `scan_streaming` with Arrow builders
+//! Composes logfwd-core's generic `scan_streaming` with Arrow builders
 //! to produce `RecordBatch`. The core scan logic lives in logfwd-core;
 //! this crate provides the Arrow-specific builder implementations.
 
@@ -10,47 +10,11 @@ use logfwd_core::json_scanner::scan_streaming;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_core::scanner::ScanBuilder;
 
-use crate::storage_builder::StorageBuilder;
 use crate::streaming_builder::StreamingBuilder;
 
 // ---------------------------------------------------------------------------
-// ScanBuilder impls for Arrow builders
+// ScanBuilder impl for StreamingBuilder
 // ---------------------------------------------------------------------------
-
-impl ScanBuilder for StorageBuilder {
-    #[inline(always)]
-    fn begin_row(&mut self) {
-        self.begin_row();
-    }
-    #[inline(always)]
-    fn end_row(&mut self) {
-        self.end_row();
-    }
-    #[inline(always)]
-    fn resolve_field(&mut self, key: &[u8]) -> usize {
-        self.resolve_field(key)
-    }
-    #[inline(always)]
-    fn append_str_by_idx(&mut self, idx: usize, v: &[u8]) {
-        self.append_str_by_idx(idx, v);
-    }
-    #[inline(always)]
-    fn append_int_by_idx(&mut self, idx: usize, v: &[u8]) {
-        self.append_int_by_idx(idx, v);
-    }
-    #[inline(always)]
-    fn append_float_by_idx(&mut self, idx: usize, v: &[u8]) {
-        self.append_float_by_idx(idx, v);
-    }
-    #[inline(always)]
-    fn append_null_by_idx(&mut self, idx: usize) {
-        self.append_null_by_idx(idx);
-    }
-    #[inline(always)]
-    fn append_raw(&mut self, line: &[u8]) {
-        self.append_raw(line);
-    }
-}
 
 impl ScanBuilder for StreamingBuilder {
     #[inline(always)]
@@ -94,45 +58,7 @@ impl ScanBuilder for StreamingBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// CopyScanner — StorageBuilder (self-contained, compressible)
-// ---------------------------------------------------------------------------
-
-/// Scanner producing self-contained `RecordBatch` via `StorageBuilder`.
-///
-/// Output owns all its data — the input buffer can be freed after `scan()`.
-pub struct CopyScanner {
-    builder: StorageBuilder,
-    config: ScanConfig,
-}
-
-impl CopyScanner {
-    /// Create a new scanner with the given configuration.
-    pub fn new(config: ScanConfig) -> Self {
-        CopyScanner {
-            builder: StorageBuilder::new(config.keep_raw),
-            config,
-        }
-    }
-    /// Scan an NDJSON buffer into a `RecordBatch`.
-    ///
-    /// The returned batch owns all its data — the input buffer can be
-    /// freed immediately after this call returns.
-    pub fn scan(&mut self, buf: &[u8]) -> Result<RecordBatch, ArrowError> {
-        if self.config.validate_utf8 {
-            std::str::from_utf8(buf).map_err(|e| {
-                ArrowError::InvalidArgumentError(format!(
-                    "CopyScanner: input is not valid UTF-8: {e}"
-                ))
-            })?;
-        }
-        self.builder.begin_batch();
-        scan_streaming(buf, &self.config, &mut self.builder);
-        self.builder.finish_batch()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ZeroCopyScanner — StreamingBuilder (zero-copy hot path)
+// Scanner — StreamingBuilder (zero-copy hot path)
 // ---------------------------------------------------------------------------
 
 /// Zero-copy scanner producing `RecordBatch` via `StreamingBuilder`.
@@ -140,15 +66,15 @@ impl CopyScanner {
 /// String values are `StringViewArray` views into the reference-counted input
 /// buffer (`bytes::Bytes`). The input buffer must stay alive while the
 /// `RecordBatch` is in use.
-pub struct ZeroCopyScanner {
+pub struct Scanner {
     builder: StreamingBuilder,
     config: ScanConfig,
 }
 
-impl ZeroCopyScanner {
+impl Scanner {
     /// Create a new streaming scanner with the given configuration.
     pub fn new(config: ScanConfig) -> Self {
-        ZeroCopyScanner {
+        Scanner {
             builder: StreamingBuilder::new(config.keep_raw),
             config,
         }
@@ -161,9 +87,7 @@ impl ZeroCopyScanner {
     pub fn scan(&mut self, buf: bytes::Bytes) -> Result<RecordBatch, ArrowError> {
         if self.config.validate_utf8 {
             std::str::from_utf8(&buf).map_err(|e| {
-                ArrowError::InvalidArgumentError(format!(
-                    "ZeroCopyScanner: input is not valid UTF-8: {e}"
-                ))
+                ArrowError::InvalidArgumentError(format!("Scanner: input is not valid UTF-8: {e}"))
             })?;
         }
         self.builder.begin_batch(buf.clone());
@@ -179,34 +103,35 @@ impl ZeroCopyScanner {
     ///
     /// This is the optimal persistence path: zero-copy scan speed with
     /// a single bulk copy at finalization.
-    pub fn scan_owned(&mut self, buf: bytes::Bytes) -> Result<RecordBatch, ArrowError> {
+    pub fn scan_detached(&mut self, buf: bytes::Bytes) -> Result<RecordBatch, ArrowError> {
         if self.config.validate_utf8 {
             std::str::from_utf8(&buf).map_err(|e| {
-                ArrowError::InvalidArgumentError(format!(
-                    "ZeroCopyScanner: input is not valid UTF-8: {e}"
-                ))
+                ArrowError::InvalidArgumentError(format!("Scanner: input is not valid UTF-8: {e}"))
             })?;
         }
         self.builder.begin_batch(buf.clone());
         scan_streaming(&buf, &self.config, &mut self.builder);
-        self.builder.finish_batch_owned()
+        self.builder.finish_batch_detached()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::scanner::{CopyScanner, ZeroCopyScanner};
+    use crate::scanner::Scanner;
     use arrow::array::{Array, Int64Array, StringArray};
+    use bytes::Bytes;
     use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 
-    fn default_scanner(_rows: usize) -> CopyScanner {
-        CopyScanner::new(ScanConfig::default())
+    fn default_scanner(_rows: usize) -> Scanner {
+        Scanner::new(ScanConfig::default())
     }
 
     #[test]
     fn test_simple() {
         let input = b"{\"host\":\"web1\",\"status\":200,\"lat\":1.5}\n{\"host\":\"web2\",\"status\":404,\"lat\":0.3}\n";
-        let batch = default_scanner(4).scan(input).unwrap();
+        let batch = default_scanner(4)
+            .scan_detached(Bytes::from(input.to_vec()))
+            .unwrap();
         assert_eq!(batch.num_rows(), 2);
         // Single-type fields: bare names
         assert_eq!(
@@ -244,7 +169,9 @@ mod tests {
         use arrow::array::StructArray;
         use arrow::datatypes::DataType;
         let batch = default_scanner(4)
-            .scan(b"{\"status\":200}\n{\"status\":\"OK\"}\n")
+            .scan_detached(Bytes::from(
+                b"{\"status\":200}\n{\"status\":\"OK\"}\n".to_vec(),
+            ))
             .unwrap();
         // Old suffixed columns must not exist
         assert!(
@@ -272,10 +199,12 @@ mod tests {
     #[test]
     fn test_missing_fields() {
         let batch = default_scanner(4)
-            .scan(b"{\"a\":\"hello\"}\n{\"b\":\"world\"}\n")
+            .scan_detached(Bytes::from(
+                b"{\"a\":\"hello\"}\n{\"b\":\"world\"}\n".to_vec(),
+            ))
             .unwrap();
         assert_eq!(batch.num_rows(), 2);
-        // Single-type string fields: bare names
+        // Single-type string field: bare name
         let a = batch.column_by_name("a").unwrap();
         assert!(!a.is_null(0));
         assert!(a.is_null(1));
@@ -283,10 +212,11 @@ mod tests {
     #[test]
     fn test_nested() {
         let batch = default_scanner(4)
-            .scan(
+            .scan_detached(Bytes::from(
                 br#"{"u":{"name":"alice"},"level":"info"}
-"#,
-            )
+"#
+                .to_vec(),
+            ))
             .unwrap();
         assert!(
             batch
@@ -310,11 +240,12 @@ mod tests {
             keep_raw: false,
             validate_utf8: false,
         };
-        let batch = CopyScanner::new(config)
-            .scan(
+        let batch = Scanner::new(config)
+            .scan_detached(Bytes::from(
                 br#"{"a":"1","b":"2","c":"3"}
-"#,
-            )
+"#
+                .to_vec(),
+            ))
             .unwrap();
         // Single-type string field: bare name
         assert!(batch.column_by_name("a").is_some());
@@ -328,22 +259,28 @@ mod tests {
             keep_raw: true,
             validate_utf8: false,
         };
-        let batch = CopyScanner::new(config)
-            .scan(b"{\"msg\":\"hi\"}\n")
+        let batch = Scanner::new(config)
+            .scan_detached(Bytes::from(b"{\"msg\":\"hi\"}\n".to_vec()))
             .unwrap();
         assert!(batch.column_by_name("_raw").is_some());
     }
     #[test]
     fn test_batch_reuse() {
         let mut s = default_scanner(4);
-        let _ = s.scan(b"{\"x\":1}\n").unwrap();
-        let b = s.scan(b"{\"x\":2}\n").unwrap();
+        let _ = s
+            .scan_detached(Bytes::from(b"{\"x\":1}\n".to_vec()))
+            .unwrap();
+        let b = s
+            .scan_detached(Bytes::from(b"{\"x\":2}\n".to_vec()))
+            .unwrap();
         assert_eq!(b.num_rows(), 1);
     }
     #[test]
     fn test_bool_null() {
         let batch = default_scanner(4)
-            .scan(b"{\"a\":true,\"b\":false,\"c\":null}\n")
+            .scan_detached(Bytes::from(
+                b"{\"a\":true,\"b\":false,\"c\":null}\n".to_vec(),
+            ))
             .unwrap();
         // Single-type string field: bare name
         assert_eq!(
@@ -359,7 +296,9 @@ mod tests {
     }
     #[test]
     fn test_duplicate_keys() {
-        let batch = default_scanner(4).scan(b"{\"a\":1,\"a\":2}\n").unwrap();
+        let batch = default_scanner(4)
+            .scan_detached(Bytes::from(b"{\"a\":1,\"a\":2}\n".to_vec()))
+            .unwrap();
         // Single-type int field: bare name (first-writer-wins for dup keys)
         assert_eq!(
             batch
@@ -375,14 +314,14 @@ mod tests {
     #[test]
     fn test_i64_overflow() {
         let batch = default_scanner(4)
-            .scan(b"{\"big\":99999999999999999999}\n")
+            .scan_detached(Bytes::from(b"{\"big\":99999999999999999999}\n".to_vec()))
             .unwrap();
         assert!(batch.column_by_name("big").is_some());
     }
     #[test]
     fn test_i64_min_is_preserved_as_int() {
         let batch = default_scanner(4)
-            .scan(b"{\"big\":-9223372036854775808}\n")
+            .scan_detached(Bytes::from(b"{\"big\":-9223372036854775808}\n".to_vec()))
             .unwrap();
         // Single-type int field: bare name
         let col = batch
@@ -395,15 +334,22 @@ mod tests {
     }
     #[test]
     fn test_empty_object() {
-        assert_eq!(default_scanner(4).scan(b"{}\n").unwrap().num_rows(), 1);
+        assert_eq!(
+            default_scanner(4)
+                .scan_detached(Bytes::from(b"{}\n".to_vec()))
+                .unwrap()
+                .num_rows(),
+            1
+        );
     }
     #[test]
     fn test_array_value() {
         let batch = default_scanner(4)
-            .scan(
+            .scan_detached(Bytes::from(
                 br#"{"tags":["a","b"],"n":1}
-"#,
-            )
+"#
+                .to_vec(),
+            ))
             .unwrap();
         assert_eq!(
             batch
@@ -419,10 +365,11 @@ mod tests {
     #[test]
     fn test_braces_in_string() {
         let batch = default_scanner(4)
-            .scan(
+            .scan_detached(Bytes::from(
                 br#"{"d":{"m":"has } and {"},"ok":true}
-"#,
-            )
+"#
+                .to_vec(),
+            ))
             .unwrap();
         assert_eq!(
             batch
@@ -438,10 +385,11 @@ mod tests {
     #[test]
     fn test_escaped_string() {
         let batch = default_scanner(4)
-            .scan(
+            .scan_detached(Bytes::from(
                 br#"{"msg":"hello \"world\""}
-"#,
-            )
+"#
+                .to_vec(),
+            ))
             .unwrap();
         assert!(
             batch
@@ -460,13 +408,19 @@ mod tests {
         for i in 0..1000 {
             input.extend_from_slice(format!("{{\"n\":{i}}}\n").as_bytes());
         }
-        assert_eq!(default_scanner(1024).scan(&input).unwrap().num_rows(), 1000);
+        assert_eq!(
+            default_scanner(1024)
+                .scan_detached(Bytes::from(input))
+                .unwrap()
+                .num_rows(),
+            1000
+        );
     }
 
-    // --- ZeroCopyScanner ---
+    // --- Scanner (zero-copy) ---
     #[test]
     fn test_streaming_simple() {
-        let mut s = ZeroCopyScanner::new(ScanConfig::default());
+        let mut s = Scanner::new(ScanConfig::default());
         let batch = s
             .scan(bytes::Bytes::from_static(
                 b"{\"host\":\"web1\",\"status\":200}\n{\"host\":\"web2\"}\n",
@@ -478,7 +432,7 @@ mod tests {
     }
     #[test]
     fn test_streaming_reuse() {
-        let mut s = ZeroCopyScanner::new(ScanConfig::default());
+        let mut s = Scanner::new(ScanConfig::default());
         let _ = s
             .scan(bytes::Bytes::from_static(b"{\"x\":\"a\"}\n"))
             .unwrap();
@@ -496,7 +450,7 @@ mod tests {
             keep_raw: true,
             validate_utf8: false,
         };
-        let batch = ZeroCopyScanner::new(config)
+        let batch = Scanner::new(config)
             .scan(bytes::Bytes::from_static(b"{\"msg\":\"hi\"}\n"))
             .unwrap();
         assert!(
@@ -507,7 +461,7 @@ mod tests {
         let raw_arr = raw_col
             .as_any()
             .downcast_ref::<arrow::array::StringViewArray>()
-            .expect("_raw must be StringViewArray in ZeroCopyScanner");
+            .expect("_raw must be StringViewArray in Scanner");
         assert_eq!(raw_arr.value(0), "{\"msg\":\"hi\"}");
     }
 
@@ -518,8 +472,8 @@ mod tests {
             validate_utf8: true,
             ..ScanConfig::default()
         };
-        let batch = CopyScanner::new(config)
-            .scan(b"{\"msg\":\"hello\"}\n")
+        let batch = Scanner::new(config)
+            .scan_detached(Bytes::from(b"{\"msg\":\"hello\"}\n".to_vec()))
             .unwrap();
         assert_eq!(batch.num_rows(), 1);
     }
@@ -531,7 +485,8 @@ mod tests {
             ..ScanConfig::default()
         };
         // 0xFF is not valid UTF-8
-        let result = CopyScanner::new(config).scan(b"{\"msg\":\"\xFF\"}\n");
+        let result =
+            Scanner::new(config).scan_detached(Bytes::from(b"{\"msg\":\"\xFF\"}\n".to_vec()));
         assert!(result.is_err());
     }
 
@@ -541,7 +496,7 @@ mod tests {
             validate_utf8: true,
             ..ScanConfig::default()
         };
-        let batch = ZeroCopyScanner::new(config)
+        let batch = Scanner::new(config)
             .scan(bytes::Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
             .unwrap();
         assert_eq!(batch.num_rows(), 1);
@@ -553,8 +508,7 @@ mod tests {
             validate_utf8: true,
             ..ScanConfig::default()
         };
-        let result =
-            ZeroCopyScanner::new(config).scan(bytes::Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
+        let result = Scanner::new(config).scan(bytes::Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
         assert!(result.is_err());
     }
 }

@@ -2,7 +2,7 @@
 //
 // Uses Arrow's StringViewArray to store string values as 16-byte views
 // pointing directly into the input buffer. No string copies during scanning
-// or during finish_batch. The input buffer (as bytes::Bytes) is reference-counted
+// or during finish_batch/finish_batch_detached. The input buffer (as bytes::Bytes) is reference-counted
 // and shared between the builder and the resulting Arrow arrays.
 //
 // For the hot pipeline path: scan -> query -> output -> discard.
@@ -590,7 +590,7 @@ impl StreamingBuilder {
         result
     }
 
-    /// Build a self-contained `RecordBatch` with owned `StringArray` columns.
+    /// Build a self-contained `RecordBatch` with detached `StringArray` columns.
     ///
     /// Uses the same scan data as `finish_batch` but produces `StringArray`
     /// (contiguous offsets + data) instead of `StringViewArray` (views into
@@ -600,11 +600,11 @@ impl StreamingBuilder {
     /// This is the optimal persistence path: zero-copy scan speed during
     /// parsing, single bulk copy during finalization, and the resulting
     /// `StringArray` compresses efficiently via IPC zstd.
-    pub fn finish_batch_owned(&mut self) -> Result<RecordBatch, ArrowError> {
+    pub fn finish_batch_detached(&mut self) -> Result<RecordBatch, ArrowError> {
         debug_assert_eq!(
             self.state,
             BuilderState::InBatch,
-            "finish_batch_owned called outside of a batch"
+            "finish_batch_detached called outside of a batch"
         );
         let num_rows = self.row_count as usize;
         let has_decoded = !self.decoded_buf.is_empty();
@@ -1541,10 +1541,10 @@ mod tests {
         b.resolve_field(b"x"); // no begin_batch — must panic
     }
 
-    // --- finish_batch_owned tests ---
+    // --- finish_batch_detached tests ---
 
     #[test]
-    fn test_owned_basic_string_and_int() {
+    fn test_detached_basic_string_and_int() {
         let json = b"{\"name\":\"alice\",\"age\":30}\n";
         let buf = bytes::Bytes::from(json.to_vec());
         let mut b = StreamingBuilder::new(false);
@@ -1558,7 +1558,7 @@ mod tests {
         b.append_int_by_idx(idx_age, b"30");
         b.end_row();
 
-        let batch = b.finish_batch_owned().unwrap();
+        let batch = b.finish_batch_detached().unwrap();
         assert_eq!(batch.num_rows(), 1);
 
         // Strings are StringArray (Utf8), not StringViewArray (Utf8View)
@@ -1577,7 +1577,7 @@ mod tests {
     }
 
     #[test]
-    fn test_owned_not_pinned_to_input() {
+    fn test_detached_not_pinned_to_input() {
         let json = b"{\"msg\":\"hello world\"}\n";
         let buf = bytes::Bytes::from(json.to_vec());
         let buf_start = buf.as_ptr() as usize;
@@ -1590,7 +1590,7 @@ mod tests {
         b.append_str_by_idx(idx, &buf[8..19]); // "hello world"
         b.end_row();
 
-        let batch = b.finish_batch_owned().unwrap();
+        let batch = b.finish_batch_detached().unwrap();
 
         // Verify no buffer in the batch points into the input
         for col in batch.columns() {
@@ -1607,7 +1607,7 @@ mod tests {
     }
 
     #[test]
-    fn test_owned_type_conflict_struct() {
+    fn test_detached_type_conflict_struct() {
         let buf = bytes::Bytes::from_static(b"unused_padding");
         let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf.clone());
@@ -1620,7 +1620,7 @@ mod tests {
         b.append_str_by_idx(idx, &buf[0..6]); // "unused"
         b.end_row();
 
-        let batch = b.finish_batch_owned().unwrap();
+        let batch = b.finish_batch_detached().unwrap();
         assert_eq!(batch.num_rows(), 2);
 
         let col = batch.column_by_name("val").unwrap();
@@ -1635,7 +1635,7 @@ mod tests {
     }
 
     #[test]
-    fn test_owned_missing_fields_nulls() {
+    fn test_detached_missing_fields_nulls() {
         let buf = bytes::Bytes::from_static(b"abcdef");
         let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf.clone());
@@ -1650,7 +1650,7 @@ mod tests {
         b.append_str_by_idx(idx_b, &buf[3..6]); // "def"
         b.end_row();
 
-        let batch = b.finish_batch_owned().unwrap();
+        let batch = b.finish_batch_detached().unwrap();
         assert_eq!(batch.num_rows(), 2);
 
         let a_col = batch
@@ -1664,7 +1664,7 @@ mod tests {
     }
 
     #[test]
-    fn test_owned_batch_reuse() {
+    fn test_detached_batch_reuse() {
         let buf1 = bytes::Bytes::from_static(b"hello");
         let buf2 = bytes::Bytes::from_static(b"world");
         let mut b = StreamingBuilder::new(false);
@@ -1674,14 +1674,14 @@ mod tests {
         b.begin_row();
         b.append_str_by_idx(idx, &buf1[..]);
         b.end_row();
-        let batch1 = b.finish_batch_owned().unwrap();
+        let batch1 = b.finish_batch_detached().unwrap();
 
         b.begin_batch(buf2.clone());
         let idx = b.resolve_field(b"x");
         b.begin_row();
         b.append_str_by_idx(idx, &buf2[..]);
         b.end_row();
-        let batch2 = b.finish_batch_owned().unwrap();
+        let batch2 = b.finish_batch_detached().unwrap();
 
         assert_eq!(batch1.num_rows(), 1);
         assert_eq!(batch2.num_rows(), 1);
@@ -1695,16 +1695,16 @@ mod tests {
     }
 
     #[test]
-    fn test_owned_empty_batch() {
+    fn test_detached_empty_batch() {
         let buf = bytes::Bytes::from_static(b"\n");
         let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf);
-        let batch = b.finish_batch_owned().unwrap();
+        let batch = b.finish_batch_detached().unwrap();
         assert_eq!(batch.num_rows(), 0);
     }
 
     #[test]
-    fn test_owned_float_values() {
+    fn test_detached_float_values() {
         let buf = bytes::Bytes::from_static(b"unused");
         let mut b = StreamingBuilder::new(false);
         b.begin_batch(buf);
@@ -1714,7 +1714,7 @@ mod tests {
         b.end_row();
         b.begin_row();
         b.end_row(); // missing → null
-        let batch = b.finish_batch_owned().unwrap();
+        let batch = b.finish_batch_detached().unwrap();
         assert_eq!(batch.num_rows(), 2);
         let col = batch
             .column_by_name("lat")
@@ -1727,7 +1727,7 @@ mod tests {
     }
 
     #[test]
-    fn test_owned_keep_raw() {
+    fn test_detached_keep_raw() {
         let json = b"{\"msg\":\"hi\"}\n";
         let buf = bytes::Bytes::from(json.to_vec());
         let mut b = StreamingBuilder::new(true);
@@ -1737,7 +1737,7 @@ mod tests {
         b.append_str_by_idx(idx, &buf[8..10]); // "hi"
         b.append_raw(&buf[0..12]); // full line
         b.end_row();
-        let batch = b.finish_batch_owned().unwrap();
+        let batch = b.finish_batch_detached().unwrap();
         assert_eq!(batch.num_rows(), 1);
         let raw_col = batch.column_by_name("_raw").unwrap();
         assert_eq!(*raw_col.data_type(), DataType::Utf8);
@@ -1749,7 +1749,7 @@ mod tests {
     }
 
     #[test]
-    fn test_owned_decoded_strings() {
+    fn test_detached_decoded_strings() {
         // Simulate a JSON string with escape sequences that go through
         // append_decoded_str_by_idx (decoded_buf path).
         let json = b"hello world padding";
@@ -1761,7 +1761,7 @@ mod tests {
         // Decoded string goes into decoded_buf, not the original buffer
         b.append_decoded_str_by_idx(idx, b"decoded value");
         b.end_row();
-        let batch = b.finish_batch_owned().unwrap();
+        let batch = b.finish_batch_detached().unwrap();
         assert_eq!(batch.num_rows(), 1);
         let col = batch
             .column_by_name("msg")
@@ -1772,7 +1772,7 @@ mod tests {
         assert_eq!(col.value(0), "decoded value");
     }
 
-    /// Verify that finish_batch() and finish_batch_owned() produce the same
+    /// Verify that finish_batch() and finish_batch_detached() produce the same
     /// data (same values, same nulls) just with different string types
     /// (Utf8View vs Utf8).
     #[test]
@@ -1788,11 +1788,11 @@ mod tests {
         populate_builder(&mut b1, &buf, input);
         let view_batch = b1.finish_batch().unwrap();
 
-        // Run through finish_batch_owned (StringArray)
+        // Run through finish_batch_detached (StringArray)
         let mut b2 = StreamingBuilder::new(false);
         b2.begin_batch(buf.clone());
         populate_builder(&mut b2, &buf, input);
-        let owned_batch = b2.finish_batch_owned().unwrap();
+        let owned_batch = b2.finish_batch_detached().unwrap();
 
         // Same shape
         assert_eq!(view_batch.num_rows(), owned_batch.num_rows());

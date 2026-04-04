@@ -226,10 +226,9 @@ builder via `append_*_by_idx`. String scanning uses the pre-computed
 
 The scan loop is generic over the `ScanBuilder` trait:
 
-- **`StorageBuilder`**: collects `(row, value)` records. Builds columns
-  independently at `finish_batch`. Correct by construction. For
-  persistence path (Arrow IPC segments).
-- **`StreamingBuilder`**: stores `(row, offset, len)` views into a
+- **`StreamingBuilder`** (via `Scanner::scan_detached`): builds detached
+  `StringArray` columns. For the persistence path (Arrow IPC segments).
+- **`StreamingBuilder`** (via `Scanner::scan`): stores `(row, offset, len)` views into a
   `bytes::Bytes` buffer. Builds `StringViewArray` columns with zero
   copies. 20% faster. For real-time hot path when persistence is
   disabled.

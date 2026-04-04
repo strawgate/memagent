@@ -1,5 +1,5 @@
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use logfwd_arrow::scanner::CopyScanner;
+use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use std::hint::black_box;
 
@@ -225,54 +225,33 @@ fn arrow_json_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
 }
 
 // ===========================================================================
-// sonic-rs baseline: spec-compliant SIMD JSON parser → StorageBuilder
+// sonic-rs baseline: spec-compliant SIMD JSON parser → Scanner
 // ===========================================================================
 
 fn sonic_rs_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
-    use logfwd_arrow::storage_builder::StorageBuilder;
+    // Use sonic-rs to produce NDJSON, then feed through Scanner::scan_detached.
+    // This gives a fair comparison: sonic-rs parses, Scanner builds Arrow arrays.
     use sonic_rs::{JsonContainerTrait, JsonNumberTrait, JsonValueTrait};
 
-    let mut builder = StorageBuilder::new(false);
-    builder.begin_batch();
-
+    let mut ndjson = Vec::with_capacity(data.len());
     for line in data.split(|&b| b == b'\n') {
         if line.is_empty() {
             continue;
         }
-        builder.begin_row();
-        if let Ok(val) = sonic_rs::from_slice::<sonic_rs::Value>(line)
-            && let Some(obj) = val.as_object()
-        {
-            for (key_str, val) in obj {
-                let key = key_str.as_bytes();
-                let idx = builder.resolve_field(key);
-                if let Some(s) = val.as_str() {
-                    builder.append_str_by_idx(idx, s.as_bytes());
-                } else if val.is_null() {
-                    builder.append_null_by_idx(idx);
-                } else if let Some(b) = val.as_bool() {
-                    builder.append_str_by_idx(idx, if b { b"true" } else { b"false" });
-                } else if let Some(n) = val.as_number() {
-                    if n.is_f64() {
-                        if let Some(f) = n.as_f64() {
-                            let buf = f.to_string();
-                            builder.append_float_by_idx(idx, buf.as_bytes());
-                        }
-                    } else if let Some(i) = n.as_i64() {
-                        let buf = i.to_string();
-                        builder.append_int_by_idx(idx, buf.as_bytes());
-                    }
-                } else {
-                    // nested object/array → serialize as string
-                    if let Ok(s) = sonic_rs::to_string(val) {
-                        builder.append_str_by_idx(idx, s.as_bytes());
-                    }
+        if let Ok(val) = sonic_rs::from_slice::<sonic_rs::Value>(line) {
+            if val.is_object() {
+                if let Ok(s) = sonic_rs::to_string(&val) {
+                    ndjson.extend_from_slice(s.as_bytes());
+                    ndjson.push(b'\n');
                 }
             }
         }
-        builder.end_row();
     }
-    builder.finish_batch().expect("bench: batch build failed")
+
+    let mut scanner = Scanner::new(ScanConfig::default());
+    scanner
+        .scan_detached(bytes::Bytes::from(ndjson))
+        .expect("bench: scan_detached failed")
 }
 
 // ===========================================================================
@@ -286,12 +265,12 @@ macro_rules! bench_scenario {
             let mut group = c.benchmark_group($group_name);
             group.throughput(Throughput::Bytes(data.len() as u64));
 
-            group.bench_function("CopyScanner", |b| {
-                let mut scanner = CopyScanner::new($config());
+            group.bench_function("Scanner", |b| {
+                let mut scanner = Scanner::new($config());
                 b.iter(|| {
                     black_box(
                         scanner
-                            .scan(black_box(&data))
+                            .scan_detached(bytes::Bytes::from(data.clone()))
                             .expect("bench: scan should not fail"),
                     )
                 })

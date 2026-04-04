@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use logfwd::pipeline::Pipeline;
-use logfwd_arrow::scanner::CopyScanner;
+use logfwd_arrow::scanner::Scanner;
 use logfwd_config::Config;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_test_utils::test_meter;
@@ -471,8 +471,10 @@ fn test_enrichment_join() {
         r#"{"service":"auth","message":"login failed"}"#,
         "\n",
     );
-    let mut scanner = CopyScanner::new(ScanConfig::default());
-    let batch = scanner.scan(json_lines.as_bytes()).expect("scan failed");
+    let mut scanner = Scanner::new(ScanConfig::default());
+    let batch = scanner
+        .scan_detached(bytes::Bytes::from(json_lines.as_bytes().to_vec()))
+        .expect("scan failed");
     assert_eq!(batch.num_rows(), 3);
 
     // Write a CSV enrichment file: service → owning team.
