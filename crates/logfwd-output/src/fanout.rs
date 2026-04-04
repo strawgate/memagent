@@ -65,7 +65,7 @@ impl OutputSink for FanOut {
         let mut first_err: Option<io::Error> = None;
         for sink in &mut self.sinks {
             if let Err(e) = sink.send_batch(batch, meta) {
-                eprintln!("fanout: sink '{}' failed: {e}", sink.name());
+                tracing::error!(sink = sink.name(), error = %e, "fanout: sink send failed");
                 failed_sinks.push(sink.name().to_string());
                 if first_err.is_none() {
                     first_err = Some(e);
@@ -83,7 +83,7 @@ impl OutputSink for FanOut {
         let mut first_err: Option<io::Error> = None;
         for sink in &mut self.sinks {
             if let Err(e) = sink.flush() {
-                eprintln!("fanout: sink '{}' failed to flush: {e}", sink.name());
+                tracing::error!(sink = sink.name(), error = %e, "fanout: sink flush failed");
                 failed_sinks.push(sink.name().to_string());
                 if first_err.is_none() {
                     first_err = Some(e);

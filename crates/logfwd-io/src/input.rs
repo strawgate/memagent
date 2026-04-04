@@ -159,10 +159,7 @@ impl InputSource for FileInput {
 
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {
         if let Err(e) = self.tailer.set_offset_by_source(source_id, offset) {
-            eprintln!(
-                "warn: failed to restore offset for source {}: {e}",
-                source_id.0
-            );
+            tracing::warn!(source_id = source_id.0, error = %e, "failed to restore offset");
         }
     }
 }

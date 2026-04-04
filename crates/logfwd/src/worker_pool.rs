@@ -214,7 +214,7 @@ impl OutputWorkerPool {
             // Pool has been drained — reject the item immediately rather than
             // silently losing it. This keeps the at-least-once invariant intact
             // even for callers that mistakenly submit after drain.
-            eprintln!("worker_pool: submit after drain — rejecting batch immediately");
+            tracing::warn!("worker_pool: submit after drain, rejecting batch immediately");
             let ticket_count = item.tickets.len();
             if self
                 .ack_tx
@@ -231,8 +231,9 @@ impl OutputWorkerPool {
                 })
                 .is_err()
             {
-                eprintln!(
-                    "worker_pool: ack channel closed, batch lost permanently (ticket_count={ticket_count})"
+                tracing::error!(
+                    ticket_count,
+                    "worker_pool: ack channel closed, batch lost permanently"
                 );
             }
             return;
@@ -298,8 +299,9 @@ impl OutputWorkerPool {
                     })
                     .is_err()
                 {
-                    eprintln!(
-                        "worker_pool: ack channel closed, batch lost permanently (ticket_count={ticket_count})"
+                    tracing::error!(
+                        ticket_count,
+                        "worker_pool: ack channel closed, batch lost permanently"
                     );
                 }
             }
@@ -310,7 +312,7 @@ impl OutputWorkerPool {
         // This can happen when a single-use factory is exhausted (OnceFactory
         // after its first worker exits). Silently dropping would lose the ack.
         if let WorkerMsg::Work(item) = msg {
-            eprintln!("worker_pool: no workers available, rejecting batch");
+            tracing::error!("worker_pool: no workers available, rejecting batch");
             let ticket_count = item.tickets.len();
             if self
                 .ack_tx
@@ -327,8 +329,9 @@ impl OutputWorkerPool {
                 })
                 .is_err()
             {
-                eprintln!(
-                    "worker_pool: ack channel closed, batch lost permanently (ticket_count={ticket_count})"
+                tracing::error!(
+                    ticket_count,
+                    "worker_pool: ack channel closed, batch lost permanently"
                 );
             }
         }
@@ -369,7 +372,7 @@ impl OutputWorkerPool {
             while let Some(res) = self.join_set.join_next().await {
                 if let Err(e) = res {
                     if e.is_panic() {
-                        eprintln!("worker_pool: worker panicked during drain: {e:?}");
+                        tracing::error!(error = ?e, "worker_pool: worker panicked during drain");
                     }
                 }
             }
@@ -378,9 +381,9 @@ impl OutputWorkerPool {
             .await
             .is_err()
         {
-            eprintln!(
-                "worker_pool: drain timeout ({graceful_timeout:?}); \
-                 cancelling workers"
+            tracing::warn!(
+                timeout = ?graceful_timeout,
+                "worker_pool: drain timeout, cancelling workers"
             );
             // Phase 3 — fire cancellation token so workers notice at their
             // next select! poll (after their current send_batch() returns).
@@ -393,7 +396,7 @@ impl OutputWorkerPool {
                 while let Some(res) = self.join_set.join_next().await {
                     if let Err(e) = res {
                         if e.is_panic() {
-                            eprintln!("worker_pool: worker panicked: {e:?}");
+                            tracing::error!(error = ?e, "worker_pool: worker panicked");
                         }
                     }
                 }
@@ -570,7 +573,11 @@ async fn process_item(
 
         match result {
             Err(_elapsed) => {
-                eprintln!("worker_pool: worker {worker_id} timed out after {BATCH_TIMEOUT_SECS}s");
+                tracing::error!(
+                    worker_id,
+                    timeout_secs = BATCH_TIMEOUT_SECS,
+                    "worker_pool: batch send timed out"
+                );
                 return false;
             }
             Ok(Ok(SendResult::Ok)) => {
@@ -578,18 +585,20 @@ async fn process_item(
                 return true;
             }
             Ok(Ok(SendResult::Rejected(reason))) => {
-                eprintln!("worker_pool: worker {worker_id} batch rejected: {reason}");
+                tracing::warn!(worker_id, %reason, "worker_pool: batch rejected");
                 return false;
             }
             Ok(Ok(SendResult::RetryAfter(retry_dur))) => {
                 if attempts >= MAX_RETRIES {
-                    eprintln!("worker_pool: worker {worker_id} RetryAfter exceeded max retries");
+                    tracing::error!(
+                        worker_id,
+                        max_retries = MAX_RETRIES,
+                        "worker_pool: RetryAfter exceeded max retries"
+                    );
                     return false;
                 }
                 let sleep_for = retry_dur.min(max_retry_delay);
-                eprintln!(
-                    "worker_pool: worker {worker_id} rate-limited, retrying after {sleep_for:?}"
-                );
+                tracing::warn!(worker_id, ?sleep_for, "worker_pool: rate-limited, retrying");
                 tokio::time::sleep(sleep_for).await;
                 // Reset delay to initial — server specified the backoff, don't compound it.
                 delay = Duration::from_millis(100);
@@ -599,13 +608,19 @@ async fn process_item(
             Ok(Ok(_)) => return false,
             Ok(Err(e)) => {
                 if attempts >= MAX_RETRIES {
-                    eprintln!(
-                        "worker_pool: worker {worker_id} gave up after {MAX_RETRIES} retries: {e}"
+                    tracing::error!(
+                        worker_id,
+                        max_retries = MAX_RETRIES,
+                        error = %e,
+                        "worker_pool: gave up after retries"
                     );
                     return false;
                 }
-                eprintln!(
-                    "worker_pool: worker {worker_id} transient error (attempt {attempts}): {e}"
+                tracing::warn!(
+                    worker_id,
+                    attempt = attempts,
+                    error = %e,
+                    "worker_pool: transient error, retrying"
                 );
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(max_retry_delay);

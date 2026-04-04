@@ -19,7 +19,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 bytes = "1"
-
+tracing = { workspace = true }
 
 [lints]
 workspace = true

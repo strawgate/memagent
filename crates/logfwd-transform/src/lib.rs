@@ -630,9 +630,9 @@ impl SqlTransform {
                         format!("Failed to register enrichment table '{}': {e}", et.name())
                     })?;
             } else {
-                eprintln!(
-                    "  warning: enrichment table '{}' not yet loaded, skipping",
-                    et.name()
+                tracing::warn!(
+                    table = et.name(),
+                    "enrichment table not yet loaded, skipping"
                 );
             }
         }
