@@ -287,7 +287,7 @@ impl Pipeline {
     pub fn with_sink(mut self, sink: Box<dyn logfwd_output::Sink>) -> Self {
         let name = self.name.clone();
         let factory = Arc::new(OnceAsyncFactory::new(name, sink));
-        self.pool = OutputWorkerPool::new(factory, 1, Duration::MAX);
+        self.pool = OutputWorkerPool::new(factory, 1, Duration::MAX, Arc::clone(&self.metrics));
         self
     }
 
