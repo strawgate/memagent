@@ -5,12 +5,12 @@
 
 #![allow(deprecated)] // Benchmarks use sync OutputSink; migration tracked separately.
 
-use std::fmt::Write;
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::scanner::Scanner;
+use logfwd_bench::generators::{gen_cri_lines, gen_json_lines, make_test_metadata};
 use logfwd_core::cri::{CriReassembler, ReassembleResult, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use logfwd_io::compress::ChunkCompressor;
@@ -20,63 +20,8 @@ use logfwd_output::{
 };
 use logfwd_transform::SqlTransform;
 
-// ---------------------------------------------------------------------------
-// Test data generators
-// ---------------------------------------------------------------------------
-
-/// Generate N newline-delimited JSON log lines (~250 bytes each).
-fn gen_json_lines(n: usize) -> Vec<u8> {
-    let levels = ["INFO", "ERROR", "DEBUG", "WARN"];
-    let paths = [
-        "/api/users",
-        "/api/orders",
-        "/api/health",
-        "/api/auth/login",
-        "/api/metrics",
-    ];
-    let mut s = String::with_capacity(n * 260);
-    for i in 0..n {
-        let _ = write!(
-            s,
-            r#"{{"timestamp":"2024-01-15T10:30:{:02}.{:09}Z","level":"{}","message":"GET {} HTTP/1.1","status":{},"duration_ms":{},"request_id":"req-{:08x}","service":"api-gateway"}}"#,
-            i % 60,
-            i % 1_000_000_000,
-            levels[i % levels.len()],
-            paths[i % paths.len()],
-            [200, 200, 200, 500, 404][i % 5],
-            (i % 500) + 1,
-            i,
-        );
-        s.push('\n');
-    }
-    s.into_bytes()
-}
-
-/// Generate N CRI-formatted log lines wrapping JSON.
-fn gen_cri_lines(n: usize) -> Vec<u8> {
-    let levels = ["INFO", "ERROR", "DEBUG", "WARN"];
-    let mut s = String::with_capacity(n * 310);
-    for i in 0..n {
-        let _ = write!(
-            s,
-            r#"2024-01-15T10:30:{:02}.{:09}Z stdout F {{"level":"{}","message":"request handled","status":{},"duration_ms":{}}}"#,
-            i % 60,
-            i % 1_000_000_000,
-            levels[i % levels.len()],
-            [200, 500, 404][i % 3],
-            (i % 500) + 1,
-        );
-        s.push('\n');
-    }
-    s.into_bytes()
-}
-
-fn make_metadata() -> BatchMetadata {
-    BatchMetadata {
-        resource_attrs: Arc::new(vec![("service.name".into(), "bench".into())]),
-        observed_time_ns: 0,
-    }
-}
+/// Seed used for all data generators in this benchmark file.
+const BENCH_SEED: u64 = 0;
 
 /// Null sink that discards all data — measures pure serialization overhead.
 struct NullSink;
@@ -107,7 +52,7 @@ fn bench_scanner(c: &mut Criterion) {
     let mut group = c.benchmark_group("scanner");
 
     for &n in &[1_000, 10_000, 100_000] {
-        let data = gen_json_lines(n);
+        let data = gen_json_lines(n, BENCH_SEED);
         let bytes = data.len() as u64;
 
         group.throughput(Throughput::Bytes(bytes));
@@ -161,7 +106,7 @@ fn bench_cri(c: &mut Criterion) {
     let mut group = c.benchmark_group("cri");
 
     for &n in &[1_000, 10_000] {
-        let data = gen_cri_lines(n);
+        let data = gen_cri_lines(n, BENCH_SEED);
         let bytes = data.len() as u64;
 
         // Benchmark just parsing (no reassembly allocation).
@@ -221,7 +166,7 @@ fn bench_transform(c: &mut Criterion) {
     group.sample_size(20);
 
     let n = 10_000;
-    let data = gen_json_lines(n);
+    let data = gen_json_lines(n, BENCH_SEED);
     let mut scanner = Scanner::new(ScanConfig::default());
     let batch = scanner
         .scan_detached(bytes::Bytes::from(data.clone()))
@@ -276,7 +221,7 @@ fn bench_compress(c: &mut Criterion) {
 
     // Compress JSON log data at different sizes.
     for &n in &[1_000, 10_000, 100_000] {
-        let data = gen_json_lines(n);
+        let data = gen_json_lines(n, BENCH_SEED);
         let bytes = data.len() as u64;
 
         group.throughput(Throughput::Bytes(bytes));
@@ -298,12 +243,12 @@ fn bench_output(c: &mut Criterion) {
     group.sample_size(20);
 
     let n = 10_000;
-    let data = gen_json_lines(n);
+    let data = gen_json_lines(n, BENCH_SEED);
     let mut scanner = Scanner::new(ScanConfig::default());
     let batch = scanner
         .scan_detached(bytes::Bytes::from(data.clone()))
         .expect("bench: scan should not fail");
-    let meta = make_metadata();
+    let meta = make_test_metadata();
 
     // NullSink (measures overhead of scan + batch creation only)
     group.throughput(Throughput::Elements(n as u64));
@@ -338,8 +283,8 @@ fn bench_end_to_end(c: &mut Criterion) {
     group.sample_size(20);
 
     let n = 10_000;
-    let data = gen_json_lines(n);
-    let meta = make_metadata();
+    let data = gen_json_lines(n, BENCH_SEED);
+    let meta = make_test_metadata();
 
     // Full pipeline: scan → SELECT * → capture sink
     group.throughput(Throughput::Elements(n as u64));
@@ -417,12 +362,12 @@ fn bench_elasticsearch_serialize(c: &mut Criterion) {
     .expect("factory creation failed");
 
     for &n in &[1_000usize, 10_000, 100_000] {
-        let data = gen_json_lines(n);
+        let data = gen_json_lines(n, BENCH_SEED);
         let mut scanner = Scanner::new(ScanConfig::default());
         let batch = scanner
             .scan_detached(bytes::Bytes::from(data.clone()))
             .expect("bench: scan should not fail");
-        let meta = make_metadata();
+        let meta = make_test_metadata();
 
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(
