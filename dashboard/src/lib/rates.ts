@@ -18,7 +18,14 @@ export class RateTracker {
     const dt = (now - prev.time) / 1000;
     if (dt <= 0) return this.ema.get(key) ?? null; // same render cycle — return last EMA
 
-    const raw = Math.max(0, (value - prev.value) / dt);
+    // Counter rollback (e.g. server restart) — reset EMA so the rate
+    // drops to 0 immediately instead of decaying over ~8 seconds.
+    if (value < prev.value) {
+      this.ema.delete(key);
+      return 0;
+    }
+
+    const raw = (value - prev.value) / dt;
     const prevEma = this.ema.get(key);
     const smoothed = prevEma == null ? raw : prevEma * (1 - this.alpha) + raw * this.alpha;
     this.ema.set(key, smoothed);

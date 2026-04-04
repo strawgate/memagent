@@ -13,6 +13,8 @@ export function LogViewer() {
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
 
     const poll = async () => {
       try {
@@ -24,12 +26,13 @@ export function LogViewer() {
         }
       } catch {
         // ignore
+      } finally {
+        if (!cancelled) timer = setTimeout(poll, 2000);
       }
     };
 
     poll();
-    const id = setInterval(poll, 2000);
-    return () => clearInterval(id);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [open]);
 
   useEffect(() => {

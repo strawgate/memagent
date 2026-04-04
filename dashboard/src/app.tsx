@@ -184,9 +184,21 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    poll();
-    const id = setInterval(poll, POLL_MS);
-    return () => clearInterval(id);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let backoff = POLL_MS;
+
+    const loop = () => {
+      poll().then(
+        () => { backoff = POLL_MS; },          // success — reset backoff
+        () => { backoff = Math.min(backoff * 2, 30_000); }, // error — exponential backoff
+      ).finally(() => {
+        if (!cancelled) timer = setTimeout(loop, backoff);
+      });
+    };
+
+    loop();
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [poll]);
 
   const version = pipes?.system?.version ?? "?";
