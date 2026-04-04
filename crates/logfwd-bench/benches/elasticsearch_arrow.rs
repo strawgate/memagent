@@ -79,11 +79,11 @@ fn generate_log_batch(num_rows: usize) -> RecordBatch {
     }
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new("timestamp_str", DataType::Utf8, false),
-        Field::new("level_str", DataType::Utf8, false),
-        Field::new("message_str", DataType::Utf8, false),
-        Field::new("status_int", DataType::Int64, false),
-        Field::new("duration_ms_float", DataType::Float64, false),
+        Field::new("timestamp", DataType::Utf8, false),
+        Field::new("level", DataType::Utf8, false),
+        Field::new("message", DataType::Utf8, false),
+        Field::new("status", DataType::Int64, false),
+        Field::new("duration_ms", DataType::Float64, false),
     ]));
 
     RecordBatch::try_new(
@@ -289,20 +289,17 @@ fn main() {
         (
             "Filtered",
             format!(
-                r#"FROM {} | WHERE level_str == "ERROR" | LIMIT 10000"#,
+                r#"FROM {} | WHERE level == "ERROR" | LIMIT 10000"#,
                 BENCH_INDEX
             ),
         ),
         (
             "Projection",
-            format!(
-                "FROM {} | KEEP level_str, status_int | LIMIT 10000",
-                BENCH_INDEX
-            ),
+            format!("FROM {} | KEEP level, status | LIMIT 10000", BENCH_INDEX),
         ),
         (
             "Aggregation",
-            format!("FROM {} | STATS count() BY level_str", BENCH_INDEX),
+            format!("FROM {} | STATS count() BY level", BENCH_INDEX),
         ),
     ];
 

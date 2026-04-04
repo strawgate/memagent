@@ -151,7 +151,7 @@ fn main() {
 
     // SELECT 2 fields (pushdown)
     {
-        let mut transform = SqlTransform::new("SELECT timestamp_str, level_str FROM logs").unwrap();
+        let mut transform = SqlTransform::new("SELECT timestamp, level FROM logs").unwrap();
         let config = transform.scan_config();
         let mut scanner = Scanner::new(config);
         let batch = scanner.scan(bytes::Bytes::from(data.clone())).unwrap();
