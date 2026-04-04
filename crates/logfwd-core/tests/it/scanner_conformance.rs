@@ -440,14 +440,14 @@ proptest! {
 ///   multiple Bytes → extend_from_slice into BytesMut → split().freeze() → ZeroCopyScanner
 fn assert_accumulation_consistent(chunks: &[&[u8]]) {
     use bytes::BytesMut;
-    use logfwd_arrow::scanner::ZeroCopyScanner;
+    use logfwd_arrow::scanner::Scanner;
 
     // Path A: concatenate then scan (baseline)
     let mut full = Vec::new();
     for chunk in chunks {
         full.extend_from_slice(chunk);
     }
-    let mut scanner_a = ZeroCopyScanner::new(ScanConfig::default());
+    let mut scanner_a = Scanner::new(ScanConfig::default());
     let batch_a = scanner_a
         .scan(bytes::Bytes::from(full.clone()))
         .expect("baseline scan should succeed");
@@ -458,7 +458,7 @@ fn assert_accumulation_consistent(chunks: &[&[u8]]) {
         buf.extend_from_slice(chunk);
     }
     let frozen = buf.split().freeze();
-    let mut scanner_b = ZeroCopyScanner::new(ScanConfig::default());
+    let mut scanner_b = Scanner::new(ScanConfig::default());
     let batch_b = scanner_b
         .scan(frozen)
         .expect("accumulated scan should succeed");
@@ -471,31 +471,66 @@ fn assert_accumulation_consistent(chunks: &[&[u8]]) {
         batch_b.num_rows()
     );
 
-    // Compare all column values
+    // Schema must match (name + type + nullability)
+    let mut fields_a: Vec<_> = batch_a
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
+        .collect();
+    let mut fields_b: Vec<_> = batch_b
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
+        .collect();
+    fields_a.sort_by(|l, r| l.0.cmp(&r.0));
+    fields_b.sort_by(|l, r| l.0.cmp(&r.0));
+    assert_eq!(
+        fields_a, fields_b,
+        "Schema fields differ between direct and accumulated"
+    );
+
+    // Compare every column's values — catches corrupted StringView offsets
     for (i, field) in batch_a.schema().fields().iter().enumerate() {
         let col_a = batch_a.column(i);
-        let col_b = batch_b.column_by_name(field.name());
-        assert!(
-            col_b.is_some(),
-            "Column '{}' missing in accumulated batch",
-            field.name()
-        );
-        let col_b = col_b.unwrap();
+        let col_b = batch_b.column_by_name(field.name()).unwrap_or_else(|| {
+            panic!("Column '{}' missing in accumulated batch", field.name());
+        });
         assert_eq!(
             col_a.len(),
             col_b.len(),
             "Column '{}' length differs",
             field.name()
         );
+        for row in 0..col_a.len() {
+            assert_eq!(
+                col_a.is_null(row),
+                col_b.is_null(row),
+                "Null mismatch at {}[{row}]",
+                field.name(),
+            );
+            if !col_a.is_null(row) {
+                assert_eq!(
+                    format!("{:?}", col_a.as_ref().slice(row, 1)),
+                    format!("{:?}", col_b.as_ref().slice(row, 1)),
+                    "Value mismatch at {}[{row}]",
+                    field.name(),
+                );
+            }
+        }
     }
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// Split NDJSON at random newline boundaries and accumulate via BytesMut.
+    /// Split NDJSON at a proptest-chosen newline boundary and accumulate via BytesMut.
     #[test]
-    fn accumulation_matches_direct(buf in arb_ndjson_buffer()) {
+    fn accumulation_matches_direct(
+        buf in arb_ndjson_buffer(),
+        split_pct in 0usize..100,
+    ) {
         // Find all newline positions
         let newlines: Vec<usize> = buf.iter()
             .enumerate()
@@ -507,8 +542,9 @@ proptest! {
             return Ok(());
         }
 
-        // Split at a random newline position
-        let mid = newlines[newlines.len() / 2];
+        // Pick a newline index based on proptest-generated percentage
+        let idx = split_pct % newlines.len();
+        let mid = newlines[idx];
         let chunk1 = &buf[..mid];
         let chunk2 = &buf[mid..];
 

@@ -13,7 +13,7 @@ dhat-heap = ["dhat"]
 cpu-profiling = ["pprof"]
 
 [dependencies]
-bytes = "1"
+bytes = { workspace = true }
 logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
@@ -40,7 +40,7 @@ tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 
 [dev-dependencies]
 arrow = { workspace = true }
-bytes = "1"
+bytes = { workspace = true }
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1.11.0"
 stats_alloc = "0.1"

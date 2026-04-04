@@ -37,14 +37,17 @@ The binary crate wires everything together.
 ### 1. Reading: bytes enter the system
 
 ```
-Disk → FileReader (BytesMut) → freeze() → InputEvent::Data { bytes: Bytes }
+Disk → FileReader (Vec<u8>) → InputEvent::Data { bytes: Vec<u8> }
 ```
 
 **FileTailer** (`logfwd-io/src/tail.rs`) is composed of two internal layers:
 - **FileDiscovery**: path watching via notify (kqueue/inotify), glob evaluation,
   rotation detection, deleted-file cleanup, LRU eviction.
-- **FileReader**: open file descriptors, `BytesMut` read buffer, byte reading.
-  Reads into `BytesMut`, then `freeze()` produces refcounted `Bytes`.
+- **FileReader**: open file descriptors, `Vec<u8>` read buffer, byte reading.
+
+> **Note:** logfwd-io (tailer, InputEvent, FramedInput) still uses `Vec<u8>`.
+> Only `pipeline.rs` uses `BytesMut`/`Bytes`. The Bytes boundary is at the
+> `input_poll_loop` → `ChannelMsg` transition.
 
 Each input source runs on its own OS thread. Reads feed a bounded
 `tokio::sync::mpsc` channel to the async pipeline loop. The channel
@@ -54,7 +57,7 @@ across the thread boundary.
 ### 2. Framing: raw bytes → complete lines
 
 ```
-Bytes → FramedInput::poll() → newline-delimited JSON as Bytes
+Vec<u8> → FramedInput::poll() → newline-delimited JSON as Vec<u8>
 ```
 
 **FramedInput** (`logfwd-io/src/framed.rs`) combines format detection
@@ -262,20 +265,20 @@ operations.
 Understanding who owns what and when copies happen:
 
 ```
-Current (after #939 + #963 — 4 copies):
-  tailer reads → Vec<u8>                                [COPY 1: kernel → Vec]
-  FramedInput: remainder + extend_from_slice             [COPY 2: framing]
-  FormatDecoder: chunk → out_buf → Bytes::from(Vec)      [COPY 3: format processing]
-  pipeline: input.buf (BytesMut) .extend_from_slice      [COPY 4: thread accumulation]
-  channel: split().freeze() → Bytes                      (no copy — refcount)
-  scan_buf (BytesMut) .extend_from_slice(&bytes)         (copy — SIMD contiguity)
-  flush: split().freeze() → Bytes                        (no copy — refcount)
-  ZeroCopyScanner receives Bytes directly                (no copy)
+Current (after #939 + #963 — 5 heap copies, 2 zero-copy transitions):
+  tailer reads → Vec<u8>                                [COPY 1: kernel → userspace]
+  FramedInput: remainder + extend_from_slice             [COPY 2: Vec prepend]
+  FormatDecoder: chunk → out_buf                         [COPY 3: format processing]
+  pipeline input.buf: extend_from_slice → BytesMut       [COPY 4: thread accumulation]
+  channel: split().freeze() → Bytes                      (zero-copy — refcount only)
+  scan_buf: extend_from_slice → BytesMut                 [COPY 5: async accumulation]
+  flush: split().freeze() → Bytes                        (zero-copy — refcount only)
+  Scanner receives Bytes directly                (zero-copy)
   StreamingBuilder stores views → RecordBatch            (zero-copy)
   Bytes dropped when RecordBatch is consumed
 
-  Note: tailer, InputEvent, FramedInput still use Vec<u8>.
-  Only pipeline.rs (ChannelMsg, InputState.buf, scan_buf) uses BytesMut/Bytes.
+  logfwd-io boundary: Vec<u8> (tailer, InputEvent, FramedInput)
+  pipeline.rs boundary: BytesMut/Bytes (ChannelMsg, scan_buf, scanner)
 
 Target (zero-copy for 99% passthrough path — #608):
   tailer reads → BytesMut → freeze() → Bytes             (no copy)
@@ -283,7 +286,7 @@ Target (zero-copy for 99% passthrough path — #608):
   Passthrough format: emit Bytes slice directly           (no copy)
   CRI format: metadata injection requires rewrite         [COPY 1: unavoidable]
   pipeline: scan_buf.extend_from_slice(&bytes)            [COPY 2: SIMD contiguity]
-  ZeroCopyScanner receives Bytes directly                 (no copy)
+  Scanner receives Bytes directly                 (no copy)
   StreamingBuilder stores views → RecordBatch             (zero-copy)
   Bytes dropped when RecordBatch is consumed
 ```

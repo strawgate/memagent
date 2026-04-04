@@ -33,6 +33,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 arrow = { version = "55", default-features = false, features = ["ipc_compression"] }
+bytes = "1"
 arrow-json = "55"
 datafusion = { version = "48", default-features = false, features = [
     "string_expressions",

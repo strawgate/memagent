@@ -52,7 +52,8 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 |------|-------------|
 | Async orchestration only — no business logic | Code review |
 | Pipeline decisions go through core state machine | Architecture |
-| Deps: everything + tokio | Cargo.toml |
+| Deps: everything + tokio + bytes | Cargo.toml |
+| BytesMut/Bytes used for pipeline buffer accumulation | Architecture |
 
 ## Adding a new crate
 

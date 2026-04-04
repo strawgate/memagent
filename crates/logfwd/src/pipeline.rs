@@ -392,7 +392,7 @@ impl Pipeline {
     pub fn with_input(mut self, _name: &str, source: Box<dyn InputSource>) -> Self {
         self.inputs.push(InputState {
             source,
-            buf: BytesMut::new(),
+            buf: BytesMut::with_capacity(self.batch_target_bytes),
             stats: Arc::new(ComponentStats::new()),
         });
         self

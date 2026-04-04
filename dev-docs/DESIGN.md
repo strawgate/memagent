@@ -183,6 +183,27 @@ attributes. Directly queryable by DuckDB, Polars, DataFusion with zero schema kn
 OTAP's star schema (4+ tables with foreign keys) is optimized for wire efficiency, not
 queryability. Convert at the boundary when needed.
 
+### bytes::Bytes for pipeline buffer ownership
+
+Pipeline accumulation buffers use `BytesMut` (mutable, single-owner) in each
+stage, converting to `Bytes` (immutable, refcounted) at stage boundaries via
+`split().freeze()`. This is the standard Rust pattern for I/O pipelines where
+buffers cross thread/async boundaries.
+
+Why `Bytes` instead of `Vec<u8>`: The Arrow `StreamingBuilder` needs the input
+buffer to outlive the scan phase — `StringViewArray` stores `(offset, len)` views
+into the buffer, and the `RecordBatch` carries these through SQL transform and
+output serialization. `Bytes` provides this lifetime extension via refcounting.
+`Vec<u8>` cannot be shared without cloning.
+
+Why not `Arc<Vec<u8>>`: `Bytes` supports zero-copy `slice()` and `split()` that
+`Arc<Vec<u8>>` does not. Future FramedInput work (#608) will use `Bytes::slice()`
+for zero-copy newline framing.
+
+Current boundary: logfwd-io produces `Vec<u8>` (tailer, FramedInput). The Bytes
+transition happens at `input_poll_loop` in pipeline.rs. logfwd-core is untouched
+(scanner takes `&[u8]` via `Bytes::Deref`).
+
 ### Verification strategy
 
 Three tools, each at a different layer. See `dev-docs/VERIFICATION.md` for mechanics.
