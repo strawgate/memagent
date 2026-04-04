@@ -33,6 +33,7 @@ export class RingBuffer {
    * e.g. bucketMs=5000 → one averaged point per 5 seconds.
    */
   bucket(bucketMs: number, maxAgeMs: number = 5 * 60 * 1000): DataPoint[] {
+    if (!Number.isFinite(bucketMs) || bucketMs <= 0) return [];
     const raw = this.points(maxAgeMs);
     if (raw.length === 0) return [];
     const map = new Map<number, { sum: number; count: number }>();

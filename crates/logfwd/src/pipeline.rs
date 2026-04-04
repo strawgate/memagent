@@ -102,6 +102,12 @@ impl Pipeline {
         meter: &Meter,
         base_path: Option<&std::path::Path>,
     ) -> Result<Self, String> {
+        if config.workers == Some(0) {
+            return Err("workers must be >= 1".to_string());
+        }
+        if config.batch_target_bytes == Some(0) {
+            return Err("batch_target_bytes must be > 0".to_string());
+        }
         let transform_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
         let mut transform = SqlTransform::new(transform_sql)?;
 

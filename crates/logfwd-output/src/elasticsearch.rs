@@ -135,7 +135,7 @@ impl ElasticsearchAsyncSink {
     fn extract_took(body: &[u8]) -> Option<u64> {
         const PREFIX: &[u8] = b"\"took\":";
         let pos = memchr::memmem::find(body, PREFIX)?;
-        let rest = &body[pos + PREFIX.len()..];
+        let rest = body[pos + PREFIX.len()..].trim_ascii_start();
         let end = rest
             .iter()
             .position(|b| !b.is_ascii_digit())

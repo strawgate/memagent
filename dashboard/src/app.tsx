@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { api } from "./api";
 import { ChartGrid } from "./components/ChartGrid";
 import { ConfigView } from "./components/ConfigView";
@@ -391,6 +391,21 @@ export function App() {
   const version = pipes?.system?.version ?? "?";
   const uptime = stats?.uptime_sec ?? pipes?.system?.uptime_seconds ?? 0;
 
+  // Stable references — series composition never changes, only data mutated in place.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally stable slice
+  const pipelineSeries = useMemo(
+    () =>
+      seriesRef.current.filter((s) =>
+        ["lps", "bps", "obps", "err", "lat", "inflight", "batches", "stalls"].includes(s.id)
+      ),
+    []
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally stable slice
+  const systemSeries = useMemo(
+    () => seriesRef.current.filter((s) => ["cpu", "mem"].includes(s.id)),
+    []
+  );
+
   return (
     <>
       <StatusBar
@@ -404,16 +419,12 @@ export function App() {
 
         <div class="section">
           <div class="heading">Pipeline Metrics</div>
-          <ChartGrid
-            series={seriesRef.current.filter((s) =>
-              ["lps", "bps", "obps", "err", "lat", "inflight", "batches", "stalls"].includes(s.id)
-            )}
-          />
+          <ChartGrid series={pipelineSeries} />
         </div>
 
         <div class="section">
           <div class="heading">System Metrics</div>
-          <ChartGrid series={seriesRef.current.filter((s) => ["cpu", "mem"].includes(s.id))} />
+          <ChartGrid series={systemSeries} />
         </div>
 
         <LogViewer />

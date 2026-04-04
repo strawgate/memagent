@@ -870,6 +870,11 @@ export function TraceExplorer({ traces }: Props) {
       const workers = all.slice(1);
       lanesRef.current = [all[0], ...workers.slice(0, DEFAULT_WORKERS)];
     }
+    // Prune firstSeenRef: remove entries no longer in the active trace set.
+    const activeIds = new Set(traces.map((t) => t.trace_id));
+    for (const id of firstSeenRef.current.keys()) {
+      if (!activeIds.has(id)) firstSeenRef.current.delete(id);
+    }
   }, [traces, showAll]);
 
   useEffect(() => {
@@ -1038,7 +1043,7 @@ export function TraceExplorer({ traces }: Props) {
       </div>
 
       {/* Show more/less worker rows */}
-      {hiddenCount > 0 && (
+      {(showAll || hiddenCount > 0) && (
         <button type="button" class="t2-show-more" onClick={() => setShowAll((v) => !v)}>
           {showAll
             ? `▲ show fewer workers`
