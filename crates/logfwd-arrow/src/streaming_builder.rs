@@ -229,24 +229,23 @@ impl StreamingBuilder {
     /// length lie within `self.buf` bounds. We use `usize` subtraction rather
     /// than `offset_from` to avoid that API's stricter UB preconditions.
     ///
-    /// # Panics (debug builds)
-    /// Debug-asserts that `value` lies entirely within `self.buf`, and that
-    /// the computed byte offset fits in a u32.  A buffer larger than 4 GiB
-    /// would cause the offset to silently truncate without this guard.
+    /// # Panics
+    /// Panics if `value` does not lie entirely within `self.buf`, or if the
+    /// computed byte offset exceeds `u32::MAX` (buffer larger than 4 GiB).
+    /// These checks fire in both debug and release builds to prevent silent
+    /// StringView data corruption.
     #[inline(always)]
     fn offset_of(&self, value: &[u8]) -> u32 {
         let base = self.buf.as_ptr() as usize;
         let ptr = value.as_ptr() as usize;
-        debug_assert!(
+        assert!(
             ptr >= base && ptr + value.len() <= base + self.buf.len(),
             "value must be within buffer bounds"
         );
         let offset = ptr - base;
-        debug_assert!(
-            u32::try_from(offset).is_ok(),
-            "StreamingBuilder buffer offset exceeds u32::MAX ({offset} bytes)"
-        );
-        offset as u32
+        u32::try_from(offset).unwrap_or_else(|_| {
+            panic!("StreamingBuilder buffer offset exceeds u32::MAX ({offset} bytes)")
+        })
     }
 
     #[inline(always)]
