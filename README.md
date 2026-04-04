@@ -2,17 +2,67 @@
 
 A Rust log forwarder that tails files, parses JSON and Kubernetes CRI logs with portable SIMD, transforms with SQL, and ships to any OTLP-compatible collector — at 1.7 million lines/second on a single ARM64 core.
 
----
-
-## What it does
-
-logfwd reads log files (including Kubernetes container logs in CRI format), applies a SQL filter/transform, and forwards records as OTLP protobuf to an OpenTelemetry collector or compatible backend.
-
 ```
 log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → your collector
 ```
 
-logfwd needs an OTLP receiver to send to. Options: [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/), [Grafana Alloy](https://grafana.com/oss/alloy/), or logfwd's own built-in blackhole sink for testing (ships with the binary).
+---
+
+## Quick Start
+
+Try logfwd in 60 seconds — no collector, no infrastructure, just a terminal.
+
+**1. Install**
+
+```bash
+# Download the latest release (macOS Apple Silicon shown — see Install section for all platforms)
+curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd-darwin-arm64 -o logfwd
+chmod +x logfwd
+
+# Or build from source (Rust 1.85+)
+cargo build --release -p logfwd && cp target/release/logfwd .
+```
+
+**2. Generate test data**
+
+```bash
+./logfwd --generate-json 100000 logs.json
+```
+
+**3. Create a pipeline**
+
+```yaml
+# config.yaml
+input:
+  type: file
+  path: logs.json
+  format: json
+
+transform: |
+  SELECT level, message, status, duration_ms
+  FROM logs
+  WHERE level = 'ERROR' AND duration_ms > 50
+
+output:
+  type: stdout
+  format: console
+```
+
+**4. Run it**
+
+```bash
+./logfwd --config config.yaml
+```
+
+You'll see only the records that match your SQL filter:
+
+```
+ERROR  request handled GET /api/v2/products/10049  status=500 duration_ms=92
+ERROR  request handled POST /api/v1/orders/10121  status=503 duration_ms=78
+...
+```
+
+Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/getting-started/quickstart.md) to keep going.
 
 ---
 
@@ -20,120 +70,58 @@ logfwd needs an OTLP receiver to send to. Options: [OpenTelemetry Collector](htt
 
 | What | How |
 |------|-----|
-| **Fast SIMD parsing** | One pass per buffer using the [`wide`](https://crates.io/crates/wide) crate for portable SIMD — 10 sequential broadcast-compare operations per 64-byte block, no hand-rolled intrinsics, runs on x86_64, ARM64, or any LLVM-supported target |
+| **Fast SIMD parsing** | One pass per buffer with portable SIMD — 10 broadcast-compare ops per 64-byte block, runs on x86_64 and ARM64 |
 | **Low-copy pipeline** | Apache Arrow `StringViewArray` stores views into the read buffer — string data isn't copied from scanner to RecordBatch |
-| **SQL transforms** | Every parsed batch runs through a DataFusion SQL query before anything hits the wire. Filter, reshape, regex-extract, join enrichment tables — all in standard SQL |
-| **OTLP native** | Encodes directly to OTLP protobuf. Any OpenTelemetry Collector, Grafana Alloy, or OTLP-speaking backend works out of the box |
-| **Kani-verified core** | `framer.rs`, `aggregator.rs`, and wire-format primitives in `otlp.rs` are verified with the [Kani bounded model checker](https://github.com/model-checking/kani) — exhaustive bounded verification, not just fuzzing |
-| **Single static binary** | One file. No JVM, no Python, no Lua, no runtime dependencies |
-
----
-
-## Install
-
-Download the latest release from [GitHub Releases](https://github.com/strawgate/memagent/releases) or build from source:
-
-```bash
-# From source (requires Rust toolchain)
-cargo build --release -p logfwd
-cp target/release/logfwd /usr/local/bin/
-```
-
----
-
-## Quick Start
-
-### Try it in 60 seconds — no collector needed
-
-logfwd ships a test-data generator and a built-in OTLP "blackhole" — accepts data and discards it immediately, a perfectly reliable drain for your benchmarks.
-
-```bash
-# 1. Generate 100,000 synthetic JSON log lines
-logfwd --generate-json 100000 logs.json
-
-# 2. Start the blackhole receiver (listens on :4318)
-logfwd --blackhole &
-
-# 3. Create config.yaml
-cat > config.yaml << 'EOF'
-input:
-  type: file
-  path: logs.json
-  format: json
-
-transform: |
-  SELECT * FROM logs WHERE duration_ms > 50
-
-output:
-  type: otlp
-  endpoint: http://127.0.0.1:4318
-  compression: zstd
-EOF
-
-# 4. Run
-logfwd --config config.yaml
-```
-
-### Or just print to stdout
-
-No collector, no config ceremony:
-
-```yaml
-input:
-  type: file
-  path: /var/log/app/app.log
-  format: json
-
-output:
-  type: stdout
-  format: console
-```
-
-```bash
-logfwd --config config.yaml
-```
+| **SQL transforms** | Every batch runs through a DataFusion SQL query. Filter, reshape, regex-extract, join enrichment tables — standard SQL |
+| **OTLP native** | Encodes directly to OTLP protobuf. Works with any OpenTelemetry Collector, Grafana Alloy, or OTLP-speaking backend |
+| **Kani-verified core** | The framer, aggregator, and OTLP wire-format code are verified with the [Kani model checker](https://github.com/model-checking/kani) — exhaustive bounded proofs that these paths cannot panic, overflow, or produce invalid output |
+| **Single static binary** | One statically-linked file (~15 MB). No JVM, no Python, no Lua, no runtime dependencies |
 
 ---
 
 ## SQL Transforms
 
-The transform is the main reason to use logfwd over a plain forwarder. Every batch of parsed log records is a DataFusion SQL table named `logs`.
+The SQL transform is why you'd pick logfwd over a plain forwarder. Every parsed batch becomes a DataFusion table named `logs`.
 
 ```sql
 -- Forward only errors and slow requests
 SELECT level, message, duration_ms, status
 FROM logs
-WHERE level = 'ERROR'
-   OR duration_ms > 1000
+WHERE level = 'ERROR' OR duration_ms > 1000
 ```
 
 ```sql
--- Extract a field with regex, rename columns
+-- Extract fields with regex, rename columns
 SELECT
   level,
-  message,
   regexp_extract(message, 'request_id=([a-f0-9-]+)', 1) AS request_id,
   status
 FROM logs
-WHERE level IN ('ERROR', 'WARN')
-  AND status >= 400
+WHERE status >= 400
 ```
 
-**Column naming:** JSON fields use their bare names as Arrow column names. The scanner detects types automatically:
+Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](book/src/config/sql-transforms.md).
 
-| JSON type      | Arrow type | Example column |
-|----------------|------------|----------------|
-| String         | Utf8View   | `level`        |
-| Integer        | Int64      | `status`       |
-| Float          | Float64    | `latency_ms`   |
-| Boolean        | Boolean    | `enabled`      |
-| Object / Array | Utf8View   | `metadata` — raw JSON string |
+---
 
-When a field has mixed types across rows, the builder emits a `StructArray` conflict column with typed children.
+## Install
 
-> Nested objects are stored as raw JSON strings, not expanded into sub-fields.
+```bash
+# Binary (pick your platform)
+#   logfwd-linux-amd64, logfwd-linux-arm64, logfwd-darwin-amd64, logfwd-darwin-arm64
+curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd-linux-amd64 -o logfwd
+chmod +x logfwd
+sudo mv logfwd /usr/local/bin/
 
-**Built-in UDFs:** `int()`, `float()`, `grok()`, `regexp_extract()` — see the [Configuration Reference](book/src/config/reference.md).
+# Docker
+docker run --rm -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
+  ghcr.io/strawgate/memagent:latest --config /etc/logfwd/config.yaml
+
+# From source (requires Rust 1.85+)
+cargo build --release -p logfwd
+```
+
+See [Installation](book/src/getting-started/installation.md) for all platforms and options.
 
 ---
 
@@ -151,7 +139,7 @@ transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
-  endpoint: http://otel-collector:4318
+  endpoint: http://otel-collector:4318/v1/logs
   compression: zstd
 ```
 
@@ -167,7 +155,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
-        endpoint: http://otel-collector:4318
+        endpoint: http://otel-collector:4318/v1/logs
 
   debug:
     inputs:
@@ -183,100 +171,63 @@ See the [Configuration Reference](book/src/config/reference.md) for all YAML fie
 
 ---
 
-## Kubernetes (CRI) Support
-
-Point logfwd at `/var/log/pods/**/*.log` with `format: cri` and it handles timestamp parsing, stdout/stderr routing, and multi-line log reassembly (CRI partial-log flags).
-
-Every CRI record gets these extra columns:
-
-| Column | Description |
-|--------|-------------|
-| `_timestamp` | CRI timestamp as an RFC 3339 string |
-| `_stream` | `stdout` or `stderr` |
-
-Filter by stream:
-
-```sql
-SELECT _timestamp, _stream, level, message
-FROM logs
-WHERE _stream = 'stderr'
-  AND level = 'ERROR'
-```
-
-> **Coming soon:** Kubernetes namespace/pod/container metadata enrichment (`k8s_path`) is implemented in the pipeline but not yet wired into the YAML config schema.
-
----
-
-## Output destinations
-
-| Output          | Status         | Description |
-|-----------------|----------------|-------------|
-| `otlp`          | ✅ Implemented  | OTLP protobuf over HTTP or gRPC — works with any OpenTelemetry-compatible receiver |
-| `http`          | ✅ Implemented  | JSON lines over HTTP POST, optional zstd compression |
-| `stdout`        | ✅ Implemented  | JSON or colored console output — great for local debugging |
-| `elasticsearch` | ✅ Implemented   | Elasticsearch bulk API with retry logic, per-document error handling |
-| `loki`          | ✅ Implemented   | Grafana Loki push API with label grouping and dedup |
-| `parquet`       | 🚧 Stub         | Struct exists; Parquet file writing not yet implemented |
-
----
-
-## CLI Reference
-
-```
-logfwd --config <config.yaml>             Run the pipeline
-logfwd --config <config.yaml> --validate  Parse and validate config only
-logfwd --config <config.yaml> --dry-run   Build pipeline objects, check SQL syntax
-logfwd --blackhole [bind_addr]            Start OTLP blackhole for testing
-logfwd --generate-json <n> <file>         Generate synthetic test data
-logfwd --version                          Print version
-```
-
----
-
-## Deployment
-
-### Docker
-
-```bash
-docker run -d \
-  --name logfwd \
-  -v /var/log:/var/log:ro \
-  -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  logfwd:latest --config /etc/logfwd/config.yaml
-```
-
-### Kubernetes DaemonSet
-
-A ready-to-apply manifest ships at `deploy/daemonset.yml`. It runs one logfwd pod per node and reads all container logs from `/var/log`.
+## Kubernetes
 
 ```bash
 kubectl apply -f deploy/daemonset.yml
 kubectl -n collectors rollout status daemonset/logfwd
 ```
 
-Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
+Runs one logfwd pod per node, reads all container logs from `/var/log`. Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
 
-See the [Deployment Guide](book/src/deployment/kubernetes.md) for full details, resource sizing, and OTLP collector integration examples.
+See the [Deployment Guide](book/src/deployment/kubernetes.md) for resource sizing, OTLP collector integration, and CRI log format details.
+
+---
+
+## Output Destinations
+
+| Output          | Status         | Description |
+|-----------------|----------------|-------------|
+| `otlp`          | Implemented | OTLP protobuf over HTTP or gRPC |
+| `http`          | Implemented | JSON lines over HTTP POST, optional zstd |
+| `stdout`        | Implemented | JSON or colored console output |
+| `elasticsearch` | Implemented | Bulk API with retry and per-document error handling |
+| `loki`          | Implemented | Grafana Loki push API with label grouping |
+
+---
+
+## CLI Reference
+
+```
+logfwd --config <file>                   Run the pipeline
+logfwd --config <file> --validate        Validate config syntax
+logfwd --config <file> --dry-run         Build pipeline, check SQL, don't start
+logfwd --blackhole [bind_addr]           Start OTLP blackhole receiver for testing
+logfwd --generate-json <n> <file>        Generate synthetic JSON log data
+logfwd --version                         Print version
+```
 
 ---
 
 ## Documentation
 
-### User guides ([book/src/](book/src/))
+**User guides** — [book/src/](book/src/)
 
 | Guide | Description |
 |-------|-------------|
+| [Quick Start](book/src/getting-started/quickstart.md) | Working pipeline in 60 seconds, then build on it |
+| [Your First Pipeline](book/src/getting-started/first-pipeline.md) | Production config with monitoring and validation |
 | [Configuration Reference](book/src/config/reference.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
 | [SQL Transforms](book/src/config/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
-| [Deployment](book/src/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing, OTLP integration |
+| [Deployment](book/src/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |
 | [Troubleshooting](book/src/troubleshooting.md) | Common errors, debug mode, diagnostics API |
 
-### Developer guides
+**Developer guides**
 
 | Guide | Description |
 |-------|-------------|
 | [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute — PR process, pre-commit checks |
-| [dev-docs/ARCHITECTURE.md](dev-docs/ARCHITECTURE.md) | Pipeline data flow, SIMD stages, crate map |
-| [dev-docs/DESIGN.md](dev-docs/DESIGN.md) | Vision, target architecture, architecture decision records |
-| [dev-docs/VERIFICATION.md](dev-docs/VERIFICATION.md) | TLA+, Kani, proptest — tool selection, tiers, per-module status |
+| [Architecture](dev-docs/ARCHITECTURE.md) | Pipeline data flow, SIMD stages, crate map |
+| [Design](dev-docs/DESIGN.md) | Vision, target architecture, decision records |
+| [Verification](dev-docs/VERIFICATION.md) | TLA+, Kani, proptest — tool selection, proof status |
