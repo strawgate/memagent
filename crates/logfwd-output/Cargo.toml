@@ -35,5 +35,8 @@ tiny_http = "0.12"
 memchr = "2"
 insta = "1"
 
+[features]
+elasticsearch_integration_tests = []
+
 [lints]
 workspace = true
