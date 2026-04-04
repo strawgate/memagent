@@ -309,7 +309,7 @@ with the native Arrow type:
 When a field contains **mixed types** across rows in the same batch, the builder emits
 a single `StructArray` conflict column with typed children:
 
-```
+```text
 status: Struct { int: Int64, str: Utf8View }
 ```
 
@@ -317,13 +317,13 @@ Conflict structs are automatically flattened to strings for SQL via
 `normalize_conflict_columns()`. For most inputs (OTLP, CSV, consistent JSON),
 all columns use bare names and conflicts never arise.
 
-Special columns added for CRI inputs:
+Special columns:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `_raw` | Utf8View | Original raw line (only when `keep_raw: true`). |
-| `_timestamp` | Utf8View | Timestamp from CRI header as an RFC 3339 string. |
-| `_stream` | Utf8View | CRI stream name (`stdout`/`stderr`). |
+| `_raw` | Utf8View | Original raw line (only when `keep_raw: true`). Available for all input formats. |
+| `_timestamp` | Utf8View | Timestamp from CRI header as an RFC 3339 string (CRI inputs only). |
+| `_stream` | Utf8View | CRI stream name (`stdout`/`stderr`) (CRI inputs only). |
 
 ### Built-in UDFs
 

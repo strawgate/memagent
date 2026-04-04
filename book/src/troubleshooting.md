@@ -166,9 +166,9 @@ Look for log lines like:
 [DEBUG] read 4096 bytes from /var/log/pods/app_pod-xyz/app/0.log
 ```
 
-If files appear in the log but no records reach the output, the format parser may
-be discarding lines. Switch to `format: raw` temporarily to confirm raw lines are
-flowing:
+If files appear in the log but no records reach the output, the format processing
+(FramedInput) may be discarding lines. Switch to `format: raw` temporarily to
+confirm raw lines are flowing:
 
 ```yaml
 input:
