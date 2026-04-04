@@ -128,9 +128,11 @@ fields.
 ### Batch reuse
 
 Both `SimdScanner` and `StreamingSimdScanner` can be reused across batches.
-Each call to `scan()` implicitly calls `begin_batch()` and produces an
-independent `RecordBatch`; schema and data from previous batches are not
-carried over.
+Each call to `scan()` resets the underlying builder (via `begin_batch()` on the
+concrete builder type) and produces an independent `RecordBatch`; schema and
+data from previous batches are not carried over. Note that `begin_batch()` is
+not part of the `ScanBuilder` trait — it is a method on the concrete builder
+types (`StreamingBuilder`, `StorageBuilder`) called by the scanner wrappers.
 
 ---
 

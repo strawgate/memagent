@@ -1483,6 +1483,114 @@ mod tests {
         assert_eq!(status.value(0), "not_a_number");
     }
 
+    // -----------------------------------------------------------------------
+    // Regression tests — #415: IS NULL / IS NOT NULL / LIKE / numeric IN list
+    // -----------------------------------------------------------------------
+
+    /// `WHERE status IS NULL` on a plain Utf8 batch.
+    /// collect_column_refs must collect "status" from an IsNull expression so
+    /// the scanner requests the field, and DataFusion must filter correctly.
+    #[test]
+    fn test_where_is_null() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "status",
+            DataType::Utf8,
+            true,
+        )]));
+        let status: ArrayRef = Arc::new(StringArray::from(vec![Some("200"), None, Some("404")]));
+        let batch = RecordBatch::try_new(schema, vec![status]).unwrap();
+
+        let mut transform =
+            SqlTransform::new("SELECT status FROM logs WHERE status IS NULL").unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
+        // Only the null row should match.
+        assert_eq!(result.num_rows(), 1);
+    }
+
+    /// `WHERE status IS NOT NULL` on a plain Utf8 batch.
+    #[test]
+    fn test_where_is_not_null() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "status",
+            DataType::Utf8,
+            true,
+        )]));
+        let status: ArrayRef = Arc::new(StringArray::from(vec![Some("200"), None, Some("404")]));
+        let batch = RecordBatch::try_new(schema, vec![status]).unwrap();
+
+        let mut transform =
+            SqlTransform::new("SELECT status FROM logs WHERE status IS NOT NULL").unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
+        // The two non-null rows should match.
+        assert_eq!(result.num_rows(), 2);
+    }
+
+    /// `WHERE level LIKE 'ERR%'` on a plain batch.
+    /// collect_column_refs must collect "level" from a Like expression.
+    #[test]
+    fn test_where_like() {
+        let batch = make_test_batch();
+        let mut transform =
+            SqlTransform::new("SELECT * FROM logs WHERE level LIKE 'ERR%'").unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
+        // make_test_batch has two ERROR rows.
+        assert_eq!(result.num_rows(), 2);
+    }
+
+    /// `WHERE int(status) IN (200, 503)` on a plain batch.
+    /// collect_column_refs must collect "status" from the InList expression's
+    /// function argument.
+    #[test]
+    fn test_where_int_in_list() {
+        let batch = make_test_batch();
+        let mut transform =
+            SqlTransform::new("SELECT * FROM logs WHERE int(status) IN (200, 503)").unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
+        // make_test_batch has status values "200", "500", "not_a_number", "503"
+        // int(status) IN (200, 503) matches rows 0 and 3.
+        assert_eq!(result.num_rows(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression tests — QueryAnalyzer column-ref collection for #415 forms
+    // -----------------------------------------------------------------------
+
+    /// QueryAnalyzer must collect column refs from an IS NULL expression.
+    #[test]
+    fn test_query_analyzer_is_null_column_refs() {
+        let a = QueryAnalyzer::new("SELECT level FROM logs WHERE status IS NULL").unwrap();
+        assert!(
+            a.referenced_columns.contains("status"),
+            "IS NULL expr must add 'status' to referenced_columns"
+        );
+        assert!(
+            a.referenced_columns.contains("level"),
+            "'level' from SELECT must be in referenced_columns"
+        );
+    }
+
+    /// QueryAnalyzer must collect column refs from a LIKE expression.
+    #[test]
+    fn test_query_analyzer_like_column_refs() {
+        let a = QueryAnalyzer::new("SELECT * FROM logs WHERE level LIKE 'ERR%'").unwrap();
+        assert!(
+            a.referenced_columns.contains("level"),
+            "LIKE expr must add 'level' to referenced_columns"
+        );
+    }
+
+    /// QueryAnalyzer must collect column refs from an IN list expression.
+    #[test]
+    fn test_query_analyzer_in_list_column_refs() {
+        let a = QueryAnalyzer::new("SELECT * FROM logs WHERE status IN ('200', '404')").unwrap();
+        assert!(
+            a.referenced_columns.contains("status"),
+            "InList expr must add 'status' to referenced_columns"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+
     /// Verify that a stable schema does NOT trigger repeated context recreation
     /// (i.e. the hash comparison is correct and equal hashes are treated as
     /// cache hits).

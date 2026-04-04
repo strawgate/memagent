@@ -786,3 +786,171 @@ fn cross_batch_int_udf_works_on_clean_and_conflict_batches() {
     // Row 1: string row → null (no integer value)
     assert!(arr2.is_null(1));
 }
+
+// ---------------------------------------------------------------------------
+// Multi-column conflict batch helper (status conflict + level plain column)
+// ---------------------------------------------------------------------------
+
+/// Build a two-column conflict batch:
+/// - `status: Struct { int: Int64, str: Utf8View }` (conflict column)
+/// - `level: Utf8` (plain non-conflict column)
+fn make_multi_col_conflict_batch(
+    int_vals: Vec<Option<i64>>,
+    str_vals: Vec<Option<&str>>,
+    levels: Vec<&str>,
+) -> RecordBatch {
+    let n = int_vals.len();
+    assert_eq!(str_vals.len(), n);
+    assert_eq!(levels.len(), n);
+
+    let int_arr: ArrayRef = Arc::new(Int64Array::from(int_vals));
+    let mut sv = StringViewBuilder::new();
+    for v in &str_vals {
+        match v {
+            Some(s) => sv.append_value(s),
+            None => sv.append_null(),
+        }
+    }
+    let str_arr: ArrayRef = Arc::new(sv.finish());
+
+    let struct_fields = Fields::from(vec![
+        Field::new("int", DataType::Int64, true),
+        Field::new("str", DataType::Utf8View, true),
+    ]);
+    let struct_arr = StructArray::new(
+        struct_fields.clone(),
+        vec![Arc::clone(&int_arr), Arc::clone(&str_arr)],
+        None,
+    );
+
+    let level_arr: ArrayRef = Arc::new(StringArray::from(levels));
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("status", DataType::Struct(struct_fields), true),
+        Field::new("level", DataType::Utf8, true),
+    ]));
+
+    RecordBatch::try_new(schema, vec![Arc::new(struct_arr) as ArrayRef, level_arr]).unwrap()
+}
+
+// ===========================================================================
+// Section 6: Regression — IS NULL / IS NOT NULL / LIKE / IN on conflict batches
+//   Covers issue #415: SQL rewriter gaps for these expression forms.
+//   Covers issue #429: SELECT * EXCEPT on conflict batch.
+// ===========================================================================
+
+/// `WHERE status IS NULL` on a conflict batch.
+/// Rows where both int and str children are null → NULL in the flat Utf8 column
+/// → matched by IS NULL.
+#[test]
+fn conflict_batch_where_is_null() {
+    // Row 0: int=200, str=null → "200" (not null)
+    // Row 1: int=null, str=null → null  (IS NULL matches)
+    let batch = make_conflict_struct_batch(vec![Some(200), None], vec![None, None]);
+
+    let mut t = SqlTransform::new("SELECT status FROM logs WHERE status IS NULL").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+
+    assert_eq!(
+        result.num_rows(),
+        1,
+        "only the all-null row must match IS NULL"
+    );
+    let col = collect_string_col(&result, "status");
+    assert_eq!(col[0], "<NULL>");
+}
+
+/// `WHERE status IS NOT NULL` on a conflict batch.
+/// Only rows with at least one non-null child should be returned.
+#[test]
+fn conflict_batch_where_is_not_null() {
+    // Row 0: int=200, str=null → "200" (not null, matches IS NOT NULL)
+    // Row 1: int=null, str=null → null  (does not match IS NOT NULL)
+    let batch = make_conflict_struct_batch(vec![Some(200), None], vec![None, None]);
+
+    let mut t = SqlTransform::new("SELECT status FROM logs WHERE status IS NOT NULL").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+
+    assert_eq!(
+        result.num_rows(),
+        1,
+        "only the non-null row must match IS NOT NULL"
+    );
+    let col = collect_string_col(&result, "status");
+    assert_eq!(col[0], "200");
+}
+
+/// `WHERE status LIKE 'O%'` on a conflict batch.
+/// Both string-origin and integer-origin rows (cast to Utf8) are matchable.
+#[test]
+fn conflict_batch_where_like() {
+    // Row 0: int=200, str=null  → "200"
+    // Row 1: int=null, str="OK"   → "OK"    (matches 'O%')
+    // Row 2: int=null, str="OOPS" → "OOPS"  (matches 'O%')
+    let batch = make_conflict_struct_batch(
+        vec![Some(200), None, None],
+        vec![None, Some("OK"), Some("OOPS")],
+    );
+
+    let mut t = SqlTransform::new("SELECT status FROM logs WHERE status LIKE 'O%'").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+
+    assert_eq!(
+        result.num_rows(),
+        2,
+        "rows with 'OK' and 'OOPS' must match 'O%'"
+    );
+    let mut col = collect_string_col(&result, "status");
+    col.sort();
+    assert_eq!(col, ["OK", "OOPS"]);
+}
+
+/// `WHERE int(status) IN (200, 404)` on a conflict batch.
+/// The `int()` UDF converts the flat Utf8 column to Int64; IN list matches.
+#[test]
+fn conflict_batch_where_int_in_list() {
+    // Row 0: int=200  → "200" → int()=200 (matches)
+    // Row 1: int=404  → "404" → int()=404 (matches)
+    // Row 2: int=null, str="OK" → "OK" → int()=null (no match)
+    let batch = make_conflict_struct_batch(
+        vec![Some(200), Some(404), None],
+        vec![None, None, Some("OK")],
+    );
+
+    let mut t =
+        SqlTransform::new("SELECT int(status) AS s FROM logs WHERE int(status) IN (200, 404)")
+            .unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 2, "200 and 404 must match IN (200, 404)");
+    let col = collect_i64_col(&result, "s");
+    assert!(col.contains(&Some(200)), "200 must be in results");
+    assert!(col.contains(&Some(404)), "404 must be in results");
+}
+
+/// `SELECT * EXCEPT (status)` on a conflict batch (two-column batch).
+/// After normalization `status` becomes a flat Utf8 column; EXCEPT removes it.
+/// The `level` column must survive.
+#[test]
+fn conflict_batch_select_star_except_conflict_col() {
+    let batch = make_multi_col_conflict_batch(
+        vec![Some(200), None],
+        vec![None, Some("OK")],
+        vec!["INFO", "ERROR"],
+    );
+
+    let mut t = SqlTransform::new("SELECT * EXCEPT (status) FROM logs").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 2);
+    assert!(
+        result.column_by_name("status").is_none(),
+        "status must be excluded by EXCEPT"
+    );
+    assert!(
+        result.column_by_name("level").is_some(),
+        "level must survive EXCEPT (status)"
+    );
+    let levels = collect_string_col(&result, "level");
+    assert_eq!(levels, ["INFO", "ERROR"]);
+}

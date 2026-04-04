@@ -44,7 +44,7 @@ pipelines:
         type: file
         path: /var/log/pods/**/*.log
         format: cri
-    transform: SELECT * FROM logs WHERE level_str = 'ERROR'
+    transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
         endpoint: otel-collector:4317
@@ -130,6 +130,25 @@ input:
 Receive OTLP log records from another agent or SDK.
 
 No extra fields required; the listen address will be configurable in a future release.
+
+### `generator` input
+
+Emit synthetic JSON log lines for benchmarking and pipeline testing. No external
+data source is required. The generator produces records with the following fields:
+`timestamp`, `level`, `message`, `duration_ms`, `request_id`, `service`, `status`.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `listen` | string | No | omitted (unlimited) | Target events per second as a decimal integer string, e.g. `"50000"`. Omit this field to run as fast as possible. Note: this field reuses the `listen` key shared with network input types. |
+
+```yaml
+input:
+  type: generator
+  listen: "50000"   # emit at ~50 000 events/sec; omit for unlimited
+```
+
+> The generator always runs indefinitely. Use `--generate-json <n> <file>` on the CLI
+> to generate a fixed number of lines to a file instead.
 
 ---
 
@@ -220,13 +239,16 @@ output:
   format: console
 ```
 
-### `elasticsearch` output *(stub)*
+### `elasticsearch` output
 
-Ship to Elasticsearch via the bulk API. Not yet functional.
+Ship to Elasticsearch via the bulk API. Supports per-document error handling, retry
+logic, optional zstd compression, and automatic batch splitting for large payloads.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `endpoint` | string | Yes | Elasticsearch base URL. |
+| `endpoint` | string | Yes | Elasticsearch base URL, e.g. `http://localhost:9200`. |
+| `index` | string | No | Target index name. Defaults to `logs`. |
+| `compression` | string | No | `zstd` to compress bulk request bodies. |
 
 ### `loki` output *(stub)*
 
@@ -261,7 +283,7 @@ Write records to Parquet files. Not yet functional.
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
 | `http` | Implemented | JSON lines over HTTP POST. |
 | `stdout` | Implemented | Print to stdout (JSON or coloured text). |
-| `elasticsearch` | Stub | Elasticsearch bulk API. |
+| `elasticsearch` | Implemented | Elasticsearch bulk API with retry logic and per-document error handling. |
 | `loki` | Stub | Grafana Loki push API. |
 | `file_out` | Partial | Write to a file. |
 | `parquet` | Stub | Write Parquet files. |
@@ -274,7 +296,7 @@ The optional `transform` field contains a DataFusion SQL query that is applied t
 Arrow `RecordBatch` produced by the scanner. The source table is always named `logs`.
 
 ```yaml
-transform: SELECT level_str, message_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level, message, status FROM logs WHERE status >= 400
 ```
 
 Multi-line SQL is supported with YAML block scalars:
@@ -282,39 +304,49 @@ Multi-line SQL is supported with YAML block scalars:
 ```yaml
 transform: |
   SELECT
-    level_str,
-    message_str,
-    regexp_extract(message_str, 'request_id=([a-f0-9-]+)', 1) AS request_id_str,
-    status_int
+    level,
+    message,
+    regexp_extract(message, 'request_id=([a-f0-9-]+)', 1) AS request_id,
+    status
   FROM logs
-  WHERE level_str IN ('ERROR', 'WARN')
-    AND status_int >= 400
+  WHERE level IN ('ERROR', 'WARN')
+    AND status >= 400
 ```
 
 ### Column naming convention
 
-The scanner maps each JSON field to one or more typed Arrow columns following the
-`{field}_{type}` naming convention:
+The scanner always uses the **bare field name** as the SQL column name — no type
+suffix is appended. The Arrow column type depends on what the scanner observes:
 
-| JSON value type | Arrow column type | Column name pattern | Example |
-|-----------------|-------------------|---------------------|---------|
-| String | StringArray | `{field}_str` | `level_str` |
-| Integer | Int64Array | `{field}_int` | `status_int` |
-| Float | Float64Array | `{field}_float` | `latency_ms_float` |
-| Boolean | StringArray (`"true"`/`"false"`) | `{field}_str` | `enabled_str` |
-| Null | null in all type columns | — | — |
-| Object / Array | StringArray (raw JSON) | `{field}_str` | `metadata_str` |
+**Consistent type across all rows in a batch** — one Arrow column with the native type:
 
-When a field contains mixed types across rows, separate columns are emitted:
-`status_int` and `status_str` can coexist in the same batch.
+| JSON value type | Arrow column type | Column name | Example |
+|-----------------|-------------------|-------------|---------|
+| String | Utf8View | bare name | `level` |
+| Integer | Int64 | bare name | `status` |
+| Float | Float64 | bare name | `latency_ms` |
+| Boolean | Utf8View (`"true"`/`"false"`) | bare name | `enabled` |
+| Null | null | — | — |
+| Object / Array | Utf8View (raw JSON) | bare name | `metadata` |
+
+**Mixed types within the same batch** (e.g. `status` is an integer in one row and a
+string in another) — a conflict-struct column is produced. Before the batch reaches
+DataFusion, `normalize_conflict_columns()` coalesces it to a bare `Utf8` column so
+your SQL always uses the same column name (`status`, not a type-suffixed variant). Use
+the `int()` and `float()` UDFs for typed access:
+
+```sql
+-- Always works regardless of whether status was int or string in this batch:
+WHERE int(status) > 400
+```
 
 Special columns added by the scanner:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `_raw_str` | string | Original JSON line (only when `keep_raw: true`). |
-| `_timestamp_str` | string | Timestamp from CRI header as an RFC 3339 string (CRI inputs only). |
-| `_stream_str` | string | CRI stream name (`stdout`/`stderr`). |
+| `_raw` | Utf8View | Original raw byte line (only when `keep_raw: true`). |
+| `_timestamp` | Utf8View | Timestamp from CRI header as an RFC 3339 string (CRI inputs only). |
+| `_stream` | Utf8View | CRI stream name (`stdout`/`stderr`) (CRI inputs only). |
 
 ### Built-in UDFs
 
@@ -328,17 +360,17 @@ Special columns added by the scanner:
 Examples:
 
 ```sql
--- Cast a string column to int
-SELECT int(status_str) AS status_int FROM logs
+-- Cast a mixed-type or string column to int
+SELECT int(status) AS status_int FROM logs
 
 -- Extract a field with Grok
-SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', message_str) AS parsed_str FROM logs
+SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', message) AS parsed FROM logs
 
 -- Extract a named group with regex
-SELECT regexp_extract(message_str, 'user=([a-z]+)', 1) AS user_str FROM logs
+SELECT regexp_extract(message, 'user=([a-z]+)', 1) AS user FROM logs
 
 -- Type-cast from environment-injected string
-SELECT float(duration_str) AS duration_ms_float FROM logs
+SELECT float(duration) AS duration_ms FROM logs
 ```
 
 ---
@@ -371,9 +403,9 @@ Parses Kubernetes pod log paths (e.g.
 ```sql
 -- Requires source path column injection (not yet implemented).
 -- Once available, join on the source file path:
-SELECT l.level_str, l.message_str, k.namespace, k.pod_name, k.container_name
+SELECT l.level, l.message, k.namespace, k.pod_name, k.container_name
 FROM logs l
-JOIN k8s k ON l._source_path_str = k.log_path_prefix
+JOIN k8s k ON l._source_path = k.log_path_prefix
 ```
 
 Columns exposed by `k8s`:
@@ -501,18 +533,18 @@ pipelines:
         format: cri
     transform: |
       SELECT
-        l.level_str,
-        l.message_str,
-        l.status_int,
+        l.level,
+        l.message,
+        l.status,
         k.namespace,
         k.pod_name,
         k.container_name,
         lbl.environment
       FROM logs l
-      LEFT JOIN k8s k ON l._source_path_str = k.log_path_prefix  -- requires source path injection
+      LEFT JOIN k8s k ON l._source_path = k.log_path_prefix  -- requires source path injection
       CROSS JOIN labels lbl
-      WHERE l.level_str IN ('ERROR', 'WARN')
-        OR l.status_int >= 500
+      WHERE l.level IN ('ERROR', 'WARN')
+        OR l.status >= 500
     outputs:
       - name: collector
         type: otlp
