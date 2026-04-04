@@ -26,7 +26,7 @@ transform: |
 
 output:
   type: otlp
-  endpoint: http://otel-collector:4318
+  endpoint: http://otel-collector:4318/v1/logs
   compression: zstd
 
 server:
@@ -87,7 +87,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
-        endpoint: http://otel-collector:4318
+        endpoint: http://otel-collector:4318/v1/logs
         compression: zstd
 
   all-to-console:

@@ -55,13 +55,21 @@ output:
 ./logfwd --config config.yaml
 ```
 
-You'll see colored output for every log line:
+You'll see a startup banner followed by colored output for every log line:
 
 ```
-10:30:00.001Z  INFO   request handled GET /api/v1/users/10001  duration_ms=12 status=200 service=myapp
-10:30:00.002Z  WARN   request handled POST /api/v2/orders/10015  duration_ms=87 status=429 service=myapp
-10:30:00.003Z  ERROR  request handled GET /health/10021  duration_ms=40 status=503 service=myapp
-10:30:00.004Z  DEBUG  request handled GET /api/v1/users/10033  duration_ms=3 status=200 service=myapp
+logfwd v0.1.0
+
+  ✓  default
+     in   file  logs.json
+     out  stdout
+
+ready · 1 pipeline
+
+10:30:00.000Z  INFO   request handled GET /api/v1/users/10000  duration_ms=1 request_id=... service=myapp status=200
+10:30:00.000Z  WARN   request handled POST /api/v2/orders/10015  duration_ms=87 request_id=... service=myapp status=429
+10:30:00.000Z  ERROR  request handled GET /health/10021  duration_ms=40 request_id=... service=myapp status=503
+10:30:00.000Z  DEBUG  request handled GET /api/v1/users/10033  duration_ms=3 request_id=... service=myapp status=200
 ...
 ```
 
@@ -74,6 +82,12 @@ logfwd parsed every JSON line, detected field types automatically (strings, inte
 ## Stage 2: Filter with SQL
 
 Now add a SQL transform to keep only what matters. This is the core reason to use logfwd — every batch of parsed records becomes a DataFusion SQL table named `logs`.
+
+First, regenerate the test data — logfwd tracks file positions between runs so it doesn't reprocess data it has already seen:
+
+```bash
+./logfwd --generate-json 10000 logs.json
+```
 
 **Update your config:**
 
@@ -94,7 +108,7 @@ output:
   format: console
 ```
 
-**Run it again:**
+**Run it:**
 
 ```bash
 ./logfwd --config config.yaml
@@ -103,12 +117,12 @@ output:
 Now you see far fewer lines — only errors with slow durations:
 
 ```
-10:30:00.007Z  ERROR  request handled GET /api/v2/products/10049  duration_ms=92 status=500 service=myapp
-10:30:00.019Z  ERROR  request handled POST /api/v1/orders/10121  duration_ms=78 status=503 service=myapp
+ERROR  request handled GET /api/v2/products/10049  status=500 duration_ms=92
+ERROR  request handled POST /api/v1/orders/10121  status=503 duration_ms=78
 ...
 ```
 
-Everything else was filtered out before it reached the output. In production, this means you only ship the logs you care about — saving bandwidth, storage, and money.
+Only the four columns from the `SELECT` appear — `level`, `message`, `status`, `duration_ms`. Everything else was filtered out before it reached the output. In production, this means you only ship the logs you care about — saving bandwidth, storage, and money.
 
 **Try a more advanced transform:**
 
@@ -138,10 +152,14 @@ In production, logfwd sends OTLP protobuf to an OpenTelemetry Collector, Grafana
 
 ```bash
 ./logfwd --blackhole &
-# OTLP receiver listening on 127.0.0.1:4318
+# logfwd blackhole starting on 127.0.0.1:4318
 ```
 
-**Update your config to send OTLP:**
+**Regenerate test data and update your config to send OTLP:**
+
+```bash
+./logfwd --generate-json 10000 logs.json
+```
 
 ```yaml
 # config.yaml
@@ -157,7 +175,7 @@ transform: |
 
 output:
   type: otlp
-  endpoint: http://127.0.0.1:4318
+  endpoint: http://127.0.0.1:4318/v1/logs
   compression: zstd
 ```
 
@@ -174,7 +192,7 @@ To ship to a real collector, replace the endpoint:
 ```yaml
 output:
   type: otlp
-  endpoint: http://otel-collector:4318   # your real collector
+  endpoint: http://otel-collector:4318/v1/logs   # your real collector
   compression: zstd
 ```
 
@@ -191,11 +209,12 @@ Before running in production, verify your config. `--validate` catches YAML erro
 
 ```bash
 ./logfwd --config config.yaml --validate
+#   ready: default
 # config ok: 1 pipeline(s)
 
 ./logfwd --config config.yaml --dry-run
-# pipeline default: 1 input(s) -> SELECT ... -> 1 output(s)
-# dry run ok: 1 pipeline(s) constructed
+#   ready: default
+# dry run ok: 1 pipeline(s)
 ```
 
 ---

@@ -54,11 +54,12 @@ output:
 ./logfwd --config config.yaml
 ```
 
-You'll see colored, filtered output:
+You'll see only the records that match your SQL filter:
 
 ```
-10:30:00.003Z  ERROR  request handled GET /health/10021  duration_ms=61 status=503 service=myapp
-10:30:00.007Z  ERROR  request handled GET /api/v2/products/10049  duration_ms=92 status=500 ...
+ERROR  request handled GET /api/v2/products/10049  status=500 duration_ms=92
+ERROR  request handled POST /api/v1/orders/10121  status=503 duration_ms=78
+...
 ```
 
 Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/getting-started/quickstart.md) to keep going.
@@ -138,7 +139,7 @@ transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
-  endpoint: http://otel-collector:4318
+  endpoint: http://otel-collector:4318/v1/logs
   compression: zstd
 ```
 
@@ -154,7 +155,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
-        endpoint: http://otel-collector:4318
+        endpoint: http://otel-collector:4318/v1/logs
 
   debug:
     inputs:
