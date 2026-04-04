@@ -13,6 +13,31 @@ use super::{
 };
 
 // ---------------------------------------------------------------------------
+// ByteCounter — write wrapper that tallies bytes written
+// ---------------------------------------------------------------------------
+
+/// Wraps any [`Write`] and counts every byte that passes through.
+///
+/// Used by [`StdoutSink`] to report `output_bytes` without changing the
+/// public `write_batch_to` signature.
+struct ByteCounter<W> {
+    inner: W,
+    written: u64,
+}
+
+impl<W: Write> Write for ByteCounter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // StdoutSink
 // ---------------------------------------------------------------------------
 
@@ -31,9 +56,6 @@ pub struct StdoutSink {
     format: StdoutFormat,
     buf: Vec<u8>,
     color: bool,
-    // Stored for API consistency with other sinks; byte tracking on stdout is
-    // not currently wired up.
-    #[allow(dead_code)]
     stats: Arc<ComponentStats>,
 }
 
@@ -252,10 +274,13 @@ fn find_col(fields: &arrow::datatypes::Fields, names: &[&str]) -> Option<usize> 
 
 impl OutputSink for StdoutSink {
     fn send_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()> {
-        let mut stdout = io::stdout().lock();
-        self.write_batch_to(batch, metadata, &mut stdout)?;
-        // Line counting is done once by the pipeline (PipelineMetrics::inc_output_success).
-        // Sinks must not also call inc_lines or the counter is doubled.
+        let mut counter = ByteCounter {
+            inner: io::stdout().lock(),
+            written: 0,
+        };
+        self.write_batch_to(batch, metadata, &mut counter)?;
+        self.stats.inc_lines(batch.num_rows() as u64);
+        self.stats.inc_bytes(counter.written);
         Ok(())
     }
 
