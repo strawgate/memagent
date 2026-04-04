@@ -1,7 +1,7 @@
 # Scanner Contract
 
 This document formalises the contract between callers and the scanner layer
-(`SimdScanner` / `StreamingSimdScanner`).  It covers input requirements,
+(`CopyScanner` / `ZeroCopyScanner`).  It covers input requirements,
 output guarantees, and known limitations.
 
 ---
@@ -127,7 +127,7 @@ fields.
 
 ### Batch reuse
 
-Both `SimdScanner` and `StreamingSimdScanner` can be reused across batches.
+Both `CopyScanner` and `ZeroCopyScanner` can be reused across batches.
 Each call to `scan()` resets builder state internally and produces an
 independent `RecordBatch`; schema and data from previous batches are not
 carried over.
@@ -147,6 +147,6 @@ carried over.
 - **No escape decoding of string values** — string values are stored as
   raw bytes (including any JSON escape sequences such as `\n`, `\uXXXX`).
   Callers that need decoded strings must unescape them.
-- **`_raw` column not supported by `StreamingSimdScanner`** — setting
-  `keep_raw = true` with the streaming variant is a no-op; use `SimdScanner`
+- **`_raw` column not supported by `ZeroCopyScanner`** — setting
+  `keep_raw = true` with the streaming variant is a no-op; use `CopyScanner`
   if a `_raw` column is needed.

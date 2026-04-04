@@ -5,7 +5,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::StreamingSimdScanner;
+use logfwd_core::scanner::ZeroCopyScanner;
 use logfwd_transform::SqlTransform;
 
 fn main() {
@@ -138,7 +138,7 @@ fn fmt_count(n: usize) -> String {
 fn bench(dataset: &str, lines: usize, fields: usize, sql: &str, data: &[u8]) {
     let mut transform = SqlTransform::new(sql).expect("bad SQL");
     let config = transform.scan_config();
-    let mut scanner = StreamingSimdScanner::new(config);
+    let mut scanner = ZeroCopyScanner::new(config);
 
     let t0 = Instant::now();
     let batch = scanner.scan(bytes::Bytes::from(data.to_vec()))
@@ -163,7 +163,7 @@ fn bench(dataset: &str, lines: usize, fields: usize, sql: &str, data: &[u8]) {
 
 fn bench_scan_only(dataset: &str, lines: usize, fields: usize, data: &[u8]) {
     let config = ScanConfig::default();
-    let mut scanner = StreamingSimdScanner::new(config);
+    let mut scanner = ZeroCopyScanner::new(config);
 
     let t0 = Instant::now();
     let batch = scanner.scan(bytes::Bytes::from(data.to_vec()))

@@ -39,6 +39,6 @@ pub(crate) fn check_dup_bits(written_bits: &mut u64, idx: usize) -> bool {
 }
 
 // Re-export scanner types for convenience
-pub use scanner::{SimdScanner, StreamingSimdScanner};
+pub use scanner::{CopyScanner, ZeroCopyScanner};
 pub use storage_builder::StorageBuilder;
 pub use streaming_builder::StreamingBuilder;

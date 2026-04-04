@@ -110,7 +110,7 @@ Every PR gets reviewed for:
 ### Common Copilot issues to watch for
 - **Lint failures** — Copilot doesn't run `cargo fmt` or `cargo clippy`. Every PR needs lint fixes.
 - **Approx constant test values** — using `3.14` (too close to PI) triggers `clippy::approx_constant`
-- **API drift** — Copilot branches from old commits, uses removed methods (e.g., `Scanner::new` → `SimdScanner::new`, `execute` → `execute_blocking`)
+- **API drift** — Copilot branches from old commits, uses removed methods (e.g., `Scanner::new` → `CopyScanner::new`, `execute` → `execute_blocking`)
 - **Dead config** — adding config fields that are parsed but never used at runtime
 - **Formatting noise** — 50%+ of diff is `rustfmt` changes to unrelated files
 

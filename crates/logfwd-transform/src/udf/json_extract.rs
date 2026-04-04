@@ -21,7 +21,7 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
-use logfwd_arrow::StreamingSimdScanner;
+use logfwd_arrow::ZeroCopyScanner;
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 
 // ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ fn parse_raw(raw_array: &StringArray, field_name: &str) -> Result<RecordBatch, D
         validate_utf8: false,
     };
 
-    let mut scanner = StreamingSimdScanner::new(config);
+    let mut scanner = ZeroCopyScanner::new(config);
     let batch = scanner
         .scan(bytes::Bytes::from(buf))
         .map_err(|e| DataFusionError::Execution(format!("scanner error: {e}")))?;

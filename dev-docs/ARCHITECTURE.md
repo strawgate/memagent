@@ -71,7 +71,7 @@ with per-source remainder tracking. It handles three formats:
 output (4096 lines, 64KB stack), no heap, Kani-proven. It returns byte
 ranges into the input buffer — zero-copy.
 
-**CriAggregator** (`logfwd-core/src/aggregator.rs`):
+**CriReassembler** (`logfwd-core/src/aggregator.rs`):
 zero-copy for F-only lines (99% of traffic), copies only for P+F
 reassembly. Kani-proven.
 
@@ -80,7 +80,7 @@ reassembly. Kani-proven.
 ```
 Bytes → StructuralIndex::new(buf)     [ONE SIMD pass, all characters]
       → NewlineFramer                  [consumes \n bitmask → line ranges]
-      → CriAggregator (if CRI format) [merges P/F partials]
+      → CriReassembler (if CRI format) [merges P/F partials]
       → Scanner                        [consumes remaining bitmasks]
 ```
 
@@ -170,8 +170,8 @@ Both produce `RecordBatch` via `finish_batch()`.
 **Scanner wrappers** in logfwd-arrow combine classification + scanning
 + building into one call:
 
-- `SimdScanner::scan(&[u8]) → RecordBatch` (StorageBuilder, copies)
-- `StreamingSimdScanner::scan(Bytes) → RecordBatch` (StreamingBuilder,
+- `CopyScanner::scan(&[u8]) → RecordBatch` (StorageBuilder, copies)
+- `ZeroCopyScanner::scan(Bytes) → RecordBatch` (StreamingBuilder,
   zero-copy)
 
 ### 6. Transform: RecordBatch → RecordBatch
@@ -201,12 +201,12 @@ RecordBatch → OutputSink::send_batch() → HTTP/stdout/file
 
 - **OtlpSink**: Encodes RecordBatch → OTLP protobuf, sends via HTTP.
   Handles resource attributes, observed timestamps, DataType-based dispatch.
-- **ElasticsearchAsyncSink**: Bulk API with retry, compression, async reqwest.
-- **LokiAsyncSink**: Loki push API with label grouping, dedup, async reqwest.
+- **ElasticsearchSink**: Bulk API with retry, compression, async reqwest.
+- **LokiSink**: Loki push API with label grouping, dedup, async reqwest.
 - **JsonLinesSink**: Converts RecordBatch → newline-delimited JSON,
   sends via HTTP with zstd compression.
 - **StdoutSink**: Renders to terminal (JSON, console, or text format).
-- **FanOut**: Sends to multiple sinks.
+- **FanoutSink**: Sends to multiple sinks.
 
 ## Crate boundaries
 
@@ -226,8 +226,8 @@ InputSource trait              FileInput, TcpInput, UdpInput,
 
 logfwd-output defines + implements
 ──────────────────────────────────────────
-OutputSink / Sink traits       OtlpSink, ElasticsearchAsyncSink,
-                               LokiAsyncSink, JsonLinesSink, StdoutSink
+OutputSink / Sink traits       OtlpSink, ElasticsearchSink,
+                               LokiSink, JsonLinesSink, StdoutSink
 ```
 
 The binary crate (`logfwd`) wires these together in `pipeline.rs`.
@@ -274,7 +274,7 @@ Understanding who owns what and when copies happen:
 Current (after #939 — 3 copies remain, down from 5):
   tailer reads → BytesMut → freeze() → Bytes           (no copy)
   FramedInput: remainder + extend_from_slice(bytes)     [COPY 1: framing]
-  FormatProcessor: chunk → out_buf                      [COPY 2: format processing]
+  FormatDecoder: chunk → out_buf                      [COPY 2: format processing]
   pipeline: scan_buf.extend_from_slice(&bytes)          [COPY 3: SIMD contiguity — required]
   scanner classifies → ChunkIndex (bitmasks, no copy)
   StreamingBuilder stores views → RecordBatch (zero-copy)

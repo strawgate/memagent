@@ -396,9 +396,9 @@ fn output_label(o: &logfwd_config::OutputConfig) -> String {
             format!("elasticsearch  {}", o.endpoint.as_deref().unwrap_or(""))
         }
         OutputType::Loki => format!("loki  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::TcpOut => format!("tcp   {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::UdpOut => format!("udp   {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::FileOut => format!("file  {}", o.path.as_deref().unwrap_or("")),
+        OutputType::Tcp => format!("tcp   {}", o.endpoint.as_deref().unwrap_or("")),
+        OutputType::Udp => format!("udp   {}", o.endpoint.as_deref().unwrap_or("")),
+        OutputType::File => format!("file  {}", o.path.as_deref().unwrap_or("")),
         OutputType::Parquet => format!("parquet  {}", o.path.as_deref().unwrap_or("")),
         OutputType::Stdout => "stdout".to_string(),
         OutputType::Null => "null".to_string(),

@@ -19,12 +19,10 @@ mod loki;
 mod parquet;
 
 pub use arrow_ipc_sink::{ArrowIpcSinkFactory, deserialize_ipc, serialize_ipc};
-pub use elasticsearch::{
-    ElasticsearchAsyncSink, ElasticsearchRequestMode, ElasticsearchSinkFactory,
-};
-pub use fanout::{FanOut, FanOutError};
+pub use elasticsearch::{ElasticsearchRequestMode, ElasticsearchSink, ElasticsearchSinkFactory};
+pub use fanout::{FanoutSink, FanoutSinkError};
 pub use json_lines::JsonLinesSink;
-pub use loki::{LokiAsyncSink, LokiSinkFactory};
+pub use loki::{LokiSink, LokiSinkFactory};
 pub use null::NullSink;
 pub use otap_sink::{
     ArrowPayloadType, BatchStatus, DecodedPayload, OtapSinkFactory, StatusCode,
@@ -598,25 +596,25 @@ pub fn build_output_sink(
             )))
         }
         OutputType::Null => Ok(Box::new(NullSink::new(name.to_string(), stats))),
-        OutputType::TcpOut => {
+        OutputType::Tcp => {
             let endpoint = cfg
                 .endpoint
                 .as_ref()
-                .ok_or_else(|| format!("output '{name}': tcp_out requires 'endpoint'"))?;
+                .ok_or_else(|| format!("output '{name}': tcp requires 'endpoint'"))?;
             Ok(Box::new(TcpSink::new(
                 name.to_string(),
                 endpoint.clone(),
                 stats,
             )))
         }
-        OutputType::UdpOut => {
+        OutputType::Udp => {
             let endpoint = cfg
                 .endpoint
                 .as_ref()
-                .ok_or_else(|| format!("output '{name}': udp_out requires 'endpoint'"))?;
+                .ok_or_else(|| format!("output '{name}': udp requires 'endpoint'"))?;
             UdpSink::new(name.to_string(), endpoint.clone(), stats)
                 .map(|s| Box::new(s) as Box<dyn OutputSink>)
-                .map_err(|e| format!("output '{name}': udp_out bind failed: {e}"))
+                .map_err(|e| format!("output '{name}': udp bind failed: {e}"))
         }
         OutputType::Elasticsearch => Err(format!(
             "output '{name}': elasticsearch requires the async pipeline — use build_sink_factory() instead"
@@ -878,7 +876,7 @@ mod tests {
 
     #[test]
     fn test_fanout() {
-        // FanOut to two sinks that write to Vec<u8>.
+        // FanoutSink to two sinks that write to Vec<u8>.
         // We use StdoutSink with write_batch_to to capture output.
         let batch = make_test_batch();
         let meta = make_metadata();
@@ -904,7 +902,7 @@ mod tests {
         assert_eq!(out1, out2);
         assert!(!out1.is_empty());
 
-        // Also test FanOut trait dispatch works.
+        // Also test FanoutSink trait dispatch works.
         let fanout_s1 = StdoutSink::new(
             "f1".to_string(),
             StdoutFormat::Json,
@@ -915,7 +913,7 @@ mod tests {
             StdoutFormat::Json,
             Arc::new(ComponentStats::new()),
         );
-        let mut fanout = FanOut::new(vec![Box::new(fanout_s1), Box::new(fanout_s2)]);
+        let mut fanout = FanoutSink::new(vec![Box::new(fanout_s1), Box::new(fanout_s2)]);
         // send_batch writes to real stdout, but should not error.
         let result = fanout.send_batch(&batch, &meta);
         assert!(result.is_ok());
@@ -948,7 +946,7 @@ mod tests {
     fn test_fanout_error_reports_failed_sink_names() {
         let batch = make_test_batch();
         let meta = make_metadata();
-        let mut fanout = FanOut::new(vec![
+        let mut fanout = FanoutSink::new(vec![
             Box::new(AlwaysFailSink { name: "sink-a" }),
             Box::new(AlwaysFailSink { name: "sink-b" }),
         ]);
@@ -958,8 +956,8 @@ mod tests {
             .expect_err("fanout should fail");
         let fanout_err = err
             .get_ref()
-            .and_then(|inner| inner.downcast_ref::<FanOutError>())
-            .expect("fanout should wrap failures in FanOutError");
+            .and_then(|inner| inner.downcast_ref::<FanoutSinkError>())
+            .expect("fanout should wrap failures in FanoutSinkError");
 
         assert_eq!(fanout_err.failed_sinks(), ["sink-a", "sink-b"]);
     }

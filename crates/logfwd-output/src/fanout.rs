@@ -6,22 +6,22 @@ use arrow::record_batch::RecordBatch;
 use super::{BatchMetadata, OutputSink};
 
 // ---------------------------------------------------------------------------
-// FanOut
+// FanoutSink
 // ---------------------------------------------------------------------------
 
 /// Multiplexes output to multiple sinks.
 #[allow(deprecated)]
-pub struct FanOut {
+pub struct FanoutSink {
     sinks: Vec<Box<dyn OutputSink>>,
 }
 
 #[derive(Debug)]
-pub struct FanOutError {
+pub struct FanoutSinkError {
     failed_sinks: Vec<String>,
     first_error: io::Error,
 }
 
-impl FanOutError {
+impl FanoutSinkError {
     fn new(failed_sinks: Vec<String>, first_error: io::Error) -> Self {
         Self {
             failed_sinks,
@@ -34,7 +34,7 @@ impl FanOutError {
     }
 }
 
-impl std::fmt::Display for FanOutError {
+impl std::fmt::Display for FanoutSinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -44,21 +44,21 @@ impl std::fmt::Display for FanOutError {
     }
 }
 
-impl std::error::Error for FanOutError {
+impl std::error::Error for FanoutSinkError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.first_error)
     }
 }
 
 #[allow(deprecated)]
-impl FanOut {
+impl FanoutSink {
     pub fn new(sinks: Vec<Box<dyn OutputSink>>) -> Self {
-        FanOut { sinks }
+        FanoutSink { sinks }
     }
 }
 
 #[allow(deprecated)]
-impl OutputSink for FanOut {
+impl OutputSink for FanoutSink {
     fn send_batch(&mut self, batch: &RecordBatch, meta: &BatchMetadata) -> io::Result<()> {
         // Try ALL sinks before returning an error. Don't short-circuit.
         let mut failed_sinks = Vec::new();
@@ -73,7 +73,7 @@ impl OutputSink for FanOut {
             }
         }
         match first_err {
-            Some(e) => Err(io::Error::other(FanOutError::new(failed_sinks, e))),
+            Some(e) => Err(io::Error::other(FanoutSinkError::new(failed_sinks, e))),
             None => Ok(()),
         }
     }
@@ -91,7 +91,7 @@ impl OutputSink for FanOut {
             }
         }
         match first_err {
-            Some(e) => Err(io::Error::other(FanOutError::new(failed_sinks, e))),
+            Some(e) => Err(io::Error::other(FanoutSinkError::new(failed_sinks, e))),
             None => Ok(()),
         }
     }
@@ -187,7 +187,7 @@ mod tests {
     fn all_sinks_succeed_returns_ok() {
         let (a, a_calls, _) = MockSink::new("a", false);
         let (b, b_calls, _) = MockSink::new("b", false);
-        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
+        let mut fanout = FanoutSink::new(vec![Box::new(a), Box::new(b)]);
         fanout.send_batch(&empty_batch(), &meta()).unwrap();
         assert_eq!(a_calls.load(Ordering::Relaxed), 1);
         assert_eq!(b_calls.load(Ordering::Relaxed), 1);
@@ -195,10 +195,10 @@ mod tests {
 
     #[test]
     fn first_sink_fails_all_still_called() {
-        // FanOut must NOT short-circuit — all sinks must be called even if the first fails.
+        // FanoutSink must NOT short-circuit — all sinks must be called even if the first fails.
         let (a, a_calls, _) = MockSink::new("a", true); // fails
         let (b, b_calls, _) = MockSink::new("b", false);
-        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
+        let mut fanout = FanoutSink::new(vec![Box::new(a), Box::new(b)]);
         let err = fanout.send_batch(&empty_batch(), &meta()).unwrap_err();
         assert_eq!(
             a_calls.load(Ordering::Relaxed),
@@ -210,7 +210,7 @@ mod tests {
             1,
             "subsequent sink must still be called"
         );
-        // err.to_string() uses FanOutError::Display which lists the failed sink names.
+        // err.to_string() uses FanoutSinkError::Display which lists the failed sink names.
         let msg = err.to_string();
         assert!(
             msg.contains('a'),
@@ -223,14 +223,14 @@ mod tests {
         let (a, _, _) = MockSink::new("alpha", false);
         let (b, _, _) = MockSink::new("beta", true); // fails
         let (c, c_calls, _) = MockSink::new("gamma", false);
-        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b), Box::new(c)]);
+        let mut fanout = FanoutSink::new(vec![Box::new(a), Box::new(b), Box::new(c)]);
         let err = fanout.send_batch(&empty_batch(), &meta()).unwrap_err();
         assert_eq!(
             c_calls.load(Ordering::Relaxed),
             1,
             "third sink must be called after middle failure"
         );
-        // err.to_string() uses FanOutError::Display which lists the failed sink names.
+        // err.to_string() uses FanoutSinkError::Display which lists the failed sink names.
         let msg = err.to_string();
         assert!(
             msg.contains("beta"),
@@ -242,9 +242,9 @@ mod tests {
     fn all_sinks_fail_first_error_returned() {
         let (a, _, _) = MockSink::new("x", true);
         let (b, _, _) = MockSink::new("y", true);
-        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
+        let mut fanout = FanoutSink::new(vec![Box::new(a), Box::new(b)]);
         let err = fanout.send_batch(&empty_batch(), &meta()).unwrap_err();
-        // err.to_string() uses FanOutError::Display which lists all failed sink names.
+        // err.to_string() uses FanoutSinkError::Display which lists all failed sink names.
         let msg = err.to_string();
         assert!(
             msg.contains('x') && msg.contains('y'),
@@ -256,7 +256,7 @@ mod tests {
     fn flush_all_succeed_returns_ok() {
         let (a, _, a_flush) = MockSink::new("a", false);
         let (b, _, b_flush) = MockSink::new("b", false);
-        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
+        let mut fanout = FanoutSink::new(vec![Box::new(a), Box::new(b)]);
         fanout.flush().unwrap();
         assert_eq!(a_flush.load(Ordering::Relaxed), 1);
         assert_eq!(b_flush.load(Ordering::Relaxed), 1);
@@ -267,7 +267,7 @@ mod tests {
         let (a, _, _) = MockSink::new("a", false);
         let (b_base, _, _) = MockSink::new("b", false);
         let b = b_base.with_fail_flush();
-        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
+        let mut fanout = FanoutSink::new(vec![Box::new(a), Box::new(b)]);
         assert!(fanout.flush().is_err());
     }
 
@@ -278,7 +278,7 @@ mod tests {
         let (b_base, _, _) = MockSink::new("bob", false);
         let a = a_base.with_fail_flush();
         let b = b_base.with_fail_flush();
-        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
+        let mut fanout = FanoutSink::new(vec![Box::new(a), Box::new(b)]);
         let err = fanout.flush().unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -289,12 +289,12 @@ mod tests {
 
     #[test]
     fn flush_first_fails_second_still_called() {
-        // FanOut flush must NOT short-circuit — both sinks must be called even if the first fails.
+        // FanoutSink flush must NOT short-circuit — both sinks must be called even if the first fails.
         let (a_base, _, a_flush) = MockSink::new("a", false);
         let (b_base, _, b_flush) = MockSink::new("b", false);
         let a = a_base.with_fail_flush();
         let b = b_base.with_fail_flush();
-        let mut fanout = FanOut::new(vec![Box::new(a), Box::new(b)]);
+        let mut fanout = FanoutSink::new(vec![Box::new(a), Box::new(b)]);
         fanout.flush().unwrap_err();
         assert_eq!(
             a_flush.load(Ordering::Relaxed),
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn empty_sinks_list_returns_ok() {
-        let mut fanout = FanOut::new(vec![]);
+        let mut fanout = FanoutSink::new(vec![]);
         fanout.send_batch(&empty_batch(), &meta()).unwrap();
         fanout.flush().unwrap();
     }

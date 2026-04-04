@@ -1,5 +1,5 @@
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use logfwd_arrow::scanner::SimdScanner;
+use logfwd_arrow::scanner::CopyScanner;
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use std::hint::black_box;
 
@@ -287,7 +287,7 @@ macro_rules! bench_scenario {
             group.throughput(Throughput::Bytes(data.len() as u64));
 
             group.bench_function("SIMD scanner", |b| {
-                let mut scanner = SimdScanner::new($config());
+                let mut scanner = CopyScanner::new($config());
                 b.iter(|| {
                     black_box(
                         scanner

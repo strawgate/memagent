@@ -15,7 +15,7 @@ using SIMD-accelerated structural classification.
 
 ## Zero-copy mode
 
-`StreamingSimdScanner` uses Arrow's `StringViewArray` to create 16-byte views
+`ZeroCopyScanner` uses Arrow's `StringViewArray` to create 16-byte views
 into the input buffer. String data is never copied — the original input buffer
 is shared via reference counting.
 

@@ -10,8 +10,8 @@ use arrow::array::{Array, Float64Array, Int64Array, StringArray, StructArray};
 use arrow::compute;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
-use logfwd_arrow::scanner::{SimdScanner, StreamingSimdScanner};
-use logfwd_core::aggregator::{AggregateResult, CriAggregator};
+use logfwd_arrow::scanner::{CopyScanner, ZeroCopyScanner};
+use logfwd_core::aggregator::{AggregateResult, CriReassembler};
 use logfwd_core::cri::parse_cri_line;
 use logfwd_core::scan_config::ScanConfig;
 
@@ -19,26 +19,26 @@ use logfwd_core::scan_config::ScanConfig;
 // Helpers
 // ===========================================================================
 
-/// Scan with SimdScanner (StorageBuilder) using default config.
+/// Scan with CopyScanner (StorageBuilder) using default config.
 fn scan_storage(input: &[u8]) -> RecordBatch {
-    let mut s = SimdScanner::new(ScanConfig::default());
+    let mut s = CopyScanner::new(ScanConfig::default());
     s.scan(input).expect("StorageBuilder scan failed")
 }
 
-/// Scan with StreamingSimdScanner (StreamingBuilder) using default config.
+/// Scan with ZeroCopyScanner (StreamingBuilder) using default config.
 fn scan_streaming(input: &[u8]) -> RecordBatch {
-    let mut s = StreamingSimdScanner::new(ScanConfig::default());
+    let mut s = ZeroCopyScanner::new(ScanConfig::default());
     s.scan(bytes::Bytes::from(input.to_vec()))
         .expect("StreamingBuilder scan failed")
 }
 
-/// Scan with SimdScanner using keep_raw=true.
+/// Scan with CopyScanner using keep_raw=true.
 fn scan_storage_raw(input: &[u8]) -> RecordBatch {
     let config = ScanConfig {
         keep_raw: true,
         ..ScanConfig::default()
     };
-    let mut s = SimdScanner::new(config);
+    let mut s = CopyScanner::new(config);
     s.scan(input)
         .expect("StorageBuilder scan (keep_raw) failed")
 }
@@ -159,7 +159,7 @@ fn assert_struct_child_null(batch: &RecordBatch, field: &str, child: &str, row: 
     // Column not existing is also acceptable.
 }
 
-/// Run a test function against both SimdScanner and StreamingSimdScanner,
+/// Run a test function against both CopyScanner and ZeroCopyScanner,
 /// verifying they produce the same row count and column names.
 fn assert_both_scanners<F>(input: &[u8], check: F)
 where
@@ -533,8 +533,8 @@ fn compliance_cri_format() {
 
 #[test]
 fn compliance_cri_partial_lines() {
-    // CRI partial (P) + full (F) — CriAggregator handles reassembly.
-    let mut agg = CriAggregator::new(2 * 1024 * 1024);
+    // CRI partial (P) + full (F) — CriReassembler handles reassembly.
+    let mut agg = CriReassembler::new(2 * 1024 * 1024);
 
     let p_line = b"2024-01-15T10:30:00.000000000Z stdout P {\"msg\":\"hel";
     let f_line = b"2024-01-15T10:30:00.000000000Z stdout F lo\"}";
@@ -572,7 +572,7 @@ fn compliance_raw_format() {
         keep_raw: true,
         validate_utf8: false,
     };
-    let mut scanner = SimdScanner::new(config);
+    let mut scanner = CopyScanner::new(config);
     let batch = scanner.scan(raw_input).unwrap();
     assert_eq!(batch.num_rows(), 1);
     assert!(
@@ -707,7 +707,7 @@ fn compliance_negative_zero_integer() {
 fn compliance_batch_reuse_isolation() {
     // Scanning two different inputs with the same scanner should not leak
     // data between batches.
-    let mut s = SimdScanner::new(ScanConfig::default());
+    let mut s = CopyScanner::new(ScanConfig::default());
     let b1 = s.scan(b"{\"a\":\"first\"}\n").unwrap();
     let b2 = s.scan(b"{\"b\":\"second\"}\n").unwrap();
 
@@ -725,7 +725,7 @@ fn compliance_batch_reuse_isolation() {
 
 #[test]
 fn compliance_streaming_batch_reuse_isolation() {
-    let mut s = StreamingSimdScanner::new(ScanConfig::default());
+    let mut s = ZeroCopyScanner::new(ScanConfig::default());
     let b1 = s
         .scan(bytes::Bytes::from_static(b"{\"a\":\"first\"}\n"))
         .unwrap();

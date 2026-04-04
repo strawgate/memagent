@@ -244,7 +244,7 @@ u64 bitmask operations, integer parsing, varint roundtrip, pipeline state machin
 
 **Tier 2 — Bounded (Kani proves for inputs up to size N):**
 `parse_cri_line` (≤32 bytes), `NewlineFramer` (all 32-byte inputs), `skip_nested`
-(all 16-byte inputs), `CriAggregator` P+P+F (8-byte messages, max_size ≤32).
+(all 16-byte inputs), `CriReassembler` P+P+F (8-byte messages, max_size ≤32).
 
 **Tier 3 — Statistical (proptest, high confidence):**
 SIMD ≡ scalar structural detection, scanner oracle vs sonic-rs, pipeline event sequences,

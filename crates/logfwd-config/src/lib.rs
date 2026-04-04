@@ -112,14 +112,14 @@ pub enum OutputType {
     Elasticsearch,
     Loki,
     Stdout,
-    FileOut,
+    File,
     Parquet,
     /// Discard all data. Used for benchmarking and blackhole receivers.
     Null,
     /// Send newline-delimited data over TCP.
-    TcpOut,
+    Tcp,
     /// Send datagrams over UDP.
-    UdpOut,
+    Udp,
     /// Arrow IPC stream over HTTP (native Arrow transport).
     ArrowIpc,
 }
@@ -132,11 +132,11 @@ impl fmt::Display for OutputType {
             OutputType::Elasticsearch => f.write_str("elasticsearch"),
             OutputType::Loki => f.write_str("loki"),
             OutputType::Stdout => f.write_str("stdout"),
-            OutputType::FileOut => f.write_str("file_out"),
+            OutputType::File => f.write_str("file"),
             OutputType::Parquet => f.write_str("parquet"),
             OutputType::Null => f.write_str("null"),
-            OutputType::TcpOut => f.write_str("tcp_out"),
-            OutputType::UdpOut => f.write_str("udp_out"),
+            OutputType::Tcp => f.write_str("tcp"),
+            OutputType::Udp => f.write_str("udp"),
             OutputType::ArrowIpc => f.write_str("arrow_ipc"),
         }
     }
@@ -157,11 +157,11 @@ impl<'de> Deserialize<'de> for OutputType {
                     "elasticsearch" => Ok(OutputType::Elasticsearch),
                     "loki" => Ok(OutputType::Loki),
                     "stdout" => Ok(OutputType::Stdout),
-                    "file_out" => Ok(OutputType::FileOut),
+                    "file" | "file_out" => Ok(OutputType::File),
                     "parquet" => Ok(OutputType::Parquet),
                     "null" => Ok(OutputType::Null),
-                    "tcp_out" => Ok(OutputType::TcpOut),
-                    "udp_out" => Ok(OutputType::UdpOut),
+                    "tcp" | "tcp_out" => Ok(OutputType::Tcp),
+                    "udp" | "udp_out" => Ok(OutputType::Udp),
                     "arrow_ipc" => Ok(OutputType::ArrowIpc),
                     other => Err(E::unknown_variant(
                         other,
@@ -171,11 +171,11 @@ impl<'de> Deserialize<'de> for OutputType {
                             "elasticsearch",
                             "loki",
                             "stdout",
-                            "file_out",
+                            "file",
                             "parquet",
                             "null",
-                            "tcp_out",
-                            "udp_out",
+                            "tcp",
+                            "udp",
                             "arrow_ipc",
                         ],
                     )),
@@ -681,7 +681,7 @@ impl Config {
 
                 // Reject placeholder output types that are not yet implemented.
                 match output.output_type {
-                    OutputType::FileOut | OutputType::Parquet => {
+                    OutputType::File | OutputType::Parquet => {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': {} output type is not yet implemented",
                             output.output_type,
@@ -737,7 +737,7 @@ impl Config {
                             )));
                         }
                     }
-                    OutputType::FileOut => {
+                    OutputType::File => {
                         if output.path.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'path'",
@@ -746,7 +746,7 @@ impl Config {
                         }
                     }
                     OutputType::Stdout | OutputType::Null => {}
-                    OutputType::TcpOut | OutputType::UdpOut => {
+                    OutputType::Tcp | OutputType::Udp => {
                         if output.endpoint.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
@@ -1157,13 +1157,13 @@ server:
     }
 
     #[test]
-    fn file_out_rejected_as_unimplemented() {
+    fn file_rejected_as_unimplemented() {
         let yaml = r"
 input:
   type: file
   path: /var/log/test.log
 output:
-  type: file_out
+  type: file
 ";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
@@ -1177,7 +1177,7 @@ output:
     fn validation_unimplemented_output_type() {
         // Each placeholder type should be caught by Config::validate() before
         // pipeline construction, not silently accepted.
-        for otype in ["file_out", "parquet"] {
+        for otype in ["file", "parquet"] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
             );
@@ -1248,7 +1248,7 @@ output:
         }
 
         // Placeholder output types must be rejected at validation time.
-        for otype in ["file_out", "parquet"] {
+        for otype in ["file", "parquet"] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
             );

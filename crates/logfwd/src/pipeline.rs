@@ -13,7 +13,7 @@ use opentelemetry::metrics::Meter;
 use tracing::Instrument;
 
 use crate::worker_pool::{AckItem, OutputWorkerPool, WorkItem};
-use logfwd_arrow::scanner::StreamingSimdScanner as Scanner;
+use logfwd_arrow::scanner::ZeroCopyScanner as Scanner;
 use logfwd_config::{
     EnrichmentConfig, Format, GeoDatabaseFormat, InputConfig, InputType, PipelineConfig,
 };
@@ -22,13 +22,13 @@ use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
 };
 use logfwd_io::diagnostics::{ComponentStats, PipelineMetrics};
-use logfwd_io::format::FormatProcessor;
+use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{FileInput, InputEvent, InputSource};
 use logfwd_io::tail::{ByteOffset, TailConfig};
 #[allow(deprecated)]
 use logfwd_output::{
-    BatchMetadata, FanOut, OnceAsyncFactory, OnceFactory, OutputSink, SinkFactory,
+    BatchMetadata, FanoutSink, OnceAsyncFactory, OnceFactory, OutputSink, SinkFactory,
     build_output_sink, build_sink_factory,
 };
 use logfwd_transform::SqlTransform;
@@ -283,8 +283,8 @@ impl Pipeline {
         }
 
         // Build output sink factory → pool.
-        // For multiple outputs, we build a FanOut wrapped in a OnceFactory
-        // (single-worker pool) until async FanOut is available.
+        // For multiple outputs, we build a FanoutSink wrapped in a OnceFactory
+        // (single-worker pool) until async FanoutSink is available.
         let factory: Arc<dyn SinkFactory> = if config.outputs.len() == 1 {
             let output_cfg = &config.outputs[0];
             let output_name = output_cfg
@@ -295,7 +295,7 @@ impl Pipeline {
             let output_stats = metrics.add_output(&output_name, &output_type_str);
             build_sink_factory(&output_name, output_cfg, output_stats)?
         } else {
-            // Multiple outputs: build a FanOut of sync sinks wrapped in OnceFactory.
+            // Multiple outputs: build a FanoutSink of sync sinks wrapped in OnceFactory.
             #[allow(deprecated)]
             {
                 let mut sinks: Vec<Box<dyn OutputSink>> = Vec::new();
@@ -309,7 +309,10 @@ impl Pipeline {
                     sinks.push(build_output_sink(&output_name, output_cfg, output_stats)?);
                 }
                 let fanout_name = name.to_string();
-                Arc::new(OnceFactory::new(fanout_name, Box::new(FanOut::new(sinks))))
+                Arc::new(OnceFactory::new(
+                    fanout_name,
+                    Box::new(FanoutSink::new(sinks)),
+                ))
             }
         };
 
@@ -1010,13 +1013,13 @@ fn make_format(
     input_type: InputType,
     format: &Format,
     stats: &Arc<ComponentStats>,
-) -> Result<FormatProcessor, String> {
+) -> Result<FormatDecoder, String> {
     const CRI_MAX_MESSAGE: usize = 2 * 1024 * 1024;
     let proc = match format {
-        Format::Cri => FormatProcessor::cri(CRI_MAX_MESSAGE, Arc::clone(stats)),
-        Format::Auto => FormatProcessor::auto(CRI_MAX_MESSAGE, Arc::clone(stats)),
-        Format::Json => FormatProcessor::passthrough_json(Arc::clone(stats)),
-        Format::Raw => FormatProcessor::passthrough(Arc::clone(stats)),
+        Format::Cri => FormatDecoder::cri(CRI_MAX_MESSAGE, Arc::clone(stats)),
+        Format::Auto => FormatDecoder::auto(CRI_MAX_MESSAGE, Arc::clone(stats)),
+        Format::Json => FormatDecoder::passthrough_json(Arc::clone(stats)),
+        Format::Raw => FormatDecoder::passthrough(Arc::clone(stats)),
         unsupported => {
             return Err(format!(
                 "input '{name}': format {:?} is not supported for {:?} inputs",
@@ -1997,14 +2000,14 @@ output:
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_fanout_output_errors_only_increment_failing_output() {
-        // This test verifies that a persistently-failing output in a FanOut
+        // This test verifies that a persistently-failing output in a FanoutSink
         // does not crash the pipeline and is recorded as a dropped batch.
         //
         // With the async worker pool, retries are built into the pool. An
         // always-failing sink causes the pool to exhaust retries and return
         // AckItem { success: false }, which increments dropped_batches_total.
         //
-        // Per-sink error tracking within FanOut is not currently supported
+        // Per-sink error tracking within FanoutSink is not currently supported
         // by the pool's AckItem protocol (tracked in issue #702).
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("fanout_output_err.log");
@@ -2829,7 +2832,7 @@ output:
 #[cfg(test)]
 mod format_integration_tests {
     use super::*;
-    use logfwd_arrow::scanner::SimdScanner;
+    use logfwd_arrow::scanner::CopyScanner;
     use logfwd_core::scan_config::ScanConfig;
 
     /// JSON format: raw bytes pass directly through to scanner.
@@ -2843,7 +2846,7 @@ mod format_integration_tests {
             keep_raw: false,
             validate_utf8: false,
         };
-        let mut scanner = SimdScanner::new(config);
+        let mut scanner = CopyScanner::new(config);
         let batch = scanner.scan(input).unwrap();
         assert_eq!(batch.num_rows(), 2);
         // Single-type string fields: bare names
@@ -2861,7 +2864,7 @@ mod format_integration_tests {
             keep_raw: true,
             validate_utf8: false,
         };
-        let mut scanner = SimdScanner::new(config);
+        let mut scanner = CopyScanner::new(config);
         let batch = scanner.scan(input).unwrap();
         assert_eq!(batch.num_rows(), 2);
         assert!(batch.schema().field_with_name("_raw").is_ok());
@@ -2873,7 +2876,7 @@ mod format_integration_tests {
         let cri_input = b"2024-01-15T10:30:00Z stdout F {\"level\":\"INFO\",\"msg\":\"hello\"}\n";
         let mut out = Vec::new();
         let stats = Arc::new(ComponentStats::new());
-        let mut fmt = FormatProcessor::cri(1024, Arc::clone(&stats));
+        let mut fmt = FormatDecoder::cri(1024, Arc::clone(&stats));
         fmt.process_lines(cri_input, &mut out);
 
         let config = ScanConfig {
@@ -2882,7 +2885,7 @@ mod format_integration_tests {
             keep_raw: false,
             validate_utf8: false,
         };
-        let mut scanner = SimdScanner::new(config);
+        let mut scanner = CopyScanner::new(config);
         let batch = scanner.scan(&out).unwrap();
         assert_eq!(batch.num_rows(), 1);
         // Single-type string field: bare name
@@ -2895,7 +2898,7 @@ mod format_integration_tests {
         let input = b"2024-01-15T10:30:00Z stdout P {\"level\":\"ER\n2024-01-15T10:30:00Z stdout F ROR\",\"msg\":\"boom\"}\n";
         let mut out = Vec::new();
         let stats = Arc::new(ComponentStats::new());
-        let mut fmt = FormatProcessor::cri(1024, Arc::clone(&stats));
+        let mut fmt = FormatDecoder::cri(1024, Arc::clone(&stats));
         fmt.process_lines(input, &mut out);
 
         let config = ScanConfig {
@@ -2904,7 +2907,7 @@ mod format_integration_tests {
             keep_raw: false,
             validate_utf8: false,
         };
-        let mut scanner = SimdScanner::new(config);
+        let mut scanner = CopyScanner::new(config);
         let batch = scanner.scan(&out).unwrap();
         assert_eq!(batch.num_rows(), 1);
     }
@@ -2913,7 +2916,7 @@ mod format_integration_tests {
 #[cfg(test)]
 mod proptest_pipeline {
     use super::*;
-    use logfwd_arrow::scanner::SimdScanner;
+    use logfwd_arrow::scanner::CopyScanner;
     use logfwd_core::scan_config::ScanConfig;
     use proptest::prelude::*;
 
@@ -2954,7 +2957,7 @@ mod proptest_pipeline {
                 keep_raw: false,
                 validate_utf8: false,
             };
-            let mut scanner_whole = SimdScanner::new(ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false });
+            let mut scanner_whole = CopyScanner::new(ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false });
             let batch_whole = scanner_whole.scan(&ndjson).unwrap();
 
             // Split into two chunks with remainder handling
@@ -2989,7 +2992,7 @@ mod proptest_pipeline {
                 buf.extend_from_slice(&combined);
             }
 
-            let config2 = ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false }; let mut scanner_split = SimdScanner::new(config2);
+            let config2 = ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false }; let mut scanner_split = CopyScanner::new(config2);
             let batch_split = scanner_split.scan(&buf).unwrap();
 
             prop_assert_eq!(
@@ -3045,7 +3048,7 @@ mod proptest_pipeline {
 
             let mut out = Vec::new();
             let stats = Arc::new(ComponentStats::new());
-            let mut fmt = FormatProcessor::cri(1024 * 1024, Arc::clone(&stats));
+            let mut fmt = FormatDecoder::cri(1024 * 1024, Arc::clone(&stats));
             fmt.process_lines(&input, &mut out);
 
             let line_count = out.iter().filter(|&&b| b == b'\n').count();

@@ -94,21 +94,21 @@ impl ScanBuilder for StreamingBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// SimdScanner — StorageBuilder (self-contained, compressible)
+// CopyScanner — StorageBuilder (self-contained, compressible)
 // ---------------------------------------------------------------------------
 
 /// SIMD scanner producing self-contained `RecordBatch` via `StorageBuilder`.
 ///
 /// Output owns all its data — the input buffer can be freed after `scan()`.
-pub struct SimdScanner {
+pub struct CopyScanner {
     builder: StorageBuilder,
     config: ScanConfig,
 }
 
-impl SimdScanner {
+impl CopyScanner {
     /// Create a new scanner with the given configuration.
     pub fn new(config: ScanConfig) -> Self {
-        SimdScanner {
+        CopyScanner {
             builder: StorageBuilder::new(config.keep_raw),
             config,
         }
@@ -121,7 +121,7 @@ impl SimdScanner {
         if self.config.validate_utf8 {
             std::str::from_utf8(buf).map_err(|e| {
                 ArrowError::InvalidArgumentError(format!(
-                    "SimdScanner: input is not valid UTF-8: {e}"
+                    "CopyScanner: input is not valid UTF-8: {e}"
                 ))
             })?;
         }
@@ -132,7 +132,7 @@ impl SimdScanner {
 }
 
 // ---------------------------------------------------------------------------
-// StreamingSimdScanner — StreamingBuilder (zero-copy hot path)
+// ZeroCopyScanner — StreamingBuilder (zero-copy hot path)
 // ---------------------------------------------------------------------------
 
 /// SIMD scanner producing zero-copy `RecordBatch` via `StreamingBuilder`.
@@ -140,15 +140,15 @@ impl SimdScanner {
 /// String values are `StringViewArray` views into the reference-counted input
 /// buffer (`bytes::Bytes`). The input buffer must stay alive while the
 /// `RecordBatch` is in use.
-pub struct StreamingSimdScanner {
+pub struct ZeroCopyScanner {
     builder: StreamingBuilder,
     config: ScanConfig,
 }
 
-impl StreamingSimdScanner {
+impl ZeroCopyScanner {
     /// Create a new streaming scanner with the given configuration.
     pub fn new(config: ScanConfig) -> Self {
-        StreamingSimdScanner {
+        ZeroCopyScanner {
             builder: StreamingBuilder::new(config.keep_raw),
             config,
         }
@@ -162,7 +162,7 @@ impl StreamingSimdScanner {
         if self.config.validate_utf8 {
             std::str::from_utf8(&buf).map_err(|e| {
                 ArrowError::InvalidArgumentError(format!(
-                    "StreamingSimdScanner: input is not valid UTF-8: {e}"
+                    "ZeroCopyScanner: input is not valid UTF-8: {e}"
                 ))
             })?;
         }
@@ -183,7 +183,7 @@ impl StreamingSimdScanner {
         if self.config.validate_utf8 {
             std::str::from_utf8(&buf).map_err(|e| {
                 ArrowError::InvalidArgumentError(format!(
-                    "StreamingSimdScanner: input is not valid UTF-8: {e}"
+                    "ZeroCopyScanner: input is not valid UTF-8: {e}"
                 ))
             })?;
         }
@@ -195,12 +195,12 @@ impl StreamingSimdScanner {
 
 #[cfg(test)]
 mod tests {
-    use crate::scanner::{SimdScanner, StreamingSimdScanner};
+    use crate::scanner::{CopyScanner, ZeroCopyScanner};
     use arrow::array::{Array, Int64Array, StringArray};
     use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 
-    fn default_scanner(_rows: usize) -> SimdScanner {
-        SimdScanner::new(ScanConfig::default())
+    fn default_scanner(_rows: usize) -> CopyScanner {
+        CopyScanner::new(ScanConfig::default())
     }
 
     #[test]
@@ -310,7 +310,7 @@ mod tests {
             keep_raw: false,
             validate_utf8: false,
         };
-        let batch = SimdScanner::new(config)
+        let batch = CopyScanner::new(config)
             .scan(
                 br#"{"a":"1","b":"2","c":"3"}
 "#,
@@ -328,7 +328,7 @@ mod tests {
             keep_raw: true,
             validate_utf8: false,
         };
-        let batch = SimdScanner::new(config)
+        let batch = CopyScanner::new(config)
             .scan(b"{\"msg\":\"hi\"}\n")
             .unwrap();
         assert!(batch.column_by_name("_raw").is_some());
@@ -463,10 +463,10 @@ mod tests {
         assert_eq!(default_scanner(1024).scan(&input).unwrap().num_rows(), 1000);
     }
 
-    // --- StreamingSimdScanner ---
+    // --- ZeroCopyScanner ---
     #[test]
     fn test_streaming_simple() {
-        let mut s = StreamingSimdScanner::new(ScanConfig::default());
+        let mut s = ZeroCopyScanner::new(ScanConfig::default());
         let batch = s
             .scan(bytes::Bytes::from_static(
                 b"{\"host\":\"web1\",\"status\":200}\n{\"host\":\"web2\"}\n",
@@ -478,7 +478,7 @@ mod tests {
     }
     #[test]
     fn test_streaming_reuse() {
-        let mut s = StreamingSimdScanner::new(ScanConfig::default());
+        let mut s = ZeroCopyScanner::new(ScanConfig::default());
         let _ = s
             .scan(bytes::Bytes::from_static(b"{\"x\":\"a\"}\n"))
             .unwrap();
@@ -496,7 +496,7 @@ mod tests {
             keep_raw: true,
             validate_utf8: false,
         };
-        let batch = StreamingSimdScanner::new(config)
+        let batch = ZeroCopyScanner::new(config)
             .scan(bytes::Bytes::from_static(b"{\"msg\":\"hi\"}\n"))
             .unwrap();
         assert!(
@@ -507,7 +507,7 @@ mod tests {
         let raw_arr = raw_col
             .as_any()
             .downcast_ref::<arrow::array::StringViewArray>()
-            .expect("_raw must be StringViewArray in StreamingSimdScanner");
+            .expect("_raw must be StringViewArray in ZeroCopyScanner");
         assert_eq!(raw_arr.value(0), "{\"msg\":\"hi\"}");
     }
 
@@ -518,7 +518,7 @@ mod tests {
             validate_utf8: true,
             ..ScanConfig::default()
         };
-        let batch = SimdScanner::new(config)
+        let batch = CopyScanner::new(config)
             .scan(b"{\"msg\":\"hello\"}\n")
             .unwrap();
         assert_eq!(batch.num_rows(), 1);
@@ -531,7 +531,7 @@ mod tests {
             ..ScanConfig::default()
         };
         // 0xFF is not valid UTF-8
-        let result = SimdScanner::new(config).scan(b"{\"msg\":\"\xFF\"}\n");
+        let result = CopyScanner::new(config).scan(b"{\"msg\":\"\xFF\"}\n");
         assert!(result.is_err());
     }
 
@@ -541,7 +541,7 @@ mod tests {
             validate_utf8: true,
             ..ScanConfig::default()
         };
-        let batch = StreamingSimdScanner::new(config)
+        let batch = ZeroCopyScanner::new(config)
             .scan(bytes::Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
             .unwrap();
         assert_eq!(batch.num_rows(), 1);
@@ -553,8 +553,8 @@ mod tests {
             validate_utf8: true,
             ..ScanConfig::default()
         };
-        let result = StreamingSimdScanner::new(config)
-            .scan(bytes::Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
+        let result =
+            ZeroCopyScanner::new(config).scan(bytes::Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
         assert!(result.is_err());
     }
 }

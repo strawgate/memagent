@@ -1,7 +1,7 @@
 //! Cross-builder consistency fuzz target.
 //!
-//! Runs the same input through both `SimdScanner` (StorageBuilder) and
-//! `StreamingSimdScanner` (StreamingBuilder) and asserts that:
+//! Runs the same input through both `CopyScanner` (StorageBuilder) and
+//! `ZeroCopyScanner` (StreamingBuilder) and asserts that:
 //! - Row counts match.
 //! - The same set of column names is produced.
 //! - For every column, the null pattern matches.
@@ -12,17 +12,17 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_arrow::scanner::{SimdScanner, StreamingSimdScanner};
+use logfwd_arrow::scanner::{CopyScanner, ZeroCopyScanner};
 
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
 use std::collections::BTreeSet;
 
 fuzz_target!(|data: &[u8]| {
-    let mut storage_scanner = SimdScanner::new(ScanConfig::default());
+    let mut storage_scanner = CopyScanner::new(ScanConfig::default());
     let Ok(storage_batch) = storage_scanner.scan(data) else { return; };
 
-    let mut streaming_scanner = StreamingSimdScanner::new(ScanConfig::default());
+    let mut streaming_scanner = ZeroCopyScanner::new(ScanConfig::default());
     let Ok(streaming_batch) = streaming_scanner.scan(bytes::Bytes::copy_from_slice(data)) else { return; };
 
     // Row counts must match.

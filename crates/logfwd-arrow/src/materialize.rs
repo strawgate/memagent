@@ -172,13 +172,13 @@ fn cast_column(field: &Arc<Field>, col: &ArrayRef) -> (Arc<Field>, ArrayRef) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StreamingSimdScanner;
+    use crate::ZeroCopyScanner;
     use bytes::Bytes;
     use logfwd_core::scan_config::ScanConfig;
 
     fn scan(input: &[u8]) -> (RecordBatch, Bytes) {
         let buf = Bytes::from(input.to_vec());
-        let mut scanner = StreamingSimdScanner::new(ScanConfig::default());
+        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
         let batch = scanner.scan(buf.clone()).unwrap();
         (batch, buf)
     }

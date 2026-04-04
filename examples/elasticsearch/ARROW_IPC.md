@@ -80,7 +80,7 @@ let factory = ElasticsearchSinkFactory::new(
 let sink = factory.create()?;
 
 // Query with ES|QL uses the async sink's query_arrow method.
-// See ElasticsearchAsyncSink::query_arrow for the Arrow IPC query API.
+// See ElasticsearchSink::query_arrow for the Arrow IPC query API.
 ```
 
 ### ES|QL Query Examples
@@ -171,7 +171,7 @@ Arrow IPC format provides significant performance improvements over JSON:
 
 ## API Reference
 
-### `ElasticsearchAsyncSink::query_arrow(query: &str) -> io::Result<Vec<RecordBatch>>`
+### `ElasticsearchSink::query_arrow(query: &str) -> io::Result<Vec<RecordBatch>>`
 
 Query Elasticsearch using ES|QL and receive Arrow IPC response.
 
@@ -216,7 +216,7 @@ The implementation automatically sets this header in `query_arrow()`.
 
 For large queries, increase the HTTP timeout:
 - Default: 30 seconds
-- Adjust in `ElasticsearchAsyncSink::new()` configuration
+- Adjust in `ElasticsearchSink::new()` configuration
 
 ## References
 

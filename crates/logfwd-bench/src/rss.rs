@@ -4,7 +4,7 @@
 use std::io::Write;
 
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::StreamingSimdScanner;
+use logfwd_core::scanner::ZeroCopyScanner;
 use logfwd_transform::SqlTransform;
 
 fn rss_mb() -> f64 {
@@ -59,7 +59,7 @@ fn main() {
             data.len() as f64 / 1_048_576.0, after_gen, after_gen - baseline);
 
         // Scan
-        let mut scanner = StreamingSimdScanner::new(ScanConfig::default());
+        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
         let batch = scanner.scan(bytes::Bytes::from(data.clone())).unwrap();
         let after_scan = rss_mb();
         println!("  After scan ({} rows):    {:.1} MB  (+{:.1} MB)",
@@ -99,7 +99,7 @@ fn main() {
         let raw_mb = data.len() as f64 / 1_048_576.0;
 
         let before = rss_mb();
-        let mut storage_scanner = logfwd_core::scanner::SimdScanner::new(ScanConfig::default());
+        let mut storage_scanner = logfwd_core::scanner::CopyScanner::new(ScanConfig::default());
         let batch = storage_scanner.scan(&data).unwrap();
         let after_storage = rss_mb();
         let storage_cols = batch.num_columns();
@@ -108,7 +108,7 @@ fn main() {
         drop(storage_scanner);
 
         let mid = rss_mb();
-        let mut streaming_scanner = StreamingSimdScanner::new(ScanConfig::default());
+        let mut streaming_scanner = ZeroCopyScanner::new(ScanConfig::default());
         let batch = streaming_scanner.scan(bytes::Bytes::from(data)).unwrap();
         let after_streaming = rss_mb();
         let streaming_cols = batch.num_columns();
@@ -140,7 +140,7 @@ fn main() {
     {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         let config = transform.scan_config();
-        let mut scanner = StreamingSimdScanner::new(config);
+        let mut scanner = ZeroCopyScanner::new(config);
         let batch = scanner.scan(bytes::Bytes::from(data.clone())).unwrap();
         let after = rss_mb();
         println!("  SELECT * (20 fields):    {:.1} MB  (delta {:.1} MB)", after, after - baseline);
@@ -153,7 +153,7 @@ fn main() {
     {
         let mut transform = SqlTransform::new("SELECT timestamp_str, level_str FROM logs").unwrap();
         let config = transform.scan_config();
-        let mut scanner = StreamingSimdScanner::new(config);
+        let mut scanner = ZeroCopyScanner::new(config);
         let batch = scanner.scan(bytes::Bytes::from(data.clone())).unwrap();
         let after = rss_mb();
         println!("  SELECT 2 fields:         {:.1} MB  (delta {:.1} MB)", after, after - mid);

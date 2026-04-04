@@ -1,7 +1,7 @@
 // scanner.rs — Generic JSON-to-columnar scan loop.
 //
 // Provides the ScanBuilder trait and the scan_into/scan_line functions.
-// Arrow-specific scanner types (SimdScanner, StreamingSimdScanner) live
+// Arrow-specific scanner types (CopyScanner, ZeroCopyScanner) live
 // in the logfwd-arrow crate.
 
 use crate::scan_config::ScanConfig;

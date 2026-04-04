@@ -7,7 +7,7 @@ use std::time::Instant;
 use arrow::ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow::record_batch::RecordBatch;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::StreamingSimdScanner;
+use logfwd_core::scanner::ZeroCopyScanner;
 use logfwd_transform::SqlTransform;
 
 fn main() {
@@ -157,12 +157,12 @@ fn memory_analysis(data: &[u8], lines: usize) {
 fn scan(data: &[u8], sql: &str) -> RecordBatch {
     let mut transform = SqlTransform::new(sql).expect("bad SQL");
     let config = transform.scan_config();
-    let mut scanner = StreamingSimdScanner::new(config);
+    let mut scanner = ZeroCopyScanner::new(config);
     let batch = scanner.scan(bytes::Bytes::from(data.to_vec())).expect("scan failed");
     // Run through transform for accurate schema
     transform.execute_blocking(batch).unwrap_or_else(|_| {
         // If transform fails, return the raw scan
-        let mut scanner2 = StreamingSimdScanner::new(ScanConfig::default());
+        let mut scanner2 = ZeroCopyScanner::new(ScanConfig::default());
         scanner2.scan(bytes::Bytes::from(data.to_vec())).unwrap()
     })
 }
@@ -307,7 +307,7 @@ fn deep_memory_analysis() {
     println!("\n=== Deep Memory Analysis (100K simple lines) ===\n");
     println!("  Raw JSON: {} ({} bytes/line)", fmt_bytes(raw_size), raw_size / 100_000);
 
-    let mut scanner = StreamingSimdScanner::new(ScanConfig::default());
+    let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
     let batch = scanner.scan(bytes::Bytes::from(data.to_vec())).unwrap();
 
     println!("  Reported total: {}", fmt_bytes(batch.get_array_memory_size()));
@@ -387,7 +387,7 @@ fn deep_memory_analysis_v2() {
     let raw_size = data.len();
     println!("\n=== Deep Memory V2 (10K lines, {} raw) ===\n", fmt_bytes(raw_size));
 
-    let mut scanner = StreamingSimdScanner::new(ScanConfig::default());
+    let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
     let batch = scanner.scan(bytes::Bytes::from(data.to_vec())).unwrap();
 
     for (i, field) in batch.schema().fields().iter().enumerate() {

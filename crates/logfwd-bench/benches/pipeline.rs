@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use logfwd_arrow::scanner::SimdScanner;
+use logfwd_arrow::scanner::CopyScanner;
 use logfwd_core::cri::{CriReassembler, ReassembleResult, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use logfwd_io::compress::ChunkCompressor;
@@ -112,7 +112,7 @@ fn bench_scanner(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(bytes));
         group.bench_with_input(BenchmarkId::new("scan_all_fields", n), &data, |b, data| {
-            let mut scanner = SimdScanner::new(ScanConfig::default());
+            let mut scanner = CopyScanner::new(ScanConfig::default());
             b.iter(|| scanner.scan(data).expect("bench: scan should not fail"));
         });
 
@@ -137,7 +137,7 @@ fn bench_scanner(c: &mut Criterion) {
                 keep_raw: false,
                 validate_utf8: false,
             };
-            let mut scanner = SimdScanner::new(config);
+            let mut scanner = CopyScanner::new(config);
             b.iter(|| scanner.scan(data).expect("bench: scan should not fail"));
         });
     }
@@ -214,7 +214,7 @@ fn bench_transform(c: &mut Criterion) {
 
     let n = 10_000;
     let data = gen_json_lines(n);
-    let mut scanner = SimdScanner::new(ScanConfig::default());
+    let mut scanner = CopyScanner::new(ScanConfig::default());
     let batch = scanner.scan(&data).expect("bench: scan should not fail");
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("select_star", |b| {
@@ -292,7 +292,7 @@ fn bench_output(c: &mut Criterion) {
 
     let n = 10_000;
     let data = gen_json_lines(n);
-    let mut scanner = SimdScanner::new(ScanConfig::default());
+    let mut scanner = CopyScanner::new(ScanConfig::default());
     let batch = scanner.scan(&data).expect("bench: scan should not fail");
     let meta = make_metadata();
 
@@ -335,7 +335,7 @@ fn bench_end_to_end(c: &mut Criterion) {
     // Full pipeline: scan → SELECT * → capture sink
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("scan_passthrough_capture", |b| {
-        let mut scanner = SimdScanner::new(ScanConfig::default());
+        let mut scanner = CopyScanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
@@ -347,7 +347,7 @@ fn bench_end_to_end(c: &mut Criterion) {
 
     // Full pipeline: scan → filter → capture sink
     group.bench_function("scan_filter_capture", |b| {
-        let mut scanner = SimdScanner::new(ScanConfig::default());
+        let mut scanner = CopyScanner::new(ScanConfig::default());
         let mut transform =
             SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
         let mut sink = NullSink;
@@ -360,7 +360,7 @@ fn bench_end_to_end(c: &mut Criterion) {
 
     // Full pipeline: scan → grok + filter → capture sink
     group.bench_function("scan_grok_filter_capture", |b| {
-        let mut scanner = SimdScanner::new(ScanConfig::default());
+        let mut scanner = CopyScanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new(
             "SELECT grok(message_str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed \
              FROM logs WHERE level_str != 'DEBUG'",
@@ -381,7 +381,7 @@ fn bench_end_to_end(c: &mut Criterion) {
 // Elasticsearch bulk serialization benchmark
 // ---------------------------------------------------------------------------
 
-/// Measures the throughput of `ElasticsearchAsyncSink::serialize_batch` —
+/// Measures the throughput of `ElasticsearchSink::serialize_batch` —
 /// the hot path that converts Arrow RecordBatches into NDJSON bulk payloads
 /// ready to POST to `/_bulk`.
 ///
@@ -404,7 +404,7 @@ fn bench_elasticsearch_serialize(c: &mut Criterion) {
 
     for &n in &[1_000usize, 10_000, 100_000] {
         let data = gen_json_lines(n);
-        let mut scanner = SimdScanner::new(ScanConfig::default());
+        let mut scanner = CopyScanner::new(ScanConfig::default());
         let batch = scanner.scan(&data).expect("bench: scan should not fail");
         let meta = make_metadata();
 

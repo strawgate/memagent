@@ -53,7 +53,7 @@ pub struct PipelineMachine<S, C> {
 
 /// Result of applying an AckReceipt to the pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommitAdvance<C> {
+pub struct CheckpointAdvance<C> {
     /// The source whose checkpoint may have advanced.
     pub source: SourceId,
     /// Whether the committed checkpoint actually changed.
@@ -141,7 +141,7 @@ impl<C: Clone> PipelineMachine<Running, C> {
     /// Ordered ACK: the checkpoint advances only when all batches with
     /// lower IDs for this source have also been acked. Out-of-order acks
     /// are buffered in `pending_acks`.
-    pub fn apply_ack(&mut self, receipt: AckReceipt<C>) -> CommitAdvance<C> {
+    pub fn apply_ack(&mut self, receipt: AckReceipt<C>) -> CheckpointAdvance<C> {
         record_ack_and_advance(
             &mut self.committed,
             &mut self.in_flight,
@@ -189,7 +189,7 @@ fn record_ack_and_advance<C: Clone>(
     in_flight: &mut BTreeMap<SourceId, BTreeMap<BatchId, C>>,
     pending_acks: &mut BTreeMap<SourceId, BTreeMap<BatchId, C>>,
     receipt: AckReceipt<C>,
-) -> CommitAdvance<C> {
+) -> CheckpointAdvance<C> {
     let source = receipt.source;
     let batch_id = receipt.batch_id;
 
@@ -210,7 +210,7 @@ fn record_ack_and_advance<C: Clone>(
     };
 
     if !removed {
-        return CommitAdvance {
+        return CheckpointAdvance {
             source,
             advanced: false,
             checkpoint: committed.get(&source).cloned(),
@@ -245,7 +245,7 @@ fn record_ack_and_advance<C: Clone>(
         pending_acks.remove(&source);
     }
 
-    CommitAdvance {
+    CheckpointAdvance {
         source,
         advanced,
         checkpoint: committed.get(&source).cloned(),
@@ -258,7 +258,7 @@ fn record_ack_and_advance<C: Clone>(
 
 impl<C: Clone> PipelineMachine<Draining, C> {
     /// Apply an AckReceipt during drain (same logic as Running).
-    pub fn apply_ack(&mut self, receipt: AckReceipt<C>) -> CommitAdvance<C> {
+    pub fn apply_ack(&mut self, receipt: AckReceipt<C>) -> CheckpointAdvance<C> {
         record_ack_and_advance(
             &mut self.committed,
             &mut self.in_flight,

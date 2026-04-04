@@ -1,6 +1,6 @@
 //! Fuzz the scanner → DataFusion `SqlTransform` integration.
 //!
-//! Feeds arbitrary bytes through `SimdScanner` and then executes a SQL query
+//! Feeds arbitrary bytes through `CopyScanner` and then executes a SQL query
 //! on the resulting `RecordBatch` via `SqlTransform`.
 //!
 //! The goal is to verify that no combination of scanner output can cause a
@@ -18,11 +18,11 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_arrow::scanner::SimdScanner;
+use logfwd_arrow::scanner::CopyScanner;
 use logfwd_transform::SqlTransform;
 
 fuzz_target!(|data: &[u8]| {
-    let mut scanner = SimdScanner::new(ScanConfig {
+    let mut scanner = CopyScanner::new(ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
         keep_raw: false,

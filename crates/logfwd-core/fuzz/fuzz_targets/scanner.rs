@@ -3,7 +3,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_arrow::scanner::SimdScanner;
+use logfwd_arrow::scanner::CopyScanner;
 
 fn validate_batch(batch: &arrow::record_batch::RecordBatch, label: &str) {
     let num_rows = batch.num_rows();
@@ -27,7 +27,7 @@ fuzz_target!(|data: &[u8]| {
         keep_raw: true,
         validate_utf8: false,
     };
-    let mut scanner = SimdScanner::new(config);
+    let mut scanner = CopyScanner::new(config);
     let Ok(batch) = scanner.scan(data) else {
         return;
     };
@@ -49,7 +49,7 @@ fuzz_target!(|data: &[u8]| {
         keep_raw: false,
         validate_utf8: false,
     };
-    let mut scanner2 = SimdScanner::new(config2);
+    let mut scanner2 = CopyScanner::new(config2);
     let Ok(batch2) = scanner2.scan(data) else {
         return;
     };

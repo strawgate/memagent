@@ -1,5 +1,5 @@
 input:
   type: generator
 output:
-  type: udp_out
+  type: udp
   endpoint: 127.0.0.1:15514

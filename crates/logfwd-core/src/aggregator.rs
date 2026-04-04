@@ -31,7 +31,7 @@
 /// ```
 use alloc::vec::Vec;
 /// CRI partial line aggregator. Merges P/F lines into complete messages.
-pub struct CriAggregator {
+pub struct CriReassembler {
     pending: Vec<u8>,
     max_message_size: usize,
     /// Set to `true` when any chunk in the current P/F sequence was truncated
@@ -53,14 +53,14 @@ pub enum AggregateResult<'a> {
     Pending,
 }
 
-impl CriAggregator {
+impl CriReassembler {
     /// Create a new aggregator with the given maximum message size.
     ///
     /// Messages exceeding this size are truncated. Set to a generous
     /// default (e.g., 256KB) to handle Java stack traces and large
     /// structured log lines.
     pub fn new(max_message_size: usize) -> Self {
-        CriAggregator {
+        CriReassembler {
             pending: Vec::new(),
             max_message_size,
             truncated: false,
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn f_only_zero_copy() {
-        let mut agg = CriAggregator::new(1024);
+        let mut agg = CriReassembler::new(1024);
         let msg = b"hello world";
         match agg.feed(msg, true) {
             AggregateResult::Complete(out) => {
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn p_then_f() {
-        let mut agg = CriAggregator::new(1024);
+        let mut agg = CriReassembler::new(1024);
 
         assert!(matches!(
             agg.feed(b"hello ", false),
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn max_size_truncation() {
-        let mut agg = CriAggregator::new(10);
+        let mut agg = CriReassembler::new(10);
 
         // P line with 8 bytes
         agg.feed(b"12345678", false);
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn max_size_f_only() {
-        let mut agg = CriAggregator::new(5);
+        let mut agg = CriReassembler::new(5);
         match agg.feed(b"truncated", true) {
             AggregateResult::Truncated(out) => {
                 assert_eq!(out, b"trunc");
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn reset_preserves_capacity() {
-        let mut agg = CriAggregator::new(1024);
+        let mut agg = CriReassembler::new(1024);
         agg.feed(b"some data", false);
         let cap_before = agg.pending.capacity();
         agg.reset();
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn multiple_sequences() {
-        let mut agg = CriAggregator::new(1024);
+        let mut agg = CriReassembler::new(1024);
 
         // Sequence 1: P + F
         agg.feed(b"a", false);
@@ -280,7 +280,7 @@ mod proptests {
                 1..20usize,
             )
         ) {
-            let mut agg = CriAggregator::new(max_size);
+            let mut agg = CriReassembler::new(max_size);
             for (msg, is_full) in sequence {
                 match agg.feed(&msg, is_full) {
                     AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
@@ -310,7 +310,7 @@ mod proptests {
                 1..20usize,
             )
         ) {
-            let mut agg = CriAggregator::new(max_size);
+            let mut agg = CriReassembler::new(max_size);
             for chunk in p_chunks {
                 match agg.feed(&chunk, false) {
                     AggregateResult::Pending => {}
@@ -331,7 +331,7 @@ mod proptests {
             p_chunk in proptest::collection::vec(proptest::num::u8::ANY, 0..32usize),
             f_chunk in proptest::collection::vec(proptest::num::u8::ANY, 0..32usize),
         ) {
-            let mut agg = CriAggregator::new(max_size);
+            let mut agg = CriReassembler::new(max_size);
 
             // Accumulate some P data, then reset
             let _ = agg.feed(&p_chunk, false);
@@ -358,13 +358,13 @@ mod proptests {
 mod verification {
     use super::*;
 
-    /// Prove CriAggregator::feed respects max_message_size for F-only lines.
+    /// Prove CriReassembler::feed respects max_message_size for F-only lines.
     #[kani::proof]
     fn verify_aggregator_f_only_max_size() {
         let max_size: usize = kani::any();
         kani::assume(max_size >= 1 && max_size <= 32);
 
-        let mut agg = CriAggregator::new(max_size);
+        let mut agg = CriReassembler::new(max_size);
         let msg: [u8; 16] = kani::any();
 
         match agg.feed(&msg, true) {
@@ -380,13 +380,13 @@ mod verification {
         }
     }
 
-    /// Prove CriAggregator::feed respects max_message_size for P+F sequences.
+    /// Prove CriReassembler::feed respects max_message_size for P+F sequences.
     #[kani::proof]
     fn verify_aggregator_pf_max_size() {
         let max_size: usize = kani::any();
         kani::assume(max_size >= 1 && max_size <= 32);
 
-        let mut agg = CriAggregator::new(max_size);
+        let mut agg = CriReassembler::new(max_size);
 
         let msg1: [u8; 8] = kani::any();
         let _ = agg.feed(&msg1, false);
@@ -410,7 +410,7 @@ mod verification {
     /// Prove P lines never produce output.
     #[kani::proof]
     fn verify_aggregator_p_returns_pending() {
-        let mut agg = CriAggregator::new(1024);
+        let mut agg = CriReassembler::new(1024);
         let msg: [u8; 8] = kani::any();
         match agg.feed(&msg, false) {
             AggregateResult::Pending => {} // expected
@@ -426,7 +426,7 @@ mod verification {
         let max_size: usize = kani::any();
         kani::assume(max_size >= 1 && max_size <= 32);
 
-        let mut agg = CriAggregator::new(max_size);
+        let mut agg = CriReassembler::new(max_size);
 
         let msg1: [u8; 8] = kani::any();
         let _ = agg.feed(&msg1, false);
@@ -453,7 +453,7 @@ mod verification {
     /// Prove reset after Complete allows a clean new sequence.
     #[kani::proof]
     fn verify_aggregator_reset_clears_state() {
-        let mut agg = CriAggregator::new(64);
+        let mut agg = CriReassembler::new(64);
 
         let msg1: [u8; 4] = kani::any();
         let _ = agg.feed(&msg1, false);
@@ -479,7 +479,7 @@ mod verification {
     /// F lines return Truncated(&[]) without slicing panics.
     #[kani::proof]
     fn verify_aggregator_max_size_zero() {
-        let mut agg = CriAggregator::new(0);
+        let mut agg = CriReassembler::new(0);
         let msg: [u8; 8] = kani::any();
 
         // P line: no output, no panic
@@ -505,7 +505,7 @@ mod verification {
     fn verify_aggregator_f_only_is_input_prefix() {
         let max_size: usize = kani::any();
         kani::assume(max_size >= 1 && max_size <= 32); // consistent with other aggregator proofs
-        let mut agg = CriAggregator::new(max_size);
+        let mut agg = CriReassembler::new(max_size);
         assert!(!agg.has_pending()); // fast path requires no pending
 
         let msg: [u8; 8] = kani::any();
@@ -533,7 +533,7 @@ mod verification {
     #[kani::proof]
     fn verify_aggregator_pf_content_correct() {
         let max_size: usize = kani::any_where(|&s: &usize| s >= 1 && s <= 16);
-        let mut agg = CriAggregator::new(max_size);
+        let mut agg = CriReassembler::new(max_size);
 
         let p_msg: [u8; 4] = kani::any();
         let _ = agg.feed(&p_msg, false); // P chunk

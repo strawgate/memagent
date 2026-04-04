@@ -10,7 +10,7 @@
 //! 2. Exercises all public query methods (`is_in_string`, `next_quote`,
 //!    `scan_string`, `skip_nested`) at every byte position to ensure no
 //!    out-of-bounds access or panic.
-//! 3. Passes the same bytes through `SimdScanner` to exercise the full
+//! 3. Passes the same bytes through `CopyScanner` to exercise the full
 //!    scanner pipeline built on top of `StructuralIndex`.
 //!
 //! The corpus should include inputs with dense backslash runs near multiples
@@ -21,7 +21,7 @@
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::structural::StructuralIndex;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_arrow::scanner::SimdScanner;
+use logfwd_arrow::scanner::CopyScanner;
 
 fuzz_target!(|data: &[u8]| {
     // --- Direct StructuralIndex API exercise ---
@@ -56,7 +56,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // --- Full scanner pipeline (uses StructuralIndex internally) ---
-    let mut scanner = SimdScanner::new(ScanConfig::default());
+    let mut scanner = CopyScanner::new(ScanConfig::default());
     let Ok(batch) = scanner.scan(data) else { return; };
     let num_rows = batch.num_rows();
     let schema = batch.schema();

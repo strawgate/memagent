@@ -130,7 +130,7 @@ partition offset (gaps from compaction), Journald is an opaque cursor string, pu
 work for file inputs.
 
 **Cost:** `C: Clone` bound on methods; generic propagates to `AckReceipt<C>`,
-`CommitAdvance<C>`.  
+`CheckpointAdvance<C>`.  
 **Research:** `dev-docs/research/offset-checkpoint-research.md`. **Related:** #270.
 
 ### Rejected batches advance the checkpoint

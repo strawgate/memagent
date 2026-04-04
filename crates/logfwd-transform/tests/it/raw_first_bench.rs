@@ -53,7 +53,7 @@ async fn path_a_extraction(json_data: &[u8], num_fields: usize) -> RecordBatch {
         keep_raw: false,
         validate_utf8: false,
     };
-    let mut scanner = logfwd_arrow::StreamingSimdScanner::new(config);
+    let mut scanner = logfwd_arrow::ZeroCopyScanner::new(config);
     let batch = scanner
         .scan(bytes::Bytes::copy_from_slice(json_data))
         .unwrap();
@@ -82,7 +82,7 @@ async fn path_a_passthrough(json_data: &[u8]) -> RecordBatch {
         keep_raw: false,
         validate_utf8: false,
     };
-    let mut scanner = logfwd_arrow::StreamingSimdScanner::new(config);
+    let mut scanner = logfwd_arrow::ZeroCopyScanner::new(config);
     let batch = scanner
         .scan(bytes::Bytes::copy_from_slice(json_data))
         .unwrap();

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use logfwd_arrow::scanner::SimdScanner;
+use logfwd_arrow::scanner::CopyScanner;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::sink::SinkFactory;
@@ -116,7 +116,7 @@ fn run_worker(
     .expect("failed to create sink factory");
     let mut sink = factory.create().expect("failed to create sink");
 
-    let mut scanner = SimdScanner::new(ScanConfig::default());
+    let mut scanner = CopyScanner::new(ScanConfig::default());
     let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
     let meta = BatchMetadata {
         resource_attrs: Arc::new(vec![("service.name".into(), "es-bench".into())]),

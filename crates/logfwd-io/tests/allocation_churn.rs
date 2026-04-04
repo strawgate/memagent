@@ -9,7 +9,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use serial_test::serial;
 
 use logfwd_io::diagnostics::ComponentStats;
-use logfwd_io::format::FormatProcessor;
+use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
 use std::collections::VecDeque;
@@ -62,7 +62,7 @@ fn framed_input_no_buffer_churn() {
     let source = MockSource::repeating(&chunk, TOTAL_POLLS);
     let mut framed = FramedInput::new(
         Box::new(source),
-        FormatProcessor::passthrough(Arc::clone(&stats)),
+        FormatDecoder::passthrough(Arc::clone(&stats)),
         Arc::clone(&stats),
     );
 
@@ -103,7 +103,7 @@ fn framed_input_no_leak_across_polls() {
     let source = MockSource::repeating(&chunk, 100);
     let mut framed = FramedInput::new(
         Box::new(source),
-        FormatProcessor::passthrough(Arc::clone(&stats)),
+        FormatDecoder::passthrough(Arc::clone(&stats)),
         Arc::clone(&stats),
     );
 

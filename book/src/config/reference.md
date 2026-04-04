@@ -236,7 +236,7 @@ Push to Grafana Loki.
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Loki push URL. |
 
-### `file_out` output *(partial)*
+### `file` output *(partial)*
 
 Write records to a file.
 
@@ -263,7 +263,7 @@ Write records to Parquet files. Not yet functional.
 | `stdout` | Implemented | Print to stdout (JSON or coloured text). |
 | `elasticsearch` | Implemented | Elasticsearch bulk API with retry and compression. |
 | `loki` | Implemented | Grafana Loki push API with label grouping. |
-| `file_out` | Partial | Write to a file. |
+| `file` | Partial | Write to a file. |
 | `parquet` | Stub | Write Parquet files. |
 
 ---

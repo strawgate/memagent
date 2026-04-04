@@ -11,7 +11,7 @@ use std::alloc::System;
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
-use logfwd_arrow::scanner::{SimdScanner, StreamingSimdScanner};
+use logfwd_arrow::scanner::{CopyScanner, ZeroCopyScanner};
 use logfwd_core::scan_config::ScanConfig;
 
 fn make_ndjson(n: usize) -> Vec<u8> {
@@ -46,7 +46,7 @@ fn assert_stable_windows(label: &str, alloc1: usize, alloc2: usize) {
 #[test]
 #[serial]
 fn storage_scanner_no_leak_across_batches() {
-    let mut scanner = SimdScanner::new(ScanConfig::default());
+    let mut scanner = CopyScanner::new(ScanConfig::default());
     let data = make_ndjson(500);
 
     for _ in 0..5 {
@@ -76,7 +76,7 @@ fn storage_scanner_no_leak_across_batches() {
 #[test]
 #[serial]
 fn streaming_scanner_no_leak_across_batches() {
-    let mut scanner = StreamingSimdScanner::new(ScanConfig::default());
+    let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
     let input: bytes::Bytes = make_ndjson(500).into();
 
     for _ in 0..5 {
@@ -107,7 +107,7 @@ fn streaming_scanner_no_leak_across_batches() {
 #[test]
 #[serial]
 fn scanner_allocs_scale_linearly() {
-    let mut scanner = SimdScanner::new(ScanConfig::default());
+    let mut scanner = CopyScanner::new(ScanConfig::default());
     let _ = scanner.scan(&make_ndjson(1000)).unwrap();
 
     let data_500 = make_ndjson(500);
@@ -130,7 +130,7 @@ fn scanner_allocs_scale_linearly() {
     );
 
     // StreamingBuilder should be sub-linear (zero-copy path).
-    let mut streaming = StreamingSimdScanner::new(ScanConfig::default());
+    let mut streaming = ZeroCopyScanner::new(ScanConfig::default());
     let _ = streaming
         .scan(bytes::Bytes::from(make_ndjson(1000)))
         .unwrap();

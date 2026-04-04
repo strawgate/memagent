@@ -103,7 +103,7 @@ pub fn sort_and_dedup_timestamps(entries: &mut Vec<LokiEntry>) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// LokiAsyncSink
+// LokiSink — reqwest-based async implementation of Sink
 // ---------------------------------------------------------------------------
 
 struct LokiConfig {
@@ -115,21 +115,21 @@ struct LokiConfig {
 }
 
 /// Async Loki sink using reqwest.
-pub struct LokiAsyncSink {
+pub struct LokiSink {
     config: Arc<LokiConfig>,
     client: Arc<reqwest::Client>,
     name: String,
     stats: Arc<ComponentStats>,
 }
 
-impl LokiAsyncSink {
+impl LokiSink {
     fn new(
         name: String,
         config: Arc<LokiConfig>,
         client: Arc<reqwest::Client>,
         stats: Arc<ComponentStats>,
     ) -> Self {
-        LokiAsyncSink {
+        LokiSink {
             config,
             client,
             name,
@@ -331,7 +331,7 @@ impl LokiAsyncSink {
     }
 }
 
-impl super::sink::Sink for LokiAsyncSink {
+impl super::sink::Sink for LokiSink {
     fn send_batch<'a>(
         &'a mut self,
         batch: &'a RecordBatch,
@@ -366,7 +366,7 @@ impl super::sink::Sink for LokiAsyncSink {
 // LokiSinkFactory
 // ---------------------------------------------------------------------------
 
-/// Creates `LokiAsyncSink` instances for the output worker pool.
+/// Creates `LokiSink` instances for the output worker pool.
 pub struct LokiSinkFactory {
     name: String,
     config: Arc<LokiConfig>,
@@ -424,46 +424,12 @@ impl LokiSinkFactory {
 
 impl super::sink::SinkFactory for LokiSinkFactory {
     fn create(&self) -> io::Result<Box<dyn super::sink::Sink>> {
-        Ok(Box::new(LokiAsyncSink::new(
+        Ok(Box::new(LokiSink::new(
             self.name.clone(),
             Arc::clone(&self.config),
             Arc::clone(&self.client),
             Arc::clone(&self.stats),
         )))
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Old placeholder (kept for backward compat with lib.rs exports if any)
-// ---------------------------------------------------------------------------
-
-/// Synchronous placeholder Loki sink.
-///
-/// Deprecated: use `LokiSinkFactory` with the async worker pool instead.
-#[allow(dead_code)]
-pub struct LokiSink {
-    name: String,
-}
-
-#[allow(dead_code)]
-impl LokiSink {
-    pub fn new(name: String, _endpoint: String) -> Self {
-        LokiSink { name }
-    }
-}
-
-#[allow(deprecated)]
-impl super::OutputSink for LokiSink {
-    fn send_batch(&mut self, _batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 
     fn name(&self) -> &str {

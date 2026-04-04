@@ -12,10 +12,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::{BatchMetadata, build_col_infos, write_row_json};
 
 // ---------------------------------------------------------------------------
-// ElasticsearchAsyncSink — reqwest-based async implementation of Sink
+// ElasticsearchSink — reqwest-based async implementation of Sink
 // ---------------------------------------------------------------------------
 
-/// Configuration shared across all `ElasticsearchAsyncSink` instances from
+/// Configuration shared across all `ElasticsearchSink` instances from
 /// the same factory.
 pub(crate) struct ElasticsearchConfig {
     endpoint: String,
@@ -46,7 +46,7 @@ pub enum ElasticsearchRequestMode {
 /// Implements the [`super::sink::Sink`] trait for use with `OutputWorkerPool`.
 /// All workers share the same `reqwest::Client` (cloned from the factory) to
 /// reuse connection pools, TLS sessions, and DNS caches.
-pub struct ElasticsearchAsyncSink {
+pub struct ElasticsearchSink {
     config: Arc<ElasticsearchConfig>,
     client: reqwest::Client,
     name: String,
@@ -54,14 +54,14 @@ pub struct ElasticsearchAsyncSink {
     stats: Arc<ComponentStats>,
 }
 
-impl ElasticsearchAsyncSink {
+impl ElasticsearchSink {
     pub(crate) fn new(
         name: String,
         config: Arc<ElasticsearchConfig>,
         client: reqwest::Client,
         stats: Arc<ComponentStats>,
     ) -> Self {
-        ElasticsearchAsyncSink {
+        ElasticsearchSink {
             name,
             config,
             client,
@@ -598,7 +598,7 @@ impl ElasticsearchAsyncSink {
     }
 }
 
-impl super::sink::Sink for ElasticsearchAsyncSink {
+impl super::sink::Sink for ElasticsearchSink {
     fn send_batch<'a>(
         &'a mut self,
         batch: &'a RecordBatch,
@@ -625,7 +625,7 @@ impl super::sink::Sink for ElasticsearchAsyncSink {
 // ElasticsearchSinkFactory
 // ---------------------------------------------------------------------------
 
-/// Creates `ElasticsearchAsyncSink` instances for the output worker pool.
+/// Creates `ElasticsearchSink` instances for the output worker pool.
 ///
 /// All workers share a single `reqwest::Client` (which is internally
 /// `Arc`-wrapped) so they reuse the same connection pool, TLS sessions,
@@ -712,7 +712,7 @@ impl ElasticsearchSinkFactory {
 
 impl super::sink::SinkFactory for ElasticsearchSinkFactory {
     fn create(&self) -> io::Result<Box<dyn super::sink::Sink>> {
-        Ok(Box::new(ElasticsearchAsyncSink::new(
+        Ok(Box::new(ElasticsearchSink::new(
             self.name.clone(),
             Arc::clone(&self.config),
             self.client.clone(), // reqwest::Client is Arc-wrapped, clone is cheap
@@ -726,12 +726,12 @@ impl super::sink::SinkFactory for ElasticsearchSinkFactory {
 }
 
 impl ElasticsearchSinkFactory {
-    /// Create a concrete `ElasticsearchAsyncSink` without boxing it.
+    /// Create a concrete `ElasticsearchSink` without boxing it.
     ///
     /// Intended for benchmarks and tests that need access to
     /// `serialize_batch` or `serialized_len` directly.
-    pub fn create_sink(&self) -> ElasticsearchAsyncSink {
-        ElasticsearchAsyncSink::new(
+    pub fn create_sink(&self) -> ElasticsearchSink {
+        ElasticsearchSink::new(
             self.name.clone(),
             Arc::clone(&self.config),
             self.client.clone(),
@@ -873,7 +873,7 @@ mod tests {
         }
     }
 
-    fn make_test_sink(index: &str) -> ElasticsearchAsyncSink {
+    fn make_test_sink(index: &str) -> ElasticsearchSink {
         let factory = ElasticsearchSinkFactory::new(
             "test".to_string(),
             "http://localhost:9200".to_string(),
@@ -885,7 +885,7 @@ mod tests {
         )
         .expect("factory creation failed");
         let client = reqwest::Client::new();
-        ElasticsearchAsyncSink::new(
+        ElasticsearchSink::new(
             "test".to_string(),
             Arc::clone(&factory.config),
             client,
@@ -929,7 +929,7 @@ mod tests {
     #[test]
     fn parse_bulk_response_success() {
         let response = br#"{"took":5,"errors":false,"items":[{"index":{"_id":"1","status":201}}]}"#;
-        ElasticsearchAsyncSink::parse_bulk_response(response).expect("should not error on success");
+        ElasticsearchSink::parse_bulk_response(response).expect("should not error on success");
     }
 
     #[test]
@@ -942,7 +942,7 @@ mod tests {
                 {"index":{"error":{"type":"mapper_parsing_exception","reason":"failed to parse"},"status":400}}
             ]
         }"#;
-        let err = ElasticsearchAsyncSink::parse_bulk_response(response)
+        let err = ElasticsearchSink::parse_bulk_response(response)
             .expect_err("should error on bulk failure");
         assert!(err.to_string().contains("mapper_parsing_exception"));
     }
@@ -1051,21 +1051,21 @@ mod tests {
     #[test]
     fn parse_bulk_response_empty_items_array() {
         let response = br#"{"took":0,"errors":false,"items":[]}"#;
-        ElasticsearchAsyncSink::parse_bulk_response(response).expect("empty items should succeed");
+        ElasticsearchSink::parse_bulk_response(response).expect("empty items should succeed");
     }
 
     #[test]
     fn parse_bulk_response_malformed_json_without_errors_true_is_ok() {
         // The implementation uses fast-path memchr for "errors":true.
         // Malformed JSON that doesn't contain that string is treated as success.
-        ElasticsearchAsyncSink::parse_bulk_response(b"not valid json")
+        ElasticsearchSink::parse_bulk_response(b"not valid json")
             .expect("no errors:true → treated as ok");
     }
 
     #[test]
     fn parse_bulk_response_malformed_json_after_errors_true_returns_err() {
         // If "errors":true is present but the full JSON parse fails, return an error.
-        ElasticsearchAsyncSink::parse_bulk_response(b"\"errors\":true {{{malformed")
+        ElasticsearchSink::parse_bulk_response(b"\"errors\":true {{{malformed")
             .expect_err("malformed JSON after errors:true should error");
     }
 
@@ -1073,7 +1073,7 @@ mod tests {
     fn parse_bulk_response_errors_false_does_not_error() {
         // errors:false means success even if items have non-200 status
         let response = br#"{"took":1,"errors":false,"items":[{"index":{"_id":"1","status":200}}]}"#;
-        ElasticsearchAsyncSink::parse_bulk_response(response).expect("errors:false must succeed");
+        ElasticsearchSink::parse_bulk_response(response).expect("errors:false must succeed");
     }
 }
 
@@ -1101,7 +1101,7 @@ mod snapshot_tests {
         }
     }
 
-    fn make_test_sink() -> ElasticsearchAsyncSink {
+    fn make_test_sink() -> ElasticsearchSink {
         let factory = ElasticsearchSinkFactory::new(
             "test".to_string(),
             "http://localhost:9200".to_string(),
@@ -1113,7 +1113,7 @@ mod snapshot_tests {
         )
         .expect("factory creation failed");
         let client = reqwest::Client::new();
-        ElasticsearchAsyncSink::new(
+        ElasticsearchSink::new(
             "test".to_string(),
             Arc::clone(&factory.config),
             client,

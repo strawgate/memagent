@@ -1,5 +1,5 @@
 input:
   type: generator
 output:
-  type: tcp_out
+  type: tcp
   endpoint: 127.0.0.1:15140

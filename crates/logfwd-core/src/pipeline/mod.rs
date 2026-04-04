@@ -31,7 +31,7 @@ mod registry;
 pub use batch::{AckReceipt, BatchId, BatchTicket, Queued, Sending, SourceId};
 
 // Pipeline lifecycle types
-pub use lifecycle::{CommitAdvance, Draining, PipelineMachine, Running, Starting, Stopped};
+pub use lifecycle::{CheckpointAdvance, Draining, PipelineMachine, Running, Starting, Stopped};
 
 // Source registry types
 pub use registry::{SourceEntry, SourceRegistry, SourceState};

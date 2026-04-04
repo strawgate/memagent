@@ -11,7 +11,7 @@
 
 use crate::diagnostics::ComponentStats;
 use crate::filter_hints::FilterHints;
-use crate::format::FormatProcessor;
+use crate::format::FormatDecoder;
 use crate::input::{InputEvent, InputSource};
 use crate::tail::ByteOffset;
 use logfwd_core::checkpoint_tracker::CheckpointTracker;
@@ -34,7 +34,7 @@ struct SourceState {
     /// Partial-line bytes after the last newline.
     remainder: Vec<u8>,
     /// Per-source format processor (CRI aggregator state is source-scoped).
-    format: FormatProcessor,
+    format: FormatDecoder,
     /// Kani-proven checkpoint offset tracker. Tracks the relationship
     /// between file read position and the last complete newline boundary.
     tracker: CheckpointTracker,
@@ -54,7 +54,7 @@ struct SourceState {
 pub struct FramedInput {
     inner: Box<dyn InputSource>,
     /// Template format processor — cloned per-source on first data arrival.
-    format_template: FormatProcessor,
+    format_template: FormatDecoder,
     /// Per-source state: remainder, format processor, checkpoint tracker.
     sources: HashMap<Option<SourceId>, SourceState>,
     out_buf: Vec<u8>,
@@ -67,7 +67,7 @@ pub struct FramedInput {
 impl FramedInput {
     pub fn new(
         inner: Box<dyn InputSource>,
-        format: FormatProcessor,
+        format: FormatDecoder,
         stats: Arc<ComponentStats>,
     ) -> Self {
         Self {
@@ -407,7 +407,7 @@ mod tests {
         let source = MockSource::from_chunks(vec![b"line1\nline2\n"]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             stats,
         );
 
@@ -421,7 +421,7 @@ mod tests {
         let source = MockSource::from_chunks(vec![b"hello\nwor", b"ld\n"]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             stats,
         );
 
@@ -440,7 +440,7 @@ mod tests {
         let source = MockSource::from_chunks(vec![b"partial", b"more\n"]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             Arc::clone(&stats),
         );
 
@@ -461,7 +461,7 @@ mod tests {
         let source = MockSource::from_chunks(vec![&big, b"\n"]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             Arc::clone(&stats),
         );
 
@@ -499,7 +499,7 @@ mod tests {
         let source = MockSource::from_chunks(vec![&chunk, b"\n"]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             Arc::clone(&stats),
         );
 
@@ -547,7 +547,7 @@ mod tests {
         ]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             stats,
         );
 
@@ -574,7 +574,7 @@ mod tests {
         let source = MockSource::from_chunks(vec![input.as_slice()]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::cri(2 * 1024 * 1024, Arc::clone(&stats)),
+            FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats)),
             stats,
         );
 
@@ -594,7 +594,7 @@ mod tests {
         let source_full = MockSource::from_chunks(vec![full_input.as_slice()]);
         let mut framed_full = FramedInput::new(
             Box::new(source_full),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             Arc::clone(&stats),
         );
         let reference = collect_data(framed_full.poll().unwrap());
@@ -607,7 +607,7 @@ mod tests {
             let source = MockSource::from_chunks(vec![chunk1, chunk2]);
             let mut framed = FramedInput::new(
                 Box::new(source),
-                FormatProcessor::passthrough(Arc::clone(&stats2)),
+                FormatDecoder::passthrough(Arc::clone(&stats2)),
                 stats2,
             );
 
@@ -636,7 +636,7 @@ mod tests {
         ]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(stats.clone()),
+            FormatDecoder::passthrough(stats.clone()),
             stats,
         );
 
@@ -663,7 +663,7 @@ mod tests {
         ]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(stats.clone()),
+            FormatDecoder::passthrough(stats.clone()),
             stats,
         );
 
@@ -689,7 +689,7 @@ mod tests {
         ]);
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(stats.clone()),
+            FormatDecoder::passthrough(stats.clone()),
             stats,
         );
 
@@ -738,7 +738,7 @@ mod tests {
 
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             stats,
         );
 
@@ -793,7 +793,7 @@ mod tests {
 
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             stats,
         );
 
@@ -823,7 +823,7 @@ mod tests {
 
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             stats,
         );
 
@@ -851,7 +851,7 @@ mod tests {
 
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             stats,
         );
 
@@ -897,7 +897,7 @@ mod tests {
 
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::cri(2 * 1024 * 1024, Arc::clone(&stats)),
+            FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats)),
             stats,
         );
 
@@ -948,7 +948,7 @@ mod tests {
 
         let mut framed = FramedInput::new(
             Box::new(source),
-            FormatProcessor::passthrough(Arc::clone(&stats)),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
             stats,
         );
 
