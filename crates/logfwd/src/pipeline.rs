@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use bytes::{Bytes, BytesMut};
+
 use opentelemetry::metrics::Meter;
 use tracing::Instrument;
 
@@ -42,8 +44,8 @@ use tokio_util::sync::CancellationToken;
 enum ChannelMsg {
     /// Data with per-file checkpoint metadata.
     Data {
-        /// Accumulated scanner-ready bytes.
-        bytes: Vec<u8>,
+        /// Accumulated scanner-ready bytes (refcounted).
+        bytes: Bytes,
         /// Per-file (source_id, byte_offset) at time of send.
         checkpoints: Vec<(SourceId, ByteOffset)>,
         /// When the input thread enqueued this message. Used to measure
@@ -61,7 +63,7 @@ struct InputState {
     /// The pipeline receives scanner-ready bytes — it doesn't know about formats.
     source: Box<dyn InputSource>,
     /// Buffer accumulating scanner-ready bytes for batching.
-    buf: Vec<u8>,
+    buf: BytesMut,
     /// Input metrics (used for parse/rotation/truncation observability).
     stats: Arc<ComponentStats>,
 }
@@ -388,7 +390,7 @@ impl Pipeline {
         }
         drop(tx); // Drop our copy so rx.recv() returns None when all inputs exit.
 
-        let mut scan_buf = Vec::with_capacity(self.batch_target_bytes);
+        let mut scan_buf = BytesMut::with_capacity(self.batch_target_bytes);
         let mut batch_checkpoints: HashMap<SourceId, ByteOffset> = HashMap::new();
         // Oldest queued_at in the current accumulating batch — reset after each flush.
         let mut batch_queued_at: Option<Instant> = None;
@@ -552,7 +554,7 @@ impl Pipeline {
     )]
     async fn flush_batch(
         &mut self,
-        scan_buf: &mut Vec<u8>,
+        scan_buf: &mut BytesMut,
         batch_checkpoints: &mut HashMap<SourceId, ByteOffset>,
         flush_reason: &'static str,
         queued_at: Option<Instant>,
@@ -566,11 +568,9 @@ impl Pipeline {
 
         let checkpoints = std::mem::take(batch_checkpoints);
 
-        // Swap in a pre-allocated buffer to avoid losing the capacity
-        // of the original scan_buf (which was created with
-        // Vec::with_capacity(batch_target_bytes)).
-        let mut combined = Vec::with_capacity(self.batch_target_bytes);
-        std::mem::swap(scan_buf, &mut combined);
+        // Split off accumulated data. BytesMut::split retains the allocation
+        // for the next batch; freeze() produces immutable Bytes for the scanner.
+        let combined = scan_buf.split().freeze();
 
         // Record batch-level attributes now that we know the input size.
         let span = tracing::Span::current();
@@ -599,7 +599,7 @@ impl Pipeline {
             let scan_span =
                 tracing::info_span!("scan", pipeline = %self.name, rows = tracing::field::Empty);
             let _entered = scan_span.enter();
-            let b = match tokio::task::block_in_place(|| self.scanner.scan(combined.into())) {
+            let b = match tokio::task::block_in_place(|| self.scanner.scan(combined)) {
                 Ok(b) => b,
                 Err(e) => {
                     // Queued tickets dropped here — safe, not tracked by machine.
@@ -856,8 +856,7 @@ fn input_poll_loop(
         let should_send =
             input.buf.len() >= batch_target_bytes || (!input.buf.is_empty() && timeout_elapsed);
         if should_send {
-            let mut data = Vec::with_capacity(batch_target_bytes);
-            std::mem::swap(&mut input.buf, &mut data);
+            let data = input.buf.split().freeze();
 
             // Snapshot file offsets (hot path — no PathBuf allocation).
             let checkpoints = input.source.checkpoint_data();
@@ -876,7 +875,7 @@ fn input_poll_loop(
 
     // Drain any remaining buffered data on shutdown.
     if !input.buf.is_empty() {
-        let data = std::mem::take(&mut input.buf);
+        let data = input.buf.split().freeze();
         let checkpoints = input.source.checkpoint_data();
         let msg = ChannelMsg::Data {
             bytes: data,
@@ -1056,7 +1055,7 @@ fn build_input_state(
 
     Ok(InputState {
         source: Box::new(framed),
-        buf: Vec::with_capacity(buf_cap),
+        buf: BytesMut::with_capacity(buf_cap),
         stats,
     })
 }
@@ -1598,7 +1597,7 @@ output:
 
         // Fill the channel (capacity=1).
         tx.try_send(ChannelMsg::Data {
-            bytes: vec![1],
+            bytes: Bytes::from_static(&[1]),
             checkpoints: vec![],
             queued_at: Instant::now(),
         })
@@ -1612,7 +1611,7 @@ output:
                 &tx2,
                 &metrics2,
                 ChannelMsg::Data {
-                    bytes: vec![2],
+                    bytes: Bytes::from_static(&[2]),
                     checkpoints: vec![],
                     queued_at: Instant::now(),
                 },
@@ -2498,7 +2497,7 @@ output:
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMsg>(4);
 
         tx.try_send(ChannelMsg::Data {
-            bytes: b"test\n".to_vec(),
+            bytes: Bytes::from_static(b"test\n"),
             checkpoints: vec![(SourceId(42), ByteOffset(1000))],
             queued_at: Instant::now(),
         })
