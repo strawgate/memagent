@@ -95,8 +95,8 @@ types intact.
 | Column | Description |
 |---|---|
 | `_raw` | The original raw byte line (unparsed) |
-| `_file_str` | The absolute path of the file being tailed |
-| `_time` | The internal timestamp assigned to the log line |
+| `_timestamp` | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only) |
+| `_stream` | CRI stream name — `stdout` or `stderr` (CRI inputs only) |
 
 ## Schema Stability
 
@@ -126,7 +126,7 @@ Per-batch fidelity (C1) is implemented today — within a single batch the
 scanner preserves every observed type faithfully.
 
 Full cross-batch schema stability (C3) is **not yet implemented**. It is
-tracked in [#625](https://github.com/logfwd/logfwd/issues/625) and will
+tracked in [#625](https://github.com/strawgate/memagent/issues/625) and will
 require a `TableProvider` approach that advertises referenced columns as
 stable `Utf8` and rewrites `CAST(status AS BIGINT)` to read the struct's
 `int` child directly.
