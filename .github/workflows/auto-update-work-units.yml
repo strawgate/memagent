@@ -50,6 +50,7 @@ jobs:
                   typeof l === 'string' ? l : l.name
                 );
                 const isWorkUnit = labels.includes('work-unit');
+                if (!isWorkUnit) continue;
 
                 // Match unchecked checkboxes that reference this issue number.
                 // Handles patterns like "- [ ] #123", "- [ ] #123 fixed", "- [ ] #123 done"
