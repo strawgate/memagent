@@ -619,11 +619,8 @@ mod tests {
             ])),
             Arc::new(trace_id_builder.finish()),
             Arc::new(span_id_builder.finish()),
-            Arc::new(arrow::array::UInt32Array::from(vec![
-                None as Option<u32>,
-                None,
-            ])),
-            Arc::new(arrow::array::UInt32Array::from(vec![Some(0u32), Some(0)])),
+            Arc::new(UInt32Array::from(vec![None as Option<u32>, None])),
+            Arc::new(UInt32Array::from(vec![Some(0u32), Some(0)])),
         ];
 
         RecordBatch::try_new(schema, columns).expect("logs batch")
