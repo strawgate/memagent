@@ -1,9 +1,11 @@
 //! Output sink trait and implementations for serializing Arrow RecordBatches
 //! to various formats: stdout JSON/text, JSON lines over HTTP, OTLP protobuf.
 
+mod arrow_ipc_sink;
 mod fanout;
 mod json_lines;
 mod null;
+mod otap_sink;
 mod otlp_sink;
 pub mod sink;
 mod stdout;
@@ -16,6 +18,7 @@ mod loki;
 #[allow(dead_code)]
 mod parquet;
 
+pub use arrow_ipc_sink::{ArrowIpcSinkFactory, deserialize_ipc, serialize_ipc};
 pub use elasticsearch::{
     ElasticsearchAsyncSink, ElasticsearchRequestMode, ElasticsearchSinkFactory,
 };
@@ -23,6 +26,10 @@ pub use fanout::{FanOut, FanOutError};
 pub use json_lines::JsonLinesSink;
 pub use loki::{LokiAsyncSink, LokiSinkFactory};
 pub use null::NullSink;
+pub use otap_sink::{
+    ArrowPayloadType, BatchStatus, DecodedPayload, OtapSinkFactory, StatusCode,
+    decode_batch_arrow_records, decode_batch_status, encode_batch_arrow_records,
+};
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
 pub use sink::{OnceAsyncFactory, SendResult, Sink, SinkFactory, SyncSinkAdapter};
 use stdout::*;
@@ -740,6 +747,30 @@ pub fn build_sink_factory(
                 stats,
             )
             .map_err(|e| format!("output '{name}': loki factory: {e}"))?;
+            Ok(Arc::new(factory))
+        }
+        OutputType::ArrowIpc => {
+            let endpoint = cfg
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| format!("output '{name}': arrow_ipc requires 'endpoint'"))?;
+            let compression = match cfg.compression.as_deref() {
+                Some("zstd") => Compression::Zstd,
+                Some(other) => {
+                    return Err(format!(
+                        "output '{name}': arrow_ipc does not support '{other}' compression (use 'zstd' or omit)"
+                    ));
+                }
+                None => Compression::None,
+            };
+            let factory = ArrowIpcSinkFactory::new(
+                name.to_string(),
+                endpoint.clone(),
+                compression,
+                auth_headers,
+                stats,
+            )
+            .map_err(|e| format!("output '{name}': arrow_ipc factory: {e}"))?;
             Ok(Arc::new(factory))
         }
         _ => {

@@ -10,6 +10,7 @@ doctest = false
 
 [dependencies]
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
+logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 arrow = { workspace = true }
 crossbeam-channel = "0.5"
 csv = "1"

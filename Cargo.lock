@@ -2374,6 +2374,7 @@ dependencies = [
  "gethostname",
  "glob",
  "libc",
+ "logfwd-arrow",
  "logfwd-core",
  "memchr",
  "notify",

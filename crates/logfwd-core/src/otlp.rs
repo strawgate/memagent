@@ -186,6 +186,77 @@ pub fn encode_fixed32(buf: &mut Vec<u8>, field_number: u32, value: u32) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 
+// --- Protobuf wire format decode helpers ---
+
+/// Decode a varint from `buf` starting at `pos`.
+///
+/// Returns `(value, new_pos)` or an error string if the input is truncated
+/// or the varint exceeds 10 bytes.
+pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static str> {
+    let mut value: u64 = 0;
+    let mut shift: u32 = 0;
+    let mut i = pos;
+    loop {
+        if i >= buf.len() {
+            return Err("varint: unexpected end of input");
+        }
+        let byte = buf[i];
+        i += 1;
+        value |= ((byte & 0x7F) as u64) << shift;
+        if byte & 0x80 == 0 {
+            return Ok((value, i));
+        }
+        shift += 7;
+        if shift >= 64 {
+            return Err("varint: too many bytes");
+        }
+    }
+}
+
+/// Decode a protobuf tag into `(field_number, wire_type, new_pos)`.
+pub fn decode_tag(buf: &[u8], pos: usize) -> Result<(u32, u8, usize), &'static str> {
+    let (tag, new_pos) = decode_varint(buf, pos)?;
+    let field_number = (tag >> 3) as u32;
+    let wire_type = (tag & 0x07) as u8;
+    Ok((field_number, wire_type, new_pos))
+}
+
+/// Skip a protobuf field value based on its wire type. Returns the new
+/// position after the field value.
+pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'static str> {
+    match wire_type {
+        0 => {
+            // Varint.
+            let (_, new_pos) = decode_varint(buf, pos)?;
+            Ok(new_pos)
+        }
+        1 => {
+            // 64-bit fixed.
+            if pos + 8 > buf.len() {
+                return Err("skip: truncated fixed64");
+            }
+            Ok(pos + 8)
+        }
+        2 => {
+            // Length-delimited.
+            let (len, new_pos) = decode_varint(buf, pos)?;
+            let end = new_pos + len as usize;
+            if end > buf.len() {
+                return Err("skip: length-delimited overflow");
+            }
+            Ok(end)
+        }
+        5 => {
+            // 32-bit fixed.
+            if pos + 4 > buf.len() {
+                return Err("skip: truncated fixed32");
+            }
+            Ok(pos + 4)
+        }
+        _ => Err("skip: unsupported wire type"),
+    }
+}
+
 /// Decode a hex-encoded byte slice into `out`.
 ///
 /// Returns `true` when `hex_bytes.len() == out.len() * 2` and every character
