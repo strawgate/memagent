@@ -153,8 +153,8 @@ output:
 // ---------------------------------------------------------------------------
 
 /// Write ten JSON lines (five ERROR, five INFO), run a pipeline whose SQL
-/// transform filters to ERROR rows only, and assert that `transform_out`
-/// reflects the reduction.
+/// transform filters to ERROR rows only, and assert that the output stats
+/// reflect the reduction.
 #[test]
 fn test_sql_transform_filters_rows() {
     let dir = tempfile::tempdir().unwrap();
@@ -192,11 +192,14 @@ output:
         .transform_in
         .lines_total
         .load(Ordering::Relaxed);
+    // lines_out is now derived from the output sink's stats (single increment
+    // path: each sink calls inc_lines once on success).
     let lines_out = pipeline
         .metrics()
-        .transform_out
-        .lines_total
-        .load(Ordering::Relaxed);
+        .outputs
+        .first()
+        .map(|(_, _, s)| s.lines_total.load(Ordering::Relaxed))
+        .unwrap_or(0);
 
     assert_eq!(
         lines_in, 10,

@@ -616,9 +616,6 @@ impl Pipeline {
             }
         };
         let transform_elapsed = t1.elapsed();
-        self.metrics
-            .transform_out
-            .inc_lines(result.num_rows() as u64);
 
         // Handle zero-row transform results (SQL WHERE filtered all rows).
         // Still ack — data was processed, just not forwarded.
