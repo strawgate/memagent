@@ -6,6 +6,7 @@
 
 pub mod conflict_schema;
 pub mod scanner;
+pub mod star_schema;
 pub mod storage_builder;
 pub mod streaming_builder;
 
