@@ -14,7 +14,7 @@
  * 1. SAFETY (normal path, no ForceStop):
  *    Comment out ForceStop in PipelineMachine.tla Next relation.
  *    Check: TypeOK, NoDoubleComplete, DrainCompleteness,
- *           CheckpointOrderingInvariant, CommittedNeverAheadOfAcked
+ *           CheckpointOrderingInvariant, CommittedNeverAheadOfCreated
  *    Use: MCFast constants (2 sources, 3 batches) — < 30s
  *
  * 2. LIVENESS (normal path, no ForceStop):

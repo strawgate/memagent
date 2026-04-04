@@ -103,7 +103,6 @@ TypeOK ==
         /\ acked[s]     \subseteq created[s]
         /\ in_flight[s] \cap acked[s] = {}
         /\ committed[s] \in 0..MaxBatchesPerSource
-        /\ committed[s] <= Cardinality(acked[s])
 
 (* ---------------------------------------------------------------------------
  * Initial state
@@ -314,9 +313,11 @@ CheckpointOrderingInvariant ==
                     /\ i \in acked[s]
                     /\ i \notin in_flight[s]
 
-\* committed[s] never exceeds the count of acked batches.
-CommittedNeverAheadOfAcked ==
-    \A s \in Sources : committed[s] <= Cardinality(acked[s])
+\* committed[s] never exceeds the highest created batch ID.
+\* (It can exceed Cardinality(acked[s]) when some batch IDs were created
+\* but never sent — skipped batches don't block checkpoint advancement.)
+CommittedNeverAheadOfCreated ==
+    \A s \in Sources : committed[s] <= Cardinality(created[s])
 
 \* Structural invariants (catch model misconfiguration).
 InFlightImpliesCreated ==
