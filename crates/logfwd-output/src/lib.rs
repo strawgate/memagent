@@ -5,6 +5,7 @@ mod arrow_ipc_sink;
 mod fanout;
 mod json_lines;
 mod null;
+mod otap_sink;
 mod otlp_sink;
 pub mod sink;
 mod stdout;
@@ -25,6 +26,10 @@ pub use fanout::{FanOut, FanOutError};
 pub use json_lines::JsonLinesSink;
 pub use loki::{LokiAsyncSink, LokiSinkFactory};
 pub use null::NullSink;
+pub use otap_sink::{
+    ArrowPayloadType, BatchStatus, DecodedPayload, OtapSinkFactory, StatusCode,
+    decode_batch_arrow_records, decode_batch_status, encode_batch_arrow_records,
+};
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
 pub use sink::{OnceAsyncFactory, SendResult, Sink, SinkFactory, SyncSinkAdapter};
 use stdout::*;
