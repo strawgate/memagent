@@ -28,6 +28,11 @@ struct StoredBitmasks<'a> {
 /// structural positions are extracted from 64-byte block bitmasks
 /// consumed on the fly.
 ///
+/// JSON escape sequences in string values (`\"`, `\\`, `\/`, `\b`, `\f`,
+/// `\n`, `\r`, `\t`, `\uXXXX`) are decoded to their UTF-8 representation
+/// during extraction. This prevents double-escaping when values are
+/// re-serialized downstream (see issue #410).
+///
 /// # Preconditions
 /// - The caller must have already invoked `begin_batch` on the builder before
 ///   this call (see [`ScanBuilder`] for the initialization contract).
@@ -103,9 +108,13 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
         close_bracket: &close_bracket,
     };
 
+    // Scratch buffer for decoding JSON escape sequences in string values.
+    // Allocated once, reused across lines via clear() — no per-line allocation.
+    let mut scratch = alloc::vec::Vec::new();
+
     // Phase 2: Scan each line using stored bitmasks for quote/nested lookups.
     for (start, end) in line_ranges {
-        scan_line(buf, start, end, &bitmasks, config, builder);
+        scan_line(buf, start, end, &bitmasks, config, builder, &mut scratch);
     }
 }
 
@@ -117,6 +126,7 @@ fn scan_line<B: ScanBuilder>(
     blocks: &StoredBitmasks<'_>,
     config: &ScanConfig,
     builder: &mut B,
+    scratch: &mut alloc::vec::Vec<u8>,
 ) {
     builder.begin_row();
     if config.keep_raw {
@@ -166,7 +176,7 @@ fn scan_line<B: ScanBuilder>(
         let wanted = config.is_wanted(key);
         match buf[pos] {
             b'"' => {
-                // String value
+                // String value — decode JSON escape sequences (#410)
                 let val_start = pos + 1;
                 let val_end = match next_quote(pos + 1, end, blocks) {
                     Some(p) => p,
@@ -174,7 +184,13 @@ fn scan_line<B: ScanBuilder>(
                 };
                 if wanted {
                     let idx = builder.resolve_field(key);
-                    builder.append_str_by_idx(idx, &buf[val_start..val_end]);
+                    let raw = &buf[val_start..val_end];
+                    if memchr::memchr(b'\\', raw).is_some() {
+                        decode_json_escapes(raw, scratch);
+                        builder.append_decoded_str_by_idx(idx, scratch);
+                    } else {
+                        builder.append_str_by_idx(idx, raw);
+                    }
                 }
                 pos = val_end + 1;
             }
@@ -395,6 +411,151 @@ fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// JSON string escape decoding (#410)
+// ---------------------------------------------------------------------------
+
+/// Decode JSON escape sequences from `input` into `out`.
+///
+/// Handles all RFC 8259 §7 escapes: `\"` `\\` `\/` `\b` `\f` `\n` `\r` `\t`
+/// and `\uXXXX` (including surrogate pairs for supplementary code points).
+///
+/// Invalid or truncated escape sequences are passed through unchanged
+/// to avoid data loss on malformed input.
+fn decode_json_escapes(input: &[u8], out: &mut alloc::vec::Vec<u8>) {
+    out.clear();
+    // Decoded output is always ≤ input length (escapes expand, never shrink).
+    out.reserve(input.len());
+
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] != b'\\' || i + 1 >= input.len() {
+            out.push(input[i]);
+            i += 1;
+            continue;
+        }
+
+        match input[i + 1] {
+            b'"' => {
+                out.push(b'"');
+                i += 2;
+            }
+            b'\\' => {
+                out.push(b'\\');
+                i += 2;
+            }
+            b'/' => {
+                out.push(b'/');
+                i += 2;
+            }
+            b'b' => {
+                out.push(0x08);
+                i += 2;
+            }
+            b'f' => {
+                out.push(0x0C);
+                i += 2;
+            }
+            b'n' => {
+                out.push(b'\n');
+                i += 2;
+            }
+            b'r' => {
+                out.push(b'\r');
+                i += 2;
+            }
+            b't' => {
+                out.push(b'\t');
+                i += 2;
+            }
+            b'u' => {
+                i = decode_unicode_escape(input, i, out);
+            }
+            _ => {
+                // Unknown escape — pass through unchanged
+                out.push(b'\\');
+                i += 1;
+            }
+        }
+    }
+}
+
+/// Decode a `\uXXXX` escape (possibly a surrogate pair) starting at `pos`.
+/// Appends the decoded UTF-8 bytes to `out` and returns the new position.
+fn decode_unicode_escape(input: &[u8], pos: usize, out: &mut alloc::vec::Vec<u8>) -> usize {
+    // Need at least 6 bytes: \uXXXX
+    if pos + 6 > input.len() {
+        out.push(b'\\');
+        return pos + 1;
+    }
+    let cp = match parse_hex4(&input[pos + 2..pos + 6]) {
+        Some(v) => v,
+        None => {
+            out.push(b'\\');
+            return pos + 1;
+        }
+    };
+
+    // High surrogate — expect a following \uXXXX low surrogate
+    if (0xD800..=0xDBFF).contains(&cp) {
+        if pos + 12 <= input.len() && input[pos + 6] == b'\\' && input[pos + 7] == b'u' {
+            if let Some(lo) = parse_hex4(&input[pos + 8..pos + 12]) {
+                if (0xDC00..=0xDFFF).contains(&lo) {
+                    let full = 0x10000 + ((cp as u32 - 0xD800) << 10) + (lo as u32 - 0xDC00);
+                    if let Some(c) = char::from_u32(full) {
+                        let mut utf8 = [0u8; 4];
+                        let s = c.encode_utf8(&mut utf8);
+                        out.extend_from_slice(s.as_bytes());
+                        return pos + 12;
+                    }
+                }
+            }
+        }
+        // Unpaired high surrogate — pass through raw
+        out.extend_from_slice(&input[pos..pos + 6]);
+        return pos + 6;
+    }
+
+    // Lone low surrogate — pass through raw
+    if (0xDC00..=0xDFFF).contains(&cp) {
+        out.extend_from_slice(&input[pos..pos + 6]);
+        return pos + 6;
+    }
+
+    // BMP code point
+    if let Some(c) = char::from_u32(cp as u32) {
+        let mut utf8 = [0u8; 4];
+        let s = c.encode_utf8(&mut utf8);
+        out.extend_from_slice(s.as_bytes());
+        pos + 6
+    } else {
+        // Invalid code point — pass through raw
+        out.extend_from_slice(&input[pos..pos + 6]);
+        pos + 6
+    }
+}
+
+/// Parse 4 ASCII hex digits into a `u16`.
+#[inline]
+fn parse_hex4(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    let mut val: u16 = 0;
+    let mut j = 0;
+    while j < 4 {
+        let digit = match bytes[j] {
+            b'0'..=b'9' => bytes[j] - b'0',
+            b'a'..=b'f' => bytes[j] - b'a' + 10,
+            b'A'..=b'F' => bytes[j] - b'A' + 10,
+            _ => return None,
+        };
+        val = (val << 4) | digit as u16;
+        j += 1;
+    }
+    Some(val)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -553,6 +714,7 @@ mod tests {
 
     #[test]
     fn escaped_quotes_in_value() {
+        // After #410 fix: scanner decodes \" to " in string values.
         let buf = br#"{"msg":"said \"hello\""}"#;
         let config = ScanConfig::default();
         let mut builder = TestBuilder::new();
@@ -562,8 +724,177 @@ mod tests {
         let row = &builder.rows[0];
         assert!(
             row.iter()
-                .any(|(k, v)| k == "msg" && v == r#"said \"hello\""#)
+                .any(|(k, v)| k == "msg" && v == r#"said "hello""#)
         );
+    }
+
+    // --- Escape decoding tests (#410) ---
+
+    #[test]
+    fn unicode_escape_u0041() {
+        // \u0041 is 'A' — must be decoded, not double-escaped.
+        let buf = br#"{"a":"\u0041"}"#;
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(row.iter().any(|(k, v)| k == "a" && v == "A"));
+    }
+
+    #[test]
+    fn unicode_escape_e_acute() {
+        // \u00e9 is 'é' — must be decoded to UTF-8.
+        let buf = br#"{"msg":"caf\u00e9"}"#;
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(row.iter().any(|(k, v)| k == "msg" && v == "café"));
+    }
+
+    #[test]
+    fn unicode_surrogate_pair() {
+        // \uD83D\uDE00 is U+1F600 (😀) — surrogate pair decoded to UTF-8.
+        let buf = br#"{"e":"\uD83D\uDE00"}"#;
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(row.iter().any(|(k, v)| k == "e" && v == "😀"));
+    }
+
+    #[test]
+    fn escape_newline_tab_cr() {
+        let buf = br#"{"a":"line1\nline2\ttab\rret"}"#;
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(
+            row.iter()
+                .any(|(k, v)| k == "a" && v == "line1\nline2\ttab\rret")
+        );
+    }
+
+    #[test]
+    fn escape_backslash() {
+        // \\\\ in raw bytes is two JSON-escaped backslashes → two literal backslashes
+        let buf = b"{\"a\":\"c:\\\\path\\\\file\"}";
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(row.iter().any(|(k, v)| k == "a" && v == "c:\\path\\file"));
+    }
+
+    #[test]
+    fn escape_solidus() {
+        let buf = br#"{"url":"http:\/\/example.com"}"#;
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(
+            row.iter()
+                .any(|(k, v)| k == "url" && v == "http://example.com")
+        );
+    }
+
+    #[test]
+    fn no_escape_passthrough() {
+        // Strings without backslashes pass through unchanged (fast path).
+        let buf = br#"{"x":"hello world"}"#;
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(row.iter().any(|(k, v)| k == "x" && v == "hello world"));
+    }
+
+    #[test]
+    fn mixed_escapes_and_plain_text() {
+        let buf = br#"{"m":"start\n\tmiddle \u0041 end"}"#;
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(
+            row.iter()
+                .any(|(k, v)| k == "m" && v == "start\n\tmiddle A end")
+        );
+    }
+
+    #[test]
+    fn decode_json_escapes_unit() {
+        let mut out = Vec::new();
+
+        // Simple escapes
+        decode_json_escapes(br#"hello"#, &mut out);
+        assert_eq!(&out, b"hello");
+
+        decode_json_escapes(br#"say \"hi\""#, &mut out);
+        assert_eq!(&out, b"say \"hi\"");
+
+        decode_json_escapes(br#"a\\b"#, &mut out);
+        assert_eq!(&out, b"a\\b");
+
+        decode_json_escapes(br#"a\/b"#, &mut out);
+        assert_eq!(&out, b"a/b");
+
+        decode_json_escapes(br#"a\nb\tc"#, &mut out);
+        assert_eq!(&out, b"a\nb\tc");
+
+        decode_json_escapes(br#"\b\f"#, &mut out);
+        assert_eq!(&out, &[0x08, 0x0C]);
+
+        // Unicode escape
+        decode_json_escapes(br#"\u0041"#, &mut out);
+        assert_eq!(&out, b"A");
+
+        // Multi-byte unicode
+        decode_json_escapes(br#"\u00e9"#, &mut out);
+        assert_eq!(&out, "é".as_bytes());
+
+        // Surrogate pair
+        decode_json_escapes(br#"\uD83D\uDE00"#, &mut out);
+        assert_eq!(&out, "😀".as_bytes());
+
+        // Truncated escape at end — pass through
+        decode_json_escapes(br#"abc\"#, &mut out);
+        assert_eq!(&out, br#"abc\"#);
+
+        // Unknown escape letter — pass through backslash
+        decode_json_escapes(br#"\x"#, &mut out);
+        assert_eq!(&out, br#"\x"#);
+    }
+
+    #[test]
+    fn parse_hex4_unit() {
+        assert_eq!(parse_hex4(b"0041"), Some(0x0041));
+        assert_eq!(parse_hex4(b"00e9"), Some(0x00e9));
+        assert_eq!(parse_hex4(b"D83D"), Some(0xD83D));
+        assert_eq!(parse_hex4(b"DE00"), Some(0xDE00));
+        assert_eq!(parse_hex4(b"FFFF"), Some(0xFFFF));
+        assert_eq!(parse_hex4(b"0000"), Some(0x0000));
+        assert_eq!(parse_hex4(b"abcf"), Some(0xABCF));
+        assert_eq!(parse_hex4(b"ZZZZ"), None);
+        assert_eq!(parse_hex4(b"00g0"), None);
     }
 
     #[test]

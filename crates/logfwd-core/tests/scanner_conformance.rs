@@ -132,17 +132,14 @@ fn assert_values_correct(input: &[u8]) {
                 });
                 if !arr.is_null(row) {
                     let actual = arr.value(row);
-                    // Our scanner preserves escape sequences (raw bytes),
-                    // sonic-rs unescapes them. For strings without escapes
-                    // the values must be identical.
-                    if !actual.contains('\\') {
-                        assert_eq!(
-                            actual,
-                            expected,
-                            "String value mismatch at '{key_str}'[{row}].\nExpected: {expected:?}\nActual: {actual:?}\nInput: {:?}",
-                            String::from_utf8_lossy(line)
-                        );
-                    }
+                    // After #410: scanner decodes JSON escape sequences,
+                    // so values match sonic-rs output for all strings.
+                    assert_eq!(
+                        actual,
+                        expected,
+                        "String value mismatch at '{key_str}'[{row}].\nExpected: {expected:?}\nActual: {actual:?}\nInput: {:?}",
+                        String::from_utf8_lossy(line)
+                    );
                 }
             } else if val.is_i64() {
                 let expected = val.as_i64().unwrap();

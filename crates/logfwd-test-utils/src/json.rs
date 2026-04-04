@@ -18,6 +18,11 @@ pub fn arb_json_string() -> impl Strategy<Value = String> {
             Just("\\n".to_string()),
             Just("\\t".to_string()),
             Just("\\r".to_string()),
+            Just("\\/".to_string()),
+            Just("\\b".to_string()),
+            Just("\\f".to_string()),
+            // Unicode escape sequences (\uXXXX) — BMP code points
+            (0x0020u16..0xD800).prop_map(|cp| format!("\\u{cp:04X}")),
         ],
         0..20,
     )

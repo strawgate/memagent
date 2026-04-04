@@ -70,6 +70,10 @@ impl ScanBuilder for StreamingBuilder {
         self.append_str_by_idx(idx, v);
     }
     #[inline(always)]
+    fn append_decoded_str_by_idx(&mut self, idx: usize, v: &[u8]) {
+        self.append_decoded_str_by_idx(idx, v);
+    }
+    #[inline(always)]
     fn append_int_by_idx(&mut self, idx: usize, v: &[u8]) {
         self.append_int_by_idx(idx, v);
     }
