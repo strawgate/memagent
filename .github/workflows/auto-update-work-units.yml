@@ -50,7 +50,7 @@ jobs:
                   typeof l === 'string' ? l : l.name
                 );
                 const isWorkUnit = labels.includes('work-unit');
-                if (!isWorkUnit) continue;
+                if (!isWorkUnit) break;
 
                 // Match unchecked checkboxes that reference this issue number.
                 // Handles patterns like "- [ ] #123", "- [ ] #123 fixed", "- [ ] #123 done"
@@ -83,7 +83,7 @@ jobs:
                 console.log(`Checked #${closedNumber} in issue #${candidate.number}`);
 
                 // If all checkboxes are now checked and this is a work-unit, close it.
-                const unchecked = (updatedBody.match(/- \[ \] /g) || []).length;
+                const unchecked = (updatedBody.match(/- \[ \]( |$)/gm) || []).length;
                 if (isWorkUnit && unchecked === 0 && updatedBody.includes('- [x]')) {
                   await github.rest.issues.createComment({
                     owner, repo,
