@@ -39,12 +39,28 @@ This spec follows the industry-standard two-file pattern used by etcd-io/raft
 
 ```text
 tla/
-  PipelineMachine.tla           — clean algorithm spec, no TLC-specific overrides
-  MCPipelineMachine.tla         — TLC config: symmetry sets, model constants, bounds
-  PipelineMachine.cfg           — safety model (fast, ~50K states)
+  # Lifecycle state machine (ordered ACK, checkpoint ordering, drain guarantee)
+  PipelineMachine.tla           — clean algorithm spec
+  MCPipelineMachine.tla         — TLC config: symmetry sets, model constants
+  PipelineMachine.cfg           — safety model (~50K states)
   PipelineMachine.liveness.cfg  — liveness model (smaller constants, no SYMMETRY)
   PipelineMachine.thorough.cfg  — thorough safety model (3 sources, 4 batches)
-  PipelineMachine.coverage.cfg  — reachability / vacuity guards (kani::cover! equiv)
+  PipelineMachine.coverage.cfg  — reachability / vacuity guards
+
+  # Shutdown coordination (multi-process drain protocol)
+  ShutdownProtocol.tla          — N inputs + channel + consumer + pool
+  MCShutdownProtocol.tla        — TLC config
+  ShutdownProtocol.cfg          — safety model
+  ShutdownProtocol.liveness.cfg — liveness model
+  ShutdownProtocol.coverage.cfg — reachability guards
+
+  # Batching protocol (multi-source, checkpoint merge, reject handling)
+  PipelineBatch.tla             — batch accumulation + flush + ack/reject
+  MCPipelineBatch.tla           — TLC config
+  PipelineBatch.cfg             — safety model
+  PipelineBatch.liveness.cfg    — liveness model
+  PipelineBatch.coverage.cfg    — reachability guards
+
   README.md                     — this file
 ```
 
