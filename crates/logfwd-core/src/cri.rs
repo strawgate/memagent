@@ -635,18 +635,22 @@ mod verification {
     /// Prove write_json_line with prefix correctly injects after opening brace,
     /// and wraps non-JSON messages as {"_raw":"..."}.
     ///
-    /// Vec::with_capacity pre-allocates enough for the worst case (8-byte input
-    /// all control chars → 60-byte escaped output) so CBMC sees only one
-    /// allocation path rather than the 7 realloc steps of Vec::new().
+    /// Input: 4-byte msg + 4-byte prefix = 8 symbolic bytes. Reduced from 8+4
+    /// to keep symex under CI timeout while still covering all escape paths.
+    /// Vec::with_capacity pre-allocates to avoid realloc VCC explosion.
     #[kani::proof]
-    #[kani::unwind(10)]
-    #[kani::solver(kissat)] // json_escape_bytes loop × 12 symbolic bytes: kissat outperforms cadical
+    #[kani::unwind(6)] // 4 iterations + 2 margin
+    #[kani::solver(kissat)] // json_escape_bytes loop × 8 symbolic bytes: kissat outperforms cadical
     fn verify_write_json_line_prefix_injection() {
-        let msg: [u8; 8] = kani::any();
+        let msg: [u8; 4] = kani::any();
         let prefix: [u8; 4] = kani::any();
-        // Pre-allocate: { (1) + prefix (4) + msg[1..] (7) + \n (1) = 13 bytes JSON path;
+        // Pre-allocate: { (1) + prefix (4) + msg[1..] (3) + \n (1) = 9 bytes JSON path;
         // or {"_raw":"..."} path up to 64 bytes. Capacity 64 avoids all reallocs.
         let mut out = Vec::with_capacity(64);
+
+        // Guard vacuity: ensure both paths are reachable
+        kani::cover!(msg[0] == b'{', "JSON path reachable");
+        kani::cover!(msg[0] != b'{', "non-JSON path reachable");
 
         write_json_line(&msg, Some(&prefix), &mut out);
 
@@ -654,9 +658,9 @@ mod verification {
             // Output should be: { + prefix + msg[1..] + \n
             assert_eq!(out[0], b'{');
             assert_eq!(&out[1..5], &prefix);
-            assert_eq!(&out[5..12], &msg[1..]);
-            assert_eq!(out[12], b'\n');
-            assert_eq!(out.len(), 13);
+            assert_eq!(&out[5..8], &msg[1..]);
+            assert_eq!(out[8], b'\n');
+            assert_eq!(out.len(), 9);
         } else {
             // Non-JSON: wrapped as {"_raw":"..."}\n — ends with \n
             assert_eq!(out[out.len() - 1], b'\n');
@@ -667,16 +671,20 @@ mod verification {
 
     /// Prove write_json_line without prefix passes JSON through and wraps plain text.
     ///
-    /// unwind(10) covers the 8-iteration json_escape_bytes loop with margin.
-    /// Vec::with_capacity(64) pre-allocates for the worst-case 60-byte output
-    /// (8 control chars × 6 bytes each + prefix/suffix), eliminating the 7
-    /// Vec realloc paths (0→1→2→4→8→16→32→64) that caused the 28-minute timeout.
+    /// Input: 4 symbolic bytes. Reduced from 8 to keep symex under CI timeout
+    /// (8 bytes produced 45K VCCs from the json_escape_bytes match arms).
+    /// 4 bytes still covers all escape paths and branch combinations.
+    /// Vec::with_capacity(64) pre-allocates to avoid realloc VCC explosion.
     #[kani::proof]
-    #[kani::unwind(10)]
-    #[kani::solver(kissat)] // json_escape_bytes loop × 8 symbolic bytes: kissat outperforms cadical
+    #[kani::unwind(6)] // 4 iterations + 2 margin
+    #[kani::solver(kissat)] // json_escape_bytes loop × 4 symbolic bytes: kissat outperforms cadical
     fn verify_write_json_line_no_prefix() {
-        let msg: [u8; 8] = kani::any();
+        let msg: [u8; 4] = kani::any();
         let mut out = Vec::with_capacity(64);
+
+        // Guard vacuity: ensure both paths are reachable
+        kani::cover!(msg[0] == b'{', "JSON path reachable");
+        kani::cover!(msg[0] != b'{', "non-JSON path reachable");
 
         write_json_line(&msg, None, &mut out);
 
@@ -685,16 +693,12 @@ mod verification {
 
         if msg[0] == b'{' {
             // JSON message passed through unchanged: msg + \n
-            assert_eq!(out.len(), 9);
+            assert_eq!(out.len(), 5);
             // Check each byte individually to avoid memcmp VCC explosion
             assert_eq!(out[0], msg[0]);
             assert_eq!(out[1], msg[1]);
             assert_eq!(out[2], msg[2]);
             assert_eq!(out[3], msg[3]);
-            assert_eq!(out[4], msg[4]);
-            assert_eq!(out[5], msg[5]);
-            assert_eq!(out[6], msg[6]);
-            assert_eq!(out[7], msg[7]);
         } else {
             // Non-JSON: wrapped as {"_raw":"..."}\n — check prefix byte by byte
             assert_eq!(out[0], b'{');
