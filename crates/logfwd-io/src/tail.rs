@@ -32,6 +32,26 @@ pub struct FileIdentity {
     pub fingerprint: u64,
 }
 
+impl FileIdentity {
+    /// Derive a stable `SourceId` from the compound key (device, inode, fingerprint).
+    ///
+    /// Hashing all three fields prevents collisions between files that share
+    /// the same first N bytes (same fingerprint) but live on different inodes.
+    /// Two files on the same inode+device are the same file, so the fingerprint
+    /// differentiates after inode reuse (e.g., log rotation).
+    pub fn source_id(&self) -> SourceId {
+        // Empty file sentinel: fingerprint 0 means no data to checkpoint.
+        if self.fingerprint == 0 {
+            return SourceId(0);
+        }
+        let mut h = xxhash_rust::xxh64::Xxh64::new(0);
+        h.update(&self.device.to_le_bytes());
+        h.update(&self.inode.to_le_bytes());
+        h.update(&self.fingerprint.to_le_bytes());
+        SourceId(h.digest())
+    }
+}
+
 /// State tracked per tailed file.
 struct TailedFile {
     #[expect(dead_code, reason = "retained for debug logging")]
@@ -695,13 +715,14 @@ impl FileTailer {
         Ok(())
     }
 
-    /// Restore a file offset by SourceId (fingerprint), not path.
+    /// Restore a file offset by SourceId (compound identity), not path.
     ///
-    /// Scans all tailed files for a matching fingerprint. Used for checkpoint
-    /// restore — the checkpoint stores fingerprint + offset, not path.
+    /// Scans all tailed files for a matching compound identity
+    /// (device + inode + fingerprint). Used for checkpoint restore — the
+    /// checkpoint stores source_id + offset, not path.
     pub fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) -> io::Result<()> {
         for tailed in self.files.values_mut() {
-            if SourceId(tailed.identity.fingerprint) == source_id {
+            if tailed.identity.source_id() == source_id {
                 tailed.offset = offset;
                 tailed.file.seek(SeekFrom::Start(offset))?;
                 return Ok(());
@@ -721,11 +742,8 @@ impl FileTailer {
     /// (fingerprint 0).
     pub fn source_id_for_path(&self, path: &Path) -> Option<SourceId> {
         self.files.get(path).and_then(|tailed| {
-            if tailed.identity.fingerprint != 0 {
-                Some(SourceId(tailed.identity.fingerprint))
-            } else {
-                None
-            }
+            let sid = tailed.identity.source_id();
+            if sid == SourceId(0) { None } else { Some(sid) }
         })
     }
 
@@ -737,12 +755,7 @@ impl FileTailer {
         self.files
             .iter()
             .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
-            .map(|(_, tailed)| {
-                (
-                    SourceId(tailed.identity.fingerprint),
-                    ByteOffset(tailed.offset),
-                )
-            })
+            .map(|(_, tailed)| (tailed.identity.source_id(), ByteOffset(tailed.offset)))
             .collect()
     }
 
@@ -754,7 +767,7 @@ impl FileTailer {
         self.files
             .iter()
             .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
-            .map(|(path, tailed)| (SourceId(tailed.identity.fingerprint), path.clone()))
+            .map(|(path, tailed)| (tailed.identity.source_id(), path.clone()))
             .collect()
     }
 }
