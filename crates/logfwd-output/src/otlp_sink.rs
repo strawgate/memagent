@@ -7,9 +7,9 @@ use arrow::record_batch::RecordBatch;
 
 use logfwd_arrow::conflict_schema::normalize_conflict_columns;
 use logfwd_core::otlp::{
-    Severity, bytes_field_size, encode_bytes_field, encode_fixed32, encode_fixed64, encode_tag,
-    encode_varint, encode_varint_field, hex_decode, parse_severity, parse_timestamp_nanos,
-    varint_len,
+    self, Severity, bytes_field_size, encode_bytes_field, encode_fixed32, encode_fixed64,
+    encode_tag, encode_varint, encode_varint_field, hex_decode, parse_severity,
+    parse_timestamp_nanos, varint_len,
 };
 use logfwd_io::diagnostics::ComponentStats;
 use zstd::bulk::Compressor as ZstdCompressor;
@@ -129,65 +129,98 @@ impl OtlpSink {
         }
 
         // Phase 2: compute sizes bottom-up.
-        // ScopeLogs inner = field 1 (InstrumentationScope) + repeated field 2 (LogRecord) entries
+        // ScopeLogs inner = scope (InstrumentationScope) + repeated log_records (LogRecord)
         let instrumentation_scope_inner_size =
-            bytes_field_size(1, SCOPE_NAME.len()) + bytes_field_size(2, SCOPE_VERSION.len());
+            bytes_field_size(otlp::INSTRUMENTATION_SCOPE_NAME, SCOPE_NAME.len())
+                + bytes_field_size(otlp::INSTRUMENTATION_SCOPE_VERSION, SCOPE_VERSION.len());
 
-        let mut scope_logs_inner_size = bytes_field_size(1, instrumentation_scope_inner_size);
+        let mut scope_logs_inner_size =
+            bytes_field_size(otlp::SCOPE_LOGS_SCOPE, instrumentation_scope_inner_size);
         for &(start, end) in &record_ranges {
             let record_len = end - start;
-            // tag for field 2 wire type 2 + varint length + payload
-            scope_logs_inner_size +=
-                varint_len(((2u64) << 3) | 2) + varint_len(record_len as u64) + record_len;
+            scope_logs_inner_size += bytes_field_size(otlp::SCOPE_LOGS_LOG_RECORDS, record_len);
         }
 
-        // ResourceLogs inner = resource attributes (field 1) + scope_logs (field 2)
-        let mut resource_inner_size = bytes_field_size(2, scope_logs_inner_size);
+        // ResourceLogs inner = resource (field 1) + scope_logs (field 2)
+        let mut resource_inner_size =
+            bytes_field_size(otlp::RESOURCE_LOGS_SCOPE_LOGS, scope_logs_inner_size);
 
-        // Encode resource attributes as Resource message (field 1 of ResourceLogs)
+        // Encode resource attributes as Resource message
         let mut resource_msg: Vec<u8> = Vec::new();
         if !metadata.resource_attrs.is_empty() {
             for (k, v) in metadata.resource_attrs.as_ref() {
-                // Resource.attributes is protobuf field 1
-                encode_key_value_string(&mut resource_msg, 1, k.as_bytes(), v.as_bytes());
+                encode_key_value_string(
+                    &mut resource_msg,
+                    otlp::RESOURCE_ATTRIBUTES,
+                    k.as_bytes(),
+                    v.as_bytes(),
+                );
             }
         }
         if !resource_msg.is_empty() {
-            // Resource message field 1 (attributes) — we wrote KeyValues directly.
-            // Wrap in Resource message (field 1 of ResourceLogs).
-            resource_inner_size += bytes_field_size(1, resource_msg.len());
+            resource_inner_size +=
+                bytes_field_size(otlp::RESOURCE_LOGS_RESOURCE, resource_msg.len());
         }
 
-        let request_size = bytes_field_size(1, resource_inner_size);
+        let request_size =
+            bytes_field_size(otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, resource_inner_size);
 
         // Phase 3: write the final protobuf.
         self.encoder_buf.reserve(request_size + 16);
 
-        // ExportLogsServiceRequest.resource_logs (field 1)
-        encode_tag(&mut self.encoder_buf, 1, 2);
+        // ExportLogsServiceRequest.resource_logs
+        encode_tag(
+            &mut self.encoder_buf,
+            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp::WIRE_TYPE_LEN,
+        );
         encode_varint(&mut self.encoder_buf, resource_inner_size as u64);
 
         // Resource (field 1 of ResourceLogs)
         if !resource_msg.is_empty() {
-            encode_bytes_field(&mut self.encoder_buf, 1, &resource_msg);
+            encode_bytes_field(
+                &mut self.encoder_buf,
+                otlp::RESOURCE_LOGS_RESOURCE,
+                &resource_msg,
+            );
         }
 
         // ScopeLogs (field 2 of ResourceLogs)
-        encode_tag(&mut self.encoder_buf, 2, 2);
+        encode_tag(
+            &mut self.encoder_buf,
+            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp::WIRE_TYPE_LEN,
+        );
         encode_varint(&mut self.encoder_buf, scope_logs_inner_size as u64);
 
         // InstrumentationScope (field 1 of ScopeLogs)
-        encode_tag(&mut self.encoder_buf, 1, 2);
+        encode_tag(
+            &mut self.encoder_buf,
+            otlp::SCOPE_LOGS_SCOPE,
+            otlp::WIRE_TYPE_LEN,
+        );
         encode_varint(
             &mut self.encoder_buf,
             instrumentation_scope_inner_size as u64,
         );
-        encode_bytes_field(&mut self.encoder_buf, 1, SCOPE_NAME);
-        encode_bytes_field(&mut self.encoder_buf, 2, SCOPE_VERSION);
+        encode_bytes_field(
+            &mut self.encoder_buf,
+            otlp::INSTRUMENTATION_SCOPE_NAME,
+            SCOPE_NAME,
+        );
+        encode_bytes_field(
+            &mut self.encoder_buf,
+            otlp::INSTRUMENTATION_SCOPE_VERSION,
+            SCOPE_VERSION,
+        );
 
-        // LogRecords (field 2 of ScopeLogs, repeated)
+        // LogRecords (repeated, field 2 of ScopeLogs)
         for &(start, end) in &record_ranges {
-            encode_bytes_field(&mut self.encoder_buf, 2, &records_buf[start..end]);
+            encode_bytes_field(
+                &mut self.encoder_buf,
+                otlp::SCOPE_LOGS_LOG_RECORDS,
+                &records_buf[start..end],
+            );
         }
     }
 }
@@ -490,53 +523,67 @@ fn encode_row_as_log_record(
 
     // --- Write protobuf fields ---
 
-    // field 1: time_unix_nano (fixed64)
+    // LogRecord.time_unix_nano (fixed64)
     if timestamp_ns > 0 {
-        encode_fixed64(buf, 1, timestamp_ns);
+        encode_fixed64(buf, otlp::LOG_RECORD_TIME_UNIX_NANO, timestamp_ns);
     }
 
-    // field 2: severity_number (varint)
+    // LogRecord.severity_number (varint)
     if severity_num as u8 > 0 {
-        encode_varint_field(buf, 2, severity_num as u64);
+        encode_varint_field(buf, otlp::LOG_RECORD_SEVERITY_NUMBER, severity_num as u64);
     }
 
-    // field 3: severity_text (string)
+    // LogRecord.severity_text (string)
     if !severity_text.is_empty() {
-        encode_bytes_field(buf, 3, severity_text);
+        encode_bytes_field(buf, otlp::LOG_RECORD_SEVERITY_TEXT, severity_text);
     }
 
-    // field 5: body (AnyValue { string_value })
+    // LogRecord.body (AnyValue { string_value })
     if !body_bytes.is_empty() {
-        let anyvalue_inner_size = bytes_field_size(1, body_bytes.len());
-        encode_tag(buf, 5, 2);
+        let anyvalue_inner_size = bytes_field_size(otlp::ANY_VALUE_STRING_VALUE, body_bytes.len());
+        encode_tag(buf, otlp::LOG_RECORD_BODY, otlp::WIRE_TYPE_LEN);
         encode_varint(buf, anyvalue_inner_size as u64);
-        encode_bytes_field(buf, 1, body_bytes);
+        encode_bytes_field(buf, otlp::ANY_VALUE_STRING_VALUE, body_bytes);
     }
 
-    // field 6: attributes — pre-resolved attribute columns
+    // LogRecord.attributes — pre-resolved attribute columns
     for (field_name, attr) in &columns.attribute_cols {
         match attr {
             AttrArray::Int(arr) => {
                 if !arr.is_null(row) {
-                    // LogRecord.attributes is protobuf field 6
-                    encode_key_value_int(buf, 6, field_name.as_bytes(), arr.value(row));
+                    encode_key_value_int(
+                        buf,
+                        otlp::LOG_RECORD_ATTRIBUTES,
+                        field_name.as_bytes(),
+                        arr.value(row),
+                    );
                 }
             }
             AttrArray::Float(arr) => {
                 if !arr.is_null(row) {
-                    encode_key_value_double(buf, 6, field_name.as_bytes(), arr.value(row));
+                    encode_key_value_double(
+                        buf,
+                        otlp::LOG_RECORD_ATTRIBUTES,
+                        field_name.as_bytes(),
+                        arr.value(row),
+                    );
                 }
             }
             AttrArray::Bool(arr) => {
                 if !arr.is_null(row) {
-                    encode_key_value_bool(buf, 6, field_name.as_bytes(), arr.value(row));
+                    encode_key_value_bool(
+                        buf,
+                        otlp::LOG_RECORD_ATTRIBUTES,
+                        field_name.as_bytes(),
+                        arr.value(row),
+                    );
                 }
             }
             AttrArray::Str(arr) => {
                 if !arr.is_null(row) {
                     encode_key_value_string(
                         buf,
-                        6,
+                        otlp::LOG_RECORD_ATTRIBUTES,
                         field_name.as_bytes(),
                         str_value(*arr, row).as_bytes(),
                     );
@@ -545,94 +592,96 @@ fn encode_row_as_log_record(
         }
     }
 
-    // field 8: flags (fixed32) — W3C trace flags
+    // LogRecord.flags (fixed32) — W3C trace flags
     if let Some((_, arr)) = columns.flags_col {
         if !arr.is_null(row) {
-            encode_fixed32(buf, 8, arr.value(row) as u32);
+            encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, arr.value(row) as u32);
         }
     }
 
-    // field 9: trace_id (bytes, 16 bytes) — hex-decoded from 32-char string column
+    // LogRecord.trace_id (bytes, 16 bytes) — hex-decoded from 32-char string column
     if let Some((_, arr)) = columns.trace_id_col {
         if !arr.is_null(row) {
             let hex = str_value(arr, row);
             let mut decoded = [0u8; 16];
             if hex_decode(hex.as_bytes(), &mut decoded) {
-                encode_bytes_field(buf, 9, &decoded);
+                encode_bytes_field(buf, otlp::LOG_RECORD_TRACE_ID, &decoded);
             }
         }
     }
 
-    // field 10: span_id (bytes, 8 bytes) — hex-decoded from 16-char string column
+    // LogRecord.span_id (bytes, 8 bytes) — hex-decoded from 16-char string column
     if let Some((_, arr)) = columns.span_id_col {
         if !arr.is_null(row) {
             let hex = str_value(arr, row);
             let mut decoded = [0u8; 8];
             if hex_decode(hex.as_bytes(), &mut decoded) {
-                encode_bytes_field(buf, 10, &decoded);
+                encode_bytes_field(buf, otlp::LOG_RECORD_SPAN_ID, &decoded);
             }
         }
     }
 
-    // field 11: observed_time_unix_nano (fixed64)
-    encode_fixed64(buf, 11, metadata.observed_time_ns);
+    // LogRecord.observed_time_unix_nano (fixed64)
+    encode_fixed64(
+        buf,
+        otlp::LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
+        metadata.observed_time_ns,
+    );
 }
 
 /// Encode a KeyValue with string AnyValue as an attribute.
 /// `field_number` is the protobuf field tag of the parent message's `attributes` repeated field
-/// (6 for `LogRecord.attributes`, 1 for `Resource.attributes`).
-/// KeyValue: { key (field 1, string), value (field 2, AnyValue { string_value (field 1) }) }
+/// (e.g. `LOG_RECORD_ATTRIBUTES` for LogRecord, `RESOURCE_ATTRIBUTES` for Resource).
+/// KeyValue: { key (string), value (AnyValue { string_value }) }
 fn encode_key_value_string(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value: &[u8]) {
-    let anyvalue_inner = bytes_field_size(1, value.len()); // AnyValue.string_value
-    let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
-    encode_tag(buf, field_number, 2);
+    let anyvalue_inner = bytes_field_size(otlp::ANY_VALUE_STRING_VALUE, value.len());
+    let kv_inner = bytes_field_size(otlp::KEY_VALUE_KEY, key.len())
+        + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+    encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
     encode_varint(buf, kv_inner as u64);
-    // KeyValue.key = field 1
-    encode_bytes_field(buf, 1, key);
-    // KeyValue.value = field 2 (AnyValue)
-    encode_tag(buf, 2, 2);
+    encode_bytes_field(buf, otlp::KEY_VALUE_KEY, key);
+    encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
     encode_varint(buf, anyvalue_inner as u64);
-    // AnyValue.string_value = field 1
-    encode_bytes_field(buf, 1, value);
+    encode_bytes_field(buf, otlp::ANY_VALUE_STRING_VALUE, value);
 }
 
-/// Encode a KeyValue with int AnyValue (field 3 of AnyValue = int_value).
+/// Encode a KeyValue with int AnyValue (`AnyValue.int_value`).
 fn encode_key_value_int(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value: i64) {
     let anyvalue_inner = 1 + varint_len(value as u64); // tag(1 byte) + varint
-    let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
-    encode_tag(buf, field_number, 2);
+    let kv_inner = bytes_field_size(otlp::KEY_VALUE_KEY, key.len())
+        + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+    encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
     encode_varint(buf, kv_inner as u64);
-    encode_bytes_field(buf, 1, key);
-    encode_tag(buf, 2, 2);
+    encode_bytes_field(buf, otlp::KEY_VALUE_KEY, key);
+    encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
     encode_varint(buf, anyvalue_inner as u64);
-    // AnyValue.int_value = field 3, wire type 0 (varint)
-    encode_varint_field(buf, 3, value as u64);
+    encode_varint_field(buf, otlp::ANY_VALUE_INT_VALUE, value as u64);
 }
 
-/// Encode a KeyValue with double AnyValue (field 4 of AnyValue = double_value).
+/// Encode a KeyValue with double AnyValue (`AnyValue.double_value`).
 fn encode_key_value_double(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value: f64) {
     let anyvalue_inner = 1 + 8; // tag(1 byte) + fixed64
-    let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
-    encode_tag(buf, field_number, 2);
+    let kv_inner = bytes_field_size(otlp::KEY_VALUE_KEY, key.len())
+        + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+    encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
     encode_varint(buf, kv_inner as u64);
-    encode_bytes_field(buf, 1, key);
-    encode_tag(buf, 2, 2);
+    encode_bytes_field(buf, otlp::KEY_VALUE_KEY, key);
+    encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
     encode_varint(buf, anyvalue_inner as u64);
-    // AnyValue.double_value = field 4, wire type 1 (64-bit fixed)
-    encode_fixed64(buf, 4, value.to_bits());
+    encode_fixed64(buf, otlp::ANY_VALUE_DOUBLE_VALUE, value.to_bits());
 }
 
-/// Encode a KeyValue with boolean AnyValue (field 2 of AnyValue = bool_value).
+/// Encode a KeyValue with boolean AnyValue (`AnyValue.bool_value`).
 fn encode_key_value_bool(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value: bool) {
     let anyvalue_inner = 1 + 1; // tag(1 byte) + varint(1 byte)
-    let kv_inner = bytes_field_size(1, key.len()) + bytes_field_size(2, anyvalue_inner);
-    encode_tag(buf, field_number, 2);
+    let kv_inner = bytes_field_size(otlp::KEY_VALUE_KEY, key.len())
+        + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+    encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
     encode_varint(buf, kv_inner as u64);
-    encode_bytes_field(buf, 1, key);
-    encode_tag(buf, 2, 2);
+    encode_bytes_field(buf, otlp::KEY_VALUE_KEY, key);
+    encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
     encode_varint(buf, anyvalue_inner as u64);
-    // AnyValue.bool_value = field 2, wire type 0 (varint)
-    encode_varint_field(buf, 2, u64::from(value));
+    encode_varint_field(buf, otlp::ANY_VALUE_BOOL_VALUE, u64::from(value));
 }
 
 /// Write a gRPC length-prefixed message frame into `buf`.
@@ -997,5 +1046,275 @@ mod tests {
             contains_bytes(&sink.encoder_buf, b"active"),
             "attribute key 'active' not found"
         );
+    }
+
+    /// Roundtrip oracle test: encode a RecordBatch with our hand-rolled encoder,
+    /// decode with prost (the canonical protobuf library), and compare fields.
+    ///
+    /// This is the definitive test that our OTLP encoding is spec-compliant.
+    /// If we encode a field incorrectly, prost::Message::decode will either
+    /// fail or produce different values.
+    #[test]
+    fn roundtrip_encode_decode_via_prost() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        // Build a RecordBatch with all supported LogRecord field types.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::Utf8, true),
+            Field::new("level", DataType::Utf8, true),
+            Field::new("message", DataType::Utf8, true),
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+            Field::new("flags", DataType::Int64, true),
+            Field::new("host", DataType::Utf8, true), // string attribute
+            Field::new("count", DataType::Int64, true), // int attribute
+            Field::new("latency", DataType::Float64, true), // double attribute
+            Field::new("active", DataType::Boolean, true), // bool attribute
+        ]));
+
+        let ts_arr = StringArray::from(vec!["2024-01-15T10:30:00Z"]);
+        let level_arr = StringArray::from(vec!["ERROR"]);
+        let msg_arr = StringArray::from(vec!["disk full"]);
+        let trace_arr = StringArray::from(vec!["0102030405060708090a0b0c0d0e0f10"]);
+        let span_arr = StringArray::from(vec!["0102030405060708"]);
+        let flags_arr = Int64Array::from(vec![1i64]);
+        let host_arr = StringArray::from(vec!["web-01"]);
+        let count_arr = Int64Array::from(vec![42i64]);
+        let latency_arr = arrow::array::Float64Array::from(vec![1.5f64]);
+        let active_arr = arrow::array::BooleanArray::from(vec![Some(true)]);
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(ts_arr),
+                Arc::new(level_arr),
+                Arc::new(msg_arr),
+                Arc::new(trace_arr),
+                Arc::new(span_arr),
+                Arc::new(flags_arr),
+                Arc::new(host_arr),
+                Arc::new(count_arr),
+                Arc::new(latency_arr),
+                Arc::new(active_arr),
+            ],
+        )
+        .expect("valid batch");
+
+        let observed_ns: u64 = 1_700_000_000_000_000_000;
+        let resource_attrs = Arc::new(vec![("k8s.pod.name".to_string(), "my-pod".to_string())]);
+        let metadata = BatchMetadata {
+            resource_attrs,
+            observed_time_ns: observed_ns,
+        };
+
+        // Encode with our hand-rolled encoder.
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &metadata);
+        assert!(
+            !sink.encoder_buf.is_empty(),
+            "encoder must produce non-empty output"
+        );
+
+        // Decode with prost — the canonical protobuf decoder.
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode our encoding without error");
+
+        // --- Verify structure ---
+        assert_eq!(request.resource_logs.len(), 1, "exactly one ResourceLogs");
+        let rl = &request.resource_logs[0];
+
+        // Resource attributes
+        let resource = rl.resource.as_ref().expect("Resource must be present");
+        let pod_attr = resource
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "k8s.pod.name");
+        assert!(pod_attr.is_some(), "resource attr k8s.pod.name must exist");
+        let pod_val = pod_attr
+            .unwrap()
+            .value
+            .as_ref()
+            .and_then(|v| match &v.value {
+                Some(Value::StringValue(s)) => Some(s.as_str()),
+                _ => None,
+            });
+        assert_eq!(pod_val, Some("my-pod"), "resource attr value mismatch");
+
+        // ScopeLogs
+        assert_eq!(rl.scope_logs.len(), 1, "exactly one ScopeLogs");
+        let sl = &rl.scope_logs[0];
+        let scope = sl
+            .scope
+            .as_ref()
+            .expect("InstrumentationScope must be present");
+        assert_eq!(scope.name, "logfwd", "scope name must be 'logfwd'");
+        assert_eq!(
+            scope.version,
+            env!("CARGO_PKG_VERSION"),
+            "scope version must match CARGO_PKG_VERSION"
+        );
+
+        // LogRecord
+        assert_eq!(sl.log_records.len(), 1, "exactly one LogRecord");
+        let lr = &sl.log_records[0];
+
+        // time_unix_nano: 2024-01-15T10:30:00Z = 1705314600 seconds
+        assert_eq!(
+            lr.time_unix_nano, 1_705_314_600_000_000_000,
+            "time_unix_nano mismatch"
+        );
+
+        // observed_time_unix_nano
+        assert_eq!(
+            lr.observed_time_unix_nano, observed_ns,
+            "observed_time_unix_nano mismatch"
+        );
+
+        // severity
+        assert_eq!(lr.severity_number, 17, "ERROR severity_number must be 17");
+        assert_eq!(lr.severity_text, "ERROR", "severity_text mismatch");
+
+        // body
+        let body_str = lr.body.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(body_str, Some("disk full"), "body mismatch");
+
+        // trace_id (16 bytes, decoded from hex)
+        assert_eq!(
+            lr.trace_id,
+            vec![
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                0x0f, 0x10
+            ],
+            "trace_id mismatch"
+        );
+
+        // span_id (8 bytes, decoded from hex)
+        assert_eq!(
+            lr.span_id,
+            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            "span_id mismatch"
+        );
+
+        // flags
+        assert_eq!(lr.flags, 1, "flags mismatch");
+
+        // --- Verify attributes ---
+        let find_attr = |name: &str| lr.attributes.iter().find(|kv| kv.key == name);
+
+        // String attribute: host
+        let host_kv = find_attr("host").expect("host attribute must exist");
+        let host_val = host_kv.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(host_val, Some("web-01"), "host attribute value mismatch");
+
+        // Int attribute: count
+        let count_kv = find_attr("count").expect("count attribute must exist");
+        let count_val = count_kv.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::IntValue(i)) => Some(*i),
+            _ => None,
+        });
+        assert_eq!(count_val, Some(42), "count attribute value mismatch");
+
+        // Double attribute: latency
+        let latency_kv = find_attr("latency").expect("latency attribute must exist");
+        let latency_val = latency_kv.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::DoubleValue(d)) => Some(*d),
+            _ => None,
+        });
+        assert!(
+            (latency_val.unwrap() - 1.5).abs() < f64::EPSILON,
+            "latency attribute value mismatch"
+        );
+
+        // Bool attribute: active
+        let active_kv = find_attr("active").expect("active attribute must exist");
+        let active_val = active_kv.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::BoolValue(b)) => Some(*b),
+            _ => None,
+        });
+        assert_eq!(active_val, Some(true), "active attribute value mismatch");
+    }
+
+    /// Roundtrip with minimal fields: only body, no timestamp, no severity,
+    /// no trace context. Ensures sparse records encode correctly.
+    #[test]
+    fn roundtrip_minimal_record() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "message",
+            DataType::Utf8,
+            true,
+        )]));
+        let msg_arr = StringArray::from(vec!["hello world"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(msg_arr)]).expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode minimal record");
+
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(lr.time_unix_nano, 0, "no timestamp column means 0");
+        assert_eq!(lr.severity_number, 0, "no severity means unspecified");
+        let body_str = lr.body.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(body_str, Some("hello world"), "body mismatch");
+        assert!(lr.trace_id.is_empty(), "no trace_id column means empty");
+        assert!(lr.span_id.is_empty(), "no span_id column means empty");
+    }
+
+    /// Roundtrip with multiple rows to verify repeated LogRecord encoding.
+    #[test]
+    fn roundtrip_multiple_rows() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::any_value::Value;
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("level", DataType::Utf8, true),
+        ]));
+        let msg_arr = StringArray::from(vec!["first", "second", "third"]);
+        let level_arr = StringArray::from(vec!["INFO", "WARN", "ERROR"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(msg_arr), Arc::new(level_arr)])
+            .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode multi-row batch");
+
+        let records = &request.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 3, "must have 3 LogRecords");
+
+        let bodies: Vec<&str> = records
+            .iter()
+            .filter_map(|lr| {
+                lr.body.as_ref().and_then(|v| match &v.value {
+                    Some(Value::StringValue(s)) => Some(s.as_str()),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(bodies, vec!["first", "second", "third"]);
+
+        let severities: Vec<i32> = records.iter().map(|lr| lr.severity_number).collect();
+        assert_eq!(severities, vec![9, 13, 17], "INFO=9, WARN=13, ERROR=17");
     }
 }

@@ -223,7 +223,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `json_scanner.rs` | Streaming JSON field scanner via bitmask iteration | Kani bounded (5 proofs) + proptest oracle |
 | `scan_config.rs` | `parse_int_fast`, `parse_float_fast`, `ScanConfig` | Kani exhaustive (2 proofs) |
 | `cri.rs` | CRI log parsing + partial line reassembly | Kani exhaustive (8 proofs) |
-| `otlp.rs` | Protobuf wire format + OTLP encoding + timestamp parsing | Kani exhaustive (25 proofs incl. 3 contract verifications) |
+| `otlp.rs` | Protobuf wire format + OTLP encoding + timestamp parsing | Kani mixed exhaustive + bounded (30 proofs incl. 3 contract verifications) |
 | `pipeline/lifecycle.rs` | Pipeline state machine (ordered ACK, drain, shutdown) | Kani exhaustive (6 proofs) + proptest + **TLA+** |
 | `pipeline/batch.rs` | BatchTicket typestate (ack/nack/fail/reject) | Kani exhaustive (5 proofs) + compile-time |
 | `logfwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (8 proofs: ColVariant field preservation, variant_dt, is_conflict_struct, json/str priority contracts) |

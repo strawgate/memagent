@@ -20,6 +20,93 @@
 //!   tag = (field_number << 3) | wire_type
 //!   wire_type: 0=varint, 1=64-bit fixed, 2=length-delimited, 5=32-bit fixed
 
+// --- Protobuf field number constants ---
+//
+// Extracted from opentelemetry/proto/logs/v1/logs.proto so that the encoder
+// uses named constants instead of magic numbers. Kani tripwire proofs
+// (in the verification module below) verify these match the proto spec.
+
+// --- Wire types ---
+
+/// Protobuf wire type 0: varint.
+pub const WIRE_TYPE_VARINT: u8 = 0;
+/// Protobuf wire type 1: 64-bit fixed.
+pub const WIRE_TYPE_FIXED64: u8 = 1;
+/// Protobuf wire type 2: length-delimited.
+pub const WIRE_TYPE_LEN: u8 = 2;
+/// Protobuf wire type 5: 32-bit fixed.
+pub const WIRE_TYPE_FIXED32: u8 = 5;
+
+// --- ExportLogsServiceRequest ---
+
+/// `ExportLogsServiceRequest.resource_logs` (repeated ResourceLogs).
+pub const EXPORT_LOGS_REQUEST_RESOURCE_LOGS: u32 = 1;
+
+// --- ResourceLogs ---
+
+/// `ResourceLogs.resource` (Resource message).
+pub const RESOURCE_LOGS_RESOURCE: u32 = 1;
+/// `ResourceLogs.scope_logs` (repeated ScopeLogs).
+pub const RESOURCE_LOGS_SCOPE_LOGS: u32 = 2;
+
+// --- Resource ---
+
+/// `Resource.attributes` (repeated KeyValue).
+pub const RESOURCE_ATTRIBUTES: u32 = 1;
+
+// --- ScopeLogs ---
+
+/// `ScopeLogs.scope` (InstrumentationScope message).
+pub const SCOPE_LOGS_SCOPE: u32 = 1;
+/// `ScopeLogs.log_records` (repeated LogRecord).
+pub const SCOPE_LOGS_LOG_RECORDS: u32 = 2;
+
+// --- InstrumentationScope ---
+
+/// `InstrumentationScope.name` (string).
+pub const INSTRUMENTATION_SCOPE_NAME: u32 = 1;
+/// `InstrumentationScope.version` (string).
+pub const INSTRUMENTATION_SCOPE_VERSION: u32 = 2;
+
+// --- LogRecord field numbers (logs.proto) ---
+
+/// `LogRecord.time_unix_nano` (fixed64).
+pub const LOG_RECORD_TIME_UNIX_NANO: u32 = 1;
+/// `LogRecord.severity_number` (SeverityNumber enum, varint).
+pub const LOG_RECORD_SEVERITY_NUMBER: u32 = 2;
+/// `LogRecord.severity_text` (string).
+pub const LOG_RECORD_SEVERITY_TEXT: u32 = 3;
+/// `LogRecord.body` (AnyValue message).
+pub const LOG_RECORD_BODY: u32 = 5;
+/// `LogRecord.attributes` (repeated KeyValue).
+pub const LOG_RECORD_ATTRIBUTES: u32 = 6;
+/// `LogRecord.flags` (fixed32, W3C trace flags).
+pub const LOG_RECORD_FLAGS: u32 = 8;
+/// `LogRecord.trace_id` (bytes, 16 bytes).
+pub const LOG_RECORD_TRACE_ID: u32 = 9;
+/// `LogRecord.span_id` (bytes, 8 bytes).
+pub const LOG_RECORD_SPAN_ID: u32 = 10;
+/// `LogRecord.observed_time_unix_nano` (fixed64).
+pub const LOG_RECORD_OBSERVED_TIME_UNIX_NANO: u32 = 11;
+
+// --- AnyValue field numbers (common.proto) ---
+
+/// `AnyValue.string_value` (string).
+pub const ANY_VALUE_STRING_VALUE: u32 = 1;
+/// `AnyValue.bool_value` (bool).
+pub const ANY_VALUE_BOOL_VALUE: u32 = 2;
+/// `AnyValue.int_value` (int64).
+pub const ANY_VALUE_INT_VALUE: u32 = 3;
+/// `AnyValue.double_value` (double/fixed64).
+pub const ANY_VALUE_DOUBLE_VALUE: u32 = 4;
+
+// --- KeyValue field numbers (common.proto) ---
+
+/// `KeyValue.key` (string).
+pub const KEY_VALUE_KEY: u32 = 1;
+/// `KeyValue.value` (AnyValue message).
+pub const KEY_VALUE_VALUE: u32 = 2;
+
 // --- Protobuf wire format helpers ---
 
 use alloc::vec::Vec;
@@ -526,6 +613,48 @@ mod tests {
         let mut out = [0u8; 4];
         assert!(!hex_decode(b"0102030G", &mut out)); // 'G' is invalid
         assert!(!hex_decode(b"01 20304", &mut out)); // space is invalid
+    }
+
+    /// Spot-check protobuf field number constants against the OTLP proto spec.
+    /// Catches drift without requiring the Kani toolchain.
+    #[test]
+    fn field_constants_spot_check() {
+        // Wire types (protobuf spec).
+        assert_eq!(WIRE_TYPE_VARINT, 0);
+        assert_eq!(WIRE_TYPE_FIXED64, 1);
+        assert_eq!(WIRE_TYPE_LEN, 2);
+        assert_eq!(WIRE_TYPE_FIXED32, 5);
+
+        // LogRecord fields (logs.proto).
+        assert_eq!(LOG_RECORD_TIME_UNIX_NANO, 1);
+        assert_eq!(LOG_RECORD_SEVERITY_NUMBER, 2);
+        assert_eq!(LOG_RECORD_SEVERITY_TEXT, 3);
+        assert_eq!(LOG_RECORD_BODY, 5);
+        assert_eq!(LOG_RECORD_ATTRIBUTES, 6);
+        assert_eq!(LOG_RECORD_FLAGS, 8);
+        assert_eq!(LOG_RECORD_TRACE_ID, 9);
+        assert_eq!(LOG_RECORD_SPAN_ID, 10);
+        assert_eq!(LOG_RECORD_OBSERVED_TIME_UNIX_NANO, 11);
+
+        // AnyValue fields (common.proto).
+        assert_eq!(ANY_VALUE_STRING_VALUE, 1);
+        assert_eq!(ANY_VALUE_BOOL_VALUE, 2);
+        assert_eq!(ANY_VALUE_INT_VALUE, 3);
+        assert_eq!(ANY_VALUE_DOUBLE_VALUE, 4);
+
+        // KeyValue fields (common.proto).
+        assert_eq!(KEY_VALUE_KEY, 1);
+        assert_eq!(KEY_VALUE_VALUE, 2);
+
+        // Message nesting fields.
+        assert_eq!(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, 1);
+        assert_eq!(RESOURCE_LOGS_RESOURCE, 1);
+        assert_eq!(RESOURCE_LOGS_SCOPE_LOGS, 2);
+        assert_eq!(RESOURCE_ATTRIBUTES, 1);
+        assert_eq!(SCOPE_LOGS_SCOPE, 1);
+        assert_eq!(SCOPE_LOGS_LOG_RECORDS, 2);
+        assert_eq!(INSTRUMENTATION_SCOPE_NAME, 1);
+        assert_eq!(INSTRUMENTATION_SCOPE_VERSION, 2);
     }
 }
 
@@ -1123,5 +1252,94 @@ mod verification {
         let hex = vec![b'a'; hex_len];
         let mut out = [0u8; 16];
         assert!(!hex_decode(&hex, &mut out));
+    }
+
+    // -----------------------------------------------------------------------
+    // Field number constant tripwire proofs
+    //
+    // These verify that the named constants in this module match the OTLP
+    // proto spec. If someone changes a constant, Kani will catch the drift.
+    // The values come from:
+    //   opentelemetry/proto/logs/v1/logs.proto
+    //   opentelemetry/proto/common/v1/common.proto
+    //   opentelemetry/proto/resource/v1/resource.proto
+    // -----------------------------------------------------------------------
+
+    /// Verify LogRecord field numbers match logs.proto.
+    #[kani::proof]
+    fn verify_log_record_field_numbers() {
+        assert!(LOG_RECORD_TIME_UNIX_NANO == 1);
+        assert!(LOG_RECORD_SEVERITY_NUMBER == 2);
+        assert!(LOG_RECORD_SEVERITY_TEXT == 3);
+        // field 4 is dropped_attributes_count (not used)
+        assert!(LOG_RECORD_BODY == 5);
+        assert!(LOG_RECORD_ATTRIBUTES == 6);
+        // field 7 is dropped_attributes_count (not used)
+        assert!(LOG_RECORD_FLAGS == 8);
+        assert!(LOG_RECORD_TRACE_ID == 9);
+        assert!(LOG_RECORD_SPAN_ID == 10);
+        assert!(LOG_RECORD_OBSERVED_TIME_UNIX_NANO == 11);
+
+        // Cover: all constants exercised
+        kani::cover!(LOG_RECORD_TIME_UNIX_NANO == 1, "time_unix_nano is 1");
+        kani::cover!(
+            LOG_RECORD_OBSERVED_TIME_UNIX_NANO == 11,
+            "observed_time is 11"
+        );
+    }
+
+    /// Verify AnyValue field numbers match common.proto.
+    #[kani::proof]
+    fn verify_any_value_field_numbers() {
+        assert!(ANY_VALUE_STRING_VALUE == 1);
+        assert!(ANY_VALUE_BOOL_VALUE == 2);
+        assert!(ANY_VALUE_INT_VALUE == 3);
+        assert!(ANY_VALUE_DOUBLE_VALUE == 4);
+
+        kani::cover!(ANY_VALUE_STRING_VALUE == 1, "string_value is 1");
+        kani::cover!(ANY_VALUE_DOUBLE_VALUE == 4, "double_value is 4");
+    }
+
+    /// Verify KeyValue field numbers match common.proto.
+    #[kani::proof]
+    fn verify_key_value_field_numbers() {
+        assert!(KEY_VALUE_KEY == 1);
+        assert!(KEY_VALUE_VALUE == 2);
+
+        kani::cover!(KEY_VALUE_KEY == 1, "key is 1");
+        kani::cover!(KEY_VALUE_VALUE == 2, "value is 2");
+    }
+
+    /// Verify message nesting field numbers match the OTLP spec.
+    #[kani::proof]
+    fn verify_message_nesting_field_numbers() {
+        // ExportLogsServiceRequest
+        assert!(EXPORT_LOGS_REQUEST_RESOURCE_LOGS == 1);
+        // ResourceLogs
+        assert!(RESOURCE_LOGS_RESOURCE == 1);
+        assert!(RESOURCE_LOGS_SCOPE_LOGS == 2);
+        // Resource
+        assert!(RESOURCE_ATTRIBUTES == 1);
+        // ScopeLogs
+        assert!(SCOPE_LOGS_SCOPE == 1);
+        assert!(SCOPE_LOGS_LOG_RECORDS == 2);
+        // InstrumentationScope
+        assert!(INSTRUMENTATION_SCOPE_NAME == 1);
+        assert!(INSTRUMENTATION_SCOPE_VERSION == 2);
+
+        kani::cover!(EXPORT_LOGS_REQUEST_RESOURCE_LOGS == 1, "request field 1");
+        kani::cover!(SCOPE_LOGS_LOG_RECORDS == 2, "log_records is 2");
+    }
+
+    /// Verify wire type constants match protobuf spec.
+    #[kani::proof]
+    fn verify_wire_type_constants() {
+        assert!(WIRE_TYPE_VARINT == 0);
+        assert!(WIRE_TYPE_FIXED64 == 1);
+        assert!(WIRE_TYPE_LEN == 2);
+        assert!(WIRE_TYPE_FIXED32 == 5);
+
+        kani::cover!(WIRE_TYPE_VARINT == 0, "varint is 0");
+        kani::cover!(WIRE_TYPE_FIXED32 == 5, "fixed32 is 5");
     }
 }
