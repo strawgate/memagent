@@ -13,6 +13,7 @@ dhat-heap = ["dhat"]
 cpu-profiling = ["pprof"]
 
 [dependencies]
+bytes = "1"
 logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
