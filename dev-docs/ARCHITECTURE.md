@@ -271,23 +271,29 @@ operations.
 Understanding who owns what and when copies happen:
 
 ```
-Current (after #939 — 3 copies remain, down from 5):
-  tailer reads → BytesMut → freeze() → Bytes           (no copy)
-  FramedInput: remainder + extend_from_slice(bytes)     [COPY 1: framing]
-  FormatDecoder: chunk → out_buf                      [COPY 2: format processing]
-  pipeline: scan_buf.extend_from_slice(&bytes)          [COPY 3: SIMD contiguity — required]
-  scanner classifies → ChunkIndex (bitmasks, no copy)
-  StreamingBuilder stores views → RecordBatch (zero-copy)
+Current (after #939 + #963 — 4 copies):
+  tailer reads → Vec<u8>                                [COPY 1: kernel → Vec]
+  FramedInput: remainder + extend_from_slice             [COPY 2: framing]
+  FormatDecoder: chunk → out_buf → Bytes::from(Vec)      [COPY 3: format processing]
+  pipeline: input.buf (BytesMut) .extend_from_slice      [COPY 4: thread accumulation]
+  channel: split().freeze() → Bytes                      (no copy — refcount)
+  scan_buf (BytesMut) .extend_from_slice(&bytes)         (copy — SIMD contiguity)
+  flush: split().freeze() → Bytes                        (no copy — refcount)
+  ZeroCopyScanner receives Bytes directly                (no copy)
+  StreamingBuilder stores views → RecordBatch            (zero-copy)
   Bytes dropped when RecordBatch is consumed
 
+  Note: tailer, InputEvent, FramedInput still use Vec<u8>.
+  Only pipeline.rs (ChannelMsg, InputState.buf, scan_buf) uses BytesMut/Bytes.
+
 Target (zero-copy for 99% passthrough path — #608):
-  tailer reads → BytesMut → freeze() → Bytes            (no copy)
-  FramedInput: Bytes::slice() for line ranges            (no copy)
-  Passthrough format: emit Bytes slice directly          (no copy)
-  CRI format: metadata injection requires rewrite        [COPY 1: unavoidable]
-  pipeline: scan_buf.extend_from_slice(&bytes)           [COPY 2: SIMD contiguity — required]
-  scanner classifies → ChunkIndex (bitmasks, no copy)
-  StreamingBuilder stores views → RecordBatch (zero-copy)
+  tailer reads → BytesMut → freeze() → Bytes             (no copy)
+  FramedInput: Bytes::slice() for line ranges             (no copy)
+  Passthrough format: emit Bytes slice directly           (no copy)
+  CRI format: metadata injection requires rewrite         [COPY 1: unavoidable]
+  pipeline: scan_buf.extend_from_slice(&bytes)            [COPY 2: SIMD contiguity]
+  ZeroCopyScanner receives Bytes directly                 (no copy)
+  StreamingBuilder stores views → RecordBatch             (zero-copy)
   Bytes dropped when RecordBatch is consumed
 ```
 
