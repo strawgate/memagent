@@ -20,9 +20,6 @@ pub struct NullSink {
     name: String,
     batches_discarded: AtomicU64,
     rows_discarded: AtomicU64,
-    // Stored for API consistency with other sinks; not used by NullSink since
-    // discarded data is not worth metering at the byte level.
-    #[allow(dead_code)]
     stats: Arc<ComponentStats>,
 }
 
@@ -52,9 +49,10 @@ impl OutputSink for NullSink {
         self.batches_discarded.fetch_add(1, Ordering::Relaxed);
         let num_rows = batch.num_rows() as u64;
         self.rows_discarded.fetch_add(num_rows, Ordering::Relaxed);
-        // Line counting is done once by the pipeline after send_batch returns
-        // (via PipelineMetrics::inc_output_success). Sinks must not also call
-        // inc_lines or the counter is doubled.
+        // Track discarded lines and in-memory byte size so that diagnostics
+        // show non-zero output metrics for null/blackhole pipelines.
+        self.stats.inc_lines(num_rows);
+        self.stats.inc_bytes(batch.get_array_memory_size() as u64);
         Ok(())
     }
 
@@ -113,10 +111,9 @@ mod tests {
     }
 
     #[test]
-    fn null_sink_does_not_increment_lines_total() {
-        // Line counting is the pipeline's responsibility (PipelineMetrics::inc_output_success).
-        // NullSink must NOT call inc_lines, or the counter would be doubled
-        // every time a batch is forwarded.
+    fn null_sink_increments_lines_and_bytes() {
+        // Each sink is responsible for its own line and byte counting —
+        // there is no central pipeline call that does it.
         use arrow::array::Int32Array;
         use arrow::datatypes::{DataType, Field, Schema};
         use std::sync::Arc;
@@ -135,11 +132,16 @@ mod tests {
         sink.send_batch(&batch, &meta).unwrap();
         sink.send_batch(&batch, &meta).unwrap();
 
-        // Sink must not increment lines_total — that is pipeline.rs's job.
+        // Sink must increment lines_total once per row per batch.
         assert_eq!(
             stats.lines_total.load(Ordering::Relaxed),
-            0,
-            "sink must not double-count lines"
+            6,
+            "sink must increment lines_total for each forwarded row"
+        );
+        // Bytes must be non-zero (in-memory batch size).
+        assert!(
+            stats.bytes_total.load(Ordering::Relaxed) > 0,
+            "sink must report non-zero bytes"
         );
         // Row-level counters on the sink itself are still tracked.
         assert_eq!(sink.rows_discarded(), 6);

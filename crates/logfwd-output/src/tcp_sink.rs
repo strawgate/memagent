@@ -108,7 +108,7 @@ impl OutputSink for TcpSink {
         }
 
         self.write_with_retry()?;
-        // inc_lines is counted by the pipeline; only track bytes here.
+        self.stats.inc_lines(batch.num_rows() as u64);
         self.stats.inc_bytes(self.buf.len() as u64);
         Ok(())
     }

@@ -618,9 +618,6 @@ impl Pipeline {
             }
         };
         let transform_elapsed = t1.elapsed();
-        self.metrics
-            .transform_out
-            .inc_lines(result.num_rows() as u64);
 
         // Handle zero-row transform results (SQL WHERE filtered all rows).
         // Still ack — data was processed, just not forwarded.
@@ -1015,8 +1012,8 @@ mod tests {
 
     use logfwd_config::{Format, OutputConfig, OutputType};
     use logfwd_io::diagnostics::ComponentStats;
-    use logfwd_test_utils::sinks::{CountingSink, DevNullSink, FailingSink, FrozenSink, SlowSink};
-    use logfwd_test_utils::{append_json_lines, test_meter};
+    use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
+    use logfwd_test_utils::test_meter;
 
     #[test]
     fn test_build_output_sink_stdout() {
@@ -2541,7 +2538,7 @@ output:
             "checkpoints.json must exist after clean shutdown"
         );
         // Re-open the store to verify the checkpoints are readable.
-        let store = logfwd_io::checkpoint::FileCheckpointStore::open(&cp_dir).unwrap();
+        let store = FileCheckpointStore::open(&cp_dir).unwrap();
         let cps = store.load_all();
         assert!(!cps.is_empty(), "at least one checkpoint must be written");
         assert!(cps[0].offset > 0, "checkpoint offset must be non-zero");
