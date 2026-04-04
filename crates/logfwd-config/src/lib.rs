@@ -535,7 +535,7 @@ impl Config {
                     OutputType::FileOut | OutputType::Parquet => {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': {} output type is not yet implemented",
-                            output_type_name(&output.output_type),
+                            output.output_type,
                         )));
                     }
                     _ => {}
@@ -549,7 +549,7 @@ impl Config {
                         if output.endpoint.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
-                                output_type_name(&output.output_type),
+                                output.output_type,
                             )));
                         }
                         if let Some(ep) = &output.endpoint
@@ -571,7 +571,7 @@ impl Config {
                         if output.path.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'path'",
-                                output_type_name(&output.output_type),
+                                output.output_type,
                             )));
                         }
                     }
@@ -580,7 +580,7 @@ impl Config {
                         if output.endpoint.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
-                                output_type_name(&output.output_type),
+                                output.output_type,
                             )));
                         }
                     }
@@ -598,21 +598,6 @@ impl Config {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn output_type_name(t: &OutputType) -> &'static str {
-    match t {
-        OutputType::Otlp => "otlp",
-        OutputType::Http => "http",
-        OutputType::Elasticsearch => "elasticsearch",
-        OutputType::Loki => "loki",
-        OutputType::Stdout => "stdout",
-        OutputType::FileOut => "file_out",
-        OutputType::Parquet => "parquet",
-        OutputType::Null => "null",
-        OutputType::TcpOut => "tcp_out",
-        OutputType::UdpOut => "udp_out",
-    }
-}
 
 /// Validate that a bind address is a parseable `host:port` socket address.
 fn validate_bind_addr(addr: &str) -> Result<(), String> {
