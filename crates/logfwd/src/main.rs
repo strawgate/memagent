@@ -410,9 +410,9 @@ async fn run_pipelines(
 ) -> Result<(), CliError> {
     use logfwd::pipeline::Pipeline;
     use logfwd_io::diagnostics::DiagnosticsServer;
+    use tracing_subscriber::Layer;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::Layer;
 
     // Acquire exclusive lock only when tailing files — OTLP-only and
     // blackhole pipelines don't need filesystem locking (#737).
