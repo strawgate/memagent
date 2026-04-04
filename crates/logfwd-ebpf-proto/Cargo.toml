@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+doctest = false
+
 # This is a research prototype. The actual eBPF program would be compiled
 # separately for the BPF target using aya-ebpf. This crate contains:
 # - Shared types (common.rs) used by both kernel and userspace

@@ -9,10 +9,14 @@ interface Props {
 
 export function StatusBar({ connected, totalErrors, version, uptime }: Props) {
   const pillClass = connected
-    ? totalErrors > 0 ? "pill pill-err" : "pill pill-ok"
+    ? totalErrors > 0
+      ? "pill pill-err"
+      : "pill pill-ok"
     : "pill pill-off";
   const pillText = connected
-    ? totalErrors > 0 ? `${totalErrors} errors` : "healthy"
+    ? totalErrors > 0
+      ? `${totalErrors} errors`
+      : "healthy"
     : "disconnected";
 
   return (

@@ -17,9 +17,9 @@ use logfwd_output::{BatchMetadata, build_col_infos, write_row_json};
 
 fn make_batch(n: usize) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
-        Field::new("host_str", DataType::Utf8, true),
-        Field::new("status_int", DataType::Int64, true),
-        Field::new("latency_float", DataType::Float64, true),
+        Field::new("host", DataType::Utf8, true),
+        Field::new("status", DataType::Int64, true),
+        Field::new("latency", DataType::Float64, true),
     ]));
 
     let hosts: Vec<&str> = (0..n)

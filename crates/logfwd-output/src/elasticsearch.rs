@@ -86,10 +86,8 @@ impl ElasticsearchAsyncSink {
         );
 
         let cols = build_col_infos(batch);
-        // Check normalized JSON output names (field_name strips type suffixes like
-        // `_str`/`_int`), not raw Arrow field names. A column `@timestamp_str` is
-        // serialized as `@timestamp`, so we must check the normalized name to avoid
-        // injecting a duplicate timestamp key into the document.
+        // Check whether any output field is named `@timestamp` or `_timestamp`
+        // to avoid injecting a duplicate timestamp key into the document.
         let has_timestamp_col = cols
             .iter()
             .any(|c| c.field_name == "@timestamp" || c.field_name == "_timestamp");
@@ -128,6 +126,22 @@ impl ElasticsearchAsyncSink {
             }
         }
         Ok(())
+    }
+
+    /// Extract the `took` field (milliseconds) from an ES bulk response body.
+    /// Returns `None` if the field is absent or not parseable.
+    fn extract_took(body: &[u8]) -> Option<u64> {
+        const PREFIX: &[u8] = b"\"took\":";
+        let pos = memchr::memmem::find(body, PREFIX)?;
+        let rest = body[pos + PREFIX.len()..].trim_ascii_start();
+        let end = rest
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if end == 0 {
+            return None;
+        }
+        std::str::from_utf8(&rest[..end]).ok()?.parse().ok()
     }
 
     /// Parse the ES bulk API response body for per-document errors.
@@ -301,6 +315,7 @@ impl ElasticsearchAsyncSink {
             req = req.header(k.clone(), v.clone());
         }
 
+        tracing::Span::current().record("req_bytes", body_len as u64);
         let req = if self.config.compress {
             use flate2::Compression;
             use flate2::write::GzEncoder;
@@ -308,12 +323,16 @@ impl ElasticsearchAsyncSink {
             let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
             enc.write_all(&body).map_err(io::Error::other)?;
             let compressed = enc.finish().map_err(io::Error::other)?;
+            tracing::Span::current().record("cmp_bytes", compressed.len() as u64);
             req.header("Content-Encoding", "gzip").body(compressed)
         } else {
             req.body(body)
         };
 
+        let t0 = std::time::Instant::now();
         let response = req.send().await.map_err(io::Error::other)?;
+        let send_ns = t0.elapsed().as_nanos() as u64;
+        tracing::Span::current().record("send_ns", send_ns);
 
         let status = response.status();
 
@@ -351,6 +370,12 @@ impl ElasticsearchAsyncSink {
         }
 
         let body = response.bytes().await.map_err(io::Error::other)?;
+        let recv_ns = t0.elapsed().as_nanos() as u64 - send_ns;
+        tracing::Span::current().record("recv_ns", recv_ns);
+        tracing::Span::current().record("resp_bytes", body.len() as u64);
+        if let Some(took) = Self::extract_took(&body) {
+            tracing::Span::current().record("took_ms", took);
+        }
         Self::parse_bulk_response(&body)?;
         Ok(super::sink::SendResult::Ok)
     }
@@ -562,8 +587,8 @@ mod tests {
     #[test]
     fn serialize_batch_basic() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("level_str", DataType::Utf8, false),
-            Field::new("status_int", DataType::Int64, false),
+            Field::new("level", DataType::Utf8, false),
+            Field::new("status", DataType::Int64, false),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -616,7 +641,7 @@ mod tests {
     #[test]
     fn empty_batch_produces_empty_output() {
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "level_str",
+            "level",
             DataType::Utf8,
             false,
         )]));
@@ -786,14 +811,14 @@ mod snapshot_tests {
         )
     }
 
-    /// Snapshot: basic multi-type batch (level_str, status_int, duration_float).
-    /// Regression guard: field name normalization + type serialization.
+    /// Snapshot: basic multi-type batch (level, status, duration_ms).
+    /// Regression guard: field name preservation + type serialization.
     #[test]
     fn snapshot_basic_multi_type_batch() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("level_str", DataType::Utf8, false),
-            Field::new("status_int", DataType::Int64, false),
-            Field::new("duration_ms_float", DataType::Float64, false),
+            Field::new("level", DataType::Utf8, false),
+            Field::new("status", DataType::Int64, false),
+            Field::new("duration_ms", DataType::Float64, false),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -816,8 +841,8 @@ mod snapshot_tests {
     #[test]
     fn snapshot_nullable_columns() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("msg_str", DataType::Utf8, true),
-            Field::new("code_int", DataType::Int64, true),
+            Field::new("msg", DataType::Utf8, true),
+            Field::new("code", DataType::Int64, true),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -839,11 +864,7 @@ mod snapshot_tests {
     /// Regression guard: escape_json correctness.
     #[test]
     fn snapshot_special_char_strings() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "msg_str",
-            DataType::Utf8,
-            false,
-        )]));
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)]));
         let batch = RecordBatch::try_new(
             schema,
             vec![Arc::new(StringArray::from(vec![
@@ -866,8 +887,8 @@ mod snapshot_tests {
     #[test]
     fn snapshot_all_null_fields() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("msg_str", DataType::Utf8, true),
-            Field::new("code_int", DataType::Int64, true),
+            Field::new("msg", DataType::Utf8, true),
+            Field::new("code", DataType::Int64, true),
         ]));
         let batch = RecordBatch::try_new(
             schema,

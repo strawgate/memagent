@@ -1,7 +1,7 @@
 input:
   type: generator
 transform: |
-  SELECT * FROM logs WHERE level_str != 'DEBUG'
+  SELECT * FROM logs WHERE level != 'DEBUG'
 output:
   type: null
 server:

@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+doctest = false
+
 [dependencies]
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 arrow = { workspace = true }

@@ -18,7 +18,7 @@ use std::process::Command;
 /// Looks for `fn find_char_mask(` and captures everything through the
 /// matching closing brace. Returns a standalone .rs file that rustc can compile.
 fn build_canary_source() -> String {
-    let src = include_str!("../src/structural.rs");
+    let src = include_str!("../../src/structural.rs");
 
     let fn_start = src
         .find("fn find_char_mask(")

@@ -1,4 +1,4 @@
-import type { PipelinesResponse, StatsResponse, ConfigResponse, TracesResponse } from "./types";
+import type { ConfigResponse, PipelinesResponse, StatsResponse, TracesResponse } from "./types";
 
 async function get<T>(url: string): Promise<T | null> {
   try {

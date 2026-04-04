@@ -41,8 +41,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use logfwd_core::pipeline::{BatchTicket, Sending};
+use logfwd_io::diagnostics::PipelineMetrics;
 use logfwd_output::BatchMetadata;
 use logfwd_output::sink::{SendResult, Sink, SinkFactory};
 
@@ -68,6 +70,10 @@ pub struct WorkItem {
     pub scan_ns: u64,
     /// Nanoseconds spent in the transform stage (passed through for metrics at ack time).
     pub transform_ns: u64,
+    /// Batch ID for active-batch tracking in PipelineMetrics.
+    pub batch_id: u64,
+    /// The batch span — kept alive through the worker so output_ns can be recorded on it.
+    pub span: tracing::Span,
 }
 
 /// Result from a worker after processing one [`WorkItem`].
@@ -85,6 +91,12 @@ pub struct AckItem {
     pub scan_ns: u64,
     /// Nanoseconds spent in the transform stage (passed through from WorkItem).
     pub transform_ns: u64,
+    /// Nanoseconds spent in the output stage (actual send time, measured by worker).
+    pub output_ns: u64,
+    /// Nanoseconds spent waiting in the pool queue before a worker picked it up.
+    pub queue_wait_ns: u64,
+    /// Batch ID for active-batch tracking in PipelineMetrics.
+    pub batch_id: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +112,16 @@ enum WorkerMsg {
 }
 
 // ---------------------------------------------------------------------------
+// Worker config (shared across all workers in a pool)
+// ---------------------------------------------------------------------------
+
+struct WorkerConfig {
+    idle_timeout: Duration,
+    cancel: CancellationToken,
+    max_retry_delay: Duration,
+    metrics: Arc<PipelineMetrics>,
+}
+
 // Worker handle (held by pool)
 // ---------------------------------------------------------------------------
 
@@ -141,11 +163,18 @@ pub struct OutputWorkerPool {
     next_id: usize,
     /// Maximum retry duration for `SendResult::RetryAfter`.
     max_retry_delay: Duration,
+    /// Pipeline metrics for updating active-batch worker assignment.
+    metrics: Arc<PipelineMetrics>,
 }
 
 impl OutputWorkerPool {
     /// Create a new pool. No workers are spawned until the first `submit`.
-    pub fn new(factory: Arc<dyn SinkFactory>, max_workers: usize, idle_timeout: Duration) -> Self {
+    pub fn new(
+        factory: Arc<dyn SinkFactory>,
+        max_workers: usize,
+        idle_timeout: Duration,
+        metrics: Arc<PipelineMetrics>,
+    ) -> Self {
         assert!(
             max_workers >= 1,
             "OutputWorkerPool::new: max_workers must be >= 1, got {max_workers}"
@@ -158,11 +187,12 @@ impl OutputWorkerPool {
             ack_tx,
             cancel: CancellationToken::new(),
             join_set: JoinSet::new(),
-            channel_capacity: 2,
+            channel_capacity: 1,
             max_workers,
             idle_timeout,
             next_id: 0,
             max_retry_delay: Duration::from_secs(30),
+            metrics,
         }
     }
 
@@ -195,6 +225,9 @@ impl OutputWorkerPool {
                     submitted_at: item.submitted_at,
                     scan_ns: item.scan_ns,
                     transform_ns: item.transform_ns,
+                    output_ns: 0,
+                    queue_wait_ns: 0,
+                    batch_id: item.batch_id,
                 })
                 .is_err()
             {
@@ -259,6 +292,9 @@ impl OutputWorkerPool {
                         submitted_at: item.submitted_at,
                         scan_ns: item.scan_ns,
                         transform_ns: item.transform_ns,
+                        output_ns: 0,
+                        queue_wait_ns: 0,
+                        batch_id: item.batch_id,
                     })
                     .is_err()
                 {
@@ -285,6 +321,9 @@ impl OutputWorkerPool {
                     submitted_at: item.submitted_at,
                     scan_ns: item.scan_ns,
                     transform_ns: item.transform_ns,
+                    output_ns: 0,
+                    queue_wait_ns: 0,
+                    batch_id: item.batch_id,
                 })
                 .is_err()
             {
@@ -373,21 +412,16 @@ impl OutputWorkerPool {
         let sink = self.factory.create()?;
         let (tx, rx) = mpsc::channel::<WorkerMsg>(self.channel_capacity);
         let ack_tx = self.ack_tx.clone();
-        let cancel = self.cancel.clone();
-        let idle_timeout = self.idle_timeout;
-        let max_retry_delay = self.max_retry_delay;
         let id = self.next_id;
         self.next_id += 1;
+        let cfg = WorkerConfig {
+            cancel: self.cancel.clone(),
+            idle_timeout: self.idle_timeout,
+            max_retry_delay: self.max_retry_delay,
+            metrics: Arc::clone(&self.metrics),
+        };
 
-        self.join_set.spawn(worker_task(
-            id,
-            sink,
-            rx,
-            ack_tx,
-            idle_timeout,
-            cancel,
-            max_retry_delay,
-        ));
+        self.join_set.spawn(worker_task(id, sink, rx, ack_tx, cfg));
 
         Ok(WorkerHandle { tx })
     }
@@ -416,10 +450,14 @@ async fn worker_task(
     mut sink: Box<dyn Sink>,
     mut rx: mpsc::Receiver<WorkerMsg>,
     ack_tx: mpsc::UnboundedSender<AckItem>,
-    idle_timeout: Duration,
-    cancel: CancellationToken,
-    max_retry_delay: Duration,
+    cfg: WorkerConfig,
 ) {
+    let WorkerConfig {
+        idle_timeout,
+        cancel,
+        max_retry_delay,
+        metrics,
+    } = cfg;
     loop {
         tokio::select! {
             biased; // check cancel first
@@ -433,10 +471,36 @@ async fn worker_task(
                         let submitted_at = item.submitted_at;
                         let scan_ns = item.scan_ns;
                         let transform_ns = item.transform_ns;
+                        let batch_id = item.batch_id;
+                        let span = item.span;
+                        let queue_wait_ns = submitted_at.elapsed().as_nanos() as u64;
+                        // Record which worker picked up this batch for the live dashboard.
+                        let now_ns = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64;
+                        metrics.assign_worker_to_active_batch(batch_id, id, now_ns);
+                        let output_span = tracing::info_span!(
+                            parent: &span, "output",
+                            worker_id = id,
+                            send_ns   = tracing::field::Empty,
+                            recv_ns   = tracing::field::Empty,
+                            took_ms   = tracing::field::Empty,
+                            retries   = tracing::field::Empty,
+                            req_bytes = tracing::field::Empty,
+                            cmp_bytes = tracing::field::Empty,
+                            resp_bytes = tracing::field::Empty,
+                        );
                         let success = process_item(
                             id, &mut *sink, item.batch.clone(), &item.metadata, max_retry_delay,
                         )
+                        .instrument(output_span)
                         .await;
+                        let output_ns = submitted_at.elapsed().as_nanos() as u64 - queue_wait_ns;
+                        // Remove from active_batches immediately — don't wait for the pipeline's
+                        // ack select loop, which can be starved by flush_batch.await blocking.
+                        metrics.finish_active_batch(batch_id);
+                        drop(span);
                         if ack_tx
                             .send(AckItem {
                                 tickets: item.tickets,
@@ -445,6 +509,9 @@ async fn worker_task(
                                 submitted_at,
                                 scan_ns,
                                 transform_ns,
+                                output_ns,
+                                queue_wait_ns,
+                                batch_id,
                             })
                             .is_err()
                         {
@@ -506,7 +573,10 @@ async fn process_item(
                 eprintln!("worker_pool: worker {worker_id} timed out after {BATCH_TIMEOUT_SECS}s");
                 return false;
             }
-            Ok(Ok(SendResult::Ok)) => return true,
+            Ok(Ok(SendResult::Ok)) => {
+                tracing::Span::current().record("retries", attempts);
+                return true;
+            }
             Ok(Ok(SendResult::Rejected(reason))) => {
                 eprintln!("worker_pool: worker {worker_id} batch rejected: {reason}");
                 return false;
@@ -960,6 +1030,15 @@ mod tests {
             submitted_at: std::time::Instant::now(),
             scan_ns: 0,
             transform_ns: 0,
+            batch_id: 0,
+            span: tracing::Span::none(),
+        }
+    }
+
+    fn test_metrics() -> Arc<PipelineMetrics> {
+        {
+            let meter = logfwd_test_utils::test_meter();
+            Arc::new(PipelineMetrics::new("test", "", &meter))
         }
     }
 
@@ -970,7 +1049,7 @@ mod tests {
             calls: Arc::clone(&calls),
             fail: false,
         });
-        let mut pool = OutputWorkerPool::new(factory, 4, Duration::from_secs(60));
+        let mut pool = OutputWorkerPool::new(factory, 4, Duration::from_secs(60), test_metrics());
         assert_eq!(pool.worker_count(), 0);
 
         pool.submit(empty_work_item()).await;
@@ -993,7 +1072,7 @@ mod tests {
             fail: false,
         });
         // max_workers=4, but all items should go to the same worker (MRU).
-        let mut pool = OutputWorkerPool::new(factory, 4, Duration::from_secs(60));
+        let mut pool = OutputWorkerPool::new(factory, 4, Duration::from_secs(60), test_metrics());
 
         // Submit 3 items sequentially (each after the previous is received).
         for _ in 0..3 {
@@ -1015,7 +1094,7 @@ mod tests {
             calls: Arc::clone(&calls),
             fail: false,
         });
-        let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60));
+        let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60), test_metrics());
 
         pool.submit(empty_work_item()).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1034,7 +1113,7 @@ mod tests {
             calls: Arc::clone(&calls),
             fail: true,
         });
-        let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(60));
+        let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(60), test_metrics());
 
         pool.submit(empty_work_item()).await;
         // Allow retries to exhaust (4 attempts × 100ms-400ms backoff ≈ 700ms).
@@ -1055,7 +1134,7 @@ mod tests {
             fail: false,
         });
         // max 2 workers
-        let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60));
+        let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60), test_metrics());
 
         // Submit many items quickly to saturate channels.
         for _ in 0..10 {
@@ -1077,7 +1156,7 @@ mod tests {
             calls: Arc::clone(&calls),
             fail: false,
         });
-        let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60));
+        let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60), test_metrics());
 
         for _ in 0..5 {
             pool.submit(empty_work_item()).await;

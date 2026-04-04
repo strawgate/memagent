@@ -49,6 +49,33 @@ To temporarily **disable** sccache (e.g. for debugging):
 RUSTC_WRAPPER="" cargo build
 ```
 
+## Faster linking (optional)
+
+Linking is often 30–50 % of incremental rebuild time. Installing a faster
+linker can significantly speed up the edit-compile cycle.
+
+**Linux — mold (recommended):**
+
+```bash
+# Ubuntu/Debian
+sudo apt install mold
+# Then add to your personal ~/.cargo/config.toml (not the repo config):
+# [target.x86_64-unknown-linux-gnu]
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+```
+
+**macOS — lld via Homebrew:**
+
+```bash
+brew install llvm
+# Then add to your personal ~/.cargo/config.toml:
+# [target.aarch64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+```
+
+This is deliberately not set in the repo's `.cargo/config.toml` to avoid
+breaking builds for developers who have not installed the linker.
+
 ## Local CPU profiling (macOS)
 
 The `cpu-profiling` feature works locally on macOS, but the shutdown path matters:
