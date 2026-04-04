@@ -367,16 +367,25 @@ export function App() {
     let backoff = pollMs;
 
     const loop = () => {
-      poll().then(
-        () => { backoff = pollMs; },                                  // success — reset backoff
-        () => { backoff = Math.min(backoff * 2, 30_000); }, // error — exponential backoff
-      ).finally(() => {
-        if (!cancelled) timer = setTimeout(loop, backoff);
-      });
+      poll()
+        .then(
+          () => {
+            backoff = pollMs;
+          }, // success — reset backoff
+          () => {
+            backoff = Math.min(backoff * 2, 30_000);
+          } // error — exponential backoff
+        )
+        .finally(() => {
+          if (!cancelled) timer = setTimeout(loop, backoff);
+        });
     };
 
     loop();
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [poll, pollMs]);
 
   const version = pipes?.system?.version ?? "?";

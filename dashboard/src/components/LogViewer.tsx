@@ -34,7 +34,10 @@ export function LogViewer() {
     };
 
     poll();
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [open]);
 
   // Auto-scroll the log container (not the page) to bottom unless user scrolled up.

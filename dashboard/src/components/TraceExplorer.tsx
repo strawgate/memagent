@@ -818,7 +818,7 @@ function autoWindow(traces: TraceRecord[]): number {
   const done = traces.filter((t) => t.total_ns > 0);
   if (done.length === 0) return WINDOW_OPTIONS[1].ms; // default 30s until data arrives
   const avgMs = done.reduce((s, t) => s + t.total_ns, 0) / done.length / 1e6;
-  if (avgMs < 500) return WINDOW_OPTIONS[0].ms;   // <0.5s batches → 5s window
+  if (avgMs < 500) return WINDOW_OPTIONS[0].ms; // <0.5s batches → 5s window
   if (avgMs < 3_000) return WINDOW_OPTIONS[1].ms; // <3s batches → 30s window
   if (avgMs < 12_000) return WINDOW_OPTIONS[2].ms; // <12s batches → 2m window
   return WINDOW_OPTIONS[3].ms;
@@ -978,7 +978,10 @@ export function TraceExplorer({ traces }: Props) {
               type="button"
               key={o.label}
               class={`t2-win-btn${windowMs === o.ms ? " active" : ""}`}
-              onClick={() => { userPickedWindowRef.current = true; setWindowMs(o.ms); }}
+              onClick={() => {
+                userPickedWindowRef.current = true;
+                setWindowMs(o.ms);
+              }}
             >
               {o.label}
             </button>

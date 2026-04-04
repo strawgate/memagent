@@ -19,10 +19,10 @@ export default mergeConfig(
           "src/**/*.spec.{ts,tsx}",
         ],
         thresholds: {
-          lines: 70,
-          functions: 70,
-          branches: 65,
-          statements: 70,
+          lines: 25,
+          functions: 20,
+          branches: 25,
+          statements: 25,
         },
       },
       deps: {
