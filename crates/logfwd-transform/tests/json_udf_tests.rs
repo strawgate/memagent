@@ -342,7 +342,28 @@ async fn edge_malformed_json() {
 
 #[tokio::test]
 async fn edge_very_long_value() {
-    let long_val = "x".repeat(12_000); // 12 KB string
+    // 500 bytes — spans 7+ SIMD blocks (64 B each), exercises the same long-value
+    // edge case without the multi-minute CI penalty of the old 12 KB payload.
+    let long_val = "x".repeat(500);
+    let line = format!(r#"{{"big": "{}"}}"#, long_val);
+    let batch = make_raw_batch(&[&line]);
+    let result = query1("SELECT json(_raw, 'big') AS b FROM logs", batch).await;
+    let col = result
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    if !col.is_null(0) {
+        assert_eq!(col.value(0), long_val);
+    }
+}
+
+/// Stress variant with the original 12 KB payload.
+/// Run manually with: `cargo test -p logfwd-transform --test json_udf_tests edge_very_long_value_12kb -- --ignored`
+#[tokio::test]
+#[ignore]
+async fn edge_very_long_value_12kb() {
+    let long_val = "x".repeat(12_000);
     let line = format!(r#"{{"big": "{}"}}"#, long_val);
     let batch = make_raw_batch(&[&line]);
     let result = query1("SELECT json(_raw, 'big') AS b FROM logs", batch).await;

@@ -62,7 +62,7 @@ input:
   format: json
 
 transform: |
-  SELECT * FROM logs WHERE duration_ms_int > 50
+  SELECT * FROM logs WHERE duration_ms > 50
 
 output:
   type: otlp
@@ -99,35 +99,40 @@ logfwd --config config.yaml
 
 The transform is the main reason to use logfwd over a plain forwarder. Every batch of parsed log records is a DataFusion SQL table named `logs`.
 
+> **Column names:** `--generate-json` produces JSON with bare field names (`level`, `message`, `status`, `duration_ms`, `request_id`, `service`, `timestamp`). For JSON sources where every row has a consistent field type, logfwd uses the bare field name as the SQL column name — no type suffix is added. See [Column naming](#column-naming) below.
+
 ```sql
 -- Forward only errors and slow requests
-SELECT level_str, message_str, duration_ms_int, status_int
+SELECT level, message, duration_ms, status
 FROM logs
-WHERE level_str = 'ERROR'
-   OR duration_ms_int > 1000
+WHERE level = 'ERROR'
+   OR duration_ms > 1000
 ```
 
 ```sql
 -- Extract a field with regex, rename columns
 SELECT
-  level_str,
-  message_str,
-  regexp_extract(message_str, 'request_id=([a-f0-9-]+)', 1) AS request_id_str,
-  status_int
+  level,
+  message,
+  regexp_extract(message, 'request_id=([a-f0-9-]+)', 1) AS request_id,
+  status
 FROM logs
-WHERE level_str IN ('ERROR', 'WARN')
-  AND status_int >= 400
+WHERE level IN ('ERROR', 'WARN')
+  AND status >= 400
 ```
 
-**Column naming:** JSON fields are suffixed with their detected type — JSON types change between log sources; suffixes keep your SQL from breaking.
+**Column naming:** logfwd always uses the bare JSON field name as the SQL column name — no type suffix is appended.
 
-| JSON type      | Column suffix | Example                                         |
+- **Consistent-type field** (same type in every row of a batch): one Arrow column with the native type — e.g. `level` (Utf8View), `status` (Int64).
+- **Mixed-type field** (different types across rows in the same batch): a conflict-struct column is produced and automatically normalized to a bare `Utf8` column. Use `int()` / `float()` UDFs for typed access.
+
+| JSON type      | Column name   | Example                                         |
 |----------------|---------------|-------------------------------------------------|
-| String         | `_str`        | `level_str`                                     |
-| Integer        | `_int`        | `status_int`                                    |
-| Float          | `_float`      | `latency_ms_float`                              |
-| Boolean        | `_str`        | `enabled_str` — stored as `"true"` / `"false"` |
-| Object / Array | `_str`        | `metadata_str` — raw JSON string                |
+| String         | bare name     | `level` (Utf8View)                              |
+| Integer        | bare name     | `status` (Int64)                                |
+| Float          | bare name     | `latency_ms` (Float64)                          |
+| Boolean        | bare name     | `enabled` (stored as `"true"` / `"false"`)      |
+| Object / Array | bare name     | `metadata` — raw JSON string                    |
 
 > Nested objects are stored as raw JSON strings, not expanded into sub-fields.
 
@@ -145,7 +150,7 @@ input:
   path: /var/log/app/*.log
   format: json
 
-transform: SELECT level_str, message_str, status_int FROM logs WHERE status_int >= 400
+transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
@@ -159,22 +164,22 @@ output:
 pipelines:
   errors:
     inputs:
-      type: file
-      path: /var/log/pods/**/*.log
-      format: cri
-    transform: SELECT * FROM logs WHERE level_str = 'ERROR'
+      - type: file
+        path: /var/log/pods/**/*.log
+        format: cri
+    transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
-      type: otlp
-      endpoint: http://otel-collector:4318
+      - type: otlp
+        endpoint: http://otel-collector:4318
 
   debug:
     inputs:
-      type: file
-      path: /var/log/pods/**/*.log
-      format: cri
+      - type: file
+        path: /var/log/pods/**/*.log
+        format: cri
     outputs:
-      type: stdout
-      format: console
+      - type: stdout
+        format: console
 ```
 
 See [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) for all YAML fields, input/output types, and enrichment tables.
@@ -189,17 +194,16 @@ Every CRI record gets these extra columns:
 
 | Column | Description |
 |--------|-------------|
-| `_file_str` | Absolute path of the source log file |
-| `_time_ns_int` | CRI timestamp in nanoseconds |
-| `_stream_str` | `stdout` or `stderr` |
+| `_timestamp` | CRI timestamp as an RFC 3339 string |
+| `_stream` | `stdout` or `stderr` |
 
-Use `_file_str` to identify which pod and container generated a record, or filter by stream:
+Use `_stream` to filter by stream:
 
 ```sql
-SELECT _time_ns_int, _stream_str, level_str, message_str
+SELECT _timestamp, _stream, level, message
 FROM logs
-WHERE _stream_str = 'stderr'
-  AND level_str = 'ERROR'
+WHERE _stream = 'stderr'
+  AND level = 'ERROR'
 ```
 
 > **Coming soon:** Kubernetes namespace/pod/container metadata enrichment (`k8s_path`) is implemented in the pipeline but not yet wired into the YAML config schema.

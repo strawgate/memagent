@@ -27,9 +27,12 @@ struct StoredBitmasks<'a> {
 /// Zero heap allocation for bitmask storage. Line boundaries and
 /// structural positions are extracted from 64-byte block bitmasks
 /// consumed on the fly.
+///
+/// # Preconditions
+/// - The caller must have already invoked `begin_batch` on the builder before
+///   this call (see [`ScanBuilder`] for the initialization contract).
 #[inline(never)]
 pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: &mut B) {
-    builder.begin_batch();
     if buf.is_empty() {
         return;
     }
@@ -424,7 +427,6 @@ mod tests {
     }
 
     impl ScanBuilder for TestBuilder {
-        fn begin_batch(&mut self) {}
         fn begin_row(&mut self) {
             self.current_row.clear();
             self.current_raw = None;
