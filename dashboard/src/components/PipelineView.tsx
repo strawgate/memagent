@@ -1,17 +1,26 @@
-import { useState, useRef } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import { fmt, fmtBytes } from "../lib/format";
-import type { PipelineData, ComponentData, TraceRecord } from "../types";
 import { RateTracker } from "../lib/rates";
+import type { ComponentData, PipelineData, TraceRecord } from "../types";
 import { TraceExplorer } from "./TraceExplorer";
+
+const POLL_OPTIONS = [
+  { label: "500ms", ms: 500 },
+  { label: "1s", ms: 1000 },
+  { label: "2s", ms: 2000 },
+  { label: "5s", ms: 5000 },
+];
 
 interface Props {
   pipeline: PipelineData;
   traces: TraceRecord[];
+  pollMs: number;
+  setPollMs: (ms: number) => void;
 }
 
 const Arrow = () => (
   <div class="pipe-conn">
-    <svg viewBox="0 0 28 14">
+    <svg viewBox="0 0 28 14" aria-hidden="true">
       <line x1="0" y1="7" x2="20" y2="7" />
       <polygon points="20,3 28,7 20,11" />
     </svg>
@@ -21,17 +30,17 @@ const Arrow = () => (
 // Human-readable label for component types coming from the server.
 function typeLabel(type: string): string {
   const map: Record<string, string> = {
-    file:       "File",
-    generator:  "Generator",
-    tcp:        "TCP",
-    udp:        "UDP",
-    otlp:       "OTLP",
-    otlpgrpc:   "OTLP/gRPC",
-    loki:       "Loki",
+    file: "File",
+    generator: "Generator",
+    tcp: "TCP",
+    udp: "UDP",
+    otlp: "OTLP",
+    otlpgrpc: "OTLP/gRPC",
+    loki: "Loki",
     elasticsearch: "Elasticsearch",
-    parquet:    "Parquet",
-    stdout:     "Stdout",
-    null:       "Null",
+    parquet: "Parquet",
+    stdout: "Stdout",
+    null: "Null",
   };
   return map[type.toLowerCase()] ?? type;
 }
@@ -41,16 +50,15 @@ function isGenericName(name: string): boolean {
   return /^(input|output)_\d+$/.test(name);
 }
 
-export function PipelineView({ pipeline: p, traces }: Props) {
-  const [sel, setSel]             = useState<string | null>(null);
-  const [tracesOpen, setTracesOpen] = useState(false);
+export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) {
+  const [sel, setSel] = useState<string | null>(null);
   const ratesRef = useRef(new RateTracker());
 
   const toggle = (id: string) => setSel(sel === id ? null : id);
 
   const compRate = (comp: ComponentData, field: "lines_total" | "bytes_total") => {
     const v = ratesRef.current.rate(`${comp.name}_${field}`, comp[field]);
-    return v != null ? fmt(v) + "/s" : "-";
+    return v != null ? `${fmt(v)}/s` : "-";
   };
 
   return (
@@ -66,20 +74,32 @@ export function PipelineView({ pipeline: p, traces }: Props) {
             >
               <div class="pn-type">{typeLabel(inp.type)}</div>
               {!isGenericName(inp.name) && <div class="pn-name">{inp.name}</div>}
-              <div class="pn-row"><span>lines</span><b>{fmt(inp.lines_total)}</b></div>
-              <div class="pn-row"><span>bytes</span><b>{fmtBytes(inp.bytes_total)}</b></div>
-              <div class="pn-row"><span>rate</span><b>{compRate(inp, "lines_total")}</b></div>
+              <div class="pn-row">
+                <span>lines</span>
+                <b>{fmt(inp.lines_total)}</b>
+              </div>
+              <div class="pn-row">
+                <span>bytes</span>
+                <b>{fmtBytes(inp.bytes_total)}</b>
+              </div>
+              <div class="pn-row">
+                <span>rate</span>
+                <b>{compRate(inp, "lines_total")}</b>
+              </div>
             </div>
           </>
         ))}
         <Arrow />
-        <div
-          class={`pn xfm ${sel === "t" ? "selected" : ""}`}
-          onClick={() => toggle("t")}
-        >
+        <div class={`pn xfm ${sel === "t" ? "selected" : ""}`} onClick={() => toggle("t")}>
           <div class="pn-type">SQL</div>
-          <div class="pn-row"><span>in</span><b>{fmt(p.transform.lines_in)}</b></div>
-          <div class="pn-row"><span>out</span><b>{fmt(p.transform.lines_out)}</b></div>
+          <div class="pn-row">
+            <span>in</span>
+            <b>{fmt(p.transform.lines_in)}</b>
+          </div>
+          <div class="pn-row">
+            <span>out</span>
+            <b>{fmt(p.transform.lines_out)}</b>
+          </div>
           <div class="pn-row">
             <span>drop</span>
             <b style={p.transform.filter_drop_rate > 0.05 ? "color:var(--warn)" : ""}>
@@ -97,8 +117,14 @@ export function PipelineView({ pipeline: p, traces }: Props) {
             >
               <div class="pn-type">{typeLabel(out.type)}</div>
               {!isGenericName(out.name) && <div class="pn-name">{out.name}</div>}
-              <div class="pn-row"><span>lines</span><b>{fmt(out.lines_total)}</b></div>
-              <div class="pn-row"><span>bytes</span><b>{fmtBytes(out.bytes_total)}</b></div>
+              <div class="pn-row">
+                <span>lines</span>
+                <b>{fmt(out.lines_total)}</b>
+              </div>
+              <div class="pn-row">
+                <span>bytes</span>
+                <b>{fmtBytes(out.bytes_total)}</b>
+              </div>
               <div class="pn-row">
                 <span>errors</span>
                 <b style={out.errors > 0 ? "color:var(--err)" : ""}>{out.errors}</b>
@@ -113,73 +139,150 @@ export function PipelineView({ pipeline: p, traces }: Props) {
         <div class="inspector">
           <div class="insp-header">
             <span class="insp-title">Transform &mdash; SQL</span>
-            <button class="insp-close" onClick={() => setSel(null)}>&times; close</button>
+            <button type="button" class="insp-close" onClick={() => setSel(null)}>
+              &times; close
+            </button>
           </div>
           <div class="sql-box">{p.transform.sql || "SELECT * FROM logs"}</div>
           <div class="insp-grid">
-            <div class="insp-kv"><div class="ik-l">Lines In</div><div class="ik-v">{fmt(p.transform.lines_in)}</div></div>
-            <div class="insp-kv"><div class="ik-l">Lines Out</div><div class="ik-v">{fmt(p.transform.lines_out)}</div></div>
-            <div class="insp-kv"><div class="ik-l">Drop Rate</div><div class="ik-v">{(p.transform.filter_drop_rate * 100).toFixed(1)}%</div></div>
-            {p.stage_seconds?.scan != null && <div class="insp-kv"><div class="ik-l">Scan Time</div><div class="ik-v">{p.stage_seconds.scan.toFixed(3)}s</div></div>}
-            {p.stage_seconds?.transform != null && <div class="insp-kv"><div class="ik-l">Transform Time</div><div class="ik-v">{p.stage_seconds.transform.toFixed(3)}s</div></div>}
+            <div class="insp-kv">
+              <div class="ik-l">Lines In</div>
+              <div class="ik-v">{fmt(p.transform.lines_in)}</div>
+            </div>
+            <div class="insp-kv">
+              <div class="ik-l">Lines Out</div>
+              <div class="ik-v">{fmt(p.transform.lines_out)}</div>
+            </div>
+            <div class="insp-kv">
+              <div class="ik-l">Drop Rate</div>
+              <div class="ik-v">{(p.transform.filter_drop_rate * 100).toFixed(1)}%</div>
+            </div>
+            {p.stage_seconds?.scan != null && (
+              <div class="insp-kv">
+                <div class="ik-l">Scan Time</div>
+                <div class="ik-v">{p.stage_seconds.scan.toFixed(3)}s</div>
+              </div>
+            )}
+            {p.stage_seconds?.transform != null && (
+              <div class="insp-kv">
+                <div class="ik-l">Transform Time</div>
+                <div class="ik-v">{p.stage_seconds.transform.toFixed(3)}s</div>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {sel?.startsWith("i") && (() => {
-        const idx = parseInt(sel.slice(1));
-        const inp = p.inputs[idx];
-        if (!inp) return null;
-        return (
-          <div class="inspector">
-            <div class="insp-header">
-              <span class="insp-title">Input &mdash; {typeLabel(inp.type)}{!isGenericName(inp.name) ? ` · ${inp.name}` : ""}</span>
-              <button class="insp-close" onClick={() => setSel(null)}>&times; close</button>
+      {sel?.startsWith("i") &&
+        (() => {
+          const idx = parseInt(sel.slice(1), 10);
+          const inp = p.inputs[idx];
+          if (!inp) return null;
+          return (
+            <div class="inspector">
+              <div class="insp-header">
+                <span class="insp-title">
+                  Input &mdash; {typeLabel(inp.type)}
+                  {!isGenericName(inp.name) ? ` · ${inp.name}` : ""}
+                </span>
+                <button type="button" class="insp-close" onClick={() => setSel(null)}>
+                  &times; close
+                </button>
+              </div>
+              <div class="insp-grid">
+                <div class="insp-kv">
+                  <div class="ik-l">Type</div>
+                  <div class="ik-v">{typeLabel(inp.type)}</div>
+                </div>
+                {!isGenericName(inp.name) && (
+                  <div class="insp-kv">
+                    <div class="ik-l">Name</div>
+                    <div class="ik-v">{inp.name}</div>
+                  </div>
+                )}
+                <div class="insp-kv">
+                  <div class="ik-l">Lines</div>
+                  <div class="ik-v">{fmt(inp.lines_total)}</div>
+                </div>
+                <div class="insp-kv">
+                  <div class="ik-l">Bytes</div>
+                  <div class="ik-v">{fmtBytes(inp.bytes_total)}</div>
+                </div>
+                <div class="insp-kv">
+                  <div class="ik-l">Errors</div>
+                  <div class="ik-v">{inp.errors}</div>
+                </div>
+              </div>
             </div>
-            <div class="insp-grid">
-              <div class="insp-kv"><div class="ik-l">Type</div><div class="ik-v">{typeLabel(inp.type)}</div></div>
-              {!isGenericName(inp.name) && <div class="insp-kv"><div class="ik-l">Name</div><div class="ik-v">{inp.name}</div></div>}
-              <div class="insp-kv"><div class="ik-l">Lines</div><div class="ik-v">{fmt(inp.lines_total)}</div></div>
-              <div class="insp-kv"><div class="ik-l">Bytes</div><div class="ik-v">{fmtBytes(inp.bytes_total)}</div></div>
-              <div class="insp-kv"><div class="ik-l">Errors</div><div class="ik-v">{inp.errors}</div></div>
-            </div>
-          </div>
-        );
-      })()}
+          );
+        })()}
 
-      {sel?.startsWith("o") && (() => {
-        const idx = parseInt(sel.slice(1));
-        const out = p.outputs[idx];
-        if (!out) return null;
-        return (
-          <div class="inspector">
-            <div class="insp-header">
-              <span class="insp-title">Output &mdash; {typeLabel(out.type)}{!isGenericName(out.name) ? ` · ${out.name}` : ""}</span>
-              <button class="insp-close" onClick={() => setSel(null)}>&times; close</button>
+      {sel?.startsWith("o") &&
+        (() => {
+          const idx = parseInt(sel.slice(1), 10);
+          const out = p.outputs[idx];
+          if (!out) return null;
+          return (
+            <div class="inspector">
+              <div class="insp-header">
+                <span class="insp-title">
+                  Output &mdash; {typeLabel(out.type)}
+                  {!isGenericName(out.name) ? ` · ${out.name}` : ""}
+                </span>
+                <button type="button" class="insp-close" onClick={() => setSel(null)}>
+                  &times; close
+                </button>
+              </div>
+              <div class="insp-grid">
+                <div class="insp-kv">
+                  <div class="ik-l">Type</div>
+                  <div class="ik-v">{typeLabel(out.type)}</div>
+                </div>
+                {!isGenericName(out.name) && (
+                  <div class="insp-kv">
+                    <div class="ik-l">Name</div>
+                    <div class="ik-v">{out.name}</div>
+                  </div>
+                )}
+                <div class="insp-kv">
+                  <div class="ik-l">Lines</div>
+                  <div class="ik-v">{fmt(out.lines_total)}</div>
+                </div>
+                <div class="insp-kv">
+                  <div class="ik-l">Bytes</div>
+                  <div class="ik-v">{fmtBytes(out.bytes_total)}</div>
+                </div>
+                <div class="insp-kv">
+                  <div class="ik-l">Errors</div>
+                  <div class="ik-v" style={out.errors > 0 ? "color:var(--err)" : ""}>
+                    {out.errors}
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="insp-grid">
-              <div class="insp-kv"><div class="ik-l">Type</div><div class="ik-v">{typeLabel(out.type)}</div></div>
-              {!isGenericName(out.name) && <div class="insp-kv"><div class="ik-l">Name</div><div class="ik-v">{out.name}</div></div>}
-              <div class="insp-kv"><div class="ik-l">Lines</div><div class="ik-v">{fmt(out.lines_total)}</div></div>
-              <div class="insp-kv"><div class="ik-l">Bytes</div><div class="ik-v">{fmtBytes(out.bytes_total)}</div></div>
-              <div class="insp-kv"><div class="ik-l">Errors</div><div class="ik-v" style={out.errors > 0 ? "color:var(--err)" : ""}>{out.errors}</div></div>
-            </div>
-          </div>
-        );
-      })()}
+          );
+        })()}
 
-      {/* Batch traces — timeline always visible, list shown when expanded */}
+      {/* Batch traces — always visible */}
       {traces.length > 0 && (
         <div class="pipe-traces">
-          <button
-            class="pipe-traces-toggle"
-            onClick={() => setTracesOpen(!tracesOpen)}
-          >
+          <div class="pipe-traces-header">
             <span>Batch Traces</span>
             <span class="pipe-traces-count">{traces.length} recent</span>
-            <span class="pipe-traces-chevron">{tracesOpen ? "▲" : "▼"}</span>
-          </button>
-          <TraceExplorer traces={traces} collapsed={!tracesOpen} />
+            <div class="t2-window-picker" style="margin-left:auto">
+              {POLL_OPTIONS.map((o) => (
+                <button
+                  type="button"
+                  key={o.label}
+                  class={`t2-win-btn${pollMs === o.ms ? " active" : ""}`}
+                  onClick={() => setPollMs(o.ms)}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <TraceExplorer traces={traces} />
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { api } from "../api";
 import type { ConfigResponse } from "../types";
 
@@ -44,7 +44,9 @@ export function ConfigView() {
           dangerouslySetInnerHTML={{ __html: highlightYaml(config.raw_yaml || "(no config)") }}
         />
       ) : (
-        <div class="yaml" style="color:var(--t4)">loading&hellip;</div>
+        <div class="yaml" style="color:var(--t4)">
+          loading&hellip;
+        </div>
       )}
     </div>
   );

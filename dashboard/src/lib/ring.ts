@@ -28,6 +28,28 @@ export class RingBuffer {
     return this.data.filter((d) => d.t >= cutoff);
   }
 
+  /**
+   * Return points averaged into fixed-width time buckets.
+   * e.g. bucketMs=5000 → one averaged point per 5 seconds.
+   */
+  bucket(bucketMs: number, maxAgeMs: number = 5 * 60 * 1000): DataPoint[] {
+    if (!Number.isFinite(bucketMs) || bucketMs <= 0) return [];
+    const raw = this.points(maxAgeMs);
+    if (raw.length === 0) return [];
+    const map = new Map<number, { sum: number; count: number }>();
+    for (const p of raw) {
+      const key = Math.floor(p.t / bucketMs) * bucketMs;
+      const entry = map.get(key);
+      if (entry) {
+        entry.sum += p.v;
+        entry.count++;
+      } else map.set(key, { sum: p.v, count: 1 });
+    }
+    return [...map.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([t, { sum, count }]) => ({ t: t + bucketMs / 2, v: sum / count }));
+  }
+
   get length(): number {
     return this.data.length;
   }

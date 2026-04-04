@@ -40,6 +40,71 @@ jobs:
               - 'crates/logfwd-core/**'
 
   # -------------------------------------------------------------------------
+  # Frontend checks — format, lint, typecheck run in parallel via matrix
+  # -------------------------------------------------------------------------
+  frontend-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [format, lint, typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+
+      - name: biome format check
+        if: matrix.check == 'format'
+        run: npx biome check .
+
+      - name: oxlint
+        if: matrix.check == 'lint'
+        run: npx oxlint .
+
+      - name: typecheck
+        if: matrix.check == 'typecheck'
+        uses: actions/cache@v4
+        with:
+          path: dashboard/tsconfig.tsbuildinfo
+          key: tsc-${{ hashFiles('dashboard/src/**/*.ts', 'dashboard/src/**/*.tsx', 'dashboard/tsconfig.app.json') }}
+      - name: run tsgo
+        if: matrix.check == 'typecheck'
+        working-directory: dashboard
+        run: npx tsgo --noEmit
+
+  # -------------------------------------------------------------------------
+  # Frontend tests — vitest with coverage
+  # -------------------------------------------------------------------------
+  frontend-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - name: vitest
+        run: npx vitest run --coverage
+      - name: upload coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: dashboard/coverage/
+
+  # -------------------------------------------------------------------------
   # Lint: fast checks (fmt, TOML, typos, actionlint) then clippy + audits.
   # Combined into one job to save a runner — fast checks fail-fast before
   # the expensive clippy build starts.
