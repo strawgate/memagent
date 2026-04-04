@@ -74,14 +74,14 @@ transform: |
   SELECT
     _timestamp,
     _stream,
-    level_str,
-    message_str,
-    status_int,
-    duration_ms_float,
-    regexp_extract(_file_str, '/([^/]+)/[^/]+\\.log$', 1) AS pod_name_str
+    level,
+    message,
+    status,
+    duration_ms,
+    regexp_extract(_source_path, '/([^/]+)/[^/]+\\.log$', 1) AS pod_name
   FROM logs
-  WHERE level_str IN ('ERROR', 'WARN')
-    AND status_int >= 400
+  WHERE level IN ('ERROR', 'WARN')
+    AND status >= 400
 
 output:
   type: elasticsearch
@@ -100,7 +100,7 @@ pipelines:
       type: file
       path: /var/log/app/*.log
       format: json
-    transform: SELECT * FROM logs WHERE level_str = 'ERROR'
+    transform: SELECT * FROM logs WHERE level = 'ERROR'
     output:
       type: elasticsearch
       endpoint: http://elasticsearch:9200
@@ -111,7 +111,7 @@ pipelines:
       type: file
       path: /var/log/nginx/access.log
       format: json
-    transform: SELECT * FROM logs WHERE status_int >= 200
+    transform: SELECT * FROM logs WHERE status >= 200
     output:
       type: elasticsearch
       endpoint: http://elasticsearch:9200
@@ -156,9 +156,9 @@ transform: |
   SELECT
     _timestamp,
     _stream,
-    level_str,
-    message_str,
-    _file_str AS source_file_str
+    level,
+    message,
+    _source_path AS source_file
   FROM logs
 
 output:

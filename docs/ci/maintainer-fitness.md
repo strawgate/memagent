@@ -30,27 +30,19 @@ adding abstractions that are not immediately needed.
 
 ## Phase Alignment — Is This the Right Time?
 
-logfwd has a 10-phase roadmap. Read `dev-docs/PHASES.md` to determine which phases
-are currently in-progress (marked without `✅ DONE`), which tasks within each
-in-progress phase are next (listed without `✅ DONE` under the phase), and which
-phases are not yet started. The "Parallel work" table at the bottom of `PHASES.md`
-lists production-severity issues that take priority over phase work.
+logfwd tracks its roadmap in a pinned GitHub issue:
+https://github.com/strawgate/memagent/issues/889
 
-Using the live content of `dev-docs/PHASES.md`:
-- Flag PRs that implement a future-phase task while an earlier phase has incomplete
-  tasks (skipping is acceptable only when the earlier phase has a documented blocker
+Check that issue to determine which work is in-progress, which is next, and
+which is blocked. Using the live content of that issue:
+- Flag PRs that implement future work while earlier tasks have incomplete
+  checkboxes (skipping is acceptable only when there is a documented blocker
   and the future work is independent).
-- Flag PRs that add scope explicitly deferred to a later phase ("after Phase N"
-  language in `PHASES.md`).
-- Flag PRs that revert completed (`✅ DONE`) phase work without a reason.
+- Flag PRs that add scope explicitly deferred to a later phase.
+- Flag PRs that revert completed work without a reason.
 
-If the PR references a specific phase or task ("implements Phase 5c"), verify
-the implementation matches the sub-task description in `PHASES.md`. If it
-completes a task, the task must be marked `✅ DONE` with the PR number.
-
-Check the "Parallel work" table in `PHASES.md` for open production-severity issues.
-If any are listed without a resolution, flag any PR adding non-critical features
-and ask whether this PR is more urgent than those issues.
+If the PR references a specific roadmap task, verify the implementation
+matches the task description in the issue.
 
 
 ## Performance and Hot Path Risk
@@ -91,14 +83,14 @@ as a "fix" — is a behavior change that will silently alter query results for
 operators. Require an explicit ADR in `DESIGN.md`, a `CONFIG_REFERENCE.md` update,
 and an announcement in the PR description that this is a breaking semantic change.
 
-Type conflict column names use double-underscore suffixes: when a field named
-"status" appears as both an integer and a string in the same batch, the columns
-are named `status__int` and `status__str` (not `status_int` / `status_str` — those
-were the old single-underscore names). Any PR that changes the suffix separator,
-the suffix vocabulary, or the conflict detection logic must: (1) update
-`docs/COLUMN_NAMING.md` with examples, (2) update the `logfwd.conflict_groups`
-metadata schema description, and (3) check whether the SQL rewriter (currently
-pending deletion in Phase 10c) or any existing tests reference the old format.
+Type conflict columns use Arrow `StructArray` format: when a field named
+"status" appears as both an integer and a string in the same batch, the column
+is `status: Struct { int: Int64, str: Utf8View }`. Conflict structs are
+detected by `is_conflict_struct()` in `crates/logfwd-arrow/src/conflict_schema.rs`.
+Any PR that changes the conflict detection logic, the child field names, or
+the `normalize_conflict_columns()` SQL flattening must: (1) update the
+"Column naming convention" section in `book/src/config/reference.md` with
+examples, and (2) check whether existing tests reference the old format.
 
 
 ## No Feature Flags, No Dead Code, No Speculative Abstractions

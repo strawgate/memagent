@@ -1,5 +1,9 @@
 # Proven kernel architectures in Rust: what works today
 
+> **Status:** Historical
+> **Date:** 2026-03
+> **Context:** Survey of rustls, s2n-quic, CosmWasm, and others for proven kernel patterns.
+
 **The most effective pattern for separating a "proven core" in Rust combines three mechanisms: a dedicated `no_std` crate, `#![forbid(unsafe_code)]`, and trait-based abstraction at the boundary.** This is not theoretical — projects like rustls, s2n-quic, and CosmWasm ship production code with this architecture, and AWS runs Kani formal verification in CI on s2n-quic-core with every pull request. The pattern works, but the real-world evidence reveals sharp tradeoffs: the orphan rule is a show-stopping blocker for some projects, `no_std` eliminates HashMap, and no existing tool enforces per-crate dependency policies within a workspace.
 
 ## Six projects, three distinct strategies

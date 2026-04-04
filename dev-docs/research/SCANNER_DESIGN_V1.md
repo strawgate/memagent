@@ -1,8 +1,8 @@
-> **Historical reference** from the v1 implementation. See [ARCHITECTURE.md](../ARCHITECTURE.md) for the current design.
-
----
-
 # Scanner and Transform Design
+
+> **Status:** Historical
+> **Date:** 2026-03
+> **Context:** Design rationale from the v1 Arrow-first pipeline, superseded by current implementation.
 
 Design rationale for the Arrow-first pipeline. The implementations are in
 `scanner.rs`, `batch_builder.rs`, `transform.rs`, and `output.rs`.

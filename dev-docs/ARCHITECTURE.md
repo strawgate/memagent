@@ -55,23 +55,28 @@ pipeline — everything downstream references it instead of copying.
 ### 2. Framing: raw bytes → complete lines
 
 ```
-Vec<u8> → FormatParser::process() → newline-delimited JSON in buffer
+Vec<u8> → FramedInput::poll() → newline-delimited JSON in buffer
 ```
 
-**FormatParser** (`logfwd-core/src/format.rs`) handles three formats:
+**FramedInput** (`logfwd-io/src/framed.rs`) combines format detection
+with per-source remainder tracking. It handles three formats:
 
-- **JsonParser**: Lines are already JSON. Splits on `\n`, carries
-  partial lines across reads.
-- **CriParser**: Kubernetes container log format. Parses timestamp,
+- **Json**: Lines are already JSON. Splits on `\n`, carries
+  partial lines across reads via per-source remainder buffers.
+- **Cri**: Kubernetes container log format. Parses timestamp,
   stream, flags, message. Reassembles P (partial) lines into complete
-  messages. Returns JSON-wrapped output.
-- **RawParser**: Wraps each line as `{"_raw":"<escaped>"}`.
+  messages. Injects `_timestamp` and `_stream` as JSON fields.
+- **Raw**: Wraps each line as `{"_raw":"<escaped>"}`.
 
-All parsers accumulate output into a shared `json_buf: Vec<u8>`.
-This is the **first unnecessary copy** — the data already exists in
-the read buffer.
+**NewlineFramer** (`logfwd-core/src/framer.rs`): fixed-size
+output (4096 lines, 64KB stack), no heap, Kani-proven. It returns byte
+ranges into the input buffer — zero-copy.
 
-**Target:** Replace FormatParser with a layered model (#303):
+**CriAggregator** (`logfwd-core/src/aggregator.rs`):
+zero-copy for F-only lines (99% of traffic), copies only for P+F
+reassembly. Kani-proven.
+
+**Target:** Replace the copy-based framing with a layered zero-copy model (#303):
 
 ```
 Bytes → StructuralIndex::new(buf)     [ONE SIMD pass, all characters]
@@ -79,14 +84,6 @@ Bytes → StructuralIndex::new(buf)     [ONE SIMD pass, all characters]
       → CriAggregator (if CRI format) [merges P/F partials]
       → Scanner                        [consumes remaining bitmasks]
 ```
-
-NewlineFramer (`logfwd-core/src/framer.rs`) already exists: fixed-size
-output (4096 lines, 64KB stack), no heap, Kani-proven. It returns byte
-ranges into the input buffer — zero-copy.
-
-CriAggregator (`logfwd-core/src/aggregator.rs`) already exists:
-zero-copy for F-only lines (99% of traffic), copies only for P+F
-reassembly. Kani-proven.
 
 ### 3. Structural classification: SIMD pre-pass
 
@@ -146,9 +143,10 @@ logfwd-core (proven, no_std). It doesn't know about Arrow — it
 calls trait methods that logfwd-arrow implements.
 
 **ScanConfig** controls which fields to extract (field pushdown from
-SQL analysis) and type detection. Fields are typed per-value: the
-same key can produce `status_int` and `status_str` columns if some
-rows have integers and others have strings.
+SQL analysis) and type detection. Fields are typed per-value: when a
+field has a single type across all rows it gets a bare column name
+(`status` as `Int64`). When a field has mixed types, the builder emits
+a `StructArray` conflict column (`status: Struct { int, str }`).
 
 ### 5. Building: typed fields → Arrow RecordBatch
 
@@ -203,8 +201,9 @@ RecordBatch → OutputSink::send_batch() → HTTP/stdout/file
 **OutputSink** (`logfwd-output/src/lib.rs`) implementations:
 
 - **OtlpSink**: Encodes RecordBatch → OTLP protobuf, sends via HTTP.
-  Handles resource attributes, observed timestamps, column type
-  suffixes (`_int`, `_str`, `_float`).
+  Handles resource attributes, observed timestamps, DataType-based dispatch.
+- **ElasticsearchAsyncSink**: Bulk API with retry, compression, async reqwest.
+- **LokiAsyncSink**: Loki push API with label grouping, dedup, async reqwest.
 - **JsonLinesSink**: Converts RecordBatch → newline-delimited JSON,
   sends via HTTP with zstd compression.
 - **StdoutSink**: Renders to terminal (JSON, console, or text format).
@@ -221,14 +220,15 @@ logfwd-core defines          logfwd-arrow implements
 ScanBuilder                   StreamingBuilder
                               StorageBuilder
 
-logfwd-core defines          logfwd-io implements
-──────────────────────────    ──────────────────────────
-InputSource                   FileInput
-                              (future: ArrowIpcInput, OtapReceiver)
+logfwd-io defines + implements
+──────────────────────────────────────────
+InputSource trait              FileInput, TcpInput, UdpInput,
+                               OtlpReceiverInput
 
-logfwd-core defines          logfwd-output implements
-──────────────────────────    ──────────────────────────
-OutputSink                    OtlpSink, JsonLinesSink, StdoutSink
+logfwd-output defines + implements
+──────────────────────────────────────────
+OutputSink / Sink traits       OtlpSink, ElasticsearchAsyncSink,
+                               LokiAsyncSink, JsonLinesSink, StdoutSink
 ```
 
 The binary crate (`logfwd`) wires these together in `pipeline.rs`.
@@ -242,7 +242,7 @@ loop {
     select! {
         // Receive from input threads via bounded channel
         msg = rx.recv() => {
-            // Append to json_buf via FormatParser
+            // Append to json_buf via FramedInput
             // If buf >= batch_target_bytes OR timer expired:
             //   flush_batch(json_buf)
         }
@@ -306,4 +306,4 @@ selection guidance, proof quality requirements, and per-module status.
 - `dev-docs/DESIGN.md` — vision, goals, and architecture decision records
 - `dev-docs/VERIFICATION.md` — verification tiers, tool selection, per-module status
 - `dev-docs/CRATE_RULES.md` — per-crate enforcement rules
-- `dev-docs/PHASES.md` — implementation roadmap with issue references
+- [Roadmap (GitHub issue #889)](https://github.com/strawgate/memagent/issues/889) — implementation phases with issue references

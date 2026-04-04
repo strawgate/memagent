@@ -1,8 +1,8 @@
 # File Tailing Audit
 
-Date: 2026-04-02
-Context: End-to-end audit of logfwd's file reading path. Research into
-how production collectors solve each problem informs the options below.
+> **Status:** Active
+> **Date:** 2026-04-02
+> **Context:** End-to-end audit of the file tailing path with recommendations from production collector research.
 
 ## Data Flow Diagram
 

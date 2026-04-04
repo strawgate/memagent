@@ -1,5 +1,9 @@
 # Formal verification limits for a Rust data processing kernel
 
+> **Status:** Historical
+> **Date:** 2026-03
+> **Context:** Research on Kani's practical input-size bounds and TLA+ complementary role.
+
 **Kani can prove meaningful safety and correctness properties for roughly 60–80% of a data pipeline's pure logic, but only within strict input-size bounds — typically 10–20 bytes for complex parsing, ~8 state transitions for protocol sequences, and full 64-bit range for loop-free bitwise operations.** Temporal properties like liveness and fairness fall entirely outside Kani's reach and require TLA+ at the design level. The most productive strategy is a two-layer architecture: decompose the kernel into small, pure, independently verifiable functions (bitmask logic, field accumulation, encode/decode roundtrips), prove those with Kani using compositional contracts, and model the pipeline's scheduling and progress guarantees in TLA+. Alternative tools — particularly Verus for unsafe systems code and EverParse for binary format parsing — extend the verification frontier beyond what bounded model checking alone can achieve.
 
 ---

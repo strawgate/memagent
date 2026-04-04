@@ -1,5 +1,9 @@
 # Raw-First Architecture
 
+> **Status:** Historical
+> **Date:** 2026-03
+> **Context:** Design decision for readers producing raw lines with SQL as schema declaration.
+
 Context: #445, #625
 
 ## Design

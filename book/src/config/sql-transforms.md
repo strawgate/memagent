@@ -5,17 +5,23 @@ line becomes a row in a virtual `logs` table.
 
 ## Column naming
 
-The JSON scanner creates typed columns with suffixes:
-- `field_str` — string value (Utf8)
-- `field_int` — integer value (Int64)
-- `field_float` — float value (Float64)
+The JSON scanner creates columns using **bare field names** with native Arrow types:
+- `level` — Utf8View (string)
+- `status` — Int64 (integer)
+- `latency_ms` — Float64 (float)
 
-The SQL rewriter automatically translates bare column names, so you can write:
+Use bare names directly in SQL:
 
 ```sql
 SELECT * FROM logs WHERE level = 'ERROR'
--- automatically becomes: WHERE level_str = 'ERROR'
 ```
+
+When a field has mixed types across rows (e.g., `status` is sometimes an int,
+sometimes a string), the builder emits a `StructArray` conflict column
+(`status: Struct { int: Int64, str: Utf8View }`).
+Before SQL execution, conflict columns are normalized to flat `Utf8` columns
+via `COALESCE(CAST(int AS Utf8), CAST(float AS Utf8), str)`.
+Use `int(status)` or `float(status)` for numeric operations on these columns.
 
 ## Examples
 

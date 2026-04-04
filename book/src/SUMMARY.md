@@ -27,6 +27,10 @@
 - [SIMD Scanner](./architecture/scanner.md)
 - [Performance](./architecture/performance.md)
 
+# Troubleshooting
+
+- [Troubleshooting](./troubleshooting.md)
+
 # Development
 
 - [Contributing](./development/contributing.md)

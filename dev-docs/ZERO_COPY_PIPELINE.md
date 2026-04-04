@@ -11,7 +11,7 @@ and simd-json. See issue #302 for the original discussion.
 ```
 Tailer reads into read_buf: [u8; 8192]
   → COPY 1: extend_from_slice into result: Vec<u8> (new alloc per read)
-  → FormatParser::process(&bytes, &mut json_buf)
+  → FramedInput::process(&bytes, &mut json_buf)
     → COPY 2: extend_from_slice every line into json_buf: Vec<u8>
     → partial: Vec<u8> holds tail bytes (copy on every partial)
   → json_buf → Bytes (move, not copy)
@@ -122,7 +122,7 @@ IPC file reader.
 |-----------|---------|--------|
 | Tailer output | `Vec<u8>` per read | `Bytes` (reusable BytesMut) |
 | InputEvent | `Data { bytes: Vec<u8> }` | `Data { bytes: Bytes }` |
-| FormatParser | `process(&[u8], &mut Vec<u8>)` | Replaced by Framer trait |
+| FramedInput | `process(&[u8], &mut Vec<u8>)` | Replaced by Framer trait |
 | json_buf accumulation | `Vec<u8>` copy of all lines | Eliminated — scanner operates on original Bytes |
 | CRI reassembly | Copy every line | Zero-copy for F lines, copy only for P+F |
 | Scanner input | `Vec<u8>` → `Bytes` conversion | Receives `Bytes` directly |

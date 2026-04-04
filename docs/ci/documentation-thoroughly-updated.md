@@ -17,7 +17,7 @@ to `logfwd-core` that participates in the data flow, the data flow diagram chang
 changes (new trait added in core that another crate implements), or the buffer
 lifecycle section changes (new copy introduced or eliminated). The document
 describes the full pipeline from disk to wire:
-disk → FileTailer → FormatParser → ChunkIndex → scanner → ScanBuilder →
+disk → FileTailer → FramedInput → ChunkIndex → scanner → ScanBuilder →
 RecordBatch → SqlTransform → OutputSink.
 Any new participant in this chain must appear in `ARCHITECTURE.md`. The document
 also tracks the "Target" state (zero-copy Bytes pipeline, StructuralIndex);
@@ -68,7 +68,7 @@ any other area where the correct behavior is subtle, consider whether a lesson
 is warranted.
 
 
-## CONFIG_REFERENCE.md (`docs/CONFIG_REFERENCE.md`)
+## CONFIG_REFERENCE.md (`book/src/config/reference.md`)
 
 Update required when: a new configuration field is added to any config struct in
 `logfwd-config`, an existing field's type or semantics change, a new SQL UDF is
@@ -80,15 +80,17 @@ showing the field in context. Omitting any of these makes the config reference
 incomplete for operators.
 
 
-## COLUMN_NAMING.md (`docs/COLUMN_NAMING.md`)
+## Column Naming (in `book/src/config/reference.md`, "Column naming convention" section)
 
-Update required when: the type conflict suffix format changes (currently double-
-underscore: `status__int`, `status__str`), the conflict detection logic changes,
-the definition of "type conflict" changes, the first-write-wins behavior for
-duplicate keys changes, or the bare-name-by-default behavior changes. This
-document is what operators use to write SQL queries against log columns — if
-it is wrong, their queries break silently. Include before/after examples showing
-input JSON and resulting column names for all affected cases.
+Update required when: the type conflict format changes (currently StructArray
+with typed children: `status: Struct { int: Int64, str: Utf8View }`), the
+conflict detection logic in `is_conflict_struct()` changes, the definition of
+"type conflict" changes, the first-write-wins behavior for duplicate keys
+changes, or the bare-name-by-default behavior changes. The column naming
+section in the Configuration Reference is what operators use to write SQL
+queries against log columns — if it is wrong, their queries break silently.
+Include before/after examples showing input JSON and resulting column names
+for all affected cases.
 
 
 ## CRATE_RULES.md (`dev-docs/CRATE_RULES.md`)
@@ -102,17 +104,15 @@ deciding what to add to which crate — inaccuracy causes agents to add the wron
 dependency to the wrong crate.
 
 
-## PHASES.md (`dev-docs/PHASES.md`)
+## Roadmap (GitHub issue #889)
 
-Update required when: a phase task is completed (mark with `✅ DONE` and add the
-PR number), a phase is fully completed (add `✅ DONE` to the phase heading), a new
-sub-task is identified and added to a phase, or a task is moved between phases.
-The roadmap is the shared understanding of project direction between human
-maintainers and AI agents. Out-of-date phase status causes agents to implement
-work that is already done or skip work that is next in sequence. If this PR
-completes a phase task, that task must be marked done in `PHASES.md`. Read
-`PHASES.md` to determine current phase status rather than relying on any
-cached snapshot.
+The roadmap is tracked in a pinned GitHub issue, not in a file:
+https://github.com/strawgate/memagent/issues/889
+
+Update required when: a roadmap task is completed (check its checkbox and add
+the PR number). The roadmap is the shared understanding of project direction
+between human maintainers and AI agents. If this PR completes a roadmap task,
+that task must be checked off in the issue.
 
 
 ## SCANNER_CONTRACT.md (`dev-docs/SCANNER_CONTRACT.md`)
@@ -158,9 +158,6 @@ for the key dependencies: DataFusion (`SessionContext`, `MemTable`, UDF registra
 Arrow (`RecordBatch`, `StringViewArray`, `IpcWriteOptions`), Tokio (bounded channels,
 `CancellationToken`, `block_in_place`, `select!` safety), OpenTelemetry OTLP (protobuf
 nesting, HTTP vs gRPC, resource attributes), and Kani (proof API, solver selection,
-function contracts). Only Arrow and DataFusion reference files are versioned by major
-version number (`arrow-v54.md`, `datafusion-v45.md`); other reference files
-(`tokio-async-patterns.md`, `opentelemetry-otlp.md`, `kani-verification.md`, etc.)
-are unversioned and updated in-place. When a major version bump changes API patterns
-for Arrow or DataFusion, rename the relevant reference doc to the new version and
-update it. For unversioned reference files, update in-place.
+function contracts). Reference files use stable names (`arrow.md`, `datafusion.md`)
+with a version note at the top. When a major version bump changes API patterns,
+update the reference doc in-place and adjust the version note.

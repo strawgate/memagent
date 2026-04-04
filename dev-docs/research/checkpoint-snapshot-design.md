@@ -1,7 +1,8 @@
 # Checkpoint Snapshot Design: #584 + #585
 
-Date: 2026-04-01 (v2 — incorporates adversarial review)
-Context: Phase 5c — wire PipelineMachine into pipeline.rs
+> **Status:** Active
+> **Date:** 2026-04-01 (v2 — incorporates adversarial review)
+> **Context:** Phase 5c design for flowing checkpoint metadata through the pipeline for at-least-once delivery.
 
 ## Problem
 

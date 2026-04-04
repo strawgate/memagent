@@ -1,4 +1,6 @@
-# Arrow Rust v54.3.1 -- Agent Reference
+# Arrow Rust -- Agent Reference
+
+> Written for Arrow v54.3.1. Workspace currently uses v55 (PR #794). Verify details against current version.
 
 Non-obvious API details sourced from the actual crate source at
 `~/.cargo/registry/src/index.crates.io-*/arrow-{array,ipc,schema,buffer}-54.3.1/`.

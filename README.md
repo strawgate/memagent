@@ -99,8 +99,6 @@ logfwd --config config.yaml
 
 The transform is the main reason to use logfwd over a plain forwarder. Every batch of parsed log records is a DataFusion SQL table named `logs`.
 
-> **Column names:** `--generate-json` produces JSON with bare field names (`level`, `message`, `status`, `duration_ms`, `request_id`, `service`, `timestamp`). For JSON sources where every row has a consistent field type, logfwd uses the bare field name as the SQL column name — no type suffix is added. See [Column naming](#column-naming) below.
-
 ```sql
 -- Forward only errors and slow requests
 SELECT level, message, duration_ms, status
@@ -121,22 +119,21 @@ WHERE level IN ('ERROR', 'WARN')
   AND status >= 400
 ```
 
-**Column naming:** logfwd always uses the bare JSON field name as the SQL column name — no type suffix is appended.
+**Column naming:** JSON fields use their bare names as Arrow column names. The scanner detects types automatically:
 
-- **Consistent-type field** (same type in every row of a batch): one Arrow column with the native type — e.g. `level` (Utf8View), `status` (Int64).
-- **Mixed-type field** (different types across rows in the same batch): a conflict-struct column is produced and automatically normalized to a bare `Utf8` column. Use `int()` / `float()` UDFs for typed access.
+| JSON type      | Arrow type | Example column |
+|----------------|------------|----------------|
+| String         | Utf8View   | `level`        |
+| Integer        | Int64      | `status`       |
+| Float          | Float64    | `latency_ms`   |
+| Boolean        | Boolean    | `enabled`      |
+| Object / Array | Utf8View   | `metadata` — raw JSON string |
 
-| JSON type      | Column name   | Example                                         |
-|----------------|---------------|-------------------------------------------------|
-| String         | bare name     | `level` (Utf8View)                              |
-| Integer        | bare name     | `status` (Int64)                                |
-| Float          | bare name     | `latency_ms` (Float64)                          |
-| Boolean        | bare name     | `enabled` (stored as `"true"` / `"false"`)      |
-| Object / Array | bare name     | `metadata` — raw JSON string                    |
+When a field has mixed types across rows, the builder emits a `StructArray` conflict column with typed children.
 
 > Nested objects are stored as raw JSON strings, not expanded into sub-fields.
 
-**Built-in UDFs:** `int()`, `float()`, `grok()`, `regexp_extract()` — see [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md).
+**Built-in UDFs:** `int()`, `float()`, `grok()`, `regexp_extract()` — see the [Configuration Reference](book/src/config/reference.md).
 
 ---
 
@@ -182,7 +179,7 @@ pipelines:
         format: console
 ```
 
-See [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) for all YAML fields, input/output types, and enrichment tables.
+See the [Configuration Reference](book/src/config/reference.md) for all YAML fields, input/output types, and enrichment tables.
 
 ---
 
@@ -197,7 +194,7 @@ Every CRI record gets these extra columns:
 | `_timestamp` | CRI timestamp as an RFC 3339 string |
 | `_stream` | `stdout` or `stderr` |
 
-Use `_stream` to filter by stream:
+Filter by stream:
 
 ```sql
 SELECT _timestamp, _stream, level, message
@@ -218,7 +215,7 @@ WHERE _stream = 'stderr'
 | `http`          | ✅ Implemented  | JSON lines over HTTP POST, optional zstd compression |
 | `stdout`        | ✅ Implemented  | JSON or colored console output — great for local debugging |
 | `elasticsearch` | ✅ Implemented   | Elasticsearch bulk API with retry logic, per-document error handling |
-| `loki`          | 🚧 Stub         | Struct exists; Loki push API not yet implemented |
+| `loki`          | ✅ Implemented   | Grafana Loki push API with label grouping and dedup |
 | `parquet`       | 🚧 Stub         | Struct exists; Parquet file writing not yet implemented |
 
 ---
@@ -259,28 +256,27 @@ kubectl -n collectors rollout status daemonset/logfwd
 
 Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full details, resource sizing, and OTLP collector integration examples.
+See the [Deployment Guide](book/src/deployment/kubernetes.md) for full details, resource sizing, and OTLP collector integration examples.
 
 ---
 
 ## Documentation
 
-### User guides (`docs/`)
+### User guides ([book/src/](book/src/))
 
 | Guide | Description |
 |-------|-------------|
-| [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
-| [docs/COLUMN_NAMING.md](docs/COLUMN_NAMING.md) | How JSON fields map to SQL column names |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, Kubernetes DaemonSet, resource sizing, OTLP integration |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common errors, debug mode, diagnostics API |
+| [Configuration Reference](book/src/config/reference.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
+| [SQL Transforms](book/src/config/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
+| [Deployment](book/src/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing, OTLP integration |
+| [Troubleshooting](book/src/troubleshooting.md) | Common errors, debug mode, diagnostics API |
 
-### Developer guides (`dev-docs/`)
+### Developer guides
 
 | Guide | Description |
 |-------|-------------|
+| [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute — PR process, pre-commit checks |
 | [dev-docs/ARCHITECTURE.md](dev-docs/ARCHITECTURE.md) | Pipeline data flow, SIMD stages, crate map |
 | [dev-docs/DESIGN.md](dev-docs/DESIGN.md) | Vision, target architecture, architecture decision records |
 | [dev-docs/VERIFICATION.md](dev-docs/VERIFICATION.md) | TLA+, Kani, proptest — tool selection, tiers, per-module status |
-| [dev-docs/CODE_STYLE.md](dev-docs/CODE_STYLE.md) | Code style conventions enforced during review |
-| [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute — PR process, pre-commit checks |

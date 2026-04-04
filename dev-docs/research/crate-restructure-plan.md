@@ -1,7 +1,8 @@
 # Crate Restructure Plan
 
-Date: 2026-04-03
-Context: Build time optimization, blast radius reduction, cleaner boundaries
+> **Status:** Active
+> **Date:** 2026-04-03
+> **Context:** Plan to split logfwd-core and logfwd-io for build time and blast radius improvements.
 
 ## Current State
 

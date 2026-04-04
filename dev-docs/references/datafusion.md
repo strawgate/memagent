@@ -1,4 +1,6 @@
-# DataFusion v45 -- Agent Reference
+# DataFusion -- Agent Reference
+
+> Written for DataFusion v45. Workspace currently uses v48 (PR #794). Verify details against current version.
 
 Non-obvious behavior, patterns extracted from source, and gotchas.
 

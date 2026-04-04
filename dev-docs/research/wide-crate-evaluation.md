@@ -1,5 +1,9 @@
 # `wide` Crate Evaluation for SIMD Character Detection
 
+> **Status:** Completed
+> **Date:** 2026-03-31
+> **Context:** Evaluated `wide` crate for portable SIMD; decision made to adopt it.
+
 Evaluated 2026-03-31 for replacing hand-rolled `std::arch` intrinsics
 in logfwd's structural character detection.
 

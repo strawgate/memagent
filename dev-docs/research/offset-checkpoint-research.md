@@ -1,5 +1,9 @@
 # Offset & Checkpoint Research
 
+> **Status:** Historical
+> **Date:** 2026-03-31
+> **Context:** Research on offset semantics and checkpoint tracking for the pipeline state machine.
+
 Date: 2026-03-31
 Context: Pipeline state machine design (#270) — what should BatchTicket track?
 

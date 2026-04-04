@@ -1,5 +1,9 @@
 # Column Type System — Constraint Analysis
 
+> **Status:** Historical
+> **Date:** 2026-03
+> **Context:** Constraint analysis for column type handling across input/output formats.
+
 Context: #445. This document enumerates all constraints before choosing a design.
 
 ## Actors and their expectations
