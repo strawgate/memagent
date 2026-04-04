@@ -50,18 +50,18 @@ output:
   type: elasticsearch
   endpoint: https://es-cluster:9200
   index: logs             # default: "logs"
-  compression: zstd       # zstd | none (optional)
+  compression: gzip       # gzip | none (optional)
 ```
 
 - **Bulk API**: Per-document error handling with automatic retries.
 - **Batch splitting**: Large payloads are split automatically to stay within Elasticsearch limits.
-- **Compression**: Optional zstd compression for reduced network usage.
+- **Compression**: Optional gzip compression for reduced network usage.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Elasticsearch URL |
 | `index` | string | No | `logs` | Target index name |
-| `compression` | string | No | none | `zstd` or `none` |
+| `compression` | string | No | none | `gzip` or `none` |
 
 ## Loki
 

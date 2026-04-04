@@ -22,6 +22,10 @@ server:
 | `/api/traces` | 200 | Recent batch processing spans (up to 500) |
 | `/metrics` | 410 | Removed — returns pointer to `/api/pipelines` |
 
+> **Security note:** The diagnostics server has no authentication.
+> Endpoints like `/api/config` and `/api/logs` expose operational details.
+> Bind to `127.0.0.1` or a pod-internal address — do not expose to the public internet.
+
 ## Key metrics
 
 | Metric | Description |

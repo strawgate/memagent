@@ -104,9 +104,10 @@ the document. When upgrading a dependency:
 2. Keep the old content if it's still relevant (migration context)
 3. Update `AGENTS.md` if the filename changed
 
-Reference docs that cover unversioned patterns (e.g., `production-patterns.md`,
-`arrow-pipeline-patterns.md`) are treated as living documents — update them when
-patterns change.
+Reference docs that cover unversioned patterns (e.g., `tokio-async-patterns.md`)
+are living documents — update them when patterns change.
+They do not carry version numbers in filenames but should note the library
+versions they were last verified against.
 
 ---
 

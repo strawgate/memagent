@@ -242,7 +242,10 @@ curl -s http://localhost:9090/api/pipelines | jq .
         "total": 512,
         "avg_rows": 4.0,
         "flush_by_size": 500,
-        "flush_by_timeout": 12
+        "flush_by_timeout": 12,
+        "dropped_batches_total": 0,
+        "scan_errors_total": 0,
+        "last_batch_time_ns": 1712160000000000000
       },
       "stage_seconds": {
         "scan": 1.234567,
@@ -274,6 +277,9 @@ curl -s http://localhost:9090/api/pipelines | jq .
 | `batches.avg_rows` | Average rows per batch. |
 | `batches.flush_by_size` | Batches flushed because they reached the row limit. |
 | `batches.flush_by_timeout` | Batches flushed because the timeout expired. |
+| `batches.dropped_batches_total` | Batches dropped due to backpressure or errors. |
+| `batches.scan_errors_total` | Scanner errors (malformed input, etc.). |
+| `batches.last_batch_time_ns` | Unix timestamp (ns) of last processed batch. |
 | `stage_seconds.scan` | Total CPU time spent in the SIMD scanner. |
 | `stage_seconds.transform` | Total CPU time spent in DataFusion SQL. |
 | `stage_seconds.output` | Total CPU time spent in the output sink (includes network). |

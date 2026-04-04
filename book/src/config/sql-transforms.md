@@ -17,8 +17,11 @@ SELECT * FROM logs WHERE level = 'ERROR'
 ```
 
 When a field has mixed types across rows (e.g., `status` is sometimes an int,
-sometimes a string), the builder emits a `StructArray` conflict column that is
-automatically flattened to strings for SQL.
+sometimes a string), the builder emits a `StructArray` conflict column
+(`status: Struct { int: Int64, str: Utf8View }`).
+Before SQL execution, conflict columns are normalized to flat `Utf8` columns
+via `COALESCE(CAST(int AS Utf8), CAST(float AS Utf8), str)`.
+Use `int(status)` or `float(status)` for numeric operations on these columns.
 
 ## Examples
 

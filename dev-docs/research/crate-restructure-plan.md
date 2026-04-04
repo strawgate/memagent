@@ -4,9 +4,6 @@
 > **Date:** 2026-04-03
 > **Context:** Plan to split logfwd-core and logfwd-io for build time and blast radius improvements.
 
-Date: 2026-04-03
-Context: Build time optimization, blast radius reduction, cleaner boundaries
-
 ## Current State
 
 10 workspace crates, 42,745 lines, 586 tests.

@@ -22,7 +22,7 @@ data source is required.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `listen` | string | No | unlimited | Target events per second, e.g. `"50000"`. |
+| `listen` | string | No | (unlimited) | Target events per second, e.g. `"50000"`. Omit for maximum throughput. |
 
 ```yaml
 input:
