@@ -57,7 +57,7 @@ output:
 You'll see colored, filtered output:
 
 ```
-10:30:00.003Z  ERROR  request handled GET /health/10021  duration_ms=40 status=503 service=myapp
+10:30:00.003Z  ERROR  request handled GET /health/10021  duration_ms=61 status=503 service=myapp
 10:30:00.007Z  ERROR  request handled GET /api/v2/products/10049  duration_ms=92 status=500 ...
 ```
 
