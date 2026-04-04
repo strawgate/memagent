@@ -1739,8 +1739,12 @@ output:
         // Drain both messages.
         let msg1 = rx.recv().await.unwrap();
         let msg2 = rx.recv().await.unwrap();
-        assert!(matches!(msg1, ChannelMsg::Data { bytes, .. } if bytes == Bytes::from_static(&[1])));
-        assert!(matches!(msg2, ChannelMsg::Data { bytes, .. } if bytes == Bytes::from_static(&[2])));
+        assert!(
+            matches!(msg1, ChannelMsg::Data { bytes, .. } if bytes == Bytes::from_static(&[1]))
+        );
+        assert!(
+            matches!(msg2, ChannelMsg::Data { bytes, .. } if bytes == Bytes::from_static(&[2]))
+        );
         assert!(
             handle.join().unwrap().is_ok(),
             "blocking send should succeed"
