@@ -640,6 +640,7 @@ mod verification {
     /// allocation path rather than the 7 realloc steps of Vec::new().
     #[kani::proof]
     #[kani::unwind(10)]
+    #[kani::solver(kissat)] // json_escape_bytes loop × 12 symbolic bytes: kissat outperforms cadical
     fn verify_write_json_line_prefix_injection() {
         let msg: [u8; 8] = kani::any();
         let prefix: [u8; 4] = kani::any();
@@ -672,6 +673,7 @@ mod verification {
     /// Vec realloc paths (0→1→2→4→8→16→32→64) that caused the 28-minute timeout.
     #[kani::proof]
     #[kani::unwind(10)]
+    #[kani::solver(kissat)] // json_escape_bytes loop × 8 symbolic bytes: kissat outperforms cadical
     fn verify_write_json_line_no_prefix() {
         let msg: [u8; 8] = kani::any();
         let mut out = Vec::with_capacity(64);
