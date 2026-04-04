@@ -117,12 +117,8 @@ fn bench_output_encode(c: &mut Criterion) {
                 },
             );
 
-            // OTLP protobuf + zstd: use OtlpSink with zstd compression via
-            // the OutputSink trait (encode_batch writes to internal buffer,
-            // send_batch compresses it; we call encode only since send would
-            // attempt HTTP).  We approximate the compressed path by encoding
-            // then compressing the raw JSON representation instead, which
-            // captures the compression cost on a similar payload size.
+            // JSON lines + zstd: serialize to NDJSON then compress.
+            // Measures the combined cost of JSON serialization and compression.
             group.bench_with_input(
                 BenchmarkId::new("json_lines_zstd", &label),
                 &batch,

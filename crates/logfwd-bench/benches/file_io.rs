@@ -39,12 +39,12 @@ fn bench_framing(c: &mut Criterion) {
 
     // Generate data at different sizes with different line length distributions.
     let scenarios: Vec<(&str, Vec<u8>)> = vec![
-        // Narrow lines (~130 bytes each) — ~10MB
-        ("narrow_10mb", generators::gen_narrow(80_000, 42)),
-        // Production mixed (~250 bytes avg) — ~10MB
-        ("mixed_10mb", generators::gen_production_mixed(40_000, 42)),
-        // CRI K8s lines (~350 bytes avg) — ~10MB
-        ("cri_10mb", generators::gen_cri_k8s(30_000, 42)),
+        // Narrow lines (~130 bytes each)
+        ("narrow_80k", generators::gen_narrow(80_000, 42)),
+        // Production mixed (~250 bytes avg)
+        ("mixed_40k", generators::gen_production_mixed(40_000, 42)),
+        // CRI K8s lines (~350 bytes avg)
+        ("cri_30k", generators::gen_cri_k8s(30_000, 42)),
     ];
 
     let framer = NewlineFramer;
