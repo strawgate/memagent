@@ -205,12 +205,53 @@ fn tcp_client_disconnect_mid_stream() {
 
     // Subsequent polls should not panic.
     let events = input.poll().unwrap();
-    // No more data expected.
+    // No more data expected — only EndOfFile events (if the disconnect was
+    // detected in this poll) or no events at all are acceptable.
     assert!(
-        events.is_empty()
-            || events
-                .iter()
-                .all(|e| matches!(e, InputEvent::Data { bytes, .. } if bytes.is_empty()))
+        events.iter().all(|e| match e {
+            InputEvent::Data { bytes, .. } => bytes.is_empty(),
+            InputEvent::EndOfFile { .. } => true,
+            _ => false,
+        }),
+        "unexpected non-empty data after client disconnect"
+    );
+}
+
+#[test]
+fn tcp_partial_line_disconnect_emits_eof() {
+    let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let addr = input.local_addr().unwrap();
+
+    {
+        let mut client = TcpStream::connect(addr).unwrap();
+        // Partial line — no trailing newline.
+        client.write_all(b"no newline at end").unwrap();
+        client.flush().unwrap();
+        // Client drops here — EOF without a terminating newline.
+    }
+
+    // Poll with backoff until we see an EndOfFile event (fix for #804/#580).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut backoff = Duration::from_millis(5);
+    let max_backoff = Duration::from_millis(200);
+    let mut got_eof = false;
+
+    while std::time::Instant::now() < deadline {
+        for event in input.poll().unwrap() {
+            if matches!(event, InputEvent::EndOfFile { source_id } if source_id.is_some()) {
+                got_eof = true;
+            }
+        }
+        if got_eof {
+            break;
+        }
+        thread::sleep(backoff);
+        backoff = (backoff * 2).min(max_backoff);
+    }
+
+    assert!(
+        got_eof,
+        "expected EndOfFile event when TCP client disconnects with a partial line"
     );
 }
 
