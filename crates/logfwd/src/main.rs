@@ -329,7 +329,21 @@ fn validate_pipelines(
     let mut errors = 0;
     for (name, pipe_cfg) in &config.pipelines {
         match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
-            Ok(_) => {
+            Ok(mut pipeline) => {
+                // --dry-run: also execute a probe batch through the SQL plan
+                // to catch planning errors (duplicate aliases, bad window specs)
+                // that only surface on the first real batch at runtime.
+                if dry_run {
+                    if let Err(e) = pipeline.validate_sql_plan() {
+                        eprintln!(
+                            "  {}error{}: pipeline '{name}' SQL plan: {e}",
+                            red(),
+                            reset()
+                        );
+                        errors += 1;
+                        continue;
+                    }
+                }
                 // Success output goes to stdout so scripts can capture it.
                 println!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
             }

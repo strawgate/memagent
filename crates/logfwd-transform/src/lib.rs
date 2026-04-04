@@ -729,6 +729,44 @@ impl SqlTransform {
     pub fn analyzer(&self) -> &QueryAnalyzer {
         &self.analyzer
     }
+
+    /// Validate the SQL plan by executing it against a dummy single-row batch.
+    ///
+    /// This forces DataFusion to plan the query (resolve columns, check for
+    /// duplicate aliases, validate window specs, etc.) at validation time
+    /// rather than waiting for the first real batch at runtime.
+    pub fn validate_plan(&mut self) -> Result<(), String> {
+        use arrow::array::{ArrayRef, StringArray};
+        use arrow::datatypes::{Field, Schema};
+
+        // Build a schema from referenced columns (or a fallback for SELECT *).
+        let fields: Vec<Field> = if self.analyzer.referenced_columns.is_empty() {
+            // SELECT * — provide a minimal representative schema.
+            vec![
+                Field::new("_raw", DataType::Utf8, true),
+                Field::new("level", DataType::Utf8, true),
+                Field::new("msg", DataType::Utf8, true),
+            ]
+        } else {
+            self.analyzer
+                .referenced_columns
+                .iter()
+                .map(|name| Field::new(name, DataType::Utf8, true))
+                .collect()
+        };
+
+        let schema = Arc::new(Schema::new(fields.clone()));
+        let arrays: Vec<ArrayRef> = fields
+            .iter()
+            .map(|_| Arc::new(StringArray::from(vec![Some("x")])) as ArrayRef)
+            .collect();
+
+        let batch = RecordBatch::try_new(schema, arrays)
+            .map_err(|e| format!("failed to build probe batch: {e}"))?;
+
+        self.execute_blocking(batch)?;
+        Ok(())
+    }
 }
 
 /// Concatenate multiple RecordBatches into one.
@@ -1623,5 +1661,48 @@ mod tests {
                 "ctx must remain populated for stable schema (batch {i})"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #721: validate_plan catches SQL planning errors
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_plan_accepts_valid_sql() {
+        let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+        transform
+            .validate_plan()
+            .expect("valid SQL should pass plan validation");
+    }
+
+    #[test]
+    fn validate_plan_catches_duplicate_aliases() {
+        // "SELECT level AS k, msg AS k FROM logs" produces a duplicate alias error
+        // at DataFusion planning time (not at parse time).
+        let mut transform = SqlTransform::new("SELECT level AS k, msg AS k FROM logs").unwrap();
+        let err = transform.validate_plan();
+        assert!(
+            err.is_err(),
+            "duplicate column alias should be caught by validate_plan"
+        );
+    }
+
+    #[test]
+    fn validate_plan_catches_invalid_function() {
+        // A non-existent function should fail during planning.
+        let mut transform = SqlTransform::new("SELECT nonexistent_fn(level) FROM logs").unwrap();
+        let err = transform.validate_plan();
+        assert!(
+            err.is_err(),
+            "unknown function should be caught by validate_plan"
+        );
+    }
+
+    #[test]
+    fn validate_plan_accepts_filter_query() {
+        let mut transform = SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").unwrap();
+        transform
+            .validate_plan()
+            .expect("filter query should pass plan validation");
     }
 }

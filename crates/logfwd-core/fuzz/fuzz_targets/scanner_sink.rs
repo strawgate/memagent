@@ -36,6 +36,7 @@ fuzz_target!(|data: &[u8]| {
         "fuzz".to_string(),
         "http://localhost/".to_string(),
         vec![],
+        Compression::None,
         Arc::new(ComponentStats::new()),
     );
     json_sink.serialize_batch(&batch);

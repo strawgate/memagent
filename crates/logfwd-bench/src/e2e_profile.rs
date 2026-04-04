@@ -36,6 +36,7 @@ fn main() {
         "bench".to_string(),
         "http://localhost:19877".to_string(),
         vec![],
+        logfwd_output::Compression::None,
         std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
     );
     json_sink.serialize_batch(&result);

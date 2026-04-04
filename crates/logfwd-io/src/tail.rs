@@ -553,6 +553,15 @@ impl FileTailer {
             self.files.remove(path);
             self.evicted_offsets.remove(path); // Bug G: prevent unbounded leak
         }
+        // Remove deleted paths from watch_paths when using glob patterns so
+        // the list does not grow unboundedly with file churn. (#810)
+        // Glob-discovered paths will be re-added by the next rescan_globs() call
+        // when the file reappears.  Literal-path tailers (glob_patterns empty)
+        // must keep deleted paths so they detect the file if it is re-created.
+        if !self.glob_patterns.is_empty() && !deleted.is_empty() {
+            let deleted_set: HashSet<&PathBuf> = deleted.iter().collect();
+            self.watch_paths.retain(|p| !deleted_set.contains(p));
+        }
 
         // Evict least-recently-read files when over the open-file limit.
         // Save each evicted file's offset so it can resume from the correct
@@ -1414,6 +1423,62 @@ mod tests {
             0,
             "deleted file should be removed from the files map"
         );
+        // For literal-path tailers, watch_paths must KEEP the path so the
+        // file can be detected if it is re-created. (#810)
+        assert_eq!(
+            tailer.watch_paths.len(),
+            1,
+            "literal-path tailers must keep watch_paths entry after deletion"
+        );
+    }
+
+    /// Regression test: glob-discovered file deletions must shrink watch_paths
+    /// so the list does not grow unboundedly with file churn. (#810)
+    #[test]
+    fn test_glob_deleted_file_removed_from_watch_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let pattern = format!("{}/*.log", dir.path().display());
+
+        // Create several files matching the glob.
+        let paths: Vec<_> = (0..5)
+            .map(|i| {
+                let p = dir.path().join(format!("churn-{i}.log"));
+                let mut f = File::create(&p).unwrap();
+                writeln!(f, "data {i}").unwrap();
+                p
+            })
+            .collect();
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // Read initial data so the tailer advances past the initial content.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+
+        let paths_before = tailer.watch_paths.len();
+        assert_eq!(paths_before, 5, "should have 5 watch_paths before deletion");
+
+        // Delete all files.
+        for p in &paths {
+            fs::remove_file(p).unwrap();
+        }
+
+        // Poll to trigger deletion cleanup.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+
+        assert_eq!(
+            tailer.watch_paths.len(),
+            0,
+            "watch_paths must shrink to 0 after all glob files are deleted (#810)"
+        );
+        assert_eq!(tailer.num_files(), 0, "files map must also be empty");
     }
 
     #[test]
