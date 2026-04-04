@@ -170,6 +170,9 @@ pub struct OnceAsyncFactory {
 }
 
 impl OnceAsyncFactory {
+    /// Create a factory that yields `sink` on the first `create()` call and
+    /// returns an error on every subsequent call, enforcing single-worker
+    /// semantics.
     pub fn new(name: String, sink: Box<dyn Sink>) -> Self {
         OnceAsyncFactory {
             name,
