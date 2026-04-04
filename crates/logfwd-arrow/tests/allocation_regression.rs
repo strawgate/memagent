@@ -11,7 +11,7 @@ use std::alloc::System;
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
-use logfwd_arrow::scanner::{CopyScanner, ZeroCopyScanner};
+use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::ScanConfig;
 
 fn make_ndjson(n: usize) -> Vec<u8> {
@@ -42,41 +42,11 @@ fn assert_stable_windows(label: &str, alloc1: usize, alloc2: usize) {
     );
 }
 
-/// Repeated StorageBuilder scans should have stable allocation profiles.
-#[test]
-#[serial]
-fn storage_scanner_no_leak_across_batches() {
-    let mut scanner = CopyScanner::new(ScanConfig::default());
-    let data = make_ndjson(500);
-
-    for _ in 0..5 {
-        drop(scanner.scan(&data).unwrap());
-    }
-
-    let reg1 = Region::new(GLOBAL);
-    for _ in 0..10 {
-        drop(scanner.scan(&data).unwrap());
-    }
-    let stats1 = reg1.change();
-
-    let reg2 = Region::new(GLOBAL);
-    for _ in 0..10 {
-        drop(scanner.scan(&data).unwrap());
-    }
-    let stats2 = reg2.change();
-
-    assert_stable_windows(
-        "StorageBuilder leak",
-        stats1.bytes_allocated,
-        stats2.bytes_allocated,
-    );
-}
-
 /// Repeated StreamingBuilder scans should have stable allocation profiles.
 #[test]
 #[serial]
 fn streaming_scanner_no_leak_across_batches() {
-    let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+    let mut scanner = Scanner::new(ScanConfig::default());
     let input: bytes::Bytes = make_ndjson(500).into();
 
     for _ in 0..5 {
@@ -102,45 +72,72 @@ fn streaming_scanner_no_leak_across_batches() {
     );
 }
 
-/// StorageBuilder allocations should scale linearly (not quadratically).
+/// Repeated scan_detached scans should have stable allocation profiles.
+#[test]
+#[serial]
+fn detached_scanner_no_leak_across_batches() {
+    let mut scanner = Scanner::new(ScanConfig::default());
+    let data = make_ndjson(500);
+
+    for _ in 0..5 {
+        drop(
+            scanner
+                .scan_detached(bytes::Bytes::from(data.clone()))
+                .unwrap(),
+        );
+    }
+
+    let reg1 = Region::new(GLOBAL);
+    for _ in 0..10 {
+        drop(
+            scanner
+                .scan_detached(bytes::Bytes::from(data.clone()))
+                .unwrap(),
+        );
+    }
+    let stats1 = reg1.change();
+
+    let reg2 = Region::new(GLOBAL);
+    for _ in 0..10 {
+        drop(
+            scanner
+                .scan_detached(bytes::Bytes::from(data.clone()))
+                .unwrap(),
+        );
+    }
+    let stats2 = reg2.change();
+
+    assert_stable_windows(
+        "Detached scanner leak",
+        stats1.bytes_allocated,
+        stats2.bytes_allocated,
+    );
+}
+
+/// Scanner allocations should scale linearly (not quadratically).
 /// StreamingBuilder should be sub-linear (zero-copy path).
 #[test]
 #[serial]
 fn scanner_allocs_scale_linearly() {
-    let mut scanner = CopyScanner::new(ScanConfig::default());
-    let _ = scanner.scan(&make_ndjson(1000)).unwrap();
-
-    let data_500 = make_ndjson(500);
-    let reg_500 = Region::new(GLOBAL);
-    let _ = scanner.scan(&data_500).unwrap();
-    let stats_500 = reg_500.change();
-
-    let data_5000 = make_ndjson(5000);
-    let reg_5000 = Region::new(GLOBAL);
-    let _ = scanner.scan(&data_5000).unwrap();
-    let stats_5000 = reg_5000.change();
-
-    let count_ratio = stats_5000.allocations as f64 / stats_500.allocations.max(1) as f64;
-    assert!(
-        count_ratio < 15.0,
-        "StorageBuilder super-linear: 10x rows caused {count_ratio:.1}x allocs \
-         (500={}, 5000={}). Expected ~10x.",
-        stats_500.allocations,
-        stats_5000.allocations,
-    );
-
     // StreamingBuilder should be sub-linear (zero-copy path).
-    let mut streaming = ZeroCopyScanner::new(ScanConfig::default());
+    let mut streaming = Scanner::new(ScanConfig::default());
     let _ = streaming
         .scan(bytes::Bytes::from(make_ndjson(1000)))
         .unwrap();
 
+    let data_500 = make_ndjson(500);
+    let data_5000 = make_ndjson(5000);
+
     let reg_s500 = Region::new(GLOBAL);
-    let _ = streaming.scan(bytes::Bytes::from(data_500)).unwrap();
+    let _ = streaming
+        .scan(bytes::Bytes::from(data_500.clone()))
+        .unwrap();
     let stats_s500 = reg_s500.change();
 
     let reg_s5000 = Region::new(GLOBAL);
-    let _ = streaming.scan(bytes::Bytes::from(data_5000)).unwrap();
+    let _ = streaming
+        .scan(bytes::Bytes::from(data_5000.clone()))
+        .unwrap();
     let stats_s5000 = reg_s5000.change();
 
     let streaming_ratio = stats_s5000.allocations as f64 / stats_s500.allocations.max(1) as f64;

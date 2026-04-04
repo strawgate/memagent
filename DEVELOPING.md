@@ -123,7 +123,7 @@ See also `dev-docs/ARCHITECTURE.md` for pipeline data flow.
 
 ### The deferred builder pattern exists because incremental null-padding is broken
 
-`StorageBuilder` collects `(row, value)` records during scanning and bulk-builds Arrow columns at `finish_batch`. This seems roundabout — why not write directly to Arrow builders?
+`StreamingBuilder` collects `(row, value)` records during scanning and bulk-builds Arrow columns at `finish_batch`. This seems roundabout — why not write directly to Arrow builders?
 
 Because maintaining column alignment across multiple type builders (str, int, float) per field is a coordination nightmare. When you write an int, you must pad the str and float builders with null. When `end_row` fires, pad all unwritten fields. When a new field appears mid-batch, back-fill all prior rows. We tried this (`IndexedBatchBuilder`); proptest found column length mismatches on multi-line NDJSON with varying field sets.
 
@@ -174,9 +174,9 @@ Every time we thought the scanner was correct, proptest broke it. Escapes crossi
 
 Oracle tests compare against sonic-rs as ground truth. Our scanner does first-writer-wins for duplicate keys; sonic-rs does last-writer-wins. Both valid per RFC 8259; oracle tests skip duplicate-key inputs.
 
-### Two builders serve different purposes
+### Two scan modes serve different purposes
 
-- **`StorageBuilder`**: copies values into self-contained Arrow arrays. Input buffer can be freed. For persistence and compression.
-- **`StreamingBuilder`**: zero-copy `StringViewArray` views into `bytes::Bytes` buffer. 20% faster. Buffer must stay alive. For real-time query-then-discard.
+- **`Scanner::scan_detached`**: produces self-contained `StringArray` columns. Input buffer can be freed. For persistence and compression.
+- **`Scanner::scan`**: zero-copy `StringViewArray` views into `bytes::Bytes` buffer. 20% faster. Buffer must stay alive. For real-time query-then-discard.
 
-Both implement `ScanBuilder` trait, sharing the generic `scan_into()` loop.
+Both use the same `StreamingBuilder` (which implements `ScanBuilder`), sharing the generic `scan_streaming()` loop.

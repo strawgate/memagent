@@ -14,7 +14,8 @@
 //!   cargo test -p logfwd-core --test scanner_conformance -- --nocapture
 
 use arrow::array::{Array, Float64Array, Int64Array, StringArray, StructArray};
-use logfwd_arrow::scanner::CopyScanner;
+use bytes::Bytes;
+use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_test_utils::json::{arb_flat_object, arb_json_string, arb_ndjson_buffer};
 use proptest::prelude::*;
@@ -41,8 +42,10 @@ fn get_struct_child<'a>(
 fn assert_values_correct(input: &[u8]) {
     use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
-    let mut simd = CopyScanner::new(ScanConfig::default());
-    let batch = simd.scan(input).expect("scan should succeed");
+    let mut simd = Scanner::new(ScanConfig::default());
+    let batch = simd
+        .scan_detached(Bytes::from(input.to_vec()))
+        .expect("scan should succeed");
 
     // Parse each line with sonic-rs and verify the Arrow output matches
     let mut row = 0;
@@ -308,26 +311,26 @@ proptest! {
 }
 
 // ===========================================================================
-// Cross-builder consistency: CopyScanner vs ZeroCopyScanner
+// Cross-mode consistency: scan (Utf8View) vs scan_detached (Utf8)
 // ===========================================================================
 
-/// Verify both scanners produce the same row count and the same non-null
-/// values for the same input. Accounts for StringArray vs StringViewArray.
+/// Verify scan and scan_detached produce the same row count and the same
+/// non-null values for the same input. Accounts for StringArray vs StringViewArray.
 fn assert_builders_consistent(input: &[u8]) {
-    use logfwd_arrow::scanner::ZeroCopyScanner;
+    let mut detached = Scanner::new(ScanConfig::default());
+    let mut streaming = Scanner::new(ScanConfig::default());
 
-    let mut storage = CopyScanner::new(ScanConfig::default());
-    let mut streaming = ZeroCopyScanner::new(ScanConfig::default());
-
-    let sb = storage.scan(input).expect("scan should succeed");
+    let sb = detached
+        .scan_detached(Bytes::from(input.to_vec()))
+        .expect("scan_detached should succeed");
     let stb = streaming
-        .scan(bytes::Bytes::from(input.to_vec()))
+        .scan(Bytes::from(input.to_vec()))
         .expect("scan should succeed");
 
     assert_eq!(
         sb.num_rows(),
         stb.num_rows(),
-        "Row count mismatch between builders"
+        "Row count mismatch between scan modes"
     );
 
     // Compare column names (both should produce the same set)
@@ -347,7 +350,7 @@ fn assert_builders_consistent(input: &[u8]) {
     st_names.sort();
     assert_eq!(
         s_names, st_names,
-        "Column names differ between builders.\nStorage: {s_names:?}\nStreaming: {st_names:?}"
+        "Column names differ between scan modes.\nDetached: {s_names:?}\nStreaming: {st_names:?}"
     );
 
     // Compare values row-by-row for int and float columns
@@ -358,7 +361,7 @@ fn assert_builders_consistent(input: &[u8]) {
             assert_eq!(
                 s_col.is_null(row),
                 st_col.is_null(row),
-                "Null mismatch at {col_name}[{row}] between builders"
+                "Null mismatch at {col_name}[{row}] between scan modes"
             );
             if !s_col.is_null(row) {
                 if let Some(a) = s_col.as_any().downcast_ref::<Int64Array>() {
@@ -376,8 +379,7 @@ fn assert_builders_consistent(input: &[u8]) {
                         "Float mismatch at {col_name}[{row}]"
                     );
                 }
-                // String comparison: StorageBuilder uses Utf8, StreamingBuilder uses Utf8View.
-                // Detect by DataType so bare string columns (no _str suffix) are also compared.
+                // String comparison: scan_detached uses Utf8, scan uses Utf8View.
                 let s_is_str = matches!(
                     s_col.data_type(),
                     arrow::datatypes::DataType::Utf8
@@ -392,7 +394,7 @@ fn assert_builders_consistent(input: &[u8]) {
                                 | arrow::datatypes::DataType::Utf8View
                                 | arrow::datatypes::DataType::LargeUtf8
                         ),
-                        "Type mismatch at {col_name}[{row}]: storage has {:?} but streaming has {:?}",
+                        "Type mismatch at {col_name}[{row}]: detached has {:?} but streaming has {:?}",
                         s_col.data_type(),
                         st_col.data_type()
                     );
@@ -595,8 +597,10 @@ fn edge_duplicate_keys() {
     let input = br#"{"a":1,"a":2}
 "#;
     // Both scanners handle duplicates via first-writer-wins in the builder
-    let mut simd = CopyScanner::new(ScanConfig::default());
-    let batch = simd.scan(input).expect("scan should succeed");
+    let mut simd = Scanner::new(ScanConfig::default());
+    let batch = simd
+        .scan_detached(Bytes::from(input.to_vec()))
+        .expect("scan should succeed");
     assert_eq!(batch.num_rows(), 1);
     // First-writer-wins
     let col = batch
@@ -612,8 +616,10 @@ fn edge_duplicate_keys() {
 fn edge_duplicate_keys_different_types() {
     let input = br#"{"a":1,"a":"hello"}
 "#;
-    let mut simd = CopyScanner::new(ScanConfig::default());
-    let batch = simd.scan(input).expect("scan should succeed");
+    let mut simd = Scanner::new(ScanConfig::default());
+    let batch = simd
+        .scan_detached(Bytes::from(input.to_vec()))
+        .expect("scan should succeed");
     assert_eq!(batch.num_rows(), 1);
 }
 
@@ -622,27 +628,27 @@ fn edge_duplicate_keys_different_types() {
 #[test]
 fn no_panic_truncated_string() {
     let input = b"{\"a\":\"unterminated\n";
-    let mut simd = CopyScanner::new(ScanConfig::default());
+    let mut simd = Scanner::new(ScanConfig::default());
     let _batch = simd
-        .scan(input)
+        .scan_detached(Bytes::from(input.to_vec()))
         .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
 fn no_panic_truncated_object() {
     let input = b"{\"a\":1,\"b\"\n";
-    let mut simd = CopyScanner::new(ScanConfig::default());
+    let mut simd = Scanner::new(ScanConfig::default());
     let _batch = simd
-        .scan(input)
+        .scan_detached(Bytes::from(input.to_vec()))
         .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
 fn no_panic_garbage() {
     let input = b"not json at all\n";
-    let mut simd = CopyScanner::new(ScanConfig::default());
+    let mut simd = Scanner::new(ScanConfig::default());
     let _batch = simd
-        .scan(input)
+        .scan_detached(Bytes::from(input.to_vec()))
         .expect("scan should not fail on malformed JSON");
 }
 
@@ -654,27 +660,27 @@ fn no_panic_random_bytes() {
     let input = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789{}\n\u{00e9}\u{4e2d}\u{1f600}\n"
         .as_bytes()
         .to_vec();
-    let mut simd = CopyScanner::new(ScanConfig::default());
+    let mut simd = Scanner::new(ScanConfig::default());
     let _batch = simd
-        .scan(&input)
+        .scan_detached(Bytes::from(input.clone()))
         .expect("scan should not fail on valid UTF-8");
 }
 
 #[test]
 fn no_panic_only_quotes() {
     let input = b"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"";
-    let mut simd = CopyScanner::new(ScanConfig::default());
+    let mut simd = Scanner::new(ScanConfig::default());
     let _batch = simd
-        .scan(input)
+        .scan_detached(Bytes::from(input.to_vec()))
         .expect("scan should not fail on malformed JSON");
 }
 
 #[test]
 fn no_panic_only_backslashes() {
     let input = b"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\";
-    let mut simd = CopyScanner::new(ScanConfig::default());
+    let mut simd = Scanner::new(ScanConfig::default());
     let _batch = simd
-        .scan(input)
+        .scan_detached(Bytes::from(input.to_vec()))
         .expect("scan should not fail on malformed JSON");
 }
 
@@ -690,8 +696,8 @@ fn no_panic_deeply_nested() {
         input.push('}');
     }
     input.push_str("}\n");
-    let mut simd = CopyScanner::new(ScanConfig::default());
+    let mut simd = Scanner::new(ScanConfig::default());
     let _batch = simd
-        .scan(input.as_bytes())
+        .scan_detached(Bytes::from(input.into_bytes()))
         .expect("scan should not fail on valid UTF-8");
 }

@@ -131,7 +131,7 @@ contract to match the new behavior and justify the change.
 Update required when: the buffer lifecycle changes (when `Bytes` is frozen, when
 it is dropped, when `StringViewArray` views are created), a new copy is introduced
 into what was a zero-copy path, a planned copy elimination is completed, or the
-relationship between `StreamingBuilder` and `StorageBuilder` is clarified. This
+relationship between `StreamingBuilder`'s `finish_batch` and `finish_batch_detached` is clarified. This
 document tracks the two unnecessary copies in the current implementation (read
 into `Vec`, accumulate in `json_buf`) and the target state (`BytesMut` per file,
 freeze to `Bytes`, views all the way to `RecordBatch`).

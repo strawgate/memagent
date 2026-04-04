@@ -1,6 +1,6 @@
 //! Fuzz the scanner-to-output-sink pipeline.
 //!
-//! Feeds arbitrary bytes through `CopyScanner` and then serializes the
+//! Feeds arbitrary bytes through `Scanner` and then serializes the
 //! resulting `RecordBatch` with both `JsonLinesSink` and `OtlpSink`.
 //!
 //! Verifies that:
@@ -12,19 +12,19 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_arrow::scanner::CopyScanner;
+use logfwd_arrow::scanner::Scanner;
 use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::{BatchMetadata, Compression, JsonLinesSink, OtlpProtocol, OtlpSink};
 use std::sync::Arc;
 
 fuzz_target!(|data: &[u8]| {
-    let mut scanner = CopyScanner::new(ScanConfig {
+    let mut scanner = Scanner::new(ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
         keep_raw: false,
         validate_utf8: false,
     });
-    let Ok(batch) = scanner.scan(data) else { return; };
+    let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else { return; };
 
     let metadata = BatchMetadata {
         resource_attrs: Arc::new(vec![]),

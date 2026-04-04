@@ -133,10 +133,10 @@ pub fn merge_to_utf8(
     let float_s = float_col.map(|c| {
         compute::cast(c, &DataType::Utf8).expect("Float64 → Utf8 cast is always supported by Arrow")
     });
-    // StreamingBuilder emits str columns as Utf8View; StorageBuilder emits Utf8.
+    // StreamingBuilder emits str columns as Utf8View; finish_batch_detached emits Utf8.
     // Both cast cleanly to Utf8 here. This loses the zero-copy StringView property,
-    // but normalize_conflict_columns is only called in the SQL transform path (not
-    // the storage path), so the trade-off is intentional and acceptable.
+    // but normalize_conflict_columns is only called in the SQL transform path,
+    // so the trade-off is intentional and acceptable.
     let str_s = str_col.map(|c| {
         compute::cast(c, &DataType::Utf8)
             .expect("Utf8/Utf8View → Utf8 cast is always supported by Arrow")

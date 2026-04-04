@@ -1,14 +1,13 @@
 //! Arrow integration layer for logfwd.
 //!
 //! Implements logfwd-core's `ScanBuilder` trait using Apache Arrow types.
-//! Contains `StreamingBuilder` (zero-copy hot path) and `StorageBuilder`
-//! (persistence path), plus scanner wrapper types that produce `RecordBatch`.
+//! Contains `StreamingBuilder` (zero-copy hot path) and the `Scanner`
+//! wrapper type that produces `RecordBatch`.
 
 pub mod conflict_schema;
 pub mod materialize;
 pub mod scanner;
 pub mod star_schema;
-pub mod storage_builder;
 pub mod streaming_builder;
 
 /// Check and set a per-row written bit for the given field index.
@@ -39,6 +38,5 @@ pub(crate) fn check_dup_bits(written_bits: &mut u64, idx: usize) -> bool {
 }
 
 // Re-export scanner types for convenience
-pub use scanner::{CopyScanner, ZeroCopyScanner};
-pub use storage_builder::StorageBuilder;
+pub use scanner::Scanner;
 pub use streaming_builder::StreamingBuilder;

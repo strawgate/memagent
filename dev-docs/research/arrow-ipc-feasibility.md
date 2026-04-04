@@ -17,7 +17,7 @@ well above the thresholds required for 1 M+ rows/sec sustained ingestion.
 
 Standalone example in `crates/logfwd-core/examples/arrow_ipc_roundtrip.rs`:
 
-1. Generate 30 000 K8s-style log rows via `StorageBuilder` → `RecordBatch` (~5 MB IPC).
+1. Generate 30 000 K8s-style log rows via `Scanner::scan_detached` → `RecordBatch` (~5 MB IPC).
 2. Serialise to Arrow IPC **file format** (footer gives random-access batch offsets needed for mmap replay).
 3. Compress with zstd via `IpcWriteOptions::try_with_compression(Some(CompressionType::ZSTD))`.
 4. Deserialise via `FileReader` (sequential) and via `memmap2::Mmap` (mmap).

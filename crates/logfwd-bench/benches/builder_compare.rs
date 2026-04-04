@@ -1,4 +1,4 @@
-//! Criterion benchmarks: streaming (StringViewArray) vs scan_owned (StringArray)
+//! Criterion benchmarks: streaming (StringViewArray) vs scan_detached (StringArray)
 //! across different data shapes, sizes, and pipeline stages.
 //!
 //! All variants within a group run back-to-back for reliable relative comparison.
@@ -14,7 +14,7 @@ use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::materialize::detach_if_attached;
-use logfwd_arrow::scanner::ZeroCopyScanner;
+use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_transform::SqlTransform;
 
@@ -178,7 +178,7 @@ fn fmt_bytes(n: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Scan only: streaming (StringViewArray) vs scan_owned (StringArray)
+// 1. Scan only: streaming (StringViewArray) vs scan_detached (StringArray)
 // ---------------------------------------------------------------------------
 
 fn bench_scan(c: &mut Criterion) {
@@ -200,13 +200,13 @@ fn bench_scan(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(data.len() as u64));
 
         group.bench_function(BenchmarkId::new("streaming", name), |b| {
-            let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+            let mut scanner = Scanner::new(ScanConfig::default());
             b.iter(|| scanner.scan(buf.clone()).unwrap());
         });
 
-        group.bench_function(BenchmarkId::new("scan_owned", name), |b| {
-            let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
-            b.iter(|| scanner.scan_owned(buf.clone()).unwrap());
+        group.bench_function(BenchmarkId::new("scan_detached", name), |b| {
+            let mut scanner = Scanner::new(ScanConfig::default());
+            b.iter(|| scanner.scan_detached(buf.clone()).unwrap());
         });
     }
 
@@ -235,7 +235,7 @@ fn bench_persist(c: &mut Criterion) {
 
         // streaming scan → detach → IPC zstd
         group.bench_function(BenchmarkId::new("streaming", name), |b| {
-            let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+            let mut scanner = Scanner::new(ScanConfig::default());
             b.iter(|| {
                 let batch = scanner.scan(buf.clone()).unwrap();
                 let owned = logfwd_arrow::materialize::detach(&batch);
@@ -244,11 +244,11 @@ fn bench_persist(c: &mut Criterion) {
             });
         });
 
-        // scan_owned → IPC zstd (no intermediate StringViewArray)
-        group.bench_function(BenchmarkId::new("scan_owned", name), |b| {
-            let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+        // scan_detached → IPC zstd (no intermediate StringViewArray)
+        group.bench_function(BenchmarkId::new("scan_detached", name), |b| {
+            let mut scanner = Scanner::new(ScanConfig::default());
             b.iter(|| {
-                let batch = scanner.scan_owned(buf.clone()).unwrap();
+                let batch = scanner.scan_detached(buf.clone()).unwrap();
                 let compressed = write_ipc_zstd(&batch);
                 std::hint::black_box(compressed.len());
             });
@@ -274,7 +274,7 @@ fn bench_pipeline(c: &mut Criterion) {
     // --- Passthrough (SELECT *) ---
 
     group.bench_function(BenchmarkId::new("passthrough", "streaming"), |b| {
-        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+        let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         b.iter(|| {
             let batch = scanner.scan(buf.clone()).unwrap();
@@ -285,11 +285,11 @@ fn bench_pipeline(c: &mut Criterion) {
         });
     });
 
-    group.bench_function(BenchmarkId::new("passthrough", "scan_owned"), |b| {
-        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+    group.bench_function(BenchmarkId::new("passthrough", "scan_detached"), |b| {
+        let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         b.iter(|| {
-            let batch = scanner.scan_owned(buf.clone()).unwrap();
+            let batch = scanner.scan_detached(buf.clone()).unwrap();
             let transformed = transform.execute_blocking(batch).unwrap();
             let compressed = write_ipc_zstd(&transformed);
             std::hint::black_box(compressed.len());
@@ -299,7 +299,7 @@ fn bench_pipeline(c: &mut Criterion) {
     // --- WHERE filter (25% selectivity) ---
 
     group.bench_function(BenchmarkId::new("where_filter", "streaming"), |b| {
-        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+        let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").unwrap();
         b.iter(|| {
             let batch = scanner.scan(buf.clone()).unwrap();
@@ -310,11 +310,11 @@ fn bench_pipeline(c: &mut Criterion) {
         });
     });
 
-    group.bench_function(BenchmarkId::new("where_filter", "scan_owned"), |b| {
-        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+    group.bench_function(BenchmarkId::new("where_filter", "scan_detached"), |b| {
+        let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").unwrap();
         b.iter(|| {
-            let batch = scanner.scan_owned(buf.clone()).unwrap();
+            let batch = scanner.scan_detached(buf.clone()).unwrap();
             let transformed = transform.execute_blocking(batch).unwrap();
             let compressed = write_ipc_zstd(&transformed);
             std::hint::black_box(compressed.len());
@@ -324,7 +324,7 @@ fn bench_pipeline(c: &mut Criterion) {
     // --- Projection + filter ---
 
     group.bench_function(BenchmarkId::new("proj_filter", "streaming"), |b| {
-        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+        let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new(
             "SELECT level, message, status, duration_ms FROM logs WHERE status >= 400",
         )
@@ -338,14 +338,14 @@ fn bench_pipeline(c: &mut Criterion) {
         });
     });
 
-    group.bench_function(BenchmarkId::new("proj_filter", "scan_owned"), |b| {
-        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+    group.bench_function(BenchmarkId::new("proj_filter", "scan_detached"), |b| {
+        let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new(
             "SELECT level, message, status, duration_ms FROM logs WHERE status >= 400",
         )
         .unwrap();
         b.iter(|| {
-            let batch = scanner.scan_owned(buf.clone()).unwrap();
+            let batch = scanner.scan_detached(buf.clone()).unwrap();
             let transformed = transform.execute_blocking(batch).unwrap();
             let compressed = write_ipc_zstd(&transformed);
             std::hint::black_box(compressed.len());
@@ -370,8 +370,8 @@ fn bench_decompress(c: &mut Criterion) {
 
     for (name, data) in &datasets {
         let buf = Bytes::from(data.clone());
-        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
-        let batch = scanner.scan_owned(buf).unwrap();
+        let mut scanner = Scanner::new(ScanConfig::default());
+        let batch = scanner.scan_detached(buf).unwrap();
         let compressed = write_ipc_zstd(&batch);
 
         group.throughput(Throughput::Bytes(data.len() as u64));
@@ -405,7 +405,7 @@ fn bench_sizes(c: &mut Criterion) {
     eprintln!();
     eprintln!(
         "{:<20} {:>10} {:>12} {:>12} {:>12} {:>12} {:>8}",
-        "Dataset", "Raw", "Streaming", "scan_owned", "IPC(stream)", "IPC(owned)", "Ratio"
+        "Dataset", "Raw", "Streaming", "scan_detached", "IPC(stream)", "IPC(owned)", "Ratio"
     );
     eprintln!("{}", "-".repeat(95));
 
@@ -413,13 +413,13 @@ fn bench_sizes(c: &mut Criterion) {
         let buf = Bytes::from(data.clone());
         let raw_size = data.len();
 
-        let mut s1 = ZeroCopyScanner::new(ScanConfig::default());
+        let mut s1 = Scanner::new(ScanConfig::default());
         let streaming_batch = s1.scan(buf.clone()).unwrap();
         let streaming_mem = streaming_batch.get_array_memory_size();
         let streaming_ipc = write_ipc_zstd(&logfwd_arrow::materialize::detach(&streaming_batch));
 
-        let mut s2 = ZeroCopyScanner::new(ScanConfig::default());
-        let owned_batch = s2.scan_owned(buf).unwrap();
+        let mut s2 = Scanner::new(ScanConfig::default());
+        let owned_batch = s2.scan_detached(buf).unwrap();
         let owned_mem = owned_batch.get_array_memory_size();
         let owned_ipc = write_ipc_zstd(&owned_batch);
 

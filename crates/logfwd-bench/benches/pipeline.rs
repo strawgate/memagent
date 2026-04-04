@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use logfwd_arrow::scanner::CopyScanner;
+use logfwd_arrow::scanner::Scanner;
 use logfwd_core::cri::{CriReassembler, ReassembleResult, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use logfwd_io::compress::ChunkCompressor;
@@ -112,8 +112,12 @@ fn bench_scanner(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(bytes));
         group.bench_with_input(BenchmarkId::new("scan_all_fields", n), &data, |b, data| {
-            let mut scanner = CopyScanner::new(ScanConfig::default());
-            b.iter(|| scanner.scan(data).expect("bench: scan should not fail"));
+            let mut scanner = Scanner::new(ScanConfig::default());
+            b.iter(|| {
+                scanner
+                    .scan_detached(bytes::Bytes::from(data.to_vec()))
+                    .expect("bench: scan should not fail")
+            });
         });
 
         // Pushdown: only extract 3 fields.
@@ -137,8 +141,12 @@ fn bench_scanner(c: &mut Criterion) {
                 keep_raw: false,
                 validate_utf8: false,
             };
-            let mut scanner = CopyScanner::new(config);
-            b.iter(|| scanner.scan(data).expect("bench: scan should not fail"));
+            let mut scanner = Scanner::new(config);
+            b.iter(|| {
+                scanner
+                    .scan_detached(bytes::Bytes::from(data.to_vec()))
+                    .expect("bench: scan should not fail")
+            });
         });
     }
 
@@ -214,8 +222,10 @@ fn bench_transform(c: &mut Criterion) {
 
     let n = 10_000;
     let data = gen_json_lines(n);
-    let mut scanner = CopyScanner::new(ScanConfig::default());
-    let batch = scanner.scan(&data).expect("bench: scan should not fail");
+    let mut scanner = Scanner::new(ScanConfig::default());
+    let batch = scanner
+        .scan_detached(bytes::Bytes::from(data.clone()))
+        .expect("bench: scan should not fail");
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("select_star", |b| {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
@@ -292,8 +302,10 @@ fn bench_output(c: &mut Criterion) {
 
     let n = 10_000;
     let data = gen_json_lines(n);
-    let mut scanner = CopyScanner::new(ScanConfig::default());
-    let batch = scanner.scan(&data).expect("bench: scan should not fail");
+    let mut scanner = Scanner::new(ScanConfig::default());
+    let batch = scanner
+        .scan_detached(bytes::Bytes::from(data.clone()))
+        .expect("bench: scan should not fail");
     let meta = make_metadata();
 
     // NullSink (measures overhead of scan + batch creation only)
@@ -335,11 +347,13 @@ fn bench_end_to_end(c: &mut Criterion) {
     // Full pipeline: scan → SELECT * → capture sink
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("scan_passthrough_capture", |b| {
-        let mut scanner = CopyScanner::new(ScanConfig::default());
+        let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let batch = scanner.scan(&data).expect("bench: scan should not fail");
+            let batch = scanner
+                .scan_detached(bytes::Bytes::from(data.clone()))
+                .expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
         });
@@ -347,12 +361,14 @@ fn bench_end_to_end(c: &mut Criterion) {
 
     // Full pipeline: scan → filter → capture sink
     group.bench_function("scan_filter_capture", |b| {
-        let mut scanner = CopyScanner::new(ScanConfig::default());
+        let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform =
             SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let batch = scanner.scan(&data).expect("bench: scan should not fail");
+            let batch = scanner
+                .scan_detached(bytes::Bytes::from(data.clone()))
+                .expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
         });
@@ -360,7 +376,7 @@ fn bench_end_to_end(c: &mut Criterion) {
 
     // Full pipeline: scan → grok + filter → capture sink
     group.bench_function("scan_grok_filter_capture", |b| {
-        let mut scanner = CopyScanner::new(ScanConfig::default());
+        let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new(
             "SELECT grok(message_str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed \
              FROM logs WHERE level_str != 'DEBUG'",
@@ -368,7 +384,9 @@ fn bench_end_to_end(c: &mut Criterion) {
         .unwrap();
         let mut sink = NullSink;
         b.iter(|| {
-            let batch = scanner.scan(&data).expect("bench: scan should not fail");
+            let batch = scanner
+                .scan_detached(bytes::Bytes::from(data.clone()))
+                .expect("bench: scan should not fail");
             let result = transform.execute_blocking(batch).unwrap();
             sink.send_batch(&result, &meta).unwrap();
         });
@@ -404,8 +422,10 @@ fn bench_elasticsearch_serialize(c: &mut Criterion) {
 
     for &n in &[1_000usize, 10_000, 100_000] {
         let data = gen_json_lines(n);
-        let mut scanner = CopyScanner::new(ScanConfig::default());
-        let batch = scanner.scan(&data).expect("bench: scan should not fail");
+        let mut scanner = Scanner::new(ScanConfig::default());
+        let batch = scanner
+            .scan_detached(bytes::Bytes::from(data.clone()))
+            .expect("bench: scan should not fail");
         let meta = make_metadata();
 
         group.throughput(Throughput::Elements(n as u64));

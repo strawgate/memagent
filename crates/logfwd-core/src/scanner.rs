@@ -1,8 +1,7 @@
 // scanner.rs — Generic JSON-to-columnar scan loop.
 //
 // Provides the ScanBuilder trait and the scan_into/scan_line functions.
-// Arrow-specific scanner types (CopyScanner, ZeroCopyScanner) live
-// in the logfwd-arrow crate.
+// The Arrow-specific Scanner type lives in the logfwd-arrow crate.
 
 use crate::scan_config::ScanConfig;
 use crate::scan_config::parse_int_fast;
@@ -59,10 +58,10 @@ pub enum BuilderState {
 ///
 /// **Initialization**: `begin_batch` is intentionally NOT part of this trait.
 /// Each implementor has its own `begin_batch` method with a type-specific
-/// signature (`StorageBuilder::begin_batch()` takes no args;
-/// `StreamingBuilder::begin_batch(buf: Bytes)` takes the input buffer for
-/// zero-copy view construction).  Callers must invoke `begin_batch` on the
-/// concrete type before passing it to `scan_into` or `scan_streaming`.
+/// signature (e.g. `StreamingBuilder::begin_batch(buf: Bytes)` takes the
+/// input buffer for zero-copy view construction).  Callers must invoke
+/// `begin_batch` on the concrete type before passing it to `scan_into` or
+/// `scan_streaming`.
 ///
 /// - `resolve_field`: maps a field name to a column index. Must be stable
 ///   within a batch (same key → same index). May create new columns.
@@ -72,7 +71,7 @@ pub enum BuilderState {
 /// - First-write-wins: if a key appears twice in one row, the first value
 ///   is kept and subsequent writes are silently ignored.
 ///
-/// Implementations live in `logfwd-arrow` (`StorageBuilder`, `StreamingBuilder`).
+/// Implementations live in `logfwd-arrow` (`StreamingBuilder`).
 pub trait ScanBuilder {
     /// Start a new row.
     fn begin_row(&mut self);
@@ -120,8 +119,8 @@ pub trait ScanBuilder {
 ///   this call (see [`ScanBuilder`] for the initialization contract).
 ///
 /// # Type parameter
-/// - `B`: Any implementation of `ScanBuilder` (e.g., `StorageBuilder`,
-///   `StreamingBuilder` from `logfwd-arrow`)
+/// - `B`: Any implementation of `ScanBuilder` (e.g., `StreamingBuilder`
+///   from `logfwd-arrow`)
 #[inline(never)]
 pub fn scan_into<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: &mut B) {
     debug_assert!(

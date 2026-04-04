@@ -5,8 +5,8 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
+use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::ZeroCopyScanner;
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_transform::SqlTransform;
 use logfwd_output::BatchMetadata;
@@ -20,7 +20,7 @@ fn main() {
 
     // Stage 1: Scan
     let t0 = Instant::now();
-    let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+    let mut scanner = Scanner::new(ScanConfig::default());
     let batch = scanner.scan(bytes::Bytes::from(data)).unwrap();
     let scan_ms = t0.elapsed().as_millis();
 
@@ -92,7 +92,7 @@ fn main() {
         let data = generate_simple(n);
         
         let t = Instant::now();
-        let mut s = ZeroCopyScanner::new(ScanConfig::default());
+        let mut s = Scanner::new(ScanConfig::default());
         let batch = s.scan(bytes::Bytes::from(data)).unwrap();
         let scan = t.elapsed().as_millis();
         

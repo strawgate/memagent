@@ -65,7 +65,7 @@ intermediate allocation at the scanner/builder boundary.
 
 ## The Deferred Builder Pattern
 
-`StorageBuilder` and `StreamingBuilder` use a deferred-write pattern: they collect
+`StreamingBuilder` uses a deferred-write pattern: it collects
 `(field_index, value)` records during scanning and bulk-build Arrow columns at
 `finish_batch`. Do not replace this with incremental writes directly into Arrow
 builders during scanning. The incremental approach requires coordinated null-padding:

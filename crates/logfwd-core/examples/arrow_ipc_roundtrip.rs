@@ -1,7 +1,7 @@
 //! Arrow IPC roundtrip benchmark — Phase 0 DiskQueue spike.
 //!
 //! Validates the DiskQueue design:
-//!   1. Generate a ~4 MB `RecordBatch` via `StorageBuilder` (K8s-style log data)
+//!   1. Generate a ~4 MB `RecordBatch` via `Scanner::scan_detached` (K8s-style log data)
 //!   2. Write via Arrow IPC `FileWriter` — both uncompressed and with zstd
 //!   3. Read back via `FileReader` (sequential read) and via `memmap2` (mmap)
 //!   4. Verify bit-identical roundtrip (schema + every column)
@@ -22,7 +22,8 @@ use std::time::Instant;
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow::record_batch::RecordBatch;
-use logfwd_arrow::storage_builder::StorageBuilder;
+use logfwd_arrow::scanner::Scanner;
+use logfwd_core::scan_config::ScanConfig;
 use memmap2::Mmap;
 use tempfile::NamedTempFile;
 
@@ -30,85 +31,62 @@ use tempfile::NamedTempFile;
 // K8s-realistic log data generator
 // ---------------------------------------------------------------------------
 
-/// Generates a `RecordBatch` of K8s-style log rows via [`StorageBuilder`].
+/// Generates a `RecordBatch` of K8s-style log rows via [`Scanner::scan_detached`].
 ///
 /// Each row has timestamp, namespace, pod, container, stream, level, msg,
 /// status (int), latency_ms (float), and request_id columns — matching the
 /// realistic benchmark scenario used in `benches/scanner.rs`.
 fn generate_batch(num_rows: usize) -> RecordBatch {
-    let namespaces: &[&[u8]] = &[
-        b"default",
-        b"kube-system",
-        b"monitoring",
-        b"prod",
-        b"staging",
+    let namespaces = ["default", "kube-system", "monitoring", "prod", "staging"];
+    let pods = [
+        "api-7f8d9c6b5-x2k4m",
+        "nginx-5b9c7d8e6-q3r7p",
+        "prom-0",
+        "coredns-6d4b-wk9tn",
     ];
-    let pods: &[&[u8]] = &[
-        b"api-7f8d9c6b5-x2k4m",
-        b"nginx-5b9c7d8e6-q3r7p",
-        b"prom-0",
-        b"coredns-6d4b-wk9tn",
-    ];
-    let levels: &[&[u8]] = &[b"DEBUG", b"INFO", b"INFO", b"INFO", b"WARN", b"ERROR"];
+    let levels = ["DEBUG", "INFO", "INFO", "INFO", "WARN", "ERROR"];
 
-    let mut builder = StorageBuilder::new(false);
-    builder.begin_batch();
-
-    // Pre-resolve all field indices (one HashMap lookup per field, amortised).
-    let ts_idx = builder.resolve_field(b"timestamp");
-    let ns_idx = builder.resolve_field(b"namespace");
-    let pod_idx = builder.resolve_field(b"pod");
-    let container_idx = builder.resolve_field(b"container");
-    let stream_idx = builder.resolve_field(b"stream");
-    let level_idx = builder.resolve_field(b"level");
-    let msg_idx = builder.resolve_field(b"msg");
-    let status_idx = builder.resolve_field(b"status");
-    let latency_idx = builder.resolve_field(b"latency_ms");
-    let req_id_idx = builder.resolve_field(b"request_id");
-
+    let mut ndjson = Vec::with_capacity(num_rows * 300);
     for i in 0..num_rows {
-        builder.begin_row();
-
         let ts = format!(
             "2024-01-15T10:{:02}:{:02}.{:03}Z",
             (i / 60) % 60,
             i % 60,
             i % 1000
         );
-        builder.append_str_by_idx(ts_idx, ts.as_bytes());
-        builder.append_str_by_idx(ns_idx, namespaces[i % namespaces.len()]);
-        builder.append_str_by_idx(pod_idx, pods[i % pods.len()]);
-        builder.append_str_by_idx(container_idx, b"main");
-        builder.append_str_by_idx(stream_idx, b"stdout");
-        builder.append_str_by_idx(level_idx, levels[i % levels.len()]);
-
         let msg = format!(
             "request processed path=/api/v1/resource/{} user_id=usr_{:06}",
             i,
             i % 100_000
         );
-        builder.append_str_by_idx(msg_idx, msg.as_bytes());
-
-        // Deliberately produce type conflict: status resolves as int.
-        let status: &[u8] = if i % 20 == 0 {
-            b"500"
+        let status = if i % 20 == 0 {
+            500
         } else if i % 7 == 0 {
-            b"404"
+            404
         } else {
-            b"200"
+            200
         };
-        builder.append_int_by_idx(status_idx, status);
-
-        let latency = format!("{:.3}", 0.1 + (i as f64 % 100.0) * 0.5);
-        builder.append_float_by_idx(latency_idx, latency.as_bytes());
-
+        let latency = 0.1 + (i as f64 % 100.0) * 0.5;
         let req_id = format!("req-{:08x}", i as u32);
-        builder.append_str_by_idx(req_id_idx, req_id.as_bytes());
-
-        builder.end_row();
+        let line = format!(
+            r#"{{"timestamp":"{}","namespace":"{}","pod":"{}","container":"main","stream":"stdout","level":"{}","msg":"{}","status":{},"latency_ms":{:.3},"request_id":"{}"}}"#,
+            ts,
+            namespaces[i % namespaces.len()],
+            pods[i % pods.len()],
+            levels[i % levels.len()],
+            msg,
+            status,
+            latency,
+            req_id,
+        );
+        ndjson.extend_from_slice(line.as_bytes());
+        ndjson.push(b'\n');
     }
 
-    builder.finish_batch().expect("example: batch build failed")
+    let mut scanner = Scanner::new(ScanConfig::default());
+    scanner
+        .scan_detached(bytes::Bytes::from(ndjson))
+        .expect("example: scan_detached failed")
 }
 
 // ---------------------------------------------------------------------------

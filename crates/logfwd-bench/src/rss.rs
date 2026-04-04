@@ -3,8 +3,8 @@
 
 use std::io::Write;
 
+use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_core::scanner::ZeroCopyScanner;
 use logfwd_transform::SqlTransform;
 
 fn rss_mb() -> f64 {
@@ -59,7 +59,7 @@ fn main() {
             data.len() as f64 / 1_048_576.0, after_gen, after_gen - baseline);
 
         // Scan
-        let mut scanner = ZeroCopyScanner::new(ScanConfig::default());
+        let mut scanner = Scanner::new(ScanConfig::default());
         let batch = scanner.scan(bytes::Bytes::from(data.clone())).unwrap();
         let after_scan = rss_mb();
         println!("  After scan ({} rows):    {:.1} MB  (+{:.1} MB)",
@@ -92,23 +92,23 @@ fn main() {
         println!();
     }
 
-    // === StorageBuilder (copies strings) vs StreamingBuilder (zero-copy) ===
-    println!("--- StorageBuilder vs StreamingBuilder (1M simple lines) ---");
+    // === scan_detached (copies strings) vs scan (zero-copy) ===
+    println!("--- scan_detached vs scan (1M simple lines) ---");
     {
         let data = generate_simple(1_000_000);
         let raw_mb = data.len() as f64 / 1_048_576.0;
 
         let before = rss_mb();
-        let mut storage_scanner = logfwd_core::scanner::CopyScanner::new(ScanConfig::default());
-        let batch = storage_scanner.scan(&data).unwrap();
-        let after_storage = rss_mb();
-        let storage_cols = batch.num_columns();
-        let storage_reported = batch.get_array_memory_size() as f64 / 1_048_576.0;
+        let mut detached_scanner = Scanner::new(ScanConfig::default());
+        let batch = detached_scanner.scan_detached(bytes::Bytes::from(data.clone())).unwrap();
+        let after_detached = rss_mb();
+        let detached_cols = batch.num_columns();
+        let detached_reported = batch.get_array_memory_size() as f64 / 1_048_576.0;
         drop(batch);
-        drop(storage_scanner);
+        drop(detached_scanner);
 
         let mid = rss_mb();
-        let mut streaming_scanner = ZeroCopyScanner::new(ScanConfig::default());
+        let mut streaming_scanner = Scanner::new(ScanConfig::default());
         let batch = streaming_scanner.scan(bytes::Bytes::from(data)).unwrap();
         let after_streaming = rss_mb();
         let streaming_cols = batch.num_columns();
@@ -117,13 +117,13 @@ fn main() {
         drop(streaming_scanner);
 
         println!("  Raw JSON:         {:.1} MB", raw_mb);
-        println!("  StorageBuilder:   RSS +{:.1} MB  (reported {:.1} MB)  {} cols",
-            after_storage - before, storage_reported, storage_cols);
-        println!("  StreamingBuilder: RSS +{:.1} MB  (reported {:.1} MB)  {} cols",
+        println!("  scan_detached:    RSS +{:.1} MB  (reported {:.1} MB)  {} cols",
+            after_detached - before, detached_reported, detached_cols);
+        println!("  scan (zero-copy): RSS +{:.1} MB  (reported {:.1} MB)  {} cols",
             after_streaming - mid, streaming_reported, streaming_cols);
         println!("  Savings:          {:.1} MB ({:.0}% less RSS)",
-            (after_storage - before) - (after_streaming - mid),
-            100.0 * (1.0 - (after_streaming - mid) / (after_storage - before)));
+            (after_detached - before) - (after_streaming - mid),
+            100.0 * (1.0 - (after_streaming - mid) / (after_detached - before)));
         println!();
     }
 
@@ -140,7 +140,7 @@ fn main() {
     {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         let config = transform.scan_config();
-        let mut scanner = ZeroCopyScanner::new(config);
+        let mut scanner = Scanner::new(config);
         let batch = scanner.scan(bytes::Bytes::from(data.clone())).unwrap();
         let after = rss_mb();
         println!("  SELECT * (20 fields):    {:.1} MB  (delta {:.1} MB)", after, after - baseline);
@@ -153,7 +153,7 @@ fn main() {
     {
         let mut transform = SqlTransform::new("SELECT timestamp_str, level_str FROM logs").unwrap();
         let config = transform.scan_config();
-        let mut scanner = ZeroCopyScanner::new(config);
+        let mut scanner = Scanner::new(config);
         let batch = scanner.scan(bytes::Bytes::from(data.clone())).unwrap();
         let after = rss_mb();
         println!("  SELECT 2 fields:         {:.1} MB  (delta {:.1} MB)", after, after - mid);
