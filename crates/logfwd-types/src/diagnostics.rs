@@ -8,8 +8,11 @@ use opentelemetry::metrics::{Counter, Meter};
 /// Stats for one component. Dual-write: atomics for /api/pipelines,
 /// OTel counters for OTLP push. Both are lock-free on the hot path.
 pub struct ComponentStats {
+    /// Total lines processed by this component.
     pub lines_total: AtomicU64,
+    /// Total bytes processed by this component.
     pub bytes_total: AtomicU64,
+    /// Total errors encountered by this component.
     pub errors_total: AtomicU64,
     /// Expected input lifecycle events (rotation/truncation).
     pub rotations_total: AtomicU64,
@@ -48,16 +51,19 @@ impl ComponentStats {
         Self::with_meter(&noop, "noop", vec![])
     }
 
+    /// Increment line counter by `n` (atomic + OTel).
     pub fn inc_lines(&self, n: u64) {
         self.lines_total.fetch_add(n, Ordering::Relaxed);
         self.otel_lines.add(n, &self.otel_attrs);
     }
 
+    /// Increment byte counter by `n` (atomic + OTel).
     pub fn inc_bytes(&self, n: u64) {
         self.bytes_total.fetch_add(n, Ordering::Relaxed);
         self.otel_bytes.add(n, &self.otel_attrs);
     }
 
+    /// Increment error counter by 1 (atomic + OTel).
     pub fn inc_errors(&self) {
         self.errors_total.fetch_add(1, Ordering::Relaxed);
         self.otel_errors.add(1, &self.otel_attrs);
@@ -73,6 +79,7 @@ impl ComponentStats {
         self.otel_rotations.add(1, &self.otel_attrs);
     }
 
+    /// Increment parse-error counter by `n` (atomic + OTel).
     pub fn inc_parse_errors(&self, n: u64) {
         self.parse_errors_total.fetch_add(n, Ordering::Relaxed);
         self.otel_parse_errors.add(n, &self.otel_attrs);
