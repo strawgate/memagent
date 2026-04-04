@@ -601,7 +601,7 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
 /// Expand `${VAR}` references in `text` using the process environment.
 ///
 /// Returns an error if a referenced variable is not set in the environment.
-/// This catches typos like `${OTEL_EXPORTE_ENDPOINT}` at config-load time
+/// This catches misspelled env var names at config-load time
 /// instead of producing cryptic runtime failures.
 fn expand_env_vars(text: &str) -> Result<String, ConfigError> {
     let mut result = String::with_capacity(text.len());
