@@ -10,6 +10,12 @@ Read `AGENTS.md` in the repository root for full project context, crate structur
 - **Test:** `just test`
 - **Lint:** `just lint` (clippy + rustfmt + taplo + cargo-deny)
 
+## PR Descriptions
+
+- Use `Closes #N` for every issue the PR fully resolves (auto-closes on merge)
+- Use `Relates to #N` for partial fixes
+- Fill in the PR template — summary, closing keywords, test plan
+
 ## What NOT to Do
 
 - Do not add dependencies without justification

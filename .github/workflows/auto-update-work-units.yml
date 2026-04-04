@@ -1,0 +1,103 @@
+name: "Auto: Update work-unit checkboxes"
+
+# When an issue is closed, find any open work-unit issues that reference it
+# in a checkbox line and check the box. If all boxes are checked, close the
+# work-unit automatically.
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  update-checkboxes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update parent work-unit checkboxes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const closedNumber = context.payload.issue.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Find open issues that contain a checkbox referencing this issue.
+            // Search for the pattern "- [ ] #N" in issue bodies.
+            // Use paginate to collect all matching results (not just one page).
+            const candidates = await github.paginate(
+              github.rest.search.issuesAndPullRequests,
+              {
+                q: `repo:${owner}/${repo} is:issue is:open label:work-unit "#${closedNumber}" in:body`,
+              }
+            );
+
+            for (const candidate of candidates) {
+              // Retry loop: concurrent issue closures can race on read-modify-write.
+              // Re-fetch the issue body on each attempt to avoid stomping another update.
+              const MAX_RETRIES = 3;
+              for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                const { data: issue } = await github.rest.issues.get({
+                  owner, repo,
+                  issue_number: candidate.number,
+                });
+
+                const body = issue.body || '';
+
+                // Extract labels for later work-unit check.
+                const labels = (issue.labels || []).map((l) =>
+                  typeof l === 'string' ? l : l.name
+                );
+                const isWorkUnit = labels.includes('work-unit');
+                if (!isWorkUnit) break;
+
+                // Match unchecked checkboxes that reference this issue number.
+                // Handles patterns like "- [ ] #123", "- [ ] #123 fixed", "- [ ] #123 done"
+                const pattern = new RegExp(
+                  `- \\[ \\] #${closedNumber}\\b`,
+                  'g'
+                );
+
+                // Use replace() directly — it returns the original string when there
+                // is no match, avoiding the regex lastIndex bug that occurs when
+                // test() is called before replace() on a global regex.
+                const updatedBody = body.replace(pattern, `- [x] #${closedNumber}`);
+
+                if (updatedBody === body) break; // nothing to update
+
+                try {
+                  await github.rest.issues.update({
+                    owner, repo,
+                    issue_number: candidate.number,
+                    body: updatedBody,
+                  });
+                } catch (err) {
+                  if (attempt < MAX_RETRIES && err.status === 409) {
+                    console.log(`Conflict updating #${candidate.number}, retrying (${attempt}/${MAX_RETRIES})...`);
+                    continue;
+                  }
+                  throw err;
+                }
+
+                console.log(`Checked #${closedNumber} in issue #${candidate.number}`);
+
+                // If all checkboxes are now checked and this is a work-unit, close it.
+                const unchecked = (updatedBody.match(/- \[ \]( |$)/gm) || []).length;
+                if (isWorkUnit && unchecked === 0 && updatedBody.includes('- [x]')) {
+                  await github.rest.issues.createComment({
+                    owner, repo,
+                    issue_number: candidate.number,
+                    body: `All checkboxes complete — closing automatically.\n\nLast resolved: #${closedNumber}.`,
+                  });
+                  await github.rest.issues.update({
+                    owner, repo,
+                    issue_number: candidate.number,
+                    state: 'closed',
+                  });
+                  console.log(`All boxes checked — closed work-unit #${candidate.number}`);
+                }
+
+                break; // success, no retry needed
+              }
+            }

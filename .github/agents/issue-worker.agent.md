@@ -23,6 +23,17 @@ Then read every source file in the module(s) you'll modify — including tests.
 5. Write tests for every change. Bug fix? Reproduce it first.
 6. Keep changes minimal and focused. Don't refactor what wasn't asked.
 
+## PR Descriptions
+
+- Use `Closes #N` in the PR body for every issue the PR fully resolves. This auto-closes issues on merge and triggers work-unit checkbox updates.
+- If the PR only partially addresses an issue, use `Relates to #N` instead.
+- For work-unit issues, list each child issue with its closing keyword:
+  ```
+  Closes #386
+  Closes #697
+  Closes #817
+  ```
+
 ## Working on Pull Requests
 
 1. Read every changed file and ALL review comments before responding
