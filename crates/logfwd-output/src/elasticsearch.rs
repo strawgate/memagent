@@ -130,6 +130,22 @@ impl ElasticsearchAsyncSink {
         Ok(())
     }
 
+    /// Extract the `took` field (milliseconds) from an ES bulk response body.
+    /// Returns `None` if the field is absent or not parseable.
+    fn extract_took(body: &[u8]) -> Option<u64> {
+        const PREFIX: &[u8] = b"\"took\":";
+        let pos = memchr::memmem::find(body, PREFIX)?;
+        let rest = body[pos + PREFIX.len()..].trim_ascii_start();
+        let end = rest
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if end == 0 {
+            return None;
+        }
+        std::str::from_utf8(&rest[..end]).ok()?.parse().ok()
+    }
+
     /// Parse the ES bulk API response body for per-document errors.
     ///
     /// Returns `Ok(())` if all documents succeeded (`errors: false`), or
@@ -301,6 +317,7 @@ impl ElasticsearchAsyncSink {
             req = req.header(k.clone(), v.clone());
         }
 
+        tracing::Span::current().record("req_bytes", body_len as u64);
         let req = if self.config.compress {
             use flate2::Compression;
             use flate2::write::GzEncoder;
@@ -308,12 +325,16 @@ impl ElasticsearchAsyncSink {
             let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
             enc.write_all(&body).map_err(io::Error::other)?;
             let compressed = enc.finish().map_err(io::Error::other)?;
+            tracing::Span::current().record("cmp_bytes", compressed.len() as u64);
             req.header("Content-Encoding", "gzip").body(compressed)
         } else {
             req.body(body)
         };
 
+        let t0 = std::time::Instant::now();
         let response = req.send().await.map_err(io::Error::other)?;
+        let send_ns = t0.elapsed().as_nanos() as u64;
+        tracing::Span::current().record("send_ns", send_ns);
 
         let status = response.status();
 
@@ -351,6 +372,12 @@ impl ElasticsearchAsyncSink {
         }
 
         let body = response.bytes().await.map_err(io::Error::other)?;
+        let recv_ns = t0.elapsed().as_nanos() as u64 - send_ns;
+        tracing::Span::current().record("recv_ns", recv_ns);
+        tracing::Span::current().record("resp_bytes", body.len() as u64);
+        if let Some(took) = Self::extract_took(&body) {
+            tracing::Span::current().record("took_ms", took);
+        }
         Self::parse_bulk_response(&body)?;
         Ok(super::sink::SendResult::Ok)
     }

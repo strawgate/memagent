@@ -288,6 +288,12 @@ pub struct PipelineConfig {
     /// ```
     #[serde(default)]
     pub resource_attrs: HashMap<String, String>,
+    /// Maximum number of concurrent output workers. Default: 4.
+    pub workers: Option<usize>,
+    /// Batch target size in bytes before flushing. Default: 4 MiB.
+    pub batch_target_bytes: Option<usize>,
+    /// Batch flush timeout in milliseconds. Default: 100.
+    pub batch_timeout_ms: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +381,9 @@ impl Config {
                     outputs: vec![output],
                     enrichment: Vec::new(),
                     resource_attrs: raw.resource_attrs,
+                    workers: None,
+                    batch_target_bytes: None,
+                    batch_timeout_ms: None,
                 };
                 let mut map = HashMap::new();
                 map.insert("default".to_string(), pipeline);
