@@ -29,6 +29,9 @@ struct FieldColumns {
     name: Vec<u8>,
     /// String values: (row, offset_in_buffer, len). Views into the shared buffer.
     str_views: Vec<(u32, u32, u32)>,
+    /// Decoded string values: (row, bytes). Heap-allocated copies for strings
+    /// decoded from JSON escape sequences (not in the shared buffer). See #410.
+    decoded_strs: Vec<(u32, Vec<u8>)>,
     /// Int values: (row, parsed_value).
     int_values: Vec<(u32, i64)>,
     /// Float values: (row, parsed_value).
@@ -43,6 +46,7 @@ impl FieldColumns {
         FieldColumns {
             name: name.to_vec(),
             str_views: Vec::with_capacity(256),
+            decoded_strs: Vec::new(),
             int_values: Vec::with_capacity(256),
             float_values: Vec::with_capacity(256),
             has_str: false,
@@ -53,6 +57,7 @@ impl FieldColumns {
 
     fn clear(&mut self) {
         self.str_views.clear();
+        self.decoded_strs.clear();
         self.int_values.clear();
         self.float_values.clear();
         self.has_str = false;
@@ -263,6 +268,28 @@ impl StreamingBuilder {
             .push((self.row_count, offset, value.len() as u32));
     }
 
+    /// Append a decoded string value that is NOT a subslice of the input
+    /// buffer. Used for strings whose JSON escape sequences have been decoded
+    /// (see issue #410). Stores a heap-allocated copy rather than a zero-copy
+    /// view.
+    #[inline(always)]
+    pub fn append_decoded_str_by_idx(&mut self, idx: usize, value: &[u8]) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_decoded_str_by_idx called outside of a row"
+        );
+        if check_dup_bits(&mut self.written_bits, idx) {
+            return;
+        }
+        if std::str::from_utf8(value).is_err() {
+            return;
+        }
+        let fc = &mut self.fields[idx];
+        fc.has_str = true;
+        fc.decoded_strs.push((self.row_count, value.to_vec()));
+    }
+
     #[inline(always)]
     pub fn append_int_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
@@ -409,6 +436,7 @@ impl StreamingBuilder {
                     let mut builder = StringViewBuilder::new();
                     let block = builder.append_block(arrow_buf.clone());
                     let mut vi = 0;
+                    let mut di = 0;
                     for row in 0..num_rows as u32 {
                         if vi < fc.str_views.len() && fc.str_views[vi].0 == row {
                             let (_, offset, len) = fc.str_views[vi];
@@ -416,6 +444,11 @@ impl StreamingBuilder {
                                 .try_append_view(block, offset, len)
                                 .expect("offset/len pre-validated by offset_of and UTF-8 check");
                             vi += 1;
+                        } else if di < fc.decoded_strs.len() && fc.decoded_strs[di].0 == row {
+                            let s = std::str::from_utf8(&fc.decoded_strs[di].1)
+                                .expect("decoded string pre-validated as UTF-8");
+                            builder.append_value(s);
+                            di += 1;
                         } else {
                             builder.append_null();
                         }
@@ -483,6 +516,7 @@ impl StreamingBuilder {
                     let block = builder.append_block(arrow_buf.clone());
 
                     let mut vi = 0;
+                    let mut di = 0;
                     for row in 0..num_rows as u32 {
                         if vi < fc.str_views.len() && fc.str_views[vi].0 == row {
                             let (_, offset, len) = fc.str_views[vi];
@@ -490,6 +524,11 @@ impl StreamingBuilder {
                                 .try_append_view(block, offset, len)
                                 .expect("offset/len pre-validated by offset_of and UTF-8 check");
                             vi += 1;
+                        } else if di < fc.decoded_strs.len() && fc.decoded_strs[di].0 == row {
+                            let s = std::str::from_utf8(&fc.decoded_strs[di].1)
+                                .expect("decoded string pre-validated as UTF-8");
+                            builder.append_value(s);
+                            di += 1;
                         } else {
                             builder.append_null();
                         }

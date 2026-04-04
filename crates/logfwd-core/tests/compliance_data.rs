@@ -227,17 +227,16 @@ fn compliance_huge_line() {
 #[test]
 fn compliance_special_chars_in_values() {
     // JSON strings with escape sequences for newlines, tabs, quotes, backslashes, unicode.
-    // The scanner stores raw byte content between quotes (including escape sequences).
+    // After #410: scanner decodes escape sequences to their actual characters.
     let input = br#"{"msg":"line1\nline2\ttab\"quote\\back"}"#;
     let input_nl = [input.as_slice(), b"\n"].concat();
     assert_both_scanners(&input_nl, |batch| {
         assert_eq!(batch.num_rows(), 1);
         let val = get_str(batch, "msg", 0).expect("msg should exist");
-        // Scanner stores raw escape sequences, so the value should contain
-        // the literal backslash-n, backslash-t etc.
-        assert!(val.contains(r"\n"), "missing \\n in: {val}");
-        assert!(val.contains(r"\t"), "missing \\t in: {val}");
-        assert!(val.contains(r"\\"), "missing \\\\ in: {val}");
+        // Scanner decodes escape sequences: \n → newline, \t → tab, \\ → backslash
+        assert!(val.contains('\n'), "missing decoded newline in: {val:?}");
+        assert!(val.contains('\t'), "missing decoded tab in: {val:?}");
+        assert!(val.contains('\\'), "missing decoded backslash in: {val:?}");
     });
 }
 
@@ -391,10 +390,10 @@ fn compliance_escaped_quotes_in_strings() {
     assert_both_scanners(&input_nl, |batch| {
         assert_eq!(batch.num_rows(), 1);
         let val = get_str(batch, "msg", 0).expect("msg should exist");
-        // Scanner stores raw content between outer quotes, preserving escape sequences.
+        // After #410: scanner decodes \" to literal quote characters.
         assert!(
-            val.contains("\\\"hello\\\""),
-            "escaped quotes not preserved: {val}"
+            val.contains("\"hello\""),
+            "decoded quotes not found: {val:?}"
         );
     });
 }

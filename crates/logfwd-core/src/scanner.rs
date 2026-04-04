@@ -82,6 +82,16 @@ pub trait ScanBuilder {
     fn resolve_field(&mut self, key: &[u8]) -> usize;
     /// Append a string value at the given column index.
     fn append_str_by_idx(&mut self, idx: usize, value: &[u8]);
+    /// Append a decoded string value at the given column index.
+    ///
+    /// Called when the value has been decoded from JSON escape sequences
+    /// and may not be a direct subslice of the input buffer. Builders that
+    /// use zero-copy views (e.g., `StreamingBuilder`) should override this
+    /// to handle non-buffer bytes. The default delegates to
+    /// [`append_str_by_idx`](Self::append_str_by_idx).
+    fn append_decoded_str_by_idx(&mut self, idx: usize, value: &[u8]) {
+        self.append_str_by_idx(idx, value);
+    }
     /// Append an integer value (as raw ASCII digits) at the given column index.
     fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
     /// Append a float value (as raw ASCII) at the given column index.
