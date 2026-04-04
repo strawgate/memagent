@@ -67,6 +67,12 @@ struct TailedFile {
     eof_emitted: bool,
 }
 
+/// Saved state for a file evicted from the open-file LRU cache.
+struct EvictedFile {
+    identity: FileIdentity,
+    offset: u64,
+}
+
 /// Internal result from read_new_data — distinguishes truncation from no-data.
 enum ReadResult {
     /// New data available.
@@ -203,10 +209,12 @@ pub struct FileTailer {
     watcher: notify::RecommendedWatcher,
     /// Directories currently registered with the notify watcher.
     watched_dirs: HashSet<PathBuf>,
-    /// Saved offsets for files evicted from the open-file LRU cache.
+    /// Saved state for files evicted from the open-file LRU cache.
     /// When a file is re-opened after eviction, we seek to the saved offset
-    /// to avoid duplicating or losing data.
-    evicted_offsets: HashMap<PathBuf, u64>,
+    /// to avoid duplicating or losing data. The identity is retained so that
+    /// `file_offsets()` can include evicted files in checkpoint data (#697)
+    /// and `open_file_at` can verify the fingerprint still matches (#817).
+    evicted_offsets: HashMap<PathBuf, EvictedFile>,
     /// Channel receiving filesystem events from the watcher.
     fs_events: crossbeam_channel::Receiver<notify::Result<notify::Event>>,
     /// Last time we did a full poll scan.
@@ -361,8 +369,26 @@ impl FileTailer {
         let identity = identify_file(path, self.config.fingerprint_bytes)?;
         let mut file = File::open(path)?;
 
-        let offset = if let Some(saved) = self.evicted_offsets.remove(path) {
-            file.seek(SeekFrom::Start(saved))?
+        let offset = if let Some(evicted) = self.evicted_offsets.remove(path) {
+            // Verify the file identity still matches before restoring the
+            // saved offset. If the file was deleted and a new file appeared
+            // at the same path, the fingerprint will differ and we must not
+            // seek to the stale offset — that would skip data. (#817)
+            if evicted.identity.fingerprint == identity.fingerprint {
+                file.seek(SeekFrom::Start(evicted.offset))?
+            } else {
+                tracing::warn!(
+                    path = %path.display(),
+                    saved_fingerprint = evicted.identity.fingerprint,
+                    current_fingerprint = identity.fingerprint,
+                    "evicted offset fingerprint mismatch — ignoring saved offset"
+                );
+                if start_from_end {
+                    file.seek(SeekFrom::End(0))?
+                } else {
+                    0
+                }
+            }
         } else if start_from_end {
             file.seek(SeekFrom::End(0))?
         } else {
@@ -596,7 +622,13 @@ impl FileTailer {
             let to_remove = self.files.len() - self.config.max_open_files;
             for (path, _) in by_age.into_iter().take(to_remove) {
                 if let Some(evicted) = self.files.remove(&path) {
-                    self.evicted_offsets.insert(path, evicted.offset);
+                    self.evicted_offsets.insert(
+                        path,
+                        EvictedFile {
+                            identity: evicted.identity,
+                            offset: evicted.offset,
+                        },
+                    );
                 }
             }
         }
@@ -749,14 +781,26 @@ impl FileTailer {
 
     /// Hot path: source identity + offset for all tailed files.
     ///
+    /// Includes both actively-tailed files and files evicted from the LRU
+    /// cache (#697). This ensures evicted file offsets are persisted to the
+    /// checkpoint file, surviving crashes while files are in the evicted state.
+    ///
     /// Skips empty files (fingerprint 0) — they have no data to checkpoint.
     /// Called on every channel send (~100ms). No PathBuf allocation.
     pub fn file_offsets(&self) -> Vec<(SourceId, ByteOffset)> {
-        self.files
+        let active = self
+            .files
             .iter()
             .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
-            .map(|(_, tailed)| (tailed.identity.source_id(), ByteOffset(tailed.offset)))
-            .collect()
+            .map(|(_, tailed)| (tailed.identity.source_id(), ByteOffset(tailed.offset)));
+
+        let evicted = self
+            .evicted_offsets
+            .values()
+            .filter(|e| e.identity.fingerprint != 0)
+            .map(|e| (e.identity.source_id(), ByteOffset(e.offset)));
+
+        active.chain(evicted).collect()
     }
 
     /// Cold path: source identity + canonical path for all tailed files.
@@ -1751,6 +1795,122 @@ mod tests {
         // Offset should be reset to 0, not 999_999.
         let offset = tailer.get_offset(&log_path).unwrap();
         assert_eq!(offset, 0, "stale offset should reset to 0");
+    }
+
+    /// #697: Evicted file offsets must appear in file_offsets() so they are
+    /// included in checkpoint data and survive crashes.
+    #[test]
+    fn test_evicted_offsets_in_checkpoint_data() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 3 files with content; limit to 2 so one is evicted.
+        let mut log_paths = Vec::new();
+        for i in 0..3 {
+            let p = dir.path().join(format!("{i}.log"));
+            {
+                let mut f = File::create(&p).unwrap();
+                writeln!(f, "content for file {i}").unwrap();
+            }
+            log_paths.push(p);
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 60_000,
+            max_open_files: 2,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // Read initial data, then trigger eviction.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(tailer.num_files(), 2, "evicted to max_open_files=2");
+
+        // file_offsets() must include evicted files too.
+        let offsets = tailer.file_offsets();
+        assert_eq!(
+            offsets.len(),
+            3,
+            "file_offsets() must include 2 active + 1 evicted file"
+        );
+
+        // All offsets should be non-zero (we read data from all 3 files).
+        for (sid, off) in &offsets {
+            assert!(sid.0 != 0, "SourceId should be non-zero for files with data");
+            assert!(off.0 > 0, "offset should be non-zero after reading data");
+        }
+    }
+
+    /// #817: open_file_at must verify fingerprint before restoring evicted offset.
+    /// If a file is evicted, deleted, and a new file appears at the same path,
+    /// the saved offset must be ignored.
+    #[test]
+    fn test_evicted_offset_fingerprint_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 3 files; limit to 2 so one is evicted.
+        let mut log_paths = Vec::new();
+        for i in 0..3 {
+            let p = dir.path().join(format!("{i}.log"));
+            {
+                let mut f = File::create(&p).unwrap();
+                // Write enough data so each file has a unique fingerprint.
+                writeln!(f, "unique content for file number {i} with padding to ensure distinct fingerprints").unwrap();
+            }
+            log_paths.push(p);
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 50,
+            max_open_files: 2,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // Read and trigger eviction.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(tailer.num_files(), 2);
+
+        // Find which file was evicted by checking which path is not in files.
+        let evicted_path = log_paths
+            .iter()
+            .find(|p| tailer.get_offset(p).is_none())
+            .expect("one file should be evicted")
+            .clone();
+
+        // Delete the evicted file and create a new one at the same path
+        // with completely different content.
+        fs::remove_file(&evicted_path).unwrap();
+        {
+            let mut f = File::create(&evicted_path).unwrap();
+            writeln!(f, "THIS IS A COMPLETELY DIFFERENT FILE WITH NEW CONTENT").unwrap();
+        }
+
+        // Wait for glob rescan to pick it up and re-open.
+        std::thread::sleep(Duration::from_millis(150));
+        let events = tailer.poll().unwrap();
+
+        // The new file should be read from the beginning, not from the stale offset.
+        let data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { path, bytes } if path == &evicted_path => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let s = String::from_utf8_lossy(&data);
+        assert!(
+            s.contains("COMPLETELY DIFFERENT FILE"),
+            "new file should be read from beginning, not stale offset. Got: {s}"
+        );
     }
 
     /// #730: Non-existent file paths should not prevent construction.

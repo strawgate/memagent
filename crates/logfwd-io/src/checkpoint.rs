@@ -120,6 +120,8 @@ impl CheckpointStore for FileCheckpointStore {
     /// 2. Write to `checkpoints.json.tmp`.
     /// 3. `fsync` the tmp file.
     /// 4. Rename `checkpoints.json.tmp` → `checkpoints.json`.
+    /// 5. `fsync` the parent directory so the rename is durable on
+    ///    crash (required on Linux/ext4). (#386)
     fn flush(&mut self) -> io::Result<()> {
         use std::io::Write as _;
 
@@ -141,6 +143,12 @@ impl CheckpointStore for FileCheckpointStore {
         }
 
         std::fs::rename(&tmp, &final_path)?;
+
+        // fsync the parent directory so the rename entry is durable.
+        // On ext4, rename metadata lives in the directory — without this
+        // fsync a power failure can revert the rename, losing the checkpoint.
+        let dir = std::fs::File::open(&self.data_dir)?;
+        dir.sync_all()?;
 
         Ok(())
     }
@@ -328,6 +336,26 @@ mod tests {
         let store = FileCheckpointStore::open(dir.path()).unwrap();
         assert!(store.load(1).is_none());
         assert!(store.load_all().is_empty());
+    }
+
+    /// #386: flush performs directory fsync after rename.
+    ///
+    /// We can't directly test fsync semantics (that's a kernel guarantee), but
+    /// we verify flush succeeds and the file exists after a full cycle. The
+    /// code path now opens the parent directory and calls sync_all() on it.
+    #[test]
+    fn test_flush_directory_fsync() {
+        let dir = TempDir::new().unwrap();
+        let mut store = FileCheckpointStore::open(dir.path()).unwrap();
+        store.update(make_checkpoint(1, "/var/log/app.log", 2048));
+        // This exercises the full flush path including directory fsync.
+        store.flush().unwrap();
+
+        // Verify the checkpoint file exists and is valid.
+        let bytes = std::fs::read(store.checkpoints_path()).unwrap();
+        let parsed: Vec<SourceCheckpoint> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].offset, 2048);
     }
 
     /// `default_data_dir` returns a non-empty path.
