@@ -1,3 +1,4 @@
+pub mod arrow_ipc_receiver;
 pub mod checkpoint;
 pub mod compress;
 pub mod diagnostics;

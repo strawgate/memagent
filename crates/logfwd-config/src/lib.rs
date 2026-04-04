@@ -81,6 +81,8 @@ pub enum InputType {
     Otlp,
     /// Synthetic data generator for benchmarking.
     Generator,
+    /// Arrow IPC stream receiver (native Arrow transport).
+    ArrowIpc,
 }
 
 /// Recognised output types.
@@ -104,6 +106,8 @@ pub enum OutputType {
     TcpOut,
     /// Send datagrams over UDP.
     UdpOut,
+    /// Arrow IPC stream over HTTP (native Arrow transport).
+    ArrowIpc,
 }
 
 impl<'de> Deserialize<'de> for OutputType {
@@ -126,6 +130,7 @@ impl<'de> Deserialize<'de> for OutputType {
                     "null" => Ok(OutputType::Null),
                     "tcp_out" => Ok(OutputType::TcpOut),
                     "udp_out" => Ok(OutputType::UdpOut),
+                    "arrow_ipc" => Ok(OutputType::ArrowIpc),
                     other => Err(E::unknown_variant(
                         other,
                         &[
@@ -139,6 +144,7 @@ impl<'de> Deserialize<'de> for OutputType {
                             "null",
                             "tcp_out",
                             "udp_out",
+                            "arrow_ipc",
                         ],
                     )),
                 }
@@ -469,7 +475,7 @@ impl Config {
                             )));
                         }
                     }
-                    InputType::Otlp | InputType::Generator => {}
+                    InputType::Otlp | InputType::Generator | InputType::ArrowIpc => {}
                 }
 
                 // Reject input formats that are not yet implemented.
@@ -501,7 +507,8 @@ impl Config {
                     OutputType::Otlp
                     | OutputType::Http
                     | OutputType::Elasticsearch
-                    | OutputType::Loki => {
+                    | OutputType::Loki
+                    | OutputType::ArrowIpc => {
                         if output.endpoint.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
@@ -567,6 +574,7 @@ fn output_type_name(t: &OutputType) -> &'static str {
         OutputType::Null => "null",
         OutputType::TcpOut => "tcp_out",
         OutputType::UdpOut => "udp_out",
+        OutputType::ArrowIpc => "arrow_ipc",
     }
 }
 
