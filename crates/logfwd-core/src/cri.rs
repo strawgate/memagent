@@ -364,10 +364,8 @@ mod tests {
             ReassembleResult::Complete(complete) => {
                 assert_eq!(complete, b"first partsecond partfinal part");
             }
-            other => panic!(
-                "expected Complete, got {:?}",
-                matches!(other, ReassembleResult::Pending)
-            ),
+            ReassembleResult::Truncated(_) => panic!("expected Complete, got Truncated"),
+            ReassembleResult::Pending => panic!("expected Complete, got Pending"),
         }
         reassembler.reset();
     }
@@ -381,10 +379,8 @@ mod tests {
             ReassembleResult::Complete(complete) => {
                 assert_eq!(complete, b"complete line");
             }
-            other => panic!(
-                "expected Complete, got {:?}",
-                matches!(other, ReassembleResult::Pending)
-            ),
+            ReassembleResult::Truncated(_) => panic!("expected Complete, got Truncated"),
+            ReassembleResult::Pending => panic!("expected Complete, got Pending"),
         }
         reassembler.reset();
     }

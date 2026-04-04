@@ -140,7 +140,7 @@ impl InputSource for FramedInput {
                         Some(pos) => {
                             if pos + 1 < chunk.len() {
                                 // Move tail to remainder without allocating.
-                                let tail = chunk.split_off(pos + 1);
+                                let mut tail = chunk.split_off(pos + 1);
                                 if tail.len() > MAX_REMAINDER_BYTES {
                                     // Tail exceeds the per-source cap. Discard the
                                     // oldest bytes and keep the most recent
@@ -166,7 +166,7 @@ impl InputSource for FramedInput {
                                     // call apply_remainder_consumed() — the data is still
                                     // pending and the checkpoint must not advance past it.
                                     let start = tail.len() - MAX_REMAINDER_BYTES;
-                                    state.remainder = tail[start..].to_vec();
+                                    state.remainder = tail.split_off(start);
                                 } else {
                                     let state = self.sources.get_mut(&key).expect("just inserted");
                                     state.remainder = tail;
@@ -191,7 +191,7 @@ impl InputSource for FramedInput {
                                 let state = self.sources.get_mut(&key).expect("just inserted");
                                 state.format.reset();
                                 let start = chunk.len() - MAX_REMAINDER_BYTES;
-                                state.remainder = chunk[start..].to_vec();
+                                state.remainder = chunk.split_off(start);
                                 // Do NOT call apply_remainder_consumed() — data is preserved.
                             } else {
                                 let state = self.sources.get_mut(&key).expect("just inserted");
