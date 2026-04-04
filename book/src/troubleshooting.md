@@ -280,7 +280,7 @@ curl -s http://localhost:9090/api/pipelines | jq .
 | `batches.dropped_batches_total` | Batches dropped due to backpressure or errors. |
 | `batches.scan_errors_total` | Scanner errors (malformed input, etc.). |
 | `batches.last_batch_time_ns` | Unix timestamp (ns) of last processed batch. |
-| `stage_seconds.scan` | Total CPU time spent in the SIMD scanner. |
+| `stage_seconds.scan` | Total CPU time spent in the scanner. |
 | `stage_seconds.transform` | Total CPU time spent in DataFusion SQL. |
 | `stage_seconds.output` | Total CPU time spent in the output sink (includes network). |
 | `system.uptime_seconds` | Seconds since logfwd started. |

@@ -396,7 +396,7 @@ StopReachable == ~(phase = "Stopped")
 AckOccurs == ~(\E s \in Sources : acked[s] /= {})
 
 \* The committed checkpoint advances at least once (ordering logic is exercised).
-CommitAdvances == ~(\E s \in Sources : committed[s] > 0)
+CheckpointAdvances == ~(\E s \in Sources : committed[s] > 0)
 
 \* ForceStop is reachable (the kill-switch path is exercised).
 ForcedReachable == ~(forced = TRUE)

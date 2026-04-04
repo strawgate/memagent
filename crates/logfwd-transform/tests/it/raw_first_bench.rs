@@ -1,6 +1,6 @@
 //! Side-by-side benchmark: current scanner pipeline vs raw-first UDF pipeline
 //!
-//! Path A (current): bytes -> SIMD scanner -> typed columns -> DataFusion SQL -> output
+//! Path A (current): bytes -> scanner -> typed columns -> DataFusion SQL -> output
 //! Path B (raw-first): bytes -> _raw Utf8 column -> DataFusion SQL with json UDFs -> output
 
 use arrow::array::*;
@@ -46,7 +46,7 @@ fn generate_ndjson(num_rows: usize, num_fields: usize) -> Vec<u8> {
 // =========================================================================
 
 async fn path_a_extraction(json_data: &[u8], num_fields: usize) -> RecordBatch {
-    // 1. SIMD scanner -> typed columns
+    // 1. Scanner -> typed columns
     let config = ScanConfig {
         wanted_fields: vec![],
         extract_all: true,

@@ -9,8 +9,10 @@
 
 extern crate alloc;
 
-/// CRI partial line aggregator (P/F reassembly).
-pub mod aggregator;
+/// CRI partial line reassembler (P/F reassembly).
+pub mod reassembler;
+/// Backward-compat re-export so downstream `logfwd_core::aggregator::*` still compiles.
+pub use reassembler as aggregator;
 /// Proven byte search (alternative to memchr for Kani).
 pub mod byte_search;
 /// Pure state machine for checkpoint-remainder coordination (Kani-proven).

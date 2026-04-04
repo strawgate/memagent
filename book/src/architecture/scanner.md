@@ -1,4 +1,4 @@
-# SIMD Scanner
+# Zero-Copy Scanner
 
 The scanner converts newline-delimited JSON into Apache Arrow RecordBatches
 using SIMD-accelerated structural classification.

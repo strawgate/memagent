@@ -28,7 +28,7 @@ just build       # Build release binary
 
 ```
 crates/logfwd/           # Binary entry point, CLI, pipeline orchestrator
-crates/logfwd-core/      # SIMD scanner, file tailer, CRI parser, diagnostics
+crates/logfwd-core/      # Scanner, file tailer, CRI parser, diagnostics
 crates/logfwd-config/    # YAML config parser
 crates/logfwd-output/    # Output sinks (OTLP, HTTP, stdout)
 crates/logfwd-transform/ # SQL transforms via DataFusion, UDFs

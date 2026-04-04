@@ -30,6 +30,6 @@ logfwd is a single static binary with no runtime dependencies. Point it at log f
 ## Learn more
 
 - **[Pipeline Design](./architecture/pipeline.md)** — How data flows from input to output
-- **[SIMD Scanner](./architecture/scanner.md)** — How the parser works
+- **[Scanner](./architecture/scanner.md)** — How the parser works
 - **[Performance](./architecture/performance.md)** — Benchmarks and tuning
 - **[Troubleshooting](./troubleshooting.md)** — Common errors and how to fix them

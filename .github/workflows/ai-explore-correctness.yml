@@ -20,7 +20,7 @@ jobs:
 
         Review the codebase for correctness issues:
 
-        1. **JSON parsing fidelity**: Does the SIMD scanner in
+        1. **JSON parsing fidelity**: Does the scanner in
            `crates/logfwd-core/src/scanner.rs` correctly handle all JSON
            edge cases? Check: escaped quotes in strings, unicode escapes
            (\uXXXX), nested objects/arrays, empty objects, null values,

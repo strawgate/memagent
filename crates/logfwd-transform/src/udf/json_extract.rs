@@ -1,4 +1,4 @@
-//! UDFs for extracting fields from raw JSON strings using our SIMD scanner.
+//! UDFs for extracting fields from raw JSON strings using our zero-copy scanner.
 //!
 //! ```sql
 //! SELECT json(_raw, 'status') as status FROM logs
@@ -70,7 +70,7 @@ fn is_conflict_struct_fields(fields: &arrow::datatypes::Fields) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Shared: parse raw lines with the SIMD scanner
+// Shared: parse raw lines with the scanner
 // ---------------------------------------------------------------------------
 
 /// Reconstruct an NDJSON buffer from `raw_array`, run the scanner for

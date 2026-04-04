@@ -29,7 +29,7 @@ Models `PipelineMachine<S, C>` from
 | `BeginDrainReachable` | Reachability (invariant ~P) | Draining phase is reachable (vacuity guard) |
 | `StopReachable` | Reachability (invariant ~P) | Stopped phase is reachable (vacuity guard) |
 | `AckOccurs` | Reachability (invariant ~P) | at least one batch is acked (AckBatch fires) |
-| `CommitAdvances` | Reachability (invariant ~P) | committed checkpoint advances at least once |
+| `CheckpointAdvances` | Reachability (invariant ~P) | committed checkpoint advances at least once |
 | `ForcedReachable` | Reachability (invariant ~P) | ForceStop path is reachable (vacuity guard) |
 
 ### File structure (two-file pattern)
@@ -102,7 +102,7 @@ the safety config and inspect the `forced=TRUE` traces in TLC's error output.
 ```bash
 java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.coverage.cfg
 # TLC will report INVARIANT VIOLATIONS for BeginDrainReachable, StopReachable,
-# AckOccurs, CommitAdvances, ForcedReachable — each violation is a witness
+# AckOccurs, CheckpointAdvances, ForcedReachable — each violation is a witness
 # trace proving the state IS reachable. No violation = state unreachable = bug.
 ```
 
