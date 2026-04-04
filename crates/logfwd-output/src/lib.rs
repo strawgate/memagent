@@ -91,29 +91,6 @@ pub trait OutputSink: Send {
 }
 
 // ---------------------------------------------------------------------------
-// Column naming helpers
-// ---------------------------------------------------------------------------
-
-/// Parse a typed column name into (field_name, type_suffix).
-///
-/// "duration_ms_int" -> ("duration_ms", "int")
-/// "level_str"       -> ("level", "str")
-/// "_raw"            -> ("_raw", "")
-///
-/// Deprecated: the flat-suffix scheme is being replaced by struct conflict
-/// columns.  This function is kept for backward compatibility with
-/// `otlp_sink.rs` column-role detection.
-pub fn parse_column_name(col_name: &str) -> (&str, &str) {
-    if let Some(pos) = col_name.rfind('_') {
-        let suffix = &col_name[pos + 1..];
-        if suffix == "str" || suffix == "int" || suffix == "float" {
-            return (&col_name[..pos], suffix);
-        }
-    }
-    (col_name, "")
-}
-
-// ---------------------------------------------------------------------------
 // Struct conflict column helpers
 // ---------------------------------------------------------------------------
 
@@ -831,18 +808,6 @@ mod tests {
             resource_attrs: Arc::default(),
             observed_time_ns: 1_700_000_000_000_000_000,
         }
-    }
-
-    #[test]
-    fn test_parse_column_name() {
-        assert_eq!(parse_column_name("status_int"), ("status", "int"));
-        assert_eq!(parse_column_name("level_str"), ("level", "str"));
-        assert_eq!(
-            parse_column_name("duration_ms_float"),
-            ("duration_ms", "float")
-        );
-        assert_eq!(parse_column_name("_raw"), ("_raw", ""));
-        assert_eq!(parse_column_name("plain"), ("plain", ""));
     }
 
     #[test]
