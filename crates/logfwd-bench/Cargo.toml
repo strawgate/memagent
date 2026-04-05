@@ -41,6 +41,9 @@ zstd = "0.13"
 tiny_http = "0.12"
 prost = "0.14"
 opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-messages"] }
+globset = "0.4"
+glob = "0.3"
+sonic-rs = "0.5"
 
 [[bench]]
 name = "pipeline"
