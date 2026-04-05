@@ -1455,7 +1455,6 @@ mod tests {
             index: None,
             auth: None,
             request_mode: None,
-            ..Default::default()
         };
         let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
@@ -1476,7 +1475,6 @@ mod tests {
             index: None,
             auth: None,
             request_mode: None,
-            ..Default::default()
         };
         let factory = build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "otel");
@@ -1526,7 +1524,6 @@ mod tests {
             index: None,
             auth: None,
             request_mode: None,
-            ..Default::default()
         };
         let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());

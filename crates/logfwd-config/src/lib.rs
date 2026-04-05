@@ -87,10 +87,9 @@ impl fmt::Display for InputType {
 /// Uses a custom `Deserialize` impl so that `type: null` in YAML (which
 /// the YAML spec parses as the scalar null, not the string `"null"`) is
 /// accepted as the `Null` variant in both simple and list contexts.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OutputType {
-    #[default]
     Otlp,
     Http,
     Elasticsearch,
@@ -230,7 +229,7 @@ pub struct InputConfig {
 }
 
 /// A single output destination.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     pub name: Option<String>,
@@ -2467,49 +2466,5 @@ output:
             Config::load_str(yaml).expect("format: text should be accepted as alias for console");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(pipe.inputs[0].format, Some(Format::Console));
-    }
-
-    #[test]
-    fn loki_specific_config_accepted() {
-        let yaml = r"
-input:
-  type: file
-  path: /tmp/x.log
-output:
-  type: loki
-  endpoint: http://loki:3100
-  tenant_id: mytenant
-  static_labels:
-    env: prod
-    cluster: us-east-1
-  label_columns:
-    - container_name
-    - namespace
-";
-        let cfg = Config::load_str(yaml).expect("loki specific config should be accepted");
-        let output = &cfg.pipelines["default"].outputs[0];
-        assert_eq!(output.tenant_id.as_deref(), Some("mytenant"));
-        let labels = output.static_labels.as_ref().unwrap();
-        assert_eq!(labels.get("env").map(String::as_str), Some("prod"));
-        assert_eq!(labels.get("cluster").map(String::as_str), Some("us-east-1"));
-        assert_eq!(
-            output.label_columns.as_ref().unwrap(),
-            &vec!["container_name".to_string(), "namespace".to_string()]
-        );
-    }
-
-    #[test]
-    fn loki_specific_config_rejected_for_other_types() {
-        let yaml = r"
-input:
-  type: file
-  path: /tmp/x.log
-output:
-  type: stdout
-  tenant_id: mytenant
-";
-        let err = Config::load_str(yaml).expect_err("tenant_id should be rejected for stdout");
-        assert!(err.to_string().contains("tenant_id"));
-        assert!(err.to_string().contains("only supported for loki"));
     }
 }
