@@ -433,12 +433,8 @@ mod tests {
     #[test]
     fn test_streaming_reuse() {
         let mut s = Scanner::new(ScanConfig::default());
-        let _ = s
-            .scan(Bytes::from_static(b"{\"x\":\"a\"}\n"))
-            .unwrap();
-        let b = s
-            .scan(Bytes::from_static(b"{\"x\":\"b\"}\n"))
-            .unwrap();
+        let _ = s.scan(Bytes::from_static(b"{\"x\":\"a\"}\n")).unwrap();
+        let b = s.scan(Bytes::from_static(b"{\"x\":\"b\"}\n")).unwrap();
         assert_eq!(b.num_rows(), 1);
     }
 
