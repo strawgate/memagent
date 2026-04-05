@@ -1,46 +1,36 @@
 # Agent Guide
 
+Use this file as a routing table. Read the linked docs before changing code.
+
 ## Start here
 
-- `README.md` — what logfwd does, performance targets
-- `DEVELOPING.md` — build/test/bench commands, hard-won lessons
+- `README.md` — user-facing overview, install, run, and docs entry points
+- `DEVELOPING.md` — build/test/lint/bench commands and workspace layout
 - `dev-docs/ARCHITECTURE.md` — pipeline data flow, scanner stages, crate map
-- `dev-docs/DESIGN.md` — vision, target architecture, architecture decisions
-- `dev-docs/VERIFICATION.md` — TLA+, Kani, proptest — when to use each, proof requirements, per-module status
+- `dev-docs/DESIGN.md` — vision, target architecture, major design decisions
+- `dev-docs/VERIFICATION.md` — TLA+, Kani, proptest expectations and status
 
-## Reference docs
+## Required references
 
-| Doc | When to read |
-|-----|-------------|
-| [`dev-docs/CRATE_RULES.md`](dev-docs/CRATE_RULES.md) | Per-crate rules enforced by CI |
-| [`dev-docs/CODE_STYLE.md`](dev-docs/CODE_STYLE.md) | Naming, error handling, hot path rules |
-| [`dev-docs/SCANNER_CONTRACT.md`](dev-docs/SCANNER_CONTRACT.md) | Scanner input requirements, output guarantees, limitations |
-| [`dev-docs/PR_PROCESS.md`](dev-docs/PR_PROCESS.md) | Copilot assignment, PR triage, review criteria, merge process |
-| [Roadmap (GitHub issue #889)](https://github.com/strawgate/memagent/issues/889) | What's done, what's in progress, what's next |
-| [`dev-docs/references/arrow.md`](dev-docs/references/arrow.md) | RecordBatch, StringViewArray, schema evolution |
-| [`dev-docs/references/datafusion.md`](dev-docs/references/datafusion.md) | SessionContext, MemTable, UDF creation, SQL execution |
-| [`dev-docs/references/tokio-async-patterns.md`](dev-docs/references/tokio-async-patterns.md) | Runtime, bounded channels, CancellationToken, select! safety |
-| [`dev-docs/references/opentelemetry-otlp.md`](dev-docs/references/opentelemetry-otlp.md) | OTLP protobuf nesting, HTTP vs gRPC |
-| [`dev-docs/references/kani-verification.md`](dev-docs/references/kani-verification.md) | Kani proofs, function contracts, solver selection |
-| [`dev-docs/DOCS_STANDARDS.md`](dev-docs/DOCS_STANDARDS.md) | Doc taxonomy, lifecycle rules, anti-drift measures |
-| [`tla/README.md`](tla/README.md) | TLA+ specs: PipelineMachine, ShutdownProtocol, PipelineBatch |
+- `dev-docs/CRATE_RULES.md` — per-crate rules enforced by CI
+- `dev-docs/CODE_STYLE.md` — naming, error handling, hot-path rules
+- `dev-docs/DOCS_STANDARDS.md` — doc taxonomy, lifecycle rules, anti-drift
+- `dev-docs/PR_PROCESS.md` — Copilot assignment, PR triage, review criteria
+- `dev-docs/SCANNER_CONTRACT.md` — scanner input requirements and guarantees
 
-## User docs
+## Useful references
 
-User-facing documentation lives in `book/src/`. See `book/src/SUMMARY.md` for the full table of contents.
+- `dev-docs/references/arrow.md`
+- `dev-docs/references/datafusion.md`
+- `dev-docs/references/opentelemetry-otlp.md`
+- `dev-docs/references/tokio-async-patterns.md`
+- `dev-docs/references/kani-verification.md`
+- `tla/README.md`
+- Roadmap: GitHub issue `#889`
 
-## Issue labels
+## Repo rules
 
-| Label | Meaning |
-|-------|---------|
-| `bug` | Broken behavior |
-| `enhancement` | New feature or improvement |
-| `performance` | Performance optimization |
-| `production` | Required for production readiness |
-| `research` | Needs investigation before implementation |
-
-## Before submitting
-
-- `just ci` must pass
-- See `dev-docs/VERIFICATION.md` for proof requirements (Kani, TLA+, proptest)
-- See `dev-docs/CODE_STYLE.md` for style rules
+- User docs live in `book/src/`; use `book/src/SUMMARY.md` as the table of contents.
+- Keep changes repo-local and avoid unrelated refactors.
+- Run `just ci` before final handoff when practical.
+- Follow `dev-docs/CODE_STYLE.md` and `dev-docs/VERIFICATION.md` for code and proof requirements.

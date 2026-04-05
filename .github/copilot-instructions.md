@@ -2,6 +2,8 @@
 
 Read `AGENTS.md` in the repository root for full project context, crate structure, reference docs, and code quality requirements.
 
+For documentation changes, also read `dev-docs/DOCS_STANDARDS.md`.
+
 ## Quick Reference
 
 - **Language:** Rust (stable toolchain, no hand-written unsafe — SIMD via wide crate)
