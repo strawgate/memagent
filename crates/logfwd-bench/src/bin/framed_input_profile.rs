@@ -320,7 +320,7 @@ impl InputSource for MockSource {
         Ok(self.events.pop_front().unwrap_or_default())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mock"
     }
 }
@@ -567,9 +567,7 @@ fn current_rss_kb() -> u64 {
 }
 
 fn chunk_fixed(data: &[u8], chunk_bytes: usize) -> Vec<Vec<u8>> {
-    data.chunks(chunk_bytes)
-        .map(|chunk| chunk.to_vec())
-        .collect()
+    data.chunks(chunk_bytes).map(<[u8]>::to_vec).collect()
 }
 
 fn chunk_on_line_boundaries(data: &[u8], target_bytes: usize) -> Vec<Vec<u8>> {

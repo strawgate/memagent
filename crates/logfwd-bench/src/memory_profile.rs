@@ -32,7 +32,6 @@ use std::time::{Duration, Instant};
 
 use logfwd_arrow::scanner::Scanner;
 use logfwd_bench::generators;
-use logfwd_output::OutputSink;
 use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------
