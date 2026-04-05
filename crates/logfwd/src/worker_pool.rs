@@ -537,7 +537,10 @@ async fn worker_task(
         }
     }
     // Graceful sink shutdown (flush, close connection).
-    let _ = sink.shutdown().await;
+    if let Err(e) = sink.shutdown().await {
+        tracing::error!(worker_id = id, error = %e, "worker_pool: sink shutdown failed");
+        metrics.output_error(sink.name());
+    }
 }
 
 /// Receive with idle timeout — returns `None` on timeout or channel close.
@@ -978,6 +981,7 @@ mod tests {
         name: String,
         calls: Arc<AtomicU32>,
         fail: bool,
+        fail_shutdown: bool,
     }
 
     impl Sink for CountingSink {
@@ -1007,13 +1011,21 @@ mod tests {
         }
 
         fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
-            Box::pin(async { Ok(()) })
+            let fail_shutdown = self.fail_shutdown;
+            Box::pin(async move {
+                if fail_shutdown {
+                    Err(io::Error::other("shutdown failed"))
+                } else {
+                    Ok(())
+                }
+            })
         }
     }
 
     struct CountingSinkFactory {
         calls: Arc<AtomicU32>,
         fail: bool,
+        fail_shutdown: bool,
     }
 
     impl SinkFactory for CountingSinkFactory {
@@ -1022,6 +1034,7 @@ mod tests {
                 name: "counting".into(),
                 calls: Arc::clone(&self.calls),
                 fail: self.fail,
+                fail_shutdown: self.fail_shutdown,
             }))
         }
 
@@ -1073,6 +1086,7 @@ mod tests {
         let factory = Arc::new(CountingSinkFactory {
             calls: Arc::clone(&calls),
             fail: false,
+            fail_shutdown: false,
         });
         let mut pool = OutputWorkerPool::new(factory, 4, Duration::from_secs(60), test_metrics());
         assert_eq!(pool.worker_count(), 0);
@@ -1095,6 +1109,7 @@ mod tests {
         let factory = Arc::new(CountingSinkFactory {
             calls: Arc::clone(&calls),
             fail: false,
+            fail_shutdown: false,
         });
         // max_workers=4, but all items should go to the same worker (MRU).
         let mut pool = OutputWorkerPool::new(factory, 4, Duration::from_secs(60), test_metrics());
@@ -1118,6 +1133,7 @@ mod tests {
         let factory = Arc::new(CountingSinkFactory {
             calls: Arc::clone(&calls),
             fail: false,
+            fail_shutdown: false,
         });
         let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60), test_metrics());
 
@@ -1137,6 +1153,7 @@ mod tests {
         let factory = Arc::new(CountingSinkFactory {
             calls: Arc::clone(&calls),
             fail: true,
+            fail_shutdown: false,
         });
         let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(60), test_metrics());
 
@@ -1157,6 +1174,7 @@ mod tests {
         let factory = Arc::new(CountingSinkFactory {
             calls: Arc::clone(&calls),
             fail: false,
+            fail_shutdown: false,
         });
         // max 2 workers
         let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60), test_metrics());
@@ -1175,11 +1193,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pool_drain_propagates_shutdown_error() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let factory = Arc::new(CountingSinkFactory {
+            calls: Arc::clone(&calls),
+            fail: false,
+            fail_shutdown: true,
+        });
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("test", "", &meter);
+        let out_stats = pm.add_output("counting", "counting");
+        let metrics = Arc::new(pm);
+
+        let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(60), metrics);
+
+        pool.submit(empty_work_item()).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        pool.drain(Duration::from_secs(5)).await;
+
+        assert_eq!(
+            out_stats.errors(),
+            1,
+            "expected output_error to increment stats when shutdown fails"
+        );
+    }
+
+    #[tokio::test]
     async fn pool_drain_waits_for_in_flight() {
         let calls = Arc::new(AtomicU32::new(0));
         let factory = Arc::new(CountingSinkFactory {
             calls: Arc::clone(&calls),
             fail: false,
+            fail_shutdown: false,
         });
         let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60), test_metrics());
 
