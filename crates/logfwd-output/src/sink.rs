@@ -4,20 +4,16 @@
 //! dyn-compatible, enabling `Box<dyn Sink>` without the `async_trait` crate.
 //! This costs one heap allocation per call but allows heterogeneous sink
 //! collections in the worker pool.
-//!
-//! The synchronous [`crate::OutputSink`] trait is **deprecated**. New sinks
-//! should implement `Sink` directly. Legacy sync sinks are bridged via
-//! [`SyncSinkAdapter`].
 
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
 
-#[allow(deprecated)]
-use super::{BatchMetadata, OutputSink};
+use super::BatchMetadata;
 
 // ---------------------------------------------------------------------------
 // SendResult
@@ -98,23 +94,104 @@ pub trait SinkFactory: Send + Sync + 'static {
 }
 
 // ---------------------------------------------------------------------------
-// SyncSinkAdapter
+// AsyncFanoutSink
 // ---------------------------------------------------------------------------
 
-/// Wraps a synchronous [`OutputSink`] as an async [`Sink`].
+/// Multiplexes output to multiple async [`Sink`] instances.
 ///
-/// Uses `tokio::task::block_in_place` so the sync call doesn't block the
-/// async executor. Suitable for sinks that haven't yet been ported to the
-/// async [`Sink`] trait.
-#[allow(deprecated)]
-pub struct SyncSinkAdapter {
-    inner: Box<dyn OutputSink>,
+/// Sends every batch to **all** child sinks in order. If any sink fails the
+/// error is returned immediately (the remaining sinks are still called on the
+/// next batch).
+pub struct AsyncFanoutSink {
+    sinks: Vec<Box<dyn Sink>>,
 }
 
-#[allow(deprecated)]
-impl SyncSinkAdapter {
-    pub fn new(inner: Box<dyn OutputSink>) -> Self {
-        SyncSinkAdapter { inner }
+impl AsyncFanoutSink {
+    /// Create a fanout sink wrapping the given child sinks.
+    pub fn new(sinks: Vec<Box<dyn Sink>>) -> Self {
+        AsyncFanoutSink { sinks }
+    }
+}
+
+impl Sink for AsyncFanoutSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut first_retry: Option<Duration> = None;
+            for sink in &mut self.sinks {
+                match sink.send_batch(batch, metadata).await? {
+                    SendResult::Ok => {}
+                    SendResult::RetryAfter(d) => {
+                        if first_retry.is_none_or(|prev| d > prev) {
+                            first_retry = Some(d);
+                        }
+                    }
+                    SendResult::Rejected(reason) => return Ok(SendResult::Rejected(reason)),
+                }
+            }
+            match first_retry {
+                Some(d) => Ok(SendResult::RetryAfter(d)),
+                None => Ok(SendResult::Ok),
+            }
+        })
+    }
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            for sink in &mut self.sinks {
+                sink.flush().await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "fanout"
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            for sink in &mut self.sinks {
+                sink.shutdown().await?;
+            }
+            Ok(())
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AsyncFanoutFactory
+// ---------------------------------------------------------------------------
+
+/// Factory that creates [`AsyncFanoutSink`] instances by delegating to
+/// multiple child [`SinkFactory`] instances.
+pub struct AsyncFanoutFactory {
+    name: String,
+    factories: Vec<Arc<dyn SinkFactory>>,
+}
+
+impl AsyncFanoutFactory {
+    /// Create a fanout factory wrapping the given child factories.
+    pub fn new(name: String, factories: Vec<Arc<dyn SinkFactory>>) -> Self {
+        AsyncFanoutFactory { name, factories }
+    }
+}
+
+impl SinkFactory for AsyncFanoutFactory {
+    fn create(&self) -> io::Result<Box<dyn Sink>> {
+        let sinks: Vec<Box<dyn Sink>> = self
+            .factories
+            .iter()
+            .map(|f| f.create())
+            .collect::<io::Result<_>>()?;
+        Ok(Box::new(AsyncFanoutSink::new(sinks)))
+    }
+
+    fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -244,39 +321,6 @@ mod verification {
     }
 }
 
-#[allow(deprecated)]
-impl Sink for SyncSinkAdapter {
-    fn send_batch<'a>(
-        &'a mut self,
-        batch: &'a RecordBatch,
-        metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
-        // SAFETY: block_in_place is safe here because we're within a
-        // multi-threaded tokio runtime (logfwd always uses rt-multi-thread).
-        Box::pin(async move {
-            tokio::task::block_in_place(|| {
-                self.inner
-                    .send_batch(batch, metadata)
-                    .map(|()| SendResult::Ok)
-            })
-        })
-    }
-
-    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
-        Box::pin(async move { tokio::task::block_in_place(|| self.inner.flush()) })
-    }
-
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-
-    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
-        // Flush buffered data before the worker exits. Sync sinks that buffer
-        // (e.g. file sinks) would silently lose the last batch without this.
-        Box::pin(async move { tokio::task::block_in_place(|| self.inner.flush()) })
-    }
-}
-
 // ---------------------------------------------------------------------------
 // OnceAsyncFactory
 // ---------------------------------------------------------------------------
@@ -287,10 +331,6 @@ use std::sync::Mutex;
 ///
 /// On the first `create()` call it transfers ownership of the sink to the
 /// caller; subsequent calls return an error. This enforces `max_workers = 1`.
-///
-/// Unlike [`super::OnceFactory`] (which wraps a deprecated [`OutputSink`]
-/// through [`SyncSinkAdapter`]), this wrapper accepts an async `Sink` directly
-/// — no `block_in_place` overhead.
 pub struct OnceAsyncFactory {
     name: String,
     inner: Mutex<Option<Box<dyn Sink>>>,
@@ -351,7 +391,7 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "stub"
         }
 

@@ -6,17 +6,14 @@ use arrow::record_batch::RecordBatch;
 
 use logfwd_types::diagnostics::ComponentStats;
 
-#[allow(deprecated)]
-use super::{
-    BatchMetadata, Compression, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink,
-    build_col_infos, is_transient_error, str_value, write_row_json,
-};
+use super::{Compression, build_col_infos, str_value, write_row_json};
 
 // ---------------------------------------------------------------------------
 // JsonLinesSink
 // ---------------------------------------------------------------------------
 
 /// Writes newline-delimited JSON and POSTs over HTTP.
+#[allow(dead_code)] // HTTP send fields retained for future async Sink migration.
 pub struct JsonLinesSink {
     name: String,
     url: String,
@@ -117,77 +114,6 @@ impl JsonLinesSink {
             }
         }
         Ok(())
-    }
-}
-
-#[allow(deprecated)]
-impl OutputSink for JsonLinesSink {
-    fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
-        self.serialize_batch(batch)?;
-        if self.batch_buf.is_empty() {
-            return Ok(());
-        }
-
-        // Retry with exponential backoff for transient failures.
-        // 1 initial attempt + up to HTTP_MAX_RETRIES retries; delays: 100ms → 200ms → 400ms.
-        // Note: `self.batch_buf` is re-sent as `&[u8]` on each attempt — no
-        // allocation, but the full NDJSON payload is retransmitted each time.
-        // This is acceptable as a temporary measure until SinkDriver (#319).
-        let payload: &[u8] = match self.compression {
-            Compression::Gzip => {
-                use flate2::Compression as GzLevel;
-                use flate2::write::GzEncoder;
-                use std::io::Write;
-                self.compress_buf.clear();
-                let mut enc = GzEncoder::new(&mut self.compress_buf, GzLevel::default());
-                enc.write_all(&self.batch_buf)
-                    .map_err(|e| io::Error::other(format!("gzip compression failed: {e}")))?;
-                enc.finish().map_err(|e| {
-                    io::Error::other(format!("gzip compression finish failed: {e}"))
-                })?;
-                &self.compress_buf
-            }
-            Compression::None => &self.batch_buf,
-            Compression::Zstd => {
-                unreachable!("zstd is not supported for json_lines; rejected at config validation")
-            }
-        };
-        let build_req = || {
-            let mut req = self.http_agent.post(&self.url);
-            for (k, v) in &self.headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            req = req.header("Content-Type", "application/x-ndjson");
-            if self.compression == Compression::Gzip {
-                req = req.header("Content-Encoding", "gzip");
-            }
-            req
-        };
-        let mut delay_ms: u64 = HTTP_RETRY_INITIAL_DELAY_MS;
-        let mut attempt: u32 = 0;
-        loop {
-            match build_req().send(payload) {
-                Ok(_) => {
-                    self.stats.inc_lines(batch.num_rows() as u64);
-                    self.stats.inc_bytes(payload.len() as u64);
-                    return Ok(());
-                }
-                Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_error(&e) => {
-                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                    delay_ms *= 2;
-                    attempt += 1;
-                }
-                Err(e) => return Err(io::Error::other(e.to_string())),
-            }
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        &self.name
     }
 }
 

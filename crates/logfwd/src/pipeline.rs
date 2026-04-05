@@ -30,10 +30,8 @@ use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{FileInput, InputEvent, InputSource};
 use logfwd_io::tail::{ByteOffset, TailConfig};
-#[allow(deprecated)]
 use logfwd_output::{
-    BatchMetadata, FanoutSink, OnceAsyncFactory, OnceFactory, OutputSink, SinkFactory,
-    build_output_sink, build_sink_factory,
+    AsyncFanoutFactory, BatchMetadata, OnceAsyncFactory, SinkFactory, build_sink_factory,
 };
 use logfwd_transform::SqlTransform;
 use tokio_util::sync::CancellationToken;
@@ -317,8 +315,8 @@ impl Pipeline {
         }
 
         // Build output sink factory → pool.
-        // For multiple outputs, we build a FanoutSink wrapped in a OnceFactory
-        // (single-worker pool) until async FanoutSink is available.
+        // For multiple outputs we create an AsyncFanoutFactory that delegates
+        // to one child SinkFactory per output config.
         let factory: Arc<dyn SinkFactory> = if config.outputs.len() == 1 {
             let output_cfg = &config.outputs[0];
             let output_name = output_cfg
@@ -329,33 +327,27 @@ impl Pipeline {
             let output_stats = metrics.add_output(&output_name, &output_type_str);
             build_sink_factory(&output_name, output_cfg, output_stats).map_err(|e| e.to_string())?
         } else {
-            // Multiple outputs: build a FanoutSink of sync sinks wrapped in OnceFactory.
-            #[allow(deprecated)]
-            {
-                let mut sinks: Vec<Box<dyn OutputSink>> = Vec::new();
-                for (i, output_cfg) in config.outputs.iter().enumerate() {
-                    let output_name = output_cfg
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| format!("output_{i}"));
-                    let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
-                    let output_stats = metrics.add_output(&output_name, &output_type_str);
-                    sinks.push(
-                        build_output_sink(&output_name, output_cfg, output_stats)
-                            .map_err(|e| e.to_string())?,
-                    );
-                }
-                let fanout_name = name.to_string();
-                Arc::new(OnceFactory::new(
-                    fanout_name,
-                    Box::new(FanoutSink::new(sinks)),
-                ))
+            let mut factories: Vec<Arc<dyn SinkFactory>> = Vec::new();
+            for (i, output_cfg) in config.outputs.iter().enumerate() {
+                let output_name = output_cfg
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("output_{i}"));
+                let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
+                let output_stats = metrics.add_output(&output_name, &output_type_str);
+                factories.push(
+                    build_sink_factory(&output_name, output_cfg, output_stats)
+                        .map_err(|e| e.to_string())?,
+                );
             }
+            let fanout_name = name.to_string();
+            Arc::new(AsyncFanoutFactory::new(fanout_name, factories))
         };
 
-        // Single-use factories (OnceFactory wrapping a sync sink) can only
-        // create one worker and that worker must never idle-expire — if it
-        // exits, create() returns an error and the output stops permanently.
+        // Single-use factories (e.g. OnceAsyncFactory wrapping a pre-built
+        // sink) can only create one worker and that worker must never
+        // idle-expire — if it exits, create() returns an error and the
+        // output stops permanently.
         let (max_workers, idle_timeout) = if factory.is_single_use() {
             (1, Duration::MAX) // never idle-expire the sole worker
         } else {
@@ -397,26 +389,6 @@ impl Pipeline {
         let name = self.name.clone();
         let factory = Arc::new(OnceAsyncFactory::new(name, sink));
         self.pool = OutputWorkerPool::new(factory, 1, Duration::MAX, Arc::clone(&self.metrics));
-        self
-    }
-
-    /// Replace the output sink. Useful for injecting a test sink.
-    ///
-    /// Wraps the sink in a single-worker pool via [`OnceFactory`].
-    ///
-    /// Deprecated: use [`with_sink`](Self::with_sink) with an async [`Sink`]
-    /// implementation instead.
-    #[deprecated(note = "use with_sink() with an async Sink instead")]
-    #[allow(deprecated)]
-    pub fn with_output(mut self, output: Box<dyn OutputSink>) -> Self {
-        let name = self.name.clone();
-        let factory = Arc::new(OnceFactory::new(name, output));
-        self.pool = OutputWorkerPool::new(
-            factory,
-            1,
-            Duration::from_secs(30),
-            Arc::clone(&self.metrics),
-        );
         self
     }
 
@@ -1432,7 +1404,6 @@ fn now_nanos() -> u64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
@@ -1478,24 +1449,6 @@ mod tests {
         };
         let factory = build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "otel");
-    }
-
-    #[test]
-    fn test_build_output_sink_http() {
-        let cfg = OutputConfig {
-            name: Some("es".to_string()),
-            output_type: OutputType::Http,
-            endpoint: Some("http://localhost:9200".to_string()),
-            protocol: None,
-            compression: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            request_mode: None,
-        };
-        let sink = build_output_sink("es", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(sink.name(), "es");
     }
 
     #[test]
@@ -2269,15 +2222,15 @@ output:
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_fanout_output_errors_only_increment_failing_output() {
-        // This test verifies that a persistently-failing output in a FanoutSink
-        // does not crash the pipeline and is recorded as a dropped batch.
+        // This test verifies that a persistently-failing output does not
+        // crash the pipeline and is recorded as a dropped batch.
         //
         // With the async worker pool, retries are built into the pool. An
         // always-failing sink causes the pool to exhaust retries and return
         // AckItem { success: false }, which increments dropped_batches_total.
         //
-        // Per-sink error tracking within FanoutSink is not currently supported
-        // by the pool's AckItem protocol (tracked in issue #702).
+        // Per-sink error tracking within async fanout is not currently
+        // supported by the pool's AckItem protocol (tracked in issue #702).
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("fanout_output_err.log");
 

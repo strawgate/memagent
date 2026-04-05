@@ -3,11 +3,9 @@
 //! All generators accept a `seed` parameter for reproducible output. Given the
 //! same `(count, seed)` pair, every call returns byte-identical results.
 
-#![allow(deprecated)] // Benchmarks use sync OutputSink; migration tracked separately.
-
 use std::sync::Arc;
 
-use logfwd_output::{BatchMetadata, Compression, OtlpProtocol, OtlpSink, OutputSink};
+use logfwd_output::{BatchMetadata, Compression, OtlpProtocol, OtlpSink};
 use logfwd_types::diagnostics::ComponentStats;
 
 pub mod generators;
@@ -19,18 +17,23 @@ pub mod generators;
 /// Null sink that discards all data — measures pure iteration overhead.
 pub struct NullSink;
 
-impl OutputSink for NullSink {
-    fn send_batch(
+impl NullSink {
+    /// Discard a batch. Signature matches the hot-path call sites in benchmarks.
+    pub fn send_batch(
         &mut self,
         _batch: &arrow::record_batch::RecordBatch,
         _metadata: &BatchMetadata,
     ) -> std::io::Result<()> {
         Ok(())
     }
-    fn flush(&mut self) -> std::io::Result<()> {
+
+    /// No-op flush.
+    pub fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
-    fn name(&self) -> &'static str {
+
+    /// Sink name for diagnostics.
+    pub fn name(&self) -> &'static str {
         "null"
     }
 }

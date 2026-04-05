@@ -9,15 +9,13 @@
 //!
 //! Varies: 1K / 10K / 100K rows, narrow / production-mixed data.
 
-#![allow(deprecated)]
-
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::scanner::Scanner;
 use logfwd_bench::{NullSink, generators, make_otlp_sink};
 use logfwd_core::cri::{CriReassembler, ReassembleResult, parse_cri_line};
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_output::{Compression, OutputSink};
+use logfwd_output::Compression;
 use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------
