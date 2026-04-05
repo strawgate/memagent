@@ -2311,6 +2311,7 @@ dependencies = [
  "arrow",
  "bytes",
  "criterion",
+ "dhat",
  "fastrand",
  "logfwd-arrow",
  "logfwd-core",

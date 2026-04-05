@@ -22,6 +22,7 @@ crates/
 ```bash
 just test                    # All tests
 just lint                    # fmt + clippy + toml + deny + typos
+just bench-framed-input -- --lines 200000 --iterations 5
 cargo test -p logfwd-core    # Core crate only (fastest iteration)
 
 RUSTFLAGS="-C target-cpu=native" cargo bench --bench scanner -p logfwd-core
@@ -102,6 +103,14 @@ Useful variants:
 
 ```bash
 just profile-otlp-local 1000000 10
+```
+
+For FramedInput-specific profiling (newline framing, remainder handling, format
+processing before the scanner), use:
+
+```bash
+just bench-framed-input -- --lines 200000 --iterations 5 --flamegraph /tmp/framed-input.svg
+just bench-framed-input-alloc -- --lines 200000
 ```
 
 Caveats:
