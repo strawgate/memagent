@@ -21,7 +21,6 @@ use logfwd_arrow::scanner::Scanner;
 use logfwd_config::{
     EnrichmentConfig, Format, GeoDatabaseFormat, InputConfig, InputType, PipelineConfig,
 };
-use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
 };
@@ -34,6 +33,7 @@ use logfwd_output::{
     AsyncFanoutFactory, BatchMetadata, OnceAsyncFactory, SinkFactory, build_sink_factory,
 };
 use logfwd_transform::SqlTransform;
+use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
