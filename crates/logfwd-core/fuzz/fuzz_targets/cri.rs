@@ -34,4 +34,26 @@ fuzz_target!(|data: &[u8]| {
     let prefix = b"\"k8s.pod\":\"fuzz\",";
     let (_count2, _errors2) =
         process_cri_to_buf(data, &mut reassembler2, Some(prefix), &mut out2);
+
+    // --- Full CRI → Scanner pipeline with validate_utf8 variants ---
+    // Pipe CRI output through the scanner with both validation modes.
+    // Covers the CRI→Scanner path for untrusted K8s container runtime output.
+    if !out.is_empty() {
+        use logfwd_arrow::scanner::Scanner;
+        use logfwd_core::scan_config::ScanConfig;
+
+        let out_bytes = bytes::Bytes::from(out);
+
+        let mut scanner = Scanner::new(ScanConfig {
+            validate_utf8: false,
+            ..ScanConfig::default()
+        });
+        let _ = scanner.scan_detached(out_bytes.clone());
+
+        let mut scanner_v = Scanner::new(ScanConfig {
+            validate_utf8: true,
+            ..ScanConfig::default()
+        });
+        let _ = scanner_v.scan_detached(out_bytes);
+    }
 });

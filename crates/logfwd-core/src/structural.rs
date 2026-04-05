@@ -909,6 +909,9 @@ mod verification {
             i += 1;
         }
         assert!(result == expected, "prefix_xor mismatch");
+        kani::cover!(input == 0, "all zeros");
+        kani::cover!(input == u64::MAX, "all ones");
+        kani::cover!(result != 0 && result != input, "non-trivial prefix xor");
     }
 
     /// Oracle proof: compute_real_quotes matches naive byte-by-byte
@@ -955,6 +958,11 @@ mod verification {
         // Carry is correct
         let expected_carry: u64 = if prev_was_unescaped_bs { 1 } else { 0 };
         assert!(carry == expected_carry, "carry mismatch");
+
+        kani::cover!(prev_carry == 1, "carry-in active");
+        kani::cover!(carry == 1, "carry-out active");
+        kani::cover!(result != quote_bits, "some quotes escaped");
+        kani::cover!(result == 0 && quote_bits != 0, "all quotes escaped");
     }
 
     /// Correctness: bit i is set iff block[i] == needle, for any

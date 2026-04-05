@@ -699,6 +699,60 @@ mod hex {
 mod verification {
     use super::*;
 
+    /// Prove write_i64_to_buf only emits ASCII bytes for any i64 value.
+    /// This justifies the from_utf8_unchecked safety in json_any_value_to_string (intValue path).
+    #[kani::proof]
+    #[kani::unwind(21)] // max 20 digits (i64::MIN) + sign
+    fn verify_write_i64_only_ascii() {
+        let n: i64 = kani::any();
+        let mut buf = Vec::new();
+        write_i64_to_buf(&mut buf, n);
+        assert!(!buf.is_empty(), "output must not be empty");
+        let mut i = 0;
+        while i < buf.len() {
+            assert!(buf[i].is_ascii(), "non-ASCII byte in i64 output");
+            i += 1;
+        }
+        // Also verify it's valid UTF-8 (ASCII is a subset)
+        assert!(
+            std::str::from_utf8(&buf).is_ok(),
+            "output must be valid UTF-8"
+        );
+        kani::cover!(n == 0, "zero");
+        kani::cover!(n > 0, "positive");
+        kani::cover!(n < 0, "negative");
+        kani::cover!(n == i64::MIN, "i64::MIN");
+        kani::cover!(n == i64::MAX, "i64::MAX");
+    }
+
+    /// Prove write_f64_to_buf only emits ASCII bytes for any f64 bit pattern
+    /// (including NaN, infinity, subnormals).
+    /// This justifies the from_utf8_unchecked safety in json_any_value_to_string (doubleValue path).
+    /// std::fmt::Display for f64 produces only ASCII (digits, '.', '-', 'e', '+',
+    /// 'N', 'a', 'i', 'n', 'f'). We verify this holds exhaustively.
+    #[kani::proof]
+    #[kani::unwind(30)] // ryu output is at most ~25 bytes
+    fn verify_write_f64_only_ascii() {
+        let d: f64 = kani::any();
+        let mut buf = Vec::new();
+        write_f64_to_buf(&mut buf, d);
+        assert!(!buf.is_empty(), "output must not be empty");
+        let mut i = 0;
+        while i < buf.len() {
+            assert!(buf[i].is_ascii(), "non-ASCII byte in f64 output");
+            i += 1;
+        }
+        assert!(
+            std::str::from_utf8(&buf).is_ok(),
+            "output must be valid UTF-8"
+        );
+        kani::cover!(d == 0.0, "zero");
+        kani::cover!(d > 0.0, "positive");
+        kani::cover!(d < 0.0, "negative");
+        kani::cover!(d.is_nan(), "NaN");
+        kani::cover!(d.is_infinite(), "infinity");
+    }
+
     #[kani::proof]
     #[kani::unwind(5)]
     fn hex_encode_matches_format() {
