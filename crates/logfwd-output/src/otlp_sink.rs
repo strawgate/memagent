@@ -279,7 +279,7 @@ impl OtlpSink {
             req = req.header(k.as_str(), v.as_str());
         }
         req = req.header("Content-Type", content_type);
-        if payload_is_compressed {
+        if payload_is_compressed && self.protocol == OtlpProtocol::Http {
             req = req.header("Content-Encoding", "zstd");
         }
 
@@ -316,6 +316,10 @@ impl OtlpSink {
                     return Ok(super::sink::SendResult::Rejected(format!(
                         "OTLP request rejected with status {status}: {detail}"
                     )));
+                }
+
+                if status.is_server_error() {
+                    return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(5)));
                 }
 
                 Err(io::Error::other(format!(
@@ -838,9 +842,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_payload_returns_err_on_5xx_no_loop() {
+    async fn send_payload_returns_retry_after_on_5xx() {
         let mut server = mockito::Server::new_async().await;
-        // Server will receive 1 request and fail. Since there's no retry loop, it should return Err.
+        // Server will receive 1 request and fail with 500. It should return RetryAfter.
         let _mock = server
             .mock("POST", "/v1/logs")
             .with_status(500)
@@ -859,11 +863,11 @@ mod tests {
         .unwrap();
 
         sink.encoder_buf.push(1);
-        let result = sink.send_payload(1).await;
-        assert!(
-            result.is_err(),
-            "Expected Err on 500 response without internal loop"
-        );
+        let result = sink.send_payload(1).await.unwrap();
+        match result {
+            crate::sink::SendResult::RetryAfter(_) => {} // Expected
+            _ => panic!("Expected RetryAfter on 500 response, got: {:?}", result),
+        }
     }
 
     #[test]
