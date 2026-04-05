@@ -63,6 +63,26 @@ jobs:
           echo "=== Results: $FAILED failures out of 500 seeds ==="
           if [ $FAILED -gt 0 ]; then exit 1; fi
 
+  fuzz-short:
+    name: Fuzz (5 minutes per target)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+        env:
+          RUSTC_WRAPPER: ""
+      - name: Run fuzz targets
+        run: |
+          cd crates/logfwd-core
+          for target in $(cargo fuzz list 2>/dev/null); do
+            echo "=== Fuzzing $target for 5 minutes ==="
+            cargo fuzz run "$target" -- -max_total_time=300
+          done
+
   fuzz-extended:
     name: Fuzz (30 minutes per target)
     runs-on: ubuntu-latest
