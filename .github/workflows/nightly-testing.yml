@@ -80,5 +80,5 @@ jobs:
           cd crates/logfwd-core
           for target in $(cargo fuzz list 2>/dev/null); do
             echo "=== Fuzzing $target for 30 minutes ==="
-            timeout 1800 cargo fuzz run "$target" -- -max_total_time=1800
+            cargo fuzz run "$target" -- -max_total_time=1800
           done
