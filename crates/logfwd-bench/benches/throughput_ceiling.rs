@@ -14,15 +14,11 @@
 //!
 //! Run with: `cargo bench -p logfwd-bench --bench throughput_ceiling`
 
-#![allow(deprecated)] // Benchmarks use sync OutputSink; migration tracked separately.
-
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::scanner::Scanner;
 use logfwd_bench::{NullSink, generators};
-use logfwd_core::scan_config::{FieldSpec, ScanConfig};
-use logfwd_output::OutputSink;
 
 // ---------------------------------------------------------------------------
 // Scan configs
