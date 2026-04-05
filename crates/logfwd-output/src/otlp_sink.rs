@@ -27,6 +27,8 @@ use super::{BatchMetadata, Compression, str_value};
 const SCOPE_NAME: &[u8] = b"logfwd";
 /// Version emitted in the OTLP `InstrumentationScope.version` field (from Cargo.toml).
 const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
+/// Default retry-after delay in seconds when the server does not send a Retry-After header.
+const DEFAULT_RETRY_AFTER_SECS: u64 = 5;
 
 // ---------------------------------------------------------------------------
 // OtlpSink
@@ -300,7 +302,7 @@ impl OtlpSink {
                         .get("Retry-After")
                         .and_then(|v| v.to_str().ok())
                         .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(5);
+                        .unwrap_or(DEFAULT_RETRY_AFTER_SECS);
                     return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
                         retry_after,
                     )));
@@ -322,6 +324,12 @@ impl OtlpSink {
                 if status.is_client_error() {
                     return Ok(super::sink::SendResult::Rejected(format!(
                         "OTLP request rejected with status {status}: {detail}"
+                    )));
+                }
+
+                if status.is_server_error() {
+                    return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
+                        DEFAULT_RETRY_AFTER_SECS,
                     )));
                 }
 
@@ -845,9 +853,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_payload_returns_err_on_5xx_no_loop() {
+    async fn send_payload_returns_retry_after_on_5xx() {
         let mut server = mockito::Server::new_async().await;
-        // Server will receive 1 request and fail. Since there's no retry loop, it should return Err.
+        // Server will receive 1 request and respond with 500. send_payload should
+        // return RetryAfter (not Err) so the sink's retry loop handles re-delivery.
         let _mock = server
             .mock("POST", "/v1/logs")
             .with_status(500)
@@ -866,11 +875,11 @@ mod tests {
         .unwrap();
 
         sink.encoder_buf.push(1);
-        let result = sink.send_payload(1).await;
-        assert!(
-            result.is_err(),
-            "Expected Err on 500 response without internal loop"
-        );
+        let result = sink.send_payload(1).await.unwrap();
+        match result {
+            crate::sink::SendResult::RetryAfter(_) => {} // Expected
+            _ => panic!("Expected RetryAfter on 500 response, got: {:?}", result),
+        }
     }
 
     #[test]
