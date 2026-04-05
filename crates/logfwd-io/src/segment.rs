@@ -286,7 +286,22 @@ impl SegmentFile {
     /// Each `append()` wrote an independent IPC stream (schema + batch + EOS),
     /// so we create a new `StreamReader` for each sub-stream using a shared
     /// cursor that tracks the read position across streams.
+    /// Maximum data_size we'll allocate for reading (1 GiB).
+    /// Defense-in-depth against corrupt footer claiming enormous size.
+    const MAX_READ_DATA_SIZE: u64 = 1024 * 1024 * 1024;
+
     pub fn read_batches(&self) -> io::Result<Vec<RecordBatch>> {
+        if self.footer.data_size > Self::MAX_READ_DATA_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "segment data_size {} exceeds maximum {} — likely corrupt",
+                    self.footer.data_size,
+                    Self::MAX_READ_DATA_SIZE,
+                ),
+            ));
+        }
+
         let mut file = File::open(&self.path)?;
         file.seek(SeekFrom::Start(HEADER_SIZE as u64))?;
 
@@ -353,8 +368,6 @@ pub struct SegmentWriter {
     data_size: u64,
     /// Incremental xxh32 hasher (covers header + all IPC data).
     hasher: xxhash_rust::xxh32::Xxh32,
-    /// Whether finish() has been called.
-    sealed: bool,
 }
 
 impl SegmentWriter {
@@ -384,7 +397,6 @@ impl SegmentWriter {
             batch_count: 0,
             data_size: 0,
             hasher,
-            sealed: false,
         })
     }
 
@@ -393,7 +405,6 @@ impl SegmentWriter {
     /// Serializes to Arrow IPC Stream format with zstd body compression,
     /// then appends to the file. Not durable until `finish()`.
     pub fn append(&mut self, batch: &RecordBatch) -> io::Result<()> {
-        debug_assert!(!self.sealed, "append after finish");
         if batch.num_rows() == 0 {
             return Ok(());
         }
@@ -426,8 +437,6 @@ impl SegmentWriter {
     ///
     /// After this call the segment is crash-safe.
     pub fn finish(mut self) -> io::Result<SegmentFile> {
-        self.sealed = true;
-
         // Hash the footer fields that precede the checksum.
         let mut footer_pre = [0u8; 20];
         footer_pre[0..8].copy_from_slice(&self.record_count.to_le_bytes());
@@ -457,7 +466,7 @@ impl SegmentWriter {
         // fsync the parent directory.
         if let Some(parent) = self.path.parent() {
             let dir = File::open(parent)?;
-            dir.sync_data()?;
+            dir.sync_all()?;
         }
 
         Ok(SegmentFile {
@@ -627,13 +636,27 @@ pub fn recover_segments(
     }
 
     let mut entries: Vec<PathBuf> = Vec::new();
+    // Track the highest segment ID seen across ALL .lchk files (including
+    // corrupt/incomplete ones that may fail to delete), so next_segment_id
+    // never collides with an existing filename.
+    let mut max_seen_id: u64 = 0;
+
     for entry in fs::read_dir(segment_dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("lchk") {
+            // Parse segment ID from filename: "seg-0000000042.lchk" → 42
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if let Some(id_str) = stem.strip_prefix("seg-") {
+                    if let Ok(id) = id_str.parse::<u64>() {
+                        max_seen_id = max_seen_id.max(id);
+                    }
+                }
+            }
             entries.push(path);
         }
     }
+    // Lexicographic sort == numeric sort because segment_filename() zero-pads to 10 digits.
     entries.sort();
 
     let mut valid: Vec<SegmentFile> = Vec::new();
@@ -650,7 +673,12 @@ pub fn recover_segments(
                 tracing::error!(path = %p.display(), reason, "corrupt segment detected");
                 to_delete.push(p);
             }
-            SegmentStatus::NotASegment(_) => {}
+            SegmentStatus::NotASegment(p) => {
+                tracing::warn!(
+                    path = %p.display(),
+                    "ignoring non-segment .lchk file in segment directory"
+                );
+            }
             SegmentStatus::SchemaMismatch {
                 path,
                 expected_sql_hash,
@@ -676,7 +704,9 @@ pub fn recover_segments(
         }
     }
 
-    let next_segment_id = valid.last().map_or(1, |s| s.header.segment_id + 1);
+    // Use max of all seen IDs (not just valid), so we never collide with
+    // a corrupt file that failed to delete.
+    let next_segment_id = if max_seen_id > 0 { max_seen_id + 1 } else { 1 };
     let total_records: u64 = valid.iter().map(|s| s.footer.record_count).sum();
 
     tracing::info!(
@@ -911,7 +941,9 @@ mod tests {
         let plan = recover_segments(&seg_dir, None).unwrap();
         assert_eq!(plan.segments.len(), 1);
         assert_eq!(plan.segments[0].header.segment_id, 1);
-        assert_eq!(plan.next_segment_id, 2);
+        // next_segment_id = max(all seen IDs) + 1, not max(valid) + 1,
+        // to avoid collision if the incomplete file failed to delete.
+        assert_eq!(plan.next_segment_id, 3);
         assert!(!incomplete_path.exists());
     }
 
