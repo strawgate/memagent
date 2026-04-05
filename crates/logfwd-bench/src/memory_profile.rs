@@ -22,6 +22,7 @@
 
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::alloc::System;
+use std::fmt::Write as _;
 
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
@@ -323,6 +324,10 @@ struct ProfileRun<'a> {
 }
 
 fn print_report(run: &ProfileRun<'_>) {
+    print!("{}", render_report(run));
+}
+
+fn render_report(run: &ProfileRun<'_>) -> String {
     let ProfileRun {
         samples,
         total_elapsed,
@@ -334,6 +339,7 @@ fn print_report(run: &ProfileRun<'_>) {
         sql,
     } = *run;
     let elapsed_secs = total_elapsed.as_secs_f64();
+    let mut out = String::new();
 
     // --- Throughput ---
     let lines_per_sec = total_rows as f64 / elapsed_secs;
@@ -409,69 +415,81 @@ fn print_report(run: &ProfileRun<'_>) {
     // Print markdown report
     // -----------------------------------------------------------------------
 
-    println!("## Sustained Memory Profile Results\n");
-    println!("| Parameter | Value |");
-    println!("|-----------|-------|");
-    println!("| Schema | {} |", schema_name);
-    println!("| SQL | `{}` |", sql);
-    println!("| Batch size | {} lines |", batch_lines);
-    println!("| Duration | {:.1}s |", elapsed_secs);
-    println!("| Total rows | {} |", total_rows);
-    println!("| Total batches | {} |", total_batches);
-    println!(
+    let _ = writeln!(out, "## Sustained Memory Profile Results\n");
+    let _ = writeln!(out, "| Parameter | Value |");
+    let _ = writeln!(out, "|-----------|-------|");
+    let _ = writeln!(out, "| Schema | {} |", schema_name);
+    let _ = writeln!(out, "| SQL | `{}` |", sql);
+    let _ = writeln!(out, "| Batch size | {} lines |", batch_lines);
+    let _ = writeln!(out, "| Duration | {:.1}s |", elapsed_secs);
+    let _ = writeln!(out, "| Total rows | {} |", total_rows);
+    let _ = writeln!(out, "| Total batches | {} |", total_batches);
+    let _ = writeln!(
+        out,
         "| Total input | {:.1} MB |",
         total_input_bytes as f64 / 1_048_576.0
     );
-    println!();
+    let _ = writeln!(out);
 
-    println!("### Throughput\n");
-    println!("| Metric | Value |");
-    println!("|--------|-------|");
-    println!("| Lines/sec | {:.0} |", lines_per_sec);
-    println!("| MB/sec (input) | {:.1} |", mb_per_sec);
-    println!("| Batches/sec | {:.1} |", batches_per_sec);
-    println!();
+    let _ = writeln!(out, "### Throughput\n");
+    let _ = writeln!(out, "| Metric | Value |");
+    let _ = writeln!(out, "|--------|-------|");
+    let _ = writeln!(out, "| Lines/sec | {:.0} |", lines_per_sec);
+    let _ = writeln!(out, "| MB/sec (input) | {:.1} |", mb_per_sec);
+    let _ = writeln!(out, "| Batches/sec | {:.1} |", batches_per_sec);
+    let _ = writeln!(out);
 
-    println!("### Memory (RSS)\n");
-    println!("| Metric | Value |");
-    println!("|--------|-------|");
-    println!("| Peak RSS | {:.1} MB |", peak_rss);
-    println!("| Min RSS | {:.1} MB |", min_rss);
-    println!("| Steady-state RSS | {:.1} MB |", steady_rss);
-    println!("| RSS range | {:.1} MB |", peak_rss - min_rss);
-    println!("| Growth rate | {} |", growth_verdict);
-    println!();
+    let _ = writeln!(out, "### Memory (RSS)\n");
+    let _ = writeln!(out, "| Metric | Value |");
+    let _ = writeln!(out, "|--------|-------|");
+    let _ = writeln!(out, "| Peak RSS | {:.1} MB |", peak_rss);
+    let _ = writeln!(out, "| Min RSS | {:.1} MB |", min_rss);
+    let _ = writeln!(out, "| Steady-state RSS | {:.1} MB |", steady_rss);
+    let _ = writeln!(out, "| RSS range | {:.1} MB |", peak_rss - min_rss);
+    let _ = writeln!(out, "| Growth rate | {} |", growth_verdict);
+    let _ = writeln!(out);
 
-    println!("### Allocations\n");
-    println!("| Metric | Value |");
-    println!("|--------|-------|");
-    println!(
+    let _ = writeln!(out, "### Allocations\n");
+    let _ = writeln!(out, "| Metric | Value |");
+    let _ = writeln!(out, "|--------|-------|");
+    let _ = writeln!(
+        out,
         "| Total allocated | {:.1} MB |",
         total_allocated as f64 / 1_048_576.0
     );
-    println!(
+    let _ = writeln!(
+        out,
         "| Total freed | {:.1} MB |",
         total_freed as f64 / 1_048_576.0
     );
-    println!(
+    let _ = writeln!(
+        out,
         "| Net retained | {:.1} MB |",
         net_retained as f64 / 1_048_576.0
     );
-    println!("| Alloc rate | {:.1} MB/sec |", alloc_rate_mb_per_sec);
-    println!(
+    let _ = writeln!(out, "| Alloc rate | {:.1} MB/sec |", alloc_rate_mb_per_sec);
+    let _ = writeln!(
+        out,
         "| Alloc count rate | {:.0} allocs/sec |",
         alloc_rate_per_sec
     );
-    println!("| Bytes/row | {:.0} |", bytes_per_row);
-    println!("| Allocs/row | {:.1} |", allocs_per_row);
-    println!();
+    let _ = writeln!(out, "| Bytes/row | {:.0} |", bytes_per_row);
+    let _ = writeln!(out, "| Allocs/row | {:.1} |", allocs_per_row);
+    let _ = writeln!(out);
 
     // --- RSS timeline ---
-    println!("### RSS Timeline\n");
-    println!("| Time (s) | RSS (MB) | Δ Alloc (MB) | Δ Allocs | Rows | Batches |");
-    println!("|----------|----------|-------------|----------|------|---------|");
+    let _ = writeln!(out, "### RSS Timeline\n");
+    let _ = writeln!(
+        out,
+        "| Time (s) | RSS (MB) | Δ Alloc (MB) | Δ Allocs | Rows | Batches |"
+    );
+    let _ = writeln!(
+        out,
+        "|----------|----------|-------------|----------|------|---------|"
+    );
     for s in samples {
-        println!(
+        let _ = writeln!(
+            out,
             "| {:.0} | {:.1} | {:.1} | {} | {} | {} |",
             s.elapsed_secs,
             s.rss_mb,
@@ -481,18 +499,25 @@ fn print_report(run: &ProfileRun<'_>) {
             s.total_batches,
         );
     }
-    println!();
+    let _ = writeln!(out);
 
     // --- Allocation rate per interval ---
     if samples.len() > 2 {
-        println!("### Allocation Rate Per Interval\n");
-        println!("| Interval | Alloc Rate (MB/s) | Alloc Count/s | Rows/s |");
-        println!("|----------|------------------|---------------|--------|");
+        let _ = writeln!(out, "### Allocation Rate Per Interval\n");
+        let _ = writeln!(
+            out,
+            "| Interval | Alloc Rate (MB/s) | Alloc Count/s | Rows/s |"
+        );
+        let _ = writeln!(
+            out,
+            "|----------|------------------|---------------|--------|"
+        );
         for w in samples.windows(2) {
             let dt = w[1].elapsed_secs - w[0].elapsed_secs;
             if dt > 0.0 {
                 let d_rows = w[1].total_rows - w[0].total_rows;
-                println!(
+                let _ = writeln!(
+                    out,
                     "| {:.0}–{:.0}s | {:.1} | {:.0} | {:.0} |",
                     w[0].elapsed_secs,
                     w[1].elapsed_secs,
@@ -502,13 +527,14 @@ fn print_report(run: &ProfileRun<'_>) {
                 );
             }
         }
-        println!();
+        let _ = writeln!(out);
     }
 
     // --- Verdict ---
-    println!("### Verdict\n");
+    let _ = writeln!(out, "### Verdict\n");
     if r_squared > 0.7 && slope_mb_per_min > 0.5 {
-        println!(
+        let _ = writeln!(
+            out,
             "**⚠ WARNING**: RSS is growing at {:.2} MB/min with R²={:.2}. \
              This suggests a possible memory leak or unbounded growth. \
              After {} minutes, RSS grew from {:.1} MB to {:.1} MB.",
@@ -519,7 +545,8 @@ fn print_report(run: &ProfileRun<'_>) {
             rss_values.last().unwrap_or(&0.0),
         );
     } else if peak_rss - min_rss > 50.0 {
-        println!(
+        let _ = writeln!(
+            out,
             "**~ CAUTION**: RSS fluctuates by {:.1} MB (range: {:.1}–{:.1} MB). \
              No sustained growth detected, but allocation spikes are present.",
             peak_rss - min_rss,
@@ -527,7 +554,8 @@ fn print_report(run: &ProfileRun<'_>) {
             peak_rss,
         );
     } else {
-        println!(
+        let _ = writeln!(
+            out,
             "**✓ HEALTHY**: RSS is stable at {:.1} MB (±{:.1} MB). \
              No leaks or unbounded growth detected over {:.0}s.",
             steady_rss,
@@ -535,13 +563,14 @@ fn print_report(run: &ProfileRun<'_>) {
             elapsed_secs,
         );
     }
-    println!();
+    let _ = writeln!(out);
 
     // Per-row summary for easy comparison
-    println!("### Per-Row Cost Summary\n");
-    println!("| Metric | Value |");
-    println!("|--------|-------|");
-    println!(
+    let _ = writeln!(out, "### Per-Row Cost Summary\n");
+    let _ = writeln!(out, "| Metric | Value |");
+    let _ = writeln!(out, "|--------|-------|");
+    let _ = writeln!(
+        out,
         "| Input bytes/row | {:.0} |",
         if total_rows > 0 {
             total_input_bytes as f64 / total_rows as f64
@@ -549,8 +578,9 @@ fn print_report(run: &ProfileRun<'_>) {
             0.0
         }
     );
-    println!("| Allocated bytes/row | {:.0} |", bytes_per_row);
-    println!(
+    let _ = writeln!(out, "| Allocated bytes/row | {:.0} |", bytes_per_row);
+    let _ = writeln!(
+        out,
         "| Amplification factor | {:.1}x |",
         if total_rows > 0 {
             bytes_per_row / (total_input_bytes as f64 / total_rows as f64)
@@ -558,11 +588,14 @@ fn print_report(run: &ProfileRun<'_>) {
             0.0
         }
     );
-    println!("| Allocations/row | {:.1} |", allocs_per_row);
-    println!(
+    let _ = writeln!(out, "| Allocations/row | {:.1} |", allocs_per_row);
+    let _ = writeln!(
+        out,
         "| RSS per batch ({} rows) | {:.1} MB |",
-        batch_lines, steady_rss,
+        batch_lines, steady_rss
     );
+
+    out
 }
 
 /// Simple linear regression: RSS_mb = slope * time_min + intercept.
@@ -600,4 +633,70 @@ fn linear_regression(samples: &[Sample]) -> (f64, f64) {
     let r_squared = (ss_xy * ss_xy) / (ss_xx * ss_yy);
 
     (slope, r_squared)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(
+        elapsed_secs: f64,
+        rss_mb: f64,
+        total_allocated_bytes: u64,
+        total_allocations: u64,
+        total_deallocated_bytes: u64,
+        total_rows: u64,
+        total_batches: u64,
+    ) -> Sample {
+        Sample {
+            elapsed_secs,
+            rss_mb,
+            total_allocated_bytes,
+            total_allocations,
+            total_deallocated_bytes,
+            total_rows,
+            total_batches,
+        }
+    }
+
+    #[test]
+    fn linear_regression_reports_stable_series() {
+        let samples = vec![
+            sample(0.0, 40.0, 0, 0, 0, 0, 0),
+            sample(5.0, 40.0, 10, 2, 10, 100, 1),
+            sample(10.0, 40.0, 10, 2, 10, 200, 2),
+        ];
+
+        let (slope, r_squared) = linear_regression(&samples);
+        assert!(slope.abs() < f64::EPSILON);
+        assert!(r_squared.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn render_report_contains_expected_sections() {
+        let samples = vec![
+            sample(0.0, 40.0, 0, 0, 0, 0, 0),
+            sample(5.0, 41.0, 1_048_576, 100, 1_048_576, 10_000, 1),
+            sample(10.0, 40.5, 1_048_576, 100, 1_048_576, 20_000, 2),
+        ];
+        let run = ProfileRun {
+            samples: &samples,
+            total_elapsed: Duration::from_secs(10),
+            total_rows: 20_000,
+            total_batches: 2,
+            total_input_bytes: 2_097_152,
+            batch_lines: 10_000,
+            schema_name: "narrow (5 fields)",
+            sql: "SELECT * FROM logs",
+        };
+
+        let report = render_report(&run);
+        assert!(report.contains("## Sustained Memory Profile Results"));
+        assert!(report.contains("### Throughput"));
+        assert!(report.contains("### Memory (RSS)"));
+        assert!(report.contains("### RSS Timeline"));
+        assert!(report.contains("### Verdict"));
+        assert!(report.contains("| Schema | narrow (5 fields) |"));
+        assert!(report.contains("| RSS per batch (10000 rows) |"));
+    }
 }
