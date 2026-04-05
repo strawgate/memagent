@@ -49,4 +49,5 @@ pub fn make_otlp_sink(compression: Compression) -> OtlpSink {
         reqwest::Client::new(),
         Arc::new(ComponentStats::default()),
     )
+    .expect("Failed to create OtlpSink")
 }
