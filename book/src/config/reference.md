@@ -107,7 +107,7 @@ Listen for log lines on a UDP socket.
 input:
   type: udp
   listen: 0.0.0.0:514
-  format: syslog
+  format: json
 ```
 
 ### `tcp` input *(not yet implemented)*
@@ -196,13 +196,12 @@ POST log records as newline-delimited JSON to an HTTP endpoint.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Full URL, e.g. `http://ingest.example.com/logs`. |
-| `compression` | string | No | `zstd` to compress the request body. |
+| `compression` | string | No | Reserved for future use. HTTP output is not yet implemented. |
 
 ```yaml
 output:
   type: http
   endpoint: http://ingest.example.com/logs
-  compression: zstd
 ```
 
 ### `stdout` output
@@ -258,7 +257,7 @@ Write records to Parquet files. Not yet functional.
 | Value | Status | Description |
 |-------|--------|-------------|
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
-| `http` | Implemented | JSON lines over HTTP POST. |
+| `http` | Planned | JSON lines over HTTP POST (not yet implemented). |
 | `stdout` | Implemented | Print to stdout (JSON or coloured text). |
 | `elasticsearch` | Stub | Elasticsearch bulk API. |
 | `loki` | Stub | Grafana Loki push API. |
