@@ -426,7 +426,7 @@ impl StateMachineTest for TailCheckpointTest {
 
 prop_state_machine! {
     #![proptest_config(ProptestConfig {
-        cases: 128,
+        cases: logfwd_test_utils::proptest_cases(),
         max_shrink_iters: 5_000,
         failure_persistence: None,
         .. ProptestConfig::default()

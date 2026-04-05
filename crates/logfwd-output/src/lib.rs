@@ -772,14 +772,22 @@ pub fn build_sink_factory(
                 Some(Format::Console) => StdoutFormat::Console,
                 _ => StdoutFormat::Text,
             };
-            Ok(Arc::new(StdoutSinkFactory::new(name.to_string(), fmt, stats)))
+            Ok(Arc::new(StdoutSinkFactory::new(
+                name.to_string(),
+                fmt,
+                stats,
+            )))
         }
         OutputType::Tcp => {
             let endpoint = cfg
                 .endpoint
                 .as_ref()
                 .ok_or_else(|| format!("output '{name}': tcp requires 'endpoint'"))?;
-            Ok(Arc::new(TcpSinkFactory::new(name.to_string(), endpoint.clone(), stats)))
+            Ok(Arc::new(TcpSinkFactory::new(
+                name.to_string(),
+                endpoint.clone(),
+                stats,
+            )))
         }
         _ => {
             // Sync sink — build it once, wrap in OnceFactory (max_workers=1).

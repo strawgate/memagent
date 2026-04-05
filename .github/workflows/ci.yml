@@ -266,6 +266,27 @@ jobs:
           RUSTC_WRAPPER: ""
 
   # -------------------------------------------------------------------------
+  # Turmoil deterministic simulation
+  # -------------------------------------------------------------------------
+  turmoil:
+    name: Turmoil simulation
+    needs: [changes]
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Turmoil simulation tests
+        run: cargo test -p logfwd --features turmoil --test turmoil_sim
+
+  # -------------------------------------------------------------------------
   # TLC: TLA+ model checking for all specs
   # -------------------------------------------------------------------------
   tlc:

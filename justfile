@@ -56,6 +56,11 @@ dashboard:
 
 
 
+# Extended testing: 10K proptest cases + turmoil simulation
+test-extended:
+    PROPTEST_CASES=10000 cargo nextest run --profile ci
+    cargo test -p logfwd --features turmoil --test turmoil_sim
+
 # Build release binary
 build:
     cargo build --release
