@@ -14,7 +14,6 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read  # needed by dorny/paths-filter to list changed files on bot PRs
-  checks: write        # needed by rustsec/audit-check@v2 to create check run annotations
 
 # Tool versions — bump these to upgrade across all jobs.
 env:
@@ -119,6 +118,9 @@ jobs:
     name: Lint
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write  # needed by rustsec/audit-check@v2 to create check run annotations
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
