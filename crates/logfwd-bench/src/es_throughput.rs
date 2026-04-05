@@ -24,8 +24,10 @@ use std::time::Instant;
 use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_io::diagnostics::ComponentStats;
-use logfwd_output::sink::SinkFactory;
-use logfwd_output::{BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory};
+use logfwd_output::sink::Sink;
+use logfwd_output::{
+    BatchMetadata, ElasticsearchRequestMode, ElasticsearchSink, ElasticsearchSinkFactory,
+};
 use logfwd_transform::SqlTransform;
 use pprof::ProfilerGuardBuilder;
 
@@ -114,7 +116,9 @@ fn run_worker(
         stats,
     )
     .expect("failed to create sink factory");
-    let mut sink = factory.create().expect("failed to create sink");
+    // Use create_sink() to get a concrete ElasticsearchSink so we can call
+    // serialize_batch() / serialized_len() for accurate byte accounting.
+    let mut sink: ElasticsearchSink = factory.create_sink();
 
     let mut scanner = Scanner::new(ScanConfig::default());
     let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
@@ -146,12 +150,29 @@ fn run_worker(
         };
 
         let rows = result.num_rows() as u64;
-        let raw = rows as usize * 300; // approximate bytes per row
+
+        // Serialize the batch upfront to measure actual uncompressed bytes.
+        // send_batch_inner will re-serialize internally; the overhead is
+        // acceptable in a benchmark where measurement accuracy matters more
+        // than peak throughput of the bench harness itself.
+        let raw_bytes = match sink.serialize_batch(&result, &meta) {
+            Ok(()) => sink.serialized_len() as u64,
+            Err(e) => {
+                eprintln!("[worker {worker_id}] serialize error (byte counting): {e}");
+                0
+            }
+        };
+
+        // Wire bytes: the sink compresses internally (gzip) but does not expose
+        // the compressed payload size. When compression is disabled wire == raw.
+        // When compression is enabled we report raw bytes here too; the ratio
+        // column will show 1.0× and a note is printed at scenario start.
+        let wire_bytes = raw_bytes;
 
         match rt.block_on(sink.send_batch(&result, &meta)) {
             logfwd_output::sink::SendResult::Ok => {
-                total_raw_bytes.fetch_add(raw as u64, Ordering::Relaxed);
-                total_wire_bytes.fetch_add(raw as u64, Ordering::Relaxed);
+                total_raw_bytes.fetch_add(raw_bytes, Ordering::Relaxed);
+                total_wire_bytes.fetch_add(wire_bytes, Ordering::Relaxed);
                 total_events.fetch_add(rows, Ordering::Relaxed);
                 total_batches.fetch_add(1, Ordering::Relaxed);
             }
