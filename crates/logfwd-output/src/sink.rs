@@ -144,6 +144,7 @@ impl Sink for AsyncFanoutSink {
         metadata: &'a BatchMetadata,
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
+            let mut worst: SendResult = SendResult::Ok;
             let mut first_retry: Option<Duration> = None;
             for sink in &mut self.sinks {
                 match sink.send_batch(batch, metadata).await {
@@ -153,13 +154,21 @@ impl Sink for AsyncFanoutSink {
                             first_retry = Some(d);
                         }
                     }
-                    SendResult::Rejected(reason) => return SendResult::Rejected(reason),
-                    SendResult::IoError(e) => return SendResult::IoError(e),
+                    SendResult::Rejected(reason) => {
+                        // Record but continue delivering to other sinks
+                        worst = SendResult::Rejected(reason);
+                    }
+                    SendResult::IoError(e) => {
+                        worst = SendResult::IoError(e);
+                    }
                 }
             }
-            match first_retry {
-                Some(d) => SendResult::RetryAfter(d),
-                None => SendResult::Ok,
+            match worst {
+                SendResult::Ok => match first_retry {
+                    Some(d) => SendResult::RetryAfter(d),
+                    None => SendResult::Ok,
+                },
+                other => other,
             }
         })
     }

@@ -602,6 +602,8 @@ impl Pipeline {
 
         loop {
             tokio::select! {
+                biased;  // prioritise ack processing to prevent ack starvation
+
                 () = shutdown.cancelled() => {
                     break;
                 }
