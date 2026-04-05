@@ -1,5 +1,8 @@
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::array::{Array, AsArray, PrimitiveArray};
 use arrow::datatypes::{DataType, Float64Type, Int64Type};
@@ -14,11 +17,7 @@ use logfwd_core::otlp::{
 use logfwd_types::diagnostics::ComponentStats;
 use zstd::bulk::Compressor as ZstdCompressor;
 
-#[allow(deprecated)]
-use super::{
-    BatchMetadata, Compression, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, OutputSink,
-    is_transient_error, str_value,
-};
+use super::{BatchMetadata, Compression, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, str_value};
 
 // ---------------------------------------------------------------------------
 // InstrumentationScope constants
@@ -52,7 +51,7 @@ pub struct OtlpSink {
     compress_buf: Vec<u8>,
     grpc_buf: Vec<u8>,
     compressor: Option<ZstdCompressor<'static>>,
-    http_agent: ureq::Agent,
+    client: reqwest::Client,
     stats: Arc<ComponentStats>,
 }
 
@@ -63,6 +62,7 @@ impl OtlpSink {
         protocol: OtlpProtocol,
         compression: Compression,
         headers: Vec<(String, String)>,
+        client: reqwest::Client,
         stats: Arc<ComponentStats>,
     ) -> Self {
         let compressor = match compression {
@@ -71,10 +71,6 @@ impl OtlpSink {
             }
             _ => None,
         };
-        let http_agent = ureq::config::Config::builder()
-            .timeout_global(Some(std::time::Duration::from_secs(30)))
-            .build()
-            .new_agent();
         OtlpSink {
             name,
             endpoint,
@@ -85,7 +81,7 @@ impl OtlpSink {
             compress_buf: Vec::with_capacity(64 * 1024),
             grpc_buf: Vec::with_capacity(64 * 1024),
             compressor,
-            http_agent,
+            client,
             stats,
         }
     }
@@ -225,20 +221,19 @@ impl OtlpSink {
     }
 }
 
-#[allow(deprecated)]
-impl OutputSink for OtlpSink {
-    fn send_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()> {
-        self.encode_batch(batch, metadata);
+impl OtlpSink {
+    /// Compress, frame, and send the encoded payload via reqwest.
+    ///
+    /// Returns `SendResult::RetryAfter` on 429, `SendResult::Ok` on success,
+    /// and retries transient 5xx / network errors with exponential backoff.
+    async fn send_payload(&mut self, batch_rows: u64) -> io::Result<super::sink::SendResult> {
         if self.encoder_buf.is_empty() {
-            return Ok(());
+            return Ok(super::sink::SendResult::Ok);
         }
 
         let payload: &[u8] = match self.compression {
             Compression::Zstd => {
                 if let Some(ref mut compressor) = self.compressor {
-                    // Produce raw zstd frames — no logfwd-internal header.
-                    // OTLP receivers expect standard zstd per HTTP Content-Encoding.
-                    // Reuse compress_buf to avoid per-batch allocation.
                     let bound = zstd::zstd_safe::compress_bound(self.encoder_buf.len());
                     self.compress_buf.clear();
                     self.compress_buf.reserve(bound);
@@ -266,9 +261,7 @@ impl OutputSink for OtlpSink {
         };
 
         // For gRPC, prepend the 5-byte length-prefixed frame header required by the
-        // gRPC wire protocol. Note: ureq uses HTTP/1.1; a true gRPC endpoint requires
-        // HTTP/2. Use a reverse proxy (e.g. Envoy) or `protocol: http` when the
-        // collector does not accept HTTP/1.1 upgrades.
+        // gRPC wire protocol.
         //
         // The compressed flag reflects whether this specific payload is compressed
         // (i.e. Zstd was configured AND the compressor is present). If the compressor
@@ -285,11 +278,12 @@ impl OutputSink for OtlpSink {
 
         // Retry with exponential backoff for transient failures.
         // 1 initial attempt + up to HTTP_MAX_RETRIES retries; delays: 100ms → 200ms → 400ms.
-        // Note: the full encoded payload is retransmitted on each attempt.
-        // For large batches this multiplies bandwidth; this is acceptable as a
-        // temporary measure until SinkDriver (#319) handles retries externally.
-        let build_req = || {
-            let mut req = self.http_agent.post(&self.endpoint);
+        // Allocate the owned body once before the retry loop to avoid per-attempt copies.
+        let body = payload.to_vec();
+        let mut delay_ms: u64 = HTTP_RETRY_INITIAL_DELAY_MS;
+        let mut attempt: u32 = 0;
+        loop {
+            let mut req = self.client.post(&self.endpoint);
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
@@ -297,19 +291,49 @@ impl OutputSink for OtlpSink {
             if payload_is_compressed {
                 req = req.header("Content-Encoding", "zstd");
             }
-            req
-        };
-        let mut delay_ms: u64 = HTTP_RETRY_INITIAL_DELAY_MS;
-        let mut attempt: u32 = 0;
-        loop {
-            match build_req().send(payload) {
-                Ok(_) => {
-                    self.stats.inc_lines(batch.num_rows() as u64);
-                    self.stats.inc_bytes(self.encoder_buf.len() as u64);
-                    return Ok(());
+
+            match req.body(body.clone()).send().await {
+                Ok(response) => {
+                    let status = response.status();
+
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                        let retry_after = response
+                            .headers()
+                            .get("Retry-After")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(5);
+                        return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
+                            retry_after,
+                        )));
+                    }
+
+                    if status.is_success() {
+                        self.stats.inc_lines(batch_rows);
+                        self.stats.inc_bytes(self.encoder_buf.len() as u64);
+                        return Ok(super::sink::SendResult::Ok);
+                    }
+
+                    // Transient server error — retry with backoff.
+                    if status.is_server_error() && attempt < HTTP_MAX_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        delay_ms *= 2;
+                        attempt += 1;
+                        continue;
+                    }
+
+                    // Non-retryable error — read body as bytes to avoid String allocation.
+                    let detail = response
+                        .bytes()
+                        .await
+                        .map(|b| String::from_utf8_lossy(&b).into_owned())
+                        .unwrap_or_default();
+                    return Err(io::Error::other(format!(
+                        "OTLP request failed with status {status}: {detail}"
+                    )));
                 }
-                Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_error(&e) => {
-                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_reqwest_error(&e) => {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                     delay_ms *= 2;
                     attempt += 1;
                 }
@@ -317,14 +341,104 @@ impl OutputSink for OtlpSink {
             }
         }
     }
+}
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+impl super::sink::Sink for OtlpSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>> {
+        Box::pin(async move {
+            self.encode_batch(batch, metadata);
+            let rows = batch.num_rows() as u64;
+            self.send_payload(rows).await
+        })
+    }
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OtlpSinkFactory
+// ---------------------------------------------------------------------------
+
+/// Creates [`OtlpSink`] instances for the output worker pool.
+///
+/// All workers share a single `reqwest::Client` (which is internally
+/// `Arc`-wrapped) so they reuse the same connection pool, TLS sessions,
+/// and DNS cache.
+pub struct OtlpSinkFactory {
+    name: String,
+    endpoint: String,
+    protocol: OtlpProtocol,
+    compression: Compression,
+    headers: Vec<(String, String)>,
+    client: reqwest::Client,
+    stats: Arc<ComponentStats>,
+}
+
+impl OtlpSinkFactory {
+    /// Create a new factory.
+    pub fn new(
+        name: String,
+        endpoint: String,
+        protocol: OtlpProtocol,
+        compression: Compression,
+        headers: Vec<(String, String)>,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(64)
+            .build()
+            .map_err(io::Error::other)?;
+        Ok(OtlpSinkFactory {
+            name,
+            endpoint,
+            protocol,
+            compression,
+            headers,
+            client,
+            stats,
+        })
+    }
+}
+
+impl super::sink::SinkFactory for OtlpSinkFactory {
+    fn create(&self) -> io::Result<Box<dyn super::sink::Sink>> {
+        Ok(Box::new(OtlpSink::new(
+            self.name.clone(),
+            self.endpoint.clone(),
+            self.protocol,
+            self.compression,
+            self.headers.clone(),
+            self.client.clone(),
+            Arc::clone(&self.stats),
+        )))
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Returns `true` if the reqwest error is transient and worth retrying.
+///
+/// Transient errors are: timeouts, connection errors, and request errors
+/// (network-level failures).
+fn is_transient_reqwest_error(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request()
 }
 
 /// Pre-downcast array variant for an attribute column.
@@ -769,6 +883,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
+            reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
         )
     }
@@ -969,6 +1084,7 @@ mod tests {
             OtlpProtocol::Grpc,
             Compression::None,
             vec![],
+            reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
         );
         sink.encode_batch(&batch, &make_metadata());

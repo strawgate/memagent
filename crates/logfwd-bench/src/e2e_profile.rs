@@ -51,6 +51,7 @@ fn main() {
         logfwd_output::OtlpProtocol::Http,
         logfwd_output::Compression::None,
         vec![],
+        reqwest::Client::new(),
         std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
     );
     let metadata = BatchMetadata {
@@ -102,7 +103,7 @@ fn main() {
         let xform = t.elapsed().as_millis();
         
         let t = Instant::now();
-        let mut sink = logfwd_output::OtlpSink::new("b".into(), "http://x".into(), logfwd_output::OtlpProtocol::Http, logfwd_output::Compression::None, vec![], std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()));
+        let mut sink = logfwd_output::OtlpSink::new("b".into(), "http://x".into(), logfwd_output::OtlpProtocol::Http, logfwd_output::Compression::None, vec![], reqwest::Client::new(), std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()));
         let meta = BatchMetadata { resource_attrs: Arc::new(vec![]), observed_time_ns: 0 };
         sink.encode_batch(&result, &meta);
         let encode = t.elapsed().as_millis();

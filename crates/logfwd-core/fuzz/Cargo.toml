@@ -16,6 +16,7 @@ logfwd-output = { path = "../../logfwd-output" }
 logfwd-io = { path = "../../logfwd-io" }
 arrow = { version = "54", default-features = false }
 bytes = "1"
+reqwest = { version = "0.12", default-features = false }
 
 [workspace]
 

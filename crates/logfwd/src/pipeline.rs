@@ -1416,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_output_sink_otlp() {
+    fn test_build_sink_factory_otlp() {
         let cfg = OutputConfig {
             name: Some("otel".to_string()),
             output_type: OutputType::Otlp,
@@ -1429,8 +1429,8 @@ mod tests {
             auth: None,
             request_mode: None,
         };
-        let sink = build_output_sink("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(sink.name(), "otel");
+        let factory = build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        assert_eq!(factory.name(), "otel");
     }
 
     #[test]
@@ -1452,7 +1452,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_output_sink_missing_endpoint() {
+    fn test_build_sink_factory_missing_endpoint() {
         let cfg = OutputConfig {
             name: Some("bad".to_string()),
             output_type: OutputType::Otlp,
@@ -1465,7 +1465,7 @@ mod tests {
             auth: None,
             request_mode: None,
         };
-        let result = build_output_sink("bad", &cfg, Arc::new(ComponentStats::new()));
+        let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("endpoint"), "got: {err}");

@@ -63,6 +63,7 @@ fn run_sinks(data: &[u8], validate_utf8: bool) {
         OtlpProtocol::Http,
         Compression::None,
         vec![],
+        reqwest::Client::new(),
         Arc::new(ComponentStats::new()),
     );
     otlp_sink.encode_batch(&batch, &metadata);

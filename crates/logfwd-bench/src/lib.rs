@@ -43,6 +43,7 @@ pub fn make_otlp_sink(compression: Compression) -> OtlpSink {
         OtlpProtocol::Http,
         compression,
         vec![],
+        reqwest::Client::new(),
         Arc::new(ComponentStats::default()),
     )
 }

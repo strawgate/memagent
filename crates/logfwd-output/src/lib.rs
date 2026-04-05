@@ -28,7 +28,7 @@ pub use otap_sink::{
     ArrowPayloadType, BatchStatus, DecodedPayload, OtapSinkFactory, StatusCode,
     decode_batch_arrow_records, decode_batch_status, encode_batch_arrow_records,
 };
-pub use otlp_sink::{OtlpProtocol, OtlpSink};
+pub use otlp_sink::{OtlpProtocol, OtlpSink, OtlpSinkFactory};
 pub use sink::{OnceAsyncFactory, SendResult, Sink, SinkFactory, SyncSinkAdapter};
 use stdout::*;
 pub use tcp_sink::{TcpSink, TcpSinkFactory};
@@ -546,33 +546,9 @@ pub fn build_output_sink(
             };
             Ok(Box::new(StdoutSink::new(name.to_string(), fmt, stats)))
         }
-        OutputType::Otlp => {
-            let endpoint = cfg
-                .endpoint
-                .as_ref()
-                .ok_or_else(|| format!("output '{name}': OTLP requires 'endpoint'"))?;
-            let protocol = match cfg.protocol.as_deref() {
-                Some("grpc") => OtlpProtocol::Grpc,
-                _ => OtlpProtocol::Http,
-            };
-            let compression = match cfg.compression.as_deref() {
-                Some("zstd") => Compression::Zstd,
-                Some("gzip") => {
-                    return Err(format!(
-                        "output '{name}': OTLP does not support 'gzip' compression yet"
-                    ));
-                }
-                _ => Compression::None,
-            };
-            Ok(Box::new(OtlpSink::new(
-                name.to_string(),
-                endpoint.clone(),
-                protocol,
-                compression,
-                auth_headers,
-                stats,
-            )))
-        }
+        OutputType::Otlp => Err(format!(
+            "output '{name}': OTLP requires the async pipeline — use build_sink_factory() instead"
+        )),
         OutputType::Http => {
             let endpoint = cfg
                 .endpoint
@@ -763,6 +739,35 @@ pub fn build_sink_factory(
                 .as_ref()
                 .ok_or_else(|| format!("output '{name}': udp requires 'endpoint'"))?;
             let factory = UdpSinkFactory::new(name.to_string(), endpoint.clone(), stats);
+            Ok(Arc::new(factory))
+        }
+        OutputType::Otlp => {
+            let endpoint = cfg
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| format!("output '{name}': OTLP requires 'endpoint'"))?;
+            let protocol = match cfg.protocol.as_deref() {
+                Some("grpc") => OtlpProtocol::Grpc,
+                _ => OtlpProtocol::Http,
+            };
+            let compression = match cfg.compression.as_deref() {
+                Some("zstd") => Compression::Zstd,
+                Some("gzip") => {
+                    return Err(format!(
+                        "output '{name}': OTLP does not support 'gzip' compression yet"
+                    ));
+                }
+                _ => Compression::None,
+            };
+            let factory = OtlpSinkFactory::new(
+                name.to_string(),
+                endpoint.clone(),
+                protocol,
+                compression,
+                auth_headers,
+                stats,
+            )
+            .map_err(|e| format!("output '{name}': otlp factory: {e}"))?;
             Ok(Arc::new(factory))
         }
         _ => {
@@ -990,6 +995,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
+            reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
         );
         sink.encode_batch(&batch, &meta);
@@ -1000,8 +1006,8 @@ mod tests {
         assert_eq!(sink.encoder_buf[0], 0x0A);
     }
 
-    #[test]
-    fn test_otlp_gzip_send_batch_returns_error() {
+    #[tokio::test]
+    async fn test_otlp_gzip_send_batch_returns_error() {
         let batch = make_test_batch();
         let meta = make_metadata();
         let mut sink = OtlpSink::new(
@@ -1010,11 +1016,15 @@ mod tests {
             OtlpProtocol::Http,
             Compression::Gzip,
             vec![],
+            reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
         );
 
-        let err = sink.send_batch(&batch, &meta).unwrap_err();
-        assert!(err.to_string().contains("gzip"), "got: {err}");
+        use crate::Sink;
+        match sink.send_batch(&batch, &meta).await {
+            Ok(_) => panic!("gzip compression should return an error"),
+            Err(err) => assert!(err.to_string().contains("gzip"), "got: {err}"),
+        }
     }
 
     #[test]
@@ -1149,8 +1159,17 @@ mod tests {
             index: None,
             auth: None,
         };
-        let sink = build_output_sink("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(sink.name(), "otel");
+        // build_output_sink now redirects OTLP to build_sink_factory.
+        let result = build_output_sink("otel", &cfg, Arc::new(ComponentStats::new()));
+        assert!(
+            result.is_err(),
+            "OTLP should not be available via sync build_output_sink"
+        );
+
+        // build_sink_factory should succeed and produce a factory.
+        let factory = build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        assert_eq!(factory.name(), "otel");
+        assert!(!factory.is_single_use());
     }
 
     #[test]
@@ -1167,7 +1186,7 @@ mod tests {
             index: None,
             auth: None,
         };
-        let err = match build_output_sink("otel", &cfg, Arc::new(ComponentStats::new())) {
+        let err = match build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())) {
             Ok(_) => panic!("expected gzip OTLP compression to be rejected"),
             Err(err) => err,
         };
@@ -1250,7 +1269,8 @@ mod tests {
             index: None,
             auth: None,
         };
-        let result = build_output_sink("bad", &cfg, Arc::new(ComponentStats::new()));
+        // OTLP now uses the async pipeline via build_sink_factory.
+        let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.contains("endpoint"), "got: {err}");
@@ -1358,6 +1378,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
+            reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
         );
         // Must not panic.
@@ -1385,6 +1406,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
+            reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
         );
         // Must not panic, and should produce non-empty output.
