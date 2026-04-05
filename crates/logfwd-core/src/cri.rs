@@ -794,6 +794,22 @@ mod verification {
         kani::cover!(msg[0] == b'{', "JSON path reachable");
         kani::cover!(msg[0] != b'{', "non-JSON path reachable");
 
+        // Guard vacuity for json_escape_bytes arms — Kani must find a model
+        // where each escape branch is exercised (second byte drives escape
+        // since first byte is fixed to non-{ for the non-JSON path).
+        kani::cover!(
+            msg[0] != b'{' && msg[1] == b'"',
+            "quote escape arm reachable"
+        );
+        kani::cover!(
+            msg[0] != b'{' && msg[1] == b'\\',
+            "backslash escape arm reachable"
+        );
+        kani::cover!(
+            msg[0] != b'{' && msg[1] < 0x20,
+            "control-char escape arm reachable"
+        );
+
         write_json_line(&msg, None, &mut out);
 
         // Always ends with \n
