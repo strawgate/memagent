@@ -220,7 +220,7 @@ impl JsonLinesSink {
                     }
 
                     return Err(io::Error::other(format!(
-                        "HTTP endpoint returned unexpected status {status}"
+                        "HTTP endpoint returned non-success status {status}"
                     )));
                 }
                 Err(e) if attempt < HTTP_MAX_RETRIES && (e.is_timeout() || e.is_connect()) => {
