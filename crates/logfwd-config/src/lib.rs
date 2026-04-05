@@ -189,8 +189,9 @@ pub enum Format {
     Raw,
     Auto,
     /// Human-readable colored console output for debugging/testing.
-    #[serde(alias = "text")]
     Console,
+    /// Plain text output.
+    Text,
 }
 
 impl fmt::Display for Format {
@@ -203,6 +204,7 @@ impl fmt::Display for Format {
             Format::Raw => f.write_str("raw"),
             Format::Auto => f.write_str("auto"),
             Format::Console => f.write_str("console"),
+            Format::Text => f.write_str("text"),
         }
     }
 }
@@ -2437,9 +2439,8 @@ input:
 output:
   type: stdout
 ";
-        let cfg =
-            Config::load_str(yaml).expect("format: text should be accepted as alias for console");
+        let cfg = Config::load_str(yaml).expect("format: text should be accepted");
         let pipe = &cfg.pipelines["default"];
-        assert_eq!(pipe.inputs[0].format, Some(Format::Console));
+        assert_eq!(pipe.inputs[0].format, Some(Format::Text));
     }
 }
