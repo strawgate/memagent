@@ -1402,7 +1402,7 @@ mod tests {
     use logfwd_test_utils::test_meter;
 
     #[test]
-    fn test_build_output_sink_stdout() {
+    fn test_build_sink_factory_stdout() {
         let cfg = OutputConfig {
             name: Some("test".to_string()),
             output_type: OutputType::Stdout,
@@ -1415,7 +1415,9 @@ mod tests {
             auth: None,
             request_mode: None,
         };
-        let sink = build_output_sink("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        assert_eq!(factory.name(), "test");
+        let sink = factory.create().expect("create should succeed");
         assert_eq!(sink.name(), "test");
     }
 

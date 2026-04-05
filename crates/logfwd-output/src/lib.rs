@@ -30,6 +30,7 @@ pub use otap_sink::{
 };
 pub use otlp_sink::{OtlpProtocol, OtlpSink, OtlpSinkFactory};
 pub use sink::{OnceAsyncFactory, SendResult, Sink, SinkFactory, SyncSinkAdapter};
+pub use stdout::StdoutSinkFactory;
 use stdout::*;
 pub use tcp_sink::{TcpSink, TcpSinkFactory};
 pub use udp_sink::{UdpSink, UdpSinkFactory};
@@ -538,14 +539,9 @@ pub fn build_output_sink(
 ) -> Result<Box<dyn OutputSink>, String> {
     let auth_headers = build_auth_headers(cfg.auth.as_ref());
     match cfg.output_type {
-        OutputType::Stdout => {
-            let fmt = match cfg.format.as_ref() {
-                Some(Format::Json) => StdoutFormat::Json,
-                Some(Format::Console) => StdoutFormat::Console,
-                _ => StdoutFormat::Text,
-            };
-            Ok(Box::new(StdoutSink::new(name.to_string(), fmt, stats)))
-        }
+        OutputType::Stdout => Err(format!(
+            "output '{name}': stdout requires the async pipeline — use build_sink_factory() instead"
+        )),
         OutputType::Otlp => Err(format!(
             "output '{name}': OTLP requires the async pipeline — use build_sink_factory() instead"
         )),
@@ -769,6 +765,21 @@ pub fn build_sink_factory(
             )
             .map_err(|e| format!("output '{name}': otlp factory: {e}"))?;
             Ok(Arc::new(factory))
+        }
+        OutputType::Stdout => {
+            let fmt = match cfg.format.as_ref() {
+                Some(Format::Json) => StdoutFormat::Json,
+                Some(Format::Console) => StdoutFormat::Console,
+                _ => StdoutFormat::Text,
+            };
+            Ok(Arc::new(StdoutSinkFactory::new(name.to_string(), fmt, stats)))
+        }
+        OutputType::Tcp => {
+            let endpoint = cfg
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| format!("output '{name}': tcp requires 'endpoint'"))?;
+            Ok(Arc::new(TcpSinkFactory::new(name.to_string(), endpoint.clone(), stats)))
         }
         _ => {
             // Sync sink — build it once, wrap in OnceFactory (max_workers=1).
