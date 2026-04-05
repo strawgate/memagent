@@ -13,6 +13,7 @@ logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 arrow = { workspace = true }
 bytes = "1"
+datafusion = { workspace = true }
 criterion = { version = "0.7", features = ["html_reports"] }
 fastrand = "2"
 memchr = "2"
@@ -54,6 +55,10 @@ harness = false
 
 [[bench]]
 name = "throughput_ceiling"
+harness = false
+
+[[bench]]
+name = "transform_overhead"
 harness = false
 
 [[bin]]

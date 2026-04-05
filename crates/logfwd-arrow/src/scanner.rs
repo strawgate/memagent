@@ -422,7 +422,7 @@ mod tests {
     fn test_streaming_simple() {
         let mut s = Scanner::new(ScanConfig::default());
         let batch = s
-            .scan(bytes::Bytes::from_static(
+            .scan(Bytes::from_static(
                 b"{\"host\":\"web1\",\"status\":200}\n{\"host\":\"web2\"}\n",
             ))
             .unwrap();
@@ -433,12 +433,8 @@ mod tests {
     #[test]
     fn test_streaming_reuse() {
         let mut s = Scanner::new(ScanConfig::default());
-        let _ = s
-            .scan(bytes::Bytes::from_static(b"{\"x\":\"a\"}\n"))
-            .unwrap();
-        let b = s
-            .scan(bytes::Bytes::from_static(b"{\"x\":\"b\"}\n"))
-            .unwrap();
+        let _ = s.scan(Bytes::from_static(b"{\"x\":\"a\"}\n")).unwrap();
+        let b = s.scan(Bytes::from_static(b"{\"x\":\"b\"}\n")).unwrap();
         assert_eq!(b.num_rows(), 1);
     }
 
@@ -451,7 +447,7 @@ mod tests {
             validate_utf8: false,
         };
         let batch = Scanner::new(config)
-            .scan(bytes::Bytes::from_static(b"{\"msg\":\"hi\"}\n"))
+            .scan(Bytes::from_static(b"{\"msg\":\"hi\"}\n"))
             .unwrap();
         assert!(
             batch.column_by_name("_raw").is_some(),
@@ -497,7 +493,7 @@ mod tests {
             ..ScanConfig::default()
         };
         let batch = Scanner::new(config)
-            .scan(bytes::Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
+            .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
             .unwrap();
         assert_eq!(batch.num_rows(), 1);
     }
@@ -508,7 +504,7 @@ mod tests {
             validate_utf8: true,
             ..ScanConfig::default()
         };
-        let result = Scanner::new(config).scan(bytes::Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
+        let result = Scanner::new(config).scan(Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));
         assert!(result.is_err());
     }
 }

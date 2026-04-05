@@ -439,7 +439,7 @@ proptest! {
 /// directly. This exercises the exact data path used by pipeline.rs:
 ///   multiple Bytes → extend_from_slice into BytesMut → split().freeze() → ZeroCopyScanner
 fn assert_accumulation_consistent(chunks: &[&[u8]]) {
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
     use logfwd_arrow::scanner::Scanner;
 
     // Path A: concatenate then scan (baseline)
@@ -449,7 +449,7 @@ fn assert_accumulation_consistent(chunks: &[&[u8]]) {
     }
     let mut scanner_a = Scanner::new(ScanConfig::default());
     let batch_a = scanner_a
-        .scan(bytes::Bytes::from(full.clone()))
+        .scan(Bytes::from(full.clone()))
         .expect("baseline scan should succeed");
 
     // Path B: accumulate via BytesMut (pipeline pattern)

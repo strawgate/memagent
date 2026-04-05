@@ -1185,8 +1185,15 @@ mod tests {
             label_columns: None,
         };
         // StdoutSink uses the async pipeline — must use build_sink_factory.
+        let result = build_output_sink("test", &cfg, Arc::new(ComponentStats::new()));
+        assert!(
+            result.is_err(),
+            "stdout should not be available via sync build_output_sink"
+        );
+
         let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
+        assert!(factory.is_single_use());
     }
 
     #[test]

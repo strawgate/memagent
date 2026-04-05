@@ -590,7 +590,7 @@ mod tests {
         let mut running = new_running();
         let src = SourceId(0);
 
-        let mut sending = alloc::vec::Vec::new();
+        let mut sending = Vec::new();
         for i in 0..100u64 {
             let t = running.create_batch(src, (i + 1) * 100);
             sending.push(running.begin_send(t));
@@ -1335,7 +1335,7 @@ mod proptests {
         fn in_flight_consistent(actions in proptest::collection::vec(action_strategy(), 1..50)) {
             let mut running: PipelineMachine<Running, u64> =
                 PipelineMachine::<Starting, u64>::new().start();
-            let mut sending: BTreeMap<u32, alloc::vec::Vec<BatchTicket<Sending, u64>>> = BTreeMap::new();
+            let mut sending: BTreeMap<u32, Vec<BatchTicket<Sending, u64>>> = BTreeMap::new();
 
             for action in actions {
                 match action {
@@ -1373,7 +1373,7 @@ mod proptests {
             }
 
             // in_flight_count matches our tracking
-            let our_count: usize = sending.values().map(alloc::vec::Vec::len).sum();
+            let our_count: usize = sending.values().map(Vec::len).sum();
             prop_assert_eq!(running.in_flight_count(), our_count);
         }
 
@@ -1392,7 +1392,7 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let src = SourceId(0);
 
-            let mut tickets = alloc::vec::Vec::new();
+            let mut tickets = Vec::new();
             for i in 0..n {
                 let t = running.create_batch(src, checkpoints[i]);
                 tickets.push(running.begin_send(t));
@@ -1401,7 +1401,7 @@ mod proptests {
 
             // Unbiased Fisher-Yates: perm_seed[i] is the swap index for position i.
             // No wrapping because perm_seed.len() == 20 >= n.
-            let mut indices: alloc::vec::Vec<usize> = (0..n).collect();
+            let mut indices: Vec<usize> = (0..n).collect();
             for i in (1..n).rev() {
                 let j = perm_seed[i] % (i + 1);
                 indices.swap(i, j);
@@ -1435,7 +1435,7 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let src = SourceId(0);
 
-            let mut sending = alloc::vec::Vec::new();
+            let mut sending = Vec::new();
             for i in 0..n {
                 let t = running.create_batch(src, checkpoints[i]);
                 sending.push(running.begin_send(t));
@@ -1467,7 +1467,7 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
 
             let mut expected_checkpoints: BTreeMap<u32, u64> = BTreeMap::new();
-            let mut sending_queues: BTreeMap<u32, alloc::vec::Vec<BatchTicket<Sending, u64>>> = BTreeMap::new();
+            let mut sending_queues: BTreeMap<u32, Vec<BatchTicket<Sending, u64>>> = BTreeMap::new();
 
             let n = batches_per_source.min(checkpoints.len() / num_sources.max(1));
             if n == 0 { return Ok(()); }
@@ -1540,7 +1540,7 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let mut sending: BTreeMap<
                 u32,
-                alloc::vec::Vec<BatchTicket<Sending, u64>>,
+                Vec<BatchTicket<Sending, u64>>,
             > = BTreeMap::new();
             // Monotonically increasing counter per source (simulates advancing byte offset).
             let mut next_checkpoint: BTreeMap<u32, u64> =
@@ -1634,7 +1634,7 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let src = SourceId(0);
 
-            let mut tickets = alloc::vec::Vec::new();
+            let mut tickets = Vec::new();
             for i in 0..n {
                 let t = running.create_batch(src, checkpoints[i]);
                 tickets.push(running.begin_send(t));
@@ -1643,7 +1643,7 @@ mod proptests {
             let expected_final = checkpoints[n - 1];
 
             // Unbiased Fisher-Yates: distinct seed per position, no wrapping.
-            let mut indices: alloc::vec::Vec<usize> = (0..n).collect();
+            let mut indices: Vec<usize> = (0..n).collect();
             for i in (1..n).rev() {
                 let j = perm_seed[i] % (i + 1);
                 indices.swap(i, j);
