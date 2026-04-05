@@ -1,0 +1,55 @@
+--- crates/logfwd-arrow/src/star_schema.rs
++++ crates/logfwd-arrow/src/star_schema.rs
+@@ -470,25 +470,41 @@
+         DataType::Utf8 => arr
+             .as_any()
+             .downcast_ref::<StringArray>()
+-            .map(|a| a.value(row).to_string())
+-            .unwrap_or_default(),
++            .ok_or_else(|| {
++                ArrowError::ComputeError(format!("Expected StringArray, got {}", arr.data_type()))
++            })
++            .map(|a| a.value(row).to_string()),
+         DataType::Utf8View => arr
+             .as_any()
+             .downcast_ref::<arrow::array::StringViewArray>()
+-            .map(|a| a.value(row).to_string())
+-            .unwrap_or_default(),
++            .ok_or_else(|| {
++                ArrowError::ComputeError(format!(
++                    "Expected StringViewArray, got {}",
++                    arr.data_type()
++                ))
++            })
++            .map(|a| a.value(row).to_string()),
+         DataType::Int64 => arr
+             .as_any()
+             .downcast_ref::<Int64Array>()
+-            .map(|a| a.value(row).to_string())
+-            .unwrap_or_default(),
++            .ok_or_else(|| {
++                ArrowError::ComputeError(format!("Expected Int64Array, got {}", arr.data_type()))
++            })
++            .map(|a| a.value(row).to_string()),
+         DataType::Float64 => arr
+             .as_any()
+             .downcast_ref::<Float64Array>()
+-            .map(|a| a.value(row).to_string())
+-            .unwrap_or_default(),
++            .ok_or_else(|| {
++                ArrowError::ComputeError(format!("Expected Float64Array, got {}", arr.data_type()))
++            })
++            .map(|a| a.value(row).to_string()),
+         DataType::Boolean => arr
+             .as_any()
+             .downcast_ref::<BooleanArray>()
+-            .map(|a| a.value(row).to_string())
+-            .unwrap_or_default(),
+-        _ => String::new(),
++            .ok_or_else(|| {
++                ArrowError::ComputeError(format!("Expected BooleanArray, got {}", arr.data_type()))
++            })
++            .map(|a| a.value(row).to_string()),
++        _ => Ok(String::new()),
+     }
+ }

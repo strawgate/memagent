@@ -347,17 +347,21 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         for row in 0..num_rows {
             if !ts_arr.is_null(row) {
                 // Timestamp is stored as i64 nanoseconds.
-                if let Some(prim) = ts_arr
+                let prim = ts_arr
                     .as_any()
                     .downcast_ref::<arrow::array::TimestampNanosecondArray>()
-                {
-                    let ns = prim.value(row);
-                    // Format as RFC3339 nanoseconds.
-                    let secs = ns / 1_000_000_000;
-                    let nanos = (ns % 1_000_000_000) as u32;
-                    if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
-                        v[row] = Some(chrono_timestamp(secs, nanos));
-                    }
+                    .ok_or_else(|| {
+                        ArrowError::ComputeError(format!(
+                            "Expected TimestampNanosecondArray for time_unix_nano, got {}",
+                            ts_arr.data_type()
+                        ))
+                    })?;
+                let ns = prim.value(row);
+                // Format as RFC3339 nanoseconds.
+                let secs = ns / 1_000_000_000;
+                let nanos = (ns % 1_000_000_000) as u32;
+                if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
+                    v[row] = Some(chrono_timestamp(secs, nanos));
                 }
             }
         }
@@ -948,18 +952,18 @@ pub(crate) fn parse_timestamp_to_nanos(s: &str) -> Option<i64> {
         // Heuristic for epoch timestamps based on magnitude. We use unsigned_abs() so that
         // pre-1970 (negative) timestamps are classified correctly — for negative values the
         // comparisons against positive thresholds would otherwise always be false.
-        // > 1e17: nanoseconds  (1e17 ns = ~3.17 years from 1970)
-        // > 1e14: microseconds (1e14 us = ~3.17 years)
-        // > 1e11: milliseconds (1e11 ms = ~3.17 years)
+        // > 1e16: nanoseconds
+        // > 1e13: microseconds
+        // > 1e10: milliseconds
         // else: seconds
         let abs = ns.unsigned_abs();
-        if abs > 100_000_000_000_000_000 {
+        if abs > 10_000_000_000_000_000 {
             return Some(ns);
         }
-        if abs > 100_000_000_000_000 {
+        if abs > 10_000_000_000_000 {
             return ns.checked_mul(1_000);
         }
-        if abs > 100_000_000_000 {
+        if abs > 10_000_000_000 {
             return ns.checked_mul(1_000_000);
         }
         return ns.checked_mul(1_000_000_000);
