@@ -340,7 +340,7 @@ mod tests {
         ]));
         let message = StringArray::from(vec![Some("hello world"), Some("goodbye"), None]);
         let status = Int64Array::from(vec![Some(200), Some(500), Some(404)]);
-        let latency = Float64Array::from(vec![Some(1.5), None, Some(3.14)]);
+        let latency = Float64Array::from(vec![Some(1.5), None, Some(3.5)]);
         RecordBatch::try_new(
             schema,
             vec![Arc::new(message), Arc::new(status), Arc::new(latency)],

@@ -351,7 +351,7 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "stub"
         }
 
