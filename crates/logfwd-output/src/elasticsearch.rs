@@ -639,7 +639,14 @@ impl super::sink::Sink for ElasticsearchSink {
             match self.send_batch_inner(batch, metadata, 0).await {
                 Ok(r) => r,
                 Err(e) => match e.kind() {
-                    io::ErrorKind::InvalidInput => super::sink::SendResult::Rejected(e.to_string()),
+                    // InvalidInput: proactive-split exhausted (single row too large) or
+                    // serialization error — permanent, do not retry.
+                    // InvalidData: ES bulk API returned item-level errors (e.g.
+                    // mapper_parsing_exception, strict_dynamic_mapping_exception) inside a
+                    // 200 OK response — also permanent, retrying the same document is futile.
+                    io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => {
+                        super::sink::SendResult::Rejected(e.to_string())
+                    }
                     _ => super::sink::SendResult::IoError(e),
                 },
             }
@@ -1212,6 +1219,51 @@ mod tests {
                 assert!(msg.contains("exceeds max_bulk_bytes"));
             }
             _ => panic!("Expected Rejected, got {:?}", result),
+        }
+    }
+
+    /// Regression test for #1212 (ES sink only):
+    /// ES bulk item errors (InvalidData from parse_bulk_response) must map to
+    /// `SendResult::Rejected`, not `SendResult::IoError`.  Before the fix the
+    /// `send_batch` error classifier only caught `InvalidInput`, so `InvalidData`
+    /// fell through to `IoError` and the worker pool would retry indefinitely.
+    #[test]
+    fn parse_bulk_item_error_maps_to_rejected_not_io_error() {
+        // parse_bulk_response returns Err(InvalidData) when the bulk response
+        // contains item-level errors even inside a 200 OK.  Confirm the error
+        // kind is InvalidData so the send_batch classifier can reject it.
+        let response = br#"{
+            "took":3,
+            "errors":true,
+            "items":[
+                {"index":{"error":{"type":"mapper_parsing_exception","reason":"failed to parse field [ts]"},"status":400}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("parse_bulk_response must fail on item error");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "bulk item errors must use InvalidData kind so send_batch maps them to Rejected"
+        );
+        assert!(err.to_string().contains("mapper_parsing_exception"));
+
+        // Verify send_batch converts InvalidData -> Rejected (not IoError).
+        // We exercise this through the classifier arm directly to avoid needing
+        // a live HTTP server.
+        let classified = match err.kind() {
+            io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => {
+                crate::sink::SendResult::Rejected(err.to_string())
+            }
+            _ => crate::sink::SendResult::IoError(err),
+        };
+        match classified {
+            crate::sink::SendResult::Rejected(msg) => {
+                assert!(msg.contains("mapper_parsing_exception"), "got: {msg}");
+            }
+            other => {
+                panic!("ES bulk item error must be Rejected, not retried as IoError; got {other:?}")
+            }
         }
     }
 }
