@@ -3,8 +3,6 @@
 //! Run with: cargo bench -p logfwd-bench
 //! JSON output: cargo bench -p logfwd-bench -- --output-format bencher 2>/dev/null
 
-#![allow(deprecated)] // Benchmarks use sync OutputSink; migration tracked separately.
-
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -15,7 +13,7 @@ use logfwd_core::cri::{CriReassembler, ReassembleResult, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::diagnostics::ComponentStats;
-use logfwd_output::{ElasticsearchRequestMode, ElasticsearchSinkFactory, OutputSink};
+use logfwd_output::{ElasticsearchRequestMode, ElasticsearchSinkFactory};
 use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------

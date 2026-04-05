@@ -2,7 +2,6 @@
 //! to various formats: stdout JSON/text, JSON lines over HTTP, OTLP protobuf.
 
 mod arrow_ipc_sink;
-mod fanout;
 mod json_lines;
 mod null;
 mod otap_sink;
@@ -17,22 +16,21 @@ pub mod error;
 mod elasticsearch;
 
 mod loki;
-#[allow(dead_code)]
-mod parquet;
 
 pub use arrow_ipc_sink::{ArrowIpcSinkFactory, deserialize_ipc, serialize_ipc};
 pub use elasticsearch::{ElasticsearchRequestMode, ElasticsearchSink, ElasticsearchSinkFactory};
 pub use error::OutputError;
-pub use fanout::{FanoutSink, FanoutSinkError};
 pub use json_lines::JsonLinesSink;
 pub use loki::{LokiSink, LokiSinkFactory};
-pub use null::NullSink;
+pub use null::{NullSink, NullSinkFactory};
 pub use otap_sink::{
     ArrowPayloadType, BatchStatus, DecodedPayload, OtapSinkFactory, StatusCode,
     decode_batch_arrow_records, decode_batch_status, encode_batch_arrow_records,
 };
 pub use otlp_sink::{OtlpProtocol, OtlpSink, OtlpSinkFactory};
-pub use sink::{OnceAsyncFactory, SendResult, Sink, SinkFactory, SyncSinkAdapter};
+pub use sink::{
+    AsyncFanoutFactory, AsyncFanoutSink, OnceAsyncFactory, SendResult, Sink, SinkFactory,
+};
 pub use stdout::StdoutSinkFactory;
 use stdout::*;
 pub use tcp_sink::{TcpSink, TcpSinkFactory};
@@ -40,28 +38,23 @@ pub use udp_sink::{UdpSink, UdpSinkFactory};
 
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use arrow::array::{Array, AsArray, StructArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
-use logfwd_config::{AuthConfig, Format, OutputConfig, OutputType};
+use logfwd_config::{AuthConfig, Format, OutputConfig};
 use logfwd_types::diagnostics::ComponentStats;
 
 // ---------------------------------------------------------------------------
 // HTTP retry helper
 // ---------------------------------------------------------------------------
 
-/// Maximum number of retry attempts for transient HTTP failures.
-pub(crate) const HTTP_MAX_RETRIES: u32 = 3;
-/// Initial retry delay in milliseconds; doubles on each subsequent attempt.
-pub(crate) const HTTP_RETRY_INITIAL_DELAY_MS: u64 = 100;
-
 /// Returns `true` if the ureq error is transient and worth retrying.
 ///
 /// Transient errors are: HTTP 429 Too Many Requests, 5xx server errors, and
 /// network/transport failures (I/O, host not found, connection failed, timeout).
+#[cfg(test)]
 pub(crate) fn is_transient_error(e: &ureq::Error) -> bool {
     match e {
         ureq::Error::StatusCode(status) => *status == 429 || *status >= 500,
@@ -84,22 +77,6 @@ pub struct BatchMetadata {
     pub resource_attrs: Arc<Vec<(String, String)>>,
     /// Observed timestamp in nanoseconds.
     pub observed_time_ns: u64,
-}
-
-/// Synchronous output sink trait.
-///
-/// Deprecated: use the async [`Sink`] trait instead. New sinks should
-/// implement [`Sink`] directly. Existing sync sinks will be migrated
-/// incrementally. The [`SyncSinkAdapter`] bridges legacy `OutputSink`
-/// implementations into the async pipeline.
-#[deprecated(note = "use the async `Sink` trait instead")]
-pub trait OutputSink: Send {
-    /// Serialize and send a batch.
-    fn send_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()>;
-    /// Flush any buffered data.
-    fn flush(&mut self) -> io::Result<()>;
-    /// Output name (from config).
-    fn name(&self) -> &str;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +180,6 @@ pub(crate) fn is_null(batch: &RecordBatch, variant: &ColVariant, row: usize) -> 
 }
 
 /// Return a reference to the underlying Arrow array for a `ColVariant`.
-/// Returns `None` if the column is a struct column but cannot be downcast.
 pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> Option<&'b dyn Array> {
     match variant {
         ColVariant::Flat { col_idx, .. } => Some(batch.column(*col_idx).as_ref()),
@@ -534,142 +510,14 @@ fn build_auth_headers(auth: Option<&AuthConfig>) -> Vec<(String, String)> {
     headers
 }
 
-fn parse_http_compression(
-    name: &str,
-    compression: Option<&str>,
-) -> Result<Compression, OutputError> {
-    match compression {
-        None => Ok(Compression::None),
-        Some("gzip") => Ok(Compression::Gzip),
-        Some(other) => Err(OutputError::Construction(format!(
-            "output '{name}': unsupported compression '{other}'"
-        ))),
-    }
-}
-
-#[allow(deprecated)]
-fn build_http_json_lines_sink(
-    name: &str,
-    cfg: &OutputConfig,
-    stats: Arc<ComponentStats>,
-) -> Result<Box<dyn OutputSink>, OutputError> {
-    let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
-        OutputError::Construction(format!("output '{name}': http requires 'endpoint'"))
-    })?;
-    let compression = parse_http_compression(name, cfg.compression.as_deref())?;
-    let auth_headers = build_auth_headers(cfg.auth.as_ref());
-
-    Ok(Box::new(JsonLinesSink::new(
-        name.to_string(),
-        endpoint.clone(),
-        auth_headers,
-        compression,
-        stats,
-    )))
-}
-
-// ---------------------------------------------------------------------------
-// Output construction (factory)
-// ---------------------------------------------------------------------------
-
-/// Build an output sink from configuration.
-#[allow(deprecated)]
-pub fn build_output_sink(
-    name: &str,
-    cfg: &OutputConfig,
-    stats: Arc<ComponentStats>,
-) -> Result<Box<dyn OutputSink>, OutputError> {
-    match cfg.output_type {
-        OutputType::Stdout => Err(OutputError::Construction(format!(
-            "output '{name}': stdout requires the async pipeline — use build_sink_factory() instead"
-        ))),
-        OutputType::Otlp => Err(OutputError::Construction(format!(
-            "output '{name}': OTLP requires the async pipeline — use build_sink_factory() instead"
-        ))),
-        OutputType::Http => build_http_json_lines_sink(name, cfg, stats),
-        OutputType::Null => Ok(Box::new(NullSink::new(name.to_string(), stats))),
-        OutputType::Tcp => Err(OutputError::Construction(format!(
-            "output '{name}': tcp requires the async pipeline — use build_sink_factory() instead"
-        ))),
-        OutputType::Udp => Err(OutputError::Construction(format!(
-            "output '{name}': udp requires the async pipeline — use build_sink_factory() instead"
-        ))),
-        OutputType::Elasticsearch => Err(OutputError::Construction(format!(
-            "output '{name}': elasticsearch requires the async pipeline — use build_sink_factory() instead"
-        ))),
-        _ => Err(OutputError::Construction(format!(
-            "output '{name}': type {:?} not yet supported",
-            cfg.output_type
-        ))),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// OnceFactory — wraps a pre-built OutputSink for sync/legacy sinks
-// ---------------------------------------------------------------------------
-
-/// `SinkFactory` implementation for synchronous [`OutputSink`] types.
-///
-/// Wraps one pre-built sink in a `Mutex`. On the first `create()` call it
-/// transfers ownership into a [`SyncSinkAdapter`]; subsequent calls return an
-/// error. This naturally enforces `max_workers = 1` for sync sinks since the
-/// pool will stop spawning workers once the factory starts returning errors.
-///
-/// For most sync sinks (Stdout, TCP) a single worker is correct —
-/// there is only one connection or file handle anyway.
-///
-/// For new code, prefer [`OnceAsyncFactory`] with a sink implementing the
-/// async [`Sink`] trait directly.
-#[allow(deprecated)]
-pub struct OnceFactory {
-    name: String,
-    inner: Mutex<Option<Box<dyn OutputSink>>>,
-}
-
-#[allow(deprecated)]
-impl OnceFactory {
-    pub fn new(name: String, sink: Box<dyn OutputSink>) -> Self {
-        OnceFactory {
-            name,
-            inner: Mutex::new(Some(sink)),
-        }
-    }
-}
-
-impl SinkFactory for OnceFactory {
-    fn create(&self) -> io::Result<Box<dyn Sink>> {
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|_| io::Error::other("OnceFactory mutex poisoned"))?;
-        match guard.take() {
-            Some(s) => Ok(Box::new(SyncSinkAdapter::new(s))),
-            None => Err(io::Error::other(
-                "OnceFactory: sync sink already consumed (max_workers must be 1)",
-            )),
-        }
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn is_single_use(&self) -> bool {
-        true
-    }
-}
-
 // ---------------------------------------------------------------------------
 // build_sink_factory — produce Arc<dyn SinkFactory> from config
 // ---------------------------------------------------------------------------
 
 /// Build an `Arc<dyn SinkFactory>` from an output configuration.
 ///
-/// For async-native sinks (Elasticsearch, Loki) this returns a factory that
-/// creates a fresh reqwest-based sink per worker. For all other sinks it
-/// builds the sink synchronously and wraps it in a [`OnceFactory`] — those
-/// sinks are limited to one worker.
-#[allow(deprecated)]
+/// Returns a factory that creates a fresh sink per worker. Most sink types
+/// support multiple workers; the factory can be called repeatedly.
 pub fn build_sink_factory(
     name: &str,
     cfg: &OutputConfig,
@@ -711,34 +559,16 @@ pub fn build_sink_factory(
             })?;
             Ok(Arc::new(factory))
         }
-        OutputType::Http => {
-            let _ = auth_headers;
-            let sink = build_http_json_lines_sink(name, cfg, stats)?;
-            let factory = OnceFactory::new(name.to_string(), sink);
-            Ok(Arc::new(factory))
-        }
         OutputType::Loki => {
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': loki requires 'endpoint'"))
             })?;
-            let static_labels = cfg
-                .static_labels
-                .as_ref()
-                .map(|labels| {
-                    labels
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let label_columns = cfg.label_columns.clone().unwrap_or_default();
-
             let factory = LokiSinkFactory::new(
                 name.to_string(),
                 endpoint.clone(),
-                cfg.tenant_id.clone(),
-                static_labels,
-                label_columns,
+                None, // tenant_id: not yet in OutputConfig
+                Vec::new(),
+                Vec::new(),
                 auth_headers,
                 stats,
             )
@@ -811,20 +641,9 @@ pub fn build_sink_factory(
         }
         OutputType::Stdout => {
             let fmt = match cfg.format.as_ref() {
-                Some(Format::Cri) | Some(Format::Raw) | Some(Format::Auto) => {
-                    return Err(OutputError::Construction(format!(
-                        "output '{name}': format '{}' is only supported for inputs",
-                        cfg.format.as_ref().unwrap()
-                    )));
-                }
+                Some(Format::Json) => StdoutFormat::Json,
                 Some(Format::Console) => StdoutFormat::Console,
-                Some(Format::Text) => StdoutFormat::Text,
-                Some(Format::Json) | None => StdoutFormat::Json,
-                Some(f) => {
-                    return Err(OutputError::Construction(format!(
-                        "output '{name}': format '{f}' is not supported for stdout"
-                    )));
-                }
+                _ => StdoutFormat::Text,
             };
             Ok(Arc::new(StdoutSinkFactory::new(
                 name.to_string(),
@@ -842,49 +661,11 @@ pub fn build_sink_factory(
                 stats,
             )))
         }
-        _ => {
-            // Sync sink — build it once, wrap in OnceFactory (max_workers=1).
-            let sink = build_output_sink(name, cfg, stats)?;
-            Ok(Arc::new(OnceFactory::new(name.to_string(), sink)))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test helper
-// ---------------------------------------------------------------------------
-
-/// Test helper: captures all sent batches for assertion.
-#[cfg(test)]
-pub struct CaptureSink {
-    name: String,
-    pub batches: Vec<RecordBatch>,
-}
-
-#[cfg(test)]
-impl CaptureSink {
-    pub fn new(name: &str) -> Self {
-        CaptureSink {
-            name: name.to_string(),
-            batches: Vec::new(),
-        }
-    }
-}
-
-#[cfg(test)]
-#[allow(deprecated)]
-impl OutputSink for CaptureSink {
-    fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
-        self.batches.push(batch.clone());
-        Ok(())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        &self.name
+        OutputType::Null => Ok(Arc::new(NullSinkFactory::new(name.to_string(), stats))),
+        _ => Err(OutputError::Construction(format!(
+            "output '{name}': type {:?} not yet supported",
+            cfg.output_type
+        ))),
     }
 }
 
@@ -893,11 +674,11 @@ impl OutputSink for CaptureSink {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
     use arrow::datatypes::{Field, Schema};
+    use logfwd_config::OutputType;
     use logfwd_types::diagnostics::ComponentStats;
     use std::sync::Arc;
 
@@ -946,9 +727,8 @@ mod tests {
     }
 
     #[test]
-    fn test_fanout() {
-        // FanoutSink to two sinks that write to Vec<u8>.
-        // We use StdoutSink with write_batch_to to capture output.
+    fn test_stdout_write_batch_identical_output() {
+        // Two StdoutSinks writing the same batch produce identical output.
         let batch = make_test_batch();
         let meta = make_metadata();
 
@@ -972,75 +752,6 @@ mod tests {
         // Both should have identical output.
         assert_eq!(out1, out2);
         assert!(!out1.is_empty());
-
-        // Test FanoutSink dispatch with sync OutputSink impls.
-        // StdoutSink was migrated to async Sink, so use a minimal NoOp.
-        {
-            struct NoOpSink(&'static str);
-            #[allow(deprecated)]
-            impl OutputSink for NoOpSink {
-                fn send_batch(&mut self, _: &RecordBatch, _: &BatchMetadata) -> io::Result<()> {
-                    Ok(())
-                }
-                fn flush(&mut self) -> io::Result<()> {
-                    Ok(())
-                }
-                fn name(&self) -> &str {
-                    self.0
-                }
-            }
-            #[allow(deprecated)]
-            let mut fanout = FanoutSink::new(vec![
-                Box::new(NoOpSink("f1")) as Box<dyn OutputSink>,
-                Box::new(NoOpSink("f2")),
-            ]);
-            #[allow(deprecated)]
-            let result = fanout.send_batch(&batch, &meta);
-            assert!(result.is_ok());
-        }
-    }
-
-    struct AlwaysFailSink {
-        name: &'static str,
-    }
-
-    #[allow(deprecated)]
-    impl OutputSink for AlwaysFailSink {
-        fn send_batch(
-            &mut self,
-            _batch: &RecordBatch,
-            _metadata: &BatchMetadata,
-        ) -> io::Result<()> {
-            Err(io::Error::other(format!("{} failed", self.name)))
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn name(&self) -> &str {
-            self.name
-        }
-    }
-
-    #[test]
-    fn test_fanout_error_reports_failed_sink_names() {
-        let batch = make_test_batch();
-        let meta = make_metadata();
-        let mut fanout = FanoutSink::new(vec![
-            Box::new(AlwaysFailSink { name: "sink-a" }),
-            Box::new(AlwaysFailSink { name: "sink-b" }),
-        ]);
-
-        let err = fanout
-            .send_batch(&batch, &meta)
-            .expect_err("fanout should fail");
-        let fanout_err = err
-            .get_ref()
-            .and_then(|inner| inner.downcast_ref::<FanoutSinkError>())
-            .expect("fanout should wrap failures in FanoutSinkError");
-
-        assert_eq!(fanout_err.failed_sinks(), ["sink-a", "sink-b"]);
     }
 
     #[test]
@@ -1089,26 +800,6 @@ mod tests {
         assert_eq!(sink.encoder_buf[0], 0x0A);
     }
 
-    #[test]
-    fn test_otlp_zstd_new_returns_error_instead_of_panic() {
-        // Attempt to create OtlpSink with Zstd compression should not panic,
-        // it either succeeds or returns an error (in real world it succeeds if valid).
-        let res = OtlpSink::new(
-            "test-otlp".to_string(),
-            "http://localhost:4318".to_string(),
-            OtlpProtocol::Http,
-            Compression::Zstd,
-            vec![],
-            reqwest::Client::new(),
-            Arc::new(ComponentStats::new()),
-        );
-        assert!(
-            res.is_ok(),
-            "Zstd creation should be OK, but got: {:?}",
-            res.err()
-        );
-    }
-
     #[tokio::test]
     async fn test_otlp_gzip_send_batch_returns_error() {
         let batch = make_test_batch();
@@ -1125,9 +816,10 @@ mod tests {
         .unwrap();
 
         use crate::Sink;
+        use crate::sink::SendResult;
         match sink.send_batch(&batch, &meta).await {
-            SendResult::IoError(err) => assert!(err.to_string().contains("gzip"), "got {err}"),
-            _ => panic!("gzip compression should return an error"),
+            SendResult::IoError(err) => assert!(err.to_string().contains("gzip"), "got: {err}"),
+            other => panic!("gzip compression should return IoError, got: {other:?}"),
         }
     }
 
@@ -1236,125 +928,23 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("test".to_string()),
             output_type: OutputType::Stdout,
-            endpoint: None,
-            protocol: None,
-            compression: None,
-            request_mode: None,
             format: Some(Format::Json),
-            path: None,
-            index: None,
-            auth: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
+            ..Default::default()
         };
         // StdoutSink uses the async pipeline — must use build_sink_factory.
-        let result = build_output_sink("test", &cfg, Arc::new(ComponentStats::new()));
-        assert!(
-            result.is_err(),
-            "stdout should not be available via sync build_output_sink"
-        );
-
-        let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(factory.name(), "test");
-        assert!(factory.is_single_use());
-    }
-
-    #[test]
-    fn test_build_sink_factory_stdout_input_only_formats() {
-        for format in [Format::Cri, Format::Raw, Format::Auto] {
-            let cfg = OutputConfig {
-                name: Some("test".to_string()),
-                output_type: OutputType::Stdout,
-                endpoint: None,
-                protocol: None,
-                compression: None,
-                request_mode: None,
-                format: Some(format.clone()),
-                path: None,
-                index: None,
-                auth: None,
-                tenant_id: None,
-                static_labels: None,
-                label_columns: None,
-            };
-            let result = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new()));
-            assert!(result.is_err(), "Expected error for format {:?}", format);
-            let err = result.err().unwrap();
-            assert!(
-                err.to_string().contains("only supported for inputs"),
-                "error should mention input-only format: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_build_sink_factory_stdout_default_format() {
-        let cfg = OutputConfig {
-            name: Some("test".to_string()),
-            output_type: OutputType::Stdout,
-            endpoint: None,
-            protocol: None,
-            compression: None,
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
-        };
         let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
     }
 
     #[test]
-    fn test_build_output_sink_otlp() {
-        let cfg = OutputConfig {
-            name: Some("otel".to_string()),
-            output_type: OutputType::Otlp,
-            endpoint: Some("http://localhost:4318".to_string()),
-            protocol: Some("http".to_string()),
-            compression: Some("zstd".to_string()),
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
-        };
-        // build_output_sink now redirects OTLP to build_sink_factory.
-        let result = build_output_sink("otel", &cfg, Arc::new(ComponentStats::new()));
-        assert!(
-            result.is_err(),
-            "OTLP should not be available via sync build_output_sink"
-        );
-
-        // build_sink_factory should succeed and produce a factory.
-        let factory = build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(factory.name(), "otel");
-        assert!(!factory.is_single_use());
-    }
-
-    #[test]
-    fn test_build_output_sink_otlp_rejects_gzip() {
+    fn test_build_sink_factory_otlp_rejects_gzip() {
         let cfg = OutputConfig {
             name: Some("otel".to_string()),
             output_type: OutputType::Otlp,
             endpoint: Some("http://localhost:4318".to_string()),
             protocol: Some("http".to_string()),
             compression: Some("gzip".to_string()),
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
+            ..Default::default()
         };
         let err = match build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())) {
             Ok(_) => panic!("expected gzip OTLP compression to be rejected"),
@@ -1364,72 +954,29 @@ mod tests {
     }
 
     #[test]
-    fn test_build_output_sink_http_constructs_sink() {
-        let cfg = OutputConfig {
-            name: Some("es".to_string()),
-            output_type: OutputType::Http,
-            endpoint: Some("http://localhost:9200".to_string()),
-            protocol: None,
-            compression: None,
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
-        };
-        let result = build_output_sink("es", &cfg, Arc::new(ComponentStats::new()));
-        assert!(
-            result.is_ok(),
-            "http should build a sync sink for fanout paths"
-        );
-    }
-
-    #[test]
-    fn test_build_sink_factory_http_rejects_unsupported_compression() {
-        // Http sink rejects unsupported compression algorithms.
+    fn test_build_sink_factory_http_not_yet_supported() {
         let cfg = OutputConfig {
             name: Some("http-bad".to_string()),
             output_type: OutputType::Http,
             endpoint: Some("http://localhost:9200".to_string()),
-            protocol: None,
             compression: Some("zstd".to_string()),
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
+            ..Default::default()
         };
         let result = build_sink_factory("http-bad", &cfg, Arc::new(ComponentStats::new()));
-        assert!(result.is_err(), "unsupported compression should fail");
+        assert!(result.is_err(), "Http type should not be supported yet");
         let err = result.err().unwrap();
         assert!(
-            err.to_string().contains("zstd") && err.to_string().contains("unsupported compression"),
-            "error should mention the unsupported compression, got: {err}"
+            err.to_string().contains("not yet supported"),
+            "error should mention 'not yet supported', got: {err}"
         );
     }
 
     #[test]
-    fn test_build_output_sink_missing_endpoint() {
+    fn test_build_sink_factory_missing_endpoint() {
         let cfg = OutputConfig {
             name: Some("bad".to_string()),
             output_type: OutputType::Otlp,
-            endpoint: None,
-            protocol: None,
-            compression: None,
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
+            ..Default::default()
         };
         // OTLP now uses the async pipeline via build_sink_factory.
         let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
@@ -1493,29 +1040,21 @@ mod tests {
     }
 
     #[test]
-    fn test_build_sink_factory_http_with_bearer_auth_supported() {
-        // Http sink now supports bearer auth headers.
+    fn test_build_sink_factory_elasticsearch_with_bearer_auth() {
         use logfwd_config::AuthConfig;
         let cfg = OutputConfig {
             name: Some("auth-sink".to_string()),
-            output_type: OutputType::Http,
+            output_type: OutputType::Elasticsearch,
             endpoint: Some("http://localhost:9200".to_string()),
-            protocol: None,
-            compression: None,
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
             auth: Some(AuthConfig {
                 bearer_token: Some("mytoken".to_string()),
                 headers: std::collections::HashMap::new(),
             }),
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
+            ..Default::default()
         };
-        let factory = build_sink_factory("auth-sink", &cfg, Arc::new(ComponentStats::new()))
-            .expect("Http with bearer auth should succeed");
+        // Verify the factory builds successfully with auth.
+        let factory =
+            build_sink_factory("auth-sink", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "auth-sink");
     }
 
@@ -1964,17 +1503,17 @@ mod write_row_json_tests {
     #[test]
     fn float32_serializes_as_number() {
         use arrow::array::Float32Array;
-        let batch = make_batch(vec![("val", Arc::new(Float32Array::from(vec![3.5_f32])))]);
+        let batch = make_batch(vec![("val", Arc::new(Float32Array::from(vec![3.14_f32])))]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
         assert!(
             v["val"].is_number(),
             "Float32 should serialize as JSON number, got {json}"
         );
-        let diff = (v["val"].as_f64().unwrap() - 3.5_f64).abs();
+        let diff = (v["val"].as_f64().unwrap() - 3.14_f64).abs();
         assert!(
             diff < 0.001,
-            "Float32 value should be ~3.5, got {}",
+            "Float32 value should be ~3.14, got {}",
             v["val"]
         );
     }
@@ -2144,7 +1683,7 @@ mod write_row_json_tests {
         let batch = make_batch(vec![
             ("dur_int", Arc::new(Int64Array::from(vec![42]))),
             ("label_str", Arc::new(StringArray::from(vec!["hello"]))),
-            ("score_float", Arc::new(Float64Array::from(vec![3.5]))),
+            ("score_float", Arc::new(Float64Array::from(vec![3.14]))),
         ]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
@@ -2158,7 +1697,7 @@ mod write_row_json_tests {
             "alias 'label_str' must be preserved, got: {json}"
         );
         assert!(
-            (v["score_float"].as_f64().unwrap() - 3.5).abs() < 0.01,
+            (v["score_float"].as_f64().unwrap() - 3.14).abs() < 0.01,
             "alias 'score_float' must be preserved, got: {json}"
         );
     }

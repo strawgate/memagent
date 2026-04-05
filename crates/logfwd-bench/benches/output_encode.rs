@@ -10,15 +10,13 @@
 //!
 //! Varies: narrow (5 fields) vs wide (20+ fields), 1K/10K rows.
 
-#![allow(deprecated)]
-
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::scanner::Scanner;
 use logfwd_bench::{NullSink, generators, make_otlp_sink};
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_io::compress::ChunkCompressor;
-use logfwd_output::{Compression, OutputSink};
+use logfwd_output::Compression;
 
 // ---------------------------------------------------------------------------
 // Helpers

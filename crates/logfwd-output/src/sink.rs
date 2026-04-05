@@ -4,20 +4,16 @@
 //! dyn-compatible, enabling `Box<dyn Sink>` without the `async_trait` crate.
 //! This costs one heap allocation per call but allows heterogeneous sink
 //! collections in the worker pool.
-//!
-//! The synchronous [`crate::OutputSink`] trait is **deprecated**. New sinks
-//! should implement `Sink` directly. Legacy sync sinks are bridged via
-//! [`SyncSinkAdapter`].
 
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
 
-#[allow(deprecated)]
-use super::{BatchMetadata, OutputSink};
+use super::BatchMetadata;
 
 // ---------------------------------------------------------------------------
 // SendResult
@@ -122,23 +118,105 @@ pub trait SinkFactory: Send + Sync + 'static {
 }
 
 // ---------------------------------------------------------------------------
-// SyncSinkAdapter
+// AsyncFanoutSink
 // ---------------------------------------------------------------------------
 
-/// Wraps a synchronous [`OutputSink`] as an async [`Sink`].
+/// Multiplexes output to multiple async [`Sink`] instances.
 ///
-/// Uses `tokio::task::block_in_place` so the sync call doesn't block the
-/// async executor. Suitable for sinks that haven't yet been ported to the
-/// async [`Sink`] trait.
-#[allow(deprecated)]
-pub struct SyncSinkAdapter {
-    inner: Box<dyn OutputSink>,
+/// Sends every batch to **all** child sinks in order. If any sink fails the
+/// error is returned immediately (the remaining sinks are still called on the
+/// next batch).
+pub struct AsyncFanoutSink {
+    sinks: Vec<Box<dyn Sink>>,
 }
 
-#[allow(deprecated)]
-impl SyncSinkAdapter {
-    pub fn new(inner: Box<dyn OutputSink>) -> Self {
-        SyncSinkAdapter { inner }
+impl AsyncFanoutSink {
+    /// Create a fanout sink wrapping the given child sinks.
+    pub fn new(sinks: Vec<Box<dyn Sink>>) -> Self {
+        AsyncFanoutSink { sinks }
+    }
+}
+
+impl Sink for AsyncFanoutSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+        Box::pin(async move {
+            let mut first_retry: Option<Duration> = None;
+            for sink in &mut self.sinks {
+                match sink.send_batch(batch, metadata).await {
+                    SendResult::Ok => {}
+                    SendResult::RetryAfter(d) => {
+                        if first_retry.is_none_or(|prev| d > prev) {
+                            first_retry = Some(d);
+                        }
+                    }
+                    SendResult::Rejected(reason) => return SendResult::Rejected(reason),
+                    SendResult::IoError(e) => return SendResult::IoError(e),
+                }
+            }
+            match first_retry {
+                Some(d) => SendResult::RetryAfter(d),
+                None => SendResult::Ok,
+            }
+        })
+    }
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            for sink in &mut self.sinks {
+                sink.flush().await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "fanout"
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            for sink in &mut self.sinks {
+                sink.shutdown().await?;
+            }
+            Ok(())
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AsyncFanoutFactory
+// ---------------------------------------------------------------------------
+
+/// Factory that creates [`AsyncFanoutSink`] instances by delegating to
+/// multiple child [`SinkFactory`] instances.
+pub struct AsyncFanoutFactory {
+    name: String,
+    factories: Vec<Arc<dyn SinkFactory>>,
+}
+
+impl AsyncFanoutFactory {
+    /// Create a fanout factory wrapping the given child factories.
+    pub fn new(name: String, factories: Vec<Arc<dyn SinkFactory>>) -> Self {
+        AsyncFanoutFactory { name, factories }
+    }
+}
+
+impl SinkFactory for AsyncFanoutFactory {
+    fn create(&self) -> io::Result<Box<dyn Sink>> {
+        let sinks: Vec<Box<dyn Sink>> = self
+            .factories
+            .iter()
+            .map(|f| f.create())
+            .collect::<io::Result<_>>()?;
+        Ok(Box::new(AsyncFanoutSink::new(sinks)))
+    }
+
+    fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -151,14 +229,13 @@ mod verification {
     use super::*;
     use std::time::Duration;
 
-    /// SendResult::Ok is not a RetryAfter, Rejected, or IoError variant.
+    /// SendResult::Ok is not a RetryAfter or Rejected variant.
     #[kani::proof]
     fn verify_ok_is_not_retry_or_rejection() {
         let result = SendResult::Ok;
         assert!(matches!(result, SendResult::Ok));
         assert!(!matches!(result, SendResult::RetryAfter(_)));
         assert!(!matches!(result, SendResult::Rejected(_)));
-        assert!(!matches!(result, SendResult::IoError(_)));
         kani::cover!(true, "Ok variant exercised");
     }
 
@@ -171,7 +248,6 @@ mod verification {
         let result = SendResult::RetryAfter(d);
         assert!(!matches!(result, SendResult::Ok));
         assert!(!matches!(result, SendResult::Rejected(_)));
-        assert!(!matches!(result, SendResult::IoError(_)));
         if let SendResult::RetryAfter(dur) = result {
             assert_eq!(dur.as_secs(), secs);
         }
@@ -179,46 +255,36 @@ mod verification {
         kani::cover!(secs == 0, "zero retry duration");
     }
 
-    /// SendResult::Rejected is not Ok, RetryAfter, or IoError.
+    /// SendResult::Rejected is not Ok or RetryAfter.
     #[kani::proof]
     fn verify_rejected_is_not_ok_or_retry() {
         let result = SendResult::Rejected("error".to_string());
         assert!(!matches!(result, SendResult::Ok));
         assert!(!matches!(result, SendResult::RetryAfter(_)));
-        assert!(!matches!(result, SendResult::IoError(_)));
         assert!(matches!(result, SendResult::Rejected(_)));
         kani::cover!(true, "Rejected variant exercised");
     }
 
-    /// The SendResult variants are mutually exclusive.
+    /// The three SendResult variants are mutually exclusive.
     #[kani::proof]
     fn verify_send_result_variants_are_mutually_exclusive() {
         let ok = SendResult::Ok;
         let retry = SendResult::RetryAfter(Duration::from_millis(100));
         let rejected = SendResult::Rejected("fail".to_string());
-        let io_err = SendResult::IoError(std::io::Error::new(std::io::ErrorKind::Other, "err"));
 
         assert!(matches!(ok, SendResult::Ok));
         assert!(!matches!(ok, SendResult::RetryAfter(_)));
         assert!(!matches!(ok, SendResult::Rejected(_)));
-        assert!(!matches!(ok, SendResult::IoError(_)));
 
         assert!(!matches!(retry, SendResult::Ok));
         assert!(matches!(retry, SendResult::RetryAfter(_)));
         assert!(!matches!(retry, SendResult::Rejected(_)));
-        assert!(!matches!(retry, SendResult::IoError(_)));
 
         assert!(!matches!(rejected, SendResult::Ok));
         assert!(!matches!(rejected, SendResult::RetryAfter(_)));
         assert!(matches!(rejected, SendResult::Rejected(_)));
-        assert!(!matches!(rejected, SendResult::IoError(_)));
 
-        assert!(!matches!(io_err, SendResult::Ok));
-        assert!(!matches!(io_err, SendResult::RetryAfter(_)));
-        assert!(!matches!(io_err, SendResult::Rejected(_)));
-        assert!(matches!(io_err, SendResult::IoError(_)));
-
-        kani::cover!(true, "all variants are mutually exclusive");
+        kani::cover!(true, "all three variants are mutually exclusive");
     }
 
     /// Prove that total retry wait time is bounded regardless of server-suggested delays.
@@ -280,38 +346,6 @@ mod verification {
     }
 }
 
-#[allow(deprecated)]
-impl Sink for SyncSinkAdapter {
-    fn send_batch<'a>(
-        &'a mut self,
-        batch: &'a RecordBatch,
-        metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
-        // SAFETY: block_in_place is safe here because we're within a
-        // multi-threaded tokio runtime (logfwd always uses rt-multi-thread).
-        Box::pin(async move {
-            tokio::task::block_in_place(|| match self.inner.send_batch(batch, metadata) {
-                Ok(()) => SendResult::Ok,
-                Err(e) => SendResult::IoError(e),
-            })
-        })
-    }
-
-    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
-        Box::pin(async move { tokio::task::block_in_place(|| self.inner.flush()) })
-    }
-
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-
-    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
-        // Flush buffered data before the worker exits. Sync sinks that buffer
-        // (e.g. file sinks) would silently lose the last batch without this.
-        Box::pin(async move { tokio::task::block_in_place(|| self.inner.flush()) })
-    }
-}
-
 // ---------------------------------------------------------------------------
 // OnceAsyncFactory
 // ---------------------------------------------------------------------------
@@ -322,10 +356,6 @@ use std::sync::Mutex;
 ///
 /// On the first `create()` call it transfers ownership of the sink to the
 /// caller; subsequent calls return an error. This enforces `max_workers = 1`.
-///
-/// Unlike [`super::OnceFactory`] (which wraps a deprecated [`OutputSink`]
-/// through [`SyncSinkAdapter`]), this wrapper accepts an async `Sink` directly
-/// — no `block_in_place` overhead.
 pub struct OnceAsyncFactory {
     name: String,
     inner: Mutex<Option<Box<dyn Sink>>>,

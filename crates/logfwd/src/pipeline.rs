@@ -30,10 +30,8 @@ use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{FileInput, InputEvent, InputSource};
 use logfwd_io::tail::{ByteOffset, TailConfig};
-#[allow(deprecated)]
 use logfwd_output::{
-    BatchMetadata, FanoutSink, OnceAsyncFactory, OnceFactory, OutputSink, SinkFactory,
-    build_output_sink, build_sink_factory,
+    AsyncFanoutFactory, BatchMetadata, OnceAsyncFactory, SinkFactory, build_sink_factory,
 };
 use logfwd_transform::SqlTransform;
 use tokio_util::sync::CancellationToken;
@@ -317,8 +315,8 @@ impl Pipeline {
         }
 
         // Build output sink factory → pool.
-        // For multiple outputs, we build a FanoutSink wrapped in a OnceFactory
-        // (single-worker pool) until async FanoutSink is available.
+        // For multiple outputs we create an AsyncFanoutFactory that delegates
+        // to one child SinkFactory per output config.
         let factory: Arc<dyn SinkFactory> = if config.outputs.len() == 1 {
             let output_cfg = &config.outputs[0];
             let output_name = output_cfg
@@ -329,33 +327,27 @@ impl Pipeline {
             let output_stats = metrics.add_output(&output_name, &output_type_str);
             build_sink_factory(&output_name, output_cfg, output_stats).map_err(|e| e.to_string())?
         } else {
-            // Multiple outputs: build a FanoutSink of sync sinks wrapped in OnceFactory.
-            #[allow(deprecated)]
-            {
-                let mut sinks: Vec<Box<dyn OutputSink>> = Vec::new();
-                for (i, output_cfg) in config.outputs.iter().enumerate() {
-                    let output_name = output_cfg
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| format!("output_{i}"));
-                    let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
-                    let output_stats = metrics.add_output(&output_name, &output_type_str);
-                    sinks.push(
-                        build_output_sink(&output_name, output_cfg, output_stats)
-                            .map_err(|e| e.to_string())?,
-                    );
-                }
-                let fanout_name = name.to_string();
-                Arc::new(OnceFactory::new(
-                    fanout_name,
-                    Box::new(FanoutSink::new(sinks)),
-                ))
+            let mut factories: Vec<Arc<dyn SinkFactory>> = Vec::new();
+            for (i, output_cfg) in config.outputs.iter().enumerate() {
+                let output_name = output_cfg
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("output_{i}"));
+                let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
+                let output_stats = metrics.add_output(&output_name, &output_type_str);
+                factories.push(
+                    build_sink_factory(&output_name, output_cfg, output_stats)
+                        .map_err(|e| e.to_string())?,
+                );
             }
+            let fanout_name = name.to_string();
+            Arc::new(AsyncFanoutFactory::new(fanout_name, factories))
         };
 
-        // Single-use factories (OnceFactory wrapping a sync sink) can only
-        // create one worker and that worker must never idle-expire — if it
-        // exits, create() returns an error and the output stops permanently.
+        // Single-use factories (e.g. OnceAsyncFactory wrapping a pre-built
+        // sink) can only create one worker and that worker must never
+        // idle-expire — if it exits, create() returns an error and the
+        // output stops permanently.
         let (max_workers, idle_timeout) = if factory.is_single_use() {
             (1, Duration::MAX) // never idle-expire the sole worker
         } else {
@@ -397,26 +389,6 @@ impl Pipeline {
         let name = self.name.clone();
         let factory = Arc::new(OnceAsyncFactory::new(name, sink));
         self.pool = OutputWorkerPool::new(factory, 1, Duration::MAX, Arc::clone(&self.metrics));
-        self
-    }
-
-    /// Replace the output sink. Useful for injecting a test sink.
-    ///
-    /// Wraps the sink in a single-worker pool via [`OnceFactory`].
-    ///
-    /// Deprecated: use [`with_sink`](Self::with_sink) with an async [`Sink`]
-    /// implementation instead.
-    #[deprecated(note = "use with_sink() with an async Sink instead")]
-    #[allow(deprecated)]
-    pub fn with_output(mut self, output: Box<dyn OutputSink>) -> Self {
-        let name = self.name.clone();
-        let factory = Arc::new(OnceFactory::new(name, output));
-        self.pool = OutputWorkerPool::new(
-            factory,
-            1,
-            Duration::from_secs(30),
-            Arc::clone(&self.metrics),
-        );
         self
     }
 
@@ -630,25 +602,8 @@ impl Pipeline {
 
         loop {
             tokio::select! {
-                // Process branches in priority order (biased mode).
-                // This prevents ack starvation under sustained load:
-                // - shutdown is highest priority for responsive cancellation
-                // - ack_rx is second to ensure timely checkpoint advancement
-                // - rx.recv is third to allow acks to be processed
-                // - flush_interval is lowest priority (it's just a timeout)
-                biased;
-
                 () = shutdown.cancelled() => {
                     break;
-                }
-
-                // Receive ack items from pool workers and advance the machine.
-                // Prioritized over new data to prevent unbounded in_flight growth
-                // and checkpoint advancement stalls.
-                ack = self.pool.ack_rx_mut().recv() => {
-                    if let Some(ack) = ack {
-                        self.apply_pool_ack(ack);
-                    }
                 }
 
                 msg = rx.recv() => {
@@ -672,6 +627,13 @@ impl Pipeline {
                     {
                         self.metrics.inc_flush_by_timeout();
                         self.flush_batch_from(data, checkpoints, "timeout", queued_at).await;
+                    }
+                }
+
+                // Receive ack items from pool workers and advance the machine.
+                ack = self.pool.ack_rx_mut().recv() => {
+                    if let Some(ack) = ack {
+                        self.apply_pool_ack(ack);
                     }
                 }
             }
@@ -1445,7 +1407,6 @@ fn now_nanos() -> u64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
@@ -1460,17 +1421,8 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("test".to_string()),
             output_type: OutputType::Stdout,
-            endpoint: None,
-            protocol: None,
-            compression: None,
             format: Some(Format::Json),
-            path: None,
-            index: None,
-            auth: None,
-            request_mode: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
+            ..Default::default()
         };
         let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
@@ -1486,37 +1438,10 @@ mod tests {
             endpoint: Some("http://localhost:4318".to_string()),
             protocol: Some("http".to_string()),
             compression: Some("zstd".to_string()),
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            request_mode: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
+            ..Default::default()
         };
         let factory = build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "otel");
-    }
-
-    #[test]
-    fn test_build_output_sink_http_builds_json_lines_sink() {
-        // Http is now supported in build_output_sink via JsonLinesSink (#1156).
-        let cfg = OutputConfig {
-            name: Some("es".to_string()),
-            output_type: OutputType::Http,
-            endpoint: Some("http://localhost:9200".to_string()),
-            protocol: None,
-            compression: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            request_mode: None,
-            ..Default::default()
-        };
-        let result = build_output_sink("es", &cfg, Arc::new(ComponentStats::new()));
-        assert!(result.is_ok(), "Http should be supported via JsonLinesSink");
     }
 
     #[test]
@@ -1524,17 +1449,7 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("bad".to_string()),
             output_type: OutputType::Otlp,
-            endpoint: None,
-            protocol: None,
-            compression: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            request_mode: None,
-            tenant_id: None,
-            static_labels: None,
-            label_columns: None,
+            ..Default::default()
         };
         let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
@@ -2293,15 +2208,15 @@ output:
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_fanout_output_errors_only_increment_failing_output() {
-        // This test verifies that a persistently-failing output in a FanoutSink
-        // does not crash the pipeline and is recorded as a dropped batch.
+        // This test verifies that a persistently-failing output does not
+        // crash the pipeline and is recorded as a dropped batch.
         //
         // With the async worker pool, retries are built into the pool. An
         // always-failing sink causes the pool to exhaust retries and return
         // AckItem { success: false }, which increments dropped_batches_total.
         //
-        // Per-sink error tracking within FanoutSink is not currently supported
-        // by the pool's AckItem protocol (tracked in issue #702).
+        // Per-sink error tracking within async fanout is not currently
+        // supported by the pool's AckItem protocol (tracked in issue #702).
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("fanout_output_err.log");
 
@@ -3141,7 +3056,9 @@ mod format_integration_tests {
             validate_utf8: false,
         };
         let mut scanner = Scanner::new(config);
-        let batch = scanner.scan_detached(Bytes::from(input.to_vec())).unwrap();
+        let batch = scanner
+            .scan_detached(bytes::Bytes::from(input.to_vec()))
+            .unwrap();
         assert_eq!(batch.num_rows(), 2);
         // Single-type string fields: bare names
         assert!(batch.schema().field_with_name("level").is_ok());
@@ -3159,7 +3076,9 @@ mod format_integration_tests {
             validate_utf8: false,
         };
         let mut scanner = Scanner::new(config);
-        let batch = scanner.scan_detached(Bytes::from(input.to_vec())).unwrap();
+        let batch = scanner
+            .scan_detached(bytes::Bytes::from(input.to_vec()))
+            .unwrap();
         assert_eq!(batch.num_rows(), 2);
         assert!(batch.schema().field_with_name("_raw").is_ok());
     }
@@ -3180,7 +3099,9 @@ mod format_integration_tests {
             validate_utf8: false,
         };
         let mut scanner = Scanner::new(config);
-        let batch = scanner.scan_detached(Bytes::from(out.clone())).unwrap();
+        let batch = scanner
+            .scan_detached(bytes::Bytes::from(out.clone()))
+            .unwrap();
         assert_eq!(batch.num_rows(), 1);
         // Single-type string field: bare name
         assert!(batch.schema().field_with_name("level").is_ok());
@@ -3202,7 +3123,7 @@ mod format_integration_tests {
             validate_utf8: false,
         };
         let mut scanner = Scanner::new(config);
-        let batch = scanner.scan_detached(Bytes::from(out)).unwrap();
+        let batch = scanner.scan_detached(bytes::Bytes::from(out)).unwrap();
         assert_eq!(batch.num_rows(), 1);
     }
 }
@@ -3252,7 +3173,7 @@ mod proptest_pipeline {
                 validate_utf8: false,
             };
             let mut scanner_whole = Scanner::new(ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false });
-            let batch_whole = scanner_whole.scan_detached(Bytes::from(ndjson.clone())).unwrap();
+            let batch_whole = scanner_whole.scan_detached(bytes::Bytes::from(ndjson.clone())).unwrap();
 
             // Split into two chunks with remainder handling
             let chunk1 = &ndjson[..split_at];
@@ -3287,7 +3208,7 @@ mod proptest_pipeline {
             }
 
             let config2 = ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false }; let mut scanner_split = Scanner::new(config2);
-            let batch_split = scanner_split.scan_detached(Bytes::from(buf.clone())).unwrap();
+            let batch_split = scanner_split.scan_detached(bytes::Bytes::from(buf.clone())).unwrap();
 
             prop_assert_eq!(
                 batch_whole.num_rows(),
