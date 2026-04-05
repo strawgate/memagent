@@ -286,7 +286,7 @@ profile-otlp-local lines="500000" seconds="6":
       "  SELECT * FROM logs" \
       "output:" \
       "  type: otlp" \
-      "  endpoint: http://127.0.0.1:${PORT}" \
+      "  endpoint: http://127.0.0.1:${PORT}/v1/logs" \
       "  protocol: http" \
       "  compression: zstd" \
       > "${ROOT}/config.yaml"
