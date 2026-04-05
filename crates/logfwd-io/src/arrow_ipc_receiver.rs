@@ -238,7 +238,7 @@ impl ArrowIpcReceiver {
     /// Try to receive all available RecordBatches (non-blocking).
     pub fn try_recv_all(&self) -> Vec<RecordBatch> {
         let mut batches = Vec::new();
-        while let Ok(batch) = self.rx.as_ref().unwrap().try_recv() {
+        while let Ok(batch) = self.rx.as_ref().expect("rx is Some until drop").try_recv() {
             batches.push(batch);
         }
         batches

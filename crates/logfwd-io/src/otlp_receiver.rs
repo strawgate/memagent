@@ -278,7 +278,7 @@ impl InputSource for OtlpReceiverInput {
         let mut all = Vec::new();
 
         // Drain all available decoded batches.
-        while let Ok(data) = self.rx.as_ref().unwrap().try_recv() {
+        while let Ok(data) = self.rx.as_ref().expect("rx is Some until drop").try_recv() {
             all.extend_from_slice(&data);
         }
 

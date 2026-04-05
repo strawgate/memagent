@@ -259,7 +259,7 @@ impl OtapReceiver {
     /// Try to receive all available RecordBatches (non-blocking).
     pub fn try_recv_all(&self) -> Vec<RecordBatch> {
         let mut batches = Vec::new();
-        while let Ok(batch) = self.rx.as_ref().unwrap().try_recv() {
+        while let Ok(batch) = self.rx.as_ref().expect("rx is Some until drop").try_recv() {
             batches.push(batch);
         }
         batches
@@ -269,7 +269,7 @@ impl OtapReceiver {
     pub fn recv(&self) -> io::Result<RecordBatch> {
         self.rx
             .as_ref()
-            .unwrap()
+            .expect("rx is Some until drop")
             .recv()
             .map_err(|_| io::Error::other("OTAP receiver: channel disconnected"))
     }
@@ -278,7 +278,7 @@ impl OtapReceiver {
     pub fn recv_timeout(&self, timeout: std::time::Duration) -> io::Result<RecordBatch> {
         self.rx
             .as_ref()
-            .unwrap()
+            .expect("rx is Some until drop")
             .recv_timeout(timeout)
             .map_err(|e| match e {
                 mpsc::RecvTimeoutError::Timeout => {
