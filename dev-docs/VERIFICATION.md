@@ -228,6 +228,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `pipeline/batch.rs` | BatchTicket typestate (ack/nack/fail/reject) | Kani exhaustive (5 proofs) + compile-time |
 | `logfwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (8 proofs: ColVariant field preservation, variant_dt, is_conflict_struct, json/str priority contracts) |
 | `logfwd-output/sink.rs` | SendResult outcome variants for the async Sink trait | Kani (4 proofs: Ok/RetryAfter/Rejected variant invariants, mutual exclusion) |
+| `logfwd-io/otlp_receiver.rs` | OTLP proto→JSON transcoding helpers (from_utf8_unchecked safety) | Kani (4 proofs: write_i64 ASCII-only, write_f64 ASCII-only, hex encoding, JSON escaping) |
 | `logfwd-io/format.rs` | CRI metadata injection, Auto-mode fallthrough to passthrough | Kani (4 proofs: inject_cri_metadata output structure, JSON vs plain-text path dispatch) |
 | `logfwd-io/tail.rs` | File tailer EOF emission state machine (eof_emitted flag) | Kani (4 proofs: at-most-once emission per streak, data-reset invariant, two-poll sequence, reset-cycle) |
 | `logfwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |

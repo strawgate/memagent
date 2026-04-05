@@ -700,7 +700,7 @@ mod verification {
     use super::*;
 
     /// Prove write_i64_to_buf only emits ASCII bytes for any i64 value.
-    /// This justifies the from_utf8_unchecked safety comment at line 415.
+    /// This justifies the from_utf8_unchecked safety in json_any_value_to_string (intValue path).
     #[kani::proof]
     #[kani::unwind(21)] // max 20 digits (i64::MIN) + sign
     fn verify_write_i64_only_ascii() {
@@ -725,10 +725,11 @@ mod verification {
         kani::cover!(n == i64::MAX, "i64::MAX");
     }
 
-    /// Prove write_f64_to_buf only emits ASCII bytes for any finite f64.
-    /// This justifies the from_utf8_unchecked safety comment at line 422.
-    /// Note: std::fmt::Display for f64 always produces ASCII (digits, '.', '-', 'e', '+',
-    /// 'N', 'a', 'i', 'n', 'f'). We verify this holds for all bit patterns.
+    /// Prove write_f64_to_buf only emits ASCII bytes for any f64 bit pattern
+    /// (including NaN, infinity, subnormals).
+    /// This justifies the from_utf8_unchecked safety in json_any_value_to_string (doubleValue path).
+    /// std::fmt::Display for f64 produces only ASCII (digits, '.', '-', 'e', '+',
+    /// 'N', 'a', 'i', 'n', 'f'). We verify this holds exhaustively.
     #[kani::proof]
     #[kani::unwind(30)] // ryu output is at most ~25 bytes
     fn verify_write_f64_only_ascii() {

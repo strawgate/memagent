@@ -35,32 +35,25 @@ fuzz_target!(|data: &[u8]| {
     let (_count2, _errors2) =
         process_cri_to_buf(data, &mut reassembler2, Some(prefix), &mut out2);
 
-    // --- Full CRI → Scanner pipeline with validate_utf8: true ---
-    // When input is valid UTF-8, exercises the validation code path through
-    // the CRI parser and into the scanner. When invalid, the scanner returns
-    // Err early — either way, no panics.
+    // --- Full CRI → Scanner pipeline with validate_utf8 variants ---
+    // Pipe CRI output through the scanner with both validation modes.
+    // Covers the CRI→Scanner path for untrusted K8s container runtime output.
     if !out.is_empty() {
         use logfwd_arrow::scanner::Scanner;
         use logfwd_core::scan_config::ScanConfig;
 
-        // Without UTF-8 validation (baseline)
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            keep_raw: false,
-            validate_utf8: false,
-        };
-        let mut scanner = Scanner::new(config);
-        let _ = scanner.scan_detached(bytes::Bytes::from(out.clone()));
+        let out_bytes = bytes::Bytes::from(out);
 
-        // With UTF-8 validation
-        let config_v = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            keep_raw: false,
+        let mut scanner = Scanner::new(ScanConfig {
+            validate_utf8: false,
+            ..ScanConfig::default()
+        });
+        let _ = scanner.scan_detached(out_bytes.clone());
+
+        let mut scanner_v = Scanner::new(ScanConfig {
             validate_utf8: true,
-        };
-        let mut scanner_v = Scanner::new(config_v);
-        let _ = scanner_v.scan_detached(bytes::Bytes::from(out));
+            ..ScanConfig::default()
+        });
+        let _ = scanner_v.scan_detached(out_bytes);
     }
 });
