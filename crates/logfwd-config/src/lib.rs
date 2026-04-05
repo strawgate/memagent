@@ -654,7 +654,21 @@ impl Config {
                             )));
                         }
                     }
-                    InputType::Otlp | InputType::Generator | InputType::ArrowIpc => {}
+                    InputType::Otlp => {
+                        if input.listen.is_none() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'listen' is required for otlp inputs"
+                            )));
+                        }
+                    }
+                    InputType::ArrowIpc => {
+                        if input.listen.is_none() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'listen' is required for arrow_ipc inputs"
+                            )));
+                        }
+                    }
+                    InputType::Generator => {}
                 }
 
                 // Reject fields that don't apply to this input type.
@@ -1240,6 +1254,32 @@ output:
     }
 
     #[test]
+    fn validation_otlp_requires_listen() {
+        let yaml = r"
+input:
+  type: otlp
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
+    }
+
+    #[test]
+    fn validation_arrow_ipc_requires_listen() {
+        let yaml = r"
+input:
+  type: arrow_ipc
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
+    }
+
+    #[test]
     fn validation_mixed_simple_and_pipelines() {
         let yaml = r"
 input:
@@ -1389,7 +1429,7 @@ output:
             ("file", "path: /tmp/x.log"),
             ("udp", "listen: 0.0.0.0:514"),
             ("tcp", "listen: 0.0.0.0:514"),
-            ("otlp", ""),
+            ("otlp", "listen: 0.0.0.0:4317"),
             ("generator", ""),
         ] {
             let yaml = format!("input:\n  type: {itype}\n  {extra}\noutput:\n  type: stdout\n");
@@ -2343,6 +2383,7 @@ pipelines:
   test:
     inputs:
       - type: arrow_ipc
+        listen: 0.0.0.0:4317
     outputs:
       - type: null
 "#;
