@@ -31,11 +31,12 @@ const CHANNEL_BOUND: usize = 256;
 /// can contain a single IPC stream with one or more batches.
 pub struct ArrowIpcReceiver {
     name: String,
-    rx: mpsc::Receiver<RecordBatch>,
+    rx: Option<mpsc::Receiver<RecordBatch>>,
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
+    server: std::sync::Arc<tiny_http::Server>,
     /// Keep the server thread handle alive.
-    _handle: std::thread::JoinHandle<()>,
+    _handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ArrowIpcReceiver {
@@ -51,8 +52,8 @@ impl ArrowIpcReceiver {
         addr: &str,
         capacity: usize,
     ) -> io::Result<Self> {
-        let server = tiny_http::Server::http(addr)
-            .map_err(|e| io::Error::other(format!("Arrow IPC receiver bind {addr}: {e}")))?;
+        let server = std::sync::Arc::new(tiny_http::Server::http(addr)
+            .map_err(|e| io::Error::other(format!("Arrow IPC receiver bind {addr}: {e}")))?);
 
         let bound_addr = match server.server_addr() {
             tiny_http::ListenAddr::IP(a) => a,
@@ -65,10 +66,11 @@ impl ArrowIpcReceiver {
 
         let (tx, rx) = mpsc::sync_channel(capacity);
 
+        let server_clone = std::sync::Arc::clone(&server);
         let handle = std::thread::Builder::new()
             .name("arrow-ipc-receiver".into())
             .spawn(move || {
-                for mut request in server.incoming_requests() {
+                for mut request in server_clone.incoming_requests() {
                     let url = request.url().to_string();
 
                     // Only accept the Arrow IPC endpoint path.
@@ -219,9 +221,10 @@ impl ArrowIpcReceiver {
 
         Ok(Self {
             name: name.into(),
-            rx,
+            rx: Some(rx),
             addr: bound_addr,
-            _handle: handle,
+            server,
+            _handle: Some(handle),
         })
     }
 
@@ -233,7 +236,7 @@ impl ArrowIpcReceiver {
     /// Try to receive all available RecordBatches (non-blocking).
     pub fn try_recv_all(&self) -> Vec<RecordBatch> {
         let mut batches = Vec::new();
-        while let Ok(batch) = self.rx.try_recv() {
+        while let Ok(batch) = self.rx.as_ref().unwrap().try_recv() {
             batches.push(batch);
         }
         batches
@@ -241,14 +244,14 @@ impl ArrowIpcReceiver {
 
     /// Blocking receive of the next RecordBatch.
     pub fn recv(&self) -> io::Result<RecordBatch> {
-        self.rx
+        self.rx.as_ref().unwrap()
             .recv()
             .map_err(|_| io::Error::other("Arrow IPC receiver: channel disconnected"))
     }
 
     /// Receive with a timeout.
     pub fn recv_timeout(&self, timeout: std::time::Duration) -> io::Result<RecordBatch> {
-        self.rx.recv_timeout(timeout).map_err(|e| match e {
+        self.rx.as_ref().unwrap().recv_timeout(timeout).map_err(|e| match e {
             mpsc::RecvTimeoutError::Timeout => {
                 io::Error::new(io::ErrorKind::TimedOut, "Arrow IPC receiver: timed out")
             }
@@ -415,5 +418,15 @@ mod tests {
     fn decode_ipc_stream_invalid_body() {
         let result = decode_ipc_stream(b"not arrow data");
         assert!(result.is_err());
+    }
+}
+
+impl Drop for ArrowIpcReceiver {
+    fn drop(&mut self) {
+        self.rx.take();
+        self.server.unblock();
+        if let Some(handle) = self._handle.take() {
+            let _ = handle.join();
+        }
     }
 }
