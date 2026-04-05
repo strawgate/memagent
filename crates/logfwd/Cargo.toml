@@ -11,6 +11,7 @@ doctest = false
 [features]
 dhat-heap = ["dhat"]
 cpu-profiling = ["pprof"]
+turmoil = ["dep:turmoil"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -33,6 +34,7 @@ arrow = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 tokio-util = { version = "0.7" }
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
+turmoil = { version = "0.7", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 tikv-jemallocator = { version = "0.6", features = ["stats"] }
@@ -46,6 +48,7 @@ proptest = "1.11.0"
 stats_alloc = "0.1"
 tempfile = "3"
 tiny_http = "0.12"
+turmoil = "0.7"
 
 [lints]
 workspace = true
