@@ -5,6 +5,8 @@ hel = "hel"
 leve = "leve"
 # CSS class prefix for pipeline nodes in the dashboard.
 pn = "pn"
+# Intentional "ue" string slice in streaming_builder tests (tail of "value").
+ue = "ue"
 
 [files]
 extend-exclude = [
