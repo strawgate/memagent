@@ -190,20 +190,23 @@ pub(crate) fn is_null(batch: &RecordBatch, variant: &ColVariant, row: usize) -> 
             field_idx,
             ..
         } => {
-            let sa = batch
+            let Some(sa) = batch
                 .column(*struct_col_idx)
                 .as_any()
                 .downcast_ref::<StructArray>()
-                .expect("conflict struct column must be StructArray");
+            else {
+                return true;
+            };
             sa.is_null(row) || sa.column(*field_idx).is_null(row)
         }
     }
 }
 
 /// Return a reference to the underlying Arrow array for a `ColVariant`.
-pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> &'b dyn Array {
+/// Returns `None` if the column is a struct column but cannot be downcast.
+pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> Option<&'b dyn Array> {
     match variant {
-        ColVariant::Flat { col_idx, .. } => batch.column(*col_idx).as_ref(),
+        ColVariant::Flat { col_idx, .. } => Some(batch.column(*col_idx).as_ref()),
         ColVariant::StructField {
             struct_col_idx,
             field_idx,
@@ -212,9 +215,8 @@ pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> &'b
             let sa = batch
                 .column(*struct_col_idx)
                 .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("conflict struct column must be StructArray");
-            sa.column(*field_idx).as_ref()
+                .downcast_ref::<StructArray>()?;
+            Some(sa.column(*field_idx).as_ref())
         }
     }
 }
@@ -226,7 +228,7 @@ pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> &'b
 /// Used by Loki label extraction to always produce a string value.
 pub(crate) fn coalesce_as_str(batch: &RecordBatch, row: usize, col: &ColInfo) -> Option<String> {
     let variant = col.str_variants.iter().find(|v| !is_null(batch, v, row))?;
-    let arr = get_array(batch, variant);
+    let arr = get_array(batch, variant)?;
     let s = match arr.data_type() {
         DataType::Int64 => {
             let v = arr.as_primitive::<arrow::datatypes::Int64Type>().value(row);
@@ -490,7 +492,10 @@ pub fn write_row_json(
             out.extend_from_slice(b"null");
             continue;
         };
-        let arr = get_array(batch, v);
+        let Some(arr) = get_array(batch, v) else {
+            out.extend_from_slice(b"null");
+            continue;
+        };
 
         // Value — dispatch on Arrow DataType, not column name suffix
         write_json_value(arr, row, out)?;
@@ -1037,13 +1042,30 @@ mod tests {
             vec![],
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
-        );
+        )
+        .unwrap();
         sink.encode_batch(&batch, &meta);
 
         // Should produce non-empty protobuf bytes.
         assert!(!sink.encoder_buf.is_empty());
         // First byte should be tag for field 1 (ResourceLogs), wire type 2 = 0x0A
         assert_eq!(sink.encoder_buf[0], 0x0A);
+    }
+
+    #[test]
+    fn test_otlp_zstd_new_returns_error_instead_of_panic() {
+        // Attempt to create OtlpSink with Zstd compression should not panic,
+        // it either succeeds or returns an error (in real world it succeeds if valid).
+        let res = OtlpSink::new(
+            "test-otlp".to_string(),
+            "http://localhost:4318".to_string(),
+            OtlpProtocol::Http,
+            Compression::Zstd,
+            vec![],
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::new()),
+        );
+        assert!(res.is_ok(), "Zstd creation should be OK, but got: {:?}", res.err());
     }
 
     #[tokio::test]
@@ -1058,7 +1080,8 @@ mod tests {
             vec![],
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
-        );
+        )
+        .unwrap();
 
         use crate::Sink;
         match sink.send_batch(&batch, &meta).await {
@@ -1492,7 +1515,8 @@ mod tests {
             vec![],
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
-        );
+        )
+        .unwrap();
         // Must not panic.
         sink.encode_batch(&batch, &meta);
         assert!(!sink.encoder_buf.is_empty());
@@ -1520,7 +1544,8 @@ mod tests {
             vec![],
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
-        );
+        )
+        .unwrap();
         // Must not panic, and should produce non-empty output.
         sink.encode_batch(&batch, &meta);
         assert!(!sink.encoder_buf.is_empty());

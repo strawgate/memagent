@@ -39,6 +39,7 @@ memchr = "2"
 insta = "1"
 prost = "0.14"
 opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-messages"] }
+mockito = "1.7.2"
 
 [features]
 elasticsearch_integration_tests = []

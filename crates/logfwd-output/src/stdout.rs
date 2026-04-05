@@ -216,7 +216,9 @@ impl StdoutSink {
                 else {
                     continue;
                 };
-                let arr = get_array(batch, winner);
+                let Some(arr) = get_array(batch, winner) else {
+                    continue;
+                };
 
                 if has_extra {
                     self.buf.push(b' ');

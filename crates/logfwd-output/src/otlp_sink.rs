@@ -17,7 +17,7 @@ use logfwd_core::otlp::{
 use logfwd_types::diagnostics::ComponentStats;
 use zstd::bulk::Compressor as ZstdCompressor;
 
-use super::{BatchMetadata, Compression, HTTP_MAX_RETRIES, HTTP_RETRY_INITIAL_DELAY_MS, str_value};
+use super::{BatchMetadata, Compression, str_value};
 
 // ---------------------------------------------------------------------------
 // InstrumentationScope constants
@@ -64,14 +64,12 @@ impl OtlpSink {
         headers: Vec<(String, String)>,
         client: reqwest::Client,
         stats: Arc<ComponentStats>,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let compressor = match compression {
-            Compression::Zstd => {
-                Some(ZstdCompressor::new(1).expect("zstd level 1 is always valid"))
-            }
+            Compression::Zstd => Some(ZstdCompressor::new(1).map_err(io::Error::other)?),
             _ => None,
         };
-        OtlpSink {
+        Ok(OtlpSink {
             name,
             endpoint,
             protocol,
@@ -83,7 +81,7 @@ impl OtlpSink {
             compressor,
             client,
             stats,
-        }
+        })
     }
 
     /// Encode a full ExportLogsServiceRequest from a RecordBatch.
@@ -276,69 +274,55 @@ impl OtlpSink {
             payload
         };
 
-        // Retry with exponential backoff for transient failures.
-        // 1 initial attempt + up to HTTP_MAX_RETRIES retries; delays: 100ms → 200ms → 400ms.
-        // Allocate the owned body once before the retry loop to avoid per-attempt copies.
-        let body = payload.to_vec();
-        let mut delay_ms: u64 = HTTP_RETRY_INITIAL_DELAY_MS;
-        let mut attempt: u32 = 0;
-        loop {
-            let mut req = self.client.post(&self.endpoint);
-            for (k, v) in &self.headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            req = req.header("Content-Type", content_type);
-            if payload_is_compressed {
-                req = req.header("Content-Encoding", "zstd");
-            }
+        let mut req = self.client.post(&self.endpoint);
+        for (k, v) in &self.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        req = req.header("Content-Type", content_type);
+        if payload_is_compressed {
+            req = req.header("Content-Encoding", "zstd");
+        }
 
-            match req.body(body.clone()).send().await {
-                Ok(response) => {
-                    let status = response.status();
+        match req.body(payload.to_vec()).send().await {
+            Ok(response) => {
+                let status = response.status();
 
-                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                        let retry_after = response
-                            .headers()
-                            .get("Retry-After")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|s| s.parse::<u64>().ok())
-                            .unwrap_or(5);
-                        return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
-                            retry_after,
-                        )));
-                    }
-
-                    if status.is_success() {
-                        self.stats.inc_lines(batch_rows);
-                        self.stats.inc_bytes(self.encoder_buf.len() as u64);
-                        return Ok(super::sink::SendResult::Ok);
-                    }
-
-                    // Transient server error — retry with backoff.
-                    if status.is_server_error() && attempt < HTTP_MAX_RETRIES {
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                        delay_ms *= 2;
-                        attempt += 1;
-                        continue;
-                    }
-
-                    // Non-retryable error — read body as bytes to avoid String allocation.
-                    let detail = response
-                        .bytes()
-                        .await
-                        .map(|b| String::from_utf8_lossy(&b).into_owned())
-                        .unwrap_or_default();
-                    return Err(io::Error::other(format!(
-                        "OTLP request failed with status {status}: {detail}"
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    let retry_after = response
+                        .headers()
+                        .get("Retry-After")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(5);
+                    return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
+                        retry_after,
                     )));
                 }
-                Err(e) if attempt < HTTP_MAX_RETRIES && is_transient_reqwest_error(&e) => {
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                    delay_ms *= 2;
-                    attempt += 1;
+
+                if status.is_success() {
+                    self.stats.inc_lines(batch_rows);
+                    self.stats.inc_bytes(self.encoder_buf.len() as u64);
+                    return Ok(super::sink::SendResult::Ok);
                 }
-                Err(e) => return Err(io::Error::other(e.to_string())),
+
+                // Error — read body as bytes to avoid String allocation.
+                let detail = response
+                    .bytes()
+                    .await
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_default();
+
+                if status.is_client_error() {
+                    return Ok(super::sink::SendResult::Rejected(format!(
+                        "OTLP request rejected with status {status}: {detail}"
+                    )));
+                }
+
+                Err(io::Error::other(format!(
+                    "OTLP request failed with status {status}: {detail}"
+                )))
             }
+            Err(e) => Err(io::Error::other(e.to_string())),
         }
     }
 }
@@ -425,20 +409,12 @@ impl super::sink::SinkFactory for OtlpSinkFactory {
             self.headers.clone(),
             self.client.clone(),
             Arc::clone(&self.stats),
-        )))
+        )?))
     }
 
     fn name(&self) -> &str {
         &self.name
     }
-}
-
-/// Returns `true` if the reqwest error is transient and worth retrying.
-///
-/// Transient errors are: timeouts, connection errors, and request errors
-/// (network-level failures).
-fn is_transient_reqwest_error(e: &reqwest::Error) -> bool {
-    e.is_timeout() || e.is_connect() || e.is_request()
 }
 
 /// Pre-downcast array variant for an attribute column.
@@ -830,6 +806,81 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn send_payload_returns_rejected_on_4xx() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server.mock("POST", "/v1/logs")
+            .with_status(400)
+            .create_async().await;
+
+        let mut sink = OtlpSink::new(
+            "test".into(),
+            server.url() + "/v1/logs",
+            OtlpProtocol::Http,
+            Compression::None,
+            vec![],
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::new()),
+        )
+        .unwrap();
+
+        sink.encoder_buf.push(1); // Non-empty so it sends
+        let result = sink.send_payload(1).await.unwrap();
+        match result {
+            crate::sink::SendResult::Rejected(_) => {} // Expected
+            _ => panic!("Expected Rejected on 400 response, got: {:?}", result),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_payload_returns_err_on_5xx_no_loop() {
+        let mut server = mockito::Server::new_async().await;
+        // Server will receive 1 request and fail. Since there's no retry loop, it should return Err.
+        let _mock = server.mock("POST", "/v1/logs")
+            .with_status(500)
+            .create_async().await;
+
+        let mut sink = OtlpSink::new(
+            "test".into(),
+            server.url() + "/v1/logs",
+            OtlpProtocol::Http,
+            Compression::None,
+            vec![],
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::new()),
+        )
+        .unwrap();
+
+        sink.encoder_buf.push(1);
+        let result = sink.send_payload(1).await;
+        assert!(result.is_err(), "Expected Err on 500 response without internal loop");
+    }
+
+    #[test]
+    fn invalid_struct_array_downcast_does_not_panic() {
+        use crate::{ColVariant, get_array, is_null};
+
+        // Create a non-struct array (e.g. StringArray)
+        let str_arr: Arc<dyn Array> = Arc::new(StringArray::from(vec!["hello"]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "fake_struct",
+            DataType::Utf8, // It's actually utf8
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![str_arr]).unwrap();
+
+        // Simulate a variant that thinks the column is a StructArray
+        let variant = ColVariant::StructField {
+            struct_col_idx: 0,
+            field_idx: 0,
+            dt: DataType::Utf8,
+        };
+
+        // These should gracefully return true/None, not panic.
+        assert!(is_null(&batch, &variant, 0));
+        assert!(get_array(&batch, &variant).is_none());
+    }
+
     /// Struct conflict columns (status: Struct { int, str }) must be normalized
     /// to flat Utf8 before OTLP encoding so values are not silently dropped.
     #[test]
@@ -886,6 +937,7 @@ mod tests {
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
         )
+        .unwrap()
     }
 
     fn make_metadata() -> BatchMetadata {
@@ -1086,7 +1138,8 @@ mod tests {
             vec![],
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
-        );
+        )
+        .unwrap();
         sink.encode_batch(&batch, &make_metadata());
         let proto_payload = sink.encoder_buf.clone();
 

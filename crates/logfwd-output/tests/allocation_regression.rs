@@ -117,7 +117,8 @@ fn otlp_encode_stable_across_batches() {
         vec![],
         reqwest::Client::new(),
         Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
-    );
+    )
+    .unwrap();
 
     let batch = make_batch(500);
     let meta = BatchMetadata {
