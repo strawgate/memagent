@@ -186,7 +186,7 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
         let mut attrs: Vec<(String, String)> = Vec::with_capacity(resource_cols.len());
 
         for (attr_key, col_idx) in &resource_cols {
-            let val = str_value_at(batch.column(*col_idx).as_ref(), row);
+            let val = str_value_at(batch.column(*col_idx).as_ref(), row)?;
             key_parts.push(format!("{attr_key}={val}"));
             attrs.push((attr_key.clone(), val));
         }
@@ -373,7 +373,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         let col_pos = ensure_str_col("level", &mut flat_cols, &mut col_index);
         for row in 0..num_rows {
             if !sev_arr.is_null(row) {
-                let val = str_from_array(sev_arr.as_ref(), row);
+                let val = str_from_array(sev_arr.as_ref(), row)?;
                 if !val.is_empty() {
                     if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
                         v[row] = Some(val);
@@ -389,7 +389,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         let col_pos = ensure_str_col("message", &mut flat_cols, &mut col_index);
         for row in 0..num_rows {
             if !body_arr.is_null(row) {
-                let val = str_from_array(body_arr.as_ref(), row);
+                let val = str_from_array(body_arr.as_ref(), row)?;
                 if !val.is_empty() {
                     if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
                         v[row] = Some(val);
@@ -463,57 +463,57 @@ fn empty_star_schema() -> StarSchema {
 }
 
 /// Extract a string value from any supported Arrow array at the given row.
-fn str_value_at(arr: &dyn Array, row: usize) -> String {
+fn str_value_at(arr: &dyn Array, row: usize) -> Result<String, ArrowError> {
     if arr.is_null(row) {
-        return String::new();
+        return Ok(String::new());
     }
     match arr.data_type() {
         DataType::Utf8 => arr
             .as_any()
             .downcast_ref::<StringArray>()
             .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
+            .ok_or_else(|| ArrowError::ComputeError("Expected StringArray".to_string())),
         DataType::Utf8View => arr
             .as_any()
             .downcast_ref::<arrow::array::StringViewArray>()
             .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
+            .ok_or_else(|| ArrowError::ComputeError("Expected StringViewArray".to_string())),
         DataType::Int64 => arr
             .as_any()
             .downcast_ref::<Int64Array>()
             .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
+            .ok_or_else(|| ArrowError::ComputeError("Expected Int64Array".to_string())),
         DataType::Float64 => arr
             .as_any()
             .downcast_ref::<Float64Array>()
             .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
+            .ok_or_else(|| ArrowError::ComputeError("Expected Float64Array".to_string())),
         DataType::Boolean => arr
             .as_any()
             .downcast_ref::<BooleanArray>()
             .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
-        _ => String::new(),
+            .ok_or_else(|| ArrowError::ComputeError("Expected BooleanArray".to_string())),
+        _ => Ok(String::new()),
     }
 }
 
 /// Read a string value from a Utf8 or Utf8View array.
-fn str_from_array(arr: &dyn Array, row: usize) -> String {
+fn str_from_array(arr: &dyn Array, row: usize) -> Result<String, ArrowError> {
     if arr.is_null(row) {
-        return String::new();
+        return Ok(String::new());
     }
     match arr.data_type() {
         DataType::Utf8 => arr
             .as_any()
             .downcast_ref::<StringArray>()
             .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
+            .ok_or_else(|| ArrowError::ComputeError("Expected StringArray".to_string())),
         DataType::Utf8View => arr
             .as_any()
             .downcast_ref::<arrow::array::StringViewArray>()
             .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
-        _ => String::new(),
+            .ok_or_else(|| ArrowError::ComputeError("Expected StringViewArray".to_string())),
+        _ => Ok(String::new()),
     }
 }
 
@@ -711,7 +711,7 @@ fn build_log_attrs(
                 }
                 _ => {
                     // String (default).
-                    let val = str_value_at(arr.as_ref(), row);
+                    let val = str_value_at(arr.as_ref(), row)?;
                     str_vals.push(if val.is_empty() { None } else { Some(val) });
                     int_vals.push(None);
                     double_vals.push(None);
@@ -778,15 +778,15 @@ fn build_logs_fact(
     let timestamps: Vec<Option<i64>> = if let Some(ts_idx) = timestamp_col {
         let arr = batch.column(ts_idx);
         (0..num_rows)
-            .map(|row| {
+            .map(|row| -> Result<Option<i64>, ArrowError> {
                 if arr.is_null(row) {
-                    None
+                    Ok(None)
                 } else {
-                    let s = str_value_at(arr.as_ref(), row);
-                    parse_timestamp_to_nanos(&s)
+                    let s = str_value_at(arr.as_ref(), row)?;
+                    Ok(parse_timestamp_to_nanos(&s))
                 }
             })
-            .collect()
+            .collect::<Result<Vec<_>, ArrowError>>()?
     } else {
         vec![None; num_rows]
     };
@@ -796,15 +796,17 @@ fn build_logs_fact(
         if let Some(sev_idx) = severity_col {
             let arr = batch.column(sev_idx);
             (0..num_rows)
-                .map(|row| {
+                .map(|row| -> Result<(Option<i32>, Option<String>), ArrowError> {
                     if arr.is_null(row) {
-                        (None, None)
+                        Ok((None, None))
                     } else {
-                        let s = str_value_at(arr.as_ref(), row);
+                        let s = str_value_at(arr.as_ref(), row)?;
                         let num = severity_text_to_number(&s);
-                        (Some(num), Some(s))
+                        Ok((Some(num), Some(s)))
                     }
                 })
+                .collect::<Result<Vec<_>, ArrowError>>()?
+                .into_iter()
                 .unzip()
         } else {
             (vec![None; num_rows], vec![None; num_rows])
@@ -814,15 +816,15 @@ fn build_logs_fact(
     let body_strs: Vec<Option<String>> = if let Some(body_idx) = body_col {
         let arr = batch.column(body_idx);
         (0..num_rows)
-            .map(|row| {
+            .map(|row| -> Result<Option<String>, ArrowError> {
                 if arr.is_null(row) {
-                    None
+                    Ok(None)
                 } else {
-                    let s = str_value_at(arr.as_ref(), row);
-                    if s.is_empty() { None } else { Some(s) }
+                    let s = str_value_at(arr.as_ref(), row)?;
+                    if s.is_empty() { Ok(None) } else { Ok(Some(s)) }
                 }
             })
-            .collect()
+            .collect::<Result<Vec<_>, ArrowError>>()?
     } else {
         vec![None; num_rows]
     };
@@ -831,15 +833,15 @@ fn build_logs_fact(
     let trace_ids: Vec<Option<[u8; 16]>> = if let Some(tid_idx) = trace_id_col {
         let arr = batch.column(tid_idx);
         (0..num_rows)
-            .map(|row| {
+            .map(|row| -> Result<Option<[u8; 16]>, ArrowError> {
                 if arr.is_null(row) {
-                    None
+                    Ok(None)
                 } else {
-                    let s = str_value_at(arr.as_ref(), row);
-                    hex_to_fixed::<16>(&s)
+                    let s = str_value_at(arr.as_ref(), row)?;
+                    Ok(hex_to_fixed::<16>(&s))
                 }
             })
-            .collect()
+            .collect::<Result<Vec<_>, ArrowError>>()?
     } else {
         vec![None; num_rows]
     };
@@ -848,15 +850,15 @@ fn build_logs_fact(
     let span_ids: Vec<Option<[u8; 8]>> = if let Some(sid_idx) = span_id_col {
         let arr = batch.column(sid_idx);
         (0..num_rows)
-            .map(|row| {
+            .map(|row| -> Result<Option<[u8; 8]>, ArrowError> {
                 if arr.is_null(row) {
-                    None
+                    Ok(None)
                 } else {
-                    let s = str_value_at(arr.as_ref(), row);
-                    hex_to_fixed::<8>(&s)
+                    let s = str_value_at(arr.as_ref(), row)?;
+                    Ok(hex_to_fixed::<8>(&s))
                 }
             })
-            .collect()
+            .collect::<Result<Vec<_>, ArrowError>>()?
     } else {
         vec![None; num_rows]
     };
@@ -865,15 +867,15 @@ fn build_logs_fact(
     let flags: Vec<Option<u32>> = if let Some(f_idx) = flags_col {
         let arr = batch.column(f_idx);
         (0..num_rows)
-            .map(|row| {
+            .map(|row| -> Result<Option<u32>, ArrowError> {
                 if arr.is_null(row) {
-                    None
+                    Ok(None)
                 } else {
-                    let s = str_value_at(arr.as_ref(), row);
-                    s.parse::<u32>().ok()
+                    let s = str_value_at(arr.as_ref(), row)?;
+                    Ok(s.parse::<u32>().ok())
                 }
             })
-            .collect()
+            .collect::<Result<Vec<_>, ArrowError>>()?
     } else {
         vec![None; num_rows]
     };
@@ -1855,5 +1857,37 @@ mod tests {
 
         // Verify nanosecond precision is preserved.
         assert_eq!(ts_arr.value(0), ts);
+    }
+}
+
+#[cfg(test)]
+mod tests_timestamps {
+    use super::*;
+
+    #[test]
+    fn parse_timestamp_to_nanos_digit_ranges() {
+        // 10 digits (seconds) -> nanoseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1234567890"),
+            Some(1234567890_000_000_000)
+        );
+
+        // 13 digits (milliseconds) -> nanoseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1234567890123"),
+            Some(1234567890123_000_000)
+        );
+
+        // 16 digits (microseconds) -> nanoseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1234567890123456"),
+            Some(1234567890123456_000)
+        );
+
+        // 19 digits (nanoseconds) -> nanoseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1234567890123456789"),
+            Some(1234567890123456789)
+        );
     }
 }
