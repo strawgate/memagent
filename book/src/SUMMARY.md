@@ -2,10 +2,14 @@
 
 [Introduction](./README.md)
 
+# Start Here
+
+- [Choose the Right Guide](./getting-started/which-guide.md)
+- [Quick Start (10-minute path)](./getting-started/quickstart.md)
+- [Installation](./getting-started/installation.md)
+
 # Getting Started
 
-- [Installation](./getting-started/installation.md)
-- [Quick Start](./getting-started/quickstart.md)
 - [Your First Pipeline](./getting-started/first-pipeline.md)
 
 # Configuration

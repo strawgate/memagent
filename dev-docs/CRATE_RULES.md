@@ -62,3 +62,27 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 3. Add rules to this file
 4. Create per-crate AGENTS.md with the rules
 5. Add CI checks for any structural rules
+
+## Crate boundary examples (good vs bad)
+
+### Good: core logic stays in `logfwd-core`
+
+- Parsing primitives, framing logic, and deterministic state transitions live in `logfwd-core`.
+- Platform or transport integration layers call core APIs without reimplementing core semantics.
+
+### Bad: business logic in the binary crate
+
+- Avoid adding transform semantics, framing behavior, or output encoding rules directly in `logfwd`.
+- The binary should orchestrate startup/wiring, not own domain logic.
+
+### Good: IO and transport concerns stay out of core
+
+- File watching, sockets, retries, and collector-specific transport behavior belong in IO/output layers.
+- `logfwd-core` remains pure and portable with no OS dependencies.
+
+### Bad: leaking heavy dependencies across boundaries
+
+- Do not introduce `datafusion` into crates that should remain lightweight parsing/runtime layers.
+- Do not add IO/network crates to proof-oriented core crates.
+
+When uncertain, prefer the narrower dependency surface and document the decision in this file.

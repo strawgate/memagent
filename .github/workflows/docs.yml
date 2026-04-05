@@ -36,6 +36,22 @@ jobs:
         with:
           mdbook-version: latest
 
+      - name: Link check (book + docs + README)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --accept 200,429
+            --max-retries 3
+            --exclude-mail
+            README.md book/src docs
+
+      - name: Validate required operational doc sections
+        run: python3 scripts/docs/validate_operational_sections.py
+
+      - name: Report stale operational docs
+        run: python3 scripts/docs/report_stale_docs.py
+
       - name: Build mdBook
         run: mdbook build book
 

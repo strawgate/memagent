@@ -16,6 +16,7 @@
 | [`dev-docs/CODE_STYLE.md`](dev-docs/CODE_STYLE.md) | Naming, error handling, hot path rules |
 | [`dev-docs/SCANNER_CONTRACT.md`](dev-docs/SCANNER_CONTRACT.md) | Scanner input requirements, output guarantees, limitations |
 | [`dev-docs/PR_PROCESS.md`](dev-docs/PR_PROCESS.md) | Copilot assignment, PR triage, review criteria, merge process |
+| [`dev-docs/CHANGE_MAP.md`](dev-docs/CHANGE_MAP.md) | What must change together for config, pipeline, verification, and crate-boundary edits |
 | [Roadmap (GitHub issue #889)](https://github.com/strawgate/memagent/issues/889) | What's done, what's in progress, what's next |
 | [`dev-docs/references/arrow.md`](dev-docs/references/arrow.md) | RecordBatch, StringViewArray, schema evolution |
 | [`dev-docs/references/datafusion.md`](dev-docs/references/datafusion.md) | SessionContext, MemTable, UDF creation, SQL execution |
