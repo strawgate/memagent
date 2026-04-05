@@ -87,9 +87,10 @@ impl fmt::Display for InputType {
 /// Uses a custom `Deserialize` impl so that `type: null` in YAML (which
 /// the YAML spec parses as the scalar null, not the string `"null"`) is
 /// accepted as the `Null` variant in both simple and list contexts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum OutputType {
+    #[default]
     Otlp,
     Http,
     Elasticsearch,
@@ -229,7 +230,7 @@ pub struct InputConfig {
 }
 
 /// A single output destination.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     pub name: Option<String>,
@@ -247,6 +248,14 @@ pub struct OutputConfig {
     /// Optional authentication for HTTP-based outputs.
     #[serde(default)]
     pub auth: Option<AuthConfig>,
+
+    // Loki-specific configuration
+    /// Optional X-Scope-OrgID header value for multi-tenant Loki.
+    pub tenant_id: Option<String>,
+    /// Static labels added to every Loki stream.
+    pub static_labels: Option<HashMap<String, String>>,
+    /// Record columns whose values should be extracted as Loki labels.
+    pub label_columns: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------

@@ -180,7 +180,9 @@ impl LokiSink {
                 let col = batch.column(ts_idx);
                 match col.data_type() {
                     DataType::Int64 => {
-                        col.as_primitive::<arrow::datatypes::Int64Type>().value(row) as u64
+                        col.as_primitive::<arrow::datatypes::Int64Type>()
+                            .value(row)
+                            .max(0) as u64
                     }
                     DataType::UInt64 => col
                         .as_primitive::<arrow::datatypes::UInt64Type>()
@@ -463,14 +465,15 @@ fn escape_json(s: &str) -> String {
 
 /// Wrap an already-valid JSON value (log line) as a JSON string.
 /// If it's a JSON object/array, wrap it in quotes with escaping.
-/// If it already starts with `"`, return as-is (already a JSON string).
+/// If it's a valid JSON string literal (wrapped in quotes), return as-is.
 fn escape_json_raw(s: &str) -> String {
     let trimmed = s.trim();
-    if trimmed.starts_with('"') {
-        // Already a JSON string.
+    // Properly validate if it's a valid JSON string literal.
+    // Issue #1048: starts_with('"') was too loose (e.g. "\"foo" is not valid).
+    if serde_json::from_str::<String>(trimmed).is_ok() {
         trimmed.to_string()
     } else {
-        // A JSON object or array — escape it as a string value.
+        // A JSON object, array, or unquoted string — escape it as a string value.
         format!("\"{}\"", escape_json(trimmed))
     }
 }
