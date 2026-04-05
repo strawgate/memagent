@@ -116,12 +116,24 @@ impl QueryAnalyzer {
     /// there are no `__int`/`__str`/`__float` suffixed names in SQL.
     /// `strip_type_suffix` is a no-op and is kept only for call-site symmetry.
     pub fn scan_config(&self) -> ScanConfig {
+        // Extract row predicates from the WHERE clause for scanner-level pushdown.
+        let row_predicates = self
+            .where_clause
+            .as_ref()
+            .map(|expr| {
+                let mut preds = Vec::new();
+                extract_row_predicates(expr, &mut preds);
+                preds
+            })
+            .unwrap_or_default();
+
         if self.uses_select_star {
             ScanConfig {
                 wanted_fields: vec![],
                 extract_all: true,
                 keep_raw: true,
                 validate_utf8: false,
+                row_predicates,
             }
         } else {
             use logfwd_core::scan_config::FieldSpec;
@@ -142,6 +154,7 @@ impl QueryAnalyzer {
                 extract_all: false,
                 keep_raw: false,
                 validate_utf8: false,
+                row_predicates,
             }
         }
     }
@@ -283,6 +296,117 @@ fn expr_as_u8_literal(expr: &SqlExpr) -> Option<u8> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Extract a string literal from a SQL expression.
+fn expr_as_string_literal(expr: &SqlExpr) -> Option<String> {
+    match expr {
+        SqlExpr::Value(v) => match &v.value {
+            sqlast::Value::SingleQuotedString(s)
+            | sqlast::Value::DoubleQuotedString(s)
+            | sqlast::Value::EscapedStringLiteral(s)
+            | sqlast::Value::NationalStringLiteral(s) => Some(s.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Walk a WHERE clause AST and extract simple string equality predicates
+/// that can be evaluated during JSON scanning to skip entire rows.
+///
+/// Only extracts from top-level AND chains. OR branches, complex expressions,
+/// and non-string comparisons are left for DataFusion.
+fn extract_row_predicates(expr: &SqlExpr, preds: &mut Vec<logfwd_core::scan_config::RowPredicate>) {
+    use logfwd_core::scan_config::RowPredicate;
+
+    // The scanner uses a u64 bitmask, so cap at 64 predicates.
+    if preds.len() >= 64 {
+        return;
+    }
+
+    match expr {
+        // AND: recurse into both sides
+        SqlExpr::BinaryOp {
+            left,
+            op: sqlast::BinaryOperator::And,
+            right,
+        } => {
+            extract_row_predicates(left, preds);
+            extract_row_predicates(right, preds);
+        }
+        // col = 'literal' or 'literal' = col
+        SqlExpr::BinaryOp {
+            left,
+            op: sqlast::BinaryOperator::Eq,
+            right,
+        } => {
+            if let Some(col) = expr_as_column(left) {
+                if let Some(val) = expr_as_string_literal(right) {
+                    preds.push(RowPredicate::Eq {
+                        field: col.into_bytes(),
+                        value: val.into_bytes(),
+                    });
+                }
+            } else if let Some(col) = expr_as_column(right) {
+                if let Some(val) = expr_as_string_literal(left) {
+                    preds.push(RowPredicate::Eq {
+                        field: col.into_bytes(),
+                        value: val.into_bytes(),
+                    });
+                }
+            }
+        }
+        // col != 'literal' or col <> 'literal'
+        SqlExpr::BinaryOp {
+            left,
+            op: sqlast::BinaryOperator::NotEq,
+            right,
+        } => {
+            if let Some(col) = expr_as_column(left) {
+                if let Some(val) = expr_as_string_literal(right) {
+                    preds.push(RowPredicate::NotEq {
+                        field: col.into_bytes(),
+                        value: val.into_bytes(),
+                    });
+                }
+            } else if let Some(col) = expr_as_column(right) {
+                if let Some(val) = expr_as_string_literal(left) {
+                    preds.push(RowPredicate::NotEq {
+                        field: col.into_bytes(),
+                        value: val.into_bytes(),
+                    });
+                }
+            }
+        }
+        // col IN ('a', 'b', 'c')
+        SqlExpr::InList {
+            expr: list_expr,
+            list,
+            negated: false,
+        } => {
+            if let Some(col) = expr_as_column(list_expr) {
+                let vals: Vec<Vec<u8>> = list
+                    .iter()
+                    .filter_map(expr_as_string_literal)
+                    .map(String::into_bytes)
+                    .collect();
+                // Only push if ALL list items are string literals
+                if !vals.is_empty() && vals.len() == list.len() {
+                    preds.push(RowPredicate::In {
+                        field: col.into_bytes(),
+                        values: vals,
+                    });
+                }
+            }
+        }
+        // Parenthesized expression
+        SqlExpr::Nested(inner) => {
+            extract_row_predicates(inner, preds);
+        }
+        // OR, LIKE, complex expressions — don't push (might miss rows)
+        _ => {}
     }
 }
 

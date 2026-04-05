@@ -45,7 +45,7 @@ fuzz_target!(|data: &[u8]| {
         let out_bytes = bytes::Bytes::from(out);
 
         let mut scanner = Scanner::new(ScanConfig {
-            validate_utf8: false,
+            validate_utf8: false, row_predicates: vec![],
             ..ScanConfig::default()
         });
         let _ = scanner.scan_detached(out_bytes.clone());

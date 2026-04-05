@@ -3068,6 +3068,7 @@ mod format_integration_tests {
             extract_all: true,
             keep_raw: false,
             validate_utf8: false,
+            row_predicates: vec![],
         };
         let mut scanner = Scanner::new(config);
         let batch = scanner
@@ -3088,6 +3089,7 @@ mod format_integration_tests {
             extract_all: true,
             keep_raw: true,
             validate_utf8: false,
+            row_predicates: vec![],
         };
         let mut scanner = Scanner::new(config);
         let batch = scanner
@@ -3111,6 +3113,7 @@ mod format_integration_tests {
             extract_all: true,
             keep_raw: false,
             validate_utf8: false,
+            row_predicates: vec![],
         };
         let mut scanner = Scanner::new(config);
         let batch = scanner
@@ -3135,6 +3138,7 @@ mod format_integration_tests {
             extract_all: true,
             keep_raw: false,
             validate_utf8: false,
+            row_predicates: vec![],
         };
         let mut scanner = Scanner::new(config);
         let batch = scanner.scan_detached(bytes::Bytes::from(out)).unwrap();
@@ -3185,8 +3189,15 @@ mod proptest_pipeline {
                 extract_all: true,
                 keep_raw: false,
                 validate_utf8: false,
+                row_predicates: vec![],
             };
-            let mut scanner_whole = Scanner::new(ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false });
+            let mut scanner_whole = Scanner::new(ScanConfig {
+                wanted_fields: vec![],
+                extract_all: true,
+                keep_raw: false,
+                validate_utf8: false,
+                row_predicates: vec![],
+            });
             let batch_whole = scanner_whole.scan_detached(bytes::Bytes::from(ndjson.clone())).unwrap();
 
             // Split into two chunks with remainder handling
@@ -3221,7 +3232,14 @@ mod proptest_pipeline {
                 buf.extend_from_slice(&combined);
             }
 
-            let config2 = ScanConfig { wanted_fields: vec![], extract_all: true, keep_raw: false, validate_utf8: false }; let mut scanner_split = Scanner::new(config2);
+            let config2 = ScanConfig {
+                wanted_fields: vec![],
+                extract_all: true,
+                keep_raw: false,
+                validate_utf8: false,
+                row_predicates: vec![],
+            };
+            let mut scanner_split = Scanner::new(config2);
             let batch_split = scanner_split.scan_detached(bytes::Bytes::from(buf.clone())).unwrap();
 
             prop_assert_eq!(

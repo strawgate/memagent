@@ -239,6 +239,7 @@ mod tests {
             extract_all: false,
             keep_raw: false,
             validate_utf8: false,
+            row_predicates: vec![],
         };
         let batch = Scanner::new(config)
             .scan_detached(Bytes::from(
@@ -258,6 +259,7 @@ mod tests {
             extract_all: true,
             keep_raw: true,
             validate_utf8: false,
+            row_predicates: vec![],
         };
         let batch = Scanner::new(config)
             .scan_detached(Bytes::from(b"{\"msg\":\"hi\"}\n".to_vec()))
@@ -445,6 +447,7 @@ mod tests {
             extract_all: true,
             keep_raw: true,
             validate_utf8: false,
+            row_predicates: vec![],
         };
         let batch = Scanner::new(config)
             .scan(Bytes::from_static(b"{\"msg\":\"hi\"}\n"))

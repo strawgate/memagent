@@ -33,7 +33,7 @@ fuzz_target!(|data: &[u8]| {
         wanted_fields: vec![],
         extract_all: true,
         keep_raw: false,
-        validate_utf8: false,
+        validate_utf8: false, row_predicates: vec![],
     };
     let mut scanner = Scanner::new(config);
     let Ok(batch) = scanner.scan(bytes::Bytes::copy_from_slice(data)) else { return; };
@@ -53,7 +53,7 @@ fuzz_target!(|data: &[u8]| {
         ],
         extract_all: false,
         keep_raw: false,
-        validate_utf8: false,
+        validate_utf8: false, row_predicates: vec![],
     };
     let mut scanner2 = Scanner::new(config2);
     let Ok(batch2) = scanner2.scan(bytes::Bytes::copy_from_slice(data)) else { return; };

@@ -12,6 +12,72 @@ pub struct FieldSpec {
     pub aliases: Vec<String>,
 }
 
+/// A simple predicate that can be evaluated during JSON scanning to skip
+/// entire rows before building Arrow columns.
+///
+/// These are **advisory** — the SQL transform still applies all predicates,
+/// so correctness doesn't depend on pushdown. Only top-level AND-chain
+/// predicates are extracted; OR branches are left for DataFusion.
+///
+/// The scanner uses a `u64` bitmask to track matches, so at most 64
+/// predicates are supported. If more are provided, the scanner passes all
+/// rows through and lets DataFusion handle filtering.
+///
+/// See `dev-docs/PREDICATE_PUSHDOWN.md` for the design.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowPredicate {
+    /// Field value must equal this byte string exactly.
+    /// Extracted from `WHERE field = 'literal'`.
+    Eq {
+        /// JSON field name to match.
+        field: Vec<u8>,
+        /// Expected value (raw bytes, no JSON escaping).
+        value: Vec<u8>,
+    },
+
+    /// Field value must be one of these byte strings.
+    /// Extracted from `WHERE field IN ('a', 'b', 'c')`.
+    In {
+        /// JSON field name to match.
+        field: Vec<u8>,
+        /// Set of acceptable values.
+        values: Vec<Vec<u8>>,
+    },
+
+    /// Field value must NOT equal this byte string.
+    /// Extracted from `WHERE field != 'literal'` or `WHERE field <> 'literal'`.
+    NotEq {
+        /// JSON field name to match.
+        field: Vec<u8>,
+        /// Value that must NOT appear.
+        value: Vec<u8>,
+    },
+}
+
+impl RowPredicate {
+    /// The field name this predicate applies to.
+    #[inline]
+    pub fn field_name(&self) -> &[u8] {
+        match self {
+            Self::Eq { field, .. } | Self::In { field, .. } | Self::NotEq { field, .. } => field,
+        }
+    }
+
+    /// Check whether a raw (unescaped) JSON string value satisfies this predicate.
+    #[inline]
+    pub fn matches_bytes(&self, value: &[u8]) -> bool {
+        match self {
+            Self::Eq {
+                value: expected, ..
+            } => value == expected.as_slice(),
+            Self::In { values, .. } => values.iter().any(|v| value == v.as_slice()),
+            Self::NotEq {
+                value: expected, ..
+            } => value != expected.as_slice(),
+        }
+    }
+}
+
 /// Controls which fields to extract and whether to keep _raw.
 pub struct ScanConfig {
     /// Fields to extract. Empty = extract all (SELECT *).
@@ -24,6 +90,14 @@ pub struct ScanConfig {
     /// and panics with a descriptive message if it is not. Disabled by default
     /// for maximum throughput; enable when input provenance is untrusted.
     pub validate_utf8: bool,
+    /// Row-level predicates pushed down from the SQL WHERE clause.
+    ///
+    /// When non-empty, the scanner probes each JSON line for these predicates
+    /// *before* materializing Arrow columns. Lines that fail any predicate are
+    /// skipped entirely — no `begin_row`/`end_row`, no field extraction.
+    ///
+    /// All predicates are AND'd: a row must satisfy every predicate to pass.
+    pub row_predicates: Vec<RowPredicate>,
 }
 
 impl Default for ScanConfig {
@@ -33,6 +107,7 @@ impl Default for ScanConfig {
             extract_all: true,
             keep_raw: false,
             validate_utf8: false,
+            row_predicates: vec![],
         }
     }
 }
@@ -55,6 +130,12 @@ impl ScanConfig {
             }
         }
         false
+    }
+
+    /// True if any row predicates are configured for scanner-level filtering.
+    #[inline]
+    pub fn has_row_predicates(&self) -> bool {
+        !self.row_predicates.is_empty()
     }
 }
 

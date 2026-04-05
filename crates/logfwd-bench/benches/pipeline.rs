@@ -59,6 +59,7 @@ fn bench_scanner(c: &mut Criterion) {
                 extract_all: false,
                 keep_raw: false,
                 validate_utf8: false,
+                row_predicates: vec![],
             };
             let mut scanner = Scanner::new(config);
             b.iter(|| {

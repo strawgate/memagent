@@ -113,8 +113,16 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
     let mut scratch = alloc::vec::Vec::new();
 
     // Phase 2: Scan each line using stored bitmasks for quote/nested lookups.
-    for (start, end) in line_ranges {
-        scan_line(buf, start, end, &bitmasks, config, builder, &mut scratch);
+    if config.has_row_predicates() {
+        for (start, end) in line_ranges {
+            if probe_row_predicates(buf, start, end, &bitmasks, config) {
+                scan_line(buf, start, end, &bitmasks, config, builder, &mut scratch);
+            }
+        }
+    } else {
+        for (start, end) in line_ranges {
+            scan_line(buf, start, end, &bitmasks, config, builder, &mut scratch);
+        }
     }
 }
 
@@ -284,6 +292,153 @@ fn scan_line<B: ScanBuilder>(
         }
     }
     builder.end_row();
+}
+
+/// Fast pre-scan of a JSON line to check row predicates without materializing
+/// Arrow columns.
+///
+/// Returns `true` if the row satisfies ALL predicates (AND semantics) or if
+/// any predicate field is missing from the JSON (conservative: let DataFusion
+/// handle the full evaluation).
+///
+/// This function re-uses the same JSON parsing logic as `scan_line` but only
+/// examines predicate field values — all other fields are skipped without
+/// parsing their values. No `ScanBuilder` interaction occurs.
+#[inline(never)]
+fn probe_row_predicates(
+    buf: &[u8],
+    start: usize,
+    end: usize,
+    blocks: &StoredBitmasks<'_>,
+    config: &ScanConfig,
+) -> bool {
+    let predicates = &config.row_predicates;
+    let num_predicates = predicates.len();
+
+    // Bitmask can only track up to 64 predicates. If a query somehow has
+    // more, pass the row through and let DataFusion handle full evaluation.
+    if num_predicates > 64 {
+        return true;
+    }
+
+    // Track which predicates we've matched. Use a u64 bitmask for up to 64
+    // predicates (in practice, queries rarely have more than a handful).
+    let mut matched: u64 = 0;
+    let all_matched: u64 = (1u64 << num_predicates) - 1;
+
+    let mut pos = skip_whitespace(buf, start, end);
+    if pos >= end || buf[pos] != b'{' {
+        return false;
+    }
+    pos += 1;
+
+    loop {
+        pos = skip_whitespace(buf, pos, end);
+        if pos >= end || buf[pos] == b'}' {
+            break;
+        }
+        if buf[pos] != b'"' {
+            break;
+        }
+
+        // Parse key
+        let key_start = pos + 1;
+        let key_end = match next_quote(pos + 1, end, blocks) {
+            Some(p) => p,
+            None => break,
+        };
+        let key = &buf[key_start..key_end];
+        pos = key_end + 1;
+
+        // Expect colon
+        pos = skip_whitespace(buf, pos, end);
+        if pos >= end || buf[pos] != b':' {
+            break;
+        }
+        pos += 1;
+
+        pos = skip_whitespace(buf, pos, end);
+        if pos >= end {
+            break;
+        }
+
+        // Check if this key matches any predicate
+        let mut predicate_idx = None;
+        for (i, pred) in predicates.iter().enumerate() {
+            if pred.field_name() == key {
+                predicate_idx = Some(i);
+                break;
+            }
+        }
+
+        if let Some(pi) = predicate_idx {
+            // This is a predicate field — extract value and check
+            match buf[pos] {
+                b'"' => {
+                    let val_start = pos + 1;
+                    let val_end = match next_quote(pos + 1, end, blocks) {
+                        Some(p) => p,
+                        None => break,
+                    };
+                    let val = &buf[val_start..val_end];
+                    // For escaped strings, pass through conservatively
+                    // (the decoded content may differ from the raw bytes).
+                    // For unescaped strings, check the predicate directly.
+                    if memchr::memchr(b'\\', val).is_some() || predicates[pi].matches_bytes(val) {
+                        matched |= 1u64 << pi;
+                    } else {
+                        // Predicate failed — skip this row immediately.
+                        return false;
+                    }
+                    pos = val_end + 1;
+                }
+                _ => {
+                    // Non-string value for a string predicate.
+                    // Conservative: pass it through to DataFusion.
+                    matched |= 1u64 << pi;
+                    pos = skip_value_fast(buf, pos, end, blocks);
+                }
+            }
+
+            // Early exit: all predicates matched
+            if matched == all_matched {
+                return true;
+            }
+        } else {
+            // Not a predicate field — skip value entirely
+            pos = skip_value_fast(buf, pos, end, blocks);
+        }
+
+        // Skip comma
+        pos = skip_whitespace(buf, pos, end);
+        if pos < end && buf[pos] == b',' {
+            pos += 1;
+        }
+    }
+
+    // If we didn't see all predicate fields, be conservative and include
+    // the row. DataFusion will handle the NULL/missing-field semantics.
+    matched == all_matched || matched.count_ones() < num_predicates as u32
+}
+
+/// Skip a JSON value without extracting it. Handles strings, nested
+/// objects/arrays, and bare values (numbers, booleans, null).
+#[inline]
+fn skip_value_fast(buf: &[u8], pos: usize, end: usize, blocks: &StoredBitmasks<'_>) -> usize {
+    if pos >= end {
+        return pos;
+    }
+    match buf[pos] {
+        b'"' => {
+            // String — find closing quote
+            match next_quote(pos + 1, end, blocks) {
+                Some(p) => p + 1,
+                None => end,
+            }
+        }
+        b'{' | b'[' => skip_nested(buf, pos, end, blocks),
+        _ => skip_bare_value(buf, pos, end),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1128,5 +1283,294 @@ mod verification {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row predicate pushdown tests (in cfg(test), not cfg(kani))
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod predicate_tests {
+    extern crate alloc;
+    use super::*;
+    use crate::scan_config::{RowPredicate, ScanConfig};
+    use alloc::string::{String, ToString};
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// Bare-bones test builder matching the one in `tests` above.
+    struct TestBuilder {
+        rows: Vec<Vec<(String, String)>>,
+        current: Vec<(String, String)>,
+        raws: Vec<Option<String>>,
+        current_raw: Option<String>,
+        field_names: Vec<String>,
+    }
+
+    impl TestBuilder {
+        fn new() -> Self {
+            TestBuilder {
+                rows: Vec::new(),
+                current: Vec::new(),
+                raws: Vec::new(),
+                current_raw: None,
+                field_names: Vec::new(),
+            }
+        }
+    }
+
+    impl crate::scanner::ScanBuilder for TestBuilder {
+        fn begin_row(&mut self) {
+            self.current.clear();
+            self.current_raw = None;
+        }
+        fn end_row(&mut self) {
+            self.rows.push(core::mem::take(&mut self.current));
+            self.raws.push(self.current_raw.take());
+        }
+        fn resolve_field(&mut self, name: &[u8]) -> usize {
+            let s = core::str::from_utf8(name).unwrap().to_string();
+            if let Some(i) = self.field_names.iter().position(|n| n == &s) {
+                return i;
+            }
+            self.field_names.push(s);
+            self.field_names.len() - 1
+        }
+        fn append_str_by_idx(&mut self, idx: usize, val: &[u8]) {
+            let name = self.field_names[idx].clone();
+            let value = core::str::from_utf8(val).unwrap().to_string();
+            self.current.push((name, value));
+        }
+        fn append_int_by_idx(&mut self, idx: usize, val: &[u8]) {
+            self.append_str_by_idx(idx, val);
+        }
+        fn append_float_by_idx(&mut self, idx: usize, val: &[u8]) {
+            self.append_str_by_idx(idx, val);
+        }
+        fn append_null_by_idx(&mut self, _idx: usize) {}
+        fn append_raw(&mut self, val: &[u8]) {
+            self.current_raw = Some(core::str::from_utf8(val).unwrap().to_string());
+        }
+    }
+
+    #[test]
+    fn predicate_eq_filters_rows() {
+        let buf = br#"{"level":"ERROR","msg":"fail"}
+{"level":"INFO","msg":"ok"}
+{"level":"ERROR","msg":"crash"}
+"#;
+        let config = ScanConfig {
+            row_predicates: vec![RowPredicate::Eq {
+                field: b"level".to_vec(),
+                value: b"ERROR".to_vec(),
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 2);
+        assert!(
+            builder.rows[0]
+                .iter()
+                .any(|(k, v)| k == "msg" && v == "fail")
+        );
+        assert!(
+            builder.rows[1]
+                .iter()
+                .any(|(k, v)| k == "msg" && v == "crash")
+        );
+    }
+
+    #[test]
+    fn predicate_not_eq_filters_rows() {
+        let buf = br#"{"level":"ERROR","msg":"fail"}
+{"level":"INFO","msg":"ok"}
+{"level":"DEBUG","msg":"trace"}
+"#;
+        let config = ScanConfig {
+            row_predicates: vec![RowPredicate::NotEq {
+                field: b"level".to_vec(),
+                value: b"INFO".to_vec(),
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 2);
+        assert!(
+            builder.rows[0]
+                .iter()
+                .any(|(k, v)| k == "msg" && v == "fail")
+        );
+        assert!(
+            builder.rows[1]
+                .iter()
+                .any(|(k, v)| k == "msg" && v == "trace")
+        );
+    }
+
+    #[test]
+    fn predicate_in_filters_rows() {
+        let buf = br#"{"level":"ERROR","msg":"a"}
+{"level":"INFO","msg":"b"}
+{"level":"WARN","msg":"c"}
+{"level":"DEBUG","msg":"d"}
+"#;
+        let config = ScanConfig {
+            row_predicates: vec![RowPredicate::In {
+                field: b"level".to_vec(),
+                values: vec![b"ERROR".to_vec(), b"WARN".to_vec()],
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 2);
+        assert!(builder.rows[0].iter().any(|(k, v)| k == "msg" && v == "a"));
+        assert!(builder.rows[1].iter().any(|(k, v)| k == "msg" && v == "c"));
+    }
+
+    #[test]
+    fn predicate_multiple_and() {
+        let buf = br#"{"level":"ERROR","svc":"api","msg":"a"}
+{"level":"ERROR","svc":"web","msg":"b"}
+{"level":"INFO","svc":"api","msg":"c"}
+"#;
+        let config = ScanConfig {
+            row_predicates: vec![
+                RowPredicate::Eq {
+                    field: b"level".to_vec(),
+                    value: b"ERROR".to_vec(),
+                },
+                RowPredicate::Eq {
+                    field: b"svc".to_vec(),
+                    value: b"api".to_vec(),
+                },
+            ],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        assert!(builder.rows[0].iter().any(|(k, v)| k == "msg" && v == "a"));
+    }
+
+    #[test]
+    fn predicate_missing_field_passes_through() {
+        let buf = br#"{"msg":"no level field"}
+"#;
+        let config = ScanConfig {
+            row_predicates: vec![RowPredicate::Eq {
+                field: b"level".to_vec(),
+                value: b"ERROR".to_vec(),
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_with_escaped_value_passes_through() {
+        let buf = br#"{"level":"ER\"ROR","msg":"escaped"}
+"#;
+        let config = ScanConfig {
+            row_predicates: vec![RowPredicate::Eq {
+                field: b"level".to_vec(),
+                value: b"ERROR".to_vec(),
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_no_predicates_scans_all() {
+        let buf = br#"{"a":"1"}
+{"a":"2"}
+"#;
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 2);
+    }
+
+    #[test]
+    fn predicate_duplicate_field_uses_first() {
+        // If a JSON line has duplicate keys, the scanner should check the first
+        // occurrence. The row should pass because the first "level" is "ERROR".
+        let buf = br#"{"level":"ERROR","level":"INFO"}
+"#;
+        let config = ScanConfig {
+            row_predicates: vec![RowPredicate::Eq {
+                field: b"level".to_vec(),
+                value: b"ERROR".to_vec(),
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_field_at_end_of_object() {
+        // Predicate field is the last key in the JSON object.
+        let buf = br#"{"other":"x","level":"ERROR"}
+{"other":"x","level":"INFO"}
+"#;
+        let config = ScanConfig {
+            row_predicates: vec![RowPredicate::Eq {
+                field: b"level".to_vec(),
+                value: b"ERROR".to_vec(),
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_empty_line_skipped() {
+        let buf = b"\n{\"level\":\"ERROR\"}\n\n";
+        let config = ScanConfig {
+            row_predicates: vec![RowPredicate::Eq {
+                field: b"level".to_vec(),
+                value: b"ERROR".to_vec(),
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_utf8_values() {
+        // Non-ASCII UTF-8 byte comparison should work correctly since we
+        // compare raw bytes, not decoded strings.
+        let buf = "{\"msg\":\"héllo\"}\n{\"msg\":\"world\"}\n".as_bytes();
+        let config = ScanConfig {
+            row_predicates: vec![RowPredicate::Eq {
+                field: b"msg".to_vec(),
+                value: "héllo".as_bytes().to_vec(),
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 1);
     }
 }

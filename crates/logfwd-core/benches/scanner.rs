@@ -188,6 +188,7 @@ fn pushdown_config() -> ScanConfig {
         extract_all: false,
         keep_raw: false,
         validate_utf8: false,
+        row_predicates: vec![],
     }
 }
 
@@ -197,6 +198,7 @@ fn select_star() -> ScanConfig {
         extract_all: true,
         keep_raw: false,
         validate_utf8: false,
+        row_predicates: vec![],
     }
 }
 
