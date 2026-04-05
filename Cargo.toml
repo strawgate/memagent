@@ -50,6 +50,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-opentelemetry = "0.32"
 turmoil = "0.7"
+thiserror = { version = "2", default-features = false }
+anyhow = "1"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

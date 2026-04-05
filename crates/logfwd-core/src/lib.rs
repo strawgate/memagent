@@ -29,6 +29,8 @@ pub mod otlp;
 ///
 /// Re-exported from [`logfwd_types::pipeline`] for backward compatibility.
 pub use logfwd_types::pipeline;
+/// Per-crate error types.
+pub mod error;
 /// Scanner configuration and field selection.
 pub mod scan_config;
 /// JSON-to-columnar scan loop.

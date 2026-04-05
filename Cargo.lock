@@ -2367,6 +2367,7 @@ dependencies = [
  "proptest",
  "sonic-rs",
  "tempfile",
+ "thiserror 2.0.18",
  "wide",
 ]
 
