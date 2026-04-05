@@ -79,6 +79,12 @@ impl MetricBuffer {
 
     /// Push a new high-resolution point. Automatically downsamples to lower tiers.
     fn push(&mut self, t: f64, v: f64) {
+        if t.is_nan() {
+            return; // reject NaN timestamps — they break tier trimming
+        }
+        if v.is_nan() {
+            return; // reject NaN values — they are meaningless and pollute history
+        }
         let p = Point { t, v };
 
         // Always push to tier 0 (highest resolution).

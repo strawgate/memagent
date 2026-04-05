@@ -986,14 +986,14 @@ impl DiagnosticsServer {
 
             // Compute batch latency using a consistent snapshot since they are
             // updated at different times. We retry until batches remains the same,
-            // capping at 3 attempts to avoid spinning indefinitely under contention.
+            // capping at 64 attempts to avoid spinning indefinitely under contention.
             let mut latency_batches = pm.batches_total.load(Ordering::Acquire);
             let mut batch_latency_total;
             let mut attempts = 0;
             loop {
                 batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Acquire);
                 let current_batches = pm.batches_total.load(Ordering::Acquire);
-                if current_batches == latency_batches || attempts >= 3 {
+                if current_batches == latency_batches || attempts >= 64 {
                     latency_batches = current_batches;
                     break;
                 }
