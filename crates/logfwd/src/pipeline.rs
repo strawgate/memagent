@@ -139,7 +139,7 @@ impl Pipeline {
             return Err("batch_target_bytes must be > 0".to_string());
         }
         let transform_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
-        let mut transform = SqlTransform::new(transform_sql)?;
+        let mut transform = SqlTransform::new(transform_sql).map_err(|e| e.to_string())?;
 
         // Wire up enrichment sources.
         for enrichment in &config.enrichment {
@@ -327,7 +327,7 @@ impl Pipeline {
                 .unwrap_or_else(|| "output_0".to_string());
             let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
             let output_stats = metrics.add_output(&output_name, &output_type_str);
-            build_sink_factory(&output_name, output_cfg, output_stats)?
+            build_sink_factory(&output_name, output_cfg, output_stats).map_err(|e| e.to_string())?
         } else {
             // Multiple outputs: build a FanoutSink of sync sinks wrapped in OnceFactory.
             #[allow(deprecated)]
@@ -340,7 +340,10 @@ impl Pipeline {
                         .unwrap_or_else(|| format!("output_{i}"));
                     let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
                     let output_stats = metrics.add_output(&output_name, &output_type_str);
-                    sinks.push(build_output_sink(&output_name, output_cfg, output_stats)?);
+                    sinks.push(
+                        build_output_sink(&output_name, output_cfg, output_stats)
+                            .map_err(|e| e.to_string())?,
+                    );
                 }
                 let fanout_name = name.to_string();
                 Arc::new(OnceFactory::new(
@@ -442,7 +445,7 @@ impl Pipeline {
     /// Called by `--dry-run` to surface planning errors (duplicate aliases,
     /// bad window specs, etc.) before the first real batch arrives.
     pub fn validate_sql_plan(&mut self) -> Result<(), String> {
-        self.transform.validate_plan()
+        self.transform.validate_plan().map_err(|e| e.to_string())
     }
 
     /// Override the batch flush timeout (for testing).

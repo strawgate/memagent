@@ -15,9 +15,11 @@ pub struct FanoutSink {
     sinks: Vec<Box<dyn OutputSink>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("fanout failed for sink(s): {}", failed_sinks.join(", "))]
 pub struct FanoutSinkError {
     failed_sinks: Vec<String>,
+    #[source]
     first_error: io::Error,
 }
 
@@ -31,22 +33,6 @@ impl FanoutSinkError {
 
     pub fn failed_sinks(&self) -> &[String] {
         &self.failed_sinks
-    }
-}
-
-impl std::fmt::Display for FanoutSinkError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "fanout failed for sink(s): {}",
-            self.failed_sinks.join(", ")
-        )
-    }
-}
-
-impl std::error::Error for FanoutSinkError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.first_error)
     }
 }
 
