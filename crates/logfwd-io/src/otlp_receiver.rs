@@ -691,6 +691,8 @@ fn write_json_escaped_key(out: &mut Vec<u8>, key: &str) {
     out.push(b'"');
 }
 
+/// Writes `"key":<value>` where `value` MUST already be a valid JSON token.
+/// Caller is responsible for quoting/escaping when `value` is a string.
 #[allow(dead_code)] // used in tests; kept for future raw-value emission
 fn write_json_field(out: &mut Vec<u8>, key: &str, value: &str) {
     write_json_escaped_key(out, key);
