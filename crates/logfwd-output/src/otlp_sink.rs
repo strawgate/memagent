@@ -314,6 +314,21 @@ impl OtlpSink {
                     return Ok(super::sink::SendResult::Ok);
                 }
 
+                // Server errors are transient — honour Retry-After header if
+                // present, otherwise fall back to the default.  Check before
+                // reading the body to avoid an unnecessary allocation.
+                if status.is_server_error() {
+                    let retry_after = response
+                        .headers()
+                        .get("Retry-After")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(DEFAULT_RETRY_AFTER_SECS);
+                    return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
+                        retry_after,
+                    )));
+                }
+
                 // Error — read body as bytes to avoid String allocation.
                 let detail = response
                     .bytes()
@@ -324,12 +339,6 @@ impl OtlpSink {
                 if status.is_client_error() {
                     return Ok(super::sink::SendResult::Rejected(format!(
                         "OTLP request rejected with status {status}: {detail}"
-                    )));
-                }
-
-                if status.is_server_error() {
-                    return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
-                        DEFAULT_RETRY_AFTER_SECS,
                     )));
                 }
 
@@ -879,6 +888,39 @@ mod tests {
         match result {
             crate::sink::SendResult::RetryAfter(_) => {} // Expected
             _ => panic!("Expected RetryAfter on 500 response, got: {:?}", result),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_payload_5xx_honours_retry_after_header() {
+        let mut server = mockito::Server::new_async().await;
+        // Server responds 503 with a Retry-After: 42 header.
+        // send_payload should surface that duration rather than the default.
+        let _mock = server
+            .mock("POST", "/v1/logs")
+            .with_status(503)
+            .with_header("Retry-After", "42")
+            .create_async()
+            .await;
+
+        let mut sink = OtlpSink::new(
+            "test".into(),
+            server.url() + "/v1/logs",
+            OtlpProtocol::Http,
+            Compression::None,
+            vec![],
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::new()),
+        )
+        .unwrap();
+
+        sink.encoder_buf.push(1);
+        let result = sink.send_payload(1).await.unwrap();
+        match result {
+            crate::sink::SendResult::RetryAfter(d) => {
+                assert_eq!(d.as_secs(), 42, "should honour Retry-After header value");
+            }
+            _ => panic!("Expected RetryAfter on 503 response, got: {:?}", result),
         }
     }
 
