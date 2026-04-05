@@ -346,6 +346,7 @@ fn measure_pipeline_scenario(scenario: &Scenario, iterations: usize) -> StageSum
         samples.push(run_pipeline_once(scenario));
     }
     samples.sort_by_key(|s| s.total_ns);
+    assert!(!samples.is_empty(), "--iterations must be at least 1");
     let median = &samples[samples.len() / 2];
     StageSummary {
         name: scenario.name,
@@ -467,6 +468,9 @@ fn median_time_ns(iterations: usize, mut f: impl FnMut()) -> u64 {
         samples.push(start.elapsed().as_nanos() as u64);
     }
     samples.sort_unstable();
+    if samples.is_empty() {
+        return 0;
+    }
     samples[samples.len() / 2]
 }
 
@@ -516,8 +520,9 @@ struct RssSampler {
 impl RssSampler {
     fn start() -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let peak_rss_kb = Arc::new(AtomicU64::new(current_rss_kb()));
-        let last_rss_kb = Arc::clone(&peak_rss_kb);
+        let initial_rss = current_rss_kb();
+        let peak_rss_kb = Arc::new(AtomicU64::new(initial_rss));
+        let last_rss_kb = Arc::new(AtomicU64::new(initial_rss));
         let thread_stop = Arc::clone(&stop);
         let thread_peak = Arc::clone(&peak_rss_kb);
         let thread_last = Arc::clone(&last_rss_kb);
