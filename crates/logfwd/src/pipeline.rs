@@ -7,7 +7,11 @@ use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+// std::time::Instant is used in the non-turmoil input_poll_loop (buffered_since).
+// Under turmoil that function is excluded, so the import would be unused.
+#[cfg(not(feature = "turmoil"))]
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 
@@ -72,7 +76,9 @@ enum ChannelMsg {
         checkpoints: Vec<(SourceId, ByteOffset)>,
         /// When the input thread enqueued this message. Used to measure
         /// queue wait time (time data sat in channel before processing).
-        queued_at: Instant,
+        /// Uses tokio::time::Instant so elapsed() measures simulated time
+        /// under Turmoil, not wall-clock time.
+        queued_at: tokio::time::Instant,
     },
 }
 
@@ -761,7 +767,7 @@ impl Pipeline {
         data: Bytes,
         checkpoints: HashMap<SourceId, ByteOffset>,
         flush_reason: &'static str,
-        queued_at: Option<Instant>,
+        queued_at: Option<tokio::time::Instant>,
     ) {
         if data.is_empty() {
             return;
@@ -794,7 +800,8 @@ impl Pipeline {
 
         // Scan (CPU-bound, ~1-5ms per 4MB batch). scan_maybe_blocking
         // uses block_in_place in production, direct call under turmoil.
-        let t0 = Instant::now();
+        // Use tokio::time::Instant so elapsed() measures simulated time under Turmoil.
+        let t0 = tokio::time::Instant::now();
         let batch = {
             let scan_span =
                 tracing::info_span!("scan", pipeline = %self.name, rows = tracing::field::Empty);
@@ -850,7 +857,8 @@ impl Pipeline {
         tracing::Span::current().record("input_rows", num_rows);
 
         // Transform (already async).
-        let t1 = Instant::now();
+        // Use tokio::time::Instant so elapsed() measures simulated time under Turmoil.
+        let t1 = tokio::time::Instant::now();
         let result = match self
             .transform
             .execute(batch)
@@ -906,7 +914,9 @@ impl Pipeline {
             resource_attrs: Arc::clone(&self.resource_attrs),
             observed_time_ns: now_nanos(),
         };
-        let submitted_at = Instant::now();
+        // Use tokio::time::Instant so queue-wait and batch-latency metrics
+        // measure simulated time under Turmoil, not wall-clock time.
+        let submitted_at = tokio::time::Instant::now();
         self.pool
             .submit(WorkItem {
                 num_rows: result.num_rows() as u64,
@@ -1069,7 +1079,7 @@ fn input_poll_loop(
             let msg = ChannelMsg::Data {
                 bytes: data,
                 checkpoints,
-                queued_at: Instant::now(),
+                queued_at: tokio::time::Instant::now(),
             };
             if blocking_send_channel_msg(input.source.name(), &tx, &metrics, msg).is_err() {
                 break;
@@ -1085,7 +1095,7 @@ fn input_poll_loop(
         let msg = ChannelMsg::Data {
             bytes: data,
             checkpoints,
-            queued_at: Instant::now(),
+            queued_at: tokio::time::Instant::now(),
         };
         let _ = blocking_send_channel_msg(input.source.name(), &tx, &metrics, msg);
     }
@@ -1215,7 +1225,7 @@ async fn async_input_poll_loop(
             let msg = ChannelMsg::Data {
                 bytes: data,
                 checkpoints,
-                queued_at: Instant::now(), // std::time OK here — metrics only
+                queued_at: tokio::time::Instant::now(),
             };
             if tx.send(msg).await.is_err() {
                 break;
@@ -1231,7 +1241,7 @@ async fn async_input_poll_loop(
         let msg = ChannelMsg::Data {
             bytes: data,
             checkpoints,
-            queued_at: Instant::now(), // std::time OK here — metrics only
+            queued_at: tokio::time::Instant::now(),
         };
         let _ = tx.send(msg).await;
     }
@@ -1905,7 +1915,7 @@ output:
         tx.try_send(ChannelMsg::Data {
             bytes: Bytes::from_static(&[1]),
             checkpoints: vec![],
-            queued_at: Instant::now(),
+            queued_at: tokio::time::Instant::now(),
         })
         .unwrap();
 
@@ -1919,7 +1929,7 @@ output:
                 ChannelMsg::Data {
                     bytes: Bytes::from_static(&[2]),
                     checkpoints: vec![],
-                    queued_at: Instant::now(),
+                    queued_at: tokio::time::Instant::now(),
                 },
             )
         });
@@ -2809,7 +2819,7 @@ output:
         tx.try_send(ChannelMsg::Data {
             bytes: Bytes::from_static(b"test\n"),
             checkpoints: vec![(SourceId(42), ByteOffset(1000))],
-            queued_at: Instant::now(),
+            queued_at: tokio::time::Instant::now(),
         })
         .unwrap();
 
