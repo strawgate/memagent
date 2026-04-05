@@ -63,12 +63,13 @@ fn bench_json_chain(c: &mut Criterion) {
 
         // Composed: scan → SELECT * → OTLP encode
         group.bench_with_input(BenchmarkId::new("composed", n), &data, |b, data| {
+            let data_bytes = bytes::Bytes::from(data.clone());
             let mut scanner = Scanner::new(ScanConfig::default());
             let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
             let mut sink = make_otlp_sink(Compression::None);
             b.iter(|| {
                 let batch = scanner
-                    .scan_detached(bytes::Bytes::from(data.clone()))
+                    .scan_detached(data_bytes.clone())
                     .expect("scan should not fail");
                 let result = transform.execute_blocking(batch).unwrap();
                 sink.encode_batch(&result, &meta);
@@ -79,10 +80,11 @@ fn bench_json_chain(c: &mut Criterion) {
 
         // Stage 1: scan only
         group.bench_with_input(BenchmarkId::new("scan_only", n), &data, |b, data| {
+            let data_bytes = bytes::Bytes::from(data.clone());
             let mut scanner = Scanner::new(ScanConfig::default());
             b.iter(|| {
                 scanner
-                    .scan_detached(bytes::Bytes::from(data.clone()))
+                    .scan_detached(data_bytes.clone())
                     .expect("scan should not fail")
             });
         });
@@ -132,7 +134,7 @@ fn bench_cri_chain(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("composed", n), &data, |b, data| {
             let mut scanner = Scanner::new(ScanConfig::default());
             let mut transform =
-                SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
+                SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").unwrap();
             let mut sink = make_otlp_sink(Compression::None);
             b.iter(|| {
                 let json = cri_to_json(data);
@@ -170,16 +172,17 @@ fn bench_grok_chain(c: &mut Criterion) {
 
         // Composed: scan → grok+filter → JSON serialize
         group.bench_with_input(BenchmarkId::new("composed", n), &data, |b, data| {
+            let data_bytes = bytes::Bytes::from(data.clone());
             let mut scanner = Scanner::new(ScanConfig::default());
             let mut transform = SqlTransform::new(
-                "SELECT grok(message_str, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed \
-                 FROM logs WHERE level_str != 'DEBUG'",
+                "SELECT grok(message, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed \
+                 FROM logs WHERE level != 'DEBUG'",
             )
             .unwrap();
             let mut sink = NullSink;
             b.iter(|| {
                 let batch = scanner
-                    .scan_detached(bytes::Bytes::from(data.clone()))
+                    .scan_detached(data_bytes.clone())
                     .expect("scan should not fail");
                 let result = transform.execute_blocking(batch).unwrap();
                 sink.send_batch(&result, &meta).unwrap();

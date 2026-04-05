@@ -32,10 +32,11 @@ fn bench_batch_scan(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::new("scan", n), &data, |b, data| {
+            let data_bytes = bytes::Bytes::from(data.clone());
             let mut scanner = Scanner::new(ScanConfig::default());
             b.iter(|| {
                 scanner
-                    .scan_detached(bytes::Bytes::from(data.clone()))
+                    .scan_detached(data_bytes.clone())
                     .expect("scan should not fail")
             });
         });
@@ -62,12 +63,13 @@ fn bench_batch_transform(c: &mut Criterion) {
 
         // Scan + SELECT * (passthrough)
         group.bench_with_input(BenchmarkId::new("scan_passthrough", n), &data, |b, data| {
+            let data_bytes = bytes::Bytes::from(data.clone());
             let mut scanner = Scanner::new(ScanConfig::default());
             let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
             let mut sink = NullSink;
             b.iter(|| {
                 let batch = scanner
-                    .scan_detached(bytes::Bytes::from(data.clone()))
+                    .scan_detached(data_bytes.clone())
                     .expect("scan should not fail");
                 let result = transform.execute_blocking(batch).unwrap();
                 sink.send_batch(&result, &meta).unwrap();
@@ -76,13 +78,14 @@ fn bench_batch_transform(c: &mut Criterion) {
 
         // Scan + WHERE filter
         group.bench_with_input(BenchmarkId::new("scan_filter", n), &data, |b, data| {
+            let data_bytes = bytes::Bytes::from(data.clone());
             let mut scanner = Scanner::new(ScanConfig::default());
             let mut transform =
-                SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
+                SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").unwrap();
             let mut sink = NullSink;
             b.iter(|| {
                 let batch = scanner
-                    .scan_detached(bytes::Bytes::from(data.clone()))
+                    .scan_detached(data_bytes.clone())
                     .expect("scan should not fail");
                 let result = transform.execute_blocking(batch).unwrap();
                 sink.send_batch(&result, &meta).unwrap();
@@ -114,12 +117,13 @@ fn bench_batch_pipeline(c: &mut Criterion) {
             BenchmarkId::new("scan_transform_otlp", n),
             &data,
             |b, data| {
+                let data_bytes = bytes::Bytes::from(data.clone());
                 let mut scanner = Scanner::new(ScanConfig::default());
                 let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
                 let mut sink = make_otlp_sink(Compression::None);
                 b.iter(|| {
                     let batch = scanner
-                        .scan_detached(bytes::Bytes::from(data.clone()))
+                        .scan_detached(data_bytes.clone())
                         .expect("scan should not fail");
                     let result = transform.execute_blocking(batch).unwrap();
                     sink.encode_batch(&result, &meta);
@@ -132,11 +136,12 @@ fn bench_batch_pipeline(c: &mut Criterion) {
             BenchmarkId::new("scan_transform_json", n),
             &data,
             |b, data| {
+                let data_bytes = bytes::Bytes::from(data.clone());
                 let mut scanner = Scanner::new(ScanConfig::default());
                 let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
                 b.iter(|| {
                     let batch = scanner
-                        .scan_detached(bytes::Bytes::from(data.clone()))
+                        .scan_detached(data_bytes.clone())
                         .expect("scan should not fail");
                     let result = transform.execute_blocking(batch).unwrap();
                     let cols = logfwd_output::build_col_infos(&result);
