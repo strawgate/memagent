@@ -58,10 +58,15 @@ fn rss_bytes() -> usize {
     #[cfg(target_os = "macos")]
     {
         use std::mem;
+        // SAFETY: `zeroed()` is valid for `mach_task_basic_info_data_t`
+        // (all-zero is a valid bit pattern for this plain-data struct).
         let mut info: libc::mach_task_basic_info_data_t = unsafe { mem::zeroed() };
         let mut count = (mem::size_of::<libc::mach_task_basic_info_data_t>()
             / mem::size_of::<libc::natural_t>())
             as libc::mach_msg_type_number_t;
+        // SAFETY: `mach_task_self_` is always a valid task port. `info` is a
+        // mutable reference to a zeroed struct of the correct type and `count`
+        // holds the matching element count. `task_info` only writes into `info`.
         let kr = unsafe {
             libc::task_info(
                 libc::mach_task_self_,
@@ -215,7 +220,8 @@ fn main() {
 
     let start = Instant::now();
     let mut last_sample = Instant::now();
-    let mut samples: Vec<Sample> = Vec::with_capacity((duration_secs / 5 + 2) as usize);
+    let expected_samples = (duration_secs / sample_interval.as_secs()) as usize + 2;
+    let mut samples: Vec<Sample> = Vec::with_capacity(expected_samples);
 
     let mut total_rows: u64 = 0;
     let mut total_batches: u64 = 0;
@@ -336,8 +342,10 @@ fn print_report(run: &ProfileRun<'_>) {
 
     // --- RSS analysis ---
     let rss_values: Vec<f64> = samples.iter().map(|s| s.rss_mb).collect();
-    let peak_rss = rss_values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let min_rss = rss_values.iter().copied().fold(f64::INFINITY, f64::min);
+    let (peak_rss, min_rss) = rss_values.iter().copied().fold(
+        (f64::NEG_INFINITY, f64::INFINITY),
+        |(peak, min), v| (peak.max(v), min.min(v)),
+    );
 
     // Steady-state: average of last half of samples
     let steady_start = samples.len() / 2;
@@ -550,8 +558,9 @@ fn print_report(run: &ProfileRun<'_>) {
     );
     println!("| Allocations/row | {:.1} |", allocs_per_row);
     println!(
-        "| RSS per 100K rows | {:.1} MB |",
-        steady_rss / (total_rows as f64 / 100_000.0).max(1.0)
+        "| RSS per batch ({} rows) | {:.1} MB |",
+        batch_lines,
+        steady_rss,
     );
 }
 
