@@ -158,9 +158,13 @@ impl ElasticsearchSink {
     /// Extract the `took` field (milliseconds) from an ES bulk response body.
     /// Returns `None` if the field is absent or not parseable.
     fn extract_took(body: &[u8]) -> Option<u64> {
-        const PREFIX: &[u8] = b"\"took\":";
+        const PREFIX: &[u8] = b"\"took\"";
         let pos = memchr::memmem::find(body, PREFIX)?;
         let rest = body[pos + PREFIX.len()..].trim_ascii_start();
+        if !rest.starts_with(b":") {
+            return None;
+        }
+        let rest = rest[1..].trim_ascii_start();
         let end = rest
             .iter()
             .position(|b| !b.is_ascii_digit())
@@ -176,15 +180,27 @@ impl ElasticsearchSink {
     /// Returns `Ok(())` if all documents succeeded (`errors: false`), or
     /// an `Err` with the first failure's type and reason.
     fn parse_bulk_response(body: &[u8]) -> io::Result<()> {
-        if memchr::memmem::find(body, b"\"errors\":true").is_none() {
-            return Ok(());
-        }
         let v: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("failed to parse ES bulk response: {e}"),
             )
         })?;
+
+        let has_errors = v
+            .get("errors")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ES bulk response missing 'errors' boolean field",
+                )
+            })?;
+
+        if !has_errors {
+            return Ok(());
+        }
+
         let items = v
             .get("items")
             .and_then(serde_json::Value::as_array)
@@ -194,6 +210,14 @@ impl ElasticsearchSink {
                     "ES bulk response missing 'items' array",
                 )
             })?;
+
+        if items.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ES bulk response indicated errors but 'items' array is empty",
+            ));
+        }
+
         for item in items {
             let action = item
                 .as_object()
@@ -304,9 +328,16 @@ impl ElasticsearchSink {
 
             // Proactive split: if serialized payload exceeds max_bulk_bytes, split
             // the batch in half and send each half separately.
-            if payload_len > max_bytes && n > 1 && depth < MAX_SPLIT_DEPTH {
-                self.batch_buf.clear(); // discard oversized payload
-                return self.send_split_halves(batch, metadata, depth).await;
+            if payload_len > max_bytes {
+                if n > 1 && depth < MAX_SPLIT_DEPTH {
+                    self.batch_buf.clear(); // discard oversized payload
+                    return self.send_split_halves(batch, metadata, depth).await;
+                }
+                // Row is too large to fit in a single bulk request even on its own.
+                return Ok(super::sink::SendResult::Rejected(format!(
+                    "single-row batch ({} bytes) exceeds max_bulk_bytes ({})",
+                    payload_len, max_bytes
+                )));
             }
 
             // Move the serialized payload out of batch_buf so we can pass it to
@@ -690,7 +721,8 @@ impl ElasticsearchSinkFactory {
 
         // Pre-compute the action line bytes once so serialize_batch doesn't have
         // to allocate a String on every call.
-        let action_line = format!("{{\"index\":{{\"_index\":\"{index}\"}}}}\n");
+        let escaped_index = serde_json::to_string(&index).map_err(io::Error::other)?;
+        let action_line = format!("{{\"index\":{{\"_index\":{escaped_index}}}}}\n");
 
         Ok(ElasticsearchSinkFactory {
             name,
@@ -747,8 +779,15 @@ impl ElasticsearchSinkFactory {
 /// Write a Unix timestamp (seconds) as `YYYY-MM-DDTHH:MM:SS` directly into
 /// `buf[0..19]`, zero-allocation.
 ///
-/// Handles dates from 1970 to ~2100 correctly via the Gregorian calendar.
-fn write_unix_timestamp_utc_into(buf: &mut [u8; 19], secs: u64) {
+/// Handles dates from 1970 to 9999 correctly via the Gregorian calendar.
+/// Timestamps beyond year 9999 are clamped to 9999-12-31T23:59:59 to fit
+/// the 19-byte ASCII buffer and comply with ISO 8601 4-digit year limit.
+fn write_unix_timestamp_utc_into(buf: &mut [u8; 19], mut secs: u64) {
+    const MAX_SECS: u64 = 253402300799; // 9999-12-31T23:59:59
+    if secs > MAX_SECS {
+        secs = MAX_SECS;
+    }
+
     let days = secs / 86400;
     let time = secs % 86400;
     let h = time / 3600;
@@ -757,6 +796,13 @@ fn write_unix_timestamp_utc_into(buf: &mut [u8; 19], secs: u64) {
 
     let mut year = 1970u32;
     let mut remaining = days;
+
+    // Jump in 400-year blocks (146097 days) to ensure O(1) performance
+    // regardless of how large the timestamp is.
+    let blocks400 = remaining / 146097;
+    year += blocks400 as u32 * 400;
+    remaining %= 146097;
+
     loop {
         let days_in_year = if is_leap_year(year) { 366 } else { 365 };
         if remaining < days_in_year {
@@ -1055,18 +1101,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_bulk_response_malformed_json_without_errors_true_is_ok() {
-        // The implementation uses fast-path memchr for "errors":true.
-        // Malformed JSON that doesn't contain that string is treated as success.
+    fn parse_bulk_response_malformed_json_is_error() {
         ElasticsearchSink::parse_bulk_response(b"not valid json")
-            .expect("no errors:true → treated as ok");
-    }
-
-    #[test]
-    fn parse_bulk_response_malformed_json_after_errors_true_returns_err() {
-        // If "errors":true is present but the full JSON parse fails, return an error.
-        ElasticsearchSink::parse_bulk_response(b"\"errors\":true {{{malformed")
-            .expect_err("malformed JSON after errors:true should error");
+            .expect_err("malformed json should be an error");
     }
 
     #[test]
@@ -1074,6 +1111,90 @@ mod tests {
         // errors:false means success even if items have non-200 status
         let response = br#"{"took":1,"errors":false,"items":[{"index":{"_id":"1","status":200}}]}"#;
         ElasticsearchSink::parse_bulk_response(response).expect("errors:false must succeed");
+    }
+
+    #[test]
+    fn test_index_name_escaping() {
+        let index = "logs\"-and-\\backslashes";
+        let factory = ElasticsearchSinkFactory::new(
+            "test".to_string(),
+            "http://localhost:9200".to_string(),
+            index.to_string(),
+            vec![],
+            false,
+            ElasticsearchRequestMode::Buffered,
+            Arc::new(ComponentStats::default()),
+        ).expect("factory creation failed");
+
+        let action_line = std::str::from_utf8(&factory.config.action_bytes).unwrap();
+        // Should be: {"index":{"_index":"logs\"-and-\\backslashes"}}\n
+        assert!(action_line.contains(r#"_index":"logs\"-and-\\backslashes""#), "got: {}", action_line);
+    }
+
+    #[test]
+    fn test_timestamp_extreme_values() {
+        // Year 10000+: 253402300800 seconds is 10000-01-01T00:00:00
+        let secs_y10k = 253402300800;
+        let ts = format_unix_timestamp_utc(secs_y10k);
+        // Current implementation will either produce "10000-..." (corrupting the 19-byte buf)
+        // or debug_panic. We want it to clamp to 9999-12-31T23:59:59.
+        assert_eq!(ts, "9999-12-31T23:59:59");
+
+        // u64::MAX should not hang (regression for #1087)
+        let _ = format_unix_timestamp_utc(u64::MAX);
+    }
+
+    #[test]
+    fn test_parse_bulk_response_whitespace() {
+        // Bug #1095: parser misses errors if there's whitespace
+        let response = br#" { "took": 5, "errors" :  true , "items": [] } "#;
+        ElasticsearchSink::parse_bulk_response(response).expect_err("should detect errors:true with whitespace");
+    }
+
+    #[test]
+    fn test_extract_took_whitespace() {
+        let response = br#" { "took" :  123 , "errors": false } "#;
+        assert_eq!(ElasticsearchSink::extract_took(response), Some(123));
+    }
+
+    #[test]
+    fn test_parse_bulk_response_malformed_is_error() {
+        // Bug #1094: malformed bodies treated as success
+        ElasticsearchSink::parse_bulk_response(b"{}")
+            .expect_err("missing errors field should be an error");
+        ElasticsearchSink::parse_bulk_response(b"not json")
+            .expect_err("malformed json should be an error");
+    }
+
+    #[test]
+    fn test_send_batch_oversized_single_row() {
+        use crate::sink::Sink;
+        let factory = ElasticsearchSinkFactory::new(
+            "test".to_string(),
+            "http://localhost:9200".to_string(),
+            "logs".to_string(),
+            vec![],
+            false,
+            ElasticsearchRequestMode::Buffered,
+            Arc::new(ComponentStats::default()),
+        ).unwrap();
+        let mut sink = factory.create_sink();
+
+        // Use a row large enough to exceed 5MB default limit.
+        let large_str = "A".repeat(5 * 1024 * 1024 + 1024);
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![large_str]))],
+        ).unwrap();
+
+        let meta = zero_metadata();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let result = rt.block_on(sink.send_batch(&batch, &meta)).unwrap();
+        match result {
+            crate::sink::SendResult::Rejected(msg) => assert!(msg.contains("exceeds max_bulk_bytes")),
+            _ => panic!("Expected Rejected, got {:?}", result),
+        }
     }
 }
 
