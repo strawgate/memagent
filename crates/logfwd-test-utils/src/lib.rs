@@ -11,6 +11,18 @@ pub use sinks::CountingSink;
 use std::io::Write as _;
 use std::path::Path;
 
+/// Return the number of proptest cases to run.
+///
+/// Reads from `PROPTEST_CASES` env var (for CI scaling).
+/// Default: 256 (fast enough for per-PR CI, thorough enough to catch most bugs).
+/// Nightly CI sets 10,000 for deeper exploration.
+pub fn proptest_cases() -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(256)
+}
+
 /// Return a no-op OpenTelemetry Meter for tests.
 pub fn test_meter() -> opentelemetry::metrics::Meter {
     opentelemetry::global::meter("test")

@@ -2381,6 +2381,7 @@ dependencies = [
  "libc",
  "logfwd-arrow",
  "logfwd-core",
+ "logfwd-test-utils",
  "logfwd-types",
  "memchr",
  "notify",

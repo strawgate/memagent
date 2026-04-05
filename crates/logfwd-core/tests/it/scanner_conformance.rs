@@ -241,7 +241,7 @@ fn assert_values_correct(input: &[u8]) {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(logfwd_test_utils::proptest_cases()))]
 
     #[test]
     fn oracle_single_line(obj in arb_flat_object(1..20)) {
@@ -416,7 +416,7 @@ fn assert_builders_consistent(input: &[u8]) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(logfwd_test_utils::proptest_cases()))]
 
     #[test]
     fn consistency_single_line(obj in arb_flat_object(1..15)) {
@@ -523,7 +523,7 @@ fn assert_accumulation_consistent(chunks: &[&[u8]]) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(logfwd_test_utils::proptest_cases()))]
 
     /// Split NDJSON at a proptest-chosen newline boundary and accumulate via BytesMut.
     #[test]
