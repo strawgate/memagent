@@ -719,7 +719,7 @@ impl Pipeline {
                                 offset: *offset,
                             });
                         }
-                        flush_checkpoint_with_retry(store.as_mut());
+                        flush_checkpoint_with_retry(store.as_mut()).await;
                     }
                 }
                 Err(still_draining) => {
@@ -739,7 +739,7 @@ impl Pipeline {
                                 offset: *offset,
                             });
                         }
-                        flush_checkpoint_with_retry(store.as_mut());
+                        flush_checkpoint_with_retry(store.as_mut()).await;
                     }
                 }
             }
@@ -1111,10 +1111,10 @@ fn input_poll_loop(
 /// A single failure here loses all checkpoint advancement from the run.
 /// Retry with brief sleeps to handle transient I/O errors (disk busy, NFS glitch).
 ///
-/// Uses `std::thread::sleep` (not `tokio::time::sleep`) because this runs
-/// during shutdown after all async work is drained, and `CheckpointStore::flush`
-/// is itself synchronous I/O — there is no benefit to yielding.
-fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore) {
+/// Uses `tokio::time::sleep` for the retry delay so the async task yields
+/// between attempts (Turmoil-compatible). Note: `store.flush()` itself is
+/// synchronous I/O; only the inter-retry sleep is non-blocking.
+async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore) {
     const MAX_ATTEMPTS: u32 = 3;
     const RETRY_DELAY: Duration = Duration::from_millis(100);
 
@@ -1133,7 +1133,7 @@ fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore) {
                         error = %e,
                         "pipeline: checkpoint flush failed, retrying"
                     );
-                    std::thread::sleep(RETRY_DELAY);
+                    tokio::time::sleep(RETRY_DELAY).await;
                 } else {
                     tracing::error!(
                         attempts = MAX_ATTEMPTS,
