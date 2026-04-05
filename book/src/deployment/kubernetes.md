@@ -220,7 +220,7 @@ Expose port 9090 in the pod spec to make the diagnostics API reachable from
 within the cluster.
 
 ```yaml
-# Note: logfwd does not expose a Prometheus /metrics endpoint.
+# Note: logfwd's /metrics endpoint returns HTTP 410 Gone (intentionally disabled).
 # Use /api/pipelines for JSON diagnostics instead.
 # To integrate with Prometheus, use a custom adapter or wait for a future
 # /metrics endpoint.

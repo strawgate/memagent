@@ -292,20 +292,22 @@ transform: |
 
 ### Column naming convention
 
-The scanner maps each JSON field to one or more typed Arrow columns following the
-`{field}_{type}` naming convention:
+The scanner maps each JSON field to a typed Arrow column using the field's base
+name (no type suffix):
 
-| JSON value type | Arrow column type | Column name pattern | Example |
-|-----------------|-------------------|---------------------|---------|
-| String | StringArray | `{field}_str` | `level_str` |
-| Integer | Int64Array | `{field}_int` | `status_int` |
-| Float | Float64Array | `{field}_float` | `latency_ms_float` |
-| Boolean | StringArray (`"true"`/`"false"`) | `{field}_str` | `enabled_str` |
-| Null | null in all type columns | — | — |
-| Object / Array | StringArray (raw JSON) | `{field}_str` | `metadata_str` |
+| JSON value type | Arrow column type | Column name | Example |
+|-----------------|-------------------|-------------|---------|
+| String | StringArray | `{field}` | `level` |
+| Integer | Int64Array | `{field}` | `status` |
+| Float | Float64Array | `{field}` | `latency_ms` |
+| Boolean | StringArray (`"true"`/`"false"`) | `{field}` | `enabled` |
+| Null | null in column | `{field}` | — |
+| Object / Array | StringArray (raw JSON) | `{field}` | `metadata` |
 
-When a field contains mixed types across rows, separate columns are emitted:
-`status_int` and `status_str` can coexist in the same batch.
+When a field contains mixed types across rows, the scanner emits a single
+**Struct column** under the field's base name containing one child per observed
+type (e.g., a `status` Struct with `int` and `str` children). Legacy
+single-underscore suffixed columns (`status_int`, `level_str`) are not emitted.
 
 Special columns added by the scanner:
 
