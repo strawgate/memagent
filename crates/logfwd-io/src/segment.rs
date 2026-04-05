@@ -76,12 +76,24 @@ impl SegmentHeader {
                 format!("unsupported segment version {version}"),
             ));
         }
+        // All slice ranges are within the fixed-size 32-byte array, so
+        // try_into to [u8; N] is infallible. Use explicit byte indexing
+        // to avoid any unwrap in production code.
+        let seg_id = [
+            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+        ];
+        let hash = [
+            buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+        ];
+        let ts = [
+            buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+        ];
         Ok(Self {
             version,
             flags: u16::from_le_bytes([buf[6], buf[7]]),
-            segment_id: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
-            sql_hash: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
-            created_epoch_ms: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
+            segment_id: u64::from_le_bytes(seg_id),
+            sql_hash: u64::from_le_bytes(hash),
+            created_epoch_ms: u64::from_le_bytes(ts),
         })
     }
 }
@@ -124,18 +136,24 @@ impl SegmentFooter {
                 "bad footer magic",
             ));
         }
-        let footer_size = u32::from_le_bytes(buf[28..32].try_into().unwrap());
+        let footer_size = u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]);
         if footer_size as usize != FOOTER_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unexpected footer size {footer_size}"),
             ));
         }
+        let rc = [
+            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        ];
+        let ds = [
+            buf[12], buf[13], buf[14], buf[15], buf[16], buf[17], buf[18], buf[19],
+        ];
         Ok(Self {
-            record_count: u64::from_le_bytes(buf[0..8].try_into().unwrap()),
-            batch_count: u32::from_le_bytes(buf[8..12].try_into().unwrap()),
-            data_size: u64::from_le_bytes(buf[12..20].try_into().unwrap()),
-            checksum: u32::from_le_bytes(buf[20..24].try_into().unwrap()),
+            record_count: u64::from_le_bytes(rc),
+            batch_count: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
+            data_size: u64::from_le_bytes(ds),
+            checksum: u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]),
         })
     }
 }
@@ -338,6 +356,17 @@ impl SegmentFile {
             if cursor.position() == pos_before {
                 break;
             }
+        }
+
+        if batches.len() != self.footer.batch_count as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "batch count mismatch: footer says {}, read {}",
+                    self.footer.batch_count,
+                    batches.len()
+                ),
+            ));
         }
 
         Ok(batches)
