@@ -661,14 +661,9 @@ impl Config {
                             )));
                         }
                     }
-                    InputType::ArrowIpc => {
-                        if input.listen.is_none() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'listen' is required for arrow_ipc inputs"
-                            )));
-                        }
-                    }
-                    InputType::Generator => {}
+                    // ArrowIpc is always rejected below as "not yet supported";
+                    // skip listen validation to avoid a misleading error message.
+                    InputType::ArrowIpc | InputType::Generator => {}
                 }
 
                 // Reject fields that don't apply to this input type.
@@ -1277,7 +1272,10 @@ output:
     }
 
     #[test]
-    fn validation_arrow_ipc_requires_listen() {
+    fn validation_arrow_ipc_not_supported() {
+        // arrow_ipc is always rejected as "not yet supported" regardless of
+        // whether 'listen' is specified — the 'listen' check must not fire
+        // first and give a misleading error.
         let yaml = r"
 input:
   type: arrow_ipc
@@ -1286,7 +1284,10 @@ output:
 ";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
+        assert!(
+            msg.contains("not yet supported"),
+            "expected 'not yet supported' in error: {msg}"
+        );
     }
 
     #[test]
