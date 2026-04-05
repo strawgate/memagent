@@ -2348,6 +2348,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_yaml_ng",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
