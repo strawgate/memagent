@@ -3,3 +3,8 @@
 status-level = "fail"
 final-status-level = "fail"
 failure-output = "immediate"
+# Cap parallelism so multiple worktrees don't saturate the machine.
+# Each test also spawns a multi-thread tokio runtime, so actual thread count
+# is test-threads × num_cpus. 4 threads keeps a worktree from monopolising
+# the CPU while still running tests concurrently.
+test-threads = 4

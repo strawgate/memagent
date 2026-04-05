@@ -227,6 +227,7 @@ async fn bench_scenario(label: &str, num_rows: usize, num_fields: usize, iters: 
 }
 
 #[tokio::test]
+#[ignore = "benchmark: run with `cargo nextest run -- --ignored side_by_side_benchmark`"]
 async fn side_by_side_benchmark() {
     let iters = 5;
     println!("\n  ========== Raw-First vs Current Pipeline ==========\n");

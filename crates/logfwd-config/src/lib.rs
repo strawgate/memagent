@@ -229,6 +229,10 @@ pub struct InputConfig {
     /// Maximum number of file descriptors to keep open simultaneously.
     /// Applies only to `file` inputs. Defaults to 1024 when not set.
     pub max_open_files: Option<usize>,
+    /// How often (ms) to re-evaluate glob patterns to discover new files.
+    /// Applies only to glob `file` inputs. Defaults to 5000ms when not set.
+    /// Set to a small value (e.g. 50) in tests to avoid long waits.
+    pub glob_rescan_interval_ms: Option<u64>,
 }
 
 /// A single output destination.

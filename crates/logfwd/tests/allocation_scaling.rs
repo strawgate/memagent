@@ -89,6 +89,7 @@ output:
 }
 
 #[test]
+#[ignore = "scaling benchmark: run with `cargo nextest run -- --ignored allocation_per_row_decreases_with_scale`"]
 fn allocation_per_row_decreases_with_scale() {
     // Measure at three scales.
     let (bytes_10k, rows_10k, batches_10k) = measure_pipeline(10_000);

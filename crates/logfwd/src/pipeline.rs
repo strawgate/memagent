@@ -1330,13 +1330,16 @@ fn build_input_state(
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': file input requires 'path'"))?;
             let format = cfg.format.clone().unwrap_or(Format::Auto);
-            let tail_config = TailConfig {
+            let mut tail_config = TailConfig {
                 start_from_end: false,
                 poll_interval_ms: 50,
                 read_buf_size: 256 * 1024,
                 max_open_files: cfg.max_open_files.unwrap_or(1024),
                 ..Default::default()
             };
+            if let Some(interval) = cfg.glob_rescan_interval_ms {
+                tail_config.glob_rescan_interval_ms = interval;
+            }
             let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
             let source = if is_glob {
                 FileInput::new_with_globs(name.to_string(), &[path.as_str()], tail_config)

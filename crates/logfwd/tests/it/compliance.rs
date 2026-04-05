@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -35,19 +36,26 @@ use tokio_util::sync::CancellationToken;
 
 /// A [`Sink`] that stores all received `RecordBatch`es in a shared
 /// `Arc<Mutex<Vec<RecordBatch>>>` for post-run verification.
+///
+/// Also maintains an atomic row counter so the test harness can cancel the
+/// pipeline as soon as the expected number of rows has been received, rather
+/// than waiting a fixed timeout.
 struct CaptureSink {
     name: String,
     batches: Arc<Mutex<Vec<RecordBatch>>>,
+    rows_received: Arc<AtomicU64>,
 }
 
 impl CaptureSink {
-    fn new(name: &str) -> (Self, Arc<Mutex<Vec<RecordBatch>>>) {
+    fn new(name: &str) -> (Self, Arc<Mutex<Vec<RecordBatch>>>, Arc<AtomicU64>) {
         let batches = Arc::new(Mutex::new(Vec::new()));
+        let rows_received = Arc::new(AtomicU64::new(0));
         let sink = CaptureSink {
             name: name.to_string(),
             batches: Arc::clone(&batches),
+            rows_received: Arc::clone(&rows_received),
         };
-        (sink, batches)
+        (sink, batches, rows_received)
     }
 }
 
@@ -57,6 +65,8 @@ impl Sink for CaptureSink {
         batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+        self.rows_received
+            .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
         self.batches
             .lock()
             .expect("CaptureSink lock poisoned")
@@ -237,21 +247,34 @@ fn verify_batches(
 // Pipeline helper
 // ---------------------------------------------------------------------------
 
-/// Build a pipeline from YAML config, inject a CaptureSink, run for the
-/// specified duration, and return the captured RecordBatches.
-fn run_compliance_pipeline(yaml: &str, timeout: Duration) -> Vec<RecordBatch> {
+/// Build a pipeline from YAML config, inject a CaptureSink, run until
+/// `expected_rows` have been received (or `timeout` elapses as a safety
+/// deadline), and return the captured RecordBatches.
+///
+/// Cancels as soon as the sink has seen enough rows rather than sleeping the
+/// full timeout, so tests finish as fast as the pipeline can process data.
+fn run_compliance_pipeline(yaml: &str, expected_rows: usize, timeout: Duration) -> Vec<RecordBatch> {
     let config = Config::load_str(yaml).expect("failed to parse YAML config");
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None)
         .expect("failed to build pipeline");
 
-    let (sink, captured) = CaptureSink::new("compliance-capture");
+    let (sink, captured, rows_received) = CaptureSink::new("compliance-capture");
     let mut pipeline = pipeline.with_sink(Box::new(sink));
 
     let shutdown = CancellationToken::new();
     let sd = shutdown.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(timeout);
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if rows_received.load(Ordering::Relaxed) >= expected_rows as u64 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         sd.cancel();
     });
 
@@ -289,7 +312,7 @@ output:
         log_path.display()
     );
 
-    let batches = run_compliance_pipeline(&yaml, Duration::from_millis(2000));
+    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(10));
     let report = verify_batches(&batches, count, "");
 
     assert!(
@@ -329,7 +352,8 @@ pipelines:
         input_yaml_parts.join("\n")
     );
 
-    let batches = run_compliance_pipeline(&yaml, Duration::from_millis(3000));
+    let total_rows = sources.len() * per_source;
+    let batches = run_compliance_pipeline(&yaml, total_rows, Duration::from_secs(15));
 
     for source in &sources {
         let report = verify_batches(&batches, per_source, source);
@@ -368,7 +392,8 @@ output:
         log_path.display()
     );
 
-    let batches = run_compliance_pipeline(&yaml, Duration::from_millis(2000));
+    // The WHERE filter halves the output: only odd sequence_ids pass.
+    let batches = run_compliance_pipeline(&yaml, count / 2, Duration::from_secs(10));
 
     // ERROR lines are the odd-numbered sequence_ids (1, 3, 5, ...).
     let mut all_ids: Vec<i64> = Vec::new();
@@ -438,7 +463,7 @@ output:
         log_path.display()
     );
 
-    let batches = run_compliance_pipeline(&yaml, Duration::from_millis(2000));
+    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(10));
 
     // Verify schema: only the projected columns should be present.
     for batch in &batches {
@@ -489,7 +514,7 @@ output:
         log_path.display()
     );
 
-    let batches = run_compliance_pipeline(&yaml, Duration::from_millis(5000));
+    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(30));
     let report = verify_batches(&batches, count, "");
 
     assert!(

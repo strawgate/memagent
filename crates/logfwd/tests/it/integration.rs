@@ -28,18 +28,27 @@ use tokio_util::sync::CancellationToken;
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/// Run `pipeline` until `timeout_ms` elapses, then return it so callers can
-/// inspect metrics.
+/// Run `pipeline` until `expected_lines` have passed through the transform
+/// stage (checked via `transform_in.lines_total`), then cancel and return.
 ///
-/// The pipeline's default batch timeout (100 ms) means one flush will occur
-/// once data is in the buffer.  A 600 ms window gives comfortable headroom for
-/// the tailer poll cycle (50 ms), the batch timeout (100 ms), and any
-/// scheduling jitter.
-fn run_for(mut pipeline: Pipeline, timeout_ms: u64) -> Pipeline {
+/// A safety deadline prevents the test from hanging if the pipeline stalls.
+/// Polls every 20 ms so tests finish as soon as data is processed rather than
+/// waiting a fixed timeout.
+fn run_until_lines(mut pipeline: Pipeline, expected_lines: u64) -> Pipeline {
+    let metrics = Arc::clone(pipeline.metrics());
     let shutdown = CancellationToken::new();
     let sd = shutdown.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(timeout_ms));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= expected_lines {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         sd.cancel();
     });
     pipeline.run(&shutdown).expect("pipeline.run failed");
@@ -83,7 +92,7 @@ output:
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
-    let pipeline = run_for(pipeline, 600);
+    let pipeline = run_until_lines(pipeline, 10);
 
     let lines_in = pipeline
         .metrics()
@@ -135,7 +144,7 @@ output:
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
-    let pipeline = run_for(pipeline, 600);
+    let pipeline = run_until_lines(pipeline, 3);
 
     let lines_in = pipeline
         .metrics()
@@ -185,7 +194,7 @@ output:
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
-    let pipeline = run_for(pipeline, 600);
+    let pipeline = run_until_lines(pipeline, 10);
 
     let lines_in = pipeline
         .metrics()
@@ -275,7 +284,7 @@ output:
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
-    run_for(pipeline, 600);
+    run_until_lines(pipeline, 5);
 
     let reqs = request_count.load(Ordering::Relaxed);
     assert!(reqs >= 1, "expected at least 1 HTTP request, got {reqs}");
@@ -337,14 +346,23 @@ output:
     let pipe_cfg = &config.pipelines["default"];
     let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
+    let metrics = Arc::clone(pipeline.metrics());
     let shutdown = CancellationToken::new();
     let sd_run = shutdown.clone();
     let sd_write = shutdown.clone();
 
     // Write post-rotation data in a background thread.
     std::thread::spawn(move || {
-        // Wait for the pipeline to ingest the pre-rotation data.
-        std::thread::sleep(Duration::from_millis(350));
+        // Poll until the pre-rotation data (5 lines) is ingested before rotating.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 5
+                || std::time::Instant::now() >= deadline
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
 
         // Rename the active file to simulate rotation.
         std::fs::rename(&log_path, &rotated_path).unwrap();
@@ -355,8 +373,16 @@ output:
             .collect();
         std::fs::write(&log_path, post_data.as_bytes()).unwrap();
 
-        // Let the pipeline read the new file before cancelling.
-        std::thread::sleep(Duration::from_millis(500));
+        // Poll until all 10 lines (pre + post) are processed, then cancel.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 10
+                || std::time::Instant::now() >= deadline
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         sd_run.cancel();
     });
 

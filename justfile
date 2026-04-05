@@ -19,7 +19,7 @@ clippy:
 
 # Run all tests
 test:
-    cargo test
+    cargo nextest run --profile ci
 
 # Run Kani formal verification proofs (logfwd-core only)
 # Requires: cargo install --locked kani-verifier && cargo kani setup
@@ -56,9 +56,10 @@ dashboard:
 
 
 
-# Extended testing: 10K proptest cases + turmoil simulation
+# Extended testing: 10K proptest cases + turmoil simulation + ignored benchmarks/scaling tests
 test-extended:
     PROPTEST_CASES=10000 cargo nextest run --profile ci
+    cargo nextest run --profile ci --run-ignored ignored-only
     cargo test -p logfwd --features turmoil --test turmoil_sim
 
 # Build release binary
