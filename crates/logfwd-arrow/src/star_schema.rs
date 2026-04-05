@@ -1014,7 +1014,9 @@ pub(crate) fn parse_rfc3339_nanos(s: &str) -> Option<i64> {
         .checked_add(i64::from(sec))?
         .checked_sub(tz_offset_secs)?;
 
-    total_secs.checked_mul(1_000_000_000)?.checked_add(frac_nanos)
+    total_secs
+        .checked_mul(1_000_000_000)?
+        .checked_add(frac_nanos)
 }
 
 /// Convert a civil date to days since Unix epoch (1970-01-01).
