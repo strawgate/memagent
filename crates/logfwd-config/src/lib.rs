@@ -691,6 +691,11 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'max_open_files' is not supported for tcp/udp inputs"
                             )));
                         }
+                        if input.glob_rescan_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for tcp/udp inputs"
+                            )));
+                        }
                     }
                     InputType::Otlp => {
                         if input.path.is_some() {
@@ -703,6 +708,11 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'max_open_files' is not supported for otlp inputs"
                             )));
                         }
+                        if input.glob_rescan_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for otlp inputs"
+                            )));
+                        }
                     }
                     InputType::Generator => {
                         if input.path.is_some() {
@@ -713,6 +723,11 @@ impl Config {
                         if input.max_open_files.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'max_open_files' is not supported for generator inputs"
+                            )));
+                        }
+                        if input.glob_rescan_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for generator inputs"
                             )));
                         }
                     }
@@ -2332,6 +2347,25 @@ pipelines:
         assert!(
             err.to_string().contains("max_open_files"),
             "expected max_open_files rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn tcp_input_rejects_glob_rescan_interval_ms() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 0.0.0.0:514
+        glob_rescan_interval_ms: 5000
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("glob_rescan_interval_ms"),
+            "expected glob_rescan_interval_ms rejection: {err}"
         );
     }
 
