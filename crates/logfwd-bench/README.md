@@ -8,6 +8,12 @@ Criterion microbenchmarks and profiling tools for logfwd.
 # Run Tier 1 Criterion benchmarks (fast, ~30s — pipeline, output_encode, full_chain)
 just bench
 
+# Run the dedicated FramedInput profiling report (stage timings + RSS + optional flamegraph)
+just bench-framed-input -- --lines 200000 --iterations 5 --flamegraph /tmp/framed-input.svg
+
+# Run the allocation-only FramedInput report (dhat-backed, slower)
+just bench-framed-input-alloc -- --lines 200000
+
 # Run all Criterion benchmarks (Tier 1 + 2, includes file_io, batch_formation)
 just bench-full
 
@@ -54,6 +60,7 @@ just bench-report
 | `main.rs` | `logfwd-bench` | Reads Criterion JSON, emits markdown tables |
 | `e2e_profile.rs` | *(lib)* | Per-stage timing breakdown (scan → transform → encode → compress) |
 | `es_throughput.rs` | `es-throughput` | Elasticsearch output throughput with worker scaling |
+| `bin/framed_input_profile.rs` | `framed_input_profile` | FramedInput stage timings, RSS, optional flamegraph, optional dhat allocation report |
 | `explore.rs` | *(lib)* | Multi-dimensional exploratory benchmark (CSV output) |
 | `rss.rs` | *(lib)* | Resident set size at each pipeline stage |
 | `sizes.rs` | *(lib)* | Data size analysis: raw → Arrow → IPC → Parquet |
@@ -97,3 +104,4 @@ assert_eq!(a, b); // Always true
 3. **I/O bottleneck**: Is file read + framing significant vs downstream scan/transform?
 4. **Batch amortization**: At what batch size does per-row overhead stabilize?
 5. **CRI overhead**: What's the cost of CRI parse + reassemble vs plain JSON?
+6. **FramedInput overhead**: How much CPU / memory sits in newline framing, remainder handling, and format processing before the scanner?
