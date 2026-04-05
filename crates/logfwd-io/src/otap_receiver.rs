@@ -78,8 +78,10 @@ impl OtapReceiver {
         addr: &str,
         capacity: usize,
     ) -> io::Result<Self> {
-        let server = std::sync::Arc::new(tiny_http::Server::http(addr)
-            .map_err(|e| io::Error::other(format!("OTAP receiver bind {addr}: {e}")))?);
+        let server = std::sync::Arc::new(
+            tiny_http::Server::http(addr)
+                .map_err(|e| io::Error::other(format!("OTAP receiver bind {addr}: {e}")))?,
+        );
 
         let bound_addr = match server.server_addr() {
             tiny_http::ListenAddr::IP(a) => a,
@@ -265,21 +267,27 @@ impl OtapReceiver {
 
     /// Blocking receive of the next RecordBatch.
     pub fn recv(&self) -> io::Result<RecordBatch> {
-        self.rx.as_ref().unwrap()
+        self.rx
+            .as_ref()
+            .unwrap()
             .recv()
             .map_err(|_| io::Error::other("OTAP receiver: channel disconnected"))
     }
 
     /// Receive with a timeout.
     pub fn recv_timeout(&self, timeout: std::time::Duration) -> io::Result<RecordBatch> {
-        self.rx.as_ref().unwrap().recv_timeout(timeout).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => {
-                io::Error::new(io::ErrorKind::TimedOut, "OTAP receiver: timed out")
-            }
-            mpsc::RecvTimeoutError::Disconnected => {
-                io::Error::other("OTAP receiver: channel disconnected")
-            }
-        })
+        self.rx
+            .as_ref()
+            .unwrap()
+            .recv_timeout(timeout)
+            .map_err(|e| match e {
+                mpsc::RecvTimeoutError::Timeout => {
+                    io::Error::new(io::ErrorKind::TimedOut, "OTAP receiver: timed out")
+                }
+                mpsc::RecvTimeoutError::Disconnected => {
+                    io::Error::other("OTAP receiver: channel disconnected")
+                }
+            })
     }
 
     /// Return the name of this receiver.

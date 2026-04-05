@@ -44,8 +44,10 @@ impl OtlpReceiverInput {
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
     fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
-        let server = std::sync::Arc::new(tiny_http::Server::http(addr)
-            .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?);
+        let server = std::sync::Arc::new(
+            tiny_http::Server::http(addr)
+                .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?,
+        );
 
         let bound_addr = match server.server_addr() {
             tiny_http::ListenAddr::IP(a) => a,
@@ -260,8 +262,6 @@ impl OtlpReceiverInput {
         self.addr
     }
 }
-
-
 
 impl Drop for OtlpReceiverInput {
     fn drop(&mut self) {
