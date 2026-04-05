@@ -111,6 +111,9 @@ pub struct StreamingBuilder {
     /// Raw line views: (offset_in_buf, len) per row, in row order.
     /// Populated only when `keep_raw` is true.
     raw_views: Vec<(u32, u32)>,
+    /// Tracks whether `append_raw` has been called for the current row.
+    /// Used for duplicate detection since `raw_views` is not indexed by field.
+    raw_written_this_row: bool,
     /// Protocol state — enforced via `debug_assert` in each method.
     state: BuilderState,
 }
@@ -133,6 +136,7 @@ impl StreamingBuilder {
             decoded_buf: Vec::new(),
             keep_raw,
             raw_views: Vec::new(),
+            raw_written_this_row: false,
             state: BuilderState::Idle,
         }
     }
@@ -182,6 +186,7 @@ impl StreamingBuilder {
             "begin_row called outside of a batch (call begin_batch first)"
         );
         self.written_bits = 0;
+        self.raw_written_this_row = false;
         self.state = BuilderState::InRow;
     }
 
@@ -354,6 +359,10 @@ impl StreamingBuilder {
     ///
     /// Only has effect when the builder was created with `keep_raw: true`.
     /// The line must be a subslice of the buffer passed to `begin_batch`.
+    ///
+    /// First writer wins: if called multiple times in the same row, only the
+    /// first call has effect. This maintains the invariant that `raw_views`
+    /// has exactly one entry per row when `keep_raw` is enabled.
     #[inline(always)]
     pub fn append_raw(&mut self, line: &[u8]) {
         debug_assert_eq!(
@@ -361,9 +370,10 @@ impl StreamingBuilder {
             BuilderState::InRow,
             "append_raw called outside of a row"
         );
-        if self.keep_raw {
+        if self.keep_raw && !self.raw_written_this_row {
             let offset = self.offset_of(line);
             self.raw_views.push((offset, line.len() as u32));
+            self.raw_written_this_row = true;
         }
     }
 
@@ -561,25 +571,21 @@ impl StreamingBuilder {
         }
 
         if self.keep_raw && !self.raw_views.is_empty() {
-            debug_assert_eq!(
-                self.raw_views.len(),
-                num_rows,
-                "raw_views must have exactly one entry per row: {} views for {} rows",
-                self.raw_views.len(),
-                num_rows
-            );
+            if self.raw_views.len() != num_rows {
+                return Err(ArrowError::InvalidArgumentError(format!(
+                    "raw_views cardinality mismatch: {} views for {} rows",
+                    self.raw_views.len(),
+                    num_rows
+                )));
+            }
             let mut builder = StringViewBuilder::new();
             let block = builder.append_block(raw_arrow_buf);
 
             for row in 0..num_rows {
-                if row < self.raw_views.len() {
-                    let (offset, len) = self.raw_views[row];
-                    builder
-                        .try_append_view(block, offset, len)
-                        .expect("raw view offset/len must be within buffer");
-                } else {
-                    builder.append_null();
-                }
+                let (offset, len) = self.raw_views[row];
+                builder
+                    .try_append_view(block, offset, len)
+                    .expect("raw view offset/len must be within buffer");
             }
 
             schema_fields.push(Field::new("_raw", DataType::Utf8View, true));
@@ -758,19 +764,22 @@ impl StreamingBuilder {
         }
 
         if self.keep_raw && !self.raw_views.is_empty() {
+            if self.raw_views.len() != num_rows {
+                return Err(ArrowError::InvalidArgumentError(format!(
+                    "raw_views cardinality mismatch: {} views for {} rows",
+                    self.raw_views.len(),
+                    num_rows
+                )));
+            }
             let total_bytes: usize = self.raw_views.iter().map(|&(_, l)| l as usize).sum();
             let mut builder = arrow::array::StringBuilder::with_capacity(num_rows, total_bytes);
             for row in 0..num_rows {
-                if row < self.raw_views.len() {
-                    let (offset, len) = self.raw_views[row];
-                    // Raw views always reference the original buffer (not decoded_buf).
-                    let s =
-                        std::str::from_utf8(&self.buf[offset as usize..(offset + len) as usize])
-                            .unwrap_or("");
-                    builder.append_value(s);
-                } else {
-                    builder.append_null();
-                }
+                let (offset, len) = self.raw_views[row];
+                // Raw views always reference the original buffer (not decoded_buf).
+                let s =
+                    std::str::from_utf8(&self.buf[offset as usize..(offset + len) as usize])
+                        .unwrap_or("");
+                builder.append_value(s);
             }
             schema_fields.push(Field::new("_raw", DataType::Utf8, true));
             arrays.push(Arc::new(builder.finish()) as ArrayRef);
@@ -1110,6 +1119,85 @@ mod tests {
             batch.column_by_name("_raw").is_none(),
             "_raw must not be present when keep_raw=false"
         );
+    }
+
+    /// Duplicate `append_raw` calls in one row must not corrupt later rows.
+    /// First writer wins: only the first `append_raw` value is kept per row.
+    #[test]
+    fn test_append_raw_duplicate_first_writer_wins() {
+        let buf = bytes::Bytes::from(b"firstsecondthird".to_vec());
+        let mut b = StreamingBuilder::new(true); // keep_raw=true
+        b.begin_batch(buf.clone());
+
+        let idx = b.resolve_field(b"msg");
+
+        // Row 0: two append_raw calls — first should win
+        b.begin_row();
+        b.append_raw(&buf[0..5]);   // "first"
+        b.append_raw(&buf[5..11]);  // "second" — duplicate, should be ignored
+        b.append_str_by_idx(idx, &buf[0..5]);
+        b.end_row();
+
+        // Row 1: single append_raw
+        b.begin_row();
+        b.append_raw(&buf[11..16]); // "third"
+        b.append_str_by_idx(idx, &buf[11..16]);
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let raw_col = batch
+            .column_by_name("_raw")
+            .expect("_raw column must be present");
+        let raw_arr = raw_col
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("_raw must be StringViewArray");
+
+        // Row 0 should have "first" (first writer wins), not "second"
+        assert_eq!(raw_arr.value(0), "first", "row 0 _raw should be first writer");
+        // Row 1 should have "third", not shifted data from row 0's second append
+        assert_eq!(raw_arr.value(1), "third", "row 1 _raw should be correct");
+    }
+
+    /// Duplicate `append_raw` calls in detached mode must not corrupt later rows.
+    #[test]
+    fn test_append_raw_duplicate_detached() {
+        let buf = bytes::Bytes::from(b"firstsecondthird".to_vec());
+        let mut b = StreamingBuilder::new(true); // keep_raw=true
+        b.begin_batch(buf.clone());
+
+        let idx = b.resolve_field(b"msg");
+
+        // Row 0: two append_raw calls — first should win
+        b.begin_row();
+        b.append_raw(&buf[0..5]);   // "first"
+        b.append_raw(&buf[5..11]);  // "second" — duplicate, should be ignored
+        b.append_str_by_idx(idx, &buf[0..5]);
+        b.end_row();
+
+        // Row 1: single append_raw
+        b.begin_row();
+        b.append_raw(&buf[11..16]); // "third"
+        b.append_str_by_idx(idx, &buf[11..16]);
+        b.end_row();
+
+        let batch = b.finish_batch_detached().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let raw_col = batch
+            .column_by_name("_raw")
+            .expect("_raw column must be present");
+        let raw_arr = raw_col
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .expect("_raw must be StringArray in detached mode");
+
+        // Row 0 should have "first" (first writer wins), not "second"
+        assert_eq!(raw_arr.value(0), "first", "row 0 _raw should be first writer");
+        // Row 1 should have "third", not shifted data from row 0's second append
+        assert_eq!(raw_arr.value(1), "third", "row 1 _raw should be correct");
     }
 
     /// Struct child "int" has correct values when rows are int-typed.
@@ -1780,7 +1868,7 @@ mod tests {
     /// (Utf8View vs Utf8).
     #[test]
     fn test_finish_batch_equivalence() {
-        use arrow::array::{Array, StringViewArray};
+        use arrow::array::Array;
 
         let input = b"{\"name\":\"alice\",\"score\":95}\n{\"name\":\"bob\",\"extra\":\"x\"}\n{\"score\":100}\n";
         let buf = bytes::Bytes::from(input.to_vec());
