@@ -630,8 +630,25 @@ impl Pipeline {
 
         loop {
             tokio::select! {
+                // Process branches in priority order (biased mode).
+                // This prevents ack starvation under sustained load:
+                // - shutdown is highest priority for responsive cancellation
+                // - ack_rx is second to ensure timely checkpoint advancement
+                // - rx.recv is third to allow acks to be processed
+                // - flush_interval is lowest priority (it's just a timeout)
+                biased;
+
                 () = shutdown.cancelled() => {
                     break;
+                }
+
+                // Receive ack items from pool workers and advance the machine.
+                // Prioritized over new data to prevent unbounded in_flight growth
+                // and checkpoint advancement stalls.
+                ack = self.pool.ack_rx_mut().recv() => {
+                    if let Some(ack) = ack {
+                        self.apply_pool_ack(ack);
+                    }
                 }
 
                 msg = rx.recv() => {
@@ -655,13 +672,6 @@ impl Pipeline {
                     {
                         self.metrics.inc_flush_by_timeout();
                         self.flush_batch_from(data, checkpoints, "timeout", queued_at).await;
-                    }
-                }
-
-                // Receive ack items from pool workers and advance the machine.
-                ack = self.pool.ack_rx_mut().recv() => {
-                    if let Some(ack) = ack {
-                        self.apply_pool_ack(ack);
                     }
                 }
             }
