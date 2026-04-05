@@ -211,11 +211,19 @@ logfwd --version                         Print version
 
 ## Documentation
 
+**Start here by goal**
+
+- Not sure where to begin: [Choose the Right Guide](book/src/getting-started/which-guide.md)
+- Run logfwd quickly: [Quick Start](book/src/getting-started/quickstart.md)
+- Build a safer production baseline: [Your First Pipeline](book/src/getting-started/first-pipeline.md)
+- Debug failures: [Troubleshooting](book/src/troubleshooting.md)
+
 **User guides** — [book/src/](book/src/)
 
 | Guide | Description |
 |-------|-------------|
-| [Quick Start](book/src/getting-started/quickstart.md) | Working pipeline in 60 seconds, then build on it |
+| [Choose the Right Guide](book/src/getting-started/which-guide.md) | Goal-based chooser for operators, contributors, and evaluators |
+| [Quick Start](book/src/getting-started/quickstart.md) | Working pipeline in 10 minutes with copy/paste commands |
 | [Your First Pipeline](book/src/getting-started/first-pipeline.md) | Production config with monitoring and validation |
 | [Configuration Reference](book/src/config/reference.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
 | [SQL Transforms](book/src/config/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |

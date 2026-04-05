@@ -9,6 +9,19 @@ Issue filed → Assign to Copilot → Copilot creates draft PR → Mark ready �
   Review (architecture + code quality) → Fix lint/bugs → Merge or Close
 ```
 
+## Pre-PR Checklist (Required)
+
+Before opening a PR, confirm all items:
+
+- [ ] The PR description states exactly what behavior changed.
+- [ ] If behavior changed, docs changed in the same PR (user docs in `book/src/`, contributor docs in `dev-docs/` as needed).
+- [ ] If config semantics changed, `book/src/config/reference.md` was updated.
+- [ ] If pipeline/architecture behavior changed, update `dev-docs/ARCHITECTURE.md` and/or `dev-docs/DESIGN.md`.
+- [ ] If invariants/proofs changed, update `dev-docs/VERIFICATION.md` and related harnesses.
+- [ ] Commands in docs were copy/paste verified in the target environment.
+
+Use [CHANGE_MAP](CHANGE_MAP.md) to identify all required companion updates.
+
 ## 1. Filing Issues for Copilot
 
 Write focused, well-scoped issues. Include:

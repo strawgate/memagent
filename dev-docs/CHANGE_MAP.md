@@ -1,0 +1,54 @@
+# Change Map
+
+Use this map before editing code.
+It tells you which files usually need to change together so behavior, docs, and verification stay aligned.
+
+## Configuration changes
+
+When you add, rename, or remove config fields:
+
+- Runtime parsing and validation code in the `logfwd` binary crate.
+- User-facing config reference in `book/src/config/reference.md`.
+- Related task pages that show examples (`book/src/getting-started/`, `book/src/deployment/`).
+- Validation and negative tests for invalid configs.
+
+## Pipeline behavior changes
+
+When scan, transform, batching, or output semantics change:
+
+- Architecture expectations in `dev-docs/ARCHITECTURE.md`.
+- Design rationale if tradeoffs changed in `dev-docs/DESIGN.md`.
+- Troubleshooting guidance if observable symptoms changed in `book/src/troubleshooting.md`.
+- Performance docs if throughput/latency profile changed in `book/src/architecture/performance.md`.
+
+## Verification-impacting changes
+
+When invariants, safety properties, or core algorithms change:
+
+- Proof requirements and status in `dev-docs/VERIFICATION.md`.
+- Any Kani harnesses/proptest cases covering changed behavior.
+- TLA+ specs if protocol-level behavior changed.
+
+## Crate boundary changes
+
+When logic moves between crates or new dependencies are introduced:
+
+- Update rules in `dev-docs/CRATE_RULES.md`.
+- Update crate-level `AGENTS.md` files where scope applies.
+- Ensure dependency boundaries still match architecture intent.
+
+## Documentation-only changes
+
+Even docs-only PRs should update all canonical locations for that fact.
+Do not duplicate the same reference data in multiple pages.
+Link to canonical docs instead.
+
+## Quick pre-PR checklist
+
+Before opening a PR, confirm:
+
+1. Code changes and docs changes are in the same PR when behavior changed.
+2. User-visible changes update the user book (`book/src/`).
+3. Contributor-visible changes update relevant `dev-docs/` pages.
+4. Verification expectations are updated if invariants changed.
+5. You can point reviewers to exactly where each changed behavior is documented.
