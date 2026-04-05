@@ -10,6 +10,24 @@ Read `AGENTS.md` in the repository root for full project context, crate structur
 - **Test:** `just test`
 - **Lint:** `just lint` (clippy + rustfmt + taplo + cargo-deny)
 
+## Required Before Each Commit
+
+Run these commands and fix any errors before pushing:
+
+```bash
+cargo fmt --all                                    # format all Rust code
+cargo clippy --all-targets -- -D warnings          # lint — zero warnings allowed
+cargo test -p <crate-you-changed>                  # test the crate you modified
+```
+
+Or run the full CI gate (slower but comprehensive):
+
+```bash
+just ci                                            # fmt + clippy + test + deny
+```
+
+If `just ci` takes too long (>5 min), at minimum run `cargo fmt --all && cargo clippy --all-targets -- -D warnings` before every commit, then run `just test` before the final push.
+
 ## PR Descriptions
 
 - Use `Closes #N` for every issue the PR fully resolves (auto-closes on merge)
@@ -20,6 +38,5 @@ Read `AGENTS.md` in the repository root for full project context, crate structur
 
 - Do not add dependencies without justification
 - Do not refactor code unrelated to your task
-- Do not skip `just ci` before committing
 - Do not introduce allocations in hot paths without benchmarking
 - Do not use `.unwrap()` in production code paths
