@@ -1206,7 +1206,7 @@ mod tests {
         let result = rt.block_on(sink.send_batch(&batch, &meta));
         match result {
             crate::sink::SendResult::Rejected(msg) => {
-                assert!(msg.contains("exceeds max_bulk_bytes"))
+                assert!(msg.contains("exceeds max_bulk_bytes"));
             }
             _ => panic!("Expected Rejected, got {:?}", result),
         }
