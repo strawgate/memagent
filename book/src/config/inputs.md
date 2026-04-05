@@ -30,7 +30,7 @@ input:
   listen: "50000"   # ~50,000 events/sec; omit for unlimited
 ```
 
-Use `--generate-json <n> <file>` on the CLI to write a fixed number of lines to a file instead.
+Use `--generate-json <num_lines> <output_file>` on the CLI to write a fixed number of lines to a file instead.
 
 ## UDP
 
@@ -40,7 +40,7 @@ Receive log lines on a UDP socket.
 input:
   type: udp
   listen: 0.0.0.0:514
-  format: syslog
+  format: json
 ```
 
 ## TCP
