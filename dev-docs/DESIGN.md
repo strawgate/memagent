@@ -218,3 +218,82 @@ Three tools, each at a different layer. See `dev-docs/VERIFICATION.md` for mecha
 TLA+ proves the design is correct — no race conditions, correct ordering, drain eventually
 completes. Kani proves the Rust implementation doesn't panic or overflow. A design bug is
 caught by TLA+; an implementation bug is caught by Kani.
+
+### Checkpoint as a pipeline step
+
+Checkpoint is a first-class pipeline step that persists RecordBatches to disk between
+transforms. Users control placement — the framework validates but doesn't dictate.
+
+```yaml
+pipelines:
+  web_errors:
+    inputs:
+      - type: file
+        path: /var/log/app/*.log
+    steps:
+      - type: transform
+        sql: SELECT * FROM logs WHERE level IN ('ERROR', 'WARN')
+      - type: checkpoint
+        buffer_size: 256MB
+        retention: 1h
+      - type: transform
+        sql: |
+          SELECT level, message,
+                 regexp_extract(message, 'request_id=([a-f0-9]+)', 1) AS req_id
+          FROM logs
+    outputs:
+      - type: otlp
+        endpoint: https://collector:4318
+```
+
+**Semantics:** The checkpoint step receives a RecordBatch, writes it to an Arrow IPC + zstd
+segment on disk, and passes it through unchanged. On crash recovery, the pipeline replays
+from the checkpoint's buffer instead of re-reading from the source.
+
+**Config validation rules:**
+- Checkpoint must come after an input source (not floating)
+- Checkpoint must come before at least one output sink
+- At most one checkpoint per input-to-output path
+- Transforms downstream of checkpoint must be idempotent (no NOW(), RANDOM())
+
+**Checkpoint coordination with input sources:**
+- When the checkpoint buffer is durably flushed to disk (fsync), the input source's
+  checkpoint (file offset or network sequence) advances atomically in the same
+  `CheckpointStore::flush()` call
+- On crash: replay from the input source checkpoint, which is guaranteed to be ≤ the
+  checkpoint buffer's starting point
+- File inputs: the file IS the raw persistence; checkpoint step stores the filtered output
+- Network inputs: checkpoint step IS the only persistence
+
+**Segment format:**
+```
+[4B magic: LCHK]
+[4B version: 1]
+[8B segment_id]
+[8B sql_hash]          -- hash of upstream SQL, for schema change detection
+[Arrow schema]         -- embedded for self-describing segments
+... Arrow IPC stream batches (length-prefixed, zstd compressed) ...
+[8B record_count]      -- footer
+[4B CRC-32]
+[4B magic: LCHK]       -- end marker
+```
+
+On recovery: read footer first. Missing/corrupt footer → discard segment. Schema hash
+mismatch with current config → error with remediation ("clear buffer or revert SQL").
+
+**Memory model:**
+- RecordBatch wrapped in `Arc<RecordBatch>` — one ref for downstream, one for async writer
+- Async writer runs in background tokio task with bounded channel (default 10K batches)
+- When channel full → backpressure propagates upstream
+- LRU eviction of in-memory segment cache when over memory budget
+
+**Fan-out GC:**
+- Per-output-sink ack watermark tracks which segments each sink has processed
+- Segment GC when ALL sinks have acked (min watermark)
+- Dead sink timeout: if no ack in 5 min, log error and force-advance that sink's watermark
+- Prevents unbounded buffer growth from permanently dead sinks
+
+**Alternative considered:** Framework-injected barriers (Flink model). Rejected because it
+requires global coordination across sources, which conflicts with our per-source independent
+checkpoint architecture. The user-placed checkpoint step gives control without barrier
+complexity. If we add cross-source JOINs later, we can layer barriers on top.
