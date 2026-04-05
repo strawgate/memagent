@@ -31,7 +31,7 @@ pub use otap_sink::{
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
 pub use sink::{OnceAsyncFactory, SendResult, Sink, SinkFactory, SyncSinkAdapter};
 use stdout::*;
-pub use tcp_sink::TcpSink;
+pub use tcp_sink::{TcpSink, TcpSinkFactory};
 pub use udp_sink::{UdpSink, UdpSinkFactory};
 
 use std::io::{self, Write};
