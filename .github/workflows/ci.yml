@@ -14,6 +14,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read  # needed by dorny/paths-filter to list changed files on bot PRs
+  checks: write        # needed by rustsec/audit-check@v2 to create check run annotations
 
 # Tool versions — bump these to upgrade across all jobs.
 env:
