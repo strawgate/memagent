@@ -39,6 +39,8 @@ struct FieldColumns {
     has_str: bool,
     has_int: bool,
     has_float: bool,
+    /// The last row this field was written to, used for dedup when idx >= 64.
+    last_row: u32,
 }
 
 impl FieldColumns {
@@ -51,6 +53,7 @@ impl FieldColumns {
             has_str: false,
             has_int: false,
             has_float: false,
+            last_row: u32::MAX,
         }
     }
 
@@ -61,6 +64,7 @@ impl FieldColumns {
         self.has_str = false;
         self.has_int = false;
         self.has_float = false;
+        self.last_row = u32::MAX;
     }
 }
 
@@ -263,6 +267,12 @@ impl StreamingBuilder {
         if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
+        if idx >= 64 {
+            if self.fields[idx].last_row == self.row_count {
+                return;
+            }
+            self.fields[idx].last_row = self.row_count;
+        }
         // StringViewArray requires valid UTF-8.  JSON is always UTF-8 in
         // production; for fuzz / corrupted input we skip non-UTF-8 bytes so
         // that append_view_unchecked is never called on invalid bytes.
@@ -292,6 +302,12 @@ impl StreamingBuilder {
         if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
+        if idx >= 64 {
+            if self.fields[idx].last_row == self.row_count {
+                return;
+            }
+            self.fields[idx].last_row = self.row_count;
+        }
         if std::str::from_utf8(value).is_err() {
             return;
         }
@@ -320,6 +336,12 @@ impl StreamingBuilder {
             return;
         }
         let fc = &mut self.fields[idx];
+        if idx >= 64 {
+            if fc.last_row == self.row_count {
+                return;
+            }
+            fc.last_row = self.row_count;
+        }
         if let Some(v) = parse_int_fast(value) {
             fc.has_int = true;
             fc.int_values.push((self.row_count, v));
@@ -337,6 +359,12 @@ impl StreamingBuilder {
             return;
         }
         let fc = &mut self.fields[idx];
+        if idx >= 64 {
+            if fc.last_row == self.row_count {
+                return;
+            }
+            fc.last_row = self.row_count;
+        }
         if let Some(v) = parse_float_fast(value) {
             fc.has_float = true;
             fc.float_values.push((self.row_count, v));
@@ -353,6 +381,11 @@ impl StreamingBuilder {
         // Nulls are represented by gaps -- no value record needed.
         // But mark as written for duplicate-key detection.
         let _ = check_dup_bits(&mut self.written_bits, idx);
+
+        let fc = &mut self.fields[idx];
+        if idx >= 64 {
+            fc.last_row = self.row_count;
+        }
     }
 
     /// Store a zero-copy view of the raw unparsed line.
@@ -808,14 +841,14 @@ impl StreamingBuilder {
     /// Offsets `>= buf.len()` read from `decoded_buf` at `offset - buf.len()`.
     fn read_str(&self, offset: u32, len: u32, has_decoded: bool) -> &str {
         let start = offset as usize;
-        let end = start + len as usize;
+        let end = start.saturating_add(len as usize);
         let buf_len = self.buf.len();
         let bytes = if !has_decoded || start < buf_len {
-            &self.buf[start..end]
+            self.buf.get(start..end).unwrap_or(b"")
         } else {
-            let dec_start = start - buf_len;
-            let dec_end = end - buf_len;
-            &self.decoded_buf[dec_start..dec_end]
+            let dec_start = start.saturating_sub(buf_len);
+            let dec_end = end.saturating_sub(buf_len);
+            self.decoded_buf.get(dec_start..dec_end).unwrap_or(b"")
         };
         std::str::from_utf8(bytes).unwrap_or("")
     }
@@ -1245,6 +1278,82 @@ mod tests {
         );
         // Row 1 should have "third", not shifted data from row 0's second append
         assert_eq!(raw_arr.value(1), "third", "row 1 _raw should be correct");
+    }
+
+    #[test]
+    fn test_read_str_out_of_bounds() {
+        let buf = bytes::Bytes::from_static(b"abcd");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf.clone());
+
+        let res = b.read_str(0, 10, false); // Out of bounds length
+        assert_eq!(res, ""); // Handled safely
+
+        let res2 = b.read_str(10, 2, false); // Out of bounds offset
+        assert_eq!(res2, ""); // Handled safely
+    }
+
+    #[test]
+    fn test_append_raw_duplicate_calls() {
+        let data = b"hello world\n";
+        let buf = bytes::Bytes::from(data.to_vec());
+        let mut b = StreamingBuilder::new(true);
+        b.begin_batch(buf.clone());
+
+        b.begin_row();
+        b.append_raw(&buf[0..5]);
+        b.append_raw(&buf[6..11]); // duplicate call in same row
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+
+        let raw_col = batch
+            .column_by_name("_raw")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .unwrap();
+        assert_eq!(raw_col.value(0), "hello");
+    }
+
+    #[test]
+    fn test_dedup_above_field_64() {
+        let buf = bytes::Bytes::from_static(b"value");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf.clone());
+
+        // Create 65 fields
+        let mut indices = Vec::new();
+        for i in 0..65u8 {
+            let name = format!("field{}", i);
+            indices.push(b.resolve_field(name.as_bytes()));
+        }
+        let idx_64 = indices[64]; // index 64
+
+        // Write row 0 twice to same field 64
+        b.begin_row();
+        b.append_str_by_idx(idx_64, &buf[0..3]); // "val"
+        b.append_str_by_idx(idx_64, &buf[3..5]); // "ue" (should be deduped)
+        b.end_row();
+
+        // Write row 1 once to field 64
+        b.begin_row();
+        b.append_str_by_idx(idx_64, &buf[0..5]); // "value"
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let col = batch
+            .column_by_name("field64")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .unwrap();
+
+        assert_eq!(col.value(0), "val");
+        assert_eq!(col.value(1), "value");
     }
 
     /// Struct child "int" has correct values when rows are int-typed.
