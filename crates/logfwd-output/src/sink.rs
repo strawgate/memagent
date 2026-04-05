@@ -22,14 +22,38 @@ use super::BatchMetadata;
 /// The outcome of a [`Sink::send_batch`] call.
 #[must_use]
 #[non_exhaustive]
+#[derive(Debug)]
 pub enum SendResult {
     /// The batch was accepted and delivered.
     Ok,
+    /// Network / IO error — worker pool applies its own retry policy.
+    IoError(io::Error),
     /// The batch could not be delivered right now; retry after the given
     /// duration.
     RetryAfter(Duration),
     /// The batch was rejected and must not be retried.
     Rejected(String),
+}
+
+impl SendResult {
+    /// Returns `true` if the result is [`SendResult::Ok`].
+    pub fn is_ok(&self) -> bool {
+        matches!(self, SendResult::Ok)
+    }
+
+    /// Returns `true` if the result is not [`SendResult::Ok`].
+    pub fn is_err(&self) -> bool {
+        !self.is_ok()
+    }
+
+    /// Panics if the result is not [`SendResult::Ok`], printing the variant as
+    /// the panic message.
+    pub fn unwrap(self) {
+        assert!(
+            matches!(self, SendResult::Ok),
+            "called `SendResult::unwrap()` on a non-Ok value: {self:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -53,7 +77,7 @@ pub trait Sink: Send {
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>>;
 
     /// Flush any internally buffered data to the destination.
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>>;
@@ -118,23 +142,24 @@ impl Sink for AsyncFanoutSink {
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             let mut first_retry: Option<Duration> = None;
             for sink in &mut self.sinks {
-                match sink.send_batch(batch, metadata).await? {
+                match sink.send_batch(batch, metadata).await {
                     SendResult::Ok => {}
                     SendResult::RetryAfter(d) => {
                         if first_retry.is_none_or(|prev| d > prev) {
                             first_retry = Some(d);
                         }
                     }
-                    SendResult::Rejected(reason) => return Ok(SendResult::Rejected(reason)),
+                    SendResult::Rejected(reason) => return SendResult::Rejected(reason),
+                    SendResult::IoError(e) => return SendResult::IoError(e),
                 }
             }
             match first_retry {
-                Some(d) => Ok(SendResult::RetryAfter(d)),
-                None => Ok(SendResult::Ok),
+                Some(d) => SendResult::RetryAfter(d),
+                None => SendResult::Ok,
             }
         })
     }
@@ -383,8 +408,8 @@ mod tests {
             &'a mut self,
             _batch: &'a RecordBatch,
             _metadata: &'a BatchMetadata,
-        ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
-            Box::pin(async { Ok(SendResult::Ok) })
+        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+            Box::pin(async { SendResult::Ok })
         }
 
         fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {

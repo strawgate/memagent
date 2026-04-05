@@ -1418,14 +1418,8 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("test".to_string()),
             output_type: OutputType::Stdout,
-            endpoint: None,
-            protocol: None,
-            compression: None,
             format: Some(Format::Json),
-            path: None,
-            index: None,
-            auth: None,
-            request_mode: None,
+            ..Default::default()
         };
         let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
@@ -1441,11 +1435,7 @@ mod tests {
             endpoint: Some("http://localhost:4318".to_string()),
             protocol: Some("http".to_string()),
             compression: Some("zstd".to_string()),
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            request_mode: None,
+            ..Default::default()
         };
         let factory = build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "otel");
@@ -1456,14 +1446,7 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("bad".to_string()),
             output_type: OutputType::Otlp,
-            endpoint: None,
-            protocol: None,
-            compression: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-            request_mode: None,
+            ..Default::default()
         };
         let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());

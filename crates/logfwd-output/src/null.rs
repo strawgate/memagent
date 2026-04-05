@@ -52,7 +52,7 @@ impl crate::Sink for NullSink {
         &'a mut self,
         batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         self.batches_discarded.fetch_add(1, Ordering::Relaxed);
         let num_rows = batch.num_rows() as u64;
         self.rows_discarded.fetch_add(num_rows, Ordering::Relaxed);
@@ -60,7 +60,7 @@ impl crate::Sink for NullSink {
         // show non-zero output metrics for null/blackhole pipelines.
         self.stats.inc_lines(num_rows);
         self.stats.inc_bytes(batch.get_array_memory_size() as u64);
-        Box::pin(async { Ok(SendResult::Ok) })
+        Box::pin(async { SendResult::Ok })
     }
 
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {

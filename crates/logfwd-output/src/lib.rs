@@ -50,11 +50,6 @@ use logfwd_types::diagnostics::ComponentStats;
 // HTTP retry helper
 // ---------------------------------------------------------------------------
 
-/// Maximum number of retry attempts for transient HTTP failures.
-pub(crate) const HTTP_MAX_RETRIES: u32 = 3;
-/// Initial retry delay in milliseconds; doubles on each subsequent attempt.
-pub(crate) const HTTP_RETRY_INITIAL_DELAY_MS: u64 = 100;
-
 /// Returns `true` if the ureq error is transient and worth retrying.
 ///
 /// Transient errors are: HTTP 429 Too Many Requests, 5xx server errors, and
@@ -172,20 +167,22 @@ pub(crate) fn is_null(batch: &RecordBatch, variant: &ColVariant, row: usize) -> 
             field_idx,
             ..
         } => {
-            let sa = batch
+            let Some(sa) = batch
                 .column(*struct_col_idx)
                 .as_any()
                 .downcast_ref::<StructArray>()
-                .expect("conflict struct column must be StructArray");
+            else {
+                return true;
+            };
             sa.is_null(row) || sa.column(*field_idx).is_null(row)
         }
     }
 }
 
 /// Return a reference to the underlying Arrow array for a `ColVariant`.
-pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> &'b dyn Array {
+pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> Option<&'b dyn Array> {
     match variant {
-        ColVariant::Flat { col_idx, .. } => batch.column(*col_idx).as_ref(),
+        ColVariant::Flat { col_idx, .. } => Some(batch.column(*col_idx).as_ref()),
         ColVariant::StructField {
             struct_col_idx,
             field_idx,
@@ -194,9 +191,8 @@ pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> &'b
             let sa = batch
                 .column(*struct_col_idx)
                 .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("conflict struct column must be StructArray");
-            sa.column(*field_idx).as_ref()
+                .downcast_ref::<StructArray>()?;
+            Some(sa.column(*field_idx).as_ref())
         }
     }
 }
@@ -208,7 +204,7 @@ pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> &'b
 /// Used by Loki label extraction to always produce a string value.
 pub(crate) fn coalesce_as_str(batch: &RecordBatch, row: usize, col: &ColInfo) -> Option<String> {
     let variant = col.str_variants.iter().find(|v| !is_null(batch, v, row))?;
-    let arr = get_array(batch, variant);
+    let arr = get_array(batch, variant)?;
     let s = match arr.data_type() {
         DataType::Int64 => {
             let v = arr.as_primitive::<arrow::datatypes::Int64Type>().value(row);
@@ -472,7 +468,10 @@ pub fn write_row_json(
             out.extend_from_slice(b"null");
             continue;
         };
-        let arr = get_array(batch, v);
+        let Some(arr) = get_array(batch, v) else {
+            out.extend_from_slice(b"null");
+            continue;
+        };
 
         // Value — dispatch on Arrow DataType, not column name suffix
         write_json_value(arr, row, out)?;
@@ -791,7 +790,8 @@ mod tests {
             vec![],
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
-        );
+        )
+        .unwrap();
         sink.encode_batch(&batch, &meta);
 
         // Should produce non-empty protobuf bytes.
@@ -812,12 +812,14 @@ mod tests {
             vec![],
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
-        );
+        )
+        .unwrap();
 
         use crate::Sink;
+        use crate::sink::SendResult;
         match sink.send_batch(&batch, &meta).await {
-            Ok(_) => panic!("gzip compression should return an error"),
-            Err(err) => assert!(err.to_string().contains("gzip"), "got: {err}"),
+            SendResult::IoError(err) => assert!(err.to_string().contains("gzip"), "got: {err}"),
+            other => panic!("gzip compression should return IoError, got: {other:?}"),
         }
     }
 
@@ -926,14 +928,8 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("test".to_string()),
             output_type: OutputType::Stdout,
-            endpoint: None,
-            protocol: None,
-            compression: None,
-            request_mode: None,
             format: Some(Format::Json),
-            path: None,
-            index: None,
-            auth: None,
+            ..Default::default()
         };
         // StdoutSink uses the async pipeline — must use build_sink_factory.
         let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
@@ -948,11 +944,7 @@ mod tests {
             endpoint: Some("http://localhost:4318".to_string()),
             protocol: Some("http".to_string()),
             compression: Some("gzip".to_string()),
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
+            ..Default::default()
         };
         let err = match build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())) {
             Ok(_) => panic!("expected gzip OTLP compression to be rejected"),
@@ -967,13 +959,8 @@ mod tests {
             name: Some("http-bad".to_string()),
             output_type: OutputType::Http,
             endpoint: Some("http://localhost:9200".to_string()),
-            protocol: None,
             compression: Some("zstd".to_string()),
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
+            ..Default::default()
         };
         let result = build_sink_factory("http-bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err(), "Http type should not be supported yet");
@@ -989,14 +976,7 @@ mod tests {
         let cfg = OutputConfig {
             name: Some("bad".to_string()),
             output_type: OutputType::Otlp,
-            endpoint: None,
-            protocol: None,
-            compression: None,
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
+            ..Default::default()
         };
         // OTLP now uses the async pipeline via build_sink_factory.
         let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
@@ -1066,16 +1046,11 @@ mod tests {
             name: Some("auth-sink".to_string()),
             output_type: OutputType::Elasticsearch,
             endpoint: Some("http://localhost:9200".to_string()),
-            protocol: None,
-            compression: None,
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
             auth: Some(AuthConfig {
                 bearer_token: Some("mytoken".to_string()),
                 headers: std::collections::HashMap::new(),
             }),
+            ..Default::default()
         };
         // Verify the factory builds successfully with auth.
         let factory =
@@ -1111,7 +1086,8 @@ mod tests {
             vec![],
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
-        );
+        )
+        .unwrap();
         // Must not panic.
         sink.encode_batch(&batch, &meta);
         assert!(!sink.encoder_buf.is_empty());
@@ -1139,7 +1115,8 @@ mod tests {
             vec![],
             reqwest::Client::new(),
             Arc::new(ComponentStats::new()),
-        );
+        )
+        .unwrap();
         // Must not panic, and should produce non-empty output.
         sink.encode_batch(&batch, &meta);
         assert!(!sink.encoder_buf.is_empty());
