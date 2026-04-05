@@ -253,7 +253,11 @@ fn verify_batches(
 ///
 /// Cancels as soon as the sink has seen enough rows rather than sleeping the
 /// full timeout, so tests finish as fast as the pipeline can process data.
-fn run_compliance_pipeline(yaml: &str, expected_rows: usize, timeout: Duration) -> Vec<RecordBatch> {
+fn run_compliance_pipeline(
+    yaml: &str,
+    expected_rows: usize,
+    timeout: Duration,
+) -> Vec<RecordBatch> {
     let config = Config::load_str(yaml).expect("failed to parse YAML config");
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None)
