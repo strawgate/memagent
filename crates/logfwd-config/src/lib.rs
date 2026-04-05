@@ -2468,4 +2468,79 @@ output:
         let pipe = &cfg.pipelines["default"];
         assert_eq!(pipe.inputs[0].format, Some(Format::Console));
     }
+
+    // -----------------------------------------------------------------------
+    // Loki-only field rejection for non-Loki outputs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn non_loki_output_rejects_tenant_id() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+        tenant_id: my-tenant
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("tenant_id"),
+            "expected tenant_id rejection: {err}"
+        );
+        assert!(
+            err.to_string().contains("only supported for loki"),
+            "expected loki-only message: {err}"
+        );
+    }
+
+    #[test]
+    fn non_loki_output_rejects_static_labels() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+        static_labels:
+          env: prod
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("static_labels"),
+            "expected static_labels rejection: {err}"
+        );
+        assert!(
+            err.to_string().contains("only supported for loki"),
+            "expected loki-only message: {err}"
+        );
+    }
+
+    #[test]
+    fn non_loki_output_rejects_label_columns() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+        label_columns:
+          - container_name
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("label_columns"),
+            "expected label_columns rejection: {err}"
+        );
+        assert!(
+            err.to_string().contains("only supported for loki"),
+            "expected loki-only message: {err}"
+        );
+    }
 }
