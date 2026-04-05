@@ -22,7 +22,7 @@ input:
   path: /var/log/app/*.log
   format: json
 
-transform: SELECT level, message, status FROM logs WHERE status >= 400
+transform: SELECT level_str, message_str, status_int FROM logs WHERE status_int >= 400
 
 output:
   type: otlp
@@ -44,7 +44,7 @@ pipelines:
         type: file
         path: /var/log/pods/**/*.log
         format: cri
-    transform: SELECT * FROM logs WHERE level = 'ERROR'
+    transform: SELECT * FROM logs WHERE level_str = 'ERROR'
     outputs:
       - type: otlp
         endpoint: otel-collector:4317
@@ -95,7 +95,7 @@ input:
   format: cri
 ```
 
-### `udp` input
+### `udp` input *(not yet implemented)*
 
 Listen for log lines on a UDP socket.
 
@@ -110,7 +110,7 @@ input:
   format: syslog
 ```
 
-### `tcp` input
+### `tcp` input *(not yet implemented)*
 
 Accept log lines on a TCP socket.
 
@@ -125,7 +125,7 @@ input:
   format: json
 ```
 
-### `otlp` input
+### `otlp` input *(not yet implemented)*
 
 Receive OTLP log records from another agent or SDK.
 
@@ -138,10 +138,9 @@ No extra fields required; the listen address will be configurable in a future re
 | Value | Status | Description |
 |-------|--------|-------------|
 | `file` | Implemented | Tail files matching a glob pattern. |
-| `generator` | Implemented | Synthetic data generator for benchmarking. Produces JSON log lines without external data sources. No extra fields required. |
-| `udp` | Implemented | Receive log lines over UDP. |
-| `tcp` | Implemented | Accept log lines over TCP. |
-| `otlp` | Implemented | Receive OTLP logs. |
+| `udp` | Planned | Receive log lines over UDP. |
+| `tcp` | Planned | Accept log lines over TCP. |
+| `otlp` | Planned | Receive OTLP logs. |
 
 ---
 
@@ -154,7 +153,7 @@ The `format` field controls how raw bytes from the input are parsed into log rec
 | `auto` | Auto-detect (default). Tries CRI first, then JSON, then raw. |
 | `cri` | CRI container log format (`<timestamp> <stream> <flags> <message>`). Multi-line log reassembly via the `P` partial flag is supported. |
 | `json` | Newline-delimited JSON. Each line must be a single JSON object. |
-| `raw` | Treat each line as an opaque string stored in `_raw`. |
+| `raw` | Treat each line as an opaque string stored in `_raw_str`. |
 | `logfmt` | Key=value pairs (e.g. `level=info msg="hello"`). *Not yet implemented.* |
 | `syslog` | RFC 5424 syslog. *Not yet implemented.* |
 | `console` | Human-readable coloured output for interactive debugging. Output mode only. |
@@ -220,23 +219,23 @@ output:
   format: console
 ```
 
-### `elasticsearch` output
+### `elasticsearch` output *(stub)*
 
-Ship to Elasticsearch via the bulk API.
+Ship to Elasticsearch via the bulk API. Not yet functional.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Elasticsearch base URL. |
 
-### `loki` output
+### `loki` output *(stub)*
 
-Push to Grafana Loki.
+Push to Grafana Loki. Not yet functional.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Loki push URL. |
 
-### `file` output *(partial)*
+### `file_out` output *(partial)*
 
 Write records to a file.
 
@@ -261,9 +260,9 @@ Write records to Parquet files. Not yet functional.
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
 | `http` | Implemented | JSON lines over HTTP POST. |
 | `stdout` | Implemented | Print to stdout (JSON or coloured text). |
-| `elasticsearch` | Implemented | Elasticsearch bulk API with retry and compression. |
-| `loki` | Implemented | Grafana Loki push API with label grouping. |
-| `file` | Partial | Write to a file. |
+| `elasticsearch` | Stub | Elasticsearch bulk API. |
+| `loki` | Stub | Grafana Loki push API. |
+| `file_out` | Partial | Write to a file. |
 | `parquet` | Stub | Write Parquet files. |
 
 ---
@@ -274,7 +273,7 @@ The optional `transform` field contains a DataFusion SQL query that is applied t
 Arrow `RecordBatch` produced by the scanner. The source table is always named `logs`.
 
 ```yaml
-transform: SELECT level, message, status FROM logs WHERE status >= 400
+transform: SELECT level_str, message_str, status_int FROM logs WHERE status_int >= 400
 ```
 
 Multi-line SQL is supported with YAML block scalars:
@@ -282,48 +281,40 @@ Multi-line SQL is supported with YAML block scalars:
 ```yaml
 transform: |
   SELECT
-    level,
-    message,
-    regexp_extract(message, 'request_id=([a-f0-9-]+)', 1) AS request_id,
-    status
+    level_str,
+    message_str,
+    regexp_extract(message_str, 'request_id=([a-f0-9-]+)', 1) AS request_id_str,
+    status_int
   FROM logs
-  WHERE level IN ('ERROR', 'WARN')
-    AND status >= 400
+  WHERE level_str IN ('ERROR', 'WARN')
+    AND status_int >= 400
 ```
 
 ### Column naming convention
 
-The scanner maps each JSON field to an Arrow column using **bare names** by default.
-When a field has a consistent type across all rows in a batch, it gets a single column
-with the native Arrow type:
+The scanner maps each JSON field to one or more typed Arrow columns following the
+`{field}_{type}` naming convention:
 
-| JSON value type | Arrow column type | Example |
-|-----------------|-------------------|---------|
-| String | Utf8View | `level` |
-| Integer | Int64 | `status` |
-| Float | Float64 | `latency_ms` |
-| Boolean | Boolean | `enabled` |
-| Null | null | — |
-| Object / Array | Utf8View (raw JSON) | `metadata` |
+| JSON value type | Arrow column type | Column name pattern | Example |
+|-----------------|-------------------|---------------------|---------|
+| String | StringArray | `{field}_str` | `level_str` |
+| Integer | Int64Array | `{field}_int` | `status_int` |
+| Float | Float64Array | `{field}_float` | `latency_ms_float` |
+| Boolean | StringArray (`"true"`/`"false"`) | `{field}_str` | `enabled_str` |
+| Null | null in all type columns | — | — |
+| Object / Array | StringArray (raw JSON) | `{field}_str` | `metadata_str` |
 
-When a field contains **mixed types** across rows in the same batch, the builder emits
-a single `StructArray` conflict column with typed children:
+When a field contains mixed types across rows, separate columns are emitted:
+`status_int` and `status_str` can coexist in the same batch.
 
-```text
-status: Struct { int: Int64, str: Utf8View }
-```
-
-Conflict structs are automatically flattened to strings for SQL via
-`normalize_conflict_columns()`. For most inputs (OTLP, CSV, consistent JSON),
-all columns use bare names and conflicts never arise.
-
-Special columns:
+Special columns added by the scanner:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `_raw` | Utf8View | Original raw line (only when `keep_raw: true`). Available for all input formats. |
-| `_timestamp` | Utf8View | Timestamp from CRI header as an RFC 3339 string (CRI inputs only). |
-| `_stream` | Utf8View | CRI stream name (`stdout`/`stderr`) (CRI inputs only). |
+| `_file_str` | string | Absolute path of the source file (file inputs only). |
+| `_raw_str` | string | Original JSON line (only when `keep_raw: true`). |
+| `_time_ns_int` | int64 | Timestamp from CRI header in nanoseconds (CRI inputs only). |
+| `_stream_str` | string | CRI stream name (`stdout`/`stderr`). |
 
 ### Built-in UDFs
 
@@ -338,16 +329,16 @@ Examples:
 
 ```sql
 -- Cast a string column to int
-SELECT int(status) AS status_code FROM logs
+SELECT int(status_str) AS status_int FROM logs
 
 -- Extract a field with Grok
-SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', message) AS parsed FROM logs
+SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', message_str) AS parsed_str FROM logs
 
 -- Extract a named group with regex
-SELECT regexp_extract(message, 'user=([a-z]+)', 1) AS username FROM logs
+SELECT regexp_extract(message_str, 'user=([a-z]+)', 1) AS user_str FROM logs
 
 -- Type-cast from environment-injected string
-SELECT float(duration) AS duration_ms FROM logs
+SELECT float(duration_str) AS duration_ms_float FROM logs
 ```
 
 ---
@@ -378,11 +369,9 @@ Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
 
 ```sql
--- Requires source path column injection (not yet implemented).
--- Once available, join on the source file path:
-SELECT l.level, l.message, k.namespace, k.pod_name, k.container_name
+SELECT l.level_str, l.message_str, k.namespace, k.pod_name, k.container_name
 FROM logs l
-JOIN k8s k ON l._source_path = k.log_path_prefix
+JOIN k8s k ON l._file_str = k.log_path_prefix
 ```
 
 Columns exposed by `k8s`:
@@ -430,7 +419,7 @@ The optional `server` block controls the diagnostics server and observability se
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `diagnostics` | string | none | `host:port` to listen for HTTP diagnostics. See [Diagnostics API](#diagnostics-api) for available routes. |
+| `diagnostics` | string | none | `host:port` to listen for HTTP diagnostics. See [Diagnostics API](#diagnostics-api). |
 | `log_level` | string | `info` | Log verbosity. One of `error`, `warn`, `info`, `debug`, `trace`. |
 | `metrics_endpoint` | string | none | OTLP endpoint for periodic metrics push, e.g. `http://otel-collector:4318`. |
 | `metrics_interval_secs` | integer | `60` | Push interval for OTLP metrics in seconds. |
@@ -447,21 +436,21 @@ server:
 
 ## Diagnostics API
 
-When the `server.diagnostics` address is configured, logfwd exposes several HTTP
-endpoints for monitoring, health checks, and debugging.
+When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitoring and troubleshooting.
 
-| Route | Status | Description |
+| Route | Method | Description |
 |-------|--------|-------------|
-| `/` | 200 | Interactive dashboard (HTML). |
-| `/health` | 200 | Liveness probe. Returns 200 OK as long as the process is running. |
-| `/ready` | 200/503 | Readiness probe. Returns 200 OK once pipelines are initialized, 503 otherwise. |
-| `/api/pipelines` | 200 | Detailed metrics for each pipeline, including input/output counters and system memory stats. |
-| `/api/stats` | 200 | Aggregate statistics (uptime, CPU/RSS, total lines, stages timing) as a flat JSON object. |
-| `/api/config` | 200 | The active YAML configuration and its file path. |
-| `/api/logs` | 200 | Recent log lines captured from stderr (up to 1 MiB). |
-| `/api/history` | 200 | Time-series history of metrics used by the dashboard. |
-| `/api/traces` | 200 | Recent batch processing spans (up to 500) for detailed performance tracing. |
-| `/metrics` | 410 | Removed. Returns 410 Gone with a pointer to `/api/pipelines`. |
+| `/` | GET | Dashboard HTML (visual explorer for metrics and traces). |
+| `/health` | GET | Liveness probe. Returns 200 OK if the server is running. |
+| `/ready` | GET | Readiness probe. Returns 200 OK once pipelines are initialized. |
+| `/api/pipelines` | GET | Per-pipeline counters (lines, bytes, errors, batches, stage timing). |
+| `/api/stats` | GET | Aggregate process stats (uptime, RSS, CPU, aggregate line counts). |
+| `/api/config` | GET | Currently loaded YAML configuration and its file path. |
+| `/api/logs` | GET | Recent log lines from logfwd's own stderr (ring buffer). |
+| `/api/history` | GET | Time-series data (1-hour window) for dashboard charts. |
+| `/api/traces` | GET | Recent batch processing spans for detailed latency analysis. |
+
+Note: The `/metrics` (Prometheus) endpoint was removed in favor of `/api/pipelines`. It returns `410 Gone`. The `/api/system` route mentioned in some older documentation does not exist.
 
 ---
 
@@ -510,18 +499,18 @@ pipelines:
         format: cri
     transform: |
       SELECT
-        l.level,
-        l.message,
-        l.status,
+        l.level_str,
+        l.message_str,
+        l.status_int,
         k.namespace,
         k.pod_name,
         k.container_name,
         lbl.environment
       FROM logs l
-      LEFT JOIN k8s k ON l._source_path = k.log_path_prefix  -- requires source path injection
+      LEFT JOIN k8s k ON l._file_str = k.log_path_prefix
       CROSS JOIN labels lbl
-      WHERE l.level IN ('ERROR', 'WARN')
-        OR l.status >= 500
+      WHERE l.level_str IN ('ERROR', 'WARN')
+        OR l.status_int >= 500
     outputs:
       - name: collector
         type: otlp

@@ -223,7 +223,7 @@ metadata:
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "9090"
-    prometheus.io/path: "/metrics"
+    prometheus.io/path: "/api/pipelines"
 ```
 
 ---
