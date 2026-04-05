@@ -1415,8 +1415,7 @@ mod tests {
             auth: None,
             request_mode: None,
         };
-        let factory =
-            build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
         let sink = factory.create().expect("create should succeed");
         assert_eq!(sink.name(), "test");
