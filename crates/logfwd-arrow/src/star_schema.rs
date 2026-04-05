@@ -464,41 +464,31 @@ fn str_value_at(arr: &dyn Array, row: usize) -> String {
         return String::new();
     }
     match arr.data_type() {
-        DataType::Utf8 => {
-            let a = arr
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("utf8 downcast");
-            a.value(row).to_string()
-        }
-        DataType::Utf8View => {
-            let a = arr
-                .as_any()
-                .downcast_ref::<arrow::array::StringViewArray>()
-                .expect("utf8view downcast");
-            a.value(row).to_string()
-        }
-        DataType::Int64 => {
-            let a = arr
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .expect("i64 downcast");
-            a.value(row).to_string()
-        }
-        DataType::Float64 => {
-            let a = arr
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .expect("f64 downcast");
-            a.value(row).to_string()
-        }
-        DataType::Boolean => {
-            let a = arr
-                .as_any()
-                .downcast_ref::<BooleanArray>()
-                .expect("bool downcast");
-            a.value(row).to_string()
-        }
+        DataType::Utf8 => arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Utf8View => arr
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Int64 => arr
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Float64 => arr
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Boolean => arr
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -509,17 +499,16 @@ fn str_from_array(arr: &dyn Array, row: usize) -> String {
         return String::new();
     }
     match arr.data_type() {
-        DataType::Utf8 => {
-            let a = arr.as_any().downcast_ref::<StringArray>().expect("utf8");
-            a.value(row).to_string()
-        }
-        DataType::Utf8View => {
-            let a = arr
-                .as_any()
-                .downcast_ref::<arrow::array::StringViewArray>()
-                .expect("utf8view");
-            a.value(row).to_string()
-        }
+        DataType::Utf8 => arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Utf8View => arr
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -648,7 +637,13 @@ fn build_log_attrs(
 
             match type_tag {
                 ATTR_TYPE_INT => {
-                    let a = arr.as_any().downcast_ref::<Int64Array>().expect("i64");
+                    let a = arr.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+                        ArrowError::ComputeError(format!(
+                            "Expected Int64Array for column {}, got {}",
+                            key,
+                            arr.data_type()
+                        ))
+                    })?;
                     str_vals.push(None);
                     int_vals.push(Some(a.value(row)));
                     double_vals.push(None);
@@ -656,7 +651,13 @@ fn build_log_attrs(
                     bytes_vals.push(None);
                 }
                 ATTR_TYPE_DOUBLE => {
-                    let a = arr.as_any().downcast_ref::<Float64Array>().expect("f64");
+                    let a = arr.as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
+                        ArrowError::ComputeError(format!(
+                            "Expected Float64Array for column {}, got {}",
+                            key,
+                            arr.data_type()
+                        ))
+                    })?;
                     str_vals.push(None);
                     int_vals.push(None);
                     double_vals.push(Some(a.value(row)));
@@ -664,7 +665,13 @@ fn build_log_attrs(
                     bytes_vals.push(None);
                 }
                 ATTR_TYPE_BOOL => {
-                    let a = arr.as_any().downcast_ref::<BooleanArray>().expect("bool");
+                    let a = arr.as_any().downcast_ref::<BooleanArray>().ok_or_else(|| {
+                        ArrowError::ComputeError(format!(
+                            "Expected BooleanArray for column {}, got {}",
+                            key,
+                            arr.data_type()
+                        ))
+                    })?;
                     str_vals.push(None);
                     int_vals.push(None);
                     double_vals.push(None);
@@ -672,7 +679,13 @@ fn build_log_attrs(
                     bytes_vals.push(None);
                 }
                 ATTR_TYPE_BYTES => {
-                    let a = arr.as_any().downcast_ref::<BinaryArray>().expect("binary");
+                    let a = arr.as_any().downcast_ref::<BinaryArray>().ok_or_else(|| {
+                        ArrowError::ComputeError(format!(
+                            "Expected BinaryArray for column {}, got {}",
+                            key,
+                            arr.data_type()
+                        ))
+                    })?;
                     str_vals.push(None);
                     int_vals.push(None);
                     double_vals.push(None);
@@ -912,19 +925,28 @@ fn hex_to_fixed<const N: usize>(hex: &str) -> Option<[u8; N]> {
 
 /// Parse a timestamp string to nanoseconds since epoch.
 /// Supports ISO 8601 / RFC 3339 format and bare epoch nanoseconds.
-fn parse_timestamp_to_nanos(s: &str) -> Option<i64> {
+pub(crate) fn parse_timestamp_to_nanos(s: &str) -> Option<i64> {
     let s = s.trim();
     if s.is_empty() {
         return None;
     }
     // Try bare integer nanoseconds first.
     if let Ok(ns) = s.parse::<i64>() {
-        // Heuristic: values > 1e15 are likely nanoseconds, < 1e12 are seconds.
-        if ns > 1_000_000_000_000_000 {
+        // Heuristic for epoch timestamps:
+        // > 1e17: nanoseconds  (1e17 ns = ~3.17 years from 1970)
+        // > 1e14: microseconds (1e14 us = ~3.17 years)
+        // > 1e11: milliseconds (1e11 ms = ~3.17 years)
+        // else: seconds
+        if ns > 100_000_000_000_000_000 {
             return Some(ns);
         }
-        // Interpret as seconds.
-        return Some(ns * 1_000_000_000);
+        if ns > 100_000_000_000_000 {
+            return ns.checked_mul(1_000);
+        }
+        if ns > 100_000_000_000 {
+            return ns.checked_mul(1_000_000);
+        }
+        return ns.checked_mul(1_000_000_000);
     }
     // Try RFC 3339 parsing.
     // Format: 2024-01-15T10:30:00.123456789Z
@@ -932,9 +954,9 @@ fn parse_timestamp_to_nanos(s: &str) -> Option<i64> {
 }
 
 /// Minimal RFC 3339 parser that preserves nanosecond precision.
-fn parse_rfc3339_nanos(s: &str) -> Option<i64> {
+pub(crate) fn parse_rfc3339_nanos(s: &str) -> Option<i64> {
     // Expected format: YYYY-MM-DDThh:mm:ss[.nnnnnnnnn]Z or +HH:MM
-    if s.len() < 20 {
+    if s.len() < 19 {
         return None;
     }
 
@@ -944,6 +966,10 @@ fn parse_rfc3339_nanos(s: &str) -> Option<i64> {
     let hour: u32 = s.get(11..13)?.parse().ok()?;
     let min: u32 = s.get(14..16)?.parse().ok()?;
     let sec: u32 = s.get(17..19)?.parse().ok()?;
+
+    if hour >= 24 || min >= 60 || sec >= 60 {
+        return None;
+    }
 
     let rest = &s[19..];
     let (frac_nanos, tz_start) = if let Some(dot_rest) = rest.strip_prefix('.') {
@@ -965,12 +991,15 @@ fn parse_rfc3339_nanos(s: &str) -> Option<i64> {
     };
 
     let tz_str = &rest[tz_start..];
-    let tz_offset_secs: i64 = if tz_str == "Z" || tz_str == "z" {
+    let tz_offset_secs: i64 = if tz_str.is_empty() || tz_str == "Z" || tz_str == "z" {
         0
     } else if tz_str.len() >= 6 && (tz_str.starts_with('+') || tz_str.starts_with('-')) {
         let sign: i64 = if tz_str.starts_with('-') { -1 } else { 1 };
         let tz_h: i64 = tz_str[1..3].parse().ok()?;
         let tz_m: i64 = tz_str[4..6].parse().ok()?;
+        if tz_h >= 24 || tz_m >= 60 {
+            return None;
+        }
         sign * (tz_h * 3600 + tz_m * 60)
     } else {
         return None;
@@ -978,17 +1007,39 @@ fn parse_rfc3339_nanos(s: &str) -> Option<i64> {
 
     // Convert date to days since epoch using a simplified calculation.
     let days = days_from_civil(year, month, day)?;
-    let total_secs = days * 86400 + i64::from(hour) * 3600 + i64::from(min) * 60 + i64::from(sec)
-        - tz_offset_secs;
-    Some(total_secs * 1_000_000_000 + frac_nanos)
+    let total_secs = days
+        .checked_mul(86400)?
+        .checked_add(i64::from(hour) * 3600)?
+        .checked_add(i64::from(min) * 60)?
+        .checked_add(i64::from(sec))?
+        .checked_sub(tz_offset_secs)?;
+
+    total_secs.checked_mul(1_000_000_000)?.checked_add(frac_nanos)
 }
 
 /// Convert a civil date to days since Unix epoch (1970-01-01).
 /// Uses the algorithm from Howard Hinnant's date library.
-fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
+pub(crate) fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
+    // More precise day validation
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    let max_days = match month {
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 31,
+    };
+    if day > max_days {
+        return None;
+    }
+
     let y = if month <= 2 { year - 1 } else { year };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400) as u32;

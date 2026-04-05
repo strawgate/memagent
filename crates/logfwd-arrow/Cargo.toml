@@ -17,5 +17,9 @@ bytes = "1"
 serial_test = "3"
 stats_alloc = "0.1"
 
+[[test]]
+name = "timestamp_parsing"
+path = "tests/timestamp_parsing.rs"
+
 [lints]
 workspace = true
