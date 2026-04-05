@@ -116,8 +116,7 @@ fn test_unexpected_column_types() {
 
     let batch = RecordBatch::try_new(schema, columns).unwrap();
 
-    // This should NOT panic. It might return Error or handle it.
-    // If it currently panics, this test will fail until fixed.
-    let result = flat_to_star(&batch);
-    assert!(result.is_err() || result.is_ok()); // Just want it to not panic.
+    // This should NOT panic. Reaching this line without panicking is the assertion.
+    // flat_to_star handles unexpected column types gracefully (returns Ok, skipping the column).
+    let _result = flat_to_star(&batch);
 }

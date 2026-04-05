@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, StringArray, UInt8Array,
-    UInt32Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, LargeBinaryArray,
+    StringArray, UInt8Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
@@ -679,9 +679,22 @@ fn build_log_attrs(
                     bytes_vals.push(None);
                 }
                 ATTR_TYPE_BYTES => {
-                    let a = arr.as_any().downcast_ref::<BinaryArray>().ok_or_else(|| {
+                    // attr_type_for() maps both DataType::Binary and DataType::LargeBinary to
+                    // ATTR_TYPE_BYTES, so we must handle both array types here.
+                    let bytes = match arr.data_type() {
+                        DataType::Binary => arr
+                            .as_any()
+                            .downcast_ref::<BinaryArray>()
+                            .map(|a| a.value(row).to_vec()),
+                        DataType::LargeBinary => arr
+                            .as_any()
+                            .downcast_ref::<LargeBinaryArray>()
+                            .map(|a| a.value(row).to_vec()),
+                        _ => None,
+                    }
+                    .ok_or_else(|| {
                         ArrowError::ComputeError(format!(
-                            "Expected BinaryArray for column {}, got {}",
+                            "Expected BinaryArray or LargeBinaryArray for column {}, got {}",
                             key,
                             arr.data_type()
                         ))
@@ -690,7 +703,7 @@ fn build_log_attrs(
                     int_vals.push(None);
                     double_vals.push(None);
                     bool_vals.push(None);
-                    bytes_vals.push(Some(a.value(row).to_vec()));
+                    bytes_vals.push(Some(bytes));
                 }
                 _ => {
                     // String (default).
@@ -932,18 +945,21 @@ pub(crate) fn parse_timestamp_to_nanos(s: &str) -> Option<i64> {
     }
     // Try bare integer nanoseconds first.
     if let Ok(ns) = s.parse::<i64>() {
-        // Heuristic for epoch timestamps:
+        // Heuristic for epoch timestamps based on magnitude. We use unsigned_abs() so that
+        // pre-1970 (negative) timestamps are classified correctly — for negative values the
+        // comparisons against positive thresholds would otherwise always be false.
         // > 1e17: nanoseconds  (1e17 ns = ~3.17 years from 1970)
         // > 1e14: microseconds (1e14 us = ~3.17 years)
         // > 1e11: milliseconds (1e11 ms = ~3.17 years)
         // else: seconds
-        if ns > 100_000_000_000_000_000 {
+        let abs = ns.unsigned_abs();
+        if abs > 100_000_000_000_000_000 {
             return Some(ns);
         }
-        if ns > 100_000_000_000_000 {
+        if abs > 100_000_000_000_000 {
             return ns.checked_mul(1_000);
         }
-        if ns > 100_000_000_000 {
+        if abs > 100_000_000_000 {
             return ns.checked_mul(1_000_000);
         }
         return ns.checked_mul(1_000_000_000);
@@ -991,8 +1007,13 @@ pub(crate) fn parse_rfc3339_nanos(s: &str) -> Option<i64> {
     };
 
     let tz_str = &rest[tz_start..];
-    let tz_offset_secs: i64 = if tz_str.is_empty() || tz_str == "Z" || tz_str == "z" {
+    // RFC 3339 requires an explicit timezone designator. Strings without one (e.g.
+    // "2024-01-15T10:30:00") are not valid RFC 3339 and we return None rather than
+    // silently assuming UTC, which could misinterpret local-time values.
+    let tz_offset_secs: i64 = if tz_str == "Z" || tz_str == "z" {
         0
+    } else if tz_str.is_empty() {
+        return None;
     } else if tz_str.len() >= 6 && (tz_str.starts_with('+') || tz_str.starts_with('-')) {
         let sign: i64 = if tz_str.starts_with('-') { -1 } else { 1 };
         let tz_h: i64 = tz_str[1..3].parse().ok()?;
