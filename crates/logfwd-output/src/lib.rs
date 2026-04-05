@@ -540,7 +540,7 @@ pub fn build_output_sink(
     cfg: &OutputConfig,
     stats: Arc<ComponentStats>,
 ) -> Result<Box<dyn OutputSink>, OutputError> {
-    let auth_headers = build_auth_headers(cfg.auth.as_ref());
+    let _auth_headers = build_auth_headers(cfg.auth.as_ref());
     match cfg.output_type {
         OutputType::Stdout => Err(OutputError::Construction(format!(
             "output '{name}': stdout requires the async pipeline — use build_sink_factory() instead"
@@ -726,10 +726,9 @@ pub fn build_sink_factory(
             Ok(Arc::new(factory))
         }
         OutputType::Otlp => {
-            let endpoint = cfg
-                .endpoint
-                .as_ref()
-                .ok_or_else(|| format!("output '{name}': OTLP requires 'endpoint'"))?;
+            let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
+                OutputError::Construction(format!("output '{name}': OTLP requires 'endpoint'"))
+            })?;
             let protocol = match cfg.protocol.as_deref() {
                 Some("grpc") => OtlpProtocol::Grpc,
                 _ => OtlpProtocol::Http,
@@ -737,9 +736,9 @@ pub fn build_sink_factory(
             let compression = match cfg.compression.as_deref() {
                 Some("zstd") => Compression::Zstd,
                 Some("gzip") => {
-                    return Err(format!(
+                    return Err(OutputError::Construction(format!(
                         "output '{name}': OTLP does not support 'gzip' compression yet"
-                    ));
+                    )));
                 }
                 _ => Compression::None,
             };
@@ -751,7 +750,9 @@ pub fn build_sink_factory(
                 auth_headers,
                 stats,
             )
-            .map_err(|e| format!("output '{name}': otlp factory: {e}"))?;
+            .map_err(|e| {
+                OutputError::Construction(format!("output '{name}': otlp factory: {e}"))
+            })?;
             Ok(Arc::new(factory))
         }
         OutputType::Stdout => {
@@ -767,10 +768,9 @@ pub fn build_sink_factory(
             )))
         }
         OutputType::Tcp => {
-            let endpoint = cfg
-                .endpoint
-                .as_ref()
-                .ok_or_else(|| format!("output '{name}': tcp requires 'endpoint'"))?;
+            let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
+                OutputError::Construction(format!("output '{name}': tcp requires 'endpoint'"))
+            })?;
             Ok(Arc::new(TcpSinkFactory::new(
                 name.to_string(),
                 endpoint.clone(),
@@ -1208,11 +1208,11 @@ mod tests {
             Ok(_) => panic!("expected gzip OTLP compression to be rejected"),
             Err(err) => err,
         };
-        assert!(err.contains("gzip"), "got: {err}");
+        assert!(err.to_string().contains("gzip"), "got: {err}");
     }
 
     #[test]
-    fn test_build_output_sink_http() {
+    fn test_build_output_sink_http_redirects_to_async() {
         let cfg = OutputConfig {
             name: Some("es".to_string()),
             output_type: OutputType::Http,
@@ -1225,30 +1225,17 @@ mod tests {
             index: None,
             auth: None,
         };
-        let sink = build_output_sink("es", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(sink.name(), "es");
+        let result = build_output_sink("es", &cfg, Arc::new(ComponentStats::new()));
+        assert!(result.is_err(), "http should redirect to async pipeline");
+        let err = result.err().unwrap();
+        assert!(
+            err.to_string().contains("async pipeline"),
+            "error should mention async pipeline, got: {err}"
+        );
     }
 
     #[test]
-    fn test_build_output_sink_http_with_gzip_compression() {
-        let cfg = OutputConfig {
-            name: Some("http-gz".to_string()),
-            output_type: OutputType::Http,
-            endpoint: Some("http://localhost:9200".to_string()),
-            protocol: None,
-            compression: Some("gzip".to_string()),
-            request_mode: None,
-            format: None,
-            path: None,
-            index: None,
-            auth: None,
-        };
-        let sink = build_output_sink("http-gz", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(sink.name(), "http-gz");
-    }
-
-    #[test]
-    fn test_build_output_sink_http_rejects_unknown_compression() {
+    fn test_build_sink_factory_http_rejects_unknown_compression() {
         let cfg = OutputConfig {
             name: Some("http-bad".to_string()),
             output_type: OutputType::Http,
@@ -1261,14 +1248,14 @@ mod tests {
             index: None,
             auth: None,
         };
-        let result = build_output_sink("http-bad", &cfg, Arc::new(ComponentStats::new()));
+        let result = build_sink_factory("http-bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(
             result.is_err(),
             "unsupported compression should be rejected"
         );
         let err = result.err().unwrap();
         assert!(
-            err.contains("zstd"),
+            err.to_string().contains("zstd"),
             "error should name the unsupported algorithm, got: {err}"
         );
     }
@@ -1291,7 +1278,7 @@ mod tests {
         let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(err.contains("endpoint"), "got: {err}");
+        assert!(err.to_string().contains("endpoint"), "got: {err}");
     }
 
     #[test]
@@ -1349,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_output_sink_http_with_bearer_auth() {
+    fn test_build_sink_factory_http_with_bearer_auth() {
         use logfwd_config::AuthConfig;
         let cfg = OutputConfig {
             name: Some("auth-sink".to_string()),
@@ -1366,8 +1353,10 @@ mod tests {
                 headers: std::collections::HashMap::new(),
             }),
         };
-        let sink = build_output_sink("auth-sink", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(sink.name(), "auth-sink");
+        // Http is now async-only; verify the factory builds successfully.
+        let factory =
+            build_sink_factory("auth-sink", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        assert_eq!(factory.name(), "auth-sink");
     }
 
     // -----------------------------------------------------------------------

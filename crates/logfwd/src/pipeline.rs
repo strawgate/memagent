@@ -1515,7 +1515,7 @@ mod tests {
         let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(err.contains("endpoint"), "got: {err}");
+        assert!(err.to_string().contains("endpoint"), "got: {err}");
     }
 
     #[test]
