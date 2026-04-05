@@ -715,11 +715,6 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'max_open_files' is not supported for generator inputs"
                             )));
                         }
-                        if input.listen.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'listen' is not supported for generator inputs"
-                            )));
-                        }
                     }
                     InputType::ArrowIpc => {
                         return Err(ConfigError::Validation(format!(
@@ -2359,20 +2354,22 @@ pipelines:
     }
 
     #[test]
-    fn generator_input_rejects_listen() {
+    fn generator_input_accepts_listen_as_rate_limit() {
+        // `listen` is reused as events/sec for generators (pipeline.rs reads
+        // cfg.listen at runtime). The validation guard must not reject it.
         let yaml = r#"
 pipelines:
   test:
     inputs:
       - type: generator
-        listen: 0.0.0.0:514
+        listen: "1000"
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("listen"),
-            "expected listen rejection: {err}"
+        let cfg = Config::load_str(yaml).expect("generator with listen should be valid");
+        assert_eq!(
+            cfg.pipelines["test"].inputs[0].listen.as_deref(),
+            Some("1000")
         );
     }
 
