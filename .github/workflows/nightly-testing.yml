@@ -6,49 +6,64 @@ on:
 
 jobs:
   proptest-extended:
-    name: Proptest (10,000 cases)
+    name: Proptest (100K cases)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Run proptests with 10K cases
+      - name: Run proptests with 100K cases
         run: |
-          PROPTEST_CASES=10000 cargo test -p logfwd-core --test it -- proptest
-          PROPTEST_CASES=10000 cargo test -p logfwd-io --test it -- proptest
-          PROPTEST_CASES=10000 cargo test -p logfwd-types -- proptest
-          PROPTEST_CASES=10000 cargo test -p logfwd-output -- proptest
+          PROPTEST_CASES=100000 cargo test -p logfwd-core --test it -- proptest
+          PROPTEST_CASES=100000 cargo test -p logfwd-io --test it -- proptest
+          PROPTEST_CASES=100000 cargo test -p logfwd-types -- proptest
+          PROPTEST_CASES=100000 cargo test -p logfwd-output -- proptest
         env:
-          PROPTEST_CASES: "10000"
+          PROPTEST_CASES: "100000"
 
   turmoil-seed-sweep:
-    name: Turmoil seed sweep (100 seeds)
+    name: Turmoil seed sweep (500 seeds)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Run turmoil tests with 100 different seeds
+      - name: Build turmoil tests once
+        run: cargo test -p logfwd --features turmoil --test turmoil_sim --no-run
+      - name: Run turmoil tests with 500 different seeds
         run: |
+          # Find the compiled test binary to avoid recompilation per seed
+          BIN=$(cargo test -p logfwd --features turmoil --test turmoil_sim --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable != null) | .executable' | head -1)
+          if [ -z "$BIN" ]; then
+            echo "ERROR: could not find turmoil test binary"
+            exit 1
+          fi
+          echo "Test binary: $BIN"
+
           FAILED=0
-          for SEED in $(seq 1 100); do
-            echo "=== Seed $SEED ==="
-            if ! TURMOIL_SEED=$SEED cargo test -p logfwd --features turmoil --test turmoil_sim 2>&1 | tail -3; then
+          for SEED in $(seq 1 500); do
+            if ! TURMOIL_SEED=$SEED "$BIN" --test-threads=1 2>&1 | tail -1 | grep -q "ok"; then
               echo "FAILED on seed $SEED"
+              # Re-run with output for debugging
+              TURMOIL_SEED=$SEED "$BIN" --test-threads=1 2>&1 | tail -10
               FAILED=$((FAILED + 1))
             fi
+            # Progress report every 50 seeds
+            if [ $((SEED % 50)) -eq 0 ]; then
+              echo "=== Progress: $SEED/500 seeds, $FAILED failures ==="
+            fi
           done
-          echo "=== Results: $FAILED failures out of 100 seeds ==="
+          echo "=== Results: $FAILED failures out of 500 seeds ==="
           if [ $FAILED -gt 0 ]; then exit 1; fi
 
-  fuzz-short:
-    name: Fuzz (5 minutes per target)
+  fuzz-extended:
+    name: Fuzz (30 minutes per target)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
@@ -58,6 +73,6 @@ jobs:
         run: |
           cd crates/logfwd-core
           for target in $(cargo fuzz list 2>/dev/null); do
-            echo "=== Fuzzing $target for 5 minutes ==="
-            timeout 300 cargo fuzz run "$target" -- -max_total_time=300 || true
+            echo "=== Fuzzing $target for 30 minutes ==="
+            timeout 1800 cargo fuzz run "$target" -- -max_total_time=1800 || true
           done

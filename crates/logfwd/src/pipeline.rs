@@ -139,7 +139,7 @@ impl Pipeline {
             return Err("batch_target_bytes must be > 0".to_string());
         }
         let transform_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
-        let mut transform = SqlTransform::new(transform_sql)?;
+        let mut transform = SqlTransform::new(transform_sql).map_err(|e| e.to_string())?;
 
         // Wire up enrichment sources.
         for enrichment in &config.enrichment {
@@ -327,7 +327,7 @@ impl Pipeline {
                 .unwrap_or_else(|| "output_0".to_string());
             let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
             let output_stats = metrics.add_output(&output_name, &output_type_str);
-            build_sink_factory(&output_name, output_cfg, output_stats)?
+            build_sink_factory(&output_name, output_cfg, output_stats).map_err(|e| e.to_string())?
         } else {
             // Multiple outputs: build a FanoutSink of sync sinks wrapped in OnceFactory.
             #[allow(deprecated)]
@@ -340,7 +340,10 @@ impl Pipeline {
                         .unwrap_or_else(|| format!("output_{i}"));
                     let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
                     let output_stats = metrics.add_output(&output_name, &output_type_str);
-                    sinks.push(build_output_sink(&output_name, output_cfg, output_stats)?);
+                    sinks.push(
+                        build_output_sink(&output_name, output_cfg, output_stats)
+                            .map_err(|e| e.to_string())?,
+                    );
                 }
                 let fanout_name = name.to_string();
                 Arc::new(OnceFactory::new(
@@ -442,7 +445,7 @@ impl Pipeline {
     /// Called by `--dry-run` to surface planning errors (duplicate aliases,
     /// bad window specs, etc.) before the first real batch arrives.
     pub fn validate_sql_plan(&mut self) -> Result<(), String> {
-        self.transform.validate_plan()
+        self.transform.validate_plan().map_err(|e| e.to_string())
     }
 
     /// Override the batch flush timeout (for testing).
@@ -734,9 +737,7 @@ impl Pipeline {
                                 offset: *offset,
                             });
                         }
-                        if let Err(e) = store.flush() {
-                            tracing::error!(error = %e, "pipeline: failed to flush final checkpoints");
-                        }
+                        flush_checkpoint_with_retry(store.as_mut());
                     }
                 }
                 Err(still_draining) => {
@@ -756,9 +757,7 @@ impl Pipeline {
                                 offset: *offset,
                             });
                         }
-                        if let Err(e) = store.flush() {
-                            tracing::error!(error = %e, "pipeline: failed to flush checkpoints after force-stop");
-                        }
+                        flush_checkpoint_with_retry(store.as_mut());
                     }
                 }
             }
@@ -1120,6 +1119,48 @@ fn input_poll_loop(
     }
 }
 
+/// Flush checkpoint store with bounded retry (3 attempts, 100ms between).
+///
+/// The final shutdown flush is the last chance to persist checkpoint progress.
+/// A single failure here loses all checkpoint advancement from the run.
+/// Retry with brief sleeps to handle transient I/O errors (disk busy, NFS glitch).
+///
+/// Uses `std::thread::sleep` (not `tokio::time::sleep`) because this runs
+/// during shutdown after all async work is drained, and `CheckpointStore::flush`
+/// is itself synchronous I/O — there is no benefit to yielding.
+fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore) {
+    const MAX_ATTEMPTS: u32 = 3;
+    const RETRY_DELAY: Duration = Duration::from_millis(100);
+
+    for attempt in 0..MAX_ATTEMPTS {
+        match store.flush() {
+            Ok(()) => {
+                if attempt > 0 {
+                    tracing::info!(attempt, "pipeline: checkpoint flush succeeded after retry");
+                }
+                return;
+            }
+            Err(e) => {
+                if attempt + 1 < MAX_ATTEMPTS {
+                    tracing::warn!(
+                        attempt,
+                        error = %e,
+                        "pipeline: checkpoint flush failed, retrying"
+                    );
+                    std::thread::sleep(RETRY_DELAY);
+                } else {
+                    tracing::error!(
+                        attempts = MAX_ATTEMPTS,
+                        error = %e,
+                        "pipeline: checkpoint flush failed after all retries — \
+                         checkpoint progress from this run may be lost"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[cfg(not(feature = "turmoil"))]
 fn blocking_send_channel_msg(
     input_name: &str,
@@ -1440,7 +1481,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_output_sink_http() {
+    fn test_build_output_sink_http_not_yet_supported() {
+        // Http async sink is not yet implemented (closed PR #1000).
+        // build_output_sink for Http must return an error directing callers to
+        // use the async pipeline when it becomes available.
+        // TODO: update when Http async sink is implemented.
         let cfg = OutputConfig {
             name: Some("es".to_string()),
             output_type: OutputType::Http,
@@ -1453,8 +1498,16 @@ mod tests {
             auth: None,
             request_mode: None,
         };
-        let sink = build_output_sink("es", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(sink.name(), "es");
+        let result = build_output_sink("es", &cfg, Arc::new(ComponentStats::new()));
+        assert!(
+            result.is_err(),
+            "Http is not yet supported in the sync pipeline"
+        );
+        let err = result.err().unwrap();
+        assert!(
+            err.to_string().contains("async pipeline"),
+            "error should mention async pipeline, got: {err}"
+        );
     }
 
     #[test]
@@ -1474,7 +1527,7 @@ mod tests {
         let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(err.contains("endpoint"), "got: {err}");
+        assert!(err.to_string().contains("endpoint"), "got: {err}");
     }
 
     #[test]

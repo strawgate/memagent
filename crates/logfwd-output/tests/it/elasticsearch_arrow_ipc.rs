@@ -114,7 +114,7 @@ async fn setup_test_data(sink: &mut Box<dyn logfwd_output::Sink>) -> RecordBatch
 }
 
 #[test]
-#[ignore] // Run with: cargo test --test elasticsearch_arrow_ipc -- --ignored
+#[ignore = "needs es instance"] // Run with: cargo test --test elasticsearch_arrow_ipc -- --ignored
 fn test_query_arrow_all_documents() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
     rt.block_on(async {
@@ -188,7 +188,7 @@ fn test_query_arrow_all_documents() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs es instance"]
 fn test_query_arrow_with_filter() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
     rt.block_on(async {
@@ -249,7 +249,7 @@ fn test_query_arrow_with_filter() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs es instance"]
 fn test_query_arrow_with_projection() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
     rt.block_on(async {
@@ -318,7 +318,7 @@ fn test_query_arrow_with_projection() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs es instance"]
 fn test_query_arrow_empty_result() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
     rt.block_on(async {

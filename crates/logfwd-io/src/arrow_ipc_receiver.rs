@@ -17,6 +17,8 @@ use std::sync::mpsc;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 
+use crate::InputError;
+
 /// Maximum request body size: 10 MB.
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
@@ -146,7 +148,8 @@ impl ArrowIpcReceiver {
                             Ok(d) => d,
                             Err(msg) => {
                                 let _ = request.respond(
-                                    tiny_http::Response::from_string(msg).with_status_code(400),
+                                    tiny_http::Response::from_string(msg.to_string())
+                                        .with_status_code(400),
                                 );
                                 continue;
                             }
@@ -160,7 +163,8 @@ impl ArrowIpcReceiver {
                         Ok(b) => b,
                         Err(msg) => {
                             let _ = request.respond(
-                                tiny_http::Response::from_string(msg).with_status_code(400),
+                                tiny_http::Response::from_string(msg.to_string())
+                                    .with_status_code(400),
                             );
                             continue;
                         }
@@ -261,31 +265,36 @@ impl ArrowIpcReceiver {
 }
 
 /// Decompress zstd body with size limit.
-fn decompress_zstd(body: &[u8]) -> Result<Vec<u8>, String> {
-    let decoder = zstd::Decoder::new(body)
-        .map_err(|_| "zstd decompression failed: invalid header".to_string())?;
+fn decompress_zstd(body: &[u8]) -> Result<Vec<u8>, InputError> {
+    let decoder = zstd::Decoder::new(body).map_err(|_| {
+        InputError::Receiver("zstd decompression failed: invalid header".to_string())
+    })?;
     let mut decompressed = Vec::with_capacity(body.len().min(MAX_BODY_SIZE));
     match decoder
         .take(MAX_BODY_SIZE as u64 + 1)
         .read_to_end(&mut decompressed)
     {
-        Ok(n) if n > MAX_BODY_SIZE => Err("decompressed payload too large".to_string()),
+        Ok(n) if n > MAX_BODY_SIZE => Err(InputError::Receiver(
+            "decompressed payload too large".to_string(),
+        )),
         Ok(_) => Ok(decompressed),
-        Err(e) => Err(format!("zstd decompression failed: {e}")),
+        Err(e) => Err(InputError::Receiver(format!(
+            "zstd decompression failed: {e}"
+        ))),
     }
 }
 
 /// Decode an Arrow IPC stream from bytes into RecordBatches.
-fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, String> {
+fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, InputError> {
     if body.is_empty() {
         return Ok(Vec::new());
     }
     let cursor = io::Cursor::new(body);
     let reader = StreamReader::try_new(cursor, None)
-        .map_err(|e| format!("invalid Arrow IPC stream: {e}"))?;
+        .map_err(|e| InputError::Receiver(format!("invalid Arrow IPC stream: {e}")))?;
     reader
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("failed to read Arrow IPC batch: {e}"))
+        .map_err(|e| InputError::Receiver(format!("failed to read Arrow IPC batch: {e}")))
 }
 
 // ---------------------------------------------------------------------------

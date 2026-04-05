@@ -26,6 +26,7 @@ use super::{BatchMetadata, OutputSink};
 /// The outcome of a [`Sink::send_batch`] call.
 #[must_use]
 #[non_exhaustive]
+#[derive(Debug)]
 pub enum SendResult {
     /// The batch was accepted and delivered.
     Ok,
@@ -351,7 +352,7 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "stub"
         }
 

@@ -17,6 +17,8 @@ use arrow::record_batch::RecordBatch;
 use logfwd_arrow::star_schema::{StarSchema, attrs_schema, star_to_flat};
 use logfwd_core::otlp::{decode_tag, decode_varint, encode_tag, encode_varint, skip_field};
 
+use crate::InputError;
+
 /// Maximum request body size: 10 MB.
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
@@ -150,7 +152,8 @@ impl OtapReceiver {
                         Ok(b) => b,
                         Err(msg) => {
                             let _ = request.respond(
-                                tiny_http::Response::from_string(msg).with_status_code(400),
+                                tiny_http::Response::from_string(msg.to_string())
+                                    .with_status_code(400),
                             );
                             continue;
                         }
@@ -162,7 +165,8 @@ impl OtapReceiver {
                         Ok(s) => s,
                         Err(msg) => {
                             let _ = request.respond(
-                                tiny_http::Response::from_string(msg).with_status_code(400),
+                                tiny_http::Response::from_string(msg.to_string())
+                                    .with_status_code(400),
                             );
                             continue;
                         }
@@ -309,28 +313,33 @@ struct ArrowPayload {
 ///   bytes headers = 3;
 /// }
 /// ```
-fn decode_batch_arrow_records(buf: &[u8]) -> Result<BatchArrowRecords, String> {
+fn decode_batch_arrow_records(buf: &[u8]) -> Result<BatchArrowRecords, InputError> {
     let mut batch_id: i64 = 0;
     let mut payloads: Vec<ArrowPayload> = Vec::new();
     let mut pos = 0;
 
     while pos < buf.len() {
-        let (field_number, wire_type, new_pos) = decode_tag(buf, pos)?;
+        let (field_number, wire_type, new_pos) =
+            decode_tag(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
         pos = new_pos;
 
         match (field_number, wire_type) {
             // batch_id: int64, field 1, wire type 0 (varint)
             (1, WIRE_TYPE_VARINT) => {
-                let (val, new_pos) = decode_varint(buf, pos)?;
+                let (val, new_pos) =
+                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
                 batch_id = val as i64;
                 pos = new_pos;
             }
             // arrow_payloads: repeated ArrowPayload, field 2, wire type 2
             (2, WIRE_TYPE_LENGTH_DELIMITED) => {
-                let (len, new_pos) = decode_varint(buf, pos)?;
+                let (len, new_pos) =
+                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
                 let end = new_pos + len as usize;
                 if end > buf.len() {
-                    return Err("ArrowPayload: length overflow".to_string());
+                    return Err(InputError::Receiver(
+                        "ArrowPayload: length overflow".to_string(),
+                    ));
                 }
                 let payload = decode_arrow_payload(&buf[new_pos..end])?;
                 payloads.push(payload);
@@ -338,7 +347,8 @@ fn decode_batch_arrow_records(buf: &[u8]) -> Result<BatchArrowRecords, String> {
             }
             // headers or unknown — skip
             _ => {
-                pos = skip_field(buf, wire_type, pos)?;
+                pos = skip_field(buf, wire_type, pos)
+                    .map_err(|e| InputError::Receiver(e.to_string()))?;
             }
         }
     }
@@ -355,42 +365,51 @@ fn decode_batch_arrow_records(buf: &[u8]) -> Result<BatchArrowRecords, String> {
 ///   bytes record = 3;
 /// }
 /// ```
-fn decode_arrow_payload(buf: &[u8]) -> Result<ArrowPayload, String> {
+fn decode_arrow_payload(buf: &[u8]) -> Result<ArrowPayload, InputError> {
     let mut payload_type: u32 = 0;
     let mut record: Vec<u8> = Vec::new();
     let mut pos = 0;
 
     while pos < buf.len() {
-        let (field_number, wire_type, new_pos) = decode_tag(buf, pos)?;
+        let (field_number, wire_type, new_pos) =
+            decode_tag(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
         pos = new_pos;
 
         match (field_number, wire_type) {
             // schema_id: string, field 1 — skip (not needed for decode)
             (1, WIRE_TYPE_LENGTH_DELIMITED) => {
-                let (len, new_pos) = decode_varint(buf, pos)?;
+                let (len, new_pos) =
+                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
                 pos = new_pos + len as usize;
                 if pos > buf.len() {
-                    return Err("ArrowPayload.schema_id: length overflow".to_string());
+                    return Err(InputError::Receiver(
+                        "ArrowPayload.schema_id: length overflow".to_string(),
+                    ));
                 }
             }
             // type: ArrowPayloadType enum, field 2, wire type 0
             (2, WIRE_TYPE_VARINT) => {
-                let (val, new_pos) = decode_varint(buf, pos)?;
+                let (val, new_pos) =
+                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
                 payload_type = val as u32;
                 pos = new_pos;
             }
             // record: bytes, field 3, wire type 2
             (3, WIRE_TYPE_LENGTH_DELIMITED) => {
-                let (len, new_pos) = decode_varint(buf, pos)?;
+                let (len, new_pos) =
+                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
                 let end = new_pos + len as usize;
                 if end > buf.len() {
-                    return Err("ArrowPayload.record: length overflow".to_string());
+                    return Err(InputError::Receiver(
+                        "ArrowPayload.record: length overflow".to_string(),
+                    ));
                 }
                 record = buf[new_pos..end].to_vec();
                 pos = end;
             }
             _ => {
-                pos = skip_field(buf, wire_type, pos)?;
+                pos = skip_field(buf, wire_type, pos)
+                    .map_err(|e| InputError::Receiver(e.to_string()))?;
             }
         }
     }
@@ -409,20 +428,22 @@ fn decode_arrow_payload(buf: &[u8]) -> Result<ArrowPayload, String> {
 ///
 /// If the stream contains multiple batches, they are concatenated (though OTAP
 /// payloads typically contain exactly one batch per payload).
-fn deserialize_ipc_batch(bytes: &[u8]) -> Result<RecordBatch, String> {
+fn deserialize_ipc_batch(bytes: &[u8]) -> Result<RecordBatch, InputError> {
     if bytes.is_empty() {
-        return Err("empty Arrow IPC payload".to_string());
+        return Err(InputError::Receiver("empty Arrow IPC payload".to_string()));
     }
     let cursor = io::Cursor::new(bytes);
-    let reader =
-        StreamReader::try_new(cursor, None).map_err(|e| format!("Arrow IPC reader failed: {e}"))?;
+    let reader = StreamReader::try_new(cursor, None)
+        .map_err(|e| InputError::Receiver(format!("Arrow IPC reader failed: {e}")))?;
 
     let batches: Vec<RecordBatch> = reader
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Arrow IPC read batch failed: {e}"))?;
+        .map_err(|e| InputError::Receiver(format!("Arrow IPC read batch failed: {e}")))?;
 
     if batches.is_empty() {
-        return Err("Arrow IPC stream contained no batches".to_string());
+        return Err(InputError::Receiver(
+            "Arrow IPC stream contained no batches".to_string(),
+        ));
     }
     if batches.len() == 1 {
         return Ok(batches.into_iter().next().expect("checked len"));
@@ -430,14 +451,14 @@ fn deserialize_ipc_batch(bytes: &[u8]) -> Result<RecordBatch, String> {
 
     // Concatenate multiple batches (rare but possible).
     arrow::compute::concat_batches(&batches[0].schema(), &batches)
-        .map_err(|e| format!("concat Arrow IPC batches failed: {e}"))
+        .map_err(|e| InputError::Receiver(format!("concat Arrow IPC batches failed: {e}")))
 }
 
 /// Group `ArrowPayload`s by type and assemble a `StarSchema`.
 ///
 /// Requires at least a LOGS payload. Missing attrs tables get empty defaults
 /// with the correct schema.
-fn assemble_star_schema(payloads: &[ArrowPayload]) -> Result<StarSchema, String> {
+fn assemble_star_schema(payloads: &[ArrowPayload]) -> Result<StarSchema, InputError> {
     let mut logs_batch: Option<RecordBatch> = None;
     let mut log_attrs_batch: Option<RecordBatch> = None;
     let mut resource_attrs_batch: Option<RecordBatch> = None;
@@ -460,7 +481,9 @@ fn assemble_star_schema(payloads: &[ArrowPayload]) -> Result<StarSchema, String>
         }
     }
 
-    let logs = logs_batch.ok_or_else(|| "missing LOGS payload in BatchArrowRecords".to_string())?;
+    let logs = logs_batch.ok_or_else(|| {
+        InputError::Receiver("missing LOGS payload in BatchArrowRecords".to_string())
+    })?;
 
     // Use empty batches with correct schemas for missing dimension tables.
     let log_attrs = log_attrs_batch
@@ -730,7 +753,10 @@ mod tests {
         let result = assemble_star_schema(&[]);
         assert!(result.is_err());
         let err = result.err().expect("should be error");
-        assert!(err.contains("missing LOGS payload"), "got: {err}");
+        assert!(
+            err.to_string().contains("missing LOGS payload"),
+            "got: {err}"
+        );
     }
 
     #[test]

@@ -13,6 +13,8 @@ use arrow::array::StringArray;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 
+use crate::TransformError;
+
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
@@ -49,11 +51,16 @@ impl StaticTable {
     /// `labels` slice, so the batch error path is not expected to trigger in
     /// practice, but the error is propagated for defensive correctness.
     ///
-    /// The error type is `String` for consistency with the rest of this module
-    /// (all enrichment loaders use `Result<_, String>`).
-    pub fn new(table_name: impl Into<String>, labels: &[(String, String)]) -> Result<Self, String> {
+    /// The error type is `TransformError` for consistency with the rest of this
+    /// module (all enrichment loaders use `Result<_, TransformError>`).
+    pub fn new(
+        table_name: impl Into<String>,
+        labels: &[(String, String)],
+    ) -> Result<Self, TransformError> {
         if labels.is_empty() {
-            return Err("StaticTable requires at least one label".to_string());
+            return Err(TransformError::Enrichment(
+                "StaticTable requires at least one label".to_string(),
+            ));
         }
         let fields: Vec<Field> = labels
             .iter()
@@ -64,8 +71,7 @@ impl StaticTable {
             .iter()
             .map(|(_, v)| Arc::new(StringArray::from(vec![v.as_str()])) as _)
             .collect();
-        let batch =
-            RecordBatch::try_new(schema, columns).map_err(|e| format!("Arrow batch error: {e}"))?;
+        let batch = RecordBatch::try_new(schema, columns).map_err(TransformError::Arrow)?;
         Ok(StaticTable {
             table_name: table_name.into(),
             batch,
@@ -327,7 +333,7 @@ impl CsvFileTable {
     }
 
     /// Load the file from a reader (useful for testing).
-    pub fn load_from_reader<R: io::Read>(&self, reader: R) -> Result<usize, String> {
+    pub fn load_from_reader<R: io::Read>(&self, reader: R) -> Result<usize, TransformError> {
         let batch = read_csv_to_batch(reader)?;
         let num_rows = batch.num_rows();
         *self
@@ -338,9 +344,10 @@ impl CsvFileTable {
     }
 
     /// Reload the CSV file from disk. Returns the number of rows loaded.
-    pub fn reload(&self) -> Result<usize, String> {
-        let file = std::fs::File::open(&self.path)
-            .map_err(|e| format!("failed to open {}: {e}", self.path.display()))?;
+    pub fn reload(&self) -> Result<usize, TransformError> {
+        let file = std::fs::File::open(&self.path).map_err(|e| {
+            TransformError::Enrichment(format!("failed to open {}: {e}", self.path.display()))
+        })?;
         self.load_from_reader(io::BufReader::new(file))
     }
 
@@ -363,27 +370,31 @@ impl EnrichmentTable for CsvFileTable {
 }
 
 /// Read a CSV into an Arrow RecordBatch. All columns are Utf8.
-fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
+fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, TransformError> {
     let mut csv_reader = csv::ReaderBuilder::new().flexible(true).from_reader(reader);
 
     let headers: Vec<String> = csv_reader
         .headers()
-        .map_err(|e| format!("CSV header error: {e}"))?
+        .map_err(|e| TransformError::Enrichment(format!("CSV header error: {e}")))?
         .iter()
         .map(ToString::to_string)
         .collect();
 
     if headers.is_empty() {
-        return Err("CSV has no columns".to_string());
+        return Err(TransformError::Enrichment("CSV has no columns".to_string()));
     }
 
     let mut seen = HashSet::with_capacity(headers.len());
     for h in &headers {
         if h.is_empty() {
-            return Err("CSV has an empty header name".to_string());
+            return Err(TransformError::Enrichment(
+                "CSV has an empty header name".to_string(),
+            ));
         }
         if !seen.insert(h) {
-            return Err(format!("CSV has duplicate header name: {h}"));
+            return Err(TransformError::Enrichment(format!(
+                "CSV has duplicate header name: {h}"
+            )));
         }
     }
 
@@ -392,14 +403,15 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
     let mut columns: Vec<Vec<Option<String>>> = vec![Vec::new(); num_cols];
 
     for (row_idx, result) in csv_reader.records().enumerate() {
-        let record = result.map_err(|e| format!("CSV parse error: {e}"))?;
+        let record =
+            result.map_err(|e| TransformError::Enrichment(format!("CSV parse error: {e}")))?;
         if record.len() > num_cols {
-            return Err(format!(
+            return Err(TransformError::Enrichment(format!(
                 "CSV row {} has {} fields, expected {} (header count)",
                 row_idx + 1,
                 record.len(),
                 num_cols,
-            ));
+            )));
         }
         for (i, field) in record.iter().enumerate() {
             columns[i].push(Some(field.to_string()));
@@ -424,7 +436,7 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, String> {
         })
         .collect();
 
-    RecordBatch::try_new(schema, arrays).map_err(|e| format!("Arrow batch error: {e}"))
+    RecordBatch::try_new(schema, arrays).map_err(TransformError::Arrow)
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +468,7 @@ impl JsonLinesFileTable {
     }
 
     /// Load from a reader (useful for testing).
-    pub fn load_from_reader<R: io::BufRead>(&self, reader: R) -> Result<usize, String> {
+    pub fn load_from_reader<R: io::BufRead>(&self, reader: R) -> Result<usize, TransformError> {
         let batch = read_jsonl_to_batch(reader)?;
         let num_rows = batch.num_rows();
         *self
@@ -467,9 +479,10 @@ impl JsonLinesFileTable {
     }
 
     /// Reload from disk.
-    pub fn reload(&self) -> Result<usize, String> {
-        let file = std::fs::File::open(&self.path)
-            .map_err(|e| format!("failed to open {}: {e}", self.path.display()))?;
+    pub fn reload(&self) -> Result<usize, TransformError> {
+        let file = std::fs::File::open(&self.path).map_err(|e| {
+            TransformError::Enrichment(format!("failed to open {}: {e}", self.path.display()))
+        })?;
         self.load_from_reader(io::BufReader::new(file))
     }
 }
@@ -489,7 +502,7 @@ impl EnrichmentTable for JsonLinesFileTable {
 
 /// Read JSON Lines into a RecordBatch. Discovers union schema from all rows.
 /// All values are stored as Utf8 (stringified).
-fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String> {
+fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, TransformError> {
     use std::collections::BTreeMap;
 
     // First pass: discover all keys and collect rows.
@@ -498,7 +511,8 @@ fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String>
     let mut rows: Vec<BTreeMap<String, String>> = Vec::new();
 
     for line in reader.lines() {
-        let line = line.map_err(|e| format!("JSONL read error: {e}"))?;
+        let line =
+            line.map_err(|e| TransformError::Enrichment(format!("JSONL read error: {e}")))?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -506,8 +520,8 @@ fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String>
 
         // Minimal JSON object parsing — extract top-level string key-value pairs.
         // We use serde_json-style parsing but store everything as strings.
-        let obj: BTreeMap<String, serde_json::Value> =
-            serde_json::from_str(trimmed).map_err(|e| format!("JSONL parse error: {e}"))?;
+        let obj: BTreeMap<String, serde_json::Value> = serde_json::from_str(trimmed)
+            .map_err(|e| TransformError::Enrichment(format!("JSONL parse error: {e}")))?;
 
         let mut row = BTreeMap::new();
         for (k, v) in obj {
@@ -526,7 +540,9 @@ fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String>
     }
 
     if all_keys.is_empty() {
-        return Err("JSONL has no fields".to_string());
+        return Err(TransformError::Enrichment(
+            "JSONL has no fields".to_string(),
+        ));
     }
 
     // Build columnar arrays.
@@ -547,7 +563,7 @@ fn read_jsonl_to_batch<R: io::BufRead>(reader: R) -> Result<RecordBatch, String>
         })
         .collect();
 
-    RecordBatch::try_new(schema, arrays).map_err(|e| format!("Arrow batch error: {e}"))
+    RecordBatch::try_new(schema, arrays).map_err(TransformError::Arrow)
 }
 
 // ---------------------------------------------------------------------------
@@ -692,7 +708,8 @@ mod tests {
         let result = StaticTable::new("t", &[]);
         let err = result.err().expect("empty labels should return Err");
         assert_eq!(
-            err, "StaticTable requires at least one label",
+            err.to_string(),
+            "enrichment error: StaticTable requires at least one label",
             "error message must identify the cause"
         );
     }
@@ -853,7 +870,7 @@ mod tests {
         let table = CsvFileTable::new("t", "/fake");
         let result = table.load_from_reader(&csv_data[..]);
         let err = result.expect_err("empty header should return Err");
-        assert!(err.contains("empty header name"));
+        assert!(err.to_string().contains("empty header name"));
     }
 
     #[test]
@@ -862,7 +879,7 @@ mod tests {
         let table = CsvFileTable::new("t", "/fake");
         let result = table.load_from_reader(&csv_data[..]);
         let err = result.expect_err("duplicate header should return Err");
-        assert!(err.contains("duplicate header name"));
+        assert!(err.to_string().contains("duplicate header name"));
     }
 
     #[test]

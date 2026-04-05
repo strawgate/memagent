@@ -1,3 +1,6 @@
+pub mod error;
+pub use error::InputError;
+
 pub mod arrow_ipc_receiver;
 pub mod checkpoint;
 pub mod compress;
@@ -10,6 +13,8 @@ pub mod input;
 pub mod metric_history;
 pub mod otap_receiver;
 pub mod otlp_receiver;
+/// Checkpoint segment file format, writer, reader, and recovery.
+pub mod segment;
 pub mod span_exporter;
 pub mod stderr_capture;
 pub mod tail;

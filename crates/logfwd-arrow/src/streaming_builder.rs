@@ -39,6 +39,8 @@ struct FieldColumns {
     has_str: bool,
     has_int: bool,
     has_float: bool,
+    /// The last row this field was written to, used for dedup when idx >= 64.
+    last_row: u32,
 }
 
 impl FieldColumns {
@@ -51,6 +53,7 @@ impl FieldColumns {
             has_str: false,
             has_int: false,
             has_float: false,
+            last_row: u32::MAX,
         }
     }
 
@@ -61,6 +64,7 @@ impl FieldColumns {
         self.has_str = false;
         self.has_int = false;
         self.has_float = false;
+        self.last_row = u32::MAX;
     }
 }
 
@@ -111,6 +115,9 @@ pub struct StreamingBuilder {
     /// Raw line views: (offset_in_buf, len) per row, in row order.
     /// Populated only when `keep_raw` is true.
     raw_views: Vec<(u32, u32)>,
+    /// Tracks whether `append_raw` has been called for the current row.
+    /// Used for duplicate detection since `raw_views` is not indexed by field.
+    raw_written_this_row: bool,
     /// Protocol state — enforced via `debug_assert` in each method.
     state: BuilderState,
 }
@@ -133,6 +140,7 @@ impl StreamingBuilder {
             decoded_buf: Vec::new(),
             keep_raw,
             raw_views: Vec::new(),
+            raw_written_this_row: false,
             state: BuilderState::Idle,
         }
     }
@@ -140,9 +148,9 @@ impl StreamingBuilder {
     /// Start a new batch. Takes ownership of the input buffer via Bytes
     /// (zero-copy if converted from Vec via `Bytes::from(vec)`).
     ///
-    /// # Panics (debug builds)
-    /// Debug-asserts that `buf.len()` fits in a u32, because string-view
-    /// offsets are stored as u32.  Buffers larger than 4 GiB would produce
+    /// # Panics
+    /// Asserts that `buf.len()` fits in a u32, because string-view
+    /// offsets are stored as u32. Buffers larger than 4 GiB would produce
     /// silently truncated offsets without this guard.
     pub fn begin_batch(&mut self, buf: bytes::Bytes) {
         debug_assert_ne!(
@@ -150,7 +158,7 @@ impl StreamingBuilder {
             BuilderState::InRow,
             "begin_batch called while inside a row (missing end_row)"
         );
-        debug_assert!(
+        assert!(
             u32::try_from(buf.len()).is_ok(),
             "StreamingBuilder buffer too large for u32 offsets ({} bytes)",
             buf.len()
@@ -182,6 +190,7 @@ impl StreamingBuilder {
             "begin_row called outside of a batch (call begin_batch first)"
         );
         self.written_bits = 0;
+        self.raw_written_this_row = false;
         self.state = BuilderState::InRow;
     }
 
@@ -258,6 +267,12 @@ impl StreamingBuilder {
         if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
+        if idx >= 64 {
+            if self.fields[idx].last_row == self.row_count {
+                return;
+            }
+            self.fields[idx].last_row = self.row_count;
+        }
         // StringViewArray requires valid UTF-8.  JSON is always UTF-8 in
         // production; for fuzz / corrupted input we skip non-UTF-8 bytes so
         // that append_view_unchecked is never called on invalid bytes.
@@ -287,14 +302,23 @@ impl StreamingBuilder {
         if check_dup_bits(&mut self.written_bits, idx) {
             return;
         }
+        if idx >= 64 {
+            if self.fields[idx].last_row == self.row_count {
+                return;
+            }
+            self.fields[idx].last_row = self.row_count;
+        }
         if std::str::from_utf8(value).is_err() {
             return;
         }
-        let decoded_offset = self.decoded_buf.len() as u32;
+        let decoded_offset = u32::try_from(self.decoded_buf.len())
+            .expect("StreamingBuilder decoded_buf exceeds u32::MAX");
         self.decoded_buf.extend_from_slice(value);
         // Offset into the combined buffer: original buf bytes come first,
         // decoded bytes follow at buf.len() + decoded_offset.
-        let combined_offset = self.buf.len() as u32 + decoded_offset;
+        let combined_offset = (self.buf.len() as u32).checked_add(decoded_offset).expect(
+            "StreamingBuilder combined offset overflow: buf.len() + decoded_buf.len() exceeds u32::MAX",
+        );
         let fc = &mut self.fields[idx];
         fc.has_str = true;
         fc.str_views
@@ -312,6 +336,12 @@ impl StreamingBuilder {
             return;
         }
         let fc = &mut self.fields[idx];
+        if idx >= 64 {
+            if fc.last_row == self.row_count {
+                return;
+            }
+            fc.last_row = self.row_count;
+        }
         if let Some(v) = parse_int_fast(value) {
             fc.has_int = true;
             fc.int_values.push((self.row_count, v));
@@ -329,6 +359,12 @@ impl StreamingBuilder {
             return;
         }
         let fc = &mut self.fields[idx];
+        if idx >= 64 {
+            if fc.last_row == self.row_count {
+                return;
+            }
+            fc.last_row = self.row_count;
+        }
         if let Some(v) = parse_float_fast(value) {
             fc.has_float = true;
             fc.float_values.push((self.row_count, v));
@@ -345,12 +381,21 @@ impl StreamingBuilder {
         // Nulls are represented by gaps -- no value record needed.
         // But mark as written for duplicate-key detection.
         let _ = check_dup_bits(&mut self.written_bits, idx);
+
+        let fc = &mut self.fields[idx];
+        if idx >= 64 {
+            fc.last_row = self.row_count;
+        }
     }
 
     /// Store a zero-copy view of the raw unparsed line.
     ///
     /// Only has effect when the builder was created with `keep_raw: true`.
     /// The line must be a subslice of the buffer passed to `begin_batch`.
+    ///
+    /// First writer wins: if called multiple times in the same row, only the
+    /// first call has effect. This maintains the invariant that `raw_views`
+    /// has exactly one entry per row when `keep_raw` is enabled.
     #[inline(always)]
     pub fn append_raw(&mut self, line: &[u8]) {
         debug_assert_eq!(
@@ -358,9 +403,10 @@ impl StreamingBuilder {
             BuilderState::InRow,
             "append_raw called outside of a row"
         );
-        if self.keep_raw {
+        if self.keep_raw && !self.raw_written_this_row {
             let offset = self.offset_of(line);
             self.raw_views.push((offset, line.len() as u32));
+            self.raw_written_this_row = true;
         }
     }
 
@@ -557,30 +603,32 @@ impl StreamingBuilder {
             }
         }
 
-        if self.keep_raw && !self.raw_views.is_empty() {
-            debug_assert_eq!(
-                self.raw_views.len(),
-                num_rows,
-                "raw_views must have exactly one entry per row: {} views for {} rows",
-                self.raw_views.len(),
-                num_rows
-            );
-            let mut builder = StringViewBuilder::new();
-            let block = builder.append_block(raw_arrow_buf);
+        if self.keep_raw {
+            // When keep_raw is true every row must have exactly one _raw entry.
+            // Check cardinality even when raw_views is empty so that callers who
+            // never invoke append_raw() get an explicit error rather than a batch
+            // silently missing the _raw column.
+            if self.raw_views.len() != num_rows {
+                return Err(ArrowError::InvalidArgumentError(format!(
+                    "raw_views cardinality mismatch: {} views for {} rows",
+                    self.raw_views.len(),
+                    num_rows
+                )));
+            }
+            if !self.raw_views.is_empty() {
+                let mut builder = StringViewBuilder::new();
+                let block = builder.append_block(raw_arrow_buf);
 
-            for row in 0..num_rows {
-                if row < self.raw_views.len() {
+                for row in 0..num_rows {
                     let (offset, len) = self.raw_views[row];
                     builder
                         .try_append_view(block, offset, len)
                         .expect("raw view offset/len must be within buffer");
-                } else {
-                    builder.append_null();
                 }
-            }
 
-            schema_fields.push(Field::new("_raw", DataType::Utf8View, true));
-            arrays.push(Arc::new(builder.finish()) as ArrayRef);
+                schema_fields.push(Field::new("_raw", DataType::Utf8View, true));
+                arrays.push(Arc::new(builder.finish()) as ArrayRef);
+            }
         }
 
         let schema = Arc::new(Schema::new(schema_fields));
@@ -754,23 +802,30 @@ impl StreamingBuilder {
             }
         }
 
-        if self.keep_raw && !self.raw_views.is_empty() {
-            let total_bytes: usize = self.raw_views.iter().map(|&(_, l)| l as usize).sum();
-            let mut builder = arrow::array::StringBuilder::with_capacity(num_rows, total_bytes);
-            for row in 0..num_rows {
-                if row < self.raw_views.len() {
+        if self.keep_raw {
+            // Same cardinality guard as the non-detached path: every row must
+            // have a raw entry, including the zero-row case (0 == 0 passes).
+            if self.raw_views.len() != num_rows {
+                return Err(ArrowError::InvalidArgumentError(format!(
+                    "raw_views cardinality mismatch: {} views for {} rows",
+                    self.raw_views.len(),
+                    num_rows
+                )));
+            }
+            if !self.raw_views.is_empty() {
+                let total_bytes: usize = self.raw_views.iter().map(|&(_, l)| l as usize).sum();
+                let mut builder = arrow::array::StringBuilder::with_capacity(num_rows, total_bytes);
+                for row in 0..num_rows {
                     let (offset, len) = self.raw_views[row];
                     // Raw views always reference the original buffer (not decoded_buf).
                     let s =
                         std::str::from_utf8(&self.buf[offset as usize..(offset + len) as usize])
                             .unwrap_or("");
                     builder.append_value(s);
-                } else {
-                    builder.append_null();
                 }
+                schema_fields.push(Field::new("_raw", DataType::Utf8, true));
+                arrays.push(Arc::new(builder.finish()) as ArrayRef);
             }
-            schema_fields.push(Field::new("_raw", DataType::Utf8, true));
-            arrays.push(Arc::new(builder.finish()) as ArrayRef);
         }
 
         let schema = Arc::new(Schema::new(schema_fields));
@@ -786,14 +841,14 @@ impl StreamingBuilder {
     /// Offsets `>= buf.len()` read from `decoded_buf` at `offset - buf.len()`.
     fn read_str(&self, offset: u32, len: u32, has_decoded: bool) -> &str {
         let start = offset as usize;
-        let end = start + len as usize;
+        let end = start.saturating_add(len as usize);
         let buf_len = self.buf.len();
         let bytes = if !has_decoded || start < buf_len {
-            &self.buf[start..end]
+            self.buf.get(start..end).unwrap_or(b"")
         } else {
-            let dec_start = start - buf_len;
-            let dec_end = end - buf_len;
-            &self.decoded_buf[dec_start..dec_end]
+            let dec_start = start.saturating_sub(buf_len);
+            let dec_end = end.saturating_sub(buf_len);
+            self.decoded_buf.get(dec_start..dec_end).unwrap_or(b"")
         };
         std::str::from_utf8(bytes).unwrap_or("")
     }
@@ -1090,6 +1145,35 @@ mod tests {
         assert_eq!(raw_arr.value(1), "goodbye world");
     }
 
+    #[test]
+    fn test_keep_raw_no_append_raw_calls_returns_error() {
+        // Regression test: keep_raw=true with no append_raw() calls must return
+        // an error rather than silently producing a batch without the _raw column.
+        let buf = bytes::Bytes::from_static(b"line1\nline2\n");
+        let mut b = StreamingBuilder::new(true);
+        b.begin_batch(buf.clone());
+        let idx = b.resolve_field(b"msg");
+
+        b.begin_row();
+        b.append_str_by_idx(idx, &buf[0..5]); // no append_raw call
+        b.end_row();
+
+        b.begin_row();
+        b.append_str_by_idx(idx, &buf[6..11]); // no append_raw call
+        b.end_row();
+
+        let result = b.finish_batch();
+        assert!(
+            result.is_err(),
+            "keep_raw=true with no append_raw() calls must error, got a batch"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("cardinality mismatch"),
+            "error should mention cardinality mismatch, got: {err}"
+        );
+    }
+
     /// `append_raw` is a no-op when `keep_raw` is false -- `_raw` column absent.
     #[test]
     fn test_append_raw_keep_raw_false() {
@@ -1107,6 +1191,169 @@ mod tests {
             batch.column_by_name("_raw").is_none(),
             "_raw must not be present when keep_raw=false"
         );
+    }
+
+    /// Duplicate `append_raw` calls in one row must not corrupt later rows.
+    /// First writer wins: only the first `append_raw` value is kept per row.
+    #[test]
+    fn test_append_raw_duplicate_first_writer_wins() {
+        let buf = bytes::Bytes::from(b"firstsecondthird".to_vec());
+        let mut b = StreamingBuilder::new(true); // keep_raw=true
+        b.begin_batch(buf.clone());
+
+        let idx = b.resolve_field(b"msg");
+
+        // Row 0: two append_raw calls — first should win
+        b.begin_row();
+        b.append_raw(&buf[0..5]); // "first"
+        b.append_raw(&buf[5..11]); // "second" — duplicate, should be ignored
+        b.append_str_by_idx(idx, &buf[0..5]);
+        b.end_row();
+
+        // Row 1: single append_raw
+        b.begin_row();
+        b.append_raw(&buf[11..16]); // "third"
+        b.append_str_by_idx(idx, &buf[11..16]);
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let raw_col = batch
+            .column_by_name("_raw")
+            .expect("_raw column must be present");
+        let raw_arr = raw_col
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("_raw must be StringViewArray");
+
+        // Row 0 should have "first" (first writer wins), not "second"
+        assert_eq!(
+            raw_arr.value(0),
+            "first",
+            "row 0 _raw should be first writer"
+        );
+        // Row 1 should have "third", not shifted data from row 0's second append
+        assert_eq!(raw_arr.value(1), "third", "row 1 _raw should be correct");
+    }
+
+    /// Duplicate `append_raw` calls in detached mode must not corrupt later rows.
+    #[test]
+    fn test_append_raw_duplicate_detached() {
+        let buf = bytes::Bytes::from(b"firstsecondthird".to_vec());
+        let mut b = StreamingBuilder::new(true); // keep_raw=true
+        b.begin_batch(buf.clone());
+
+        let idx = b.resolve_field(b"msg");
+
+        // Row 0: two append_raw calls — first should win
+        b.begin_row();
+        b.append_raw(&buf[0..5]); // "first"
+        b.append_raw(&buf[5..11]); // "second" — duplicate, should be ignored
+        b.append_str_by_idx(idx, &buf[0..5]);
+        b.end_row();
+
+        // Row 1: single append_raw
+        b.begin_row();
+        b.append_raw(&buf[11..16]); // "third"
+        b.append_str_by_idx(idx, &buf[11..16]);
+        b.end_row();
+
+        let batch = b.finish_batch_detached().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let raw_col = batch
+            .column_by_name("_raw")
+            .expect("_raw column must be present");
+        let raw_arr = raw_col
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .expect("_raw must be StringArray in detached mode");
+
+        // Row 0 should have "first" (first writer wins), not "second"
+        assert_eq!(
+            raw_arr.value(0),
+            "first",
+            "row 0 _raw should be first writer"
+        );
+        // Row 1 should have "third", not shifted data from row 0's second append
+        assert_eq!(raw_arr.value(1), "third", "row 1 _raw should be correct");
+    }
+
+    #[test]
+    fn test_read_str_out_of_bounds() {
+        let buf = bytes::Bytes::from_static(b"abcd");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf.clone());
+
+        let res = b.read_str(0, 10, false); // Out of bounds length
+        assert_eq!(res, ""); // Handled safely
+
+        let res2 = b.read_str(10, 2, false); // Out of bounds offset
+        assert_eq!(res2, ""); // Handled safely
+    }
+
+    #[test]
+    fn test_append_raw_duplicate_calls() {
+        let data = b"hello world\n";
+        let buf = bytes::Bytes::from(data.to_vec());
+        let mut b = StreamingBuilder::new(true);
+        b.begin_batch(buf.clone());
+
+        b.begin_row();
+        b.append_raw(&buf[0..5]);
+        b.append_raw(&buf[6..11]); // duplicate call in same row
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+
+        let raw_col = batch
+            .column_by_name("_raw")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .unwrap();
+        assert_eq!(raw_col.value(0), "hello");
+    }
+
+    #[test]
+    fn test_dedup_above_field_64() {
+        let buf = bytes::Bytes::from_static(b"value");
+        let mut b = StreamingBuilder::new(false);
+        b.begin_batch(buf.clone());
+
+        // Create 65 fields
+        let mut indices = Vec::new();
+        for i in 0..65u8 {
+            let name = format!("field{}", i);
+            indices.push(b.resolve_field(name.as_bytes()));
+        }
+        let idx_64 = indices[64]; // index 64
+
+        // Write row 0 twice to same field 64
+        b.begin_row();
+        b.append_str_by_idx(idx_64, &buf[0..3]); // "val"
+        b.append_str_by_idx(idx_64, &buf[3..5]); // "ue" (should be deduped)
+        b.end_row();
+
+        // Write row 1 once to field 64
+        b.begin_row();
+        b.append_str_by_idx(idx_64, &buf[0..5]); // "value"
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let col = batch
+            .column_by_name("field64")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .unwrap();
+
+        assert_eq!(col.value(0), "val");
+        assert_eq!(col.value(1), "value");
     }
 
     /// Struct child "int" has correct values when rows are int-typed.
@@ -1777,7 +2024,7 @@ mod tests {
     /// (Utf8View vs Utf8).
     #[test]
     fn test_finish_batch_equivalence() {
-        use arrow::array::{Array, StringViewArray};
+        use arrow::array::Array;
 
         let input = b"{\"name\":\"alice\",\"score\":95}\n{\"name\":\"bob\",\"extra\":\"x\"}\n{\"score\":100}\n";
         let buf = bytes::Bytes::from(input.to_vec());

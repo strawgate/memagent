@@ -15,6 +15,7 @@ use opentelemetry_proto::tonic::common::v1::AnyValue;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use prost::Message;
 
+use crate::InputError;
 use crate::input::{InputEvent, InputSource};
 
 /// Maximum request body size: 10 MB.
@@ -197,7 +198,8 @@ impl OtlpReceiverInput {
                         Ok(lines) => lines,
                         Err(msg) => {
                             let _ = request.respond(
-                                tiny_http::Response::from_string(msg).with_status_code(400),
+                                tiny_http::Response::from_string(msg.to_string())
+                                    .with_status_code(400),
                             );
                             continue;
                         }
@@ -283,13 +285,13 @@ impl InputSource for OtlpReceiverInput {
 /// Decode an ExportLogsServiceRequest from JSON body and produce
 /// newline-delimited JSON lines. Parses the OTLP JSON structure directly
 /// since the protobuf types don't derive serde traits.
-fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, String> {
+fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
     if body.is_empty() {
         return Ok(Vec::new());
     }
 
-    let root: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("invalid JSON: {e}"))?;
+    let root: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|e| InputError::Receiver(format!("invalid JSON: {e}")))?;
 
     let resource_logs = match root.get("resourceLogs").and_then(|v| v.as_array()) {
         Some(arr) => arr,
@@ -297,7 +299,9 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, String> {
             // An object that parses as valid JSON but lacks `resourceLogs` is
             // not a valid ExportLogsServiceRequest. Return 400 so the client
             // knows its payload was rejected rather than silently discarding it.
-            return Err("missing required field 'resourceLogs' in OTLP JSON payload".to_string());
+            return Err(InputError::Receiver(
+                "missing required field 'resourceLogs' in OTLP JSON payload".to_string(),
+            ));
         }
     };
 
@@ -430,15 +434,15 @@ fn json_any_value_to_string(v: &serde_json::Value) -> String {
 /// Decode an ExportLogsServiceRequest protobuf and produce newline-delimited
 /// JSON. Each LogRecord becomes one JSON line with fields that the scanner
 /// can extract into Arrow columns.
-fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, String> {
+fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, InputError> {
     use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 
     if body.is_empty() {
         return Ok(Vec::new());
     }
 
-    let request =
-        ExportLogsServiceRequest::decode(body).map_err(|e| format!("invalid protobuf: {e}"))?;
+    let request = ExportLogsServiceRequest::decode(body)
+        .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
 
     Ok(convert_request_to_json_lines(&request))
 }

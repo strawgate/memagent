@@ -46,13 +46,13 @@ struct CompiledGrok {
 }
 
 /// Compile a grok pattern using the `grok` crate's built-in pattern library.
-fn compile_grok(pattern: &str) -> Result<CompiledGrok, String> {
+fn compile_grok(pattern: &str) -> Result<CompiledGrok, crate::TransformError> {
     // alias_only=true: only include user-named captures (%{PATTERN:name}) in match
     // results, not internal pattern group names. Matches VRL/Tremor usage.
     let grok = grok::Grok::with_default_patterns();
     let compiled = grok
         .compile(pattern, true)
-        .map_err(|e| format!("grok pattern compilation failed: {e}"))?;
+        .map_err(|e| crate::TransformError::Sql(format!("grok pattern compilation failed: {e}")))?;
 
     // Derive field names from the compiled pattern's capture groups.
     // With alias_only=true, this returns only user-named captures.

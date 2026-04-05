@@ -334,18 +334,18 @@ impl MmdbDatabase {
     /// Open an MMDB file at the given path and load it into memory.
     ///
     /// Returns an error if the file cannot be read or is not a valid MMDB.
-    pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, String> {
+    pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, crate::TransformError> {
         let data = std::fs::read(path.as_ref()).map_err(|e| {
-            format!(
+            crate::TransformError::Enrichment(format!(
                 "failed to read MMDB file '{}': {e}",
                 path.as_ref().display()
-            )
+            ))
         })?;
         let reader = maxminddb::Reader::from_source(data).map_err(|e| {
-            format!(
+            crate::TransformError::Enrichment(format!(
                 "failed to parse MMDB file '{}': {e}",
                 path.as_ref().display()
-            )
+            ))
         })?;
         Ok(Self { reader })
     }

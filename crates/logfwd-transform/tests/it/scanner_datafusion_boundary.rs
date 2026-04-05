@@ -455,8 +455,9 @@ fn dict_utf8view_group_by_count() {
          got: {result:?}",
     );
     let err = result.unwrap_err();
+    let err_msg = err.to_string();
     assert!(
-        err.contains("Utf8View") || err.contains("dictionary"),
+        err_msg.contains("Utf8View") || err_msg.contains("dictionary"),
         "error message should mention Utf8View or dictionary, got: {err}",
     );
 }

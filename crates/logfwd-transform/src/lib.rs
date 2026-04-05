@@ -22,7 +22,10 @@ use logfwd_core::scan_config::ScanConfig;
 
 pub use logfwd_arrow::conflict_schema;
 pub mod enrichment;
+pub mod error;
 pub mod udf;
+
+pub use error::TransformError;
 
 // Re-export sqlparser through datafusion.
 use datafusion::sql::sqlparser::ast::{
@@ -47,13 +50,15 @@ pub struct QueryAnalyzer {
 
 impl QueryAnalyzer {
     /// Parse the SQL and extract metadata about column usage.
-    pub fn new(sql: &str) -> Result<Self, String> {
+    pub fn new(sql: &str) -> Result<Self, TransformError> {
         let dialect = GenericDialect {};
-        let statements =
-            Parser::parse_sql(&dialect, sql).map_err(|e| format!("SQL parse error: {e}"))?;
+        let statements = Parser::parse_sql(&dialect, sql)
+            .map_err(|e| TransformError::Sql(format!("SQL parse error: {e}")))?;
 
         if statements.len() != 1 {
-            return Err("Expected exactly one SQL statement".to_string());
+            return Err(TransformError::Sql(
+                "Expected exactly one SQL statement".to_string(),
+            ));
         }
 
         let stmt = &statements[0];
@@ -90,7 +95,9 @@ impl QueryAnalyzer {
                 }
             }
         } else {
-            return Err("Only SELECT statements are supported".to_string());
+            return Err(TransformError::Sql(
+                "Only SELECT statements are supported".to_string(),
+            ));
         }
 
         Ok(QueryAnalyzer {
@@ -528,7 +535,7 @@ pub struct SqlTransform {
 
 impl SqlTransform {
     /// Create a new SQL transform from a SQL string.
-    pub fn new(sql: &str) -> Result<Self, String> {
+    pub fn new(sql: &str) -> Result<Self, TransformError> {
         let analyzer = QueryAnalyzer::new(sql)?;
 
         Ok(SqlTransform {
@@ -560,13 +567,17 @@ impl SqlTransform {
     pub fn add_enrichment_table(
         &mut self,
         table: Arc<dyn enrichment::EnrichmentTable>,
-    ) -> Result<(), String> {
+    ) -> Result<(), TransformError> {
         let name = table.name();
         if name == "logs" {
-            return Err("enrichment table cannot be named 'logs' (reserved)".to_string());
+            return Err(TransformError::Enrichment(
+                "enrichment table cannot be named 'logs' (reserved)".to_string(),
+            ));
         }
         if self.enrichment_tables.iter().any(|t| t.name() == name) {
-            return Err(format!("duplicate enrichment table name: '{name}'"));
+            return Err(TransformError::Enrichment(format!(
+                "duplicate enrichment table name: '{name}'"
+            )));
         }
         self.enrichment_tables.push(table);
         Ok(())
@@ -580,7 +591,7 @@ impl SqlTransform {
     ///
     /// Schema changes (new fields in later batches) are handled automatically
     /// since the MemTable is recreated with the batch's schema each call.
-    pub async fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch, String> {
+    pub async fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
         if batch.num_rows() == 0 {
             return Ok(batch);
         }
@@ -613,10 +624,10 @@ impl SqlTransform {
         let batch = conflict_schema::normalize_conflict_columns(batch);
         let schema = batch.schema();
         let table = MemTable::try_new(schema, vec![vec![batch]])
-            .map_err(|e| format!("Failed to create MemTable: {e}"))?;
+            .map_err(|e| TransformError::Sql(format!("Failed to create MemTable: {e}")))?;
         let _ = ctx.deregister_table("logs");
         ctx.register_table("logs", Arc::new(table))
-            .map_err(|e| format!("Failed to register table: {e}"))?;
+            .map_err(|e| TransformError::Sql(format!("Failed to register table: {e}")))?;
 
         // Swap enrichment tables whose snapshots have changed.
         // If snapshot() returns None (table not loaded yet), deregister the
@@ -627,11 +638,17 @@ impl SqlTransform {
             if let Some(snapshot) = et.snapshot() {
                 let et_table =
                     MemTable::try_new(snapshot.schema(), vec![vec![snapshot]]).map_err(|e| {
-                        format!("Failed to create enrichment table '{}': {e}", et.name())
+                        TransformError::Enrichment(format!(
+                            "Failed to create enrichment table '{}': {e}",
+                            et.name()
+                        ))
                     })?;
                 ctx.register_table(et.name(), Arc::new(et_table))
                     .map_err(|e| {
-                        format!("Failed to register enrichment table '{}': {e}", et.name())
+                        TransformError::Enrichment(format!(
+                            "Failed to register enrichment table '{}': {e}",
+                            et.name()
+                        ))
                     })?;
             } else {
                 tracing::warn!(
@@ -646,7 +663,7 @@ impl SqlTransform {
         let df = ctx
             .sql(sql)
             .await
-            .map_err(|e| format!("SQL execution error: {e}"))?;
+            .map_err(|e| TransformError::Sql(format!("SQL execution error: {e}")))?;
 
         // Capture the output schema before collecting so we can build an empty
         // batch when the WHERE clause filters out every row — without
@@ -656,7 +673,7 @@ impl SqlTransform {
         let batches = df
             .collect()
             .await
-            .map_err(|e| format!("Failed to collect results: {e}"))?;
+            .map_err(|e| TransformError::Sql(format!("Failed to collect results: {e}")))?;
 
         // Concat all result batches into one.
         match batches.len() {
@@ -664,8 +681,7 @@ impl SqlTransform {
             1 => Ok(batches.into_iter().next().expect("verified len==1")),
             _ => {
                 let schema = batches[0].schema();
-                concat_batches(&schema, &batches)
-                    .map_err(|e| format!("Failed to concat batches: {e}"))
+                concat_batches(&schema, &batches).map_err(TransformError::Arrow)
             }
         }
     }
@@ -709,14 +725,16 @@ impl SqlTransform {
     /// runtime.
     ///
     /// When the calling code is made async, switch to `execute().await` directly.
-    pub fn execute_blocking(&mut self, batch: RecordBatch) -> Result<RecordBatch, String> {
+    pub fn execute_blocking(&mut self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| handle.block_on(self.execute(batch))),
             Err(_) => {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .map_err(|e| format!("Failed to create tokio runtime: {e}"))?;
+                    .map_err(|e| {
+                        TransformError::Sql(format!("Failed to create tokio runtime: {e}"))
+                    })?;
                 rt.block_on(self.execute(batch))
             }
         }
@@ -737,7 +755,7 @@ impl SqlTransform {
     /// This forces DataFusion to plan the query (resolve columns, check for
     /// duplicate aliases, validate window specs, etc.) at validation time
     /// rather than waiting for the first real batch at runtime.
-    pub fn validate_plan(&mut self) -> Result<(), String> {
+    pub fn validate_plan(&mut self) -> Result<(), TransformError> {
         use arrow::array::{ArrayRef, StringArray};
         use arrow::datatypes::{Field, Schema};
 
@@ -764,7 +782,7 @@ impl SqlTransform {
             .collect();
 
         let batch = RecordBatch::try_new(schema, arrays)
-            .map_err(|e| format!("failed to build probe batch: {e}"))?;
+            .map_err(|e| TransformError::Sql(format!("failed to build probe batch: {e}")))?;
 
         self.execute_blocking(batch)?;
         Ok(())

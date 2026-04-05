@@ -113,6 +113,11 @@ bench-self seconds="10":
     @echo "==> Self benchmark (generator → filter → null)"
     just _bench-run self bench/scenarios/self-bench.yaml {{seconds}}
 
+# Throughput ceiling: generator → SELECT * → null (no filter, no network)
+bench-ceiling-self seconds="10":
+    @echo "==> Ceiling benchmark (generator → passthrough → null)"
+    just _bench-run ceiling bench/scenarios/self-ceiling.yaml {{seconds}}
+
 # TCP end-to-end
 bench-tcp seconds="10":
     @echo "==> TCP benchmark (generator → tcp → tcp → null)"
@@ -226,10 +231,14 @@ build-pgo:
 bench:
     cargo bench -p logfwd-bench --bench pipeline --bench output_encode --bench full_chain
 
+# Run throughput ceiling benchmark (generator → scan → null, no transform)
+bench-ceiling:
+    cargo bench -p logfwd-bench --bench throughput_ceiling
+
 # Run all criterion benchmarks (Tier 1 + Tier 2 — includes I/O and batch scaling, ~2-5min)
 # Excludes elasticsearch_arrow which requires a running ES instance.
 bench-full:
-    cargo bench -p logfwd-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io
+    cargo bench -p logfwd-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io --bench throughput_ceiling
 
 # Run system-level benchmarks (pipeline, contention, backpressure — requires running services)
 bench-system:

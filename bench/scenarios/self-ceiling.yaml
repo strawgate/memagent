@@ -1,0 +1,8 @@
+input:
+  type: generator
+transform: |
+  SELECT * FROM logs
+output:
+  type: null
+server:
+  diagnostics: 127.0.0.1:9090

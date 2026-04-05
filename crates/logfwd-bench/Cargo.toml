@@ -56,6 +56,10 @@ harness = false
 name = "batch_formation"
 harness = false
 
+[[bench]]
+name = "throughput_ceiling"
+harness = false
+
 [[bin]]
 name = "es-throughput"
 path = "src/es_throughput.rs"
