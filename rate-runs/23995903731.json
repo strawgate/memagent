@@ -1,0 +1,44 @@
+{
+  "timestamp": "2026-04-05T06:47:19Z",
+  "commit": "454fe1e5f5580259b9859b2a2fab6f97991571ef",
+  "warmup_secs": 5,
+  "measure_secs": 20,
+  "results": [
+    {
+      "eps": 1,
+      "rss_kb": 0,
+      "cpu_percent": 0.0,
+      "actual_eps": 1.0396741508171305
+    },
+    {
+      "eps": 10,
+      "rss_kb": 0,
+      "cpu_percent": 0.0,
+      "actual_eps": 10.036990064059793
+    },
+    {
+      "eps": 100,
+      "rss_kb": 0,
+      "cpu_percent": 0.0,
+      "actual_eps": 100.01504483010186
+    },
+    {
+      "eps": 1000,
+      "rss_kb": 0,
+      "cpu_percent": 0.0,
+      "actual_eps": 999.996941545724
+    },
+    {
+      "eps": 10000,
+      "rss_kb": 0,
+      "cpu_percent": 0.0,
+      "actual_eps": 9999.959232233508
+    },
+    {
+      "eps": 100000,
+      "rss_kb": 0,
+      "cpu_percent": 0.0,
+      "actual_eps": 99999.66530137988
+    }
+  ]
+}
