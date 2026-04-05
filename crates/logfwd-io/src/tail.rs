@@ -17,7 +17,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use logfwd_core::pipeline::SourceId;
+use logfwd_types::pipeline::SourceId;
 
 /// Byte offset within a file. Newtype prevents mixing with SourceId.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

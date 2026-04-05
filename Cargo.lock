@@ -2294,6 +2294,7 @@ dependencies = [
  "logfwd-output",
  "logfwd-test-utils",
  "logfwd-transform",
+ "logfwd-types",
  "memchr",
  "opentelemetry",
  "opentelemetry-otlp",

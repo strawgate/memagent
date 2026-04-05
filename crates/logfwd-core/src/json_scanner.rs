@@ -424,7 +424,8 @@ fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
 fn decode_json_escapes(input: &[u8], out: &mut alloc::vec::Vec<u8>) {
     out.clear();
     // Decoded output is always ≤ input length (escapes expand, never shrink).
-    out.reserve(input.len());
+    // Kani note: we do not use reserve here to avoid symbolic bounds blowing up TryReserveErrorKind limits
+    // out.reserve(input.len());
 
     let mut i = 0;
     while i < input.len() {

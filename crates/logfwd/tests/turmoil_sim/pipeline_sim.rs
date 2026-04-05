@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use logfwd::pipeline::Pipeline;
-use logfwd_core::pipeline::SourceId;
 use logfwd_test_utils::sinks::CountingSink;
+use logfwd_types::pipeline::SourceId;
 use tokio_util::sync::CancellationToken;
 
 use super::channel_input::ChannelInputSource;

@@ -9,7 +9,7 @@ use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
-use logfwd_core::pipeline::SourceId;
+use logfwd_types::pipeline::SourceId;
 use socket2::SockRef;
 
 use crate::input::{InputEvent, InputSource};

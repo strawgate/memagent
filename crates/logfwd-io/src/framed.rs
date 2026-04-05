@@ -15,7 +15,7 @@ use crate::format::FormatDecoder;
 use crate::input::{InputEvent, InputSource};
 use crate::tail::ByteOffset;
 use logfwd_core::checkpoint_tracker::CheckpointTracker;
-use logfwd_core::pipeline::SourceId;
+use logfwd_types::pipeline::SourceId;
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;

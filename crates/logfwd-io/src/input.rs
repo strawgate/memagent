@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use logfwd_core::pipeline::SourceId;
+use logfwd_types::pipeline::SourceId;
 
 use crate::filter_hints::FilterHints;
 use crate::tail::{ByteOffset, FileTailer, TailConfig, TailEvent};

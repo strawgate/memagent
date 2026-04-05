@@ -17,6 +17,7 @@ turmoil = ["dep:turmoil"]
 bytes = { workspace = true }
 logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
+logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-transform = { version = "0.1.0", path = "../logfwd-transform" }
 logfwd-output = { version = "0.1.0", path = "../logfwd-output" }

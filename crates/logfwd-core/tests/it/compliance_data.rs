@@ -11,8 +11,8 @@ use arrow::compute;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use logfwd_arrow::scanner::Scanner;
-use logfwd_core::aggregator::{AggregateResult, CriReassembler};
 use logfwd_core::cri::parse_cri_line;
+use logfwd_core::reassembler::{AggregateResult, CriReassembler};
 use logfwd_core::scan_config::ScanConfig;
 
 // ===========================================================================

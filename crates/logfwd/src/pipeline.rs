@@ -21,7 +21,6 @@ use logfwd_arrow::scanner::Scanner;
 use logfwd_config::{
     EnrichmentConfig, Format, GeoDatabaseFormat, InputConfig, InputType, PipelineConfig,
 };
-use logfwd_core::pipeline::{PipelineMachine, Running, SourceId};
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
 };
@@ -34,6 +33,7 @@ use logfwd_output::{
     AsyncFanoutFactory, BatchMetadata, OnceAsyncFactory, SinkFactory, build_sink_factory,
 };
 use logfwd_transform::SqlTransform;
+use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
@@ -952,7 +952,7 @@ impl Pipeline {
     /// Flushes are throttled to at most once per 5 seconds to avoid fsync storms.
     fn ack_all_tickets(
         &mut self,
-        tickets: Vec<logfwd_core::pipeline::BatchTicket<logfwd_core::pipeline::Sending, u64>>,
+        tickets: Vec<logfwd_types::pipeline::BatchTicket<logfwd_types::pipeline::Sending, u64>>,
         success: bool,
     ) {
         let Some(ref mut machine) = self.machine else {
