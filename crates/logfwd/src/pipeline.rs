@@ -3129,9 +3129,7 @@ mod format_integration_tests {
             validate_utf8: false,
         };
         let mut scanner = Scanner::new(config);
-        let batch = scanner
-            .scan_detached(Bytes::from(input.to_vec()))
-            .unwrap();
+        let batch = scanner.scan_detached(Bytes::from(input.to_vec())).unwrap();
         assert_eq!(batch.num_rows(), 2);
         // Single-type string fields: bare names
         assert!(batch.schema().field_with_name("level").is_ok());
@@ -3149,9 +3147,7 @@ mod format_integration_tests {
             validate_utf8: false,
         };
         let mut scanner = Scanner::new(config);
-        let batch = scanner
-            .scan_detached(Bytes::from(input.to_vec()))
-            .unwrap();
+        let batch = scanner.scan_detached(Bytes::from(input.to_vec())).unwrap();
         assert_eq!(batch.num_rows(), 2);
         assert!(batch.schema().field_with_name("_raw").is_ok());
     }
@@ -3172,9 +3168,7 @@ mod format_integration_tests {
             validate_utf8: false,
         };
         let mut scanner = Scanner::new(config);
-        let batch = scanner
-            .scan_detached(Bytes::from(out.clone()))
-            .unwrap();
+        let batch = scanner.scan_detached(Bytes::from(out.clone())).unwrap();
         assert_eq!(batch.num_rows(), 1);
         // Single-type string field: bare name
         assert!(batch.schema().field_with_name("level").is_ok());
