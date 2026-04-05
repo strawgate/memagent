@@ -675,6 +675,33 @@ pub fn build_sink_factory(
             })?;
             Ok(Arc::new(factory))
         }
+        OutputType::Http => {
+            let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
+                OutputError::Construction(format!("output '{name}': http requires 'endpoint'"))
+            })?;
+
+            let compression = match cfg.compression.as_deref() {
+                None => Compression::None,
+                Some("gzip") => Compression::Gzip,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unsupported compression '{other}'"
+                    )));
+                }
+            };
+
+            // For json_lines HTTP output, we wrap it in a OnceFactory for now.
+            let sink = Box::new(json_lines::JsonLinesSink::new(
+                name.to_string(),
+                endpoint.clone(),
+                auth_headers,
+                compression,
+                stats,
+            ));
+
+            let factory = OnceFactory::new(name.to_string(), sink);
+            Ok(Arc::new(factory))
+        }
         OutputType::Loki => {
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': loki requires 'endpoint'"))
@@ -1062,8 +1089,8 @@ mod tests {
 
         use crate::Sink;
         match sink.send_batch(&batch, &meta).await {
-            Ok(_) => panic!("gzip compression should return an error"),
-            Err(err) => assert!(err.to_string().contains("gzip"), "got: {err}"),
+            SendResult::IoError(err) => assert!(err.to_string().contains("gzip"), "got {err}"),
+            _ => panic!("gzip compression should return an error"),
         }
     }
 

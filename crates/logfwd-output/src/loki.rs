@@ -338,16 +338,22 @@ impl super::sink::Sink for LokiSink {
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
-    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>>
+    ) -> std::pin::Pin<Box<dyn Future<Output = super::sink::SendResult> + Send + 'a>>
     {
         Box::pin(async move {
             if batch.num_rows() == 0 {
-                return Ok(super::sink::SendResult::Ok);
+                return super::sink::SendResult::Ok;
             }
-            let mut stream_map = self.build_stream_map(batch, metadata)?;
+            let mut stream_map = match self.build_stream_map(batch, metadata) {
+                Ok(m) => m,
+                Err(e) => return super::sink::SendResult::IoError(e),
+            };
             let (payload, retained_rows) =
                 Self::serialize_loki_json(&mut stream_map, &self.config.static_labels);
-            self.do_send(payload, retained_rows).await
+            match self.do_send(payload, retained_rows).await {
+                Ok(r) => r,
+                Err(e) => super::sink::SendResult::IoError(e),
+            }
         })
     }
 

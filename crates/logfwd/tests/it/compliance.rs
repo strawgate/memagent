@@ -56,12 +56,12 @@ impl Sink for CaptureSink {
         &'a mut self,
         batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         self.batches
             .lock()
             .expect("CaptureSink lock poisoned")
             .push(batch.clone());
-        Box::pin(async { Ok(SendResult::Ok) })
+        Box::pin(async { SendResult::Ok })
     }
 
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {

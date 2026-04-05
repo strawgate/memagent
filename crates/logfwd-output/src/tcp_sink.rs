@@ -119,23 +119,27 @@ impl Sink for TcpSink {
         &'a mut self,
         batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             if batch.num_rows() == 0 {
-                return Ok(SendResult::Ok);
+                return SendResult::Ok;
             }
 
             self.buf.clear();
             let cols = build_col_infos(batch);
             for row in 0..batch.num_rows() {
-                write_row_json(batch, row, &cols, &mut self.buf)?;
+                if let Err(e) = write_row_json(batch, row, &cols, &mut self.buf) {
+                    return SendResult::IoError(e);
+                }
                 self.buf.push(b'\n');
             }
 
-            self.write_with_retry().await?;
+            if let Err(e) = self.write_with_retry().await {
+                return SendResult::IoError(e);
+            }
             self.stats.inc_lines(batch.num_rows() as u64);
             self.stats.inc_bytes(self.buf.len() as u64);
-            Ok(SendResult::Ok)
+            SendResult::Ok
         })
     }
 

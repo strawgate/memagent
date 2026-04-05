@@ -590,15 +590,15 @@ async fn process_item(
                 );
                 return (false, send_latency_ns);
             }
-            Ok(Ok(SendResult::Ok)) => {
+            Ok(SendResult::Ok) => {
                 tracing::Span::current().record("retries", attempts);
                 return (true, send_latency_ns);
             }
-            Ok(Ok(SendResult::Rejected(reason))) => {
+            Ok(SendResult::Rejected(reason)) => {
                 tracing::warn!(worker_id, %reason, "worker_pool: batch rejected");
                 return (false, send_latency_ns);
             }
-            Ok(Ok(SendResult::RetryAfter(retry_dur))) => {
+            Ok(SendResult::RetryAfter(retry_dur)) => {
                 if attempts >= MAX_RETRIES {
                     tracing::error!(
                         worker_id,
@@ -614,9 +614,7 @@ async fn process_item(
                 delay = Duration::from_millis(100);
                 attempts += 1;
             }
-            // Future SendResult variants (#[non_exhaustive]) — treat as failure.
-            Ok(Ok(_)) => return (false, send_latency_ns),
-            Ok(Err(e)) => {
+            Ok(SendResult::IoError(e)) => {
                 if attempts >= MAX_RETRIES {
                     tracing::error!(
                         worker_id,
@@ -636,6 +634,8 @@ async fn process_item(
                 delay = (delay * 2).min(max_retry_delay);
                 attempts += 1;
             }
+            // Future SendResult variants (#[non_exhaustive]) — treat as failure.
+            Ok(_) => return (false, send_latency_ns),
         }
     }
 }
@@ -985,15 +985,15 @@ mod tests {
             &'a mut self,
             _batch: &'a RecordBatch,
             _metadata: &'a BatchMetadata,
-        ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
             let calls = self.calls.clone();
             let fail = self.fail;
             Box::pin(async move {
                 calls.fetch_add(1, Ordering::Relaxed);
                 if fail {
-                    Err(io::Error::other("injected failure"))
+                    SendResult::IoError(io::Error::other("injected failure"))
                 } else {
-                    Ok(SendResult::Ok)
+                    SendResult::Ok
                 }
             })
         }

@@ -102,10 +102,9 @@ async fn setup_test_data(sink: &mut Box<dyn logfwd_output::Sink>) -> RecordBatch
     };
 
     // Index the batch
-    let _ = sink
-        .send_batch(&batch, &metadata)
-        .await
-        .expect("failed to index test data");
+    if let logfwd_output::sink::SendResult::IoError(e) = sink.send_batch(&batch, &metadata).await {
+        panic!("failed to index test data: {e}");
+    }
 
     // Wait for indexing to complete
     tokio::time::sleep(Duration::from_millis(1000)).await;

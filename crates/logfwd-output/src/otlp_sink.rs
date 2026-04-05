@@ -348,11 +348,14 @@ impl super::sink::Sink for OtlpSink {
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = super::sink::SendResult> + Send + 'a>> {
         Box::pin(async move {
             self.encode_batch(batch, metadata);
             let rows = batch.num_rows() as u64;
-            self.send_payload(rows).await
+            match self.send_payload(rows).await {
+                Ok(r) => r,
+                Err(e) => super::sink::SendResult::IoError(e),
+            }
         })
     }
 

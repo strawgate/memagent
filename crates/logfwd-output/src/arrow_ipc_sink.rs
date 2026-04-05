@@ -167,23 +167,31 @@ impl Sink for ArrowIpcSink {
         &'a mut self,
         batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
-            self.serialize_batch(batch)?;
+            if let Err(e) = self.serialize_batch(batch) {
+                return SendResult::IoError(e);
+            }
             if self.ipc_buf.is_empty() {
-                return Ok(SendResult::Ok);
+                return SendResult::Ok;
             }
 
-            let payload = self.maybe_compress()?;
+            let payload = match self.maybe_compress() {
+                Ok(p) => p,
+                Err(e) => return SendResult::IoError(e),
+            };
             let payload_len = payload.len() as u64;
             let row_count = batch.num_rows() as u64;
 
-            let result = self.do_send(payload).await?;
+            let result = match self.do_send(payload).await {
+                Ok(r) => r,
+                Err(e) => return SendResult::IoError(e),
+            };
             if matches!(result, SendResult::Ok) {
                 self.stats.inc_lines(row_count);
                 self.stats.inc_bytes(payload_len);
             }
-            Ok(result)
+            result
         })
     }
 

@@ -32,8 +32,8 @@ impl Sink for DevNullSink {
         &'a mut self,
         _batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
-        Box::pin(async { Ok(SendResult::Ok) })
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+        Box::pin(async { SendResult::Ok })
     }
 
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
@@ -60,10 +60,10 @@ impl Sink for SlowSink {
         &'a mut self,
         _batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             tokio::time::sleep(self.delay).await;
-            Ok(SendResult::Ok)
+            SendResult::Ok
         })
     }
 
@@ -92,10 +92,10 @@ impl Sink for FrozenSink {
         &'a mut self,
         _batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             self.release.cancelled().await;
-            Ok(SendResult::Ok)
+            SendResult::Ok
         })
     }
 
@@ -135,17 +135,17 @@ impl Sink for FailingSink {
         &'a mut self,
         _batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         self.calls += 1;
         let calls = self.calls;
         let fail_count = self.fail_count;
         Box::pin(async move {
             if calls <= fail_count {
-                return Err(io::Error::other(format!(
+                return SendResult::IoError(io::Error::other(format!(
                     "simulated output failure {calls}/{fail_count}",
                 )));
             }
-            Ok(SendResult::Ok)
+            SendResult::Ok
         })
     }
 
@@ -180,10 +180,10 @@ impl Sink for CountingSink {
         &'a mut self,
         batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         self.counter
             .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-        Box::pin(async { Ok(SendResult::Ok) })
+        Box::pin(async { SendResult::Ok })
     }
 
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {

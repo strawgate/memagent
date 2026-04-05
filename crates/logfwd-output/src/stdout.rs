@@ -281,22 +281,28 @@ impl Sink for StdoutSink {
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             // Serialize the entire batch into the reusable output buffer
             // synchronously (CPU work, no I/O — fine on an async task).
-            self.serialize_batch(batch, metadata)?;
+            if let Err(e) = self.serialize_batch(batch, metadata) {
+                return SendResult::IoError(e);
+            }
 
             let bytes_written = self.output_buf.len() as u64;
 
             // Write the pre-rendered buffer to async stdout in one shot.
             let mut stdout = tokio::io::stdout();
-            stdout.write_all(&self.output_buf).await?;
-            stdout.flush().await?;
+            if let Err(e) = stdout.write_all(&self.output_buf).await {
+                return SendResult::IoError(e);
+            }
+            if let Err(e) = stdout.flush().await {
+                return SendResult::IoError(e);
+            }
 
             self.stats.inc_lines(batch.num_rows() as u64);
             self.stats.inc_bytes(bytes_written);
-            Ok(SendResult::Ok)
+            SendResult::Ok
         })
     }
 

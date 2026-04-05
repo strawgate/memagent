@@ -30,6 +30,8 @@ use super::{BatchMetadata, OutputSink};
 pub enum SendResult {
     /// The batch was accepted and delivered.
     Ok,
+    /// Network / IO error — worker pool applies its own retry policy.
+    IoError(io::Error),
     /// The batch could not be delivered right now; retry after the given
     /// duration.
     RetryAfter(Duration),
@@ -58,7 +60,7 @@ pub trait Sink: Send {
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>>;
 
     /// Flush any internally buffered data to the destination.
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>>;
@@ -128,13 +130,14 @@ mod verification {
     use super::*;
     use std::time::Duration;
 
-    /// SendResult::Ok is not a RetryAfter or Rejected variant.
+    /// SendResult::Ok is not a RetryAfter, Rejected, or IoError variant.
     #[kani::proof]
     fn verify_ok_is_not_retry_or_rejection() {
         let result = SendResult::Ok;
         assert!(matches!(result, SendResult::Ok));
         assert!(!matches!(result, SendResult::RetryAfter(_)));
         assert!(!matches!(result, SendResult::Rejected(_)));
+        assert!(!matches!(result, SendResult::IoError(_)));
         kani::cover!(true, "Ok variant exercised");
     }
 
@@ -147,6 +150,7 @@ mod verification {
         let result = SendResult::RetryAfter(d);
         assert!(!matches!(result, SendResult::Ok));
         assert!(!matches!(result, SendResult::Rejected(_)));
+        assert!(!matches!(result, SendResult::IoError(_)));
         if let SendResult::RetryAfter(dur) = result {
             assert_eq!(dur.as_secs(), secs);
         }
@@ -154,36 +158,46 @@ mod verification {
         kani::cover!(secs == 0, "zero retry duration");
     }
 
-    /// SendResult::Rejected is not Ok or RetryAfter.
+    /// SendResult::Rejected is not Ok, RetryAfter, or IoError.
     #[kani::proof]
     fn verify_rejected_is_not_ok_or_retry() {
         let result = SendResult::Rejected("error".to_string());
         assert!(!matches!(result, SendResult::Ok));
         assert!(!matches!(result, SendResult::RetryAfter(_)));
+        assert!(!matches!(result, SendResult::IoError(_)));
         assert!(matches!(result, SendResult::Rejected(_)));
         kani::cover!(true, "Rejected variant exercised");
     }
 
-    /// The three SendResult variants are mutually exclusive.
+    /// The SendResult variants are mutually exclusive.
     #[kani::proof]
     fn verify_send_result_variants_are_mutually_exclusive() {
         let ok = SendResult::Ok;
         let retry = SendResult::RetryAfter(Duration::from_millis(100));
         let rejected = SendResult::Rejected("fail".to_string());
+        let io_err = SendResult::IoError(std::io::Error::new(std::io::ErrorKind::Other, "err"));
 
         assert!(matches!(ok, SendResult::Ok));
         assert!(!matches!(ok, SendResult::RetryAfter(_)));
         assert!(!matches!(ok, SendResult::Rejected(_)));
+        assert!(!matches!(ok, SendResult::IoError(_)));
 
         assert!(!matches!(retry, SendResult::Ok));
         assert!(matches!(retry, SendResult::RetryAfter(_)));
         assert!(!matches!(retry, SendResult::Rejected(_)));
+        assert!(!matches!(retry, SendResult::IoError(_)));
 
         assert!(!matches!(rejected, SendResult::Ok));
         assert!(!matches!(rejected, SendResult::RetryAfter(_)));
         assert!(matches!(rejected, SendResult::Rejected(_)));
+        assert!(!matches!(rejected, SendResult::IoError(_)));
 
-        kani::cover!(true, "all three variants are mutually exclusive");
+        assert!(!matches!(io_err, SendResult::Ok));
+        assert!(!matches!(io_err, SendResult::RetryAfter(_)));
+        assert!(!matches!(io_err, SendResult::Rejected(_)));
+        assert!(matches!(io_err, SendResult::IoError(_)));
+
+        kani::cover!(true, "all variants are mutually exclusive");
     }
 
     /// Prove that total retry wait time is bounded regardless of server-suggested delays.
@@ -251,14 +265,15 @@ impl Sink for SyncSinkAdapter {
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         // SAFETY: block_in_place is safe here because we're within a
         // multi-threaded tokio runtime (logfwd always uses rt-multi-thread).
         Box::pin(async move {
             tokio::task::block_in_place(|| {
-                self.inner
-                    .send_batch(batch, metadata)
-                    .map(|()| SendResult::Ok)
+                match self.inner.send_batch(batch, metadata) {
+                    Ok(()) => SendResult::Ok,
+                    Err(e) => SendResult::IoError(e),
+                }
             })
         })
     }
@@ -344,8 +359,8 @@ mod tests {
             &'a mut self,
             _batch: &'a RecordBatch,
             _metadata: &'a BatchMetadata,
-        ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
-            Box::pin(async { Ok(SendResult::Ok) })
+        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+            Box::pin(async { SendResult::Ok })
         }
 
         fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {

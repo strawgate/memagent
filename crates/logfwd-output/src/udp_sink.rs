@@ -130,10 +130,12 @@ impl Sink for UdpSink {
         &'a mut self,
         batch: &'a RecordBatch,
         _metadata: &'a BatchMetadata,
-    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
-            self.do_send_batch(batch).await?;
-            Ok(SendResult::Ok)
+            match self.do_send_batch(batch).await {
+                Ok(()) => SendResult::Ok,
+                Err(e) => SendResult::IoError(e),
+            }
         })
     }
 
