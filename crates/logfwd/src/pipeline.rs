@@ -1424,6 +1424,9 @@ fn now_nanos() -> u64 {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+    // std::time::Instant is cfg-gated in the parent module for turmoil compatibility,
+    // but tests need it for timeout deadlines regardless of the turmoil feature flag.
+    use std::time::Instant;
 
     use logfwd_config::{Format, OutputConfig, OutputType};
     use logfwd_io::diagnostics::ComponentStats;
