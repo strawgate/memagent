@@ -3,17 +3,21 @@
 //! Rows are batched into datagrams up to `MAX_DATAGRAM_PAYLOAD` bytes to
 //! amortize per-packet overhead. Each datagram contains one or more
 //! newline-terminated JSON lines.
+//!
+//! Uses `tokio::net::UdpSocket` for non-blocking async I/O.
 
+use std::future::Future;
 use std::io;
-use std::net::UdpSocket;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
+use tokio::net::UdpSocket;
 
 use logfwd_types::diagnostics::ComponentStats;
 
-#[allow(deprecated)]
-use crate::{BatchMetadata, OutputSink, build_col_infos, write_row_json};
+use crate::sink::{SendResult, Sink, SinkFactory};
+use crate::{BatchMetadata, build_col_infos, write_row_json};
 
 /// Safe MTU-friendly payload limit. Ethernet MTU is 1500; minus 20 (IP) and
 /// 8 (UDP) headers leaves 1472. We use 1400 to leave room for IP options,
@@ -33,12 +37,18 @@ pub struct UdpSink {
 }
 
 impl UdpSink {
+    /// Create a new UDP sink.
+    ///
+    /// Binds a UDP socket to an ephemeral port (`0.0.0.0:0`). The socket is
+    /// set to non-blocking mode and converted to a `tokio::net::UdpSocket`.
     pub fn new(
         name: impl Into<String>,
         target: impl Into<String>,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        std_socket.set_nonblocking(true)?;
+        let socket = UdpSocket::from_std(std_socket)?;
         Ok(Self {
             name: name.into(),
             target: target.into(),
@@ -52,11 +62,11 @@ impl UdpSink {
     /// Send the current datagram buffer if non-empty, then clear it.
     /// ECONNREFUSED (ICMP port-unreachable) is silently ignored because UDP
     /// is fire-and-forget — the destination may come back later.
-    fn flush_dgram(&mut self) -> io::Result<()> {
+    async fn flush_dgram(&mut self) -> io::Result<()> {
         if self.dgram_buf.is_empty() {
             return Ok(());
         }
-        match self.socket.send_to(&self.dgram_buf, &self.target) {
+        match self.socket.send_to(&self.dgram_buf, &self.target).await {
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
                 // Silently drop — UDP is best-effort.
@@ -66,11 +76,9 @@ impl UdpSink {
         self.dgram_buf.clear();
         Ok(())
     }
-}
 
-#[allow(deprecated)]
-impl OutputSink for UdpSink {
-    fn send_batch(&mut self, batch: &RecordBatch, _metadata: &BatchMetadata) -> io::Result<()> {
+    /// Serialize and send a batch of log records as UDP datagrams.
+    async fn do_send_batch(&mut self, batch: &RecordBatch) -> io::Result<()> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
@@ -91,8 +99,8 @@ impl OutputSink for UdpSink {
             // oversized datagram (up to 65507). The network may fragment it
             // but that is better than silently dropping data.
             if row_len > MAX_DATAGRAM_PAYLOAD {
-                self.flush_dgram()?;
-                match self.socket.send_to(&self.row_buf, &self.target) {
+                self.flush_dgram().await?;
+                match self.socket.send_to(&self.row_buf, &self.target).await {
                     Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {}
                     Err(e) => return Err(e),
@@ -102,30 +110,91 @@ impl OutputSink for UdpSink {
 
             // Would adding this row overflow the current datagram?
             if self.dgram_buf.len() + row_len > MAX_DATAGRAM_PAYLOAD {
-                self.flush_dgram()?;
+                self.flush_dgram().await?;
             }
 
             self.dgram_buf.extend_from_slice(&self.row_buf);
         }
 
         // Flush any remaining rows.
-        self.flush_dgram()?;
+        self.flush_dgram().await?;
         self.stats.inc_lines(batch.num_rows() as u64);
         self.stats.inc_bytes(total_bytes);
         Ok(())
     }
+}
 
-    fn flush(&mut self) -> io::Result<()> {
-        self.flush_dgram()
+impl Sink for UdpSink {
+    fn send_batch<'a>(
+        &'a mut self,
+        batch: &'a RecordBatch,
+        _metadata: &'a BatchMetadata,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SendResult>> + Send + 'a>> {
+        Box::pin(async move {
+            self.do_send_batch(batch).await?;
+            Ok(SendResult::Ok)
+        })
+    }
+
+    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async move { self.flush_dgram().await })
     }
 
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+        Box::pin(async move { self.flush_dgram().await })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UdpSinkFactory
+// ---------------------------------------------------------------------------
+
+/// Factory for creating [`UdpSink`] instances.
+///
+/// Each call to `create()` binds a fresh UDP socket on an ephemeral port.
+/// The factory is `is_single_use() = true` because each `UdpSink` holds
+/// mutable scratch buffers — sharing across workers would require locking.
+pub struct UdpSinkFactory {
+    name: String,
+    target: String,
+    stats: Arc<ComponentStats>,
+}
+
+impl UdpSinkFactory {
+    /// Create a new factory.
+    pub fn new(name: String, target: String, stats: Arc<ComponentStats>) -> Self {
+        UdpSinkFactory {
+            name,
+            target,
+            stats,
+        }
+    }
+}
+
+impl SinkFactory for UdpSinkFactory {
+    fn create(&self) -> io::Result<Box<dyn Sink>> {
+        let sink = UdpSink::new(
+            self.name.clone(),
+            self.target.clone(),
+            Arc::clone(&self.stats),
+        )?;
+        Ok(Box::new(sink))
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_single_use(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use arrow::array::StringArray;
@@ -146,8 +215,8 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
     }
 
-    #[test]
-    fn batches_rows_into_single_datagram() {
+    #[tokio::test]
+    async fn batches_rows_into_single_datagram() {
         let receiver = StdSocket::bind("127.0.0.1:0").unwrap();
         let addr = receiver.local_addr().unwrap();
         receiver.set_nonblocking(true).unwrap();
@@ -155,14 +224,10 @@ mod tests {
         let mut sink =
             UdpSink::new("test", addr.to_string(), Arc::new(ComponentStats::new())).unwrap();
         let batch = make_batch(5);
-        let meta = BatchMetadata {
-            resource_attrs: Arc::default(),
-            observed_time_ns: 0,
-        };
-        sink.send_batch(&batch, &meta).unwrap();
+        sink.do_send_batch(&batch).await.unwrap();
 
         // Give OS a moment to deliver.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // All 5 small rows should fit in one datagram.
         let mut buf = [0u8; 65507];
@@ -178,8 +243,8 @@ mod tests {
         assert!(receiver.recv(&mut buf).is_err());
     }
 
-    #[test]
-    fn splits_when_exceeding_mtu() {
+    #[tokio::test]
+    async fn splits_when_exceeding_mtu() {
         let receiver = StdSocket::bind("127.0.0.1:0").unwrap();
         let addr = receiver.local_addr().unwrap();
         receiver.set_nonblocking(true).unwrap();
@@ -188,11 +253,7 @@ mod tests {
             UdpSink::new("test", addr.to_string(), Arc::new(ComponentStats::new())).unwrap();
         // Create enough rows that they cannot all fit in 1400 bytes.
         let batch = make_batch(100);
-        let meta = BatchMetadata {
-            resource_attrs: Arc::default(),
-            observed_time_ns: 0,
-        };
-        sink.send_batch(&batch, &meta).unwrap();
+        sink.do_send_batch(&batch).await.unwrap();
 
         // Should receive multiple datagrams, each <= 1400 bytes.
         let mut buf = [0u8; 65507];
@@ -200,7 +261,7 @@ mod tests {
         let mut dgram_count = 0;
 
         // Give OS a moment.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         while let Ok(n) = receiver.recv(&mut buf) {
             assert!(n <= MAX_DATAGRAM_PAYLOAD, "datagram too large: {n}");
@@ -214,5 +275,23 @@ mod tests {
             dgram_count > 1,
             "expected multiple datagrams, got {dgram_count}"
         );
+    }
+
+    #[test]
+    fn factory_creates_sink() {
+        // UdpSinkFactory::create needs a tokio runtime for from_std.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let factory = UdpSinkFactory::new(
+                "test-udp".to_string(),
+                "127.0.0.1:9999".to_string(),
+                Arc::new(ComponentStats::new()),
+            );
+            assert_eq!(factory.name(), "test-udp");
+            assert!(factory.is_single_use());
+
+            let sink = factory.create().expect("create should succeed");
+            assert_eq!(sink.name(), "test-udp");
+        });
     }
 }

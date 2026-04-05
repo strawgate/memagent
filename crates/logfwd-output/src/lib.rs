@@ -32,7 +32,7 @@ pub use otlp_sink::{OtlpProtocol, OtlpSink};
 pub use sink::{OnceAsyncFactory, SendResult, Sink, SinkFactory, SyncSinkAdapter};
 use stdout::*;
 pub use tcp_sink::TcpSink;
-pub use udp_sink::UdpSink;
+pub use udp_sink::{UdpSink, UdpSinkFactory};
 
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -607,15 +607,9 @@ pub fn build_output_sink(
                 stats,
             )))
         }
-        OutputType::Udp => {
-            let endpoint = cfg
-                .endpoint
-                .as_ref()
-                .ok_or_else(|| format!("output '{name}': udp requires 'endpoint'"))?;
-            UdpSink::new(name.to_string(), endpoint.clone(), stats)
-                .map(|s| Box::new(s) as Box<dyn OutputSink>)
-                .map_err(|e| format!("output '{name}': udp bind failed: {e}"))
-        }
+        OutputType::Udp => Err(format!(
+            "output '{name}': udp requires the async pipeline — use build_sink_factory() instead"
+        )),
         OutputType::Elasticsearch => Err(format!(
             "output '{name}': elasticsearch requires the async pipeline — use build_sink_factory() instead"
         )),
@@ -637,7 +631,7 @@ pub fn build_output_sink(
 /// error. This naturally enforces `max_workers = 1` for sync sinks since the
 /// pool will stop spawning workers once the factory starts returning errors.
 ///
-/// For most sync sinks (Stdout, TCP, UDP) a single worker is correct —
+/// For most sync sinks (Stdout, TCP) a single worker is correct —
 /// there is only one connection or file handle anyway.
 ///
 /// For new code, prefer [`OnceAsyncFactory`] with a sink implementing the
@@ -769,6 +763,14 @@ pub fn build_sink_factory(
                 stats,
             )
             .map_err(|e| format!("output '{name}': arrow_ipc factory: {e}"))?;
+            Ok(Arc::new(factory))
+        }
+        OutputType::Udp => {
+            let endpoint = cfg
+                .endpoint
+                .as_ref()
+                .ok_or_else(|| format!("output '{name}': udp requires 'endpoint'"))?;
+            let factory = UdpSinkFactory::new(name.to_string(), endpoint.clone(), stats);
             Ok(Arc::new(factory))
         }
         _ => {
