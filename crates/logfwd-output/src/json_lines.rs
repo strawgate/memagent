@@ -122,7 +122,7 @@ impl JsonLinesSink {
 
     /// Serialize, compress (if configured), and POST the batch over HTTP.
     ///
-    /// Retries transient failures (5xx, timeouts, connection errors) with
+    /// Retries transient failures (5xx, timeout, and connection errors) with
     /// exponential backoff. Returns `SendResult::RetryAfter` on HTTP 429 and
     /// `SendResult::Rejected` on non-429 4xx client errors.
     async fn send_batch_inner(
@@ -213,13 +213,18 @@ impl JsonLinesSink {
                         )));
                     }
 
-                    // Success.
-                    self.stats.inc_lines(batch.num_rows() as u64);
-                    self.stats.inc_bytes(payload.len() as u64);
-                    return Ok(super::sink::SendResult::Ok);
+                    if status.is_success() {
+                        self.stats.inc_lines(batch.num_rows() as u64);
+                        self.stats.inc_bytes(payload.len() as u64);
+                        return Ok(super::sink::SendResult::Ok);
+                    }
+
+                    return Err(io::Error::other(format!(
+                        "HTTP endpoint returned unexpected status {status}"
+                    )));
                 }
-                Err(_e) if attempt < HTTP_MAX_RETRIES => {
-                    // Transport-level error (connection refused, timeout, DNS, etc.)
+                Err(e) if attempt < HTTP_MAX_RETRIES && (e.is_timeout() || e.is_connect()) => {
+                    // Retry transient transport errors only.
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     delay_ms *= 2;
                     attempt += 1;
