@@ -113,7 +113,8 @@ impl MetricBuffer {
         }
 
         // Sort by time and deduplicate close timestamps.
-        all.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
+        all.retain(|p| !p.t.is_nan());
+        all.sort_by(|a, b| a.t.total_cmp(&b.t));
         all.dedup_by(|a, b| (a.t - b.t).abs() < 1.0);
         all
     }
@@ -223,5 +224,17 @@ mod tests {
         // Should have points from all tiers, deduplicated
         assert!(!points.is_empty());
         assert!(points.len() < 200); // some dedup happened
+    }
+
+    #[test]
+    fn test_nan_timestamps_do_not_panic() {
+        let mut buf = MetricBuffer::new("test");
+        buf.push(1.0, 10.0);
+        buf.push(f64::NAN, 20.0);
+        buf.push(2.0, 30.0);
+        let points = buf.points();
+        assert_eq!(points.len(), 2);
+        assert!((points[0].t - 1.0).abs() < f64::EPSILON);
+        assert!((points[1].t - 2.0).abs() < f64::EPSILON);
     }
 }

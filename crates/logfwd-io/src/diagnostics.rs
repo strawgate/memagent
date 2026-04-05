@@ -984,9 +984,21 @@ impl DiagnosticsServer {
 
             let last_batch_ns = pm.last_batch_time_ns.load(Ordering::Relaxed);
 
-            let batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Relaxed);
-            let batch_latency_avg_ns = if batches > 0 {
-                batch_latency_total / batches
+            // Compute batch latency using a consistent snapshot since they are
+            // updated at different times. We retry until batches remains the same.
+            let mut latency_batches = pm.batches_total.load(Ordering::SeqCst);
+            let mut batch_latency_total;
+            loop {
+                batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::SeqCst);
+                let current_batches = pm.batches_total.load(Ordering::SeqCst);
+                if latency_batches == current_batches {
+                    break;
+                }
+                latency_batches = current_batches;
+            }
+
+            let batch_latency_avg_ns = if latency_batches > 0 {
+                batch_latency_total / latency_batches
             } else {
                 0
             };
