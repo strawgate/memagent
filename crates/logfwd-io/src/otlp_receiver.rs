@@ -562,23 +562,20 @@ fn any_value_to_string(v: &AnyValue) -> String {
 fn write_json_any_value(out: &mut Vec<u8>, key: &str, v: &AnyValue) {
     match &v.value {
         Some(Value::IntValue(i)) => {
-            out.push(b'"');
-            out.extend_from_slice(key.as_bytes());
-            out.extend_from_slice(b"\":");
+            write_json_escaped_key(out, key);
+            out.extend_from_slice(b":");
             // Write integer directly without allocating a String
             write_i64_to_buf(out, *i);
         }
         Some(Value::DoubleValue(d)) => {
-            out.push(b'"');
-            out.extend_from_slice(key.as_bytes());
-            out.extend_from_slice(b"\":");
+            write_json_escaped_key(out, key);
+            out.extend_from_slice(b":");
             // Write double directly without allocating a String
             write_f64_to_buf(out, *d);
         }
         Some(Value::BoolValue(b)) => {
-            out.push(b'"');
-            out.extend_from_slice(key.as_bytes());
-            out.extend_from_slice(b"\":");
+            write_json_escaped_key(out, key);
+            out.extend_from_slice(b":");
             out.extend_from_slice(if *b { b"true" } else { b"false" });
         }
         Some(Value::StringValue(s)) => write_json_string_field(out, key, s),
@@ -654,21 +651,48 @@ fn write_u64_to_buf(out: &mut Vec<u8>, mut n: u64) {
 #[inline]
 fn write_f64_to_buf(out: &mut Vec<u8>, d: f64) {
     use std::io::Write;
+    if !d.is_finite() {
+        // JSON (RFC 8259) has no representation for NaN/infinity — emit null.
+        out.extend_from_slice(b"null");
+        return;
+    }
     // Use ryu for optimal float formatting (available in std)
     let _ = write!(out, "{}", d);
 }
 
-fn write_json_field(out: &mut Vec<u8>, key: &str, value: &str) {
+/// Write a JSON object key as a properly escaped quoted string.
+///
+/// OTLP attribute keys may contain quotes, backslashes, or control characters.
+/// Using raw bytes would produce malformed JSON (issue #1166).
+fn write_json_escaped_key(out: &mut Vec<u8>, key: &str) {
     out.push(b'"');
-    out.extend_from_slice(key.as_bytes());
-    out.extend_from_slice(b"\":");
+    for &b in key.as_bytes() {
+        match b {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            0x00..=0x1f => {
+                out.extend_from_slice(b"\\u00");
+                out.push(HEX_DIGITS[(b >> 4) as usize]);
+                out.push(HEX_DIGITS[(b & 0x0f) as usize]);
+            }
+            other => out.push(other),
+        }
+    }
+    out.push(b'"');
+}
+
+fn write_json_field(out: &mut Vec<u8>, key: &str, value: &str) {
+    write_json_escaped_key(out, key);
+    out.extend_from_slice(b":");
     out.extend_from_slice(value.as_bytes());
 }
 
 fn write_json_string_field(out: &mut Vec<u8>, key: &str, value: &str) {
-    out.push(b'"');
-    out.extend_from_slice(key.as_bytes());
-    out.extend_from_slice(b"\":\"");
+    write_json_escaped_key(out, key);
+    out.extend_from_slice(b":\"");
     // JSON escape per RFC 8259: all control chars (0x00-0x1f) must be escaped.
     for &b in value.as_bytes() {
         match b {
@@ -1172,5 +1196,78 @@ mod tests {
             status, 200,
             "valid OTLP JSON should return 200, got {status}"
         );
+    }
+
+    // Regression tests for issue #1167: non-finite floats must emit null, not "NaN"/"inf".
+    #[test]
+    fn write_f64_nan_emits_null() {
+        let mut out = Vec::new();
+        write_f64_to_buf(&mut out, f64::NAN);
+        assert_eq!(&out, b"null", "NaN must serialize as JSON null");
+    }
+
+    #[test]
+    fn write_f64_infinity_emits_null() {
+        let mut out = Vec::new();
+        write_f64_to_buf(&mut out, f64::INFINITY);
+        assert_eq!(&out, b"null", "Infinity must serialize as JSON null");
+    }
+
+    #[test]
+    fn write_f64_neg_infinity_emits_null() {
+        let mut out = Vec::new();
+        write_f64_to_buf(&mut out, f64::NEG_INFINITY);
+        assert_eq!(&out, b"null", "-Infinity must serialize as JSON null");
+    }
+
+    #[test]
+    fn write_f64_finite_unchanged() {
+        let mut out = Vec::new();
+        write_f64_to_buf(&mut out, 3.14);
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.starts_with("3.14"),
+            "finite float should be formatted normally: {text}"
+        );
+    }
+
+    // Regression tests for issue #1166: attribute keys with special chars must be escaped.
+    #[test]
+    fn write_json_escaped_key_escapes_quotes() {
+        let mut out = Vec::new();
+        write_json_escaped_key(&mut out, r#"ke"y"#);
+        assert_eq!(&out, b"\"ke\\\"y\"", "quote in key must be escaped");
+    }
+
+    #[test]
+    fn write_json_escaped_key_escapes_backslash() {
+        let mut out = Vec::new();
+        write_json_escaped_key(&mut out, r"ke\y");
+        assert_eq!(&out, b"\"ke\\\\y\"", "backslash in key must be escaped");
+    }
+
+    #[test]
+    fn write_json_string_field_escapes_key() {
+        let mut out = Vec::new();
+        write_json_string_field(&mut out, r#"k"ey"#, "value");
+        let text = String::from_utf8(out).unwrap();
+        // Must be valid JSON
+        let json_str = format!("{{{text}}}");
+        serde_json::from_str::<serde_json::Value>(&json_str)
+            .unwrap_or_else(|e| panic!("invalid JSON after key escaping: {e}\n{json_str}"));
+        assert!(
+            text.contains(r#"k\"ey"#),
+            "quote in key not escaped: {text}"
+        );
+    }
+
+    #[test]
+    fn write_json_field_escapes_key() {
+        let mut out = Vec::new();
+        write_json_field(&mut out, r#"k"ey"#, "42");
+        let text = String::from_utf8(out).unwrap();
+        let json_str = format!("{{{text}}}");
+        serde_json::from_str::<serde_json::Value>(&json_str)
+            .unwrap_or_else(|e| panic!("invalid JSON after key escaping: {e}\n{json_str}"));
     }
 }
