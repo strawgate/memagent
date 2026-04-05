@@ -321,6 +321,14 @@ profile-otlp-local lines="500000" seconds="6":
 bench-report:
     cargo run -p logfwd-bench
 
+# Profile FramedInput / format processing overhead and print a markdown report.
+bench-framed-input *ARGS:
+    cargo run -p logfwd-bench --release --bin framed_input_profile -- {{ARGS}}
+
+# Allocation-focused FramedInput profiling (dhat-backed, slower; no throughput numbers).
+bench-framed-input-alloc *ARGS:
+    cargo run -p logfwd-bench --release --features dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
+
 # Run low-and-slow rate-ingest benchmark (logfwd only, measures memory and CPU at each eps)
 bench-rate *ARGS:
     cargo build --release -p logfwd
