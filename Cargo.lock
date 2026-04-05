@@ -2317,6 +2317,7 @@ dependencies = [
 name = "logfwd-arrow"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "arrow",
  "bytes",
  "logfwd-core",
