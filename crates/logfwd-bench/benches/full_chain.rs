@@ -180,6 +180,7 @@ fn bench_grok_chain(c: &mut Criterion) {
             )
             .unwrap();
             let mut sink = NullSink;
+            let mut buf = Vec::with_capacity(n * 200);
             b.iter(|| {
                 let batch = scanner
                     .scan_detached(data_bytes.clone())
@@ -188,9 +189,10 @@ fn bench_grok_chain(c: &mut Criterion) {
                 sink.send_batch(&result, &meta).unwrap();
                 // Also serialize to JSON to measure the full output path
                 let cols = logfwd_output::build_col_infos(&result);
-                let mut buf = Vec::with_capacity(result.num_rows() * 200);
+                buf.clear();
                 for row in 0..result.num_rows() {
-                    let _ = logfwd_output::write_row_json(&result, row, &cols, &mut buf);
+                    logfwd_output::write_row_json(&result, row, &cols, &mut buf)
+                        .expect("JSON serialization should not fail");
                     buf.push(b'\n');
                 }
                 std::hint::black_box(buf.len());

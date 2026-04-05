@@ -45,7 +45,7 @@ just bench-report
 | `file_io.rs` | `file_io_framing`, `file_io_cri` | Disk read + newline framing + CRI parse throughput |
 | `batch_formation.rs` | `batch_scan`, `batch_transform`, `batch_pipeline` | Batch size scaling (100–100K rows) — amortization curve |
 | `builder_compare.rs` | `bench_scan`, `bench_persist`, `bench_pipeline` | StringViewArray vs StringArray comparison |
-| `elasticsearch_arrow.rs` | *(requires ES)* | ES|QL Arrow IPC vs JSON |
+| `elasticsearch_arrow.rs` | *(requires ES)* | ES\|QL Arrow IPC vs JSON |
 
 ### Profiling Tools (`src/`)
 

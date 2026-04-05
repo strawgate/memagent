@@ -139,13 +139,14 @@ fn bench_batch_pipeline(c: &mut Criterion) {
                 let data_bytes = bytes::Bytes::from(data.clone());
                 let mut scanner = Scanner::new(ScanConfig::default());
                 let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
+                let mut buf = Vec::with_capacity(n * 300);
                 b.iter(|| {
                     let batch = scanner
                         .scan_detached(data_bytes.clone())
                         .expect("scan should not fail");
                     let result = transform.execute_blocking(batch).unwrap();
                     let cols = logfwd_output::build_col_infos(&result);
-                    let mut buf = Vec::with_capacity(result.num_rows() * 300);
+                    buf.clear();
                     for row in 0..result.num_rows() {
                         logfwd_output::write_row_json(&result, row, &cols, &mut buf)
                             .expect("JSON serialization should not fail");
