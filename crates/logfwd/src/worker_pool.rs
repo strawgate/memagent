@@ -65,7 +65,8 @@ pub struct WorkItem {
     /// Number of rows in the batch (for metrics recording at ack time).
     pub num_rows: u64,
     /// When this item was submitted to the pool (set by the caller, not submit()).
-    pub submitted_at: std::time::Instant,
+    /// Uses tokio::time::Instant so elapsed() measures simulated time under Turmoil.
+    pub submitted_at: tokio::time::Instant,
     /// Nanoseconds spent in the scan stage (passed through for metrics at ack time).
     pub scan_ns: u64,
     /// Nanoseconds spent in the transform stage (passed through for metrics at ack time).
@@ -86,7 +87,8 @@ pub struct AckItem {
     /// Passed through from WorkItem for metrics recording.
     pub num_rows: u64,
     /// When the corresponding WorkItem was submitted.
-    pub submitted_at: std::time::Instant,
+    /// Uses tokio::time::Instant so elapsed() measures simulated time under Turmoil.
+    pub submitted_at: tokio::time::Instant,
     /// Nanoseconds spent in the scan stage (passed through from WorkItem).
     pub scan_ns: u64,
     /// Nanoseconds spent in the transform stage (passed through from WorkItem).
@@ -1065,7 +1067,7 @@ mod tests {
             metadata: make_metadata(),
             tickets: vec![],
             num_rows: 0,
-            submitted_at: std::time::Instant::now(),
+            submitted_at: tokio::time::Instant::now(),
             scan_ns: 0,
             transform_ns: 0,
             batch_id: 0,

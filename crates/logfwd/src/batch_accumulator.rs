@@ -5,7 +5,6 @@
 //! based on size threshold or timeout.
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use logfwd_core::pipeline::SourceId;
@@ -17,7 +16,8 @@ pub enum AccumulatorAction {
     Flush {
         data: Bytes,
         checkpoints: HashMap<SourceId, ByteOffset>,
-        queued_at: Option<Instant>,
+        /// Uses tokio::time::Instant so elapsed() measures simulated time under Turmoil.
+        queued_at: Option<tokio::time::Instant>,
         reason: &'static str,
     },
     /// Not enough data yet.
@@ -27,7 +27,8 @@ pub enum AccumulatorAction {
 pub struct BatchAccumulator {
     buf: BytesMut,
     checkpoints: HashMap<SourceId, ByteOffset>,
-    queued_at: Option<Instant>,
+    /// Uses tokio::time::Instant so elapsed() measures simulated time under Turmoil.
+    queued_at: Option<tokio::time::Instant>,
     batch_target_bytes: usize,
 }
 
@@ -46,7 +47,7 @@ impl BatchAccumulator {
         &mut self,
         bytes: Bytes,
         input_checkpoints: Vec<(SourceId, ByteOffset)>,
-        queued_at: Instant,
+        queued_at: tokio::time::Instant,
     ) -> AccumulatorAction {
         if self.queued_at.is_none() {
             self.queued_at = Some(queued_at);
@@ -73,7 +74,13 @@ impl BatchAccumulator {
     }
 
     /// Force-drain remaining data (shutdown path).
-    pub fn drain(&mut self) -> Option<(Bytes, HashMap<SourceId, ByteOffset>, Option<Instant>)> {
+    pub fn drain(
+        &mut self,
+    ) -> Option<(
+        Bytes,
+        HashMap<SourceId, ByteOffset>,
+        Option<tokio::time::Instant>,
+    )> {
         if self.buf.is_empty() {
             return None;
         }
@@ -118,7 +125,7 @@ mod tests {
         let result = acc.ingest(
             Bytes::from_static(b"hello\n"),
             vec![(sid(1), ByteOffset(6))],
-            Instant::now(),
+            tokio::time::Instant::now(),
         );
         assert!(matches!(result, AccumulatorAction::Continue));
         assert_eq!(acc.len(), 6);
@@ -130,7 +137,7 @@ mod tests {
         let result = acc.ingest(
             Bytes::from(vec![b'x'; 15]),
             vec![(sid(1), ByteOffset(15))],
-            Instant::now(),
+            tokio::time::Instant::now(),
         );
         assert!(matches!(
             result,
@@ -148,7 +155,11 @@ mod tests {
     #[test]
     fn check_timeout_nonempty_returns_flush() {
         let mut acc = BatchAccumulator::new(100);
-        acc.ingest(Bytes::from_static(b"data\n"), vec![], Instant::now());
+        acc.ingest(
+            Bytes::from_static(b"data\n"),
+            vec![],
+            tokio::time::Instant::now(),
+        );
         let result = acc.check_timeout();
         assert!(matches!(
             result,
@@ -166,7 +177,7 @@ mod tests {
         acc.ingest(
             Bytes::from_static(b"drain me\n"),
             vec![(sid(1), ByteOffset(9))],
-            Instant::now(),
+            tokio::time::Instant::now(),
         );
         let result = acc.drain();
         assert!(result.is_some());
@@ -188,12 +199,12 @@ mod tests {
         acc.ingest(
             Bytes::from_static(b"a\n"),
             vec![(sid(1), ByteOffset(2))],
-            Instant::now(),
+            tokio::time::Instant::now(),
         );
         acc.ingest(
             Bytes::from_static(b"b\n"),
             vec![(sid(1), ByteOffset(4))],
-            Instant::now(),
+            tokio::time::Instant::now(),
         );
         let (_, checkpoints, _) = acc.drain().unwrap();
         assert_eq!(checkpoints[&sid(1)], ByteOffset(4));
