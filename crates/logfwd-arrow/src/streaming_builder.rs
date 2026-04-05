@@ -7,7 +7,7 @@
 //
 // For the hot pipeline path: scan -> query -> output -> discard.
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, Float64Array, Int64Array, StringViewBuilder, StructArray};
@@ -92,7 +92,7 @@ impl FieldColumns {
 /// ```
 pub struct StreamingBuilder {
     fields: Vec<FieldColumns>,
-    field_index: HashMap<Vec<u8>, usize>,
+    field_index: AHashMap<Vec<u8>, usize>,
     /// Number of fields active in the current batch. Slots `0..num_active` in
     /// `fields` are in use; slots beyond that are pre-allocated but dormant.
     /// Resetting this to zero on `begin_batch` — together with clearing
@@ -132,7 +132,7 @@ impl StreamingBuilder {
     pub fn new(keep_raw: bool) -> Self {
         StreamingBuilder {
             fields: Vec::with_capacity(32),
-            field_index: HashMap::with_capacity(32),
+            field_index: AHashMap::with_capacity(32),
             num_active: 0,
             row_count: 0,
             written_bits: 0,
