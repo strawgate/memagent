@@ -123,9 +123,10 @@ pub trait SinkFactory: Send + Sync + 'static {
 
 /// Multiplexes output to multiple async [`Sink`] instances.
 ///
-/// Sends every batch to **all** child sinks in order. If any sink fails the
-/// error is returned immediately (the remaining sinks are still called on the
-/// next batch).
+/// Sends every batch to **all** child sinks regardless of failures. After all
+/// sinks have been called the worst result is returned using the precedence:
+/// `Rejected > IoError > RetryAfter > Ok`. This ensures that an explicit
+/// rejection is never masked by a later transient I/O error.
 pub struct AsyncFanoutSink {
     sinks: Vec<Box<dyn Sink>>,
 }
@@ -144,22 +145,37 @@ impl Sink for AsyncFanoutSink {
         metadata: &'a BatchMetadata,
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
-            let mut first_retry: Option<Duration> = None;
+            // Precedence: Rejected(3) > IoError(2) > RetryAfter(1) > Ok(0).
+            // We track the highest-priority failure seen so far; a later result
+            // can only raise the severity, never lower it.
+            let mut worst: SendResult = SendResult::Ok;
+            let mut max_retry: Option<Duration> = None;
             for sink in &mut self.sinks {
                 match sink.send_batch(batch, metadata).await {
                     SendResult::Ok => {}
                     SendResult::RetryAfter(d) => {
-                        if first_retry.is_none_or(|prev| d > prev) {
-                            first_retry = Some(d);
+                        if max_retry.is_none_or(|prev| d > prev) {
+                            max_retry = Some(d);
                         }
                     }
-                    SendResult::Rejected(reason) => return SendResult::Rejected(reason),
-                    SendResult::IoError(e) => return SendResult::IoError(e),
+                    // Only overwrite worst if the new result has strictly higher precedence.
+                    SendResult::IoError(e) => {
+                        if !matches!(worst, SendResult::Rejected(_)) {
+                            worst = SendResult::IoError(e);
+                        }
+                    }
+                    SendResult::Rejected(reason) => {
+                        // Rejected is the highest precedence — always overwrite.
+                        worst = SendResult::Rejected(reason);
+                    }
                 }
             }
-            match first_retry {
-                Some(d) => SendResult::RetryAfter(d),
-                None => SendResult::Ok,
+            match worst {
+                SendResult::Ok => match max_retry {
+                    Some(d) => SendResult::RetryAfter(d),
+                    None => SendResult::Ok,
+                },
+                other => other,
             }
         })
     }
@@ -399,6 +415,18 @@ impl SinkFactory for OnceAsyncFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn empty_batch() -> RecordBatch {
+        RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::empty()))
+    }
+
+    fn empty_meta() -> BatchMetadata {
+        BatchMetadata {
+            resource_attrs: Arc::default(),
+            observed_time_ns: 0,
+        }
+    }
 
     /// A trivial async sink for testing OnceAsyncFactory.
     struct StubSink;
@@ -423,6 +451,133 @@ mod tests {
         fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
             Box::pin(async { Ok(()) })
         }
+    }
+
+    /// Sink that always returns a fixed result.
+    struct FixedSink {
+        name: &'static str,
+        result: SendResult,
+        calls: Arc<Mutex<usize>>,
+    }
+
+    impl FixedSink {
+        fn new(name: &'static str, result: SendResult) -> (Self, Arc<Mutex<usize>>) {
+            let calls = Arc::new(Mutex::new(0usize));
+            (
+                FixedSink {
+                    name,
+                    result,
+                    calls: Arc::clone(&calls),
+                },
+                calls,
+            )
+        }
+    }
+
+    impl Sink for FixedSink {
+        fn send_batch<'a>(
+            &'a mut self,
+            _batch: &'a RecordBatch,
+            _metadata: &'a BatchMetadata,
+        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+            *self.calls.lock().unwrap() += 1;
+            let result = match &self.result {
+                SendResult::Ok => SendResult::Ok,
+                SendResult::IoError(e) => SendResult::IoError(io::Error::other(e.to_string())),
+                SendResult::RetryAfter(d) => SendResult::RetryAfter(*d),
+                SendResult::Rejected(r) => SendResult::Rejected(r.clone()),
+            };
+            Box::pin(async move { result })
+        }
+
+        fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn fanout_calls_all_sinks_even_after_rejection() {
+        // All child sinks must be called regardless of earlier failures.
+        let (s1, calls1) = FixedSink::new("s1", SendResult::Rejected("no".into()));
+        let (s2, calls2) = FixedSink::new("s2", SendResult::Ok);
+        let (s3, calls3) = FixedSink::new("s3", SendResult::Ok);
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2), Box::new(s3)]);
+
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(
+            matches!(result, SendResult::Rejected(_)),
+            "expected Rejected, got {result:?}"
+        );
+        assert_eq!(*calls1.lock().unwrap(), 1, "s1 must be called");
+        assert_eq!(*calls2.lock().unwrap(), 1, "s2 must be called");
+        assert_eq!(*calls3.lock().unwrap(), 1, "s3 must be called");
+    }
+
+    #[tokio::test]
+    async fn fanout_rejected_beats_io_error() {
+        // Rejected has higher precedence than IoError; a later IoError must not
+        // overwrite an earlier Rejected.
+        let (s1, _) = FixedSink::new("s1", SendResult::Rejected("explicit reject".into()));
+        let (s2, _) = FixedSink::new("s2", SendResult::IoError(io::Error::other("network")));
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
+
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(
+            matches!(result, SendResult::Rejected(_)),
+            "Rejected must beat IoError, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fanout_io_error_beats_retry() {
+        let (s1, _) = FixedSink::new("s1", SendResult::RetryAfter(Duration::from_secs(5)));
+        let (s2, _) = FixedSink::new("s2", SendResult::IoError(io::Error::other("net")));
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
+
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(
+            matches!(result, SendResult::IoError(_)),
+            "IoError must beat RetryAfter, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fanout_returns_max_retry_when_all_ok_or_retry() {
+        let (s1, _) = FixedSink::new("s1", SendResult::RetryAfter(Duration::from_secs(1)));
+        let (s2, _) = FixedSink::new("s2", SendResult::RetryAfter(Duration::from_secs(10)));
+        let (s3, _) = FixedSink::new("s3", SendResult::Ok);
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2), Box::new(s3)]);
+
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        match result {
+            SendResult::RetryAfter(d) => assert_eq!(
+                d,
+                Duration::from_secs(10),
+                "should return max retry duration"
+            ),
+            other => panic!("expected RetryAfter(10s), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fanout_all_ok_returns_ok() {
+        let (s1, _) = FixedSink::new("s1", SendResult::Ok);
+        let (s2, _) = FixedSink::new("s2", SendResult::Ok);
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
+
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(
+            matches!(result, SendResult::Ok),
+            "all-ok fanout must return Ok, got {result:?}"
+        );
     }
 
     #[test]

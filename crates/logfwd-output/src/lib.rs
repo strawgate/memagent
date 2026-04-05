@@ -566,9 +566,13 @@ pub fn build_sink_factory(
             let factory = LokiSinkFactory::new(
                 name.to_string(),
                 endpoint.clone(),
-                None, // tenant_id: not yet in OutputConfig
-                Vec::new(),
-                Vec::new(),
+                cfg.tenant_id.clone(),
+                cfg.static_labels
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect(),
+                cfg.label_columns.clone().unwrap_or_default(),
                 auth_headers,
                 stats,
             )

@@ -608,6 +608,17 @@ impl Pipeline {
 
         loop {
             tokio::select! {
+                biased;  // arms evaluated in source order; ack is first to prevent starvation
+
+                // Receive ack items from pool workers first — highest priority so that
+                // worker slots are freed promptly and back-pressure is relieved before
+                // we ingest or flush more data.
+                ack = self.pool.ack_rx_mut().recv() => {
+                    if let Some(ack) = ack {
+                        self.apply_pool_ack(ack);
+                    }
+                }
+
                 () = shutdown.cancelled() => {
                     break;
                 }
@@ -633,13 +644,6 @@ impl Pipeline {
                     {
                         self.metrics.inc_flush_by_timeout();
                         self.flush_batch_from(data, checkpoints, "timeout", queued_at).await;
-                    }
-                }
-
-                // Receive ack items from pool workers and advance the machine.
-                ack = self.pool.ack_rx_mut().recv() => {
-                    if let Some(ack) = ack {
-                        self.apply_pool_ack(ack);
                     }
                 }
             }
