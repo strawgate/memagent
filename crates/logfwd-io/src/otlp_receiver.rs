@@ -27,11 +27,12 @@ const CHANNEL_BOUND: usize = 4096;
 /// OTLP receiver that listens for log exports via HTTP.
 pub struct OtlpReceiverInput {
     name: String,
-    rx: mpsc::Receiver<Vec<u8>>,
+    rx: Option<mpsc::Receiver<Vec<u8>>>,
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
+    server: std::sync::Arc<tiny_http::Server>,
     /// Keep the server thread handle alive.
-    _handle: std::thread::JoinHandle<()>,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl OtlpReceiverInput {
@@ -43,8 +44,10 @@ impl OtlpReceiverInput {
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
     fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
-        let server = tiny_http::Server::http(addr)
-            .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
+        let server = std::sync::Arc::new(
+            tiny_http::Server::http(addr)
+                .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?,
+        );
 
         let bound_addr = match server.server_addr() {
             tiny_http::ListenAddr::IP(a) => a,
@@ -55,10 +58,11 @@ impl OtlpReceiverInput {
 
         let (tx, rx) = mpsc::sync_channel(capacity);
 
+        let server_clone = std::sync::Arc::clone(&server);
         let handle = std::thread::Builder::new()
             .name("otlp-receiver".into())
             .spawn(move || {
-                for mut request in server.incoming_requests() {
+                for mut request in server_clone.incoming_requests() {
                     let url = request.url().to_string();
 
                     // Only accept the exact OTLP endpoint path (with optional query string).
@@ -246,9 +250,10 @@ impl OtlpReceiverInput {
 
         Ok(Self {
             name: name.into(),
-            rx,
+            rx: Some(rx),
             addr: bound_addr,
-            _handle: handle,
+            server,
+            handle: Some(handle),
         })
     }
 
@@ -258,12 +263,22 @@ impl OtlpReceiverInput {
     }
 }
 
+impl Drop for OtlpReceiverInput {
+    fn drop(&mut self) {
+        self.rx.take();
+        self.server.unblock();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 impl InputSource for OtlpReceiverInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
         let mut all = Vec::new();
 
         // Drain all available decoded batches.
-        while let Ok(data) = self.rx.try_recv() {
+        while let Ok(data) = self.rx.as_ref().unwrap().try_recv() {
             all.extend_from_slice(&data);
         }
 
