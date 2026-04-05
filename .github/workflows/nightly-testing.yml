@@ -46,10 +46,13 @@ jobs:
 
           FAILED=0
           for SEED in $(seq 1 500); do
-            if ! TURMOIL_SEED=$SEED "$BIN" --test-threads=1 2>&1 | tail -1 | grep -q "ok"; then
+            TURMOIL_SEED=$SEED "$BIN" --test-threads=1 > /tmp/test_out.txt 2>&1
+            result=$?
+            tail -1 /tmp/test_out.txt | grep -q "ok" || result=1
+            if [ $result -ne 0 ]; then
               echo "FAILED on seed $SEED"
-              # Re-run with output for debugging
-              TURMOIL_SEED=$SEED "$BIN" --test-threads=1 2>&1 | tail -10
+              # Show last 10 lines for debugging
+              tail -10 /tmp/test_out.txt
               FAILED=$((FAILED + 1))
             fi
             # Progress report every 50 seeds
@@ -66,13 +69,16 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v6
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
+        env:
+          RUSTC_WRAPPER: ""
       - name: Run fuzz targets
         run: |
           cd crates/logfwd-core
           for target in $(cargo fuzz list 2>/dev/null); do
             echo "=== Fuzzing $target for 30 minutes ==="
-            timeout 1800 cargo fuzz run "$target" -- -max_total_time=1800 || true
+            timeout 1800 cargo fuzz run "$target" -- -max_total_time=1800
           done
