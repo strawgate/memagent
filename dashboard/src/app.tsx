@@ -399,7 +399,6 @@ export function App() {
       ),
     []
   );
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally stable slice
   const systemSeries = useMemo(
     () => seriesRef.current.filter((s) => ["cpu", "mem"].includes(s.id)),
     []

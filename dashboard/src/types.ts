@@ -35,7 +35,13 @@ export interface PipelineData {
   transform: TransformData;
   outputs: ComponentData[];
   batches?: BatchesData;
-  stage_seconds?: { scan: number; transform: number; output: number; queue_wait?: number; send?: number };
+  stage_seconds?: {
+    scan: number;
+    transform: number;
+    output: number;
+    queue_wait?: number;
+    send?: number;
+  };
   backpressure_stalls?: number;
 }
 
