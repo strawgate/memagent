@@ -1121,6 +1121,10 @@ fn input_poll_loop(
 /// The final shutdown flush is the last chance to persist checkpoint progress.
 /// A single failure here loses all checkpoint advancement from the run.
 /// Retry with brief sleeps to handle transient I/O errors (disk busy, NFS glitch).
+///
+/// Uses `std::thread::sleep` (not `tokio::time::sleep`) because this runs
+/// during shutdown after all async work is drained, and `CheckpointStore::flush`
+/// is itself synchronous I/O — there is no benefit to yielding.
 fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore) {
     const MAX_ATTEMPTS: u32 = 3;
     const RETRY_DELAY: Duration = Duration::from_millis(100);
