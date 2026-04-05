@@ -352,9 +352,12 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
                     .downcast_ref::<arrow::array::TimestampNanosecondArray>()
                 {
                     let ns = prim.value(row);
-                    // Format as RFC3339 nanoseconds.
-                    let secs = ns / 1_000_000_000;
-                    let nanos = (ns % 1_000_000_000) as u32;
+                    // Format as RFC3339 nanoseconds. Use Euclidean div/rem so
+                    // that negative timestamps (pre-1970) yield nanos in
+                    // [0, 999_999_999] rather than a negative value that wraps
+                    // on the `as u32` cast, which would corrupt the output.
+                    let secs = ns.div_euclid(1_000_000_000);
+                    let nanos = ns.rem_euclid(1_000_000_000) as u32;
                     if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
                         v[row] = Some(chrono_timestamp(secs, nanos));
                     }
