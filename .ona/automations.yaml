@@ -13,7 +13,7 @@ tasks:
       Compile the Preact/TypeScript diagnostics dashboard into
       crates/logfwd-io/src/dashboard.html. Must run before cargo build/test/clippy.
     command: |
-      cd dashboard && npm install --prefer-offline && npm run build
+      cd dashboard && npm ci && npm run build
     triggeredBy:
       - postDevcontainerStart
     dependsOn:

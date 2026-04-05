@@ -10,6 +10,9 @@
     },
     "ghcr.io/devcontainers/features/docker-in-docker": {}
   },
+  "remoteEnv": {
+    "RUSTC_WRAPPER": "sccache"
+  },
   "forwardPorts": [9090],
   "portsAttributes": {
     "9090": {
