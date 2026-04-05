@@ -920,21 +920,31 @@ mod tests {
         assert_eq!(out1, out2);
         assert!(!out1.is_empty());
 
-        // Also test FanoutSink trait dispatch works.
-        let fanout_s1 = StdoutSink::new(
-            "f1".to_string(),
-            StdoutFormat::Json,
-            Arc::new(ComponentStats::new()),
-        );
-        let fanout_s2 = StdoutSink::new(
-            "f2".to_string(),
-            StdoutFormat::Json,
-            Arc::new(ComponentStats::new()),
-        );
-        let mut fanout = FanoutSink::new(vec![Box::new(fanout_s1), Box::new(fanout_s2)]);
-        // send_batch writes to real stdout, but should not error.
-        let result = fanout.send_batch(&batch, &meta);
-        assert!(result.is_ok());
+        // Test FanoutSink dispatch with sync OutputSink impls.
+        // StdoutSink was migrated to async Sink, so use a minimal NoOp.
+        {
+            struct NoOpSink(&'static str);
+            #[allow(deprecated)]
+            impl OutputSink for NoOpSink {
+                fn send_batch(&mut self, _: &RecordBatch, _: &BatchMetadata) -> io::Result<()> {
+                    Ok(())
+                }
+                fn flush(&mut self) -> io::Result<()> {
+                    Ok(())
+                }
+                fn name(&self) -> &str {
+                    self.0
+                }
+            }
+            #[allow(deprecated)]
+            let mut fanout = FanoutSink::new(vec![
+                Box::new(NoOpSink("f1")) as Box<dyn OutputSink>,
+                Box::new(NoOpSink("f2")),
+            ]);
+            #[allow(deprecated)]
+            let result = fanout.send_batch(&batch, &meta);
+            assert!(result.is_ok());
+        }
     }
 
     struct AlwaysFailSink {
@@ -1147,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_output_sink_stdout() {
+    fn test_build_sink_factory_stdout() {
         let cfg = OutputConfig {
             name: Some("test".to_string()),
             output_type: OutputType::Stdout,
@@ -1160,8 +1170,9 @@ mod tests {
             index: None,
             auth: None,
         };
-        let sink = build_output_sink("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(sink.name(), "test");
+        // StdoutSink uses the async pipeline — must use build_sink_factory.
+        let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        assert_eq!(factory.name(), "test");
     }
 
     #[test]
