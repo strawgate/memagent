@@ -17,12 +17,12 @@ use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::{BatchMetadata, Compression, JsonLinesSink, OtlpProtocol, OtlpSink};
 use std::sync::Arc;
 
-fuzz_target!(|data: &[u8]| {
+fn run_sinks(data: &[u8], validate_utf8: bool) {
     let mut scanner = Scanner::new(ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
         keep_raw: false,
-        validate_utf8: false,
+        validate_utf8,
     });
     let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else { return; };
 
@@ -74,4 +74,9 @@ fuzz_target!(|data: &[u8]| {
             "OtlpSink: non-empty output for 0-row batch"
         );
     }
+}
+
+fuzz_target!(|data: &[u8]| {
+    run_sinks(data, false);
+    run_sinks(data, true);
 });

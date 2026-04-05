@@ -21,12 +21,12 @@ use logfwd_core::scan_config::ScanConfig;
 use logfwd_arrow::scanner::Scanner;
 use logfwd_transform::SqlTransform;
 
-fuzz_target!(|data: &[u8]| {
+fn run_transform(data: &[u8], validate_utf8: bool) {
     let mut scanner = Scanner::new(ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
         keep_raw: false,
-        validate_utf8: false,
+        validate_utf8,
     });
     let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else { return; };
 
@@ -35,4 +35,9 @@ fuzz_target!(|data: &[u8]| {
         // Errors are fine; panics are not.
         let _ = transform.execute(batch);
     }
+}
+
+fuzz_target!(|data: &[u8]| {
+    run_transform(data, false);
+    run_transform(data, true);
 });

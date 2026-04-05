@@ -56,17 +56,23 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // --- Full scanner pipeline (uses StructuralIndex internally) ---
-    let mut scanner = Scanner::new(ScanConfig::default());
-    let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else { return; };
-    let num_rows = batch.num_rows();
-    let schema = batch.schema();
-    for col_idx in 0..batch.num_columns() {
-        assert_eq!(
-            batch.column(col_idx).len(),
-            num_rows,
-            "column '{}' length {} != num_rows {num_rows}",
-            schema.field(col_idx).name(),
-            batch.column(col_idx).len(),
-        );
+    for validate_utf8 in [false, true] {
+        let config = ScanConfig {
+            validate_utf8,
+            ..ScanConfig::default()
+        };
+        let mut scanner = Scanner::new(config);
+        let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else { continue; };
+        let num_rows = batch.num_rows();
+        let schema = batch.schema();
+        for col_idx in 0..batch.num_columns() {
+            assert_eq!(
+                batch.column(col_idx).len(),
+                num_rows,
+                "column '{}' length {} != num_rows {num_rows}",
+                schema.field(col_idx).name(),
+                batch.column(col_idx).len(),
+            );
+        }
     }
 });

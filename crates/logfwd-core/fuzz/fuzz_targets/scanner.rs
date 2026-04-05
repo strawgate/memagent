@@ -54,4 +54,42 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     validate_batch(&batch2, "pushdown");
+
+    // --- validate_utf8: true variants ---
+    // When the input is not valid UTF-8, the scanner returns Err immediately.
+    // When the fuzzer generates valid UTF-8, the full pipeline runs with
+    // validation enabled, exercising the UTF-8 check code path.
+
+    // Extract-all mode with UTF-8 validation.
+    let config_v = ScanConfig {
+        wanted_fields: vec![],
+        extract_all: true,
+        keep_raw: true,
+        validate_utf8: true,
+    };
+    let mut scanner_v = Scanner::new(config_v);
+    if let Ok(batch_v) = scanner_v.scan_detached(bytes::Bytes::copy_from_slice(data)) {
+        validate_batch(&batch_v, "extract_all_validate_utf8");
+    }
+
+    // Field pushdown mode with UTF-8 validation.
+    let config2_v = ScanConfig {
+        wanted_fields: vec![
+            logfwd_core::scan_config::FieldSpec {
+                name: "level".to_string(),
+                aliases: vec![],
+            },
+            logfwd_core::scan_config::FieldSpec {
+                name: "msg".to_string(),
+                aliases: vec![],
+            },
+        ],
+        extract_all: false,
+        keep_raw: false,
+        validate_utf8: true,
+    };
+    let mut scanner2_v = Scanner::new(config2_v);
+    if let Ok(batch2_v) = scanner2_v.scan_detached(bytes::Bytes::copy_from_slice(data)) {
+        validate_batch(&batch2_v, "pushdown_validate_utf8");
+    }
 });

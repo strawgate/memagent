@@ -58,4 +58,39 @@ fuzz_target!(|data: &[u8]| {
     let mut scanner2 = Scanner::new(config2);
     let Ok(batch2) = scanner2.scan(bytes::Bytes::copy_from_slice(data)) else { return; };
     validate_batch(&batch2, "streaming_pushdown");
+
+    // --- validate_utf8: true variants ---
+
+    // Extract-all mode with UTF-8 validation.
+    let config_v = ScanConfig {
+        wanted_fields: vec![],
+        extract_all: true,
+        keep_raw: false,
+        validate_utf8: true,
+    };
+    let mut scanner_v = Scanner::new(config_v);
+    if let Ok(batch_v) = scanner_v.scan(bytes::Bytes::copy_from_slice(data)) {
+        validate_batch(&batch_v, "streaming_extract_all_validate_utf8");
+    }
+
+    // Field pushdown mode with UTF-8 validation.
+    let config2_v = ScanConfig {
+        wanted_fields: vec![
+            logfwd_core::scan_config::FieldSpec {
+                name: "level".to_string(),
+                aliases: vec![],
+            },
+            logfwd_core::scan_config::FieldSpec {
+                name: "msg".to_string(),
+                aliases: vec![],
+            },
+        ],
+        extract_all: false,
+        keep_raw: false,
+        validate_utf8: true,
+    };
+    let mut scanner2_v = Scanner::new(config2_v);
+    if let Ok(batch2_v) = scanner2_v.scan(bytes::Bytes::copy_from_slice(data)) {
+        validate_batch(&batch2_v, "streaming_pushdown_validate_utf8");
+    }
 });
