@@ -280,7 +280,14 @@ impl OtlpSink {
         }
         req = req.header("Content-Type", content_type);
         if payload_is_compressed {
-            req = req.header("Content-Encoding", "zstd");
+            // gRPC compression is signaled via the wire-frame compressed flag byte
+            // and the `grpc-encoding` header (per the gRPC-over-HTTP/2 spec).
+            // Plain HTTP/protobuf uses `Content-Encoding` instead.
+            if self.protocol == OtlpProtocol::Grpc {
+                req = req.header("grpc-encoding", "zstd");
+            } else {
+                req = req.header("Content-Encoding", "zstd");
+            }
         }
 
         match req.body(payload.to_vec()).send().await {
