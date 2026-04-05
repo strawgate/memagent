@@ -225,7 +225,7 @@ impl Sut {
         let store = FileCheckpointStore::open(self.dir.path().join("checkpoints"))
             .expect("open checkpoint store after crash");
 
-        let saved_offset = store.load(self.source_id).map(|cp| cp.offset).unwrap_or(0);
+        let saved_offset = store.load(self.source_id).map_or(0, |cp| cp.offset);
 
         let config = TailConfig {
             start_from_end: false,
