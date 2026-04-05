@@ -596,17 +596,9 @@ pub fn build_output_sink(
             )))
         }
         OutputType::Null => Ok(Box::new(NullSink::new(name.to_string(), stats))),
-        OutputType::Tcp => {
-            let endpoint = cfg
-                .endpoint
-                .as_ref()
-                .ok_or_else(|| format!("output '{name}': tcp requires 'endpoint'"))?;
-            Ok(Box::new(TcpSink::new(
-                name.to_string(),
-                endpoint.clone(),
-                stats,
-            )))
-        }
+        OutputType::Tcp => Err(format!(
+            "output '{name}': tcp requires the async pipeline — use build_sink_factory() instead"
+        )),
         OutputType::Udp => Err(format!(
             "output '{name}': udp requires the async pipeline — use build_sink_factory() instead"
         )),
