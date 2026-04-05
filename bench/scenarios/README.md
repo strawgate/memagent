@@ -5,6 +5,9 @@ Each scenario tests a different input/output path end-to-end using two logfwd pi
 ## Running
 
 ```bash
+# Build the fully optimised release binary used by end-to-end benches
+just bench-build
+
 # Self-contained (no network, measures raw pipeline throughput)
 just bench-self
 
@@ -23,6 +26,9 @@ just bench-es-streaming
 
 # All scenarios
 just bench-pipelines
+
+# Criterion microbenchmarks (Cargo bench profile, full optimisations)
+just bench
 ```
 
 ## Scenarios

@@ -9,6 +9,7 @@ build
 book/book/
 .DS_Store
 crates/logfwd-io/src/dashboard-dist/
+crates/logfwd-io/src/dashboard.html
 .playwright-mcp/
 *.env
 .env

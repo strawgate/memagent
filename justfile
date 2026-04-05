@@ -14,11 +14,11 @@ fmt-check:
     cargo fmt --check
 
 # Run clippy lints
-clippy:
+clippy: dashboard
     cargo clippy -- -D warnings
 
 # Run all tests
-test:
+test: dashboard
     cargo nextest run
 
 # Run Kani formal verification proofs (logfwd-core only)
@@ -27,7 +27,7 @@ kani:
     RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
 
 # Run all tests with nextest (parallel, faster output) — alias for `test`
-nextest:
+nextest: dashboard
     cargo nextest run
 
 # Lint everything: format, clippy, TOML, deny (matches CI Lint job)
@@ -48,16 +48,34 @@ toml-fmt:
 deny:
     cargo deny check
 
-# Build the diagnostics dashboard (Preact + TypeScript → single HTML file)
-# Requires Node.js. Output: crates/logfwd-io/src/dashboard.html
-# Must run before cargo build/test/clippy (CI does this automatically).
+# Build the diagnostics dashboard (Preact + TypeScript → single HTML file).
+# Requires Node.js. Output: crates/logfwd-io/src/dashboard.html (generated, gitignored).
+# Rebuilds only when dashboard sources/config changed.
 dashboard:
-    cd dashboard && npm install --prefer-offline && npm run build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    OUT=crates/logfwd-io/src/dashboard.html
+    if [ -f "$OUT" ] && ! find \
+        dashboard/src \
+        dashboard/package.json \
+        dashboard/package-lock.json \
+        dashboard/tsconfig.app.json \
+        dashboard/tsconfig.json \
+        dashboard/vite.config.ts \
+        -type f -newer "$OUT" -print -quit | grep -q .; then
+        echo "==> Dashboard is up to date"
+        exit 0
+    fi
+    cd dashboard
+    npm install --prefer-offline
+    npm run build
 
-
+# Build dev binary
+dev: dashboard
+    cargo build
 
 # Build release binary
-build:
+build: dashboard
     cargo build --release
 
 # ---------------------------------------------------------------------------
@@ -103,29 +121,33 @@ _bench-pair name rx_config tx_config seconds="10":
     print(f'  {\"{{name}}\":.<20s} {li:>12,} lines  {lps:>12,.0f} lines/sec  ({up:.1f}s)')
     " 2>/dev/null || echo "  {{name}}: no stats"
 
+# Build the fully optimized release binary used by end-to-end benchmarks.
+bench-build: dashboard
+    cargo build --release -p logfwd
+
 # Self-contained: generator → SQL filter → null (no network)
-bench-self seconds="10":
+bench-self seconds="10": bench-build
     @echo "==> Self benchmark (generator → filter → null)"
     just _bench-run self bench/scenarios/self-bench.yaml {{seconds}}
 
 # TCP end-to-end
-bench-tcp seconds="10":
+bench-tcp seconds="10": bench-build
     @echo "==> TCP benchmark (generator → tcp → tcp → null)"
     just _bench-pair tcp bench/scenarios/tcp-receiver.yaml bench/scenarios/tcp-sender.yaml {{seconds}}
 
 # UDP end-to-end
-bench-udp seconds="10":
+bench-udp seconds="10": bench-build
     @echo "==> UDP benchmark (generator → udp → udp → null)"
     just _bench-pair udp bench/scenarios/udp-receiver.yaml bench/scenarios/udp-sender.yaml {{seconds}}
 
 # OTLP end-to-end
-bench-otlp seconds="10":
+bench-otlp seconds="10": bench-build
     @echo "==> OTLP benchmark (generator → otlp → otlp_receiver → null)"
     just _bench-pair otlp bench/scenarios/otlp-receiver.yaml bench/scenarios/otlp-sender.yaml {{seconds}}
 
 # Elasticsearch end-to-end: starts ES in Docker, sends generator output to it, then stops ES.
 # Requires Docker.  Skips gracefully if Docker or the ES image is unavailable.
-bench-es seconds="10":
+bench-es seconds="10": dashboard
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v docker &>/dev/null; then
@@ -147,7 +169,7 @@ bench-es seconds="10":
         docker compose -f examples/elasticsearch/docker-compose.yml down
         exit 1
     fi
-    cargo build --release -p logfwd
+    just bench-build
     echo "==> ES benchmark (generator → elasticsearch)"
     just _bench-run es bench/scenarios/es-sender.yaml {{seconds}}
     echo "==> Stopping Elasticsearch"
@@ -155,7 +177,7 @@ bench-es seconds="10":
 
 # Elasticsearch end-to-end using streaming request bodies.
 # Requires Docker. Skips gracefully if Docker or the ES image is unavailable.
-bench-es-streaming seconds="10":
+bench-es-streaming seconds="10": dashboard
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v docker &>/dev/null; then
@@ -177,7 +199,7 @@ bench-es-streaming seconds="10":
         docker compose -f examples/elasticsearch/docker-compose.yml down
         exit 1
     fi
-    cargo build --release -p logfwd
+    just bench-build
     echo "==> ES streaming benchmark (generator → elasticsearch)"
     just _bench-run es-streaming bench/scenarios/es-sender-streaming.yaml {{seconds}}
     echo "==> Stopping Elasticsearch"
@@ -188,19 +210,18 @@ bench-e2e seconds="10":
     just bench-pipelines {{seconds}}
 
 [private]
-bench-pipelines seconds="10":
+bench-pipelines seconds="10": bench-build
     @echo "logfwd pipeline benchmarks ({{seconds}}s each)"
     @echo "================================================"
-    cargo build --release -p logfwd
-    just bench-self {{seconds}}
-    just bench-tcp {{seconds}}
-    just bench-udp {{seconds}}
-    just bench-otlp {{seconds}}
+    just _bench-run self bench/scenarios/self-bench.yaml {{seconds}}
+    just _bench-pair tcp bench/scenarios/tcp-receiver.yaml bench/scenarios/tcp-sender.yaml {{seconds}}
+    just _bench-pair udp bench/scenarios/udp-receiver.yaml bench/scenarios/udp-sender.yaml {{seconds}}
+    just _bench-pair otlp bench/scenarios/otlp-receiver.yaml bench/scenarios/otlp-sender.yaml {{seconds}}
 
 # Build release binary with Profile-Guided Optimisation (PGO).
 # Runs a training workload automatically; output binary is target/release/logfwd-pgo.
 # Requires llvm-profdata on PATH (e.g. `sudo apt install llvm`).
-build-pgo:
+build-pgo: dashboard
     #!/usr/bin/env bash
     set -euo pipefail
     PGO_DIR=$(mktemp -d)
@@ -217,20 +238,20 @@ build-pgo:
     cp target/release/logfwd target/release/logfwd-pgo
     echo "PGO binary written to target/release/logfwd-pgo"
 
-# Run criterion microbenchmarks
-bench:
+# Run criterion microbenchmarks with the bench profile (full optimizations).
+bench: dashboard
     cargo bench -p logfwd-bench
 
 # Run competitive benchmarks (binary mode, local dev)
-bench-competitive *ARGS:
+bench-competitive *ARGS: dashboard
     cargo run -p logfwd-competitive-bench --release -- {{ARGS}}
 
 # Run competitive benchmarks in Docker with profiling
-bench-docker:
-    cargo build --release -p logfwd
+bench-docker: dashboard
+    just bench-build
     cargo build --release --features dhat-heap -p logfwd
     cp target/release/logfwd target/release/logfwd-dhat
-    cargo build --release -p logfwd
+    just bench-build
     LOGFWD=./target/release/logfwd cargo run -p logfwd-competitive-bench --release -- \
         --lines 5000000 --docker --cpus 1 --memory 1g --markdown \
         --profile ./profiles --dhat-binary ./target/release/logfwd-dhat
@@ -238,7 +259,7 @@ bench-docker:
 # Run a local File -> OTLP profile with pprof-rs.
 # Outputs a temp directory containing config.yaml, logs.json, pipeline.log,
 # blackhole.log, and flamegraph.svg.
-profile-otlp-local lines="500000" seconds="6":
+profile-otlp-local lines="500000" seconds="6": dashboard
     #!/usr/bin/env bash
     set -euo pipefail
     ROOT=$(mktemp -d /tmp/logfwd-pprof.XXXXXX)
@@ -298,8 +319,8 @@ bench-report:
     cargo run -p logfwd-bench
 
 # Run low-and-slow rate-ingest benchmark (logfwd only, measures memory and CPU at each eps)
-bench-rate *ARGS:
-    cargo build --release -p logfwd
+bench-rate *ARGS: dashboard
+    just bench-build
     LOGFWD=./target/release/logfwd cargo run -p logfwd-competitive-bench --release -- --rate-bench {{ARGS}}
 
 # Install development tools

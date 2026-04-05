@@ -20,14 +20,34 @@ crates/
 ## Build, test, lint, bench, fuzz
 
 ```bash
+just dev                     # Dev build (regenerates dashboard asset if needed)
+just build                   # Release build (regenerates dashboard asset if needed)
 just test                    # All tests (uses nextest for parallel execution)
 just lint                    # fmt + clippy + toml + deny + typos
+just bench                   # Criterion microbenchmarks (bench profile, full optimisations)
 cargo test -p logfwd-core    # Core crate only (fastest iteration)
 
 RUSTFLAGS="-C target-cpu=native" cargo bench --bench scanner -p logfwd-core
 
 cd crates/logfwd-core && cargo +nightly fuzz run scanner -- -max_total_time=300
 ```
+
+## Dashboard asset
+
+The diagnostics dashboard is a generated file:
+
+- source: `dashboard/`
+- generated HTML: `crates/logfwd-io/src/dashboard.html`
+- committed: **no**
+
+Use `just dashboard` to regenerate it manually. The main `just` entry points
+that compile Rust (`just dev`, `just build`, `just test`, `just clippy`,
+`just bench`, and the end-to-end benchmark/profile commands) regenerate it
+automatically when the dashboard sources or config changed.
+
+CI release/dev jobs do the same with the shared `build-dashboard` action so
+cross-compiles can embed the generated HTML without checking the built asset
+into git.
 
 ## Build performance
 
@@ -61,6 +81,17 @@ This setting matters most for:
   is much faster.
 - **Incremental rebuilds of your own code**: neutral — sccache caches the
   compiled workspace artefacts, so only the file you edited is recompiled.
+
+### Benchmarks are intentionally separate
+
+Benchmark commands are kept separate from normal build/test commands so they
+always run with full optimisations:
+
+- `just bench` uses Cargo's `bench` profile (`[profile.bench]` inherits `release`)
+- `just bench-build` builds the fully optimised `target/release/logfwd` binary
+  used by the end-to-end pipeline benchmarks
+- `just bench-self|bench-tcp|bench-udp|bench-otlp|bench-e2e` all go through
+  that release build path
 
 ### Compile caching with sccache
 
