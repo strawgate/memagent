@@ -63,7 +63,7 @@ fn bench_framing(c: &mut Criterion) {
             |b, path| {
                 b.iter(|| {
                     let buf = std::fs::read(path).expect("read file");
-                    std::hint::black_box(buf.len());
+                    std::hint::black_box(&buf);
                 });
             },
         );

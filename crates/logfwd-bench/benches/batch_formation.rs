@@ -124,7 +124,7 @@ fn bench_batch_pipeline(c: &mut Criterion) {
                         .scan_detached(data_bytes.clone())
                         .expect("scan should not fail");
                     let result = transform.execute_blocking(batch).unwrap();
-                    sink.encode_batch(&result, &meta);
+                    std::hint::black_box(sink.encode_batch(&result, &meta));
                 });
             },
         );

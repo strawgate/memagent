@@ -103,9 +103,12 @@ fn bench_cri(c: &mut Criterion) {
 
         // Benchmark parse + reassemble + collect into buffer.
         group.bench_with_input(BenchmarkId::new("parse_reassemble", n), &data, |b, data| {
+            // Allocate outside b.iter to measure steady-state throughput, not alloc overhead.
+            let mut reassembler = CriReassembler::new(1024 * 1024);
+            let mut json_buf = Vec::with_capacity(data.len());
             b.iter(|| {
-                let mut reassembler = CriReassembler::new(1024 * 1024);
-                let mut json_buf = Vec::with_capacity(data.len());
+                reassembler.reset();
+                json_buf.clear();
                 let mut start = 0;
                 while start < data.len() {
                     let end =
@@ -122,7 +125,7 @@ fn bench_cri(c: &mut Criterion) {
                     }
                     start = end + 1;
                 }
-                json_buf
+                std::hint::black_box(json_buf.len())
             });
         });
     }
@@ -201,7 +204,7 @@ fn bench_compress(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(bytes));
         group.bench_with_input(BenchmarkId::new("zstd_level1", n), &data, |b, data| {
             let mut compressor = ChunkCompressor::new(1).unwrap();
-            b.iter(|| compressor.compress(data).unwrap());
+            b.iter(|| std::hint::black_box(compressor.compress(data).unwrap()));
         });
     }
 
@@ -355,7 +358,7 @@ fn bench_elasticsearch_serialize(c: &mut Criterion) {
                     // the buffer does not grow unboundedly across iterations.
                     sink.serialize_batch(batch, &meta)
                         .expect("bench: serialize should not fail");
-                    criterion::black_box(sink.serialized_len());
+                    std::hint::black_box(sink.serialized_len());
                 });
             },
         );
