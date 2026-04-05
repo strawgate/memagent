@@ -17,48 +17,36 @@ jobs:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
     with:
       additional-instructions: |
-        IMPORTANT: This repo's issues are NOT typical bug reports from
-        external users. They are pre-planned work items (enhancements,
-        refactors, bugs we already know about) with detailed descriptions
-        written by the maintainers. Many are labeled "work-unit" and
-        contain implementation plans with file paths and code sketches.
+        This repo's issues are typically pre-planned work items written
+        by maintainers — enhancements, refactors, known bugs with
+        implementation sketches. Many have file paths and code snippets
+        already. Your job is to enrich the issue with codebase context
+        that helps whoever picks it up.
 
-        Your job is NOT to diagnose an unknown bug. Instead:
+        DO:
+        - Find the source files relevant to the issue. For each, give
+          the path and the key function/struct names with line numbers.
+        - Show the current function signatures or struct definitions
+          that will be modified.
+        - Note any open PRs touching the same files (check with gh).
+        - If the issue references other issues (#NNN), note whether
+          they are open or closed.
+        - Identify test files and patterns nearby that the implementer
+          should follow.
+        - Note which crate(s) are affected and any cross-crate impacts.
 
-        1. READ the issue body carefully — it already contains the plan.
+        DO NOT:
+        - Restate what the issue already says.
+        - Speculate about root cause — the issue already describes it.
+        - Suggest the issue might be invalid or a duplicate.
+        - Produce long prose. Be terse. Code references > paragraphs.
 
-        2. FIND related source files. For every file path mentioned in
-           the issue, verify it exists and note the current line numbers
-           for the functions/structs referenced. Add any files the issue
-           missed.
-
-        3. RESEARCH the current state of the code at the locations
-           described. Has anything changed since the issue was filed?
-           Are the line numbers still accurate? Are the API signatures
-           still correct?
-
-        4. IDENTIFY potential conflicts with other open PRs. Check
-           `gh pr list --state open` for PRs touching the same files.
-
-        5. ADD missing context: function signatures, struct definitions,
-           test patterns from nearby code, relevant doc sections.
-
-        6. If the issue references other issues (#NNN), check their
-           current state (open/closed) and note any that have been
-           resolved since the issue was written.
-
-        Format your comment as:
-        - **Status**: Is the issue still valid? Any parts already done?
-        - **Key Files**: File paths with current line numbers
-        - **Open PRs**: Any in-flight work that touches the same area
-        - **Implementation Notes**: Anything the assignee should know
-          that isn't in the issue body
+        Format:
+        **Key files** (path:line — what's there now)
+        **Open PRs in this area** (if any)
+        **Test patterns to follow** (nearby test file + example)
+        **Cross-crate impact** (if any)
 
         This is logfwd, a Rust log forwarder: file tail → SIMD parse →
         Arrow RecordBatch → DataFusion SQL → OTLP/ES/Loki output.
-
-        Read CLAUDE.md for the full project guide. Key docs:
-        - dev-docs/ARCHITECTURE.md — pipeline data flow, crate map
-        - dev-docs/DESIGN.md — architecture decisions, checkpoint ADR
-        - dev-docs/VERIFICATION.md — Kani, TLA+, proptest strategy
-        - Roadmap: issue #889
+        Read CLAUDE.md for the full project guide.
