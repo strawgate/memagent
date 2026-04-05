@@ -1481,7 +1481,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_output_sink_http() {
+    fn test_build_output_sink_http_not_yet_supported() {
+        // Http async sink is not yet implemented (closed PR #1000).
+        // build_output_sink for Http must return an error directing callers to
+        // use the async pipeline when it becomes available.
+        // TODO: update when Http async sink is implemented.
         let cfg = OutputConfig {
             name: Some("es".to_string()),
             output_type: OutputType::Http,
@@ -1494,8 +1498,16 @@ mod tests {
             auth: None,
             request_mode: None,
         };
-        let sink = build_output_sink("es", &cfg, Arc::new(ComponentStats::new())).unwrap();
-        assert_eq!(sink.name(), "es");
+        let result = build_output_sink("es", &cfg, Arc::new(ComponentStats::new()));
+        assert!(
+            result.is_err(),
+            "Http is not yet supported in the sync pipeline"
+        );
+        let err = result.err().unwrap();
+        assert!(
+            err.to_string().contains("async pipeline"),
+            "error should mention async pipeline, got: {err}"
+        );
     }
 
     #[test]
