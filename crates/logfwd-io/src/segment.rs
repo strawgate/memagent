@@ -8,8 +8,8 @@
 //! ```
 //!
 //! The footer contains a checksum (xxh32) over all preceding bytes.
-//! Missing or corrupt footer = incomplete segment (crashed mid-write).
-//! Recovery: scan directory, validate footers, discard incomplete segments.
+//! Missing footer = incomplete segment (crashed mid-write). Invalid footer
+//! = corrupt segment. Both are deleted during recovery.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
@@ -174,6 +174,7 @@ pub struct SegmentFile {
 
 /// Result of attempting to open a segment file.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum SegmentStatus {
     /// Segment is complete and checksum-verified.
     Valid(SegmentFile),
@@ -589,7 +590,10 @@ impl SegmentManager {
             self.open_new_segment()?;
         }
 
-        self.current.as_mut().unwrap().writer.append(batch)?;
+        // open_new_segment() above ensures current is Some.
+        if let Some(ref mut active) = self.current {
+            active.writer.append(batch)?;
+        }
 
         Ok(sealed)
     }
@@ -636,7 +640,7 @@ impl SegmentManager {
         let active = self
             .current
             .take()
-            .expect("rotate called with no active segment");
+            .ok_or_else(|| io::Error::other("rotate called with no active segment"))?;
         active.writer.finish()
     }
 }
