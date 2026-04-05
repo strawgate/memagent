@@ -179,23 +179,19 @@ impl ElasticsearchSink {
     ///
     /// Returns `Ok(())` if all documents succeeded (`errors: false`), or
     /// an `Err` with the first failure's type and reason.
+    ///
+    /// Error kinds are chosen deliberately:
+    /// - `Other`: structural/transient failures (malformed JSON, missing fields) — retriable
+    /// - `InvalidData`: item-level document errors (mapper_parsing_exception, etc.) — permanent,
+    ///   retrying the same document is futile, so these map to `Rejected` in the caller
     fn parse_bulk_response(body: &[u8]) -> io::Result<()> {
-        let v: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("failed to parse ES bulk response: {e}"),
-            )
-        })?;
+        let v: serde_json::Value = serde_json::from_slice(body)
+            .map_err(|e| io::Error::other(format!("failed to parse ES bulk response: {e}")))?;
 
         let has_errors = v
             .get("errors")
             .and_then(serde_json::Value::as_bool)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "ES bulk response missing 'errors' boolean field",
-                )
-            })?;
+            .ok_or_else(|| io::Error::other("ES bulk response missing 'errors' boolean field"))?;
 
         if !has_errors {
             return Ok(());
@@ -204,16 +200,10 @@ impl ElasticsearchSink {
         let items = v
             .get("items")
             .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "ES bulk response missing 'items' array",
-                )
-            })?;
+            .ok_or_else(|| io::Error::other("ES bulk response missing 'items' array"))?;
 
         if items.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+            return Err(io::Error::other(
                 "ES bulk response indicated errors but 'items' array is empty",
             ));
         }
@@ -233,6 +223,7 @@ impl ElasticsearchSink {
                         .get("reason")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("no reason provided");
+                    // InvalidData: document-level rejection — permanent, do not retry.
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("ES bulk error: {error_type}: {reason}"),
