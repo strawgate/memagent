@@ -1210,6 +1210,9 @@ mod tests {
                 path: None,
                 index: None,
                 auth: None,
+                tenant_id: None,
+                static_labels: None,
+                label_columns: None,
             };
             let result = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new()));
             assert!(result.is_err(), "Expected error for format {:?}", format);
@@ -1234,6 +1237,9 @@ mod tests {
             path: None,
             index: None,
             auth: None,
+            tenant_id: None,
+            static_labels: None,
+            label_columns: None,
         };
         let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
