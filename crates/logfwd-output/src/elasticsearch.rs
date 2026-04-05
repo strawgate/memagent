@@ -638,7 +638,10 @@ impl super::sink::Sink for ElasticsearchSink {
         Box::pin(async move {
             match self.send_batch_inner(batch, metadata, 0).await {
                 Ok(r) => r,
-                Err(e) => super::sink::SendResult::IoError(e),
+                Err(e) => match e.kind() {
+                    io::ErrorKind::InvalidInput => super::sink::SendResult::Rejected(e.to_string()),
+                    _ => super::sink::SendResult::IoError(e),
+                },
             }
         })
     }

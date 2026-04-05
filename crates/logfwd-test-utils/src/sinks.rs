@@ -223,7 +223,10 @@ mod tests {
         let mut sink = DevNullSink;
         let batch = dummy_batch();
         let meta = dummy_metadata();
-        assert!(sink.send_batch(&batch, &meta).await.is_ok());
+        assert!(matches!(
+            sink.send_batch(&batch, &meta).await,
+            SendResult::Ok
+        ));
         assert!(sink.flush().await.is_ok());
         assert_eq!(sink.name(), "devnull");
     }
@@ -234,10 +237,22 @@ mod tests {
         let batch = dummy_batch();
         let meta = dummy_metadata();
 
-        assert!(sink.send_batch(&batch, &meta).await.is_err()); // call 1
-        assert!(sink.send_batch(&batch, &meta).await.is_err()); // call 2
-        assert!(sink.send_batch(&batch, &meta).await.is_ok()); // call 3 — success
-        assert!(sink.send_batch(&batch, &meta).await.is_ok()); // call 4 — success
+        assert!(matches!(
+            sink.send_batch(&batch, &meta).await,
+            SendResult::IoError(_)
+        )); // call 1
+        assert!(matches!(
+            sink.send_batch(&batch, &meta).await,
+            SendResult::IoError(_)
+        )); // call 2
+        assert!(matches!(
+            sink.send_batch(&batch, &meta).await,
+            SendResult::Ok
+        )); // call 3 — success
+        assert!(matches!(
+            sink.send_batch(&batch, &meta).await,
+            SendResult::Ok
+        )); // call 4 — success
     }
 
     #[tokio::test]
@@ -248,7 +263,10 @@ mod tests {
         let meta = dummy_metadata();
 
         let start = std::time::Instant::now();
-        assert!(sink.send_batch(&batch, &meta).await.is_ok());
+        assert!(matches!(
+            sink.send_batch(&batch, &meta).await,
+            SendResult::Ok
+        ));
         assert!(
             start.elapsed() >= delay,
             "SlowSink should sleep at least {:?}, but only {:?} elapsed",
@@ -277,7 +295,10 @@ mod tests {
         });
 
         let start = std::time::Instant::now();
-        assert!(sink.send_batch(&batch, &meta).await.is_ok());
+        assert!(matches!(
+            sink.send_batch(&batch, &meta).await,
+            SendResult::Ok
+        ));
         // Allow 20% scheduling jitter below the release delay.
         let min_expected = release_delay * 80 / 100;
         assert!(
@@ -296,8 +317,14 @@ mod tests {
         let batch = dummy_batch();
         let meta = dummy_metadata();
 
-        sink.send_batch(&batch, &meta).await.unwrap();
-        sink.send_batch(&batch, &meta).await.unwrap();
+        assert!(matches!(
+            sink.send_batch(&batch, &meta).await,
+            SendResult::Ok
+        ));
+        assert!(matches!(
+            sink.send_batch(&batch, &meta).await,
+            SendResult::Ok
+        ));
         assert_eq!(counter.load(Ordering::Relaxed), 2);
     }
 }

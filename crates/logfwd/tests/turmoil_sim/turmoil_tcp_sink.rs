@@ -72,10 +72,7 @@ impl Sink for TurmoilTcpSink {
             for row in 0..batch.num_rows() {
                 buf.clear();
                 if let Err(e) = write_row_json(batch, row, &cols, &mut buf) {
-                    return SendResult::IoError(io::Error::new(
-                        io::ErrorKind::Other,
-                        e.to_string(),
-                    ));
+                    return SendResult::IoError(io::Error::other(e.to_string()));
                 }
                 buf.push(b'\n');
 

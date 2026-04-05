@@ -102,8 +102,20 @@ async fn setup_test_data(sink: &mut Box<dyn logfwd_output::Sink>) -> RecordBatch
     };
 
     // Index the batch
-    if let logfwd_output::sink::SendResult::IoError(e) = sink.send_batch(&batch, &metadata).await {
-        panic!("failed to index test data: {e}");
+    match sink.send_batch(&batch, &metadata).await {
+        logfwd_output::sink::SendResult::Ok => {}
+        logfwd_output::sink::SendResult::IoError(e) => {
+            panic!("failed to index test data: {e}");
+        }
+        logfwd_output::sink::SendResult::RetryAfter(delay) => {
+            panic!("failed to index test data: retry after {delay:?}");
+        }
+        logfwd_output::sink::SendResult::Rejected(reason) => {
+            panic!("failed to index test data: {reason}");
+        }
+        other => {
+            panic!("failed to index test data: unexpected result {other:?}");
+        }
     }
 
     // Wait for indexing to complete

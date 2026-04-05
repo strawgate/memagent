@@ -148,14 +148,29 @@ fn run_worker(
         let rows = result.num_rows() as u64;
         let raw = rows as usize * 300; // approximate bytes per row
 
-        if let Err(e) = rt.block_on(sink.send_batch(&result, &meta)) {
-            eprintln!("[worker {worker_id}] send_batch error: {e}");
-            total_errors.fetch_add(1, Ordering::Relaxed);
-        } else {
-            total_raw_bytes.fetch_add(raw as u64, Ordering::Relaxed);
-            total_wire_bytes.fetch_add(raw as u64, Ordering::Relaxed);
-            total_events.fetch_add(rows, Ordering::Relaxed);
-            total_batches.fetch_add(1, Ordering::Relaxed);
+        match rt.block_on(sink.send_batch(&result, &meta)) {
+            logfwd_output::sink::SendResult::Ok => {
+                total_raw_bytes.fetch_add(raw as u64, Ordering::Relaxed);
+                total_wire_bytes.fetch_add(raw as u64, Ordering::Relaxed);
+                total_events.fetch_add(rows, Ordering::Relaxed);
+                total_batches.fetch_add(1, Ordering::Relaxed);
+            }
+            logfwd_output::sink::SendResult::IoError(e) => {
+                eprintln!("[worker {worker_id}] send_batch error: {e}");
+                total_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            logfwd_output::sink::SendResult::RetryAfter(delay) => {
+                eprintln!("[worker {worker_id}] send_batch asked to retry after {delay:?}");
+                total_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            logfwd_output::sink::SendResult::Rejected(reason) => {
+                eprintln!("[worker {worker_id}] send_batch rejected batch: {reason}");
+                total_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            other => {
+                eprintln!("[worker {worker_id}] send_batch returned unexpected result: {other:?}");
+                total_errors.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 }
