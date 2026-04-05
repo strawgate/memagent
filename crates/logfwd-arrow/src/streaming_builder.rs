@@ -1334,7 +1334,7 @@ mod tests {
         // Write row 0 twice to same field 64
         b.begin_row();
         b.append_str_by_idx(idx_64, &buf[0..3]); // "val"
-        b.append_str_by_idx(idx_64, &buf[3..5]); // "ue" (should be deduped)
+        b.append_str_by_idx(idx_64, &buf[3..5]); // bytes 3..5 of "value" == "ue", should be deduped
         b.end_row();
 
         // Write row 1 once to field 64
