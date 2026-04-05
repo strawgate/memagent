@@ -31,7 +31,7 @@ pub use otap_sink::{
 pub use otlp_sink::{OtlpProtocol, OtlpSink};
 pub use sink::{OnceAsyncFactory, SendResult, Sink, SinkFactory, SyncSinkAdapter};
 use stdout::*;
-pub use tcp_sink::TcpSink;
+pub use tcp_sink::{TcpSink, TcpSinkFactory};
 pub use udp_sink::{UdpSink, UdpSinkFactory};
 
 use std::io::{self, Write};
@@ -596,17 +596,9 @@ pub fn build_output_sink(
             )))
         }
         OutputType::Null => Ok(Box::new(NullSink::new(name.to_string(), stats))),
-        OutputType::Tcp => {
-            let endpoint = cfg
-                .endpoint
-                .as_ref()
-                .ok_or_else(|| format!("output '{name}': tcp requires 'endpoint'"))?;
-            Ok(Box::new(TcpSink::new(
-                name.to_string(),
-                endpoint.clone(),
-                stats,
-            )))
-        }
+        OutputType::Tcp => Err(format!(
+            "output '{name}': tcp requires the async pipeline — use build_sink_factory() instead"
+        )),
         OutputType::Udp => Err(format!(
             "output '{name}': udp requires the async pipeline — use build_sink_factory() instead"
         )),
