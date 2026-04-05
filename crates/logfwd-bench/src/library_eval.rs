@@ -477,5 +477,137 @@ async fn main() {
         (async_elapsed.as_secs_f64() / sync_elapsed.as_secs_f64() - 1.0) * 100.0;
     println!("  → async overhead: {overhead:+.1}%\n");
 
+    // -----------------------------------------------------------------------
+    // 5. Glob matching: glob vs globset
+    // -----------------------------------------------------------------------
+    println!("--- 5. Glob matching: glob vs globset ---");
+
+    // Generate realistic file paths (k8s pod logs)
+    let namespaces = ["default", "kube-system", "monitoring", "app-prod", "app-staging"];
+    let pods = ["nginx", "redis", "api-server", "worker", "scheduler", "etcd"];
+    let test_paths: Vec<String> = (0..10_000)
+        .map(|i| {
+            let ns = namespaces[i % namespaces.len()];
+            let pod = pods[i % pods.len()];
+            format!("/var/log/pods/{ns}/{pod}-{i}/0.log")
+        })
+        .collect();
+
+    let patterns = [
+        "/var/log/pods/*/nginx-*/0.log",
+        "/var/log/pods/app-*/*/0.log",
+        "/var/log/pods/kube-system/*/0.log",
+        "/var/log/pods/**/worker-*/**",
+    ];
+    println!("  {} file paths, {} patterns\n", test_paths.len(), patterns.len());
+
+    // glob crate — must re-parse pattern each time (simulated with string matching)
+    let glob_iters = 1_000u64;
+    let glob_start = Instant::now();
+    let mut glob_matches = 0u64;
+    for _ in 0..glob_iters {
+        for pattern in &patterns {
+            let compiled = glob::Pattern::new(pattern).unwrap();
+            for path in &test_paths {
+                if compiled.matches(path) {
+                    glob_matches += 1;
+                }
+            }
+        }
+    }
+    let glob_elapsed = glob_start.elapsed();
+
+    // globset — compile once, match many
+    let globset_start = Instant::now();
+    let mut globset_matches = 0u64;
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in &patterns {
+        builder.add(globset::Glob::new(pattern).unwrap());
+    }
+    let set = builder.build().unwrap();
+    for _ in 0..glob_iters {
+        for path in &test_paths {
+            if set.is_match(path) {
+                globset_matches += 1;
+            }
+        }
+    }
+    let globset_elapsed = globset_start.elapsed();
+
+    let total_checks = glob_iters * patterns.len() as u64 * test_paths.len() as u64;
+    println!(
+        "  glob::Pattern:  {:.1}μs per rescan, {:.0} matches/s ({} matches)",
+        glob_elapsed.as_micros() as f64 / glob_iters as f64,
+        total_checks as f64 / glob_elapsed.as_secs_f64(),
+        glob_matches,
+    );
+    println!(
+        "  globset::GlobSet: {:.1}μs per rescan, {:.0} matches/s ({} matches)",
+        globset_elapsed.as_micros() as f64 / glob_iters as f64,
+        total_checks as f64 / globset_elapsed.as_secs_f64(),
+        globset_matches,
+    );
+    let speedup = glob_elapsed.as_secs_f64() / globset_elapsed.as_secs_f64();
+    println!("  → globset is {speedup:.1}x faster\n");
+
+    // -----------------------------------------------------------------------
+    // 6. JSON parsing: serde_json vs sonic-rs (OTLP JSON payloads)
+    // -----------------------------------------------------------------------
+    println!("--- 6. JSON parsing: serde_json vs sonic-rs ---");
+
+    // Build OTLP JSON payloads of varying sizes
+    fn make_otlp_json(num_records: usize) -> Vec<u8> {
+        let mut records = String::new();
+        for i in 0..num_records {
+            if i > 0 {
+                records.push(',');
+            }
+            records.push_str(&format!(
+                r#"{{"timeUnixNano":"1700000000000000000","severityNumber":9,"severityText":"INFO","body":{{"stringValue":"Log line {} with some realistic content that includes host=bench-host service=api latency=42ms"}},"attributes":[{{"key":"host","value":{{"stringValue":"bench-host-{}"}}}}]}}"#,
+                i, i % 100
+            ));
+        }
+        format!(
+            r#"{{"resourceLogs":[{{"scopeLogs":[{{"logRecords":[{records}]}}]}}]}}"#
+        )
+        .into_bytes()
+    }
+
+    let json_1k = make_otlp_json(3);     // ~1KB
+    let json_10k = make_otlp_json(30);   // ~10KB
+    let json_100k = make_otlp_json(300); // ~100KB
+
+    let json_iters = 10_000u64;
+    for (label, payload) in [("~1K", &json_1k), ("~10K", &json_10k), ("~100K", &json_100k)] {
+        // serde_json
+        let serde_start = Instant::now();
+        for _ in 0..json_iters {
+            let _: serde_json::Value = serde_json::from_slice(std::hint::black_box(payload)).unwrap();
+        }
+        let serde_elapsed = serde_start.elapsed();
+
+        // sonic-rs
+        let sonic_start = Instant::now();
+        for _ in 0..json_iters {
+            let mut payload_copy = payload.clone();
+            let _: sonic_rs::Value = sonic_rs::from_slice(std::hint::black_box(&mut payload_copy)).unwrap();
+        }
+        let sonic_elapsed = sonic_start.elapsed();
+
+        println!("  {label} ({} bytes, {} records):", payload.len(), label);
+        println!(
+            "    serde_json:  {} ({:.1}μs/op)",
+            format_throughput(payload.len() * json_iters as usize, serde_elapsed),
+            serde_elapsed.as_micros() as f64 / json_iters as f64,
+        );
+        println!(
+            "    sonic-rs:    {} ({:.1}μs/op)",
+            format_throughput(payload.len() * json_iters as usize, sonic_elapsed),
+            sonic_elapsed.as_micros() as f64 / json_iters as f64,
+        );
+        let speedup = serde_elapsed.as_secs_f64() / sonic_elapsed.as_secs_f64();
+        println!("    → sonic-rs is {speedup:.2}x vs serde_json\n");
+    }
+
     println!("=== Done ===");
 }
