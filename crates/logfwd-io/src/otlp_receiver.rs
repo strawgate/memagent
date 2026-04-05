@@ -449,7 +449,13 @@ fn write_json_any_value_field_from_json(
     if let Some(i) = value.get("intValue") {
         write_json_key(out, key);
         if let Some(s) = i.as_str() {
-            out.extend_from_slice(s.as_bytes());
+            if let Ok(parsed) = s.parse::<i64>() {
+                write_i64_to_buf(out, parsed);
+            } else {
+                return Err(InputError::Receiver(format!(
+                    "invalid OTLP JSON intValue for key {key}: not a valid integer"
+                )));
+            }
         } else if let Some(n) = i.as_i64() {
             write_i64_to_buf(out, n);
         } else {
@@ -1122,6 +1128,29 @@ mod tests {
         );
 
         assert!(result.is_err(), "invalid intValue must fail");
+    }
+
+    #[test]
+    fn non_numeric_json_int_string_returns_error() {
+        let result = decode_otlp_logs_json(
+            br#"{
+                "resourceLogs": [{
+                    "scopeLogs": [{
+                        "logRecords": [{
+                            "attributes": [{
+                                "key": "status",
+                                "value": {"intValue": "notanumber"}
+                            }]
+                        }]
+                    }]
+                }]
+            }"#,
+        );
+
+        assert!(
+            result.is_err(),
+            "non-numeric intValue string must fail instead of emitting malformed JSON"
+        );
     }
 
     #[test]
