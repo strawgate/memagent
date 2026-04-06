@@ -161,8 +161,9 @@ impl OtlpSink {
 
         for row in 0..num_rows {
             let start = records_buf.len();
-            encode_row_as_log_record(&columns, row, metadata, &mut records_buf);
-            record_ranges.push((start, records_buf.len()));
+            if encode_row_as_log_record(&columns, row, metadata, &mut records_buf) {
+                record_ranges.push((start, records_buf.len()));
+            }
         }
 
         // Phase 2: compute sizes bottom-up.
@@ -677,29 +678,37 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
 }
 
 /// Encode a single RecordBatch row as an OTLP LogRecord using pre-resolved columns.
+///
+/// Returns `true` if the row was encoded and appended to `buf`, or `false` if the row
+/// was skipped due to an unrecoverable parse error (e.g. unparseable timestamp).
 fn encode_row_as_log_record(
     columns: &BatchColumns<'_>,
     row: usize,
     metadata: &BatchMetadata,
     buf: &mut Vec<u8>,
-) {
+) -> bool {
     // --- Read per-row values from pre-resolved columns ---
 
-    let timestamp_ns: u64 = columns
-        .timestamp_col
-        .and_then(|(_, arr)| {
-            if arr.is_null(row) {
-                None
-            } else {
-                let raw = str_value(arr, row);
-                let nanos = parse_timestamp_nanos(raw.as_bytes());
-                if nanos.is_none() {
-                    warn!(timestamp = %raw, "OTLP sink: unparseable timestamp; emitting 0 (epoch)");
+    // Rows with a present-but-unparseable timestamp are dropped rather than
+    // silently emitted at Unix epoch (which would corrupt time-series queries).
+    // Rows where the timestamp column is absent or null use 0 (OTLP spec
+    // permits unset time_unix_nano).
+    let timestamp_ns: u64 = if let Some((_, arr)) = columns.timestamp_col {
+        if arr.is_null(row) {
+            0
+        } else {
+            let raw = str_value(arr, row);
+            match parse_timestamp_nanos(raw.as_bytes()) {
+                Some(ns) => ns,
+                None => {
+                    warn!(timestamp = %raw, "OTLP sink: dropping row with unparseable timestamp");
+                    return false;
                 }
-                nanos
             }
-        })
-        .unwrap_or(0);
+        }
+    } else {
+        0
+    };
 
     let (severity_num, severity_text): (Severity, &[u8]) = columns
         .level_col
@@ -844,6 +853,8 @@ fn encode_row_as_log_record(
         otlp::LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
         metadata.observed_time_ns,
     );
+
+    true
 }
 
 /// Encode a KeyValue with string AnyValue as an attribute.
