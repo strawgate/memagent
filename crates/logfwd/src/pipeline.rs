@@ -107,8 +107,9 @@ pub struct Pipeline {
     inputs: Vec<InputState>,
     scanner: Scanner,
     transform: SqlTransform,
-    /// Optional post-transform processor (e.g., tail-based sampling).
-    processor: Option<Box<dyn Processor>>,
+    /// Optional post-transform processor chain (e.g., tail-based sampling).
+    /// Batches flow through each processor in order. Empty vec = no processors.
+    processors: Vec<Box<dyn Processor>>,
     /// Async worker pool. Workers own the actual sink connections; the pipeline
     /// submits `WorkItem`s and receives `AckItem`s for checkpoint advancement.
     pool: OutputWorkerPool,
@@ -379,7 +380,7 @@ impl Pipeline {
             inputs,
             scanner,
             transform,
-            processor: None,
+            processors: vec![],
             pool,
             metrics,
             batch_target_bytes: config.batch_target_bytes.unwrap_or(4 * 1024 * 1024),
@@ -419,9 +420,15 @@ impl Pipeline {
         self
     }
 
-    /// Add a post-transform processor (e.g. tail-based sampling).
+    /// Add a post-transform processor to the chain.
     pub fn with_processor(mut self, processor: Box<dyn Processor>) -> Self {
-        self.processor = Some(processor);
+        self.processors.push(processor);
+        self
+    }
+
+    /// Add a chain of post-transform processors.
+    pub fn with_processors(mut self, processors: Vec<Box<dyn Processor>>) -> Self {
+        self.processors = processors;
         self
     }
 
@@ -474,7 +481,7 @@ impl Pipeline {
             inputs: vec![],
             scanner,
             transform,
-            processor: None,
+            processors: vec![],
             pool,
             metrics,
             batch_target_bytes: 64 * 1024,
@@ -512,7 +519,7 @@ impl Pipeline {
             inputs: vec![],
             scanner,
             transform,
-            processor: None,
+            processors: vec![],
             pool,
             metrics,
             batch_target_bytes: 64 * 1024,
@@ -658,6 +665,41 @@ impl Pipeline {
                         self.metrics.inc_flush_by_timeout();
                         self.flush_batch_from(data, checkpoints, "timeout", queued_at).await;
                     }
+
+                    // Heartbeat for stateful processors: send an empty batch through
+                    // the chain so stateful processors can check their internal timers
+                    // and emit timed-out data.
+                    if !self.processors.is_empty()
+                        && self.processors.iter().any(|p| p.is_stateful())
+                        && accumulator.is_empty()
+                    {
+                        let empty = arrow::record_batch::RecordBatch::new_empty(
+                            Arc::new(arrow::datatypes::Schema::empty()),
+                        );
+                        let meta = BatchMetadata {
+                            resource_attrs: Arc::clone(&self.resource_attrs),
+                            observed_time_ns: now_nanos(),
+                        };
+                        match crate::processor::run_chain(&mut self.processors, empty, &meta) {
+                            Ok(batches) => {
+                                let total_rows: u64 =
+                                    batches.iter().map(|b| b.num_rows() as u64).sum();
+                                if total_rows > 0 {
+                                    // TODO(#0): submit timed-out processor output to
+                                    // output pool without BatchTickets (ticketless
+                                    // submission). For now, stateful processor output
+                                    // during heartbeats is only emitted at flush.
+                                    tracing::debug!(
+                                        rows = total_rows,
+                                        "stateful processor emitted rows during heartbeat (not yet submitted)"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "processor error during heartbeat");
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -707,6 +749,27 @@ impl Pipeline {
         if let Some((data, checkpoints, queued_at)) = accumulator.drain() {
             self.flush_batch_from(data, checkpoints, "drain", queued_at)
                 .await;
+        }
+
+        // Cascading flush: drain all buffered state from stateful processors.
+        // Each processor's flushed output is fed through downstream processors.
+        if !self.processors.is_empty() {
+            let meta = BatchMetadata {
+                resource_attrs: Arc::clone(&self.resource_attrs),
+                observed_time_ns: now_nanos(),
+            };
+            let flushed = crate::processor::cascading_flush(&mut self.processors, &meta);
+            let total_rows: u64 = flushed.iter().map(|b| b.num_rows() as u64).sum();
+            if total_rows > 0 {
+                // TODO(#0): submit flushed processor batches to output pool
+                // without BatchTickets (ticketless submission). This will be
+                // needed when the first stateful processor (TailSampling) is
+                // implemented. For now, log that data was flushed.
+                tracing::info!(
+                    rows = total_rows,
+                    "cascading flush emitted rows from stateful processors (not yet submitted to output)"
+                );
+            }
         }
 
         // Drain the pool: signal workers to finish current item and exit,
@@ -901,23 +964,45 @@ impl Pipeline {
             transform_elapsed.as_nanos() as u64,
             now_nanos(),
         );
-        // Pass through optional processor.
-        let result = if let Some(ref mut processor) = self.processor {
-            processor.process(result)
+        // Run through processor chain.
+        let results = if self.processors.is_empty() {
+            smallvec::smallvec![result]
         } else {
-            result
+            let meta = BatchMetadata {
+                resource_attrs: Arc::clone(&self.resource_attrs),
+                observed_time_ns: now_nanos(),
+            };
+            match crate::processor::run_chain(&mut self.processors, result, &meta) {
+                Ok(batches) => batches,
+                Err(crate::processor::ProcessorError::Transient(e)) => {
+                    tracing::warn!(error = %e, "transient processor error, rejecting batch");
+                    self.ack_all_tickets(sending, false);
+                    self.metrics.finish_active_batch(batch_id);
+                    return;
+                }
+                Err(crate::processor::ProcessorError::Permanent(e)) => {
+                    tracing::error!(error = %e, "permanent processor error, dropping batch");
+                    self.ack_all_tickets(sending, true); // ack but don't forward
+                    self.metrics.finish_active_batch(batch_id);
+                    return;
+                }
+                Err(crate::processor::ProcessorError::Fatal(e)) => {
+                    tracing::error!(error = %e, "fatal processor error, shutting down");
+                    self.ack_all_tickets(sending, false);
+                    self.metrics.finish_active_batch(batch_id);
+                    // TODO(#0): trigger pipeline shutdown on fatal processor error
+                    return;
+                }
+            }
         };
 
-        self.metrics
-            .transform_out
-            .inc_lines(result.num_rows() as u64);
+        let total_rows: u64 = results.iter().map(|b| b.num_rows() as u64).sum();
+        self.metrics.transform_out.inc_lines(total_rows);
 
-        // Handle zero-row transform results (SQL WHERE filtered all rows).
-        // Still ack — data was processed, just not forwarded.
-        if result.num_rows() == 0 {
+        // Handle zero-row results (SQL WHERE filtered all rows, or processor
+        // buffered everything). Still ack — data was processed, just not forwarded.
+        if total_rows == 0 {
             self.ack_all_tickets(sending, true);
-            // Record batch with 0 output rows so batches_total and timing are
-            // tracked, but batch_rows_total reflects actual output (not input).
             self.metrics.record_batch(
                 0,
                 scan_elapsed.as_nanos() as u64,
@@ -927,6 +1012,15 @@ impl Pipeline {
             self.metrics.finish_active_batch(batch_id);
             return;
         }
+
+        // Concatenate multiple processor outputs back to a single batch for
+        // submission. Future: submit as a work group.
+        let result = if results.len() == 1 {
+            results.into_iter().next().expect("checked len == 1")
+        } else {
+            arrow::compute::concat_batches(&results[0].schema(), results.iter())
+                .expect("concat_batches failed — schema mismatch in processor chain")
+        };
 
         let out_rows = result.num_rows() as u64;
         tracing::Span::current().record("output_rows", out_rows);
@@ -1611,7 +1705,11 @@ output:
             fn process(
                 &mut self,
                 batch: arrow::record_batch::RecordBatch,
-            ) -> arrow::record_batch::RecordBatch {
+                _meta: &BatchMetadata,
+            ) -> Result<
+                smallvec::SmallVec<[arrow::record_batch::RecordBatch; 1]>,
+                crate::processor::ProcessorError,
+            > {
                 // Drop rows where seq is odd
                 let seq_array = batch
                     .column_by_name("seq")
@@ -1626,7 +1724,20 @@ output:
                     }
                 }
                 let indices_array = arrow::array::UInt32Array::from(indices);
-                arrow::compute::take_record_batch(&batch, &indices_array).unwrap()
+                let filtered = arrow::compute::take_record_batch(&batch, &indices_array).unwrap();
+                Ok(smallvec::smallvec![filtered])
+            }
+
+            fn flush(&mut self) -> smallvec::SmallVec<[arrow::record_batch::RecordBatch; 1]> {
+                smallvec::SmallVec::new()
+            }
+
+            fn name(&self) -> &'static str {
+                "drop_odd"
+            }
+
+            fn is_stateful(&self) -> bool {
+                false
             }
         }
 
