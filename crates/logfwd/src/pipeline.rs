@@ -13,9 +13,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(not(feature = "turmoil"))]
 use std::time::Instant;
 
+use arrow::array::{ArrayRef, StringBuilder, UInt64Builder};
+use arrow::datatypes::{DataType, Field, Schema};
 use bytes::{Bytes, BytesMut};
 
-use crate::batch_accumulator::{AccumulatorAction, BatchAccumulator};
+use crate::batch_accumulator::{AccumulatorAction, BatchAccumulator, RowOriginSpan};
 
 use opentelemetry::metrics::Meter;
 use tracing::Instrument;
@@ -75,6 +77,8 @@ enum ChannelMsg {
         bytes: Bytes,
         /// Per-file (source_id, byte_offset) at time of send.
         checkpoints: Vec<(SourceId, ByteOffset)>,
+        /// Per-source row counts for the accumulated payload.
+        row_origins: Vec<RowOriginSpan>,
         /// When the input thread enqueued this message. Used to measure
         /// queue wait time (time data sat in channel before processing).
         /// Uses tokio::time::Instant so elapsed() measures simulated time
@@ -88,13 +92,19 @@ enum ChannelMsg {
 // ---------------------------------------------------------------------------
 
 struct InputState {
+    input_name: Arc<str>,
     /// The input source, wrapped in FramedInput for line framing + format processing.
     /// The pipeline receives scanner-ready bytes — it doesn't know about formats.
     source: Box<dyn InputSource>,
     /// Buffer accumulating scanner-ready bytes for batching.
     buf: BytesMut,
+    /// Per-source row spans aligned with `buf` when source metadata is enabled.
+    row_origins: Vec<RowOriginSpan>,
     /// Input metrics (used for parse/rotation/truncation observability).
     stats: Arc<ComponentStats>,
+    /// Experimental: preserve source identity in a batch sidecar and attach
+    /// it to the RecordBatch before SQL.
+    track_source_metadata: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -406,9 +416,12 @@ impl Pipeline {
     /// Add an input source for testing. Bypasses config-based input construction.
     pub fn with_input(mut self, _name: &str, source: Box<dyn InputSource>) -> Self {
         self.inputs.push(InputState {
+            input_name: Arc::<str>::from("test_input"),
             source,
             buf: BytesMut::with_capacity(self.batch_target_bytes),
+            row_origins: Vec::new(),
             stats: Arc::new(ComponentStats::new()),
+            track_source_metadata: false,
         });
         self
     }
@@ -638,12 +651,12 @@ impl Pipeline {
 
                 msg = rx.recv() => {
                     match msg {
-                        Some(ChannelMsg::Data { bytes, checkpoints, queued_at }) => {
-                            if let AccumulatorAction::Flush { data, checkpoints, queued_at, .. } =
-                                accumulator.ingest(bytes, checkpoints, queued_at)
+                        Some(ChannelMsg::Data { bytes, checkpoints, row_origins, queued_at }) => {
+                            if let AccumulatorAction::Flush { data, checkpoints, row_origins, queued_at, .. } =
+                                accumulator.ingest(bytes, checkpoints, row_origins, queued_at)
                             {
                                 self.metrics.inc_flush_by_size();
-                                self.flush_batch_from(data, checkpoints, "size", queued_at).await;
+                                self.flush_batch_from(data, checkpoints, row_origins, "size", queued_at).await;
                                 flush_interval.reset();
                             }
                         }
@@ -652,11 +665,11 @@ impl Pipeline {
                 }
 
                 _ = flush_interval.tick() => {
-                    if let AccumulatorAction::Flush { data, checkpoints, queued_at, .. } =
+                    if let AccumulatorAction::Flush { data, checkpoints, row_origins, queued_at, .. } =
                         accumulator.check_timeout()
                     {
                         self.metrics.inc_flush_by_timeout();
-                        self.flush_batch_from(data, checkpoints, "timeout", queued_at).await;
+                        self.flush_batch_from(data, checkpoints, row_origins, "timeout", queued_at).await;
                     }
                 }
             }
@@ -672,16 +685,18 @@ impl Pipeline {
                 ChannelMsg::Data {
                     bytes,
                     checkpoints,
+                    row_origins,
                     queued_at,
                 } => {
                     if let AccumulatorAction::Flush {
                         data,
                         checkpoints,
+                        row_origins,
                         queued_at,
                         ..
-                    } = accumulator.ingest(bytes, checkpoints, queued_at)
+                    } = accumulator.ingest(bytes, checkpoints, row_origins, queued_at)
                     {
-                        self.flush_batch_from(data, checkpoints, "drain", queued_at)
+                        self.flush_batch_from(data, checkpoints, row_origins, "drain", queued_at)
                             .await;
                     }
                 }
@@ -704,8 +719,8 @@ impl Pipeline {
         }
 
         // Flush any remaining buffered data.
-        if let Some((data, checkpoints, queued_at)) = accumulator.drain() {
-            self.flush_batch_from(data, checkpoints, "drain", queued_at)
+        if let Some((data, checkpoints, row_origins, queued_at)) = accumulator.drain() {
+            self.flush_batch_from(data, checkpoints, row_origins, "drain", queued_at)
                 .await;
         }
 
@@ -783,6 +798,7 @@ impl Pipeline {
         &mut self,
         data: Bytes,
         checkpoints: HashMap<SourceId, ByteOffset>,
+        row_origins: Vec<RowOriginSpan>,
         flush_reason: &'static str,
         queued_at: Option<tokio::time::Instant>,
     ) {
@@ -823,7 +839,7 @@ impl Pipeline {
             let scan_span =
                 tracing::info_span!("scan", pipeline = %self.name, rows = tracing::field::Empty);
             let _entered = scan_span.enter();
-            let b = match scan_maybe_blocking(&mut self.scanner, combined) {
+            let mut b = match scan_maybe_blocking(&mut self.scanner, combined) {
                 Ok(b) => b,
                 Err(e) => {
                     // Queued tickets dropped here — safe, not tracked by machine.
@@ -837,6 +853,19 @@ impl Pipeline {
                     return;
                 }
             };
+            if !row_origins.is_empty() {
+                b = match attach_source_metadata_column(b, &row_origins) {
+                    Ok(batch) => batch,
+                    Err(e) => {
+                        self.metrics.inc_scan_error();
+                        self.metrics.inc_dropped_batch();
+                        tracing::warn!(error = %e, "pipeline: source metadata attach error (batch dropped)");
+                        span.record("errors", 1u64);
+                        self.metrics.finish_active_batch(batch_id);
+                        return;
+                    }
+                };
+            }
             scan_span.record("rows", b.num_rows() as u64);
             b
         }; // _entered and scan_span drop here → span ends
@@ -1070,7 +1099,20 @@ fn input_poll_loop(
         } else {
             for event in events {
                 match event {
-                    InputEvent::Data { bytes, .. } => {
+                    InputEvent::Data { bytes, source_id } => {
+                        let row_count = if input.track_source_metadata {
+                            memchr::memchr_iter(b'\n', &bytes).count()
+                        } else {
+                            0
+                        };
+                        if input.track_source_metadata {
+                            push_row_origin_span(
+                                &mut input.row_origins,
+                                source_id,
+                                Some(&input.input_name),
+                                row_count,
+                            );
+                        }
                         input.buf.extend_from_slice(&bytes);
                     }
                     InputEvent::Rotated { .. } => {
@@ -1103,6 +1145,7 @@ fn input_poll_loop(
             let msg = ChannelMsg::Data {
                 bytes: data,
                 checkpoints,
+                row_origins: std::mem::take(&mut input.row_origins),
                 queued_at: tokio::time::Instant::now(),
             };
             if blocking_send_channel_msg(input.source.name(), &tx, &metrics, msg).is_err() {
@@ -1119,6 +1162,7 @@ fn input_poll_loop(
         let msg = ChannelMsg::Data {
             bytes: data,
             checkpoints,
+            row_origins: std::mem::take(&mut input.row_origins),
             queued_at: tokio::time::Instant::now(),
         };
         let _ = blocking_send_channel_msg(input.source.name(), &tx, &metrics, msg);
@@ -1223,7 +1267,20 @@ async fn async_input_poll_loop(
         } else {
             for event in events {
                 match event {
-                    InputEvent::Data { bytes, .. } => {
+                    InputEvent::Data { bytes, source_id } => {
+                        let row_count = if input.track_source_metadata {
+                            memchr::memchr_iter(b'\n', &bytes).count()
+                        } else {
+                            0
+                        };
+                        if input.track_source_metadata {
+                            push_row_origin_span(
+                                &mut input.row_origins,
+                                source_id,
+                                Some(&input.input_name),
+                                row_count,
+                            );
+                        }
                         input.buf.extend_from_slice(&bytes);
                     }
                     InputEvent::Rotated { .. } => {
@@ -1249,6 +1306,7 @@ async fn async_input_poll_loop(
             let msg = ChannelMsg::Data {
                 bytes: data,
                 checkpoints,
+                row_origins: std::mem::take(&mut input.row_origins),
                 queued_at: tokio::time::Instant::now(),
             };
             if tx.send(msg).await.is_err() {
@@ -1265,6 +1323,7 @@ async fn async_input_poll_loop(
         let msg = ChannelMsg::Data {
             bytes: data,
             checkpoints,
+            row_origins: std::mem::take(&mut input.row_origins),
             queued_at: tokio::time::Instant::now(),
         };
         let _ = tx.send(msg).await;
@@ -1419,9 +1478,11 @@ fn build_input_state(
     };
 
     if cfg.source_metadata && !matches!(format, Format::Json | Format::Cri | Format::Auto) {
-        return Err(format!(
-            "input '{name}': experimental source_metadata currently only supports format json, cri, or auto"
-        ));
+        tracing::debug!(
+            input = name,
+            format = %format,
+            "source_metadata enabled for non-JSON format; batch sidecar path will attach columns after scan"
+        );
     }
 
     // Wrap the raw transport with framing + format processing.
@@ -1434,9 +1495,12 @@ fn build_input_state(
     );
 
     Ok(InputState {
+        input_name: Arc::<str>::from(name.to_owned()),
         source: Box::new(framed),
         buf: BytesMut::with_capacity(buf_cap),
+        row_origins: Vec::new(),
         stats,
+        track_source_metadata: cfg.source_metadata,
     })
 }
 
@@ -1445,6 +1509,102 @@ fn now_nanos() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64
+}
+
+fn push_row_origin_span(
+    spans: &mut Vec<RowOriginSpan>,
+    source_id: Option<SourceId>,
+    input_name: Option<&Arc<str>>,
+    rows: usize,
+) {
+    if rows == 0 {
+        return;
+    }
+    if let Some(last) = spans.last_mut()
+        && last.source_id == source_id
+        && last.input_name.as_ref() == input_name
+    {
+        last.rows += rows;
+        return;
+    }
+    spans.push(RowOriginSpan {
+        source_id,
+        input_name: input_name.cloned(),
+        rows,
+    });
+}
+
+fn attach_source_metadata_column(
+    batch: arrow::record_batch::RecordBatch,
+    row_origins: &[RowOriginSpan],
+) -> Result<arrow::record_batch::RecordBatch, String> {
+    if row_origins.is_empty() {
+        return Ok(batch);
+    }
+    if batch.schema().column_with_name("_source_id").is_some() {
+        return Err("source metadata conflict: batch already contains _source_id".to_string());
+    }
+    if batch.schema().column_with_name("_input").is_some() {
+        return Err("source metadata conflict: batch already contains _input".to_string());
+    }
+
+    let total_rows: usize = row_origins.iter().map(|span| span.rows).sum();
+    if total_rows != batch.num_rows() {
+        return Err(format!(
+            "source metadata row mismatch: sidecar rows={total_rows}, batch rows={}",
+            batch.num_rows()
+        ));
+    }
+
+    let mut fields: Vec<Arc<Field>> = batch.schema().fields().iter().cloned().collect();
+    let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+    let mut source_id_builder = UInt64Builder::with_capacity(batch.num_rows());
+    let mut input_builder = StringBuilder::with_capacity(batch.num_rows(), batch.num_rows() * 8);
+    let mut source_id_nullable = false;
+    let mut input_nullable = false;
+    for span in row_origins {
+        match span.source_id {
+            Some(source_id) => {
+                for _ in 0..span.rows {
+                    source_id_builder.append_value(source_id.0);
+                }
+            }
+            None => {
+                source_id_nullable = true;
+                for _ in 0..span.rows {
+                    source_id_builder.append_null();
+                }
+            }
+        }
+        match span.input_name.as_deref() {
+            Some(input_name) => {
+                for _ in 0..span.rows {
+                    input_builder.append_value(input_name);
+                }
+            }
+            None => {
+                input_nullable = true;
+                for _ in 0..span.rows {
+                    input_builder.append_null();
+                }
+            }
+        }
+    }
+
+    fields.push(Arc::new(Field::new(
+        "_source_id",
+        DataType::UInt64,
+        source_id_nullable,
+    )));
+    columns.push(Arc::new(source_id_builder.finish()) as ArrayRef);
+    fields.push(Arc::new(Field::new(
+        "_input",
+        DataType::Utf8,
+        input_nullable,
+    )));
+    columns.push(Arc::new(input_builder.finish()) as ArrayRef);
+    arrow::record_batch::RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        .map_err(|e| format!("failed to attach source metadata column: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1459,6 +1619,7 @@ mod tests {
     // but tests need it for timeout deadlines regardless of the turmoil feature flag.
     use std::time::Instant;
 
+    use arrow::array::{Array, StringArray, UInt64Array};
     use logfwd_config::{Format, OutputConfig, OutputType};
     use logfwd_io::diagnostics::ComponentStats;
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
@@ -1533,7 +1694,7 @@ output:
     }
 
     #[test]
-    fn source_metadata_rejects_raw_format() {
+    fn source_metadata_allows_raw_format() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("test.log");
         std::fs::write(&log_path, b"plain text\n").unwrap();
@@ -1553,11 +1714,75 @@ output:
         );
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let err = match Pipeline::from_config("default", pipe_cfg, &test_meter(), None) {
-            Ok(_) => panic!("raw source metadata should be rejected"),
-            Err(err) => err,
-        };
-        assert!(err.contains("source_metadata currently only supports format json, cri, or auto"));
+        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None);
+        assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
+    }
+
+    #[test]
+    fn attach_source_metadata_column_appends_u64_values() {
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
+        let batch = arrow::record_batch::RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![Some("a"), Some("b"), Some("c")])) as ArrayRef],
+        )
+        .unwrap();
+
+        let batch = attach_source_metadata_column(
+            batch,
+            &[
+                RowOriginSpan {
+                    source_id: Some(SourceId(11)),
+                    input_name: Some(Arc::<str>::from("pods")),
+                    rows: 2,
+                },
+                RowOriginSpan {
+                    source_id: None,
+                    input_name: Some(Arc::<str>::from("pods")),
+                    rows: 1,
+                },
+            ],
+        )
+        .unwrap();
+
+        let source_ids = batch
+            .column_by_name("_source_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        assert_eq!(source_ids.value(0), 11);
+        assert_eq!(source_ids.value(1), 11);
+        assert!(source_ids.is_null(2));
+        let input_names = batch
+            .column_by_name("_input")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(input_names.value(0), "pods");
+        assert_eq!(input_names.value(1), "pods");
+        assert_eq!(input_names.value(2), "pods");
+    }
+
+    #[test]
+    fn attach_source_metadata_column_rejects_row_mismatch() {
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
+        let batch = arrow::record_batch::RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![Some("a")])) as ArrayRef],
+        )
+        .unwrap();
+
+        let err = attach_source_metadata_column(
+            batch,
+            &[RowOriginSpan {
+                source_id: Some(SourceId(11)),
+                input_name: Some(Arc::<str>::from("pods")),
+                rows: 2,
+            }],
+        )
+        .unwrap_err();
+        assert!(err.contains("source metadata row mismatch"));
     }
 
     #[test]
@@ -2107,6 +2332,7 @@ output:
         tx.try_send(ChannelMsg::Data {
             bytes: Bytes::from_static(&[1]),
             checkpoints: vec![],
+            row_origins: vec![],
             queued_at: tokio::time::Instant::now(),
         })
         .unwrap();
@@ -2121,6 +2347,7 @@ output:
                 ChannelMsg::Data {
                     bytes: Bytes::from_static(&[2]),
                     checkpoints: vec![],
+                    row_origins: vec![],
                     queued_at: tokio::time::Instant::now(),
                 },
             )
@@ -3011,6 +3238,7 @@ output:
         tx.try_send(ChannelMsg::Data {
             bytes: Bytes::from_static(b"test\n"),
             checkpoints: vec![(SourceId(42), ByteOffset(1000))],
+            row_origins: vec![],
             queued_at: tokio::time::Instant::now(),
         })
         .unwrap();

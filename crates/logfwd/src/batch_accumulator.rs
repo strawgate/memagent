@@ -5,10 +5,18 @@
 //! based on size threshold or timeout.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use logfwd_io::tail::ByteOffset;
 use logfwd_types::pipeline::SourceId;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowOriginSpan {
+    pub source_id: Option<SourceId>,
+    pub input_name: Option<Arc<str>>,
+    pub rows: usize,
+}
 
 /// Action returned by the accumulator after ingesting data or checking timeout.
 pub enum AccumulatorAction {
@@ -16,6 +24,7 @@ pub enum AccumulatorAction {
     Flush {
         data: Bytes,
         checkpoints: HashMap<SourceId, ByteOffset>,
+        row_origins: Vec<RowOriginSpan>,
         /// Uses tokio::time::Instant so elapsed() measures simulated time under Turmoil.
         queued_at: Option<tokio::time::Instant>,
         reason: &'static str,
@@ -27,6 +36,7 @@ pub enum AccumulatorAction {
 pub struct BatchAccumulator {
     buf: BytesMut,
     checkpoints: HashMap<SourceId, ByteOffset>,
+    row_origins: Vec<RowOriginSpan>,
     /// Uses tokio::time::Instant so elapsed() measures simulated time under Turmoil.
     queued_at: Option<tokio::time::Instant>,
     batch_target_bytes: usize,
@@ -37,6 +47,7 @@ impl BatchAccumulator {
         Self {
             buf: BytesMut::with_capacity(batch_target_bytes),
             checkpoints: HashMap::new(),
+            row_origins: Vec::new(),
             queued_at: None,
             batch_target_bytes,
         }
@@ -47,6 +58,7 @@ impl BatchAccumulator {
         &mut self,
         bytes: Bytes,
         input_checkpoints: Vec<(SourceId, ByteOffset)>,
+        input_row_origins: Vec<RowOriginSpan>,
         queued_at: tokio::time::Instant,
     ) -> AccumulatorAction {
         if self.queued_at.is_none() {
@@ -56,6 +68,7 @@ impl BatchAccumulator {
         for (sid, offset) in input_checkpoints {
             self.checkpoints.insert(sid, offset);
         }
+        self.row_origins.extend(input_row_origins);
         if self.buf.len() >= self.batch_target_bytes {
             self.take_flush("size")
         } else {
@@ -79,6 +92,7 @@ impl BatchAccumulator {
     ) -> Option<(
         Bytes,
         HashMap<SourceId, ByteOffset>,
+        Vec<RowOriginSpan>,
         Option<tokio::time::Instant>,
     )> {
         if self.buf.is_empty() {
@@ -86,8 +100,9 @@ impl BatchAccumulator {
         }
         let data = self.buf.split().freeze();
         let checkpoints = std::mem::take(&mut self.checkpoints);
+        let row_origins = std::mem::take(&mut self.row_origins);
         let queued_at = self.queued_at.take();
-        Some((data, checkpoints, queued_at))
+        Some((data, checkpoints, row_origins, queued_at))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -101,10 +116,12 @@ impl BatchAccumulator {
     fn take_flush(&mut self, reason: &'static str) -> AccumulatorAction {
         let data = self.buf.split().freeze();
         let checkpoints = std::mem::take(&mut self.checkpoints);
+        let row_origins = std::mem::take(&mut self.row_origins);
         let queued_at = self.queued_at.take();
         AccumulatorAction::Flush {
             data,
             checkpoints,
+            row_origins,
             queued_at,
             reason,
         }
@@ -125,6 +142,11 @@ mod tests {
         let result = acc.ingest(
             Bytes::from_static(b"hello\n"),
             vec![(sid(1), ByteOffset(6))],
+            vec![RowOriginSpan {
+                source_id: Some(sid(1)),
+                input_name: Some(Arc::<str>::from("input_a")),
+                rows: 1,
+            }],
             tokio::time::Instant::now(),
         );
         assert!(matches!(result, AccumulatorAction::Continue));
@@ -137,6 +159,11 @@ mod tests {
         let result = acc.ingest(
             Bytes::from(vec![b'x'; 15]),
             vec![(sid(1), ByteOffset(15))],
+            vec![RowOriginSpan {
+                source_id: Some(sid(1)),
+                input_name: Some(Arc::<str>::from("input_a")),
+                rows: 1,
+            }],
             tokio::time::Instant::now(),
         );
         assert!(matches!(
@@ -158,6 +185,11 @@ mod tests {
         acc.ingest(
             Bytes::from_static(b"data\n"),
             vec![],
+            vec![RowOriginSpan {
+                source_id: None,
+                input_name: Some(Arc::<str>::from("input_a")),
+                rows: 1,
+            }],
             tokio::time::Instant::now(),
         );
         let result = acc.check_timeout();
@@ -177,13 +209,26 @@ mod tests {
         acc.ingest(
             Bytes::from_static(b"drain me\n"),
             vec![(sid(1), ByteOffset(9))],
+            vec![RowOriginSpan {
+                source_id: Some(sid(1)),
+                input_name: Some(Arc::<str>::from("input_a")),
+                rows: 1,
+            }],
             tokio::time::Instant::now(),
         );
         let result = acc.drain();
         assert!(result.is_some());
-        let (data, checkpoints, _) = result.unwrap();
+        let (data, checkpoints, row_origins, _) = result.unwrap();
         assert_eq!(&data[..], b"drain me\n");
         assert!(checkpoints.contains_key(&sid(1)));
+        assert_eq!(
+            row_origins,
+            vec![RowOriginSpan {
+                source_id: Some(sid(1)),
+                input_name: Some(Arc::<str>::from("input_a")),
+                rows: 1,
+            }]
+        );
         assert!(acc.is_empty());
     }
 
@@ -199,14 +244,24 @@ mod tests {
         acc.ingest(
             Bytes::from_static(b"a\n"),
             vec![(sid(1), ByteOffset(2))],
+            vec![RowOriginSpan {
+                source_id: Some(sid(1)),
+                input_name: Some(Arc::<str>::from("input_a")),
+                rows: 1,
+            }],
             tokio::time::Instant::now(),
         );
         acc.ingest(
             Bytes::from_static(b"b\n"),
             vec![(sid(1), ByteOffset(4))],
+            vec![RowOriginSpan {
+                source_id: Some(sid(1)),
+                input_name: Some(Arc::<str>::from("input_a")),
+                rows: 1,
+            }],
             tokio::time::Instant::now(),
         );
-        let (_, checkpoints, _) = acc.drain().unwrap();
+        let (_, checkpoints, _, _) = acc.drain().unwrap();
         assert_eq!(checkpoints[&sid(1)], ByteOffset(4));
     }
 }

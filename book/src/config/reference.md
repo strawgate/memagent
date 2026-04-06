@@ -79,7 +79,7 @@ YAML sequence for multiple inputs.
 | `type` | string | Yes | Input type. See [Input types](#input-types). |
 | `name` | string | No | Friendly name shown in diagnostics. |
 | `format` | string | No | Log format. See [Formats](#formats). Defaults to `auto`. |
-| `source_metadata` | bool | No | Experimental. When `true`, `json`, `cri`, and `auto` inputs inject `_source_id` and `_input` into rows before SQL. Prototype-only for source metadata exploration. |
+| `source_metadata` | bool | No | Experimental. When `true`, `logfwd` preserves source identity in a batch sidecar and exposes `_source_id` and `_input` to SQL before transforms run. Prototype-only for source metadata exploration. |
 
 ### `file` input
 
@@ -159,9 +159,10 @@ The `format` field controls how raw bytes from the input are parsed into log rec
 | `logfmt` | Key=value pairs (e.g. `level=info msg="hello"`). *Not yet implemented.* |
 | `console` | Human-readable coloured output for interactive debugging. Output mode only. |
 
-`source_metadata: true` is currently limited to `json`, `cri`, and `auto`
-inputs. It is an experimental prototype and only injects `_source_id` and
-`_input`; richer source metadata still belongs to follow-up work.
+`source_metadata: true` is an experimental prototype. The current prototype
+exposes `_source_id` and `_input`, and richer metadata like source paths,
+peer addresses, and Kubernetes context still belongs to follow-up work via
+source-keyed enrichment tables.
 
 ---
 

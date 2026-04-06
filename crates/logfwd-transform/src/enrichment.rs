@@ -9,7 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use arrow::array::StringArray;
+use arrow::array::{StringArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 
@@ -299,6 +299,116 @@ fn build_k8s_batch(entries: &[K8sPodEntry]) -> RecordBatch {
         ],
     )
     .expect("k8s batch schema mismatch")
+}
+
+// ---------------------------------------------------------------------------
+// Source metadata table
+// ---------------------------------------------------------------------------
+
+/// One source-metadata row keyed by `source_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceMetadataEntry {
+    pub source_id: u64,
+    pub source_path: Option<String>,
+    pub input_name: Option<String>,
+}
+
+/// Dynamic lookup table keyed by `source_id`.
+///
+/// This is intended as the descriptive companion to row-level `_source_id`.
+/// File paths and path-derived Kubernetes metadata can live here without
+/// widening every log row.
+pub struct SourcesTable {
+    table_name: String,
+    data: Arc<RwLock<Option<RecordBatch>>>,
+}
+
+impl SourcesTable {
+    pub fn new(table_name: impl Into<String>) -> Self {
+        let table_name = table_name.into();
+        let empty = build_sources_batch(&[]);
+        Self {
+            table_name,
+            data: Arc::new(RwLock::new(Some(empty))),
+        }
+    }
+
+    /// Replace the current snapshot from a list of source entries.
+    pub fn update_entries(&self, entries: &[SourceMetadataEntry]) {
+        let mut deduped = entries.to_vec();
+        deduped.sort_by_key(|e| e.source_id);
+        deduped.dedup_by_key(|e| e.source_id);
+        let batch = build_sources_batch(&deduped);
+        *self
+            .data
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(batch);
+    }
+}
+
+impl EnrichmentTable for SourcesTable {
+    fn name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn snapshot(&self) -> Option<RecordBatch> {
+        self.data
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+fn build_sources_batch(entries: &[SourceMetadataEntry]) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("source_id", DataType::UInt64, false),
+        Field::new("source_path", DataType::Utf8, true),
+        Field::new("input_name", DataType::Utf8, true),
+        Field::new("namespace", DataType::Utf8, true),
+        Field::new("pod_name", DataType::Utf8, true),
+        Field::new("pod_uid", DataType::Utf8, true),
+        Field::new("container_name", DataType::Utf8, true),
+    ]));
+
+    let source_ids: Vec<u64> = entries.iter().map(|e| e.source_id).collect();
+    let source_paths: Vec<Option<&str>> =
+        entries.iter().map(|e| e.source_path.as_deref()).collect();
+    let input_names: Vec<Option<&str>> = entries.iter().map(|e| e.input_name.as_deref()).collect();
+
+    let parsed_paths: Vec<Option<K8sPodEntry>> = entries
+        .iter()
+        .map(|e| e.source_path.as_deref().and_then(parse_cri_log_path))
+        .collect();
+    let namespaces: Vec<Option<&str>> = parsed_paths
+        .iter()
+        .map(|entry| entry.as_ref().map(|v| v.namespace.as_str()))
+        .collect();
+    let pod_names: Vec<Option<&str>> = parsed_paths
+        .iter()
+        .map(|entry| entry.as_ref().map(|v| v.pod_name.as_str()))
+        .collect();
+    let pod_uids: Vec<Option<&str>> = parsed_paths
+        .iter()
+        .map(|entry| entry.as_ref().map(|v| v.pod_uid.as_str()))
+        .collect();
+    let container_names: Vec<Option<&str>> = parsed_paths
+        .iter()
+        .map(|entry| entry.as_ref().map(|v| v.container_name.as_str()))
+        .collect();
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(UInt64Array::from(source_ids)),
+            Arc::new(StringArray::from(source_paths)),
+            Arc::new(StringArray::from(input_names)),
+            Arc::new(StringArray::from(namespaces)),
+            Arc::new(StringArray::from(pod_names)),
+            Arc::new(StringArray::from(pod_uids)),
+            Arc::new(StringArray::from(container_names)),
+        ],
+    )
+    .expect("sources batch schema mismatch")
 }
 
 // ---------------------------------------------------------------------------
@@ -616,7 +726,7 @@ pub trait GeoDatabase: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Array;
+    use arrow::array::{Array, UInt64Array};
 
     // -- CRI path parsing ---------------------------------------------------
 
@@ -805,6 +915,85 @@ mod tests {
             "/var/log/pods/ns2_pod2_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/c/0.log".to_string(),
         ]);
         assert_eq!(table.snapshot().unwrap().num_rows(), 2);
+    }
+
+    // -- Sources table ------------------------------------------------------
+
+    #[test]
+    fn sources_table_starts_with_empty_batch() {
+        let table = SourcesTable::new("sources");
+        let batch = table.snapshot().expect("should have empty batch");
+        assert_eq!(batch.num_rows(), 0);
+        assert_eq!(batch.num_columns(), 7);
+    }
+
+    #[test]
+    fn sources_table_updates_snapshot_with_k8s_fields() {
+        let table = SourcesTable::new("sources");
+        table.update_entries(&[
+            SourceMetadataEntry {
+                source_id: 11,
+                source_path: Some(
+                    "/var/log/pods/default_api-0_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/main/0.log"
+                        .to_string(),
+                ),
+                input_name: Some("pods".to_string()),
+            },
+            SourceMetadataEntry {
+                source_id: 12,
+                source_path: Some("/var/log/nginx/access.log".to_string()),
+                input_name: Some("nginx".to_string()),
+            },
+        ]);
+
+        let batch = table.snapshot().expect("should have populated batch");
+        assert_eq!(batch.num_rows(), 2);
+
+        let source_ids = batch
+            .column_by_name("source_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        assert_eq!(source_ids.value(0), 11);
+        assert_eq!(source_ids.value(1), 12);
+
+        let namespaces = batch
+            .column_by_name("namespace")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(namespaces.value(0), "default");
+        assert!(namespaces.is_null(1));
+
+        let input_names = batch
+            .column_by_name("input_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(input_names.value(0), "pods");
+        assert_eq!(input_names.value(1), "nginx");
+    }
+
+    #[test]
+    fn sources_table_deduplicates_by_source_id() {
+        let table = SourcesTable::new("sources");
+        table.update_entries(&[
+            SourceMetadataEntry {
+                source_id: 11,
+                source_path: Some("/var/log/one.log".to_string()),
+                input_name: Some("a".to_string()),
+            },
+            SourceMetadataEntry {
+                source_id: 11,
+                source_path: Some("/var/log/two.log".to_string()),
+                input_name: Some("b".to_string()),
+            },
+        ]);
+        let batch = table.snapshot().unwrap();
+        assert_eq!(batch.num_rows(), 1);
     }
 
     // -- CSV file table -----------------------------------------------------

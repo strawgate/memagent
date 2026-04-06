@@ -1129,6 +1129,71 @@ mod tests {
         assert_eq!(result.num_rows(), 4);
     }
 
+    #[test]
+    fn test_sources_enrichment_join_on_source_id() {
+        use arrow::array::{Array, StringArray, UInt64Array};
+        use arrow::datatypes::{Field, Schema};
+        use enrichment::{SourceMetadataEntry, SourcesTable};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("_source_id", DataType::UInt64, false),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt64Array::from(vec![11, 12])) as Arc<dyn Array>,
+                Arc::new(StringArray::from(vec![Some("a"), Some("b")])) as Arc<dyn Array>,
+            ],
+        )
+        .unwrap();
+
+        let table = Arc::new(SourcesTable::new("sources"));
+        table.update_entries(&[
+            SourceMetadataEntry {
+                source_id: 11,
+                source_path: Some(
+                    "/var/log/pods/default_api-0_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/main/0.log"
+                        .to_string(),
+                ),
+                input_name: Some("pods".to_string()),
+            },
+            SourceMetadataEntry {
+                source_id: 12,
+                source_path: Some("/var/log/nginx/access.log".to_string()),
+                input_name: Some("nginx".to_string()),
+            },
+        ]);
+
+        let mut transform = SqlTransform::new(
+            "SELECT logs.message, s.input_name, s.namespace \
+             FROM logs LEFT JOIN sources AS s ON logs._source_id = s.source_id",
+        )
+        .unwrap();
+        transform.add_enrichment_table(table).unwrap();
+
+        let result = transform.execute_blocking(batch).unwrap();
+        assert_eq!(result.num_rows(), 2);
+
+        let input_names = result
+            .column_by_name("input_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(input_names.value(0), "pods");
+        assert_eq!(input_names.value(1), "nginx");
+
+        let namespaces = result
+            .column_by_name("namespace")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(namespaces.value(0), "default");
+        assert!(namespaces.is_null(1));
+    }
+
     // --- FilterHints predicate pushdown tests ---
 
     #[test]

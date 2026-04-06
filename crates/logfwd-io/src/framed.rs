@@ -62,7 +62,6 @@ pub struct FramedInput {
     /// across polls without allocating.
     spare_buf: Vec<u8>,
     stats: Arc<ComponentStats>,
-    inject_source_metadata: bool,
 }
 
 impl FramedInput {
@@ -78,7 +77,7 @@ impl FramedInput {
         inner: Box<dyn InputSource>,
         format: FormatDecoder,
         stats: Arc<ComponentStats>,
-        inject_source_metadata: bool,
+        _inject_source_metadata: bool,
     ) -> Self {
         Self {
             inner,
@@ -87,97 +86,8 @@ impl FramedInput {
             out_buf: Vec::with_capacity(64 * 1024),
             spare_buf: Vec::with_capacity(64 * 1024),
             stats,
-            inject_source_metadata,
         }
     }
-
-    fn maybe_inject_source_metadata(&mut self, source_id: Option<SourceId>) {
-        if !self.inject_source_metadata {
-            return;
-        }
-        let Some(source_id) = source_id else {
-            return;
-        };
-
-        let original = std::mem::take(&mut self.out_buf);
-        let mut injected = std::mem::take(&mut self.spare_buf);
-        injected.clear();
-        inject_source_metadata_lines(&original, source_id, self.inner.name(), &mut injected);
-        self.out_buf = injected;
-        self.spare_buf = original;
-    }
-}
-
-fn inject_source_metadata_lines(
-    chunk: &[u8],
-    source_id: SourceId,
-    input_name: &str,
-    out: &mut Vec<u8>,
-) {
-    let sid = source_id.0.to_string();
-    let sid = sid.as_bytes();
-    let input = input_name.as_bytes();
-    let mut pos = 0;
-    while pos < chunk.len() {
-        let eol = memchr::memchr(b'\n', &chunk[pos..]).map_or(chunk.len(), |off| pos + off);
-        let line = &chunk[pos..eol];
-        if !line.is_empty() {
-            if line.first() == Some(&b'{') {
-                out.extend_from_slice(b"{\"_source_id\":\"");
-                append_json_escaped(out, sid);
-                out.extend_from_slice(b"\",\"_input\":\"");
-                append_json_escaped(out, input);
-                out.extend_from_slice(b"\"");
-                let remainder = &line[1..];
-                let trimmed = trim_ascii_whitespace(remainder);
-                if trimmed != b"}" {
-                    out.extend_from_slice(b",");
-                }
-                out.extend_from_slice(remainder);
-            } else {
-                out.extend_from_slice(line);
-            }
-            out.push(b'\n');
-        }
-        pos = eol + 1;
-    }
-}
-
-fn append_json_escaped(out: &mut Vec<u8>, input: &[u8]) {
-    for &b in input {
-        match b {
-            b'"' => out.extend_from_slice(br#"\""#),
-            b'\\' => out.extend_from_slice(br#"\\"#),
-            b'\n' => out.extend_from_slice(br#"\n"#),
-            b'\r' => out.extend_from_slice(br#"\r"#),
-            b'\t' => out.extend_from_slice(br#"\t"#),
-            0x08 => out.extend_from_slice(br#"\b"#),
-            0x0c => out.extend_from_slice(br#"\f"#),
-            0x00..=0x1f => {
-                const HEX: &[u8; 16] = b"0123456789abcdef";
-                out.extend_from_slice(br#"\u00"#);
-                out.push(HEX[(b >> 4) as usize]);
-                out.push(HEX[(b & 0x0f) as usize]);
-            }
-            _ => out.push(b),
-        }
-    }
-}
-
-fn trim_ascii_whitespace(mut input: &[u8]) -> &[u8] {
-    while let Some((&first, rest)) = input.split_first() {
-        if !first.is_ascii_whitespace() {
-            break;
-        }
-        input = rest;
-    }
-    while let Some((&last, rest)) = input.split_last() {
-        if !last.is_ascii_whitespace() {
-            break;
-        }
-        input = rest;
-    }
-    input
 }
 
 impl InputSource for FramedInput {
@@ -304,8 +214,6 @@ impl InputSource for FramedInput {
                     self.out_buf.clear();
                     let state = self.sources.get_mut(&key).expect("just inserted");
                     state.format.process_lines(&chunk, &mut self.out_buf);
-                    self.maybe_inject_source_metadata(source_id);
-
                     let line_count = memchr::memchr_iter(b'\n', &chunk).count();
                     self.stats.inc_lines(line_count as u64);
 
@@ -363,7 +271,6 @@ impl InputSource for FramedInput {
                                 let state =
                                     self.sources.get_mut(&key).expect("just checked existence");
                                 state.format.process_lines(&remainder, &mut self.out_buf);
-                                self.maybe_inject_source_metadata(key);
 
                                 self.stats.inc_lines(1);
 
@@ -452,11 +359,6 @@ mod tests {
                 events: batches.into(),
                 offsets: vec![],
             }
-        }
-
-        fn with_name(mut self, name: &str) -> Self {
-            self.name = name.to_string();
-            self
         }
 
         fn from_chunks(chunks: Vec<&[u8]>) -> Self {
@@ -692,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_json_injects_source_metadata() {
+    fn passthrough_json_source_metadata_tracking_does_not_rewrite_bytes() {
         let stats = make_stats();
         let source = MockSource::new(vec![vec![InputEvent::Data {
             bytes: b"{\"msg\":\"hello\"}\n".to_vec(),
@@ -706,14 +608,11 @@ mod tests {
         );
 
         let events = framed.poll().unwrap();
-        assert_eq!(
-            collect_data(events),
-            b"{\"_source_id\":\"42\",\"_input\":\"mock\",\"msg\":\"hello\"}\n"
-        );
+        assert_eq!(collect_data(events), b"{\"msg\":\"hello\"}\n");
     }
 
     #[test]
-    fn cri_injects_source_metadata() {
+    fn cri_source_metadata_tracking_does_not_rewrite_bytes() {
         let stats = make_stats();
         let source = MockSource::new(vec![vec![InputEvent::Data {
             bytes: b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hello\"}\n".to_vec(),
@@ -729,29 +628,7 @@ mod tests {
         let events = framed.poll().unwrap();
         assert_eq!(
             collect_data(events),
-            b"{\"_source_id\":\"7\",\"_input\":\"mock\",\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"msg\":\"hello\"}\n"
-        );
-    }
-
-    #[test]
-    fn passthrough_json_escapes_input_name_and_handles_empty_object() {
-        let stats = make_stats();
-        let source = MockSource::new(vec![vec![InputEvent::Data {
-            bytes: b"{ }\n".to_vec(),
-            source_id: Some(SourceId(9)),
-        }]])
-        .with_name("mock\"name");
-        let mut framed = FramedInput::new_with_source_metadata(
-            Box::new(source),
-            FormatDecoder::passthrough_json(Arc::clone(&stats)),
-            stats,
-            true,
-        );
-
-        let events = framed.poll().unwrap();
-        assert_eq!(
-            collect_data(events),
-            b"{\"_source_id\":\"9\",\"_input\":\"mock\\\"name\" }\n"
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"msg\":\"hello\"}\n"
         );
     }
 
