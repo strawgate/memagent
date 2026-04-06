@@ -690,11 +690,17 @@ mod tests {
 
         let unterminated = "\"unterminated";
         let escaped_unterminated = escape_json_raw(unterminated);
-        assert_eq!(escaped_unterminated, "\"\\\"unterminated\"", "unterminated string should be fully escaped");
+        assert_eq!(
+            escaped_unterminated, "\"\\\"unterminated\"",
+            "unterminated string should be fully escaped"
+        );
 
         let foo = "\"foo";
         let escaped_foo = escape_json_raw(foo);
-        assert_eq!(escaped_foo, "\"\\\"foo\"", "foo without closing quote should be fully escaped");
+        assert_eq!(
+            escaped_foo, "\"\\\"foo\"",
+            "foo without closing quote should be fully escaped"
+        );
     }
 
     #[test]
