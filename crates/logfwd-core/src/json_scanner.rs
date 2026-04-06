@@ -1099,6 +1099,8 @@ mod verification {
     /// next_quote on a single block: if found, the position has a set bit
     /// in the bitmask. If not found, no bits are set in [from, end).
     #[kani::proof]
+    #[kani::unwind(66)] // inner None-branch loop: up to 64 iterations (end≤64) + 2 margin
+    #[kani::solver(kissat)]
     fn verify_next_quote_single_block() {
         let bitmask: u64 = kani::any();
         let from: usize = kani::any_where(|&f: &usize| f < 64);

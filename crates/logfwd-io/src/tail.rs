@@ -191,21 +191,112 @@ fn identify_file(path: &Path, fingerprint_bytes: usize) -> io::Result<FileIdenti
     })
 }
 
+/// Extract the root directory from a glob pattern — the longest prefix path
+/// before the first wildcard character (`*`, `?`, `[`, `{`).
+///
+/// Examples:
+/// - `/var/log/*.log` → `/var/log`
+/// - `/var/log/**/*.log` → `/var/log`
+/// - `*.log` → `.`
+fn glob_root(pattern: &str) -> PathBuf {
+    let wildcard_pos = pattern.find(['*', '?', '[', '{']).unwrap_or(pattern.len());
+    let prefix = &pattern[..wildcard_pos];
+    if prefix.is_empty() {
+        return PathBuf::from(".");
+    }
+    // If the prefix ends with `/`, the wildcard starts a new path segment,
+    // so everything before that `/` is a concrete directory.
+    // E.g. "/var/log/*.log" → prefix "/var/log/" → root "/var/log"
+    // If it doesn't end with `/`, the wildcard is mid-filename.
+    // E.g. "/var/log/app*.log" → prefix "/var/log/app" → root "/var/log"
+    if prefix.ends_with('/') {
+        let trimmed = prefix.trim_end_matches('/');
+        if trimmed.is_empty() {
+            PathBuf::from("/")
+        } else {
+            PathBuf::from(trimmed)
+        }
+    } else {
+        Path::new(prefix)
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    }
+}
+
+/// Compute the maximum directory depth a glob pattern can match.
+/// Counts path components below the root directory.
+/// Returns `None` if the pattern contains `**` (unbounded depth).
+fn glob_max_depth(pattern: &str) -> Option<usize> {
+    if pattern.contains("**") {
+        return None;
+    }
+    let root = glob_root(pattern);
+    let root_depth = root.components().count();
+    let total_depth = Path::new(pattern).components().count();
+    // Ensure at least depth 1 — a file is always at depth ≥1 from its directory.
+    Some(total_depth.saturating_sub(root_depth).max(1))
+}
+
 /// Expand a list of glob patterns into the set of matching `PathBuf` values.
 ///
-/// Patterns that match no files are silently skipped. Errors from the glob
-/// iterator (e.g., permission denied on individual entries) are also skipped.
+/// Uses `globset::GlobSet` for fast multi-pattern matching and `walkdir` for
+/// directory traversal with symlink loop detection.
+///
+/// Patterns that match no files are silently skipped. Errors from directory
+/// traversal (e.g., permission denied) are also skipped.
 fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    if patterns.is_empty() {
+        return Vec::new();
+    }
+
+    // Build a GlobSet for multi-pattern matching.
+    let mut builder = globset::GlobSetBuilder::new();
     for pattern in patterns {
-        match glob::glob(pattern) {
-            Ok(entries) => {
-                for entry in entries.flatten() {
-                    paths.push(entry);
-                }
+        match globset::GlobBuilder::new(pattern)
+            .literal_separator(true) // `*` does not cross `/`
+            .build()
+        {
+            Ok(g) => {
+                builder.add(g);
             }
             Err(e) => {
                 tracing::warn!(pattern, error = %e, "tail.invalid_glob_pattern");
+            }
+        }
+    }
+    let glob_set = match builder.build() {
+        Ok(gs) => gs,
+        Err(e) => {
+            tracing::warn!(error = %e, "tail.globset_build_failed");
+            return Vec::new();
+        }
+    };
+
+    // Collect root directories and per-root max depth for bounded traversal.
+    let mut roots: Vec<(PathBuf, Option<usize>)> = Vec::new();
+    for pattern in patterns {
+        let root = glob_root(pattern);
+        let depth = glob_max_depth(pattern);
+        // Merge: if the same root already exists, take the larger depth.
+        if let Some(existing) = roots.iter_mut().find(|(r, _)| r == &root) {
+            existing.1 = match (existing.1, depth) {
+                (None, _) | (_, None) => None, // unbounded wins
+                (Some(a), Some(b)) => Some(a.max(b)),
+            };
+        } else {
+            roots.push((root, depth));
+        }
+    }
+
+    let mut paths = Vec::new();
+    for (root, max_depth) in &roots {
+        let mut walker = walkdir::WalkDir::new(root).follow_links(true);
+        if let Some(d) = max_depth {
+            walker = walker.max_depth(*d);
+        }
+        for entry in walker.into_iter().filter_map(Result::ok) {
+            if entry.file_type().is_file() && glob_set.is_match(entry.path()) {
+                paths.push(entry.into_path());
             }
         }
     }
@@ -1028,6 +1119,54 @@ impl FileTailer {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    // ---- glob_root / glob_max_depth unit tests ----
+
+    #[test]
+    fn glob_root_absolute_star() {
+        assert_eq!(glob_root("/var/log/*.log"), PathBuf::from("/var/log"));
+    }
+
+    #[test]
+    fn glob_root_absolute_double_star() {
+        assert_eq!(glob_root("/var/log/**/*.log"), PathBuf::from("/var/log"));
+    }
+
+    #[test]
+    fn glob_root_relative_star() {
+        assert_eq!(glob_root("*.log"), PathBuf::from("."));
+    }
+
+    #[test]
+    fn glob_root_mid_filename_wildcard() {
+        // Wildcard in the middle of a filename component.
+        assert_eq!(glob_root("/var/log/app*.log"), PathBuf::from("/var/log"));
+    }
+
+    #[test]
+    fn glob_root_no_wildcard() {
+        // A literal path has no wildcard, so parent dir is the walk root.
+        assert_eq!(glob_root("/var/log/app.log"), PathBuf::from("/var/log"));
+    }
+
+    #[test]
+    fn glob_max_depth_single_level() {
+        // /var/log/*.log → root=/var/log, pattern has 3 components, root has 2 → depth 1
+        assert_eq!(glob_max_depth("/var/log/*.log"), Some(1));
+    }
+
+    #[test]
+    fn glob_max_depth_double_star_unbounded() {
+        assert_eq!(glob_max_depth("/var/log/**/*.log"), None);
+    }
+
+    #[test]
+    fn glob_max_depth_relative_is_at_least_1() {
+        // *.log → root=., 1 component each, but max(0,1) = 1
+        assert_eq!(glob_max_depth("*.log"), Some(1));
+    }
+
+    // ---- end glob helper tests ----
 
     #[test]
     fn test_tail_new_data() {

@@ -15,6 +15,7 @@ use logfwd_core::otlp::{
     parse_timestamp_nanos, varint_len,
 };
 use logfwd_types::diagnostics::ComponentStats;
+use logfwd_types::field_names;
 use zstd::bulk::Compressor as ZstdCompressor;
 
 use super::{BatchMetadata, Compression, str_value};
@@ -92,6 +93,19 @@ impl OtlpSink {
         client: reqwest::Client,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
+        // For gRPC, ensure the endpoint has the correct service path.
+        // Users typically configure just the host:port (e.g., "http://collector:4317").
+        // The gRPC spec requires the full path: /package.Service/Method (#1059)
+        let endpoint = if protocol == OtlpProtocol::Grpc {
+            let trimmed = endpoint.trim_end_matches('/');
+            if trimmed.ends_with("/Export") || trimmed.ends_with("/LogsService/Export") {
+                endpoint
+            } else {
+                format!("{trimmed}/opentelemetry.proto.collector.logs.v1.LogsService/Export")
+            }
+        } else {
+            endpoint
+        };
         let compressor = match compression {
             Compression::Zstd => Some(ZstdCompressor::new(1).map_err(io::Error::other)?),
             _ => None,
@@ -327,6 +341,49 @@ impl OtlpSink {
                 }
 
                 if status.is_success() {
+                    // For gRPC, check grpc-status header — HTTP 200 can carry a
+                    // gRPC error in headers (trailers-only responses). (#1097)
+                    //
+                    // Note: reqwest does not surface HTTP/2 trailers from the
+                    // trailers frame, only from the initial HEADERS frame. This
+                    // catches trailers-only responses (the common error path for
+                    // OTLP collectors) but not normal headers→data→trailers flow.
+                    if self.protocol == OtlpProtocol::Grpc {
+                        if let Some(grpc_status) = response.headers().get("grpc-status") {
+                            let code = grpc_status
+                                .to_str()
+                                .unwrap_or("unknown")
+                                .trim()
+                                .parse::<u32>()
+                                .unwrap_or(2); // default to UNKNOWN
+                            if code != 0 {
+                                let msg = response
+                                    .headers()
+                                    .get("grpc-message")
+                                    .and_then(|v| v.to_str().ok())
+                                    .unwrap_or("")
+                                    .to_string();
+                                // Classify gRPC status codes per gRPC spec:
+                                // Retryable: CANCELLED(1), DEADLINE_EXCEEDED(4),
+                                //   RESOURCE_EXHAUSTED(8), ABORTED(10), UNAVAILABLE(14)
+                                // Permanent: all others (INVALID_ARGUMENT, NOT_FOUND, etc.)
+                                return Ok(match code {
+                                    1 | 4 | 10 | 14 => super::sink::SendResult::IoError(
+                                        io::Error::other(format!("gRPC error {code}: {msg}")),
+                                    ),
+                                    8 => {
+                                        // RESOURCE_EXHAUSTED → treat like 429
+                                        super::sink::SendResult::RetryAfter(Duration::from_secs(
+                                            DEFAULT_RETRY_AFTER_SECS,
+                                        ))
+                                    }
+                                    _ => super::sink::SendResult::Rejected(format!(
+                                        "gRPC error {code}: {msg}"
+                                    )),
+                                });
+                            }
+                        }
+                    }
                     self.stats.inc_lines(batch_rows);
                     self.stats.inc_bytes(self.encoder_buf.len() as u64);
                     return Ok(super::sink::SendResult::Ok);
@@ -504,7 +561,12 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         let col_name = field.name().as_str();
         let field_name = col_name;
         match field_name {
-            "timestamp" | "time" | "ts" => {
+            name if field_names::matches_any(
+                name,
+                field_names::TIMESTAMP,
+                field_names::TIMESTAMP_VARIANTS,
+            ) =>
+            {
                 if timestamp_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -512,7 +574,12 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "level" | "severity" | "log_level" | "loglevel" | "lvl" => {
+            name if field_names::matches_any(
+                name,
+                field_names::SEVERITY,
+                field_names::SEVERITY_VARIANTS,
+            ) =>
+            {
                 if level_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -520,7 +587,12 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "message" | "msg" | "_msg" | "body" => {
+            name if field_names::matches_any(
+                name,
+                field_names::BODY,
+                field_names::BODY_VARIANTS,
+            ) =>
+            {
                 if body_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -528,14 +600,14 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "_raw" => {
+            field_names::RAW => {
                 // Always excluded from attributes; used as per-row body fallback.
                 excluded.push(idx);
                 if raw_col.is_none() {
                     raw_col = Some((idx, batch.column(idx).as_ref()));
                 }
             }
-            "trace_id" => {
+            field_names::TRACE_ID => {
                 if trace_id_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -543,7 +615,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "span_id" => {
+            field_names::SPAN_ID => {
                 if span_id_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -551,7 +623,12 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "flags" | "trace_flags" => {
+            name if field_names::matches_any(
+                name,
+                field_names::TRACE_FLAGS,
+                field_names::TRACE_FLAGS_VARIANTS,
+            ) =>
+            {
                 if flags_col.is_none() && matches!(field.data_type(), DataType::Int64) {
                     flags_col = Some((idx, batch.column(idx).as_primitive::<Int64Type>()));
                     excluded.push(idx);
@@ -720,10 +797,15 @@ fn encode_row_as_log_record(
         }
     }
 
-    // LogRecord.flags (fixed32) — W3C trace flags
+    // LogRecord.flags (fixed32) — W3C trace flags.
+    // Clamp to u32 range: negative or >u32::MAX values are invalid per the
+    // W3C Trace Context spec (only 8 bits are defined). (#1121)
     if let Some((_, arr)) = columns.flags_col {
         if !arr.is_null(row) {
-            encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, arr.value(row) as u32);
+            let raw = arr.value(row);
+            if let Ok(flags) = u32::try_from(raw) {
+                encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
+            }
         }
     }
 

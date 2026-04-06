@@ -16,8 +16,12 @@ use opentelemetry_proto::tonic::common::v1::AnyValue;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use prost::Message;
 
+use sonic_rs::{JsonContainerTrait, JsonValueTrait};
+
 use crate::InputError;
 use crate::input::{InputEvent, InputSource};
+
+use logfwd_types::field_names;
 
 /// Maximum request body size: 10 MB.
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -306,7 +310,7 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
         return Ok(Vec::new());
     }
 
-    let root: serde_json::Value = serde_json::from_slice(body)
+    let root: sonic_rs::Value = sonic_rs::from_slice(body)
         .map_err(|e| InputError::Receiver(format!("invalid JSON: {e}")))?;
 
     let resource_logs = match root.get("resourceLogs").and_then(|v| v.as_array()) {
@@ -364,7 +368,8 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
                     // break the JSON line if written via write_json_field directly.
                     if let Some(ns) = ts.parse::<u64>().ok().filter(|&n| n > 0) {
                         out.push(b'"');
-                        out.extend_from_slice(b"timestamp_int\":");
+                        out.extend_from_slice(field_names::TIMESTAMP.as_bytes());
+                        out.extend_from_slice(b"\":");
                         write_u64_to_buf(&mut out, ns);
                         out.push(b',');
                     }
@@ -372,7 +377,7 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
 
                 if let Some(sev) = record.get("severityText").and_then(|v| v.as_str()) {
                     if !sev.is_empty() {
-                        write_json_string_field(&mut out, "level", sev);
+                        write_json_string_field(&mut out, field_names::SEVERITY, sev);
                         out.push(b',');
                     }
                 }
@@ -380,7 +385,7 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
                 if let Some(body_val) = record.get("body")
                     && let Some(body_str) = json_any_value_to_string(body_val)?
                 {
-                    write_json_string_field(&mut out, "message", &body_str);
+                    write_json_string_field(&mut out, field_names::BODY, &body_str);
                     out.push(b',');
                 }
 
@@ -388,7 +393,7 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
                     for kv in attrs {
                         if let (Some(key), Some(val)) =
                             (kv.get("key").and_then(|k| k.as_str()), kv.get("value"))
-                            && write_json_any_value_field_from_json(&mut out, key, val)?
+                            && write_json_any_value_field_from_protojson(&mut out, key, val)?
                         {
                             out.push(b',');
                         }
@@ -402,13 +407,13 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
 
                 if let Some(tid) = record.get("traceId").and_then(|v| v.as_str()) {
                     if !tid.is_empty() {
-                        write_json_string_field(&mut out, "trace_id", tid);
+                        write_json_string_field(&mut out, field_names::TRACE_ID, tid);
                         out.push(b',');
                     }
                 }
                 if let Some(sid) = record.get("spanId").and_then(|v| v.as_str()) {
                     if !sid.is_empty() {
-                        write_json_string_field(&mut out, "span_id", sid);
+                        write_json_string_field(&mut out, field_names::SPAN_ID, sid);
                         out.push(b',');
                     }
                 }
@@ -426,7 +431,34 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
 
 /// Extract a string from an OTLP JSON AnyValue object.
 /// For common integer/float/bool cases, write directly to avoid intermediate String allocation.
-fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, InputError> {
+fn json_any_value_to_string(v: &sonic_rs::Value) -> Result<Option<String>, InputError> {
+    if let Some(s) = v.get("stringValue").and_then(|v| v.as_str()) {
+        return Ok(Some(s.to_string()));
+    }
+    if let Some(i) = v.get("intValue") {
+        let parsed = parse_protojson_i64_sonic(i)
+            .ok_or_else(|| InputError::Receiver("invalid OTLP JSON intValue".into()))?;
+        return Ok(Some(parsed.to_string()));
+    }
+    if let Some(d) = v.get("doubleValue").and_then(JsonValueTrait::as_f64) {
+        let mut buf = Vec::new();
+        write_f64_to_buf(&mut buf, d);
+        // SAFETY: write_f64_to_buf only writes ASCII characters
+        return Ok(Some(unsafe { String::from_utf8_unchecked(buf) }));
+    }
+    if let Some(b) = v.get("boolValue").and_then(JsonValueTrait::as_bool) {
+        return Ok(Some(if b { "true" } else { "false" }.to_string()));
+    }
+    if let Some(bytes) = v.get("bytesValue").and_then(|v| v.as_str()) {
+        let decoded = decode_protojson_bytes(bytes)
+            .map_err(|e| InputError::Receiver(format!("invalid OTLP JSON bytesValue: {e}")))?;
+        return Ok(Some(hex::encode(&decoded)));
+    }
+    Ok(None)
+}
+
+#[cfg(any(test, kani))]
+fn json_any_value_to_string_serde(v: &serde_json::Value) -> Result<Option<String>, InputError> {
     if let Some(s) = v.get("stringValue").and_then(|v| v.as_str()) {
         return Ok(Some(s.to_string()));
     }
@@ -450,6 +482,51 @@ fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, Inp
 }
 
 /// Write an OTLP JSON AnyValue as a JSON field preserving primitive types.
+fn write_json_any_value_field_from_protojson(
+    out: &mut Vec<u8>,
+    key: &str,
+    value: &sonic_rs::Value,
+) -> Result<bool, InputError> {
+    if let Some(i) = value.get("intValue") {
+        write_json_escaped_key(out, key);
+        out.extend_from_slice(b":");
+        let parsed = parse_protojson_i64_sonic(i).ok_or_else(|| {
+            InputError::Receiver(format!(
+                "invalid OTLP JSON intValue for key {key}: not a valid integer"
+            ))
+        })?;
+        write_i64_to_buf(out, parsed);
+        return Ok(true);
+    }
+
+    if let Some(d) = value.get("doubleValue").and_then(JsonValueTrait::as_f64) {
+        write_json_escaped_key(out, key);
+        out.extend_from_slice(b":");
+        write_f64_to_buf(out, d);
+        return Ok(true);
+    }
+
+    if let Some(b) = value.get("boolValue").and_then(JsonValueTrait::as_bool) {
+        write_json_escaped_key(out, key);
+        out.extend_from_slice(b":");
+        if b {
+            out.extend_from_slice(b"true");
+        } else {
+            out.extend_from_slice(b"false");
+        }
+        return Ok(true);
+    }
+
+    if let Some(s) = json_any_value_to_string(value)? {
+        write_json_string_field(out, key, &s);
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+/// Write an OTLP JSON AnyValue as a JSON field preserving primitive types.
+#[cfg(any(test, kani))]
 fn write_json_any_value_field_from_json(
     out: &mut Vec<u8>,
     key: &str,
@@ -485,7 +562,7 @@ fn write_json_any_value_field_from_json(
         return Ok(true);
     }
 
-    if let Some(s) = json_any_value_to_string(value)? {
+    if let Some(s) = json_any_value_to_string_serde(value)? {
         write_json_string_field(out, key, &s);
         return Ok(true);
     }
@@ -535,7 +612,7 @@ fn convert_request_to_json_lines(
                 // timestamp (write directly without allocation)
                 if record.time_unix_nano > 0 {
                     out.push(b'"');
-                    out.extend_from_slice(b"timestamp_int");
+                    out.extend_from_slice(field_names::TIMESTAMP.as_bytes());
                     out.extend_from_slice(b"\":");
                     write_u64_to_buf(&mut out, record.time_unix_nano);
                     out.push(b',');
@@ -543,14 +620,14 @@ fn convert_request_to_json_lines(
 
                 // severity
                 if !record.severity_text.is_empty() {
-                    write_json_string_field(&mut out, "level", &record.severity_text);
+                    write_json_string_field(&mut out, field_names::SEVERITY, &record.severity_text);
                     out.push(b',');
                 }
 
                 // body
                 if let Some(ref body_val) = record.body {
                     if let Some(body_str) = any_value_to_string(body_val) {
-                        write_json_string_field(&mut out, "message", &body_str);
+                        write_json_string_field(&mut out, field_names::BODY, &body_str);
                         out.push(b',');
                     }
                 }
@@ -573,14 +650,14 @@ fn convert_request_to_json_lines(
                 // trace context (write hex directly to avoid allocation)
                 if !record.trace_id.is_empty() {
                     out.push(b'"');
-                    out.extend_from_slice(b"trace_id");
+                    out.extend_from_slice(field_names::TRACE_ID.as_bytes());
                     out.extend_from_slice(b"\":\"");
                     write_hex_to_buf(&mut out, &record.trace_id);
                     out.extend_from_slice(b"\",");
                 }
                 if !record.span_id.is_empty() {
                     out.push(b'"');
-                    out.extend_from_slice(b"span_id");
+                    out.extend_from_slice(field_names::SPAN_ID.as_bytes());
                     out.extend_from_slice(b"\":\"");
                     write_hex_to_buf(&mut out, &record.span_id);
                     out.extend_from_slice(b"\",");
@@ -610,7 +687,21 @@ fn any_value_to_string(v: &AnyValue) -> Option<String> {
     }
 }
 
+#[cfg(any(test, kani))]
 fn parse_protojson_i64(value: &serde_json::Value) -> Option<i64> {
+    if let Some(n) = value.as_i64() {
+        return Some(n);
+    }
+    if let Some(n) = value.as_u64() {
+        return i64::try_from(n).ok();
+    }
+    if let Some(s) = value.as_str() {
+        return parse_protojson_i64_str(s);
+    }
+    None
+}
+
+fn parse_protojson_i64_sonic(value: &sonic_rs::Value) -> Option<i64> {
     if let Some(n) = value.as_i64() {
         return Some(n);
     }

@@ -30,6 +30,21 @@ pprof = { version = "0.14", features = ["flamegraph"] }
 tempfile = "3"
 dhat = { version = "0.3", optional = true }
 
+# Research: library evaluation candidates
+axum = "0.8"
+tower-http = { version = "0.6", features = ["limit", "decompression-zstd", "decompression-gzip"] }
+async-compression = { version = "0.4", features = ["tokio", "zstd", "gzip"] }
+backon = { version = "1", features = ["tokio-sleep"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+zstd = "0.13"
+tiny_http = "0.12"
+prost = "0.14"
+opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-messages"] }
+globset = "0.4"
+glob = "0.3"
+sonic-rs = "0.5"
+
 [[bench]]
 name = "pipeline"
 harness = false
@@ -73,6 +88,10 @@ path = "src/es_throughput.rs"
 [[bin]]
 name = "memory-profile"
 path = "src/memory_profile.rs"
+
+[[bin]]
+name = "library-eval"
+path = "src/library_eval.rs"
 
 [lints]
 workspace = true
