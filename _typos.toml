@@ -1,5 +1,6 @@
 [default.extend-words]
 # Intentional partial strings in test data and example error messages.
+ba = "ba"
 caf = "caf"
 hel = "hel"
 leve = "leve"
