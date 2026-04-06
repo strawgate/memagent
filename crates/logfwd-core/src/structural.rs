@@ -390,7 +390,10 @@ impl StructuralIndex {
                             b']'
                         };
                         if b != expected_close {
-                            return pos; // mismatch — stop and let caller handle
+                            // Quarantine malformed input: return `end` to prevent
+                            // partial nested values from being emitted and to stop
+                            // further sibling parsing on this line (doc contract).
+                            return end; // mismatch
                         }
                     }
                     pos += 1;

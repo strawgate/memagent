@@ -380,7 +380,10 @@ fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'
                 };
                 let expected = if opener == b'{' { b'}' } else { b']' };
                 if b != expected {
-                    return pos; // mismatch
+                    // Quarantine malformed input: return `end` to prevent
+                    // partial/truncated nested values from being emitted and
+                    // to stop further sibling parsing on this line.
+                    return end; // mismatch
                 }
                 pos += 1;
                 if depth == 0 {
