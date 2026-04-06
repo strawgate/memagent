@@ -9,7 +9,9 @@
 
 use std::io;
 use std::io::Read as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use base64::Engine as _;
 use opentelemetry_proto::tonic::common::v1::AnyValue;
@@ -35,6 +37,8 @@ pub struct OtlpReceiverInput {
     server: Arc<tiny_http::Server>,
     /// Keep the server thread handle alive.
     handle: Option<std::thread::JoinHandle<()>>,
+    /// Shutdown mechanism for the background thread.
+    is_running: Arc<AtomicBool>,
 }
 
 impl OtlpReceiverInput {
@@ -61,10 +65,18 @@ impl OtlpReceiverInput {
         let (tx, rx) = mpsc::sync_channel(capacity);
 
         let server_clone = Arc::clone(&server);
+        let is_running = Arc::new(AtomicBool::new(true));
+        let is_running_clone = Arc::clone(&is_running);
+
         let handle = std::thread::Builder::new()
             .name("otlp-receiver".into())
             .spawn(move || {
-                for mut request in server_clone.incoming_requests() {
+                while is_running_clone.load(Ordering::Relaxed) {
+                    let mut request = match server_clone.recv_timeout(Duration::from_millis(100)) {
+                        Ok(Some(req)) => req,
+                        Ok(None) | Err(_) => continue,
+                    };
+
                     let url = request.url().to_string();
 
                     // Only accept the exact OTLP endpoint path (with optional query string).
@@ -256,6 +268,7 @@ impl OtlpReceiverInput {
             addr: bound_addr,
             server,
             handle: Some(handle),
+            is_running,
         })
     }
 
@@ -267,6 +280,7 @@ impl OtlpReceiverInput {
 
 impl Drop for OtlpReceiverInput {
     fn drop(&mut self) {
+        self.is_running.store(false, Ordering::Relaxed);
         self.rx.take();
         self.server.unblock();
         if let Some(handle) = self.handle.take() {
@@ -1871,6 +1885,28 @@ mod tests {
             };
             assert_eq!(status, 400, "body {body:?} should return 400, got {status}");
         }
+    }
+
+    #[test]
+    fn receiver_shuts_down_cleanly_on_drop() {
+        // Create an input receiver binding to port 0 (OS assigns port).
+        let receiver = OtlpReceiverInput::new("test-drop", "127.0.0.1:0")
+            .expect("should bind successfully");
+        let local_addr = receiver.local_addr();
+
+        // Drop the receiver. This should trigger `Drop`, set `is_running` to false,
+        // and join the thread, closing the HTTP server and releasing the port.
+        drop(receiver);
+
+        // Wait a tiny bit for the OS to actually release the port if needed,
+        // though join() in Drop should make it synchronous.
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Try to bind to the exact same port again. If the previous receiver
+        // thread didn't shut down properly and leaked the server, this will fail
+        // with "Address already in use".
+        let _new_receiver = OtlpReceiverInput::new("test-drop-2", &local_addr.to_string())
+            .expect("should bind successfully to the exact same port");
     }
 
     // Valid OTLP JSON should still return 200 after the 400 fix.
