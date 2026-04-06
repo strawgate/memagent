@@ -849,6 +849,11 @@ impl Config {
                                 "pipeline '{name}' output '{label}': file output only supports format json or text"
                             )));
                         }
+                        if output.compression.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': file output does not support compression"
+                            )));
+                        }
                     }
                     OutputType::Stdout | OutputType::Null => {}
                     OutputType::Tcp | OutputType::Udp => {
@@ -1511,7 +1516,10 @@ output:
         let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: /tmp/out.ndjson\n  compression: zstd\n";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("'compression' is not supported"));
+        assert!(
+            msg.contains("does not support compression"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]

@@ -998,8 +998,6 @@ mod tests {
     #[test]
     fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
         let base_dir = unique_temp_dir("base");
-        let cwd_dir = unique_temp_dir("cwd");
-        let original_cwd = std::env::current_dir().unwrap();
 
         let cfg = OutputConfig {
             name: Some("capture".to_string()),
@@ -1009,7 +1007,8 @@ mod tests {
             ..Default::default()
         };
 
-        std::env::set_current_dir(&cwd_dir).unwrap();
+        // Pass base_dir as the base_path — relative `capture.ndjson` should
+        // resolve to `base_dir/capture.ndjson`, not `cwd/capture.ndjson`.
         let factory = build_sink_factory(
             "capture",
             &cfg,
@@ -1017,15 +1016,18 @@ mod tests {
             Arc::new(ComponentStats::new()),
         )
         .unwrap();
-        std::env::set_current_dir(&original_cwd).unwrap();
 
         assert_eq!(factory.name(), "capture");
-        assert!(base_dir.join("capture.ndjson").exists());
-        assert!(!cwd_dir.join("capture.ndjson").exists());
+        // The file is created by OpenOptions::create(true).append(true) in
+        // FileSinkFactory::new, so it must exist under base_dir.
+        assert!(
+            base_dir.join("capture.ndjson").exists(),
+            "expected file at {:?}",
+            base_dir.join("capture.ndjson")
+        );
 
         let _ = std::fs::remove_file(base_dir.join("capture.ndjson"));
         let _ = std::fs::remove_dir(&base_dir);
-        let _ = std::fs::remove_dir(&cwd_dir);
     }
 
     #[test]
