@@ -346,8 +346,11 @@ impl SegmentFile {
             Err(s) => return s,
         };
         let mut hasher = xxhash_rust::xxh32::Xxh32::new(0);
-        if file.seek(SeekFrom::Start(0)).is_err() {
-            return SegmentStatus::Corrupt(path.to_path_buf(), "seek failed".into());
+        if let Err(e) = file.seek(SeekFrom::Start(0)) {
+            return SegmentStatus::Corrupt(
+                path.to_path_buf(),
+                format!("seek to start failed: {e}"),
+            );
         }
         let mut remaining = match usize::try_from(bytes_to_hash) {
             Ok(n) => n,
@@ -769,7 +772,10 @@ impl SegmentManager {
             writer,
             opened_at: Instant::now(),
         });
-        self.next_segment_id += 1;
+        self.next_segment_id = self
+            .next_segment_id
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("segment ID overflow: u64::MAX reached"))?;
 
         Ok(())
     }
@@ -1211,5 +1217,120 @@ mod tests {
 
         assert_eq!(seg.footer.record_count, 5);
         assert_eq!(seg.footer.batch_count, 1); // only non-empty counted
+    }
+
+    #[test]
+    fn create_rejects_bad_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = SegmentHeader {
+            version: SEGMENT_VERSION + 1,
+            flags: FLAG_ZSTD,
+            segment_id: 1,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+        let result = SegmentWriter::create(dir.path(), header);
+        let err = result.err().expect("expected an error for bad version");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("unsupported segment version"));
+    }
+
+    #[test]
+    fn create_rejects_unknown_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: 0x00FF, // unknown flag bits
+            segment_id: 1,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+        let result = SegmentWriter::create(dir.path(), header);
+        let err = result.err().expect("expected an error for unknown flags");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("unknown segment flags"));
+    }
+
+    #[test]
+    fn append_rejects_oversized_data() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a normal segment first to get a valid SegmentWriter.
+        let header = SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: FLAG_ZSTD,
+            segment_id: 1,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+        let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
+
+        // Artificially push data_size to just below the cap so the next
+        // append tips it over without allocating a gigabyte of real data.
+        writer.data_size = SegmentFile::MAX_READ_DATA_SIZE;
+
+        let err = writer.append(&make_batch(1)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("exceed maximum data size"));
+    }
+
+    #[test]
+    fn create_without_zstd_flag_does_not_compress() {
+        let dir = tempfile::tempdir().unwrap();
+        let batch = make_batch(10);
+
+        // flags = 0 means no zstd compression.
+        let header_no_zstd = SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: 0,
+            segment_id: 1,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+        let mut writer = SegmentWriter::create(dir.path(), header_no_zstd).unwrap();
+        writer.append(&batch).unwrap();
+        let seg_no_zstd = writer.finish().unwrap();
+
+        // Same data with zstd enabled.
+        let header_zstd = SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: FLAG_ZSTD,
+            segment_id: 2,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+        let mut writer_z = SegmentWriter::create(dir.path(), header_zstd).unwrap();
+        writer_z.append(&batch).unwrap();
+        let seg_zstd = writer_z.finish().unwrap();
+
+        // Both should be readable and contain the same rows.
+        let batches_no_zstd = seg_no_zstd.read_batches().unwrap();
+        let batches_zstd = seg_zstd.read_batches().unwrap();
+        assert_eq!(batches_no_zstd[0].num_rows(), batches_zstd[0].num_rows());
+
+        // Uncompressed IPC stream is typically larger than zstd-compressed.
+        assert!(
+            seg_no_zstd.footer.data_size >= seg_zstd.footer.data_size,
+            "expected uncompressed ({}) >= compressed ({})",
+            seg_no_zstd.footer.data_size,
+            seg_zstd.footer.data_size,
+        );
+    }
+
+    #[test]
+    fn open_new_segment_overflow_safety() {
+        let dir = tempfile::tempdir().unwrap();
+        let seg_dir = dir.path().join("segments");
+
+        let policy = RotationPolicy::default();
+        // Start with next_segment_id at u64::MAX — the first open_new_segment
+        // call succeeds (uses MAX), the post-increment must return an error.
+        let mut mgr = SegmentManager::new(seg_dir.clone(), policy, 0, u64::MAX).unwrap();
+
+        // First append: opens segment u64::MAX — the increment overflows.
+        let err = mgr.append(&make_batch(1)).unwrap_err();
+        assert!(
+            err.to_string().contains("segment ID overflow"),
+            "unexpected error: {err}"
+        );
     }
 }
