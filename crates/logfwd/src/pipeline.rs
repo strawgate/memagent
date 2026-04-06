@@ -20,6 +20,7 @@ use crate::batch_accumulator::{AccumulatorAction, BatchAccumulator};
 use opentelemetry::metrics::Meter;
 use tracing::Instrument;
 
+use crate::processor::Processor;
 use crate::worker_pool::{AckItem, OutputWorkerPool, WorkItem};
 use logfwd_arrow::scanner::Scanner;
 use logfwd_config::{
@@ -39,7 +40,6 @@ use logfwd_output::{
 use logfwd_transform::SqlTransform;
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use tokio_util::sync::CancellationToken;
-use crate::processor::Processor;
 
 // ---------------------------------------------------------------------------
 // block_in_place shim for simulation
@@ -1553,10 +1553,7 @@ output:
         // Write 4 lines.
         let mut data = String::new();
         for i in 0..4 {
-            data.push_str(&format!(
-                r#"{{"level":"INFO","seq":{}}}"#,
-                i
-            ));
+            data.push_str(&format!(r#"{{"level":"INFO","seq":{}}}"#, i));
             data.push('\n');
         }
         std::fs::write(&log_path, data.as_bytes()).unwrap();
@@ -1581,9 +1578,17 @@ output:
         #[derive(Debug)]
         struct DropOddProcessor;
         impl Processor for DropOddProcessor {
-            fn process(&mut self, batch: arrow::record_batch::RecordBatch) -> arrow::record_batch::RecordBatch {
+            fn process(
+                &mut self,
+                batch: arrow::record_batch::RecordBatch,
+            ) -> arrow::record_batch::RecordBatch {
                 // Drop rows where seq is odd
-                let seq_array = batch.column_by_name("seq").unwrap().as_any().downcast_ref::<arrow::array::Int64Array>().unwrap();
+                let seq_array = batch
+                    .column_by_name("seq")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap();
                 let mut indices = vec![];
                 for i in 0..seq_array.len() {
                     if seq_array.value(i) % 2 == 0 {
@@ -1617,14 +1622,22 @@ output:
             .transform_in
             .lines_total
             .load(Ordering::Relaxed);
-        assert_eq!(lines_in, 4, "expected transform_in to be 4, got {}", lines_in);
+        assert_eq!(
+            lines_in, 4,
+            "expected transform_in to be 4, got {}",
+            lines_in
+        );
 
         let lines_out = pipeline
             .metrics
             .transform_out
             .lines_total
             .load(Ordering::Relaxed);
-        assert_eq!(lines_out, 2, "expected transform_out to be 2, got {}", lines_out);
+        assert_eq!(
+            lines_out, 2,
+            "expected transform_out to be 2, got {}",
+            lines_out
+        );
     }
 
     #[test]

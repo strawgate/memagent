@@ -6,7 +6,9 @@ use std::sync::Arc;
 use arrow::array::{Array, StringArray, UInt64Array};
 use arrow::datatypes::DataType;
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 
 /// UDF: hash(col) — computes a deterministic hash of a string, returning UInt64.
 /// Used primarily for tail-based sampling decisions.
@@ -26,12 +28,6 @@ impl HashUdf {
         Self {
             signature: Signature::exact(vec![DataType::Utf8], Volatility::Immutable),
         }
-    }
-}
-
-impl Default for HashUdf {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -75,7 +71,9 @@ impl ScalarUDFImpl for HashUdf {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(val))) => {
                 let mut hasher = DefaultHasher::new();
                 val.hash(&mut hasher);
-                Ok(ColumnarValue::Scalar(ScalarValue::UInt64(Some(hasher.finish()))))
+                Ok(ColumnarValue::Scalar(ScalarValue::UInt64(Some(
+                    hasher.finish(),
+                ))))
             }
             ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {
                 Ok(ColumnarValue::Scalar(ScalarValue::UInt64(None)))

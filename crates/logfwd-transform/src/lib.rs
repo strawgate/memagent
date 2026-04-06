@@ -986,7 +986,11 @@ mod tests {
 
     #[test]
     fn test_hash_udf() {
-        let schema = Arc::new(Schema::new(vec![Field::new("trace_id", DataType::Utf8, true)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "trace_id",
+            DataType::Utf8,
+            true,
+        )]));
         let vals: ArrayRef = Arc::new(StringArray::from(vec![
             Some("trace123"),
             None,
