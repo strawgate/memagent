@@ -1879,7 +1879,6 @@ mod tests {
             "should not match .txt file, got: {matches:?}"
         );
 
-<<<<<<< HEAD
         // Flat file in root for wildcard testing.
         let flat = dir.path().join("flat.log");
         File::create(&flat).unwrap();

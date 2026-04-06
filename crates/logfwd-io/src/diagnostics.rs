@@ -496,9 +496,9 @@ impl DiagnosticsServer {
 
         match route {
             "/" => Self::serve_dashboard(request),
-            "/health" => self.serve_health(request),
+            "/live" | "/health" => self.serve_live(request),
             "/ready" => self.serve_ready(request),
-            "/api/pipelines" => self.serve_pipelines(request),
+            "/admin/v1/status" | "/api/pipelines" => self.serve_status(request),
             "/api/stats" => self.serve_stats(request),
             "/api/config" => self.serve_config(request),
             "/api/logs" => self.serve_logs(request),
@@ -511,7 +511,7 @@ impl DiagnosticsServer {
                     tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..])
                         .map_err(|()| io::Error::other("invalid HTTP header"))?;
                 let resp = tiny_http::Response::from_string(
-                    "Prometheus /metrics endpoint removed. Use /api/pipelines for JSON metrics.",
+                    "Prometheus /metrics endpoint removed. Use /admin/v1/status for rich JSON status.",
                 )
                 .with_status_code(410)
                 .with_header(header);
@@ -542,14 +542,11 @@ impl DiagnosticsServer {
         Ok(())
     }
 
-    fn serve_health(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
+    fn serve_live(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let uptime = self.start_time.elapsed().as_secs();
-        let component_health = policy::aggregate_component_health(&self.pipelines);
         let body = format!(
-            r#"{{"status":"ok","component_health":"{}","uptime_seconds":{},"version":"{}"}}"#,
-            component_health.as_str(),
-            uptime,
-            VERSION,
+            r#"{{"status":"live","uptime_seconds":{},"version":"{}"}}"#,
+            uptime, VERSION,
         );
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
@@ -931,10 +928,16 @@ impl DiagnosticsServer {
         Ok(())
     }
 
-    fn serve_pipelines(
-        &self,
-        request: tiny_http::Request,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn serve_status(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
+        let body = self.status_body();
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        let resp = tiny_http::Response::from_string(body).with_header(header);
+        request.respond(resp)?;
+        Ok(())
+    }
+
+    fn status_body(&self) -> String {
         let uptime = self.start_time.elapsed().as_secs();
         let mut pipelines_json = Vec::new();
 
@@ -1066,19 +1069,22 @@ impl DiagnosticsServer {
             ));
         }
 
-        let body = format!(
-            r#"{{"pipelines":[{}],"system":{{"uptime_seconds":{},"version":"{}"{}}}}}"#,
+        let ready = if policy::is_ready(&self.pipelines) {
+            "ready"
+        } else {
+            "not_ready"
+        };
+        let component_health = policy::aggregate_component_health(&self.pipelines);
+
+        format!(
+            r#"{{"live":{{"status":"live"}},"ready":{{"status":"{}"}},"component_health":"{}","pipelines":[{}],"system":{{"uptime_seconds":{},"version":"{}"{}}}}}"#,
+            ready,
+            component_health.as_str(),
             pipelines_json.join(","),
             uptime,
             VERSION,
             self.memory_json(),
-        );
-
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(body).with_header(header);
-        request.respond(resp)?;
-        Ok(())
+        )
     }
 
     /// Returns a JSON fragment (starting with a comma) for allocator memory
@@ -1429,7 +1435,7 @@ mod tests {
     }
 
     #[test]
-    fn test_health_endpoint() {
+    fn test_live_endpoint() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
         let port = addr.port();
@@ -1437,14 +1443,9 @@ mod tests {
         // Give the server a moment to bind.
         thread::sleep(std::time::Duration::from_millis(100));
 
-        let (status, body) = http_get(port, "/health");
+        let (status, body) = http_get(port, "/live");
         assert_eq!(status, 200);
-        assert!(body.contains(r#""status":"ok""#), "body: {}", body);
-        assert!(
-            body.contains(r#""component_health":"healthy""#),
-            "body: {}",
-            body
-        );
+        assert!(body.contains(r#""status":"live""#), "body: {}", body);
         assert!(
             body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))),
             "body: {}",
@@ -1454,15 +1455,25 @@ mod tests {
     }
 
     #[test]
-    fn test_pipelines_endpoint() {
+    fn test_status_endpoint() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
         let port = addr.port();
 
         thread::sleep(std::time::Duration::from_millis(100));
 
-        let (status, body) = http_get(port, "/api/pipelines");
+        let (status, body) = http_get(port, "/admin/v1/status");
         assert_eq!(status, 200);
+        assert!(
+            body.contains(r#""component_health":"healthy""#),
+            "body: {}",
+            body
+        );
+        assert!(
+            body.contains(r#""ready":{"status":"ready"}"#),
+            "body: {}",
+            body
+        );
         assert!(body.contains(r#""name":"default""#), "body: {}", body);
         assert!(body.contains(r#""health":"healthy""#), "body: {}", body);
         assert!(body.contains(r#""lines_total":1000"#), "body: {}", body);
@@ -1918,7 +1929,13 @@ mod tests {
 
         thread::sleep(std::time::Duration::from_millis(100));
 
-        for path in &["/health", "/api/pipelines", "/api/stats"] {
+        for path in &[
+            "/live",
+            "/health",
+            "/admin/v1/status",
+            "/api/pipelines",
+            "/api/stats",
+        ] {
             let status = http_post(port, path);
             assert_eq!(status, 405, "POST {path} should return 405, got {status}");
         }
@@ -1937,8 +1954,8 @@ mod tests {
         let (status, body) = http_get(port, "/metrics");
         assert_eq!(status, 410, "expected 410 Gone for /metrics, got {status}");
         assert!(
-            body.contains("/api/pipelines"),
-            "/metrics 410 body should mention /api/pipelines: {body}"
+            body.contains("/admin/v1/status"),
+            "/metrics 410 body should mention /admin/v1/status: {body}"
         );
     }
 }
