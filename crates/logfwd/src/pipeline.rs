@@ -3,6 +3,8 @@
 //! Single thread per pipeline. All components are already built and tested;
 //! this module wires them together.
 
+mod health;
+
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
@@ -40,6 +42,8 @@ use logfwd_output::{
 use logfwd_transform::SqlTransform;
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use tokio_util::sync::CancellationToken;
+
+use self::health::{HealthTransitionEvent, reduce_component_health};
 
 // ---------------------------------------------------------------------------
 // block_in_place shim for simulation
@@ -1197,15 +1201,24 @@ fn input_poll_loop(
     // sent. This ensures batch_timeout measures "time since first data
     // arrived in this batch", preventing tiny flushes after idle periods.
     let mut buffered_since: Option<Instant> = None;
-    input.stats.set_health(input.source.health());
+    input.stats.set_health(reduce_component_health(
+        input.stats.health(),
+        HealthTransitionEvent::Observed(input.source.health()),
+    ));
 
     loop {
         if shutdown.is_cancelled() {
-            input.stats.set_health(ComponentHealth::Stopping);
+            input.stats.set_health(reduce_component_health(
+                input.stats.health(),
+                HealthTransitionEvent::ShutdownRequested,
+            ));
             break;
         }
 
-        input.stats.set_health(input.source.health());
+        input.stats.set_health(reduce_component_health(
+            input.stats.health(),
+            HealthTransitionEvent::Observed(input.source.health()),
+        ));
 
         // FramedInput handles newline framing, remainder management, and
         // format processing (CRI/Auto/passthrough). Events arriving here
@@ -1213,7 +1226,10 @@ fn input_poll_loop(
         let events = match input.source.poll() {
             Ok(e) => e,
             Err(e) => {
-                input.stats.set_health(ComponentHealth::Degraded);
+                input.stats.set_health(reduce_component_health(
+                    input.stats.health(),
+                    HealthTransitionEvent::PollFailed,
+                ));
                 tracing::warn!(input = input.source.name(), error = %e, "input.poll_error");
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
@@ -1278,7 +1294,10 @@ fn input_poll_loop(
         };
         send_shutdown_drain_msg_blocking(input.source.name(), &tx, &metrics, msg);
     }
-    input.stats.set_health(ComponentHealth::Stopped);
+    input.stats.set_health(reduce_component_health(
+        input.stats.health(),
+        HealthTransitionEvent::ShutdownCompleted,
+    ));
 }
 
 /// Flush checkpoint store with bounded retry (3 attempts, 100ms between).
@@ -1375,20 +1394,32 @@ async fn async_input_poll_loop(
     // Use tokio::time::Instant (not std::time::Instant) so that elapsed()
     // measures simulated time under Turmoil, not real wall-clock time.
     let mut buffered_since: Option<tokio::time::Instant> = None;
-    input.stats.set_health(input.source.health());
+    input.stats.set_health(reduce_component_health(
+        input.stats.health(),
+        HealthTransitionEvent::Observed(input.source.health()),
+    ));
 
     loop {
         if shutdown.is_cancelled() {
-            input.stats.set_health(ComponentHealth::Stopping);
+            input.stats.set_health(reduce_component_health(
+                input.stats.health(),
+                HealthTransitionEvent::ShutdownRequested,
+            ));
             break;
         }
 
-        input.stats.set_health(input.source.health());
+        input.stats.set_health(reduce_component_health(
+            input.stats.health(),
+            HealthTransitionEvent::Observed(input.source.health()),
+        ));
 
         let events = match input.source.poll() {
             Ok(e) => e,
             Err(e) => {
-                input.stats.set_health(ComponentHealth::Degraded);
+                input.stats.set_health(reduce_component_health(
+                    input.stats.health(),
+                    HealthTransitionEvent::PollFailed,
+                ));
                 tracing::warn!(input = input.source.name(), error = %e, "input.poll_error");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
@@ -1452,7 +1483,10 @@ async fn async_input_poll_loop(
             );
         }
     }
-    input.stats.set_health(ComponentHealth::Stopped);
+    input.stats.set_health(reduce_component_health(
+        input.stats.health(),
+        HealthTransitionEvent::ShutdownCompleted,
+    ));
 }
 
 // ---------------------------------------------------------------------------

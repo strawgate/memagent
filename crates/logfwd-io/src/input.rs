@@ -48,6 +48,9 @@ pub trait InputSource: Send {
     fn name(&self) -> &str;
 
     /// Coarse runtime health for readiness and diagnostics.
+    ///
+    /// The default is optimistic until a concrete input type wires explicit
+    /// lifecycle state into the control plane.
     fn health(&self) -> ComponentHealth {
         ComponentHealth::Healthy
     }

@@ -79,6 +79,12 @@ reason = "Still mixes HTTP shell code, JSON formatting, and runtime snapshot ass
 issue = 1438
 
 [[seams]]
+path = "crates/logfwd-io/src/diagnostics/policy.rs"
+status = "recommended"
+reason = "Local readiness and health-rollup policy is isolated here and is a good future Kani target."
+issue = 1438
+
+[[seams]]
 path = "crates/logfwd-output/src/file_sink.rs"
 status = "exempt"
 reason = "IO-heavy sink implementation; proof-worthy helpers should be extracted before Kani is required."
@@ -89,3 +95,9 @@ path = "crates/logfwd/src/pipeline.rs"
 status = "exempt"
 reason = "Async orchestration shell remains mixed; local proof seams are being extracted incrementally."
 issue = 1449
+
+[[seams]]
+path = "crates/logfwd/src/pipeline/health.rs"
+status = "required"
+reason = "Pipeline input-loop health transitions are an isolated local reducer with bounded Kani invariants."
+issue = 1440

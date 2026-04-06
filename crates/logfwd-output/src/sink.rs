@@ -87,6 +87,9 @@ pub trait Sink: Send {
     fn name(&self) -> &str;
 
     /// Coarse runtime health for readiness and diagnostics.
+    ///
+    /// The default is optimistic until a concrete sink wires explicit
+    /// startup, degradation, and failure state into the control plane.
     fn health(&self) -> ComponentHealth {
         ComponentHealth::Healthy
     }
