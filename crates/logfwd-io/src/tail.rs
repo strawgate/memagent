@@ -314,15 +314,17 @@ fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
             if !entry.file_type().is_file() {
                 continue;
             }
-            // Normalize cwd-relative paths before matching so patterns like
-            // `./*.log` match walkdir entries like `foo.log` (#1375).
+            // Normalize cwd-relative paths for matching. WalkDir from root "."
+            // may return either "app.log" or "./app.log" depending on platform
+            // and entry depth. Try all forms so both bare patterns like "*.log"
+            // and prefixed patterns like "./*.log" match correctly (#1375).
             let entry_path = entry.path();
-            let normalized = if entry_path.is_absolute() {
-                entry_path.to_path_buf()
-            } else {
-                Path::new(".").join(entry_path)
-            };
-            if glob_set.is_match(entry_path) || glob_set.is_match(&normalized) {
+            let stripped = entry_path.strip_prefix(".").unwrap_or(entry_path);
+            let prefixed = Path::new(".").join(stripped);
+            if glob_set.is_match(entry_path)
+                || glob_set.is_match(stripped)
+                || glob_set.is_match(&prefixed)
+            {
                 paths.push(entry.into_path());
             }
         }
@@ -1856,43 +1858,64 @@ mod tests {
     #[test]
     fn test_expand_glob_patterns_matches_dot_slash_cwd_relative() {
         let _cwd_guard = CWD_LOCK.lock().unwrap();
-        let original_cwd = std::env::current_dir().unwrap();
+
+        // RAII guard restores cwd even if an assert panics.
+        // RAII guard restores cwd even if an assert panics.
+        // Declared AFTER dir so it drops BEFORE dir (reverse order),
+        // ensuring cwd is restored before the temp directory is deleted.
+        struct CwdGuard(PathBuf);
+        impl Drop for CwdGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
         let dir = tempfile::tempdir().unwrap();
+        let _restore = CwdGuard(std::env::current_dir().unwrap());
         std::env::set_current_dir(dir.path()).unwrap();
 
-        let result = (|| -> io::Result<()> {
-            let nested = PathBuf::from("logs");
-            fs::create_dir_all(&nested)?;
-            let target = nested.join("app.log");
-            let other = nested.join("app.txt");
-            {
-                let mut f = File::create(&target)?;
-                writeln!(f, "hello")?;
-            }
-            File::create(&other)?;
+        let nested = PathBuf::from("logs");
+        fs::create_dir_all(&nested).unwrap();
+        let target = nested.join("app.log");
+        let other = nested.join("app.txt");
+        {
+            let mut f = File::create(&target).unwrap();
+            writeln!(f, "hello").unwrap();
+        }
+        File::create(&other).unwrap();
 
-            let matches = expand_glob_patterns(&["./logs/*.log"]);
-            let normalized_matches: Vec<PathBuf> = matches
-                .iter()
-                .map(|p| {
-                    p.strip_prefix(".")
-                        .map_or_else(|_| p.clone(), Path::to_path_buf)
-                })
-                .collect();
-            assert!(
-                normalized_matches.iter().any(|p| p == &target),
-                "pattern ./logs/*.log should match logs/app.log, got: {matches:?}"
-            );
-            assert!(
-                !normalized_matches.iter().any(|p| p == &other),
-                "pattern ./logs/*.log should not match non-log file, got: {matches:?}"
-            );
+        // Test prefixed pattern: ./logs/*.log
+        let matches = expand_glob_patterns(&["./logs/*.log"]);
+        let normalized: Vec<PathBuf> = matches
+            .iter()
+            .map(|p| {
+                p.strip_prefix(".")
+                    .map_or_else(|_| p.clone(), Path::to_path_buf)
+            })
+            .collect();
+        assert!(
+            normalized.iter().any(|p| p == &target),
+            "pattern ./logs/*.log should match logs/app.log, got: {matches:?}"
+        );
+        assert!(
+            !normalized.iter().any(|p| p == &other),
+            "pattern ./logs/*.log should not match non-log file, got: {matches:?}"
+        );
 
-            Ok(())
-        })();
-
-        std::env::set_current_dir(original_cwd).unwrap();
-        result.unwrap();
+        // Test bare pattern: *.log in cwd — the primary #1375 case.
+        let cwd_file = PathBuf::from("bare.log");
+        File::create(&cwd_file).unwrap();
+        let bare_matches = expand_glob_patterns(&["*.log"]);
+        let bare_norm: Vec<PathBuf> = bare_matches
+            .iter()
+            .map(|p| {
+                p.strip_prefix(".")
+                    .map_or_else(|_| p.clone(), Path::to_path_buf)
+            })
+            .collect();
+        assert!(
+            bare_norm.iter().any(|p| p == &cwd_file),
+            "bare pattern *.log should match cwd file bare.log, got: {bare_matches:?}"
+        );
     }
 
     /// Verify that when open files exceed `max_open_files`, the least-recently-read
@@ -2699,15 +2722,17 @@ mod tests {
         let a = dir.path().join("a.log");
         let b = dir.path().join("b.log");
 
-        // Use a tiny fingerprint to keep identity stable across truncation by
-        // preserving the first 4 bytes.
+        // Both files share the same 4-byte fingerprint prefix so that
+        // whichever file gets evicted will still match identity after truncation,
+        // exercising the stale-offset clamping path (not the identity-mismatch path).
         {
             let mut fa = File::create(&a).unwrap();
             // 200 bytes so restored offset can exceed the later truncated size.
             write!(fa, "ABCD").unwrap();
             write!(fa, "{}", "x".repeat(196)).unwrap();
             let mut fb = File::create(&b).unwrap();
-            writeln!(fb, "BBBB initial").unwrap();
+            write!(fb, "ABCD").unwrap();
+            writeln!(fb, " initial b content").unwrap();
         }
 
         let pattern = format!("{}/*.log", dir.path().display());
