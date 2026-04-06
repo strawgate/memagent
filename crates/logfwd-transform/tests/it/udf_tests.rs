@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow::array::{Array, StringArray, StringViewArray};
+use arrow::array::{Array, LargeStringArray, StringArray, StringViewArray};
 use arrow::datatypes::DataType;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
 use logfwd_transform::enrichment::GeoDatabase;
@@ -66,6 +66,57 @@ fn test_hash_udf_string_view() {
     assert_eq!(view_u64.len(), 2);
     assert_eq!(view_u64.value(0), str_u64.value(0));
     assert_eq!(view_u64.value(1), str_u64.value(1));
+}
+
+#[test]
+fn test_hash_udf_large_utf8_with_null() {
+    let udf = HashUdf::new();
+    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::UInt64, true));
+
+    // LargeStringArray with one non-null and one null value.
+    let large_string_array: Arc<dyn Array> =
+        Arc::new(LargeStringArray::from(vec![Some("value"), None]));
+    let args_large = ScalarFunctionArgs {
+        args: vec![ColumnarValue::Array(large_string_array)],
+        number_rows: 2,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+
+    let result_large = udf.invoke_with_args(args_large).unwrap();
+    let large_arr = match result_large {
+        ColumnarValue::Array(arr) => arr,
+        _ => panic!("Expected array"),
+    };
+    let large_u64 = large_arr
+        .as_any()
+        .downcast_ref::<arrow::array::UInt64Array>()
+        .unwrap();
+
+    assert_eq!(large_u64.len(), 2);
+    // Non-null value should produce a hash.
+    assert!(!large_u64.is_null(0));
+    // Null should propagate: result for null input is null.
+    assert!(large_u64.is_null(1));
+
+    // Cross-type consistency: same string via StringArray should hash identically.
+    let string_array: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("value"), None]));
+    let args_str = ScalarFunctionArgs {
+        args: vec![ColumnarValue::Array(string_array)],
+        number_rows: 2,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result_str = udf.invoke_with_args(args_str).unwrap();
+    let str_arr = match result_str {
+        ColumnarValue::Array(arr) => arr,
+        _ => panic!("Expected array"),
+    };
+    let str_u64 = str_arr
+        .as_any()
+        .downcast_ref::<arrow::array::UInt64Array>()
+        .unwrap();
+    assert_eq!(large_u64.value(0), str_u64.value(0));
 }
 
 #[test]
