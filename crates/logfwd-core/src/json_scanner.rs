@@ -271,7 +271,10 @@ fn scan_line<B: ScanBuilder>(
                     } else if parse_int_fast(val).is_some() {
                         builder.append_int_by_idx(idx, val);
                     } else {
-                        builder.append_float_by_idx(idx, val);
+                        // Integer that doesn't fit in i64 (e.g. > i64::MAX).
+                        // Preserve the original digits as a string rather than
+                        // silently losing precision via float64 conversion.
+                        builder.append_str_by_idx(idx, val);
                     }
                 }
             }
@@ -1097,6 +1100,25 @@ mod tests {
                 "valid deeply nested JSON should preserve sibling fields past MAX_TRACKED_DEPTH"
             );
         }
+    }
+
+    #[test]
+    fn test_large_integer_preserved_as_string() {
+        // A number larger than i64::MAX should be preserved as a string, not silently converted to float
+        let input = b"{\"count\":99999999999999999999}\n";
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        // Must be stored as the original digit string (no "float:" or "int:" prefix)
+        assert!(
+            row.iter()
+                .any(|(k, v)| k == "count" && v == "99999999999999999999"),
+            "oversized integer was not preserved as string; got: {:?}",
+            row
+        );
     }
 }
 

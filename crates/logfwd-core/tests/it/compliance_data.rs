@@ -314,10 +314,14 @@ fn compliance_integer_boundaries() {
         // Row 1: i64::MIN as int
         assert_eq!(get_struct_int(batch, "n", 1), Some(i64::MIN));
 
-        // Row 2: overflow -> float child
+        // Row 2: i64::MAX + 1 overflows i64; must be preserved as string, not a lossy float.
         assert_struct_child_null(batch, "n", "int", 2);
-        let f = get_struct_float(batch, "n", 2).expect("n.float should exist for overflow");
-        assert!(f > 9.2e18, "overflow should be a large float: {f}");
+        assert_struct_child_null(batch, "n", "float", 2);
+        let s = get_struct_str(batch, "n", 2).expect("n.str should exist for overflow integer");
+        assert_eq!(
+            s, "9223372036854775808",
+            "overflow integer not preserved as string: {s}"
+        );
     });
 }
 
