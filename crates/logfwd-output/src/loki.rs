@@ -316,30 +316,21 @@ impl LokiSink {
 
         let status = response.status();
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5);
-            return Ok(super::sink::SendResult::RetryAfter(
-                std::time::Duration::from_secs(retry_after),
-            ));
-        }
-
-        if status.is_client_error() {
+        if !status.is_success() {
+            let retry_after = response.headers().get("Retry-After").cloned();
             let body = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable>".to_string());
-            return Ok(super::sink::SendResult::Rejected(format!(
-                "Loki rejected push with HTTP {status}: {body}"
-            )));
-        }
-
-        if !status.is_success() {
-            return Err(io::Error::other(format!("Loki returned HTTP {status}")));
+            if let Some(send_result) = crate::http_classify::classify_http_status(
+                status.as_u16(),
+                retry_after.as_ref(),
+                &format!("Loki push: {body}"),
+            ) {
+                return Ok(send_result);
+            }
+            // classify_http_status handles all non-2xx; unreachable in practice.
+            return Err(io::Error::other(format!("Loki: HTTP {status}: {body}")));
         }
 
         self.stats.inc_lines(row_count);

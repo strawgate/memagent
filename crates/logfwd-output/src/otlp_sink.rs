@@ -28,33 +28,7 @@ use super::{BatchMetadata, Compression, str_value};
 const SCOPE_NAME: &[u8] = b"logfwd";
 /// Version emitted in the OTLP `InstrumentationScope.version` field (from Cargo.toml).
 const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
-/// Default retry-after delay in seconds when the server does not send a Retry-After header.
-const DEFAULT_RETRY_AFTER_SECS: u64 = 5;
-
-/// Parse the `Retry-After` header value (RFC 9110 §10.2.4).
-///
-/// Accepts both formats:
-/// - delta-seconds: `"120"` → `Duration::from_secs(120)`
-/// - HTTP-date: `"Wed, 21 Oct 2015 07:28:00 GMT"` → seconds until that time
-///
-/// Falls back to `DEFAULT_RETRY_AFTER_SECS` if the value is absent, unparsable,
-/// or already in the past.
-fn parse_retry_after(header_value: Option<&reqwest::header::HeaderValue>) -> Duration {
-    let Some(value) = header_value.and_then(|v| v.to_str().ok()) else {
-        return Duration::from_secs(DEFAULT_RETRY_AFTER_SECS);
-    };
-    // Try delta-seconds first (the common case for machine-to-machine APIs).
-    if let Ok(secs) = value.parse::<u64>() {
-        return Duration::from_secs(secs);
-    }
-    // Fall back to HTTP-date (RFC 9110 IMF-fixdate).
-    if let Ok(target) = httpdate::parse_http_date(value) {
-        if let Ok(delay) = target.duration_since(std::time::SystemTime::now()) {
-            return delay;
-        }
-    }
-    Duration::from_secs(DEFAULT_RETRY_AFTER_SECS)
-}
+use crate::http_classify::{self, DEFAULT_RETRY_AFTER_SECS};
 
 // ---------------------------------------------------------------------------
 // OtlpSink
@@ -335,11 +309,6 @@ impl OtlpSink {
             Ok(response) => {
                 let status = response.status();
 
-                if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    let delay = parse_retry_after(response.headers().get("Retry-After"));
-                    return Ok(super::sink::SendResult::RetryAfter(delay));
-                }
-
                 if status.is_success() {
                     // For gRPC, check grpc-status header — HTTP 200 can carry a
                     // gRPC error in headers (trailers-only responses). (#1097)
@@ -389,27 +358,21 @@ impl OtlpSink {
                     return Ok(super::sink::SendResult::Ok);
                 }
 
-                // Server errors are transient — honour Retry-After header if
-                // present, otherwise fall back to the default.  Check before
-                // reading the body to avoid an unnecessary allocation.
-                if status.is_server_error() {
-                    let delay = parse_retry_after(response.headers().get("Retry-After"));
-                    return Ok(super::sink::SendResult::RetryAfter(delay));
-                }
-
-                // Error — read body as bytes to avoid String allocation.
+                // Non-success — read body for error detail, then classify.
+                let retry_after = response.headers().get("Retry-After").cloned();
                 let detail = response
                     .bytes()
                     .await
                     .map(|b| String::from_utf8_lossy(&b).into_owned())
                     .unwrap_or_default();
-
-                if status.is_client_error() {
-                    return Ok(super::sink::SendResult::Rejected(format!(
-                        "OTLP request rejected with status {status}: {detail}"
-                    )));
+                if let Some(send_result) = http_classify::classify_http_status(
+                    status.as_u16(),
+                    retry_after.as_ref(),
+                    &format!("OTLP: {detail}"),
+                ) {
+                    return Ok(send_result);
                 }
-
+                // classify_http_status handles all non-2xx; unreachable in practice.
                 Err(io::Error::other(format!(
                     "OTLP request failed with status {status}: {detail}"
                 )))
@@ -955,10 +918,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_payload_returns_retry_after_on_5xx() {
+    async fn send_payload_returns_io_error_on_5xx_without_retry_after() {
         let mut server = mockito::Server::new_async().await;
-        // Server will receive 1 request and respond with 500. send_payload should
-        // return RetryAfter (not Err) so the sink's retry loop handles re-delivery.
+        // Server responds with 500 and no Retry-After header. The shared
+        // classifier returns IoError so the worker pool applies exponential
+        // backoff (better than the old fixed-5s retry).
         let _mock = server
             .mock("POST", "/v1/logs")
             .with_status(500)
@@ -979,14 +943,8 @@ mod tests {
         sink.encoder_buf.push(1);
         let result = sink.send_payload(1).await.unwrap();
         assert!(
-            matches!(
-                result,
-                crate::sink::SendResult::RetryAfter(d)
-                    if d.as_secs() == DEFAULT_RETRY_AFTER_SECS
-            ),
-            "Expected RetryAfter({}s) on 500 response, got: {:?}",
-            DEFAULT_RETRY_AFTER_SECS,
-            result
+            matches!(result, crate::sink::SendResult::IoError(_)),
+            "Expected IoError on 500 without Retry-After, got: {result:?}",
         );
     }
 

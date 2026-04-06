@@ -423,22 +423,8 @@ impl ElasticsearchSink {
 
         let status = response.status();
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            // Parse Retry-After header (seconds integer) or use default.
-            let retry_after = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5);
-            return Ok(super::sink::SendResult::RetryAfter(
-                std::time::Duration::from_secs(retry_after),
-            ));
-        }
-
+        // 413 is ES-specific: triggers reactive batch splitting.
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
-            // 413: payload exceeds server limit. Return a transient error so the
-            // caller can split the batch and retry smaller halves.
             let detail = response.text().await.unwrap_or_default();
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -446,14 +432,21 @@ impl ElasticsearchSink {
             ));
         }
 
-        if status.is_client_error() {
-            return Ok(super::sink::SendResult::Rejected(format!(
-                "ES rejected batch with HTTP {status}"
-            )));
-        }
-
         if !status.is_success() {
-            return Err(io::Error::other(format!("ES returned HTTP {status}")));
+            let retry_after = response.headers().get("Retry-After").cloned();
+            let detail = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            if let Some(send_result) = crate::http_classify::classify_http_status(
+                status.as_u16(),
+                retry_after.as_ref(),
+                &format!("ES: {detail}"),
+            ) {
+                return Ok(send_result);
+            }
+            // classify_http_status handles all non-2xx; unreachable in practice.
+            return Err(io::Error::other(format!("ES: HTTP {status}: {detail}")));
         }
 
         let body = response.bytes().await.map_err(io::Error::other)?;
@@ -582,18 +575,7 @@ impl ElasticsearchSink {
 
         let status = response.status();
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5);
-            return Ok(super::sink::SendResult::RetryAfter(
-                std::time::Duration::from_secs(retry_after),
-            ));
-        }
-
+        // 413 is ES-specific: triggers reactive batch splitting.
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             let detail = response.text().await.unwrap_or_default();
             return Err(io::Error::new(
@@ -604,14 +586,21 @@ impl ElasticsearchSink {
             ));
         }
 
-        if status.is_client_error() {
-            return Ok(super::sink::SendResult::Rejected(format!(
-                "ES rejected batch with HTTP {status}"
-            )));
-        }
-
         if !status.is_success() {
-            return Err(io::Error::other(format!("ES returned HTTP {status}")));
+            let retry_after = response.headers().get("Retry-After").cloned();
+            let detail = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            if let Some(send_result) = crate::http_classify::classify_http_status(
+                status.as_u16(),
+                retry_after.as_ref(),
+                &format!("ES: {detail}"),
+            ) {
+                return Ok(send_result);
+            }
+            // classify_http_status handles all non-2xx; unreachable in practice.
+            return Err(io::Error::other(format!("ES: HTTP {status}: {detail}")));
         }
 
         let body = response.bytes().await.map_err(io::Error::other)?;

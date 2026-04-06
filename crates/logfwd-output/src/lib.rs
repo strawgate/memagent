@@ -14,6 +14,8 @@ mod udp_sink;
 
 pub mod error;
 
+pub mod http_classify;
+
 mod elasticsearch;
 
 mod loki;
