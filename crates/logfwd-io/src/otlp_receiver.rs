@@ -410,9 +410,14 @@ fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, Inp
         return Ok(Some(s.to_string()));
     }
     if let Some(i) = v.get("intValue") {
-        // OTLP JSON encodes int64 as string
+        // OTLP JSON encodes int64 as string; validate that it is a well-formed integer.
         if let Some(s) = i.as_str() {
-            return Ok(Some(s.to_string()));
+            if s.parse::<i64>().is_ok() {
+                return Ok(Some(s.to_string()));
+            }
+            return Err(InputError::Receiver(format!(
+                "invalid OTLP JSON intValue: not a valid integer: {s:?}"
+            )));
         }
         // Fallback for numeric encoding
         if let Some(n) = i.as_i64() {
