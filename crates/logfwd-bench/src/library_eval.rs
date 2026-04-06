@@ -118,7 +118,7 @@ impl AxumTestServer {
 
         let counter2 = counter.clone();
         let drain_handle = tokio::spawn(async move {
-            while rx.recv().await.is_some() {
+            while let Some(_) = rx.recv().await {
                 counter2.fetch_add(1, Ordering::Relaxed);
             }
         });
@@ -272,7 +272,7 @@ async fn bench_backon_retry(iterations: u64) -> Duration {
     start.elapsed()
 }
 
-fn bench_handrolled_retry(iterations: u64) -> Duration {
+async fn bench_handrolled_retry(iterations: u64) -> Duration {
     let start = Instant::now();
     for _ in 0..iterations {
         let max_retries = 3u32;
@@ -437,7 +437,7 @@ async fn main() {
     let retry_iters = 1_000_000;
 
     let backon_elapsed = bench_backon_retry(retry_iters).await;
-    let handrolled_elapsed = bench_handrolled_retry(retry_iters);
+    let handrolled_elapsed = bench_handrolled_retry(retry_iters).await;
     println!(
         "  backon:      {:.1}ns/op ({:.2}s total)",
         backon_elapsed.as_nanos() as f64 / retry_iters as f64,
@@ -590,17 +590,14 @@ async fn main() {
     // Build OTLP JSON payloads of varying sizes
     fn make_otlp_json(num_records: usize) -> Vec<u8> {
         let mut records = String::new();
-        use std::fmt::Write;
         for i in 0..num_records {
             if i > 0 {
                 records.push(',');
             }
-            let _ = write!(
-                &mut records,
+            records.push_str(&format!(
                 r#"{{"timeUnixNano":"1700000000000000000","severityNumber":9,"severityText":"INFO","body":{{"stringValue":"Log line {} with some realistic content that includes host=bench-host service=api latency=42ms"}},"attributes":[{{"key":"host","value":{{"stringValue":"bench-host-{}"}}}}]}}"#,
-                i,
-                i % 100
-            );
+                i, i % 100
+            ));
         }
         format!(r#"{{"resourceLogs":[{{"scopeLogs":[{{"logRecords":[{records}]}}]}}]}}"#)
             .into_bytes()
@@ -626,12 +623,12 @@ async fn main() {
 
         // sonic-rs
         // Pre-allocate a reusable buffer so we don't measure clone overhead.
-        let mut buf = payload.clone();
+        let mut buf = payload.to_vec();
         let sonic_start = Instant::now();
         for _ in 0..json_iters {
             buf.clear();
             buf.extend_from_slice(payload);
-            let _: sonic_rs::Value = sonic_rs::from_slice(std::hint::black_box(&buf)).unwrap();
+            let _: sonic_rs::Value = sonic_rs::from_slice(std::hint::black_box(&mut buf)).unwrap();
         }
         let sonic_elapsed = sonic_start.elapsed();
 
