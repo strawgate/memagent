@@ -88,7 +88,7 @@ fn bench_ceiling_by_schema(c: &mut Criterion) {
                 let batch = scanner
                     .scan_detached(buf.clone())
                     .expect("scan should not fail");
-                sink.send_batch(&batch, &meta).unwrap();
+                std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
             });
         });
 
@@ -101,7 +101,7 @@ fn bench_ceiling_by_schema(c: &mut Criterion) {
                 let batch = scanner
                     .scan_detached(buf.clone())
                     .expect("scan should not fail");
-                sink.send_batch(&batch, &meta).unwrap();
+                std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
             });
         });
     }
@@ -132,7 +132,7 @@ fn bench_ceiling_by_batch_size(c: &mut Criterion) {
                 let batch = scanner
                     .scan_detached(buf.clone())
                     .expect("scan should not fail");
-                sink.send_batch(&batch, &meta).unwrap();
+                std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
             });
         });
     }
@@ -162,7 +162,7 @@ fn bench_ceiling_by_scan_config(c: &mut Criterion) {
             let batch = scanner
                 .scan_detached(buf.clone())
                 .expect("scan should not fail");
-            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
         });
     });
 
@@ -175,7 +175,7 @@ fn bench_ceiling_by_scan_config(c: &mut Criterion) {
             let batch = scanner
                 .scan_detached(buf.clone())
                 .expect("scan should not fail");
-            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
         });
     });
 
@@ -188,7 +188,7 @@ fn bench_ceiling_by_scan_config(c: &mut Criterion) {
             let batch = scanner
                 .scan_detached(buf.clone())
                 .expect("scan should not fail");
-            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
         });
     });
 
@@ -215,7 +215,7 @@ fn bench_ceiling_by_scan_mode(c: &mut Criterion) {
         let mut sink = NullSink;
         b.iter(|| {
             let batch = scanner.scan(buf.clone()).expect("scan should not fail");
-            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
         });
     });
 
@@ -226,7 +226,7 @@ fn bench_ceiling_by_scan_mode(c: &mut Criterion) {
             let batch = scanner
                 .scan_detached(buf.clone())
                 .expect("scan should not fail");
-            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
         });
     });
 
@@ -274,7 +274,7 @@ fn bench_bottleneck_isolation(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::new("null_sink_only", n), |b| {
         let mut sink = NullSink;
-        b.iter(|| sink.send_batch(&batch, &meta).unwrap());
+        b.iter(|| std::hint::black_box(sink.send_batch(&batch, &meta).unwrap()));
     });
 
     group.finish();

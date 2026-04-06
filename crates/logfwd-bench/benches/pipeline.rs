@@ -97,7 +97,7 @@ fn bench_cri(c: &mut Criterion) {
                     }
                     start = end + 1;
                 }
-                count
+                std::hint::black_box(count);
             });
         });
 
@@ -151,20 +151,20 @@ fn bench_transform(c: &mut Criterion) {
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("select_star", |b| {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap());
+        b.iter(|| std::hint::black_box(transform.execute_blocking(batch.clone()).unwrap()));
     });
 
     // Filter
     group.bench_function("where_filter", |b| {
         let mut transform = SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap());
+        b.iter(|| std::hint::black_box(transform.execute_blocking(batch.clone()).unwrap()));
     });
 
     // Projection + computed column
     group.bench_function("projection_computed", |b| {
         let mut transform =
             SqlTransform::new("SELECT level, message, status, duration_ms FROM logs").unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap());
+        b.iter(|| std::hint::black_box(transform.execute_blocking(batch.clone()).unwrap()));
     });
 
     // regexp_extract
@@ -174,7 +174,7 @@ fn bench_transform(c: &mut Criterion) {
              regexp_extract(message, '(GET|POST) (\\S+)', 2) AS path FROM logs",
         )
         .unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap());
+        b.iter(|| std::hint::black_box(transform.execute_blocking(batch.clone()).unwrap()));
     });
 
     // grok
@@ -183,7 +183,7 @@ fn bench_transform(c: &mut Criterion) {
             "SELECT grok(message, '%{WORD:method} %{URIPATH:path} %{WORD:proto}') AS parsed FROM logs",
         )
         .unwrap();
-        b.iter(|| transform.execute_blocking(batch.clone()).unwrap());
+        b.iter(|| std::hint::black_box(transform.execute_blocking(batch.clone()).unwrap()));
     });
 
     group.finish();
@@ -231,7 +231,7 @@ fn bench_output(c: &mut Criterion) {
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function("null_sink", |b| {
         let mut sink = NullSink;
-        b.iter(|| sink.send_batch(&batch, &meta).unwrap());
+        b.iter(|| std::hint::black_box(sink.send_batch(&batch, &meta).unwrap()));
     });
 
     // JSON serialization via write_row_json (measures build_col_infos + per-row dispatch)
@@ -241,7 +241,7 @@ fn bench_output(c: &mut Criterion) {
         b.iter(|| {
             buf.clear();
             for row in 0..batch.num_rows() {
-                let _ = logfwd_output::write_row_json(&batch, row, &cols, &mut buf);
+                logfwd_output::write_row_json(&batch, row, &cols, &mut buf).unwrap();
                 buf.push(b'\n');
             }
             std::hint::black_box(buf.len());

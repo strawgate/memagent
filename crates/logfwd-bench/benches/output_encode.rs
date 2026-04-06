@@ -78,7 +78,7 @@ fn bench_output_encode(c: &mut Criterion) {
                 |b, batch| {
                     let mut sink = make_otlp_sink(Compression::None);
                     b.iter(|| {
-                        sink.encode_batch(batch, &meta);
+                        std::hint::black_box(sink.encode_batch(batch, &meta));
                     });
                 },
             );

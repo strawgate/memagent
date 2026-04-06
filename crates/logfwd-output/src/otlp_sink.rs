@@ -27,6 +27,33 @@ use super::{BatchMetadata, Compression, str_value};
 const SCOPE_NAME: &[u8] = b"logfwd";
 /// Version emitted in the OTLP `InstrumentationScope.version` field (from Cargo.toml).
 const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
+/// Default retry-after delay in seconds when the server does not send a Retry-After header.
+const DEFAULT_RETRY_AFTER_SECS: u64 = 5;
+
+/// Parse the `Retry-After` header value (RFC 9110 §10.2.4).
+///
+/// Accepts both formats:
+/// - delta-seconds: `"120"` → `Duration::from_secs(120)`
+/// - HTTP-date: `"Wed, 21 Oct 2015 07:28:00 GMT"` → seconds until that time
+///
+/// Falls back to `DEFAULT_RETRY_AFTER_SECS` if the value is absent, unparsable,
+/// or already in the past.
+fn parse_retry_after(header_value: Option<&reqwest::header::HeaderValue>) -> Duration {
+    let Some(value) = header_value.and_then(|v| v.to_str().ok()) else {
+        return Duration::from_secs(DEFAULT_RETRY_AFTER_SECS);
+    };
+    // Try delta-seconds first (the common case for machine-to-machine APIs).
+    if let Ok(secs) = value.parse::<u64>() {
+        return Duration::from_secs(secs);
+    }
+    // Fall back to HTTP-date (RFC 9110 IMF-fixdate).
+    if let Ok(target) = httpdate::parse_http_date(value) {
+        if let Ok(delay) = target.duration_since(std::time::SystemTime::now()) {
+            return delay;
+        }
+    }
+    Duration::from_secs(DEFAULT_RETRY_AFTER_SECS)
+}
 
 // ---------------------------------------------------------------------------
 // OtlpSink
@@ -86,7 +113,11 @@ impl OtlpSink {
 
     /// Encode a full ExportLogsServiceRequest from a RecordBatch.
     /// Returns the raw protobuf bytes in `self.encoder_buf`.
-    pub fn encode_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()> {
+    pub fn encode_batch(
+        &mut self,
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+    ) -> io::Result<()> {
         self.encoder_buf.clear();
         let num_rows = batch.num_rows();
         if num_rows == 0 {
@@ -299,15 +330,8 @@ impl OtlpSink {
                 let status = response.status();
 
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    let retry_after = response
-                        .headers()
-                        .get("Retry-After")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(5);
-                    return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
-                        retry_after,
-                    )));
+                    let delay = parse_retry_after(response.headers().get("Retry-After"));
+                    return Ok(super::sink::SendResult::RetryAfter(delay));
                 }
 
                 // For gRPC, check trailers-only fast-fail (grpc-status in headers)
@@ -315,8 +339,16 @@ impl OtlpSink {
                 let mut grpc_message = None;
 
                 if self.protocol == OtlpProtocol::Grpc {
-                    grpc_status = response.headers().get("grpc-status").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-                    grpc_message = response.headers().get("grpc-message").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+                    grpc_status = response
+                        .headers()
+                        .get("grpc-status")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    grpc_message = response
+                        .headers()
+                        .get("grpc-message")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
                 }
 
                 // Error — read body as bytes to avoid String allocation.
@@ -347,11 +379,11 @@ impl OtlpSink {
                             )));
                         }
                     } else if !status.is_success() {
-                         // Fallback if no grpc-status found but HTTP failed
-                         return Ok(super::sink::SendResult::Rejected(format!(
+                        // Fallback if no grpc-status found but HTTP failed
+                        return Ok(super::sink::SendResult::Rejected(format!(
                             "OTLP request rejected with HTTP status {}: {}",
                             status, detail
-                         )));
+                        )));
                     }
                 }
 
@@ -359,6 +391,13 @@ impl OtlpSink {
                     self.stats.inc_lines(batch_rows);
                     self.stats.inc_bytes(self.encoder_buf.len() as u64);
                     return Ok(super::sink::SendResult::Ok);
+                }
+
+                // Server errors are transient — honour Retry-After header if
+                // present, otherwise fall back to the default.
+                if status.is_server_error() {
+                    let delay = parse_retry_after(response.headers().get("Retry-After"));
+                    return Ok(super::sink::SendResult::RetryAfter(delay));
                 }
 
                 if status.is_client_error() {
@@ -898,9 +937,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_payload_returns_err_on_5xx_no_loop() {
+    async fn send_payload_returns_retry_after_on_5xx() {
         let mut server = mockito::Server::new_async().await;
-        // Server will receive 1 request and fail. Since there's no retry loop, it should return Err.
+        // Server will receive 1 request and respond with 500. send_payload should
+        // return RetryAfter (not Err) so the sink's retry loop handles re-delivery.
         let _mock = server
             .mock("POST", "/v1/logs")
             .with_status(500)
@@ -919,10 +959,16 @@ mod tests {
         .unwrap();
 
         sink.encoder_buf.push(1);
-        let result = sink.send_payload(1).await;
+        let result = sink.send_payload(1).await.unwrap();
         assert!(
-            result.is_err(),
-            "Expected Err on 500 response without internal loop"
+            matches!(
+                result,
+                crate::sink::SendResult::RetryAfter(d)
+                    if d.as_secs() == DEFAULT_RETRY_AFTER_SECS
+            ),
+            "Expected RetryAfter({}s) on 500 response, got: {:?}",
+            DEFAULT_RETRY_AFTER_SECS,
+            result
         );
     }
 
@@ -931,7 +977,10 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         // Mock a 200 OK response that has a grpc-status header of 3 (INVALID_ARGUMENT)
         let _mock = server
-            .mock("POST", "/opentelemetry.proto.collector.logs.v1.LogsService/Export")
+            .mock(
+                "POST",
+                "/opentelemetry.proto.collector.logs.v1.LogsService/Export",
+            )
             .with_status(200)
             .with_header("content-type", "application/grpc")
             .with_header("grpc-status", "3")
@@ -960,7 +1009,43 @@ mod tests {
                 assert!(msg.contains("grpc-status 3"));
                 assert!(msg.contains("bad format"));
             }
-            _ => panic!("Expected Rejected on grpc-status 3 response, got: {:?}", result),
+            _ => panic!(
+                "Expected Rejected on grpc-status 3 response, got: {:?}",
+                result
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_payload_5xx_honours_retry_after_header() {
+        let mut server = mockito::Server::new_async().await;
+        // Server responds 503 with a Retry-After: 42 header.
+        // send_payload should surface that duration rather than the default.
+        let _mock = server
+            .mock("POST", "/v1/logs")
+            .with_status(503)
+            .with_header("Retry-After", "42")
+            .create_async()
+            .await;
+
+        let mut sink = OtlpSink::new(
+            "test".into(),
+            server.url() + "/v1/logs",
+            OtlpProtocol::Http,
+            Compression::None,
+            vec![],
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::new()),
+        )
+        .unwrap();
+
+        sink.encoder_buf.push(1);
+        let result = sink.send_payload(1).await.unwrap();
+        match result {
+            crate::sink::SendResult::RetryAfter(d) => {
+                assert_eq!(d.as_secs(), 42, "should honour Retry-After header value");
+            }
+            _ => panic!("Expected RetryAfter on 503 response, got: {:?}", result),
         }
     }
 
@@ -978,9 +1063,16 @@ mod tests {
         let mut sink = make_sink();
         let result = sink.encode_batch(&batch, &make_metadata());
 
-        assert!(result.is_err(), "out-of-range flags should produce an error");
+        assert!(
+            result.is_err(),
+            "out-of-range flags should produce an error"
+        );
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("out of range for u32"), "got: {}", err);
+        assert!(
+            err.to_string().contains("out of range for u32"),
+            "got: {}",
+            err
+        );
     }
 
     #[test]

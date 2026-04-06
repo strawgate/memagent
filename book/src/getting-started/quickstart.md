@@ -12,7 +12,7 @@ curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd
 chmod +x logfwd
 
 # Or build from source (Rust 1.85+)
-cargo build --release -p logfwd && cp target/release/logfwd .
+cargo build --release --bin logfwd && cp target/release/logfwd .
 ```
 
 Verify it works:

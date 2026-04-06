@@ -33,9 +33,11 @@ fn bench_batch_scan(c: &mut Criterion) {
             let data_bytes = bytes::Bytes::from(data.clone());
             let mut scanner = Scanner::new(ScanConfig::default());
             b.iter(|| {
-                scanner
-                    .scan_detached(data_bytes.clone())
-                    .expect("scan should not fail")
+                std::hint::black_box(
+                    scanner
+                        .scan_detached(data_bytes.clone())
+                        .expect("scan should not fail"),
+                )
             });
         });
     }
@@ -70,7 +72,7 @@ fn bench_batch_transform(c: &mut Criterion) {
                     .scan_detached(data_bytes.clone())
                     .expect("scan should not fail");
                 let result = transform.execute_blocking(batch).unwrap();
-                sink.send_batch(&result, &meta).unwrap();
+                std::hint::black_box(sink.send_batch(&result, &meta).unwrap());
             });
         });
 
@@ -86,7 +88,7 @@ fn bench_batch_transform(c: &mut Criterion) {
                     .scan_detached(data_bytes.clone())
                     .expect("scan should not fail");
                 let result = transform.execute_blocking(batch).unwrap();
-                sink.send_batch(&result, &meta).unwrap();
+                std::hint::black_box(sink.send_batch(&result, &meta).unwrap());
             });
         });
     }
