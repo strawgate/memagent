@@ -661,6 +661,12 @@ impl Config {
                     .name
                     .as_deref()
                     .map_or_else(|| format!("#{i}"), String::from);
+
+                if input.input_type == InputType::ArrowIpc {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{name}' input '{label}': arrow_ipc input type is not yet supported"
+                    )));
+                }
                 match input.input_type {
                     InputType::File => {
                         if input.path.is_none() {
@@ -686,7 +692,8 @@ impl Config {
                     InputType::Otlp => {
                         if input.listen.is_none() {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'listen' is required for otlp inputs"
+                                "pipeline '{name}' input '{label}': 'listen' is required for {} inputs",
+                                input.input_type
                             )));
                         }
                         if let Some(addr) = &input.listen {
@@ -697,9 +704,7 @@ impl Config {
                             }
                         }
                     }
-                    // ArrowIpc is always rejected below as "not yet supported";
-                    // skip listen validation to avoid a misleading error message.
-                    InputType::ArrowIpc | InputType::Generator => {}
+                    InputType::Generator | InputType::ArrowIpc => {}
                 }
 
                 // Reject fields that don't apply to this input type.
@@ -762,11 +767,7 @@ impl Config {
                             )));
                         }
                     }
-                    InputType::ArrowIpc => {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' input '{label}': arrow_ipc input type is not yet supported"
-                        )));
-                    }
+                    InputType::ArrowIpc => {}
                 }
 
                 // Reject input formats that are not yet implemented.
@@ -887,6 +888,11 @@ impl Config {
                         "pipeline '{name}' output '{label}': 'index' is only supported for elasticsearch outputs"
                     )));
                 }
+                if output.output_type == OutputType::Loki && output.compression.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{name}' output '{label}': 'compression' is not supported for loki outputs"
+                    )));
+                }
                 if output.output_type != OutputType::Otlp && output.protocol.is_some() {
                     return Err(ConfigError::Validation(format!(
                         "pipeline '{name}' output '{label}': 'protocol' is only supported for otlp outputs"
@@ -1000,17 +1006,54 @@ impl Config {
 
 /// Validate that a bind address is a parseable `host:port` socket address.
 fn validate_bind_addr(addr: &str) -> Result<(), String> {
-    addr.parse::<std::net::SocketAddr>()
-        .map(|_| ())
-        .map_err(|e| format!("'{addr}' is not a valid host:port address: {e}"))
+    validate_host_port(addr)
 }
 
 /// Validate that a string has a valid `host:port` format where port is a u16.
-/// This allows hostnames as well as IP addresses.
-fn validate_host_port(addr: &str) -> Result<(), String> {
-    let (_, port_str) = addr
-        .rsplit_once(':')
-        .ok_or_else(|| format!("'{addr}' is missing a port (expected format host:port)"))?;
+///
+/// Accepts IP addresses (v4 and v6) as well as hostnames, consistent with the
+/// runtime `TcpListener::bind` behaviour.  Use this function anywhere an
+/// address is validated so that CLI and config validation remain in sync.
+pub fn validate_host_port(addr: &str) -> Result<(), String> {
+    if addr.starts_with("http://") || addr.starts_with("https://") {
+        return Err(format!("'{addr}' is a URL, expected host:port"));
+    }
+
+    let (host, port_str) = if addr.starts_with('[') {
+        // Use find (first ']') not rfind (last ']') so that inputs like
+        // "[::1]]:4317" are rejected rather than treating "[::1]]" as the host.
+        let close_bracket = addr
+            .find(']')
+            .ok_or_else(|| format!("'{addr}' has mismatched brackets"))?;
+        let inner = &addr[1..close_bracket];
+        if inner.is_empty() {
+            return Err(format!(
+                "'{addr}' has an empty IPv6 address inside brackets"
+            ));
+        }
+        inner
+            .parse::<std::net::Ipv6Addr>()
+            .map_err(|_| format!("'{addr}' contains a non-IPv6 value inside brackets"))?;
+        if !addr[close_bracket..].starts_with("]:") {
+            return Err(format!("'{addr}' is missing a port after IPv6 brackets"));
+        }
+        let port_str = &addr[close_bracket + 2..];
+        (&addr[..=close_bracket], port_str)
+    } else {
+        addr.rsplit_once(':')
+            .ok_or_else(|| format!("'{addr}' is missing a port (expected format host:port)"))?
+    };
+
+    if host.is_empty() {
+        return Err(format!("'{addr}' has an empty host"));
+    }
+
+    if !addr.starts_with('[') && host.contains(':') {
+        return Err(format!(
+            "'{addr}' has multiple colons without IPv6 brackets"
+        ));
+    }
+
     port_str
         .parse::<u16>()
         .map_err(|_| format!("'{addr}' has an invalid port '{port_str}'"))?;
@@ -1026,6 +1069,82 @@ fn validate_log_level(level: &str) -> Result<(), String> {
         _ => Err(format!(
             "'{level}' is not a recognised log level; expected one of: trace, debug, info, warn, error"
         )),
+    }
+}
+
+#[cfg(test)]
+mod validate_host_port_tests {
+    use super::*;
+
+    #[test]
+    fn validate_host_port_works() {
+        assert!(validate_host_port("127.0.0.1:4317").is_ok());
+        assert!(validate_host_port("localhost:4317").is_ok());
+        assert!(validate_host_port("my-host.internal:8080").is_ok());
+        assert!(validate_host_port("[::1]:4317").is_ok());
+        assert!(validate_host_port("[2001:db8::1]:80").is_ok());
+
+        assert!(
+            validate_host_port(":4317")
+                .unwrap_err()
+                .contains("empty host")
+        );
+        assert!(
+            validate_host_port("http://localhost:4317")
+                .unwrap_err()
+                .contains("URL")
+        );
+        assert!(
+            validate_host_port("https://localhost:4317")
+                .unwrap_err()
+                .contains("URL")
+        );
+        assert!(
+            validate_host_port("foo:bar:4317")
+                .unwrap_err()
+                .contains("multiple colons")
+        );
+        assert!(
+            validate_host_port("localhost")
+                .unwrap_err()
+                .contains("missing a port")
+        );
+        assert!(
+            validate_host_port("localhost:")
+                .unwrap_err()
+                .contains("invalid port")
+        );
+        assert!(
+            validate_host_port("localhost:999999")
+                .unwrap_err()
+                .contains("invalid port")
+        );
+        assert!(
+            validate_host_port("[::1]")
+                .unwrap_err()
+                .contains("missing a port")
+        );
+        assert!(
+            validate_host_port("[::1]:")
+                .unwrap_err()
+                .contains("invalid port")
+        );
+        // Empty IPv6 brackets — []:8080 has no host
+        assert!(validate_host_port("[]:8080").unwrap_err().contains("empty"));
+        // Double closing bracket — [::1]]:4317 is malformed
+        assert!(
+            validate_host_port("[::1]]:4317")
+                .unwrap_err()
+                .contains("missing a port")
+        );
+    }
+
+    #[test]
+    fn validate_bind_addr_works() {
+        assert!(validate_bind_addr("127.0.0.1:4317").is_ok());
+        assert!(validate_bind_addr("localhost:4317").is_ok());
+        assert!(validate_bind_addr("[::1]:4317").is_ok());
+        assert!(validate_bind_addr("http://localhost:4317").is_err());
     }
 }
 
@@ -1525,6 +1644,42 @@ output:
     }
 
     #[test]
+    fn loki_output_rejects_compression() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: loki\n  endpoint: http://localhost:3100\n  compression: gzip\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'compression' is not supported for loki outputs"),
+            "unexpected: {msg}"
+        );
+    }
+
+    #[test]
+    fn ipv6_empty_bracket_rejected() {
+        let err = validate_host_port("[]:8080");
+        assert!(err.is_err(), "expected error for empty IPv6 brackets");
+        assert!(err.unwrap_err().contains("empty IPv6 address"));
+    }
+
+    #[test]
+    fn ipv6_double_closing_bracket_rejected() {
+        // "[::1]]:4317" has a double closing bracket; rfind would accept it by
+        // treating "[::1]]" as the host — find (first ']') correctly rejects it.
+        let err = validate_host_port("[::1]]:4317");
+        assert!(
+            err.is_err(),
+            "expected error for double closing bracket '[::1]]:4317'"
+        );
+    }
+
+    #[test]
+    fn ipv6_valid_address_accepted() {
+        assert!(validate_host_port("[::1]:8080").is_ok());
+        assert!(validate_host_port("[2001:db8::1]:4317").is_ok());
+        assert!(validate_host_port("[fe80::1%eth0]:514").is_ok());
+    }
+
+    #[test]
     fn all_input_types() {
         for (itype, extra) in [
             ("file", "path: /tmp/x.log"),
@@ -1906,7 +2061,9 @@ server:
             "error should mention 'diagnostics': {msg}"
         );
         assert!(
-            msg.contains("not a valid") || msg.contains("invalid"),
+            msg.contains("not a valid")
+                || msg.contains("invalid")
+                || msg.contains("missing a port"),
             "error should say address is invalid: {msg}"
         );
     }

@@ -663,7 +663,14 @@ pub fn build_sink_factory(
             let fmt = match cfg.format.as_ref() {
                 Some(Format::Json) => StdoutFormat::Json,
                 Some(Format::Console) => StdoutFormat::Console,
-                _ => StdoutFormat::Text,
+                Some(Format::Text) => StdoutFormat::Text,
+                // Default to console output when no format is specified.
+                None => StdoutFormat::Console,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': stdout does not support '{other:?}' format (use json, console, or text)"
+                    )));
+                }
             };
             Ok(Arc::new(StdoutSinkFactory::new(
                 name.to_string(),
@@ -1004,6 +1011,23 @@ mod tests {
         let factory =
             build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
+    }
+
+    #[test]
+    fn test_build_sink_factory_stdout_rejects_unsupported_format() {
+        let cfg = OutputConfig {
+            name: Some("test".to_string()),
+            output_type: OutputType::Stdout,
+            format: Some(Format::Cri),
+            ..Default::default()
+        };
+        match build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())) {
+            Ok(_) => panic!("expected unsupported stdout format to be rejected"),
+            Err(err) => assert!(
+                err.to_string().contains("stdout does not support"),
+                "got: {err}"
+            ),
+        }
     }
 
     #[test]

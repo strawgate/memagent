@@ -365,13 +365,18 @@ async fn cmd_config(args: &[String]) -> Result<(), CliError> {
 async fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
     let addr = args.get(2).map_or("127.0.0.1:4318", String::as_str);
 
-    // Validate addr is a parseable socket address before injecting into YAML.
-    addr.parse::<std::net::SocketAddr>()
-        .map_err(|_| CliError::Config(format!("invalid bind address: {addr}")))?;
+    // Validate addr using the same hostname-accepting logic as the config
+    // validator (validate_host_port) so that a hostname like `localhost:4318`
+    // is accepted here and not only rejected later by the config layer.
+    logfwd_config::validate_host_port(addr)
+        .map_err(|e| CliError::Config(format!("invalid bind address: {e}")))?;
 
     // Use port 0 for diagnostics so it never collides with an in-use port.
+    // Quote addr as a YAML string so bracketed IPv6 (e.g. [::1]:4318) does not
+    // break YAML parsing. Single-quote with '' escaping for any embedded quotes.
+    let yaml_addr = addr.replace('\'', "''");
     let yaml = format!(
-        "input:\n  type: otlp\n  listen: {addr}\noutput:\n  type: null\nserver:\n  diagnostics: 127.0.0.1:0\n"
+        "input:\n  type: otlp\n  listen: '{yaml_addr}'\noutput:\n  type: null\nserver:\n  diagnostics: 127.0.0.1:0\n"
     );
     let config = logfwd_config::Config::load_str(&yaml)
         .map_err(|e| CliError::Config(format!("internal config error: {e}")))?;
