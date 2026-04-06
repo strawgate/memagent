@@ -663,7 +663,9 @@ pub fn build_sink_factory(
             let fmt = match cfg.format.as_ref() {
                 Some(Format::Json) => StdoutFormat::Json,
                 Some(Format::Console) => StdoutFormat::Console,
-                Some(Format::Text) | None => StdoutFormat::Text,
+                Some(Format::Text) => StdoutFormat::Text,
+                // Default to console output when no format is specified.
+                None => StdoutFormat::Console,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
                         "output '{name}': stdout does not support '{other:?}' format (use json, console, or text)"

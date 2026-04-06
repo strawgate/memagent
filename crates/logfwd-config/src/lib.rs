@@ -1025,11 +1025,15 @@ pub fn validate_host_port(addr: &str) -> Result<(), String> {
         let close_bracket = addr
             .find(']')
             .ok_or_else(|| format!("'{addr}' has mismatched brackets"))?;
-        if addr[1..close_bracket].is_empty() {
+        let inner = &addr[1..close_bracket];
+        if inner.is_empty() {
             return Err(format!(
                 "'{addr}' has an empty IPv6 address inside brackets"
             ));
         }
+        inner
+            .parse::<std::net::Ipv6Addr>()
+            .map_err(|_| format!("'{addr}' contains a non-IPv6 value inside brackets"))?;
         if !addr[close_bracket..].starts_with("]:") {
             return Err(format!("'{addr}' is missing a port after IPv6 brackets"));
         }
