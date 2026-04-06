@@ -23,7 +23,7 @@ logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-transform = { version = "0.1.0", path = "../logfwd-transform" }
 logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 dhat = { version = "0.3", optional = true }
-pprof = { version = "0.14", features = ["flamegraph"], optional = true }
+pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 libc = "0.2"
 memchr = "2"
 opentelemetry = { workspace = true }
