@@ -168,7 +168,15 @@ impl InputSource for FramedInput {
                                     // overflowed data on crash.
                                     let start = tail.len() - MAX_REMAINDER_BYTES;
                                     state.remainder = tail.split_off(start);
-                                    state.tracker.apply_remainder_consumed();
+                                    // Do NOT call apply_remainder_consumed() here.
+                                    // The remainder still holds MAX_REMAINDER_BYTES, so
+                                    // the tracker must keep remainder_len > 0.  Calling
+                                    // apply_remainder_consumed() would set remainder_len=0
+                                    // causing checkpoint_data() to report an offset past
+                                    // the still-buffered bytes, losing them on crash.
+                                    // Being conservative (checkpoint stays at the last
+                                    // newline) is safe: at-least-once re-reads on restart,
+                                    // but no data loss.
                                 } else {
                                     let state = self.sources.get_mut(&key).expect("just inserted");
                                     state.remainder = tail;
@@ -194,7 +202,8 @@ impl InputSource for FramedInput {
                                 state.format.reset();
                                 let start = chunk.len() - MAX_REMAINDER_BYTES;
                                 state.remainder = chunk.split_off(start);
-                                state.tracker.apply_remainder_consumed();
+                                // Same reasoning as the tail-overflow branch: do NOT call
+                                // apply_remainder_consumed() while state.remainder is non-empty.
                             } else {
                                 let state = self.sources.get_mut(&key).expect("just inserted");
                                 state.remainder = chunk;
