@@ -1,11 +1,11 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, LargeStringArray, StringArray, StringViewArray, UInt64Array};
+use arrow::array::{Array, StringArray, StringViewArray, LargeStringArray, UInt64Array};
 use arrow::datatypes::DataType;
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 
 /// UDF: hash(col) — computes a deterministic hash of a string, returning UInt64.
@@ -24,14 +24,7 @@ impl Default for HashUdf {
 impl HashUdf {
     pub fn new() -> Self {
         Self {
-            signature: Signature::one_of(
-                vec![
-                    TypeSignature::Exact(vec![DataType::Utf8]),
-                    TypeSignature::Exact(vec![DataType::Utf8View]),
-                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
-                ],
-                Volatility::Immutable,
-            ),
+            signature: Signature::exact(vec![DataType::Utf8], Volatility::Immutable),
         }
     }
 }
@@ -54,7 +47,7 @@ impl ScalarUDFImpl for HashUdf {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
-        if args.args.len() != 1 {
+        if args.args.is_empty() {
             return Err(datafusion::error::DataFusionError::Execution(
                 "hash() expects exactly one argument".to_string(),
             ));
@@ -66,14 +59,9 @@ impl ScalarUDFImpl for HashUdf {
                 let dt = array.data_type();
                 let (_len, mut builder) = match dt {
                     DataType::Utf8 => {
-                        let string_array = array
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .ok_or_else(|| {
-                                datafusion::error::DataFusionError::Execution(
-                                    "hash() expected StringArray for DataType::Utf8, got incompatible array type".to_string(),
-                                )
-                            })?;
+                        let string_array = array.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                            datafusion::error::DataFusionError::Internal("failed to downcast Utf8 to StringArray".to_string())
+                        })?;
                         let mut builder = UInt64Array::builder(string_array.len());
                         for i in 0..string_array.len() {
                             if string_array.is_null(i) {
@@ -85,14 +73,9 @@ impl ScalarUDFImpl for HashUdf {
                         (string_array.len(), builder)
                     }
                     DataType::Utf8View => {
-                        let string_array = array
-                            .as_any()
-                            .downcast_ref::<StringViewArray>()
-                            .ok_or_else(|| {
-                                datafusion::error::DataFusionError::Execution(
-                                    "hash() expected StringViewArray for DataType::Utf8View, got incompatible array type".to_string(),
-                                )
-                            })?;
+                        let string_array = array.as_any().downcast_ref::<StringViewArray>().ok_or_else(|| {
+                            datafusion::error::DataFusionError::Internal("failed to downcast Utf8View to StringViewArray".to_string())
+                        })?;
                         let mut builder = UInt64Array::builder(string_array.len());
                         for i in 0..string_array.len() {
                             if string_array.is_null(i) {
@@ -104,14 +87,9 @@ impl ScalarUDFImpl for HashUdf {
                         (string_array.len(), builder)
                     }
                     DataType::LargeUtf8 => {
-                        let string_array = array
-                            .as_any()
-                            .downcast_ref::<LargeStringArray>()
-                            .ok_or_else(|| {
-                                datafusion::error::DataFusionError::Execution(
-                                    "hash() expected LargeStringArray for DataType::LargeUtf8, got incompatible array type".to_string(),
-                                )
-                            })?;
+                        let string_array = array.as_any().downcast_ref::<LargeStringArray>().ok_or_else(|| {
+                            datafusion::error::DataFusionError::Internal("failed to downcast LargeUtf8 to LargeStringArray".to_string())
+                        })?;
                         let mut builder = UInt64Array::builder(string_array.len());
                         for i in 0..string_array.len() {
                             if string_array.is_null(i) {
@@ -123,27 +101,22 @@ impl ScalarUDFImpl for HashUdf {
                         (string_array.len(), builder)
                     }
                     _ => {
-                        return Err(datafusion::error::DataFusionError::Execution(format!(
-                            "hash() expected string argument, got {:?}",
-                            dt
-                        )));
+                        return Err(datafusion::error::DataFusionError::Execution(
+                            format!("hash() expected string argument, got {:?}", dt),
+                        ));
                     }
                 };
 
                 Ok(ColumnarValue::Array(Arc::new(builder.finish())))
             }
-            ColumnarValue::Scalar(
-                ScalarValue::Utf8(Some(val))
-                | ScalarValue::Utf8View(Some(val))
-                | ScalarValue::LargeUtf8(Some(val)),
-            ) => Ok(ColumnarValue::Scalar(ScalarValue::UInt64(Some(
-                fnv1a_hash(val.as_bytes()),
-            )))),
-            ColumnarValue::Scalar(
-                ScalarValue::Utf8(None)
-                | ScalarValue::Utf8View(None)
-                | ScalarValue::LargeUtf8(None),
-            ) => Ok(ColumnarValue::Scalar(ScalarValue::UInt64(None))),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(val)) | ScalarValue::Utf8View(Some(val)) | ScalarValue::LargeUtf8(Some(val))) => {
+                Ok(ColumnarValue::Scalar(ScalarValue::UInt64(Some(
+                    fnv1a_hash(val.as_bytes()),
+                ))))
+            }
+            ColumnarValue::Scalar(ScalarValue::Utf8(None) | ScalarValue::Utf8View(None) | ScalarValue::LargeUtf8(None)) => {
+                Ok(ColumnarValue::Scalar(ScalarValue::UInt64(None)))
+            }
             ColumnarValue::Scalar(_) => Err(datafusion::error::DataFusionError::Execution(
                 "hash() expected string argument".to_string(),
             )),
