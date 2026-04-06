@@ -307,7 +307,18 @@ fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
             walker = walker.max_depth(*d);
         }
         for entry in walker.into_iter().filter_map(Result::ok) {
-            if entry.file_type().is_file() && glob_set.is_match(entry.path()) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            // Normalize cwd-relative paths before matching so patterns like
+            // `./*.log` match walkdir entries like `foo.log` (#1375).
+            let entry_path = entry.path();
+            let normalized = if entry_path.is_absolute() {
+                entry_path.to_path_buf()
+            } else {
+                Path::new(".").join(entry_path)
+            };
+            if glob_set.is_match(entry_path) || glob_set.is_match(&normalized) {
                 paths.push(entry.into_path());
             }
         }
@@ -542,6 +553,7 @@ impl FileReader {
     fn open_file_at(&mut self, path: &Path, start_from_end: bool) -> io::Result<()> {
         let identity = identify_file(path, self.config.fingerprint_bytes)?;
         let mut file = File::open(path)?;
+        let file_size = file.metadata()?.len();
 
         let offset = if let Some(evicted) = self.evicted_offsets.remove(path) {
             // Verify the file identity still matches before restoring the
@@ -549,7 +561,18 @@ impl FileReader {
             // at the same path, the fingerprint will differ and we must not
             // seek to the stale offset — that would skip data. (#817)
             if evicted.identity == identity {
-                file.seek(SeekFrom::Start(evicted.offset))?
+                let safe_offset = if evicted.offset > file_size {
+                    tracing::warn!(
+                        path = %path.display(),
+                        saved_offset = evicted.offset,
+                        file_size,
+                        "evicted offset exceeds file size — resetting to 0"
+                    );
+                    0
+                } else {
+                    evicted.offset
+                };
+                file.seek(SeekFrom::Start(safe_offset))?
             } else {
                 tracing::warn!(
                     path = %path.display(),
@@ -619,10 +642,12 @@ impl FileReader {
         // Read available bytes, capped at MAX_READ_PER_POLL (#800).
         let mut result = Vec::with_capacity(self.config.read_buf_size);
         loop {
-            if result.len() >= Self::MAX_READ_PER_POLL {
+            let remaining_budget = Self::MAX_READ_PER_POLL.saturating_sub(result.len());
+            if remaining_budget == 0 {
                 break; // continue on next poll
             }
-            let n = tailed.file.read(&mut self.read_buf)?;
+            let next_read_size = remaining_budget.min(self.read_buf.len());
+            let n = tailed.file.read(&mut self.read_buf[..next_read_size])?;
             if n == 0 {
                 break;
             }
@@ -844,8 +869,20 @@ impl FileReader {
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) -> io::Result<()> {
         for tailed in self.files.values_mut() {
             if tailed.identity.source_id() == source_id {
-                tailed.offset = offset;
-                tailed.file.seek(SeekFrom::Start(offset))?;
+                let file_size = tailed.file.metadata()?.len();
+                let safe_offset = if offset > file_size {
+                    tracing::warn!(
+                        source_id = source_id.0,
+                        saved_offset = offset,
+                        file_size,
+                        "checkpoint source offset exceeds file size — resetting to 0"
+                    );
+                    0
+                } else {
+                    offset
+                };
+                tailed.offset = safe_offset;
+                tailed.file.seek(SeekFrom::Start(safe_offset))?;
                 return Ok(());
             }
         }
@@ -1131,6 +1168,9 @@ impl FileTailer {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::Mutex;
+
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     // ---- glob_root / glob_max_depth unit tests ----
 
@@ -1730,6 +1770,49 @@ mod tests {
         assert_eq!(tailer.num_files(), 1, "should still tail exactly one file");
     }
 
+    /// #1375: cwd-relative patterns with `./` must match discovered files.
+    #[test]
+    fn test_expand_glob_patterns_matches_dot_slash_cwd_relative() {
+        let _cwd_guard = CWD_LOCK.lock().unwrap();
+        let original_cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let result = (|| -> io::Result<()> {
+            let nested = PathBuf::from("logs");
+            fs::create_dir_all(&nested)?;
+            let target = nested.join("app.log");
+            let other = nested.join("app.txt");
+            {
+                let mut f = File::create(&target)?;
+                writeln!(f, "hello")?;
+            }
+            File::create(&other)?;
+
+            let matches = expand_glob_patterns(&["./logs/*.log"]);
+            let normalized_matches: Vec<PathBuf> = matches
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(".")
+                        .map_or_else(|_| p.clone(), Path::to_path_buf)
+                })
+                .collect();
+            assert!(
+                normalized_matches.iter().any(|p| p == &target),
+                "pattern ./logs/*.log should match logs/app.log, got: {matches:?}"
+            );
+            assert!(
+                !normalized_matches.iter().any(|p| p == &other),
+                "pattern ./logs/*.log should not match non-log file, got: {matches:?}"
+            );
+
+            Ok(())
+        })();
+
+        std::env::set_current_dir(original_cwd).unwrap();
+        result.unwrap();
+    }
+
     /// Verify that when open files exceed `max_open_files`, the least-recently-read
     /// files are evicted until the count is within the limit.
     #[test]
@@ -2240,8 +2323,8 @@ mod tests {
             .sum();
 
         assert!(
-            total_bytes <= FileTailer::MAX_READ_PER_POLL + 512 * 1024, // allow one extra read_buf
-            "read should be capped near 64 MiB, got {} bytes",
+            total_bytes <= FileTailer::MAX_READ_PER_POLL,
+            "read should be capped at MAX_READ_PER_POLL, got {} bytes",
             total_bytes
         );
         assert!(total_bytes > 0, "should read some data");
@@ -2284,6 +2367,38 @@ mod tests {
         // Offset should be reset to 0, not 999_999.
         let offset = tailer.get_offset(&log_path).unwrap();
         assert_eq!(offset, 0, "stale offset should reset to 0");
+    }
+
+    /// #1037: set_offset_by_source must reset to 0 when checkpoint offset > file size.
+    #[test]
+    fn test_set_offset_by_source_validates_against_file_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("source_stale.log");
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "small file content").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+
+        let source_id = tailer
+            .file_offsets()
+            .into_iter()
+            .map(|(sid, _)| sid)
+            .next()
+            .expect("non-empty file should have source id");
+
+        // Try to set an offset beyond file size (stale checkpoint).
+        tailer.set_offset_by_source(source_id, 999_999).unwrap();
+        let offset = tailer.get_offset(&log_path).unwrap();
+        assert_eq!(offset, 0, "stale source offset should reset to 0");
     }
 
     /// #697: Evicted file offsets must appear in file_offsets() so they are
@@ -2492,6 +2607,76 @@ mod tests {
         assert!(
             s.contains("new pod new line"),
             "newly appended content must be visible after start_from_end discovery, got: {s}"
+        );
+    }
+
+    /// #1043: open_file_at must not restore an evicted offset that exceeds EOF.
+    #[test]
+    fn test_evicted_offset_clamped_when_file_shrinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.log");
+        let b = dir.path().join("b.log");
+
+        // Use a tiny fingerprint to keep identity stable across truncation by
+        // preserving the first 4 bytes.
+        {
+            let mut fa = File::create(&a).unwrap();
+            // 200 bytes so restored offset can exceed the later truncated size.
+            write!(fa, "ABCD").unwrap();
+            write!(fa, "{}", "x".repeat(196)).unwrap();
+            let mut fb = File::create(&b).unwrap();
+            writeln!(fb, "BBBB initial").unwrap();
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 50,
+            max_open_files: 1,
+            fingerprint_bytes: 4,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // Initial poll reads both and then evicts one due to max_open_files=1.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(tailer.num_files(), 1, "one file should be evicted");
+
+        let evicted = if tailer.get_offset(&a).is_none() {
+            a.clone()
+        } else if tailer.get_offset(&b).is_none() {
+            b.clone()
+        } else {
+            panic!("expected either a.log or b.log to be evicted");
+        };
+
+        // Shrink the evicted file but preserve the first 4 bytes ("ABCD")
+        // so identity still matches and stale-offset path is exercised.
+        {
+            let mut f = File::create(&evicted).unwrap(); // truncate
+            writeln!(f, "ABCD_shrunk").unwrap(); // size << previous offset
+        }
+
+        // Wait for rescan so evicted file is re-opened.
+        std::thread::sleep(Duration::from_millis(150));
+        let events = tailer.poll().unwrap();
+
+        // If stale offset is incorrectly restored past EOF, we'd read nothing.
+        // With clamping, we should read from beginning and see "ABCD_shrunk".
+        let data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { path, bytes, .. } if path == &evicted => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let s = String::from_utf8_lossy(&data);
+        assert!(
+            s.contains("ABCD_shrunk"),
+            "re-opened shrunken file should be read from beginning, got: {s}"
         );
     }
 
