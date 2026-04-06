@@ -44,8 +44,13 @@ globset = "0.4"
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-client", "trace", "metrics"] }
+base64 = "0.22"
+flate2 = "1"
+reqwest = { version = "0.12", default-features = false }
 serde = { version = "1", features = ["derive"] }
 sonic-rs = "0.5"
+tar = "0.4"
+sha2 = "0.10"
 tokio = { version = "1" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

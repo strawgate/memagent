@@ -882,6 +882,56 @@ mod verification {
             }
         }
     }
+
+    /// Prove json_any_value_to_string returns Ok for the i64 numeric path
+    /// (as_i64() branch) and that the output bytes are all ASCII.
+    ///
+    /// Uses a concrete JSON shape {intValue: <i64>} to exercise the code path
+    /// that calls write_i64_to_buf and wraps the result in from_utf8_unchecked.
+    #[kani::proof]
+    #[kani::unwind(21)] // write_i64_to_buf: at most 20 digits + sign
+    fn verify_json_any_value_to_string_int_no_panic() {
+        let n: i64 = kani::any();
+        // Build a concrete JSON object {intValue: <n>}. Using Number avoids
+        // HashMap symbolic-iteration overhead; this covers the as_i64() branch.
+        let mut map = serde_json::Map::with_capacity(1);
+        map.insert(
+            "intValue".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(n)),
+        );
+        let json_val = serde_json::Value::Object(map);
+        let result = json_any_value_to_string(&json_val);
+        // Must not panic and must return Ok(Some(ascii string))
+        assert!(result.is_ok());
+        let s = result.unwrap();
+        assert!(s.is_some());
+        let s = s.unwrap();
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            assert!(bytes[i].is_ascii());
+            i += 1;
+        }
+    }
+
+    /// Prove write_json_any_value_field_from_json returns Ok for the i64 numeric
+    /// path and that the emitted bytes are non-empty.
+    #[kani::proof]
+    #[kani::unwind(21)] // write_i64_to_buf: at most 20 digits + sign
+    fn verify_write_json_any_value_field_int_no_panic() {
+        let n: i64 = kani::any();
+        let mut map = serde_json::Map::with_capacity(1);
+        map.insert(
+            "intValue".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(n)),
+        );
+        let json_val = serde_json::Value::Object(map);
+        let mut out = Vec::new();
+        let result = write_json_any_value_field_from_json(&mut out, "v", &json_val);
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "int path must emit a field");
+        assert!(!out.is_empty());
+    }
 }
 
 #[cfg(test)]
