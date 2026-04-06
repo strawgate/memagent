@@ -1326,6 +1326,7 @@ mod verification {
     /// Proves the skip_nested contract on 16-byte inputs.
     #[kani::proof_for_contract(StructuralIndex::skip_nested)]
     #[kani::unwind(18)]
+    #[kani::solver(kissat)]
     fn verify_skip_nested_bounds() {
         let buf: [u8; 16] = kani::any();
         let pos: usize = kani::any();
