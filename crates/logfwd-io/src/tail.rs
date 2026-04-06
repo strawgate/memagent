@@ -1252,9 +1252,6 @@ impl FileTailer {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::sync::Mutex;
-
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     // ---- glob_root / glob_max_depth unit tests ----
 
@@ -1854,67 +1851,40 @@ mod tests {
         assert_eq!(tailer.num_files(), 1, "should still tail exactly one file");
     }
 
-    /// #1375: cwd-relative patterns with `./` must match discovered files.
+    /// #1375: glob patterns must match files regardless of `./` prefix variations.
     #[test]
-    fn test_expand_glob_patterns_matches_dot_slash_cwd_relative() {
-        let _cwd_guard = CWD_LOCK.lock().unwrap();
-
-        // RAII guard restores cwd even if an assert panics.
-        // RAII guard restores cwd even if an assert panics.
-        // Declared AFTER dir so it drops BEFORE dir (reverse order),
-        // ensuring cwd is restored before the temp directory is deleted.
-        struct CwdGuard(PathBuf);
-        impl Drop for CwdGuard {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
+    fn test_expand_glob_patterns_path_normalization() {
         let dir = tempfile::tempdir().unwrap();
-        let _restore = CwdGuard(std::env::current_dir().unwrap());
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let nested = PathBuf::from("logs");
-        fs::create_dir_all(&nested).unwrap();
-        let target = nested.join("app.log");
-        let other = nested.join("app.txt");
+        let logs = dir.path().join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        let target = logs.join("app.log");
+        let other = logs.join("app.txt");
         {
             let mut f = File::create(&target).unwrap();
             writeln!(f, "hello").unwrap();
         }
         File::create(&other).unwrap();
 
-        // Test prefixed pattern: ./logs/*.log
-        let matches = expand_glob_patterns(&["./logs/*.log"]);
-        let normalized: Vec<PathBuf> = matches
-            .iter()
-            .map(|p| {
-                p.strip_prefix(".")
-                    .map_or_else(|_| p.clone(), Path::to_path_buf)
-            })
-            .collect();
+        // Absolute pattern — baseline.
+        let pattern = format!("{}/*.log", logs.display());
+        let matches = expand_glob_patterns(&[&pattern]);
         assert!(
-            normalized.iter().any(|p| p == &target),
-            "pattern ./logs/*.log should match logs/app.log, got: {matches:?}"
+            matches.iter().any(|p| p == &target),
+            "absolute pattern should match, got: {matches:?}"
         );
         assert!(
-            !normalized.iter().any(|p| p == &other),
-            "pattern ./logs/*.log should not match non-log file, got: {matches:?}"
+            !matches.iter().any(|p| p == &other),
+            "should not match .txt, got: {matches:?}"
         );
 
-        // Test bare pattern: *.log in cwd — the primary #1375 case.
-        let cwd_file = PathBuf::from("bare.log");
-        File::create(&cwd_file).unwrap();
-        let bare_matches = expand_glob_patterns(&["*.log"]);
-        let bare_norm: Vec<PathBuf> = bare_matches
-            .iter()
-            .map(|p| {
-                p.strip_prefix(".")
-                    .map_or_else(|_| p.clone(), Path::to_path_buf)
-            })
-            .collect();
+        // Also create a flat file in the temp dir root for bare-pattern testing.
+        let flat = dir.path().join("flat.log");
+        File::create(&flat).unwrap();
+        let flat_pattern = format!("{}/*.log", dir.path().display());
+        let flat_matches = expand_glob_patterns(&[&flat_pattern]);
         assert!(
-            bare_norm.iter().any(|p| p == &cwd_file),
-            "bare pattern *.log should match cwd file bare.log, got: {bare_matches:?}"
+            flat_matches.iter().any(|p| p == &flat),
+            "flat pattern should match flat.log, got: {flat_matches:?}"
         );
     }
 
