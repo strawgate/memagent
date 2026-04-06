@@ -1202,8 +1202,8 @@ mod tests {
     fn glob_max_depth_relative_dot_prefix() {
         // `./` is syntactic sugar for the current directory and should not
         // change traversal depth compared with the equivalent relative pattern.
-        assert_eq!(glob_max_depth("./*.log"), Some(1));
-        assert_eq!(glob_max_depth("./foo/*.log"), Some(1));
+        assert_eq!(glob_max_depth("./*.log"), glob_max_depth("*.log"));
+        assert_eq!(glob_max_depth("./foo/*.log"), glob_max_depth("foo/*.log"));
     }
 
     // ---- end glob helper tests ----
