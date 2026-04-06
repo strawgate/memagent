@@ -26,6 +26,8 @@ dhat = { version = "0.3", optional = true }
 pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 libc = "0.2"
 memchr = "2"
+smallvec = { workspace = true }
+thiserror = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
