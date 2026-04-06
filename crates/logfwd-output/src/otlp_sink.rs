@@ -741,10 +741,16 @@ fn encode_row_as_log_record(
         }
     }
 
-    // LogRecord.flags (fixed32) — W3C trace flags
+    // LogRecord.flags (fixed32) — W3C trace flags.
+    // Clamp to u32 range: negative or >u32::MAX values are invalid per the
+    // W3C Trace Context spec (only 8 bits are defined). (#1121)
     if let Some((_, arr)) = columns.flags_col {
         if !arr.is_null(row) {
-            encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, arr.value(row) as u32);
+            let raw = arr.value(row);
+            if let Ok(flags) = u32::try_from(raw) {
+                encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
+            }
+            // Silently drop invalid flags rather than corrupt downstream traces.
         }
     }
 
