@@ -6,8 +6,10 @@ pub mod geo_lookup;
 pub mod grok;
 pub mod json_extract;
 pub mod regexp_extract;
+pub mod hash;
 
 pub use geo_lookup::GeoLookupUdf;
 pub use grok::GrokUdf;
 pub use json_extract::{JsonExtractMode, JsonExtractUdf};
 pub use regexp_extract::RegexpExtractUdf;
+pub use hash::HashUdf;
