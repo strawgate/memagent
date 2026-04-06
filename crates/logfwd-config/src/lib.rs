@@ -310,6 +310,10 @@ pub struct InputConfig {
     /// Generator-specific configuration.
     #[serde(default)]
     pub generator: Option<GeneratorInputConfig>,
+    /// Per-input SQL transform. When set, this input gets its own Scanner +
+    /// `SqlTransform` pair. Overrides the pipeline-level `transform` field
+    /// for this input only.
+    pub sql: Option<String>,
 }
 
 /// A single output destination.
