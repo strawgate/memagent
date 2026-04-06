@@ -446,14 +446,25 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
     if tz_pos < ts.len() {
         match ts[tz_pos] {
             b'Z' | b'z' => {
-                // UTC — nothing to adjust
+                // UTC — Z must be the last byte; reject trailing garbage.
+                if tz_pos + 1 != ts.len() {
+                    return None;
+                }
             }
             sign @ (b'+' | b'-') => {
-                // Expect +HH:MM or -HH:MM (6 bytes: sign, 2 hour, colon, 2 min)
-                if tz_pos + 6 > ts.len() {
+                // Expect +HH:MM or -HH:MM (exactly 6 bytes: sign, 2 hour, colon, 2 min)
+                if tz_pos + 6 != ts.len() {
                     return None;
                 }
                 if ts[tz_pos + 3] != b':' {
+                    return None;
+                }
+                // Validate that hour and minute bytes are ASCII digits before parsing.
+                if !ts[tz_pos + 1].is_ascii_digit()
+                    || !ts[tz_pos + 2].is_ascii_digit()
+                    || !ts[tz_pos + 4].is_ascii_digit()
+                    || !ts[tz_pos + 5].is_ascii_digit()
+                {
                     return None;
                 }
                 let tz_hour = parse_2digits(ts, tz_pos + 1) as u64;
@@ -778,6 +789,24 @@ mod tests {
             parse_timestamp_nanos(b"2024-01-15T10:30:00+05:60"),
             None,
             "+05:60 (minute out of range) should be rejected"
+        );
+        // Non-digit bytes in hour field
+        assert_eq!(
+            parse_timestamp_nanos(b"2024-01-15T10:30:00+ab:cd"),
+            None,
+            "+ab:cd (non-digit offset) should be rejected"
+        );
+        // Trailing bytes after Z
+        assert_eq!(
+            parse_timestamp_nanos(b"2024-01-15T10:30:00ZX"),
+            None,
+            "trailing byte after Z should be rejected"
+        );
+        // Trailing bytes after +HH:MM
+        assert_eq!(
+            parse_timestamp_nanos(b"2024-01-15T10:30:00+05:30X"),
+            None,
+            "trailing byte after +HH:MM should be rejected"
         );
     }
 
