@@ -158,6 +158,14 @@ impl Sink for AsyncFanoutSink {
             // All-true means the previous batch completed fully; the next call is a new batch.
             // Using structural completion (not observed_time_ns) avoids false identity matches
             // when two batches share the same nanosecond timestamp.
+            //
+            // Caller contract: when `send_batch` returns `RetryAfter`, the caller MUST
+            // retry the **same** batch (same `RecordBatch` and `BatchMetadata`) before
+            // sending a new one. Abandoning a partially-completed batch and switching to
+            // a new one is not supported — some sinks that already completed the old batch
+            // would be skipped for the new one because their `completed` slot is still
+            // `true`. The pipeline upholds this contract: it retries until every sink
+            // completes (`Ok` / `Rejected`) or gives up on the whole batch.
             if self.completed.iter().all(|&c| c) {
                 self.completed.fill(false);
             }
@@ -658,6 +666,43 @@ mod tests {
             2,
             "s1 must be called for the new batch"
         );
+    }
+
+    /// Document the abandonment invariant: if a caller abandons a batch midway
+    /// (does not retry after `RetryAfter`) and sends a new batch, sinks that
+    /// completed the abandoned batch retain their `true` slot and are skipped for
+    /// the new batch. The pipeline avoids this by always retrying until every sink
+    /// completes or giving up on the whole batch, so this situation cannot arise
+    /// in practice. This test documents that contract.
+    #[tokio::test]
+    async fn fanout_caller_must_not_abandon_partial_batch() {
+        // s1 completes immediately; s2 asks for a retry.
+        let (s1, calls1) = FixedSink::new("s1", SendResult::Ok);
+        let (s2, calls2) = FixedSink::new("s2", SendResult::RetryAfter(Duration::from_secs(1)));
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
+
+        // First call: s1 completes, s2 requests retry.
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(
+            matches!(result, SendResult::RetryAfter(_)),
+            "first call must return RetryAfter"
+        );
+        assert_eq!(*calls1.lock().unwrap(), 1, "s1 called once");
+        assert_eq!(*calls2.lock().unwrap(), 1, "s2 called once");
+
+        // Caller retries the same batch as required by the contract.
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(
+            matches!(result, SendResult::RetryAfter(_)),
+            "retry of same batch returns RetryAfter (s2 still waiting)"
+        );
+        // s1 is skipped (already completed); s2 is retried.
+        assert_eq!(
+            *calls1.lock().unwrap(),
+            1,
+            "s1 must not be called again on retry of same batch"
+        );
+        assert_eq!(*calls2.lock().unwrap(), 2, "s2 retried");
     }
 
     #[test]
