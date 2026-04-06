@@ -616,8 +616,7 @@ mod tests {
         // s1 completes on the first call; s2 requests a retry.
         // On the second call (retry), only s2 should be invoked.
         let (s1, calls1) = FixedSink::new("s1", SendResult::Ok);
-        let (s2, calls2) =
-            FixedSink::new("s2", SendResult::RetryAfter(Duration::from_secs(5)));
+        let (s2, calls2) = FixedSink::new("s2", SendResult::RetryAfter(Duration::from_secs(5)));
         let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
 
         let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
@@ -654,7 +653,11 @@ mod tests {
         // s1 must be called again.
         let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
         assert!(matches!(result, SendResult::Ok));
-        assert_eq!(*calls1.lock().unwrap(), 2, "s1 must be called for the new batch");
+        assert_eq!(
+            *calls1.lock().unwrap(),
+            2,
+            "s1 must be called for the new batch"
+        );
     }
 
     #[test]
