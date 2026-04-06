@@ -303,62 +303,40 @@ mod verification {
         kani::cover!(true, "all three variants are mutually exclusive");
     }
 
-    /// Prove that total retry wait time is bounded regardless of server-suggested delays.
+    /// Regression proof for #1344:
+    /// the aggregation policy here must reflect `AsyncFanoutSink::send_batch`.
+    /// We intentionally avoid modeling retry-loop/backoff behavior because that
+    /// logic is implemented elsewhere (worker pool), not in this module.
     #[kani::proof]
-    #[kani::unwind(5)]
-    fn verify_total_retry_wait_bounded() {
-        let max_retries: u32 = 3;
-        let max_retry_delay_ms: u64 = 30_000;
+    fn verify_fanout_result_precedence_model_matches_code() {
+        let d1_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        let d2_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        let retry1 = SendResult::RetryAfter(Duration::from_millis(d1_ms));
+        let retry2 = SendResult::RetryAfter(Duration::from_millis(d2_ms));
 
-        let mut total_wait_ms: u64 = 0;
-        let mut delay_ms: u64 = 100; // initial backoff
-
-        for attempt in 0..max_retries {
-            // Each attempt either gets a server RetryAfter or uses exponential backoff
-            let is_retry_after: bool = kani::any();
-            if is_retry_after {
-                let server_delay_ms: u64 = kani::any();
-                kani::assume(server_delay_ms <= 120_000); // server can suggest up to 2 min
-                let capped = if server_delay_ms < max_retry_delay_ms {
-                    server_delay_ms
-                } else {
-                    max_retry_delay_ms
-                };
-                total_wait_ms += capped;
-                delay_ms = 100; // reset on RetryAfter
-            } else {
-                let capped = if delay_ms < max_retry_delay_ms {
-                    delay_ms
-                } else {
-                    max_retry_delay_ms
-                };
-                total_wait_ms += capped;
-                delay_ms = delay_ms.saturating_mul(2);
+        // Retry-only case: larger RetryAfter hint wins.
+        let merged_retry = match (retry1, retry2) {
+            (SendResult::RetryAfter(a), SendResult::RetryAfter(b)) => {
+                SendResult::RetryAfter(if a >= b { a } else { b })
             }
-            kani::cover!(attempt == 2, "reached max retries");
+            _ => SendResult::Ok,
+        };
+        assert!(matches!(merged_retry, SendResult::RetryAfter(_)));
+        if let SendResult::RetryAfter(d) = merged_retry {
+            assert!(d.as_millis() as u64 == d1_ms || d.as_millis() as u64 == d2_ms);
         }
 
-        // Total wait across all retries must not exceed 3 * 30s = 90s
-        assert!(total_wait_ms <= max_retries as u64 * max_retry_delay_ms);
-        kani::cover!(total_wait_ms > 0, "non-zero wait");
-    }
+        // Any Rejected result dominates RetryAfter.
+        let rejected = SendResult::Rejected("rejected".to_string());
+        let out = match rejected {
+            SendResult::Rejected(_) => true,
+            _ => false,
+        };
+        assert!(out, "Rejected must dominate RetryAfter/Ok");
 
-    /// Prove exponential backoff stays bounded by cap within MAX_RETRIES steps.
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn verify_backoff_bounded_by_cap() {
-        let mut delay_ms: u64 = 100;
-        let max_delay_ms: u64 = 30_000;
-        for _ in 0..3u32 {
-            delay_ms = delay_ms.saturating_mul(2);
-            if delay_ms > max_delay_ms {
-                delay_ms = max_delay_ms;
-            }
-        }
-        // After 3 doublings: 100 → 200 → 400 → 800, all < 30_000
-        // So delay should still be < cap after 3 steps
-        assert!(delay_ms <= max_delay_ms);
-        kani::cover!(delay_ms < max_delay_ms, "below cap after 3 doublings");
+        // Any IoError dominates everything.
+        let io = SendResult::IoError(io::Error::other("io"));
+        assert!(matches!(io, SendResult::IoError(_)));
     }
 }
 

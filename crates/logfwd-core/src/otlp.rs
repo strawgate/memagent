@@ -416,8 +416,9 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         return None;
     }
 
-    let mut nanos = (days as u64) * 86400 + hour * 3600 + min * 60 + sec;
-    nanos *= 1_000_000_000;
+    // Parse timezone designator: 'Z' or ±HH:MM.
+    let mut tz_start = 19usize;
+    let mut frac_nanos = 0u64;
 
     // Parse fractional seconds if present.
     if ts.len() > 19 && ts[19] == b'.' {
@@ -436,10 +437,45 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
             for _ in frac_digits..9 {
                 frac_val *= 10;
             }
-            nanos += frac_val;
+            frac_nanos = frac_val;
         }
+        tz_start = frac_end;
     }
 
+    if tz_start >= ts.len() {
+        return None;
+    }
+
+    let tz_offset_secs: i64 = match ts[tz_start] {
+        b'Z' | b'z' if tz_start + 1 == ts.len() => 0,
+        b'+' | b'-' if tz_start + 6 == ts.len() => {
+            if ts[tz_start + 3] != b':' {
+                return None;
+            }
+            let tz_h = parse_2digits(ts, tz_start + 1) as i64;
+            let tz_m = parse_2digits(ts, tz_start + 4) as i64;
+            if tz_h >= 24 || tz_m >= 60 {
+                return None;
+            }
+            let sign = if ts[tz_start] == b'-' { -1 } else { 1 };
+            sign * (tz_h * 3600 + tz_m * 60)
+        }
+        _ => return None,
+    };
+
+    let total_secs = (days as i64)
+        .checked_mul(86_400)?
+        .checked_add(hour as i64 * 3600)?
+        .checked_add(min as i64 * 60)?
+        .checked_add(sec as i64)?
+        .checked_sub(tz_offset_secs)?;
+    if total_secs < 0 {
+        return None;
+    }
+
+    let nanos = (total_secs as u64)
+        .checked_mul(1_000_000_000)?
+        .checked_add(frac_nanos)?;
     Some(nanos)
 }
 
@@ -543,6 +579,24 @@ mod tests {
         let ts = b"2024-01-15T10:30:00.123456789Z";
         let nanos = parse_timestamp_nanos(ts).unwrap();
         assert_eq!(nanos, 1_705_314_600_123_456_789);
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_timezone_offset() {
+        let plus = b"2024-01-15T10:30:00+02:30";
+        let minus = b"2024-01-15T10:30:00-02:30";
+        assert_eq!(parse_timestamp_nanos(plus), Some(1_705_305_600_000_000_000));
+        assert_eq!(
+            parse_timestamp_nanos(minus),
+            Some(1_705_323_600_000_000_000)
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_rejects_invalid_timezone_suffix() {
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+0230"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+02:30Z"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00"), None);
     }
 
     #[test]
