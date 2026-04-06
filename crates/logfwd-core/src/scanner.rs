@@ -96,7 +96,13 @@ pub trait ScanBuilder {
     /// Append a float value (as raw ASCII) at the given column index.
     fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
     /// Append a boolean value at the given column index.
-    fn append_bool_by_idx(&mut self, idx: usize, value: bool);
+    ///
+    /// The default delegates to [`append_null_by_idx`](Self::append_null_by_idx)
+    /// so that existing implementations that do not support boolean storage
+    /// remain compilable without changes. Override to store the actual value.
+    fn append_bool_by_idx(&mut self, idx: usize, _value: bool) {
+        self.append_null_by_idx(idx);
+    }
     /// Record a null value at the given column index.
     fn append_null_by_idx(&mut self, idx: usize);
     /// Store the raw unparsed line (only called when `keep_raw` is set).

@@ -566,7 +566,20 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         if excluded.contains(&idx) {
             continue;
         }
-        let field_name = field.name().as_str().replace("__", ".");
+        // Convert double-underscore dot-encoding back to dots (e.g. `http__url` → `http.url`).
+        // Skip columns that end with a known type-conflict suffix (`__int`, `__str`,
+        // `__bool`, `__float`) — those are old-schema conflict columns, not dot-encoded
+        // names, and renaming them would produce incorrect OTLP attribute keys.
+        let raw_name = field.name().as_str();
+        let field_name = if raw_name.ends_with("__int")
+            || raw_name.ends_with("__str")
+            || raw_name.ends_with("__bool")
+            || raw_name.ends_with("__float")
+        {
+            raw_name.to_string()
+        } else {
+            raw_name.replace("__", ".")
+        };
         // Dispatch on the actual Arrow DataType, not the column name suffix.
         // A SQL transform may produce a column whose name suffix disagrees with
         // its real type (e.g. `SELECT level_str AS count_int`); using
@@ -1299,6 +1312,50 @@ mod tests {
         assert!(
             contains_bytes(&sink.encoder_buf, b"active"),
             "attribute key 'active' not found"
+        );
+    }
+
+    /// Verify that `__` in a dot-encoded column name (e.g. `http__url`) is converted to
+    /// a dot in the OTLP attribute key, but that columns ending with a known type-conflict
+    /// suffix (`__int`, `__str`, `__bool`, `__float`) are left unchanged.
+    #[test]
+    fn field_name_dot_encoding_vs_conflict_suffix() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("http__url", DataType::Utf8, true), // dot-encoded → http.url
+            Field::new("status__int", DataType::Utf8, true), // conflict suffix → unchanged
+            Field::new("status__str", DataType::Utf8, true), // conflict suffix → unchanged
+        ]));
+        let url_arr = StringArray::from(vec!["https://example.com"]);
+        let int_arr = StringArray::from(vec!["200"]);
+        let str_arr = StringArray::from(vec!["OK"]);
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(url_arr), Arc::new(int_arr), Arc::new(str_arr)],
+        )
+        .unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        assert!(
+            contains_bytes(&sink.encoder_buf, b"http.url"),
+            "dot-encoded `http__url` must appear as `http.url` in OTLP output"
+        );
+        assert!(
+            !contains_bytes(&sink.encoder_buf, b"http__url"),
+            "raw `http__url` must not appear in OTLP output"
+        );
+        assert!(
+            contains_bytes(&sink.encoder_buf, b"status__int"),
+            "conflict-suffix column `status__int` must not be renamed"
+        );
+        assert!(
+            contains_bytes(&sink.encoder_buf, b"status__str"),
+            "conflict-suffix column `status__str` must not be renamed"
+        );
+        assert!(
+            !contains_bytes(&sink.encoder_buf, b"status.int"),
+            "`status__int` must not be corrupted to `status.int`"
         );
     }
 
