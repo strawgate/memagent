@@ -12,6 +12,8 @@ use opentelemetry::metrics::{Counter, Meter};
 // paths keep working.
 pub use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
+mod policy;
+
 // ---------------------------------------------------------------------------
 // Pipeline-level metrics (shared between pipeline thread and diagnostics)
 // ---------------------------------------------------------------------------
@@ -542,7 +544,7 @@ impl DiagnosticsServer {
 
     fn serve_health(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let uptime = self.start_time.elapsed().as_secs();
-        let component_health = self.aggregate_component_health();
+        let component_health = policy::aggregate_component_health(&self.pipelines);
         let body = format!(
             r#"{{"status":"ok","component_health":"{}","uptime_seconds":{},"version":"{}"}}"#,
             component_health.as_str(),
@@ -557,17 +559,20 @@ impl DiagnosticsServer {
     }
 
     /// Returns 200 `{"status":"ready"}` when at least one pipeline is
-    /// registered (i.e., the agent has finished initialization and is
-    /// functional) and all components are in a ready state. Returns 503 before
-    /// any pipelines are configured or while a component is still starting,
-    /// stopping, stopped, or failed.
+    /// registered and the current explicit component health snapshots are
+    /// ready. Returns 503 before any pipelines are configured or while a
+    /// component is still starting, stopping, stopped, or failed.
     ///
     /// Per-pipeline data-flow freshness (`last_batch_time_ns`) is exposed
     /// via `/api/pipelines` for monitoring dashboards, but is NOT a
     /// readiness gate — a quiet log source should not cause Kubernetes
     /// to mark the pod as unready.
+    ///
+    /// Some component kinds still inherit optimistic default health until
+    /// explicit lifecycle wiring lands, so this endpoint is only as honest as
+    /// the currently wired health sources.
     fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let ready = !self.pipelines.is_empty() && self.all_components_ready();
+        let ready = policy::is_ready(&self.pipelines);
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
@@ -1028,7 +1033,7 @@ impl DiagnosticsServer {
             };
             let inflight = pm.inflight_batches.load(Ordering::Relaxed);
             let backpressure = pm.backpressure_stalls.load(Ordering::Relaxed);
-            let transform_health = pm.transform_in.health().combine(pm.transform_out.health());
+            let transform_health = policy::transform_health(pm);
 
             pipelines_json.push(format!(
                 r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","health":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"dropped_batches_total":{},"scan_errors_total":{},"parse_errors_total":{},"last_batch_time_ns":{},"batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{}}}"#,
@@ -1074,34 +1079,6 @@ impl DiagnosticsServer {
         let resp = tiny_http::Response::from_string(body).with_header(header);
         request.respond(resp)?;
         Ok(())
-    }
-
-    fn all_components_ready(&self) -> bool {
-        self.pipelines.iter().all(|pm| {
-            pm.transform_in.health().is_ready()
-                && pm.transform_out.health().is_ready()
-                && pm
-                    .inputs
-                    .iter()
-                    .all(|(_, _, stats)| stats.health().is_ready())
-                && pm
-                    .outputs
-                    .iter()
-                    .all(|(_, _, stats)| stats.health().is_ready())
-        })
-    }
-
-    fn aggregate_component_health(&self) -> ComponentHealth {
-        self.pipelines
-            .iter()
-            .flat_map(|pm| {
-                pm.inputs
-                    .iter()
-                    .map(|(_, _, stats)| stats.health())
-                    .chain([pm.transform_in.health(), pm.transform_out.health()])
-                    .chain(pm.outputs.iter().map(|(_, _, stats)| stats.health()))
-            })
-            .fold(ComponentHealth::Healthy, ComponentHealth::combine)
     }
 
     /// Returns a JSON fragment (starting with a comma) for allocator memory
