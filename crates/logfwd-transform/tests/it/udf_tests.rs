@@ -3,11 +3,11 @@ use std::sync::Arc;
 use arrow::array::{Array, StringArray, StringViewArray};
 use arrow::datatypes::DataType;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
+use logfwd_transform::enrichment::GeoDatabase;
+use logfwd_transform::enrichment::GeoResult;
 use logfwd_transform::udf::{
     GeoLookupUdf, GrokUdf, HashUdf, JsonExtractMode, JsonExtractUdf, RegexpExtractUdf,
 };
-use logfwd_transform::enrichment::GeoDatabase;
-use logfwd_transform::enrichment::GeoResult;
 
 struct MockGeoDatabase;
 
@@ -80,7 +80,35 @@ fn test_hash_udf_missing_args() {
     };
     let result = udf.invoke_with_args(args);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("expects exactly one argument"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly one argument")
+    );
+}
+
+#[test]
+fn test_hash_udf_extra_args() {
+    let udf = HashUdf::new();
+    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::UInt64, true));
+    let scalar = ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(
+        "val".to_string(),
+    )));
+    let args = ScalarFunctionArgs {
+        args: vec![scalar.clone(), scalar],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly one argument")
+    );
 }
 
 #[test]
@@ -88,20 +116,54 @@ fn test_json_extract_udf_missing_args() {
     let udf = JsonExtractUdf::new(JsonExtractMode::Str);
     let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
     let args = ScalarFunctionArgs {
-        args: vec![ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("val".to_string())))],
+        args: vec![ColumnarValue::Scalar(
+            datafusion::common::ScalarValue::Utf8(Some("val".to_string())),
+        )],
         number_rows: 1,
         return_field: Arc::clone(&return_field),
         arg_fields: vec![],
     };
     let result = udf.invoke_with_args(args);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("expects exactly two arguments"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly two arguments")
+    );
+}
+
+#[test]
+fn test_json_extract_udf_extra_args() {
+    let udf = JsonExtractUdf::new(JsonExtractMode::Str);
+    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
+    let scalar = ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(
+        "val".to_string(),
+    )));
+    let args = ScalarFunctionArgs {
+        args: vec![scalar.clone(), scalar.clone(), scalar],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly two arguments")
+    );
 }
 
 #[test]
 fn test_geo_lookup_udf_missing_args() {
     let udf = GeoLookupUdf::new(Arc::new(MockGeoDatabase));
-    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Struct(arrow::datatypes::Fields::empty()), true));
+    let return_field = Arc::new(arrow::datatypes::Field::new(
+        "r",
+        DataType::Struct(arrow::datatypes::Fields::empty()),
+        true,
+    ));
     let args = ScalarFunctionArgs {
         args: vec![],
         number_rows: 0,
@@ -110,7 +172,39 @@ fn test_geo_lookup_udf_missing_args() {
     };
     let result = udf.invoke_with_args(args);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("expects exactly one argument"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly one argument")
+    );
+}
+
+#[test]
+fn test_geo_lookup_udf_extra_args() {
+    let udf = GeoLookupUdf::new(Arc::new(MockGeoDatabase));
+    let return_field = Arc::new(arrow::datatypes::Field::new(
+        "r",
+        DataType::Struct(arrow::datatypes::Fields::empty()),
+        true,
+    ));
+    let scalar = ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(
+        "1.2.3.4".to_string(),
+    )));
+    let args = ScalarFunctionArgs {
+        args: vec![scalar.clone(), scalar],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly one argument")
+    );
 }
 
 #[test]
@@ -118,14 +212,44 @@ fn test_grok_udf_missing_args() {
     let udf = GrokUdf::new();
     let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
     let args = ScalarFunctionArgs {
-        args: vec![ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("val".to_string())))],
+        args: vec![ColumnarValue::Scalar(
+            datafusion::common::ScalarValue::Utf8(Some("val".to_string())),
+        )],
         number_rows: 1,
         return_field: Arc::clone(&return_field),
         arg_fields: vec![],
     };
     let result = udf.invoke_with_args(args);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("expects exactly two arguments"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly two arguments")
+    );
+}
+
+#[test]
+fn test_grok_udf_extra_args() {
+    let udf = GrokUdf::new();
+    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
+    let scalar = ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(
+        "val".to_string(),
+    )));
+    let args = ScalarFunctionArgs {
+        args: vec![scalar.clone(), scalar.clone(), scalar],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly two arguments")
+    );
 }
 
 #[test]
@@ -134,8 +258,12 @@ fn test_regexp_extract_udf_missing_args() {
     let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
     let args = ScalarFunctionArgs {
         args: vec![
-            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("val".to_string()))),
-            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("pattern".to_string()))),
+            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(
+                "val".to_string(),
+            ))),
+            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(
+                "pattern".to_string(),
+            ))),
         ],
         number_rows: 1,
         return_field: Arc::clone(&return_field),
@@ -143,5 +271,33 @@ fn test_regexp_extract_udf_missing_args() {
     };
     let result = udf.invoke_with_args(args);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("expects exactly three arguments"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly three arguments")
+    );
+}
+
+#[test]
+fn test_regexp_extract_udf_extra_args() {
+    let udf = RegexpExtractUdf::new();
+    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
+    let scalar = ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(
+        "val".to_string(),
+    )));
+    let args = ScalarFunctionArgs {
+        args: vec![scalar.clone(), scalar.clone(), scalar.clone(), scalar],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly three arguments")
+    );
 }

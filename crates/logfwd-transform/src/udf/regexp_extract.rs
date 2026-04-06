@@ -71,7 +71,7 @@ impl ScalarUDFImpl for RegexpExtractUdf {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DfResult<ColumnarValue> {
-        if args.args.len() < 3 {
+        if args.args.len() != 3 {
             return Err(datafusion::error::DataFusionError::Execution(
                 "regexp_extract() expects exactly three arguments".to_string(),
             ));

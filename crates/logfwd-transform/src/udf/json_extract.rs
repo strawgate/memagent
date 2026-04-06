@@ -193,7 +193,7 @@ impl ScalarUDFImpl for JsonExtractUdf {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DfResult<ColumnarValue> {
         let udf_name = self.mode.udf_name();
 
-        if args.args.len() < 2 {
+        if args.args.len() != 2 {
             return Err(DataFusionError::Execution(format!(
                 "{}() expects exactly two arguments",
                 udf_name
