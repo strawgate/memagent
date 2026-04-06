@@ -538,7 +538,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         if excluded.contains(&idx) {
             continue;
         }
-        let field_name = field.name().as_str();
+        let field_name = field.name().as_str().replace("__", ".");
         // Dispatch on the actual Arrow DataType, not the column name suffix.
         // A SQL transform may produce a column whose name suffix disagrees with
         // its real type (e.g. `SELECT level_str AS count_int`); using

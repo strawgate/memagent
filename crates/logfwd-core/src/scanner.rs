@@ -95,6 +95,8 @@ pub trait ScanBuilder {
     fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
     /// Append a float value (as raw ASCII) at the given column index.
     fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
+    /// Append a boolean value at the given column index.
+    fn append_bool_by_idx(&mut self, idx: usize, value: bool);
     /// Record a null value at the given column index.
     fn append_null_by_idx(&mut self, idx: usize);
     /// Store the raw unparsed line (only called when `keep_raw` is set).
@@ -199,7 +201,7 @@ fn scan_line<B: ScanBuilder>(
                 }
             }
             b't' | b'f' => {
-                let s = pos;
+                let is_true = buf[pos] == b't';
                 while pos < end
                     && buf[pos] != b','
                     && buf[pos] != b'}'
@@ -211,7 +213,7 @@ fn scan_line<B: ScanBuilder>(
                 }
                 if wanted {
                     let idx = builder.resolve_field(key);
-                    builder.append_str_by_idx(idx, &buf[s..pos]);
+                    builder.append_bool_by_idx(idx, is_true);
                 }
             }
             b'n' => {

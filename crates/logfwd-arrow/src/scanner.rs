@@ -45,6 +45,12 @@ impl ScanBuilder for StreamingBuilder {
     fn append_float_by_idx(&mut self, idx: usize, v: &[u8]) {
         self.append_float_by_idx(idx, v);
     }
+
+    #[inline(always)]
+    fn append_bool_by_idx(&mut self, idx: usize, value: bool) {
+        self.append_bool_by_idx(idx, value);
+    }
+
     #[inline(always)]
     fn append_null_by_idx(&mut self, idx: usize) {
         self.append_null_by_idx(idx);

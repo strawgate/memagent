@@ -14,7 +14,8 @@ logfwd-arrow = { path = "../../logfwd-arrow" }
 logfwd-transform = { path = "../../logfwd-transform" }
 logfwd-output = { path = "../../logfwd-output" }
 logfwd-io = { path = "../../logfwd-io" }
-arrow = { version = "54", default-features = false }
+logfwd-types = { path = "../../logfwd-types" }
+arrow = "55"
 bytes = "1"
 reqwest = { version = "0.12", default-features = false }
 
@@ -58,4 +59,9 @@ doc = false
 [[bin]]
 name = "fuzz_cri"
 path = "fuzz_targets/cri.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_validate_utf8"
+path = "fuzz_targets/validate_utf8.rs"
 doc = false

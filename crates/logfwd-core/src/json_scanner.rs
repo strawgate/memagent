@@ -211,7 +211,7 @@ fn scan_line<B: ScanBuilder>(
                 {
                     if wanted {
                         let idx = builder.resolve_field(key);
-                        builder.append_str_by_idx(idx, &buf[pos..pos + 4]);
+                        builder.append_bool_by_idx(idx, true);
                     }
                     pos += 4;
                 } else {
@@ -226,7 +226,7 @@ fn scan_line<B: ScanBuilder>(
                 {
                     if wanted {
                         let idx = builder.resolve_field(key);
-                        builder.append_str_by_idx(idx, &buf[pos..pos + 5]);
+                        builder.append_bool_by_idx(idx, false);
                     }
                     pos += 5;
                 } else {
@@ -621,6 +621,10 @@ mod tests {
             let val_str = String::from_utf8_lossy(val).to_string();
             self.current_row
                 .push((name, alloc::format!("float:{val_str}")));
+        }
+        fn append_bool_by_idx(&mut self, idx: usize, val: bool) {
+            let name = self.field_names[idx].clone();
+            self.current_row.push((name, val.to_string()));
         }
         fn append_null_by_idx(&mut self, idx: usize) {
             let name = self.field_names[idx].clone();
