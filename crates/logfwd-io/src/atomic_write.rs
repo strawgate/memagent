@@ -41,7 +41,11 @@ pub fn atomic_write_file(path: &Path, data: &[u8]) -> io::Result<()> {
     // fsync the parent directory so the rename entry is durable.
     // On ext4, rename metadata lives in the directory — without this
     // fsync a power failure can revert the rename.
-    if let Some(parent) = path.parent() {
+    //
+    // `path.parent()` returns `Some("")` for bare filenames like `"file.txt"`,
+    // which would fail to open. Skip the sync in that case — a bare filename
+    // means we're in the current directory, which is unusual for atomic writes.
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         let dir = fs::File::open(parent)?;
         dir.sync_data()?;
     }

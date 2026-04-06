@@ -109,11 +109,28 @@ impl IoAction {
     /// Pick the worse of two actions (higher severity wins).
     ///
     /// Used by fanout to aggregate results from multiple sinks.
+    /// On a severity tie, the action with the larger `Retry-After` hint wins
+    /// so callers respect the most conservative delay.
     pub fn worse(self, other: Self) -> Self {
-        if other.severity() > self.severity() {
-            other
-        } else {
-            self
+        match other.severity().cmp(&self.severity()) {
+            core::cmp::Ordering::Greater => other,
+            core::cmp::Ordering::Less => self,
+            core::cmp::Ordering::Equal => {
+                // Equal severity — prefer the larger Retry-After hint.
+                if other.retry_after_hint() > self.retry_after_hint() {
+                    other
+                } else {
+                    self
+                }
+            }
+        }
+    }
+
+    /// Returns the `Retry-After` hint, or `None` for non-retry actions.
+    pub fn retry_after_hint(&self) -> Option<Duration> {
+        match self {
+            IoAction::Retry { after, .. } => *after,
+            _ => None,
         }
     }
 }
@@ -257,6 +274,28 @@ mod tests {
         let reject = IoAction::reject("permanent");
         let result = retry.worse(reject);
         assert!(result.is_rejected());
+    }
+
+    #[test]
+    fn worse_tie_prefers_larger_retry_after() {
+        let short = IoAction::retry_after("a", Duration::from_secs(1));
+        let long = IoAction::retry_after("b", Duration::from_secs(10));
+        let result = short.worse(long);
+        assert_eq!(result.retry_after_hint(), Some(Duration::from_secs(10)));
+
+        // Reverse order should still pick the longer delay.
+        let short2 = IoAction::retry_after("a", Duration::from_secs(1));
+        let long2 = IoAction::retry_after("b", Duration::from_secs(10));
+        let result2 = long2.worse(short2);
+        assert_eq!(result2.retry_after_hint(), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn worse_tie_some_beats_none_retry_after() {
+        let no_hint = IoAction::retry("a");
+        let with_hint = IoAction::retry_after("b", Duration::from_secs(5));
+        let result = no_hint.worse(with_hint);
+        assert_eq!(result.retry_after_hint(), Some(Duration::from_secs(5)));
     }
 
     #[test]

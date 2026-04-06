@@ -617,11 +617,13 @@ async fn main() {
         let serde_elapsed = serde_start.elapsed();
 
         // sonic-rs
+        // Pre-allocate a reusable buffer so we don't measure clone overhead.
+        let mut buf = payload.to_vec();
         let sonic_start = Instant::now();
         for _ in 0..json_iters {
-            let mut payload_copy = payload.clone();
-            let _: sonic_rs::Value =
-                sonic_rs::from_slice(std::hint::black_box(&mut payload_copy)).unwrap();
+            buf.clear();
+            buf.extend_from_slice(payload);
+            let _: sonic_rs::Value = sonic_rs::from_slice(std::hint::black_box(&mut buf)).unwrap();
         }
         let sonic_elapsed = sonic_start.elapsed();
 
