@@ -57,13 +57,12 @@ fn rss_bytes() -> usize {
     }
     #[cfg(target_os = "macos")]
     {
-        use std::mem;
+        use std::mem::{self, size_of};
         // SAFETY: `zeroed()` is valid for `mach_task_basic_info_data_t`
         // (all-zero is a valid bit pattern for this plain-data struct).
         let mut info: libc::mach_task_basic_info_data_t = unsafe { mem::zeroed() };
-        let mut count = (mem::size_of::<libc::mach_task_basic_info_data_t>()
-            / mem::size_of::<libc::natural_t>())
-            as libc::mach_msg_type_number_t;
+        let mut count = (size_of::<libc::mach_task_basic_info_data_t>()
+            / size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
         // SAFETY: `mach_task_self_` is always a valid task port. `info` is a
         // mutable reference to a zeroed struct of the correct type and `count`
         // holds the matching element count. `task_info` only writes into `info`.
@@ -71,8 +70,8 @@ fn rss_bytes() -> usize {
             libc::task_info(
                 libc::mach_task_self_,
                 libc::MACH_TASK_BASIC_INFO,
-                &mut info as *mut _ as libc::task_info_t,
-                &mut count,
+                std::ptr::addr_of_mut!(info) as libc::task_info_t,
+                std::ptr::addr_of_mut!(count),
             )
         };
         if kr == libc::KERN_SUCCESS {
@@ -372,7 +371,7 @@ fn render_report(run: &ProfileRun<'_>) -> String {
 
     // Steady-state: average of last half of samples
     let steady_start = samples.len() / 2;
-    let steady_rss = if samples.len() > steady_start && samples.len() - steady_start > 0 {
+    let steady_rss = if samples.len() > steady_start {
         let steady_samples = &rss_values[steady_start..];
         steady_samples.iter().sum::<f64>() / steady_samples.len() as f64
     } else {

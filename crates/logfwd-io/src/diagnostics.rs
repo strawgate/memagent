@@ -987,12 +987,14 @@ impl DiagnosticsServer {
             // Compute batch latency using a consistent snapshot since they are
             // updated at different times. We retry until batches remains the same,
             // capping at 64 attempts to avoid spinning indefinitely under contention.
-            let mut latency_batches = pm.batches_total.load(Ordering::Acquire);
+            // Observability counters only — stale reads are acceptable.
+            // Use Relaxed uniformly to match all other load sites in this file.
+            let mut latency_batches = pm.batches_total.load(Ordering::Relaxed);
             let mut batch_latency_total;
             let mut attempts = 0;
             loop {
-                batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Acquire);
-                let current_batches = pm.batches_total.load(Ordering::Acquire);
+                batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Relaxed);
+                let current_batches = pm.batches_total.load(Ordering::Relaxed);
                 if current_batches == latency_batches || attempts >= 64 {
                     latency_batches = current_batches;
                     break;
@@ -1574,12 +1576,12 @@ mod tests {
     fn test_pipeline_metrics_record_batch_latency() {
         let meter = opentelemetry::global::meter("test");
         let pm = PipelineMetrics::new("test", "", &meter);
-        assert_eq!(pm.batch_latency_nanos_total.load(Ordering::Acquire), 0);
+        assert_eq!(pm.batch_latency_nanos_total.load(Ordering::Relaxed), 0);
 
         pm.record_batch_latency(10_000_000);
         pm.record_batch_latency(20_000_000);
         assert_eq!(
-            pm.batch_latency_nanos_total.load(Ordering::Acquire),
+            pm.batch_latency_nanos_total.load(Ordering::Relaxed),
             30_000_000
         );
     }
