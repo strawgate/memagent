@@ -343,8 +343,14 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
             for record in records {
                 out.push(b'{');
 
-                if let Some(ts) = record.get("timeUnixNano").and_then(|v| v.as_str()) {
-                    write_json_field(&mut out, "timestamp_int", ts);
+                if let Some(ts) = record.get("timeUnixNano") {
+                    let parsed = parse_protojson_u64(ts).filter(|&n| n > 0).ok_or_else(|| {
+                        InputError::Receiver(
+                            "invalid OTLP JSON timeUnixNano: not a valid positive uint64".into(),
+                        )
+                    })?;
+                    write_json_key(&mut out, "timestamp_int");
+                    write_u64_to_buf(&mut out, parsed);
                     out.push(b',');
                 }
 
@@ -413,7 +419,7 @@ fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, Inp
             .ok_or_else(|| InputError::Receiver("invalid OTLP JSON intValue".into()))?;
         return Ok(Some(parsed.to_string()));
     }
-    if let Some(d) = v.get("doubleValue").and_then(serde_json::Value::as_f64) {
+    if let Some(d) = v.get("doubleValue").and_then(parse_protojson_f64) {
         return Ok(Some(d.to_string()));
     }
     if let Some(b) = v.get("boolValue").and_then(serde_json::Value::as_bool) {
@@ -434,8 +440,7 @@ fn write_json_any_value_field_from_json(
     value: &serde_json::Value,
 ) -> Result<bool, InputError> {
     if let Some(i) = value.get("intValue") {
-        write_json_escaped_key(out, key);
-        out.extend_from_slice(b":");
+        write_json_key(out, key);
         let parsed = parse_protojson_i64(i).ok_or_else(|| {
             InputError::Receiver(format!(
                 "invalid OTLP JSON intValue for key {key}: not a valid integer"
@@ -445,7 +450,7 @@ fn write_json_any_value_field_from_json(
         return Ok(true);
     }
 
-    if let Some(d) = value.get("doubleValue").and_then(serde_json::Value::as_f64) {
+    if let Some(d) = value.get("doubleValue").and_then(parse_protojson_f64) {
         write_json_key(out, key);
         write_f64_to_buf(out, d);
         return Ok(true);
@@ -593,27 +598,128 @@ fn parse_protojson_i64(value: &serde_json::Value) -> Option<i64> {
     if let Some(n) = value.as_u64() {
         return i64::try_from(n).ok();
     }
+    if let Some(n) = value.as_number() {
+        return parse_protojson_i64_str(&n.to_string());
+    }
     if let Some(s) = value.as_str() {
         return parse_protojson_i64_str(s);
     }
     None
 }
 
+fn parse_protojson_u64(value: &serde_json::Value) -> Option<u64> {
+    if let Some(n) = value.as_u64() {
+        return Some(n);
+    }
+    if let Some(s) = value.as_str() {
+        return parse_protojson_u64_str(s);
+    }
+    if let Some(n) = value.as_number() {
+        return parse_protojson_u64_str(&n.to_string());
+    }
+    None
+}
+
+fn parse_protojson_f64(value: &serde_json::Value) -> Option<f64> {
+    if let Some(n) = value.as_f64() {
+        return Some(n);
+    }
+    if let Some(s) = value.as_str() {
+        return match s {
+            "NaN" => Some(f64::NAN),
+            "Infinity" => Some(f64::INFINITY),
+            "-Infinity" => Some(f64::NEG_INFINITY),
+            _ => s.parse::<f64>().ok(),
+        };
+    }
+    None
+}
+
 fn parse_protojson_i64_str(s: &str) -> Option<i64> {
-    if let Ok(parsed) = s.parse::<i64>() {
-        return Some(parsed);
+    let (negative, digits) = normalize_protojson_integral_digits(s)?;
+    let magnitude = digits.parse::<u64>().ok()?;
+    if negative {
+        let signed = i128::from(magnitude).checked_neg()?;
+        i64::try_from(signed).ok()
+    } else {
+        i64::try_from(magnitude).ok()
+    }
+}
+
+fn parse_protojson_u64_str(s: &str) -> Option<u64> {
+    let (negative, digits) = normalize_protojson_integral_digits(s)?;
+    if negative {
+        return None;
+    }
+    digits.parse::<u64>().ok()
+}
+
+fn normalize_protojson_integral_digits(s: &str) -> Option<(bool, String)> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
     }
 
-    let parsed = s.parse::<f64>().ok()?;
-    if !parsed.is_finite()
-        || parsed.fract() != 0.0
-        || parsed < i64::MIN as f64
-        || parsed > i64::MAX as f64
+    let (negative, unsigned) = match s.as_bytes()[0] {
+        b'+' => (false, &s[1..]),
+        b'-' => (true, &s[1..]),
+        _ => (false, s),
+    };
+    if unsigned.is_empty() {
+        return None;
+    }
+
+    let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
+        Some(idx) => (&unsigned[..idx], unsigned[idx + 1..].parse::<i32>().ok()?),
+        None => (unsigned, 0),
+    };
+
+    let (int_part, frac_part) = match mantissa.split_once('.') {
+        Some((int_part, frac_part)) => (int_part, frac_part),
+        None => (mantissa, ""),
+    };
+    if int_part.is_empty() && frac_part.is_empty() {
+        return None;
+    }
+    if !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
     {
         return None;
     }
 
-    Some(parsed as i64)
+    let mut digits = String::with_capacity(int_part.len() + frac_part.len());
+    digits.push_str(int_part);
+    digits.push_str(frac_part);
+    if digits.is_empty() {
+        return None;
+    }
+
+    let fractional_digits = i32::try_from(frac_part.len()).ok()?;
+    let effective_exponent = exponent.checked_sub(fractional_digits)?;
+
+    if effective_exponent >= 0 {
+        let zeros = usize::try_from(effective_exponent).ok()?;
+        digits.extend(std::iter::repeat_n('0', zeros));
+    } else {
+        let trim = usize::try_from(-effective_exponent).ok()?;
+        if trim > digits.len() {
+            if digits.bytes().all(|b| b == b'0') {
+                return Some((false, "0".to_string()));
+            }
+            return None;
+        }
+        if !digits[digits.len() - trim..].bytes().all(|b| b == b'0') {
+            return None;
+        }
+        digits.truncate(digits.len() - trim);
+    }
+
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Some((false, "0".to_string()));
+    }
+
+    Some((negative, digits.to_string()))
 }
 
 fn decode_protojson_bytes(value: &str) -> Result<Vec<u8>, base64::DecodeError> {
@@ -723,13 +829,12 @@ fn write_u64_to_buf(out: &mut Vec<u8>, mut n: u64) {
 #[inline]
 fn write_f64_to_buf(out: &mut Vec<u8>, d: f64) {
     use std::io::Write;
+    if !d.is_finite() {
+        out.extend_from_slice(b"null");
+        return;
+    }
     // Use ryu for optimal float formatting (available in std)
     let _ = write!(out, "{}", d);
-}
-
-fn write_json_field(out: &mut Vec<u8>, key: &str, value: &str) {
-    write_json_key(out, key);
-    out.extend_from_slice(value.as_bytes());
 }
 
 fn write_json_string_field(out: &mut Vec<u8>, key: &str, value: &str) {
@@ -1273,6 +1378,159 @@ mod tests {
         assert_eq!(
             row.get("status").and_then(serde_json::Value::as_i64),
             Some(500)
+        );
+    }
+
+    #[test]
+    fn bare_exponent_json_int_value_is_accepted() {
+        let json_lines = decode_otlp_logs_json(
+            br#"{
+                "resourceLogs": [{
+                    "scopeLogs": [{
+                        "logRecords": [{
+                            "attributes": [{
+                                "key": "status",
+                                "value": {"intValue": 1e2}
+                            }]
+                        }]
+                    }]
+                }]
+            }"#,
+        )
+        .expect("bare exponent intValue should decode");
+
+        let line = String::from_utf8(json_lines).expect("utf8");
+        let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            row.get("status").and_then(serde_json::Value::as_i64),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn out_of_range_json_int_value_returns_error() {
+        let result = decode_otlp_logs_json(
+            br#"{
+                "resourceLogs": [{
+                    "scopeLogs": [{
+                        "logRecords": [{
+                            "attributes": [{
+                                "key": "status",
+                                "value": {"intValue": "9223372036854775808"}
+                            }]
+                        }]
+                    }]
+                }]
+            }"#,
+        );
+
+        assert!(result.is_err(), "out-of-range intValue must fail");
+    }
+
+    #[test]
+    fn invalid_json_time_unix_nano_returns_error() {
+        let result = decode_otlp_logs_json(
+            br#"{
+                "resourceLogs": [{
+                    "scopeLogs": [{
+                        "logRecords": [{
+                            "timeUnixNano": "not-a-number"
+                        }]
+                    }]
+                }]
+            }"#,
+        );
+
+        assert!(result.is_err(), "invalid timeUnixNano must fail");
+    }
+
+    #[test]
+    fn special_float_strings_match_protobuf_semantics() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(Value::DoubleValue(f64::NAN)),
+                        }),
+                        attributes: vec![
+                            KeyValue {
+                                key: "nan_attr".into(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::DoubleValue(f64::NAN)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "pos_inf".into(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::DoubleValue(f64::INFINITY)),
+                                }),
+                            },
+                            KeyValue {
+                                key: "neg_inf".into(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::DoubleValue(f64::NEG_INFINITY)),
+                                }),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let protobuf_lines = decode_otlp_logs(&request.encode_to_vec()).unwrap();
+        let json_lines = decode_otlp_logs_json(
+            br#"{
+                "resourceLogs": [{
+                    "scopeLogs": [{
+                        "logRecords": [{
+                            "body": {"doubleValue": "NaN"},
+                            "attributes": [
+                                {"key": "nan_attr", "value": {"doubleValue": "NaN"}},
+                                {"key": "pos_inf", "value": {"doubleValue": "Infinity"}},
+                                {"key": "neg_inf", "value": {"doubleValue": "-Infinity"}}
+                            ]
+                        }]
+                    }]
+                }]
+            }"#,
+        )
+        .expect("special float string tokens should decode");
+
+        let parse_first = |lines: &[u8]| -> serde_json::Value {
+            let line = String::from_utf8(lines.to_vec())
+                .unwrap()
+                .lines()
+                .next()
+                .expect("one decoded row")
+                .to_string();
+            serde_json::from_str(&line).unwrap()
+        };
+
+        let protobuf_row = parse_first(&protobuf_lines);
+        let json_row = parse_first(&json_lines);
+        assert_eq!(protobuf_row, json_row);
+        assert_eq!(
+            json_row.get("message").and_then(serde_json::Value::as_str),
+            Some("NaN")
+        );
+        assert!(
+            json_row
+                .get("nan_attr")
+                .is_some_and(serde_json::Value::is_null)
+        );
+        assert!(
+            json_row
+                .get("pos_inf")
+                .is_some_and(serde_json::Value::is_null)
+        );
+        assert!(
+            json_row
+                .get("neg_inf")
+                .is_some_and(serde_json::Value::is_null)
         );
     }
 

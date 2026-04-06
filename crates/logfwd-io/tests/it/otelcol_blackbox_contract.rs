@@ -38,6 +38,14 @@ use crate::otlp_contract_support::{
 
 const OTELCOL_VERSION: &str = "0.148.0";
 const OTELCOL_BINARY_NAME: &str = "otelcol-contrib";
+const OTELCOL_DARWIN_AMD64_SHA256: &str =
+    "ebd06dc7f098a5e4d7c705a6228d724c9ea3b040f8435fad77846bc886df0c1f";
+const OTELCOL_DARWIN_ARM64_SHA256: &str =
+    "9fa3074e075f49b3c82cca957cfa367f097b4b56e5583105613beb8ab5a6ffa1";
+const OTELCOL_LINUX_AMD64_SHA256: &str =
+    "224be33baa9eb534838e3d742d5327eff6a6bb60cdf4a16daf9c4e70d438fe00";
+const OTELCOL_LINUX_ARM64_SHA256: &str =
+    "cdacaa17eba2d7aec7338734669a15de0f3382828ba1f835a35a81fc3e55a9fa";
 
 struct OtelcolProcess {
     child: Child,
@@ -95,12 +103,6 @@ fn otelcol_archive_name() -> String {
     format!("otelcol-contrib_{OTELCOL_VERSION}_{os}_{arch}.tar.gz")
 }
 
-fn otelcol_checksums_url() -> String {
-    format!(
-        "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{OTELCOL_VERSION}/opentelemetry-collector-releases_otelcol-contrib_checksums.txt"
-    )
-}
-
 fn cached_otelcol_binary_path() -> PathBuf {
     env::temp_dir()
         .join("memagent-otelcol-cache")
@@ -115,33 +117,16 @@ fn cached_otelcol_archive_path() -> PathBuf {
         .join(otelcol_archive_name())
 }
 
-fn fetch_expected_otelcol_archive_sha256() -> io::Result<String> {
-    let response = ureq::get(&otelcol_checksums_url())
-        .call()
-        .map_err(|err| io::Error::other(format!("failed to download otelcol checksums: {err}")))?;
-    let mut checksums = String::new();
-    response
-        .into_body()
-        .into_reader()
-        .read_to_string(&mut checksums)?;
-
-    let archive_name = otelcol_archive_name();
-    for line in checksums.lines() {
-        let mut parts = line.split_whitespace();
-        let Some(sha) = parts.next() else {
-            continue;
-        };
-        let Some(name) = parts.next() else {
-            continue;
-        };
-        if name == archive_name {
-            return Ok(sha.to_string());
-        }
+fn expected_otelcol_archive_sha256() -> io::Result<&'static str> {
+    match platform() {
+        ("darwin", "amd64") => Ok(OTELCOL_DARWIN_AMD64_SHA256),
+        ("darwin", "arm64") => Ok(OTELCOL_DARWIN_ARM64_SHA256),
+        ("linux", "amd64") => Ok(OTELCOL_LINUX_AMD64_SHA256),
+        ("linux", "arm64") => Ok(OTELCOL_LINUX_ARM64_SHA256),
+        (os, arch) => Err(io::Error::other(format!(
+            "no pinned otelcol checksum for platform {os}/{arch}"
+        ))),
     }
-
-    Err(io::Error::other(format!(
-        "checksum manifest did not contain {archive_name}"
-    )))
 }
 
 fn sha256_file(path: &Path) -> io::Result<String> {
@@ -175,7 +160,7 @@ fn ensure_otelcol_binary() -> io::Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
 
-    let expected_sha256 = fetch_expected_otelcol_archive_sha256()?;
+    let expected_sha256 = expected_otelcol_archive_sha256()?;
     let archive = cached_otelcol_archive_path();
     let binary = cached_otelcol_binary_path();
 
@@ -226,6 +211,20 @@ fn ensure_otelcol_binary() -> io::Result<PathBuf> {
     Err(io::Error::other(
         "downloaded otelcol archive did not contain otelcol-contrib",
     ))
+}
+
+fn wait_for_process_stability(process: &mut OtelcolProcess, timeout: Duration) -> io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Some(status) = process.child.try_wait()? {
+            return Err(io::Error::other(format!(
+                "otelcol exited early with {status}\n{}",
+                process.diagnostics()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
 }
 
 fn wait_for_port(addr: &str, timeout: Duration) -> io::Result<()> {
@@ -321,7 +320,7 @@ service:
             .stderr(Stdio::from(stderr))
             .spawn()?;
 
-        let process = OtelcolProcess {
+        let mut process = OtelcolProcess {
             child,
             temp_dir,
             output_path,
@@ -330,7 +329,13 @@ service:
         };
 
         match wait_for_port(&receiver_addr, Duration::from_secs(30)) {
-            Ok(()) => return Ok((process, format!("http://{receiver_addr}/v1/logs"))),
+            Ok(()) => {
+                if let Err(err) = wait_for_process_stability(&mut process, Duration::from_secs(1)) {
+                    last_error = Some(err);
+                    continue;
+                }
+                return Ok((process, format!("http://{receiver_addr}/v1/logs")));
+            }
             Err(err) => {
                 let diagnostics = process.diagnostics();
                 let bind_race = diagnostics.contains("address already in use");
@@ -412,14 +417,15 @@ service:
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .spawn()?;
-
-    Ok(OtelcolProcess {
+    let mut process = OtelcolProcess {
         child,
         temp_dir,
         output_path,
         stdout_path,
         stderr_path,
-    })
+    };
+    wait_for_process_stability(&mut process, Duration::from_secs(1))?;
+    Ok(process)
 }
 
 fn build_batch_and_expected_request() -> (RecordBatch, BatchMetadata, ExportLogsServiceRequest) {
@@ -530,14 +536,11 @@ fn poll_single_row(input: &mut dyn InputSource, timeout: Duration) -> serde_json
             }
         }
 
-        if !buf.is_empty() {
-            let line = String::from_utf8(buf)
-                .expect("receiver emits utf8 json")
-                .lines()
-                .next()
-                .expect("one decoded row")
-                .to_string();
-            return serde_json::from_str(&line)
+        if let Some(newline) = buf.iter().position(|b| *b == b'\n') {
+            let line = String::from_utf8(buf.drain(..=newline).collect())
+                .expect("receiver emits utf8 json");
+            let line = line.trim_end_matches('\n');
+            return serde_json::from_str(line)
                 .unwrap_or_else(|err| panic!("valid json row: {err}; line={line}"));
         }
 

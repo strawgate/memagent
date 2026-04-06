@@ -5,6 +5,8 @@ use opentelemetry_proto::tonic::{
     common::v1::{AnyValue, any_value::Value},
 };
 
+const OTLP_TIMESTAMP_FIELD: &str = "timestamp_int";
+
 /// Encode a byte slice as a lowercase hex string (used for trace/span IDs).
 pub fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -60,7 +62,7 @@ pub fn expected_single_row_from_request(request: &ExportLogsServiceRequest) -> s
 
     if record.time_unix_nano > 0 {
         object.insert(
-            field_names::TIMESTAMP.into(),
+            OTLP_TIMESTAMP_FIELD.into(),
             serde_json::Value::Number(record.time_unix_nano.into()),
         );
     }
@@ -126,7 +128,7 @@ pub fn emitted_single_row_from_otlp_json(export: &serde_json::Value) -> serde_js
 
     if let Some(timestamp) = record.get("timeUnixNano").and_then(parse_u64_from_json) {
         object.insert(
-            field_names::TIMESTAMP.into(),
+            OTLP_TIMESTAMP_FIELD.into(),
             serde_json::Value::Number(timestamp.into()),
         );
     }

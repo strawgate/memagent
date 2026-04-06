@@ -37,13 +37,13 @@ walkdir = { workspace = true }
 [dev-dependencies]
 logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 reqwest = { workspace = true, features = ["rustls-tls", "http2"] }
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 dhat = "0.3"
 flate2 = { workspace = true }
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1"
 proptest-state-machine = "0.8"
-sha2 = "0.10"
+sha2 = { workspace = true }
 serial_test = "3"
 tar = { workspace = true }
 tempfile = "3.27.0"

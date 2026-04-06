@@ -142,4 +142,3 @@ Expected outcomes:
 2. Add differential tests comparing our OTLP behavior with at least one external reference implementation for fixture corpus.
 3. Promote this loopback test into CI-required “contract suite” stage.
 4. Add benchmark counters for correctness overhead (latency delta with contract checks enabled/disabled).
-
