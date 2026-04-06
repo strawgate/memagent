@@ -443,14 +443,14 @@ fn json_any_value_to_string(v: &sonic_rs::Value) -> String {
             let mut buf = Vec::new();
             write_i64_to_buf(&mut buf, n);
             // write_i64_to_buf only produces ASCII digits and '-', so from_utf8 always succeeds.
-            return String::from_utf8(buf).unwrap_or_default();
+            return String::from_utf8(buf).expect("write_i64_to_buf must emit valid UTF-8");
         }
     }
     if let Some(d) = v.get("doubleValue").and_then(JsonValueTrait::as_f64) {
         let mut buf = Vec::new();
         write_f64_to_buf(&mut buf, d);
         // write_f64_to_buf only produces ASCII characters, so from_utf8 always succeeds.
-        return String::from_utf8(buf).unwrap_or_default();
+        return String::from_utf8(buf).expect("write_f64_to_buf must emit valid UTF-8");
     }
     if let Some(b) = v.get("boolValue").and_then(JsonValueTrait::as_bool) {
         return if b { "true" } else { "false" }.to_string();

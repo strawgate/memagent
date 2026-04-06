@@ -241,7 +241,10 @@ fn glob_max_depth(pattern: &str) -> Option<usize> {
         .components()
         .filter(|c| *c != std::path::Component::CurDir)
         .count();
-    let total_depth = Path::new(pattern).components().count();
+    let total_depth = Path::new(pattern)
+        .components()
+        .filter(|c| *c != std::path::Component::CurDir)
+        .count();
     // Ensure at least depth 1 — a file is always at depth ≥1 from its directory.
     Some(total_depth.saturating_sub(root_depth).max(1))
 }
@@ -1193,6 +1196,14 @@ mod tests {
         // */*.log → root=. (0 effective components), pattern has 2 → depth 2.
         // WalkDir must search at depth 2 to find files in subdirectories.
         assert_eq!(glob_max_depth("*/*.log"), Some(2));
+    }
+
+    #[test]
+    fn glob_max_depth_relative_dot_prefix() {
+        // `./` is syntactic sugar for the current directory and should not
+        // change traversal depth compared with the equivalent relative pattern.
+        assert_eq!(glob_max_depth("./*.log"), glob_max_depth("*.log"));
+        assert_eq!(glob_max_depth("./foo/*.log"), glob_max_depth("foo/*.log"));
     }
 
     // ---- end glob helper tests ----
