@@ -193,8 +193,11 @@ pub enum SegmentStatus {
 }
 
 /// Zero-padded filename for lexicographic = numeric sort.
+///
+/// u64::MAX is 18_446_744_073_709_551_615 (20 digits), so 20-digit padding
+/// ensures lexicographic sort equals numeric sort across the full u64 range.
 pub fn segment_filename(segment_id: u64) -> String {
-    format!("seg-{segment_id:010}.lchk")
+    format!("seg-{segment_id:020}.lchk")
 }
 
 impl SegmentFile {
@@ -824,7 +827,7 @@ pub fn recover_segments(
             entries.push(path);
         }
     }
-    // Lexicographic sort == numeric sort because segment_filename() zero-pads to 10 digits.
+    // Lexicographic sort == numeric sort because segment_filename() zero-pads to 20 digits.
     entries.sort();
 
     let mut valid: Vec<SegmentFile> = Vec::new();
@@ -1176,8 +1179,10 @@ mod tests {
 
     #[test]
     fn segment_filename_zero_padded() {
-        assert_eq!(segment_filename(1), "seg-0000000001.lchk");
-        assert_eq!(segment_filename(999999), "seg-0000999999.lchk");
+        assert_eq!(segment_filename(1), "seg-00000000000000000001.lchk");
+        assert_eq!(segment_filename(999999), "seg-00000000000000999999.lchk");
+        // u64::MAX must sort correctly (20 digits)
+        assert_eq!(segment_filename(u64::MAX), "seg-18446744073709551615.lchk");
     }
 
     #[test]
