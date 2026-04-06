@@ -74,7 +74,8 @@ impl OtlpReceiverInput {
                 while is_running_clone.load(Ordering::Relaxed) {
                     let mut request = match server_clone.recv_timeout(Duration::from_millis(100)) {
                         Ok(Some(req)) => req,
-                        Ok(None) | Err(_) => continue,
+                        Ok(None) => continue, // timeout — check is_running and retry
+                        Err(_) => break,      // server error — exit thread
                     };
 
                     let url = request.url().to_string();
@@ -1890,8 +1891,8 @@ mod tests {
     #[test]
     fn receiver_shuts_down_cleanly_on_drop() {
         // Create an input receiver binding to port 0 (OS assigns port).
-        let receiver = OtlpReceiverInput::new("test-drop", "127.0.0.1:0")
-            .expect("should bind successfully");
+        let receiver =
+            OtlpReceiverInput::new("test-drop", "127.0.0.1:0").expect("should bind successfully");
         let local_addr = receiver.local_addr();
 
         // Drop the receiver. This should trigger `Drop`, set `is_running` to false,
