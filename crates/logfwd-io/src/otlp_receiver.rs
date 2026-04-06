@@ -226,7 +226,7 @@ impl OtlpReceiverInput {
                                 .with_header(
                                     "Content-Type: application/json"
                                         .parse::<tiny_http::Header>()
-                                        .unwrap(),
+                                        .expect("static header is valid"),
                                 )
                                 .with_status_code(200);
                             let _ = request.respond(response);
@@ -282,7 +282,10 @@ impl InputSource for OtlpReceiverInput {
         let mut all = Vec::new();
 
         // Drain all available decoded batches.
-        while let Ok(data) = self.rx.as_ref().expect("rx is Some until drop").try_recv() {
+        let Some(rx) = self.rx.as_ref() else {
+            return Ok(vec![]);
+        };
+        while let Ok(data) = rx.try_recv() {
             all.extend_from_slice(&data);
         }
 
