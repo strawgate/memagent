@@ -178,22 +178,26 @@ impl LokiSink {
             // --- Timestamp ---
             let ts_ns = if let Some(ts_idx) = ts_col_idx {
                 let col = batch.column(ts_idx);
-                match col.data_type() {
-                    DataType::Int64 => {
-                        let val = col.as_primitive::<arrow::datatypes::Int64Type>().value(row);
-                        // Negative nanosecond timestamps are invalid for Loki (u64 wire
-                        // type). Fall back to observed time rather than sending epoch-zero
-                        // or wrapping to a far-future value. (#1084)
-                        if val >= 0 {
-                            val as u64
-                        } else {
-                            metadata.observed_time_ns
+                if col.is_null(row) {
+                    metadata.observed_time_ns
+                } else {
+                    match col.data_type() {
+                        DataType::Int64 => {
+                            let val = col.as_primitive::<arrow::datatypes::Int64Type>().value(row);
+                            // Negative nanosecond timestamps are invalid for Loki (u64 wire
+                            // type). Fall back to observed time rather than sending epoch-zero
+                            // or wrapping to a far-future value. (#1084)
+                            if val >= 0 {
+                                val as u64
+                            } else {
+                                metadata.observed_time_ns
+                            }
                         }
+                        DataType::UInt64 => col
+                            .as_primitive::<arrow::datatypes::UInt64Type>()
+                            .value(row),
+                        _ => metadata.observed_time_ns,
                     }
-                    DataType::UInt64 => col
-                        .as_primitive::<arrow::datatypes::UInt64Type>()
-                        .value(row),
-                    _ => metadata.observed_time_ns,
                 }
             } else {
                 metadata.observed_time_ns
@@ -485,8 +489,8 @@ fn escape_json(s: &str) -> String {
 fn escape_json_raw(s: &str) -> String {
     let trimmed = s.trim();
     // Bug #1048: leading quote is not enough to guarantee valid JSON string.
-    // Verify it actually parses as a JSON string.
-    if trimmed.starts_with('"') && serde_json::from_str::<String>(trimmed).is_ok() {
+    // Verify it actually parses as complete valid JSON before passthrough.
+    if trimmed.starts_with('"') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
         // Already a valid JSON string.
         trimmed.to_string()
     } else {
@@ -688,6 +692,20 @@ mod tests {
             "malformed JSON starting with quote should be escaped and wrapped"
         );
         assert_eq!(escaped, "\"\\\"not valid json\"", "should be fully escaped");
+
+        let unterminated = "\"unterminated";
+        let escaped_unterminated = escape_json_raw(unterminated);
+        assert_eq!(
+            escaped_unterminated, "\"\\\"unterminated\"",
+            "unterminated string should be fully escaped"
+        );
+
+        let foo = "\"foo";
+        let escaped_foo = escape_json_raw(foo);
+        assert_eq!(
+            escaped_foo, "\"\\\"foo\"",
+            "foo without closing quote should be fully escaped"
+        );
     }
 
     #[test]
@@ -742,7 +760,7 @@ mod tests {
         let mut entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
         entries.sort_by_key(|(ts, _)| *ts);
 
-        // After sorting, the positive (100) comes first, then observed_time_ns (12345).
+        // After sorting, the valid timestamp (100) comes first, then the fallback observed_time_ns (12345).
         assert_eq!(entries[0].0, 100, "Positive timestamp should be preserved");
         assert_eq!(
             entries[1].0, metadata.observed_time_ns,
@@ -831,6 +849,52 @@ mod tests {
         assert!(
             !key.contains("namespace"),
             "empty label value must be excluded from stream key; key: {key}"
+        );
+    }
+
+    #[test]
+    fn test_null_timestamp_handling() {
+        // Bug #1339: null timestamps should fall back to observed_time_ns
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Int64,
+            true,
+        )]));
+        // Array with one null and one valid timestamp
+        let ts_arr = Int64Array::from(vec![None, Some(100i64)]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(ts_arr)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 12345,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let mut entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        entries.sort_by_key(|(ts, _)| *ts);
+
+        // Sorted by timestamp: the non-null row (100) comes before the
+        // null row's fallback value (observed_time_ns = 12345).
+        assert_eq!(entries[0].0, 100, "Valid timestamp should be preserved");
+        assert_eq!(
+            entries[1].0, metadata.observed_time_ns,
+            "Null timestamp should fall back to observed_time_ns"
         );
     }
 }
