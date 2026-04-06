@@ -122,6 +122,13 @@ impl OtlpReceiverInput {
                         continue;
                     }
 
+                    // Final shutdown gate before the blocking body read.  If Drop fired
+                    // between the URL/method checks and here, drop the request rather than
+                    // blocking handle.join() on a potentially slow or stalled upload.
+                    if !is_running_clone.load(Ordering::Relaxed) {
+                        break;
+                    }
+
                     // Read body with a hard cap.
                     let mut body =
                         Vec::with_capacity(request.body_length().unwrap_or(0).min(MAX_BODY_SIZE));
@@ -1910,9 +1917,8 @@ mod tests {
         // and join the thread, closing the HTTP server and releasing the port.
         drop(receiver);
 
-        // Wait a tiny bit for the OS to actually release the port if needed,
-        // though join() in Drop should make it synchronous.
-        std::thread::sleep(Duration::from_millis(10));
+        // Drop::join() is synchronous — the port is released before we return from drop().
+        // No sleep needed.
 
         // Try to bind to the exact same port again. If the previous receiver
         // thread didn't shut down properly and leaked the server, this will fail
