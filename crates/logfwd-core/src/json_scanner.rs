@@ -333,7 +333,7 @@ fn probe_row_predicates(
 
     let mut pos = skip_whitespace(buf, start, end);
     if pos >= end || buf[pos] != b'{' {
-        return false;
+        return config.keep_raw;
     }
     pos += 1;
 
@@ -367,21 +367,20 @@ fn probe_row_predicates(
             break;
         }
 
-        // Check if this key matches any predicate
-        let mut predicate_idx = None;
+        let mut field_predicates = 0u64;
         for (i, pred) in predicates.iter().enumerate() {
             if pred.field_name() == key {
-                predicate_idx = Some(i);
-                break;
+                field_predicates |= 1u64 << i;
             }
         }
 
-        if let Some(pi) = predicate_idx {
+        if field_predicates != 0 {
             // First-writer-wins: skip duplicate occurrences of a key that was
             // already evaluated. Re-evaluating a duplicate could cause false
             // negatives — the second value might fail the predicate even though
             // the scanner exposes the first value to DataFusion.
-            if matched & (1u64 << pi) != 0 {
+            let pending = field_predicates & !matched;
+            if pending == 0 {
                 pos = skip_value_fast(buf, pos, end, blocks);
             } else {
                 // This is a predicate field — extract value and check
@@ -396,19 +395,28 @@ fn probe_row_predicates(
                         // For escaped strings, pass through conservatively
                         // (the decoded content may differ from the raw bytes).
                         // For unescaped strings, check the predicate directly.
-                        if memchr::memchr(b'\\', val).is_some() || predicates[pi].matches_bytes(val)
-                        {
-                            matched |= 1u64 << pi;
+                        if memchr::memchr(b'\\', val).is_some() {
+                            matched |= pending;
                         } else {
-                            // Predicate failed — skip this row immediately.
-                            return false;
+                            for (i, pred) in predicates.iter().enumerate() {
+                                let bit = 1u64 << i;
+                                if pending & bit == 0 {
+                                    continue;
+                                }
+                                if pred.matches_bytes(val) {
+                                    matched |= bit;
+                                } else {
+                                    // Predicate failed — skip this row immediately.
+                                    return false;
+                                }
+                            }
                         }
                         pos = val_end + 1;
                     }
                     _ => {
                         // Non-string value for a string predicate.
                         // Conservative: pass it through to DataFusion.
-                        matched |= 1u64 << pi;
+                        matched |= pending;
                         pos = skip_value_fast(buf, pos, end, blocks);
                     }
                 }
@@ -1804,5 +1812,52 @@ mod predicate_tests {
         scan_streaming(buf, &config, &mut builder);
         // Both rows pass through (no filtering at scanner level)
         assert_eq!(builder.rows.len(), 2);
+    }
+
+    #[test]
+    fn predicate_non_object_line_passes_through_when_keep_raw() {
+        let buf = b"plain text\n";
+        let config = ScanConfig {
+            keep_raw: true,
+            row_predicates: vec![RowPredicate::Eq {
+                field: b"_raw".to_vec(),
+                value: b"plain text".to_vec(),
+            }],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        assert_eq!(builder.raws[0].as_deref(), Some("plain text"));
+    }
+
+    #[test]
+    fn predicate_multiple_conditions_same_field_filter_correctly() {
+        let buf = br#"{"level":"ERROR","msg":"keep"}
+{"level":"INFO","msg":"drop"}
+"#;
+        let config = ScanConfig {
+            row_predicates: vec![
+                RowPredicate::Eq {
+                    field: b"level".to_vec(),
+                    value: b"ERROR".to_vec(),
+                },
+                RowPredicate::In {
+                    field: b"level".to_vec(),
+                    values: vec![b"ERROR".to_vec(), b"WARN".to_vec()],
+                },
+            ],
+            ..ScanConfig::default()
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        assert!(
+            builder.rows[0]
+                .iter()
+                .any(|(k, v)| k == "msg" && v == "keep")
+        );
     }
 }
