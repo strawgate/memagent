@@ -1446,6 +1446,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     // std::time::Instant is cfg-gated in the parent module for turmoil compatibility,
     // but tests need it for timeout deadlines regardless of the turmoil feature flag.
+    use serial_test::serial;
     use std::time::Instant;
 
     use logfwd_config::{Format, OutputConfig, OutputType};
@@ -3051,6 +3052,7 @@ output:
     /// Write N lines, run the pipeline, shut down cleanly. Verify that
     /// checkpoints.json exists and contains a non-zero offset.
     #[test]
+    #[serial]
     fn test_checkpoint_persisted_after_clean_shutdown() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("test.log");
@@ -3110,6 +3112,7 @@ output:
     /// again. The second run must process only the M new lines.
     #[cfg(not(feature = "turmoil"))]
     #[test]
+    #[serial]
     fn test_pipeline_resumes_from_checkpoint() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("resume.log");

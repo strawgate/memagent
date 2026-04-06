@@ -2402,6 +2402,7 @@ dependencies = [
  "opentelemetry_sdk",
  "pprof",
  "proptest",
+ "serial_test",
  "stats_alloc",
  "tempfile",
  "tikv-jemalloc-ctl",

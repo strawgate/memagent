@@ -47,6 +47,7 @@ arrow = { workspace = true }
 bytes = { workspace = true }
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1.11.0"
+serial_test = "3.4.0"
 stats_alloc = "0.1"
 tempfile = "3"
 tiny_http = "0.12"
