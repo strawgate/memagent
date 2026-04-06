@@ -446,7 +446,19 @@ impl FileReader {
             // at the same path, the fingerprint will differ and we must not
             // seek to the stale offset — that would skip data. (#817)
             if evicted.identity == identity {
-                file.seek(SeekFrom::Start(evicted.offset))?
+                let file_size = file.metadata()?.len();
+                let safe_offset = if evicted.offset > file_size {
+                    tracing::warn!(
+                        path = %path.display(),
+                        saved_offset = evicted.offset,
+                        file_size,
+                        "evicted offset exceeds file size — resetting to 0"
+                    );
+                    0
+                } else {
+                    evicted.offset
+                };
+                file.seek(SeekFrom::Start(safe_offset))?
             } else {
                 tracing::warn!(
                     path = %path.display(),
@@ -741,8 +753,19 @@ impl FileReader {
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) -> io::Result<()> {
         for tailed in self.files.values_mut() {
             if tailed.identity.source_id() == source_id {
-                tailed.offset = offset;
-                tailed.file.seek(SeekFrom::Start(offset))?;
+                let file_size = tailed.file.metadata()?.len();
+                let safe_offset = if offset > file_size {
+                    tracing::warn!(
+                        saved_offset = offset,
+                        file_size,
+                        "checkpoint offset exceeds file size — resetting to 0"
+                    );
+                    0
+                } else {
+                    offset
+                };
+                tailed.offset = safe_offset;
+                tailed.file.seek(SeekFrom::Start(safe_offset))?;
                 return Ok(());
             }
         }

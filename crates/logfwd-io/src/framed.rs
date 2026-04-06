@@ -162,11 +162,13 @@ impl InputSource for FramedInput {
                                     // sequence alignment).
                                     state.format.reset();
                                     // Keep the tail of the overflow data in the remainder
-                                    // buffer so the next newline can complete it. Do NOT
-                                    // call apply_remainder_consumed() — the data is still
-                                    // pending and the checkpoint must not advance past it.
+                                    // buffer so the next newline can complete it. The discarded
+                                    // prefix is lost, so we must advance the checkpoint tracker
+                                    // past it. Otherwise the checkpoint stalls and re-reads the
+                                    // overflowed data on crash.
                                     let start = tail.len() - MAX_REMAINDER_BYTES;
                                     state.remainder = tail.split_off(start);
+                                    state.tracker.apply_remainder_consumed();
                                 } else {
                                     let state = self.sources.get_mut(&key).expect("just inserted");
                                     state.remainder = tail;
@@ -192,7 +194,7 @@ impl InputSource for FramedInput {
                                 state.format.reset();
                                 let start = chunk.len() - MAX_REMAINDER_BYTES;
                                 state.remainder = chunk.split_off(start);
-                                // Do NOT call apply_remainder_consumed() — data is preserved.
+                                state.tracker.apply_remainder_consumed();
                             } else {
                                 let state = self.sources.get_mut(&key).expect("just inserted");
                                 state.remainder = chunk;
@@ -228,13 +230,41 @@ impl InputSource for FramedInput {
                 // conservative fallback.
                 event @ (InputEvent::Rotated { source_id }
                 | InputEvent::Truncated { source_id }) => {
-                    match source_id {
-                        Some(_) => {
-                            self.sources.remove(&source_id);
+                    let keys_to_flush: Vec<Option<SourceId>> = match source_id {
+                        Some(_) => vec![source_id],
+                        None => self.sources.keys().copied().collect(),
+                    };
+                    for key in keys_to_flush {
+                        if let Some(state) = self.sources.get_mut(&key) {
+                            if !state.remainder.is_empty() {
+                                let mut remainder = std::mem::take(&mut state.remainder);
+                                remainder.push(b'\n');
+
+                                self.out_buf.clear();
+                                let state =
+                                    self.sources.get_mut(&key).expect("just checked existence");
+                                state.format.process_lines(&remainder, &mut self.out_buf);
+
+                                self.stats.inc_lines(1);
+
+                                // Remainder was flushed — update tracker so
+                                // checkpointable_offset advances past the
+                                // flushed bytes.
+                                let state =
+                                    self.sources.get_mut(&key).expect("just checked existence");
+                                state.tracker.apply_remainder_consumed();
+
+                                if !self.out_buf.is_empty() {
+                                    let data = std::mem::take(&mut self.out_buf);
+                                    std::mem::swap(&mut self.out_buf, &mut self.spare_buf);
+                                    result_events.push(InputEvent::Data {
+                                        bytes: data,
+                                        source_id: key,
+                                    });
+                                }
+                            }
                         }
-                        None => {
-                            self.sources.clear();
-                        }
+                        self.sources.remove(&key);
                     }
                     result_events.push(event);
                 }
