@@ -1,4 +1,5 @@
 use base64::Engine as _;
+use logfwd_types::field_names;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::{AnyValue, any_value::Value},
@@ -59,18 +60,18 @@ pub fn expected_single_row_from_request(request: &ExportLogsServiceRequest) -> s
 
     if record.time_unix_nano > 0 {
         object.insert(
-            "timestamp_int".into(),
+            field_names::TIMESTAMP.into(),
             serde_json::Value::Number(record.time_unix_nano.into()),
         );
     }
     if !record.severity_text.is_empty() {
         object.insert(
-            "level".into(),
+            field_names::SEVERITY.into(),
             serde_json::Value::String(record.severity_text.clone()),
         );
     }
     if let Some(body) = record.body.as_ref().and_then(body_string_from_any) {
-        object.insert("message".into(), serde_json::Value::String(body));
+        object.insert(field_names::BODY.into(), serde_json::Value::String(body));
     }
     for attr in &record.attributes {
         if let Some(value) = attr.value.as_ref().and_then(attribute_json_from_any) {
@@ -86,13 +87,13 @@ pub fn expected_single_row_from_request(request: &ExportLogsServiceRequest) -> s
     }
     if !record.trace_id.is_empty() {
         object.insert(
-            "trace_id".into(),
+            field_names::TRACE_ID.into(),
             serde_json::Value::String(hex_encode(&record.trace_id)),
         );
     }
     if !record.span_id.is_empty() {
         object.insert(
-            "span_id".into(),
+            field_names::SPAN_ID.into(),
             serde_json::Value::String(hex_encode(&record.span_id)),
         );
     }
@@ -125,7 +126,7 @@ pub fn emitted_single_row_from_otlp_json(export: &serde_json::Value) -> serde_js
 
     if let Some(timestamp) = record.get("timeUnixNano").and_then(parse_u64_from_json) {
         object.insert(
-            "timestamp_int".into(),
+            field_names::TIMESTAMP.into(),
             serde_json::Value::Number(timestamp.into()),
         );
     }
@@ -133,10 +134,13 @@ pub fn emitted_single_row_from_otlp_json(export: &serde_json::Value) -> serde_js
         .get("severityText")
         .and_then(serde_json::Value::as_str)
     {
-        object.insert("level".into(), serde_json::Value::String(level.to_string()));
+        object.insert(
+            field_names::SEVERITY.into(),
+            serde_json::Value::String(level.to_string()),
+        );
     }
     if let Some(body) = record.get("body").and_then(otlp_json_any_to_string) {
-        object.insert("message".into(), serde_json::Value::String(body));
+        object.insert(field_names::BODY.into(), serde_json::Value::String(body));
     }
     for attr in record
         .get("attributes")
@@ -171,7 +175,7 @@ pub fn emitted_single_row_from_otlp_json(export: &serde_json::Value) -> serde_js
         && !trace_id.is_empty()
     {
         object.insert(
-            "trace_id".into(),
+            field_names::TRACE_ID.into(),
             serde_json::Value::String(trace_id.to_string()),
         );
     }
@@ -179,7 +183,7 @@ pub fn emitted_single_row_from_otlp_json(export: &serde_json::Value) -> serde_js
         && !span_id.is_empty()
     {
         object.insert(
-            "span_id".into(),
+            field_names::SPAN_ID.into(),
             serde_json::Value::String(span_id.to_string()),
         );
     }
