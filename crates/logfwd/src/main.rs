@@ -474,12 +474,6 @@ fn cmd_dump_config(args: &[String]) -> Result<(), CliError> {
 
 fn cmd_init() -> Result<(), CliError> {
     let path = std::path::Path::new("logfwd.yaml");
-    if path.exists() {
-        return Err(CliError::Config(format!(
-            "{} already exists — refusing to overwrite",
-            path.display()
-        )));
-    }
 
     let template = r#"# logfwd configuration
 # Docs: https://github.com/strawgate/memagent
@@ -505,8 +499,21 @@ output:
 #   diagnostics: "127.0.0.1:9191"
 "#;
 
-    std::fs::write(path, template)
-        .map_err(|e| CliError::Config(format!("cannot write {}: {e}", path.display())))?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(template.as_bytes()))
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                CliError::Config(format!(
+                    "{} already exists — refusing to overwrite",
+                    path.display()
+                ))
+            } else {
+                CliError::Config(format!("cannot write {}: {e}", path.display()))
+            }
+        })?;
     eprintln!(
         "{}created{} {} — edit it, then run: {}logfwd -c logfwd.yaml --validate{}",
         green(),
@@ -664,18 +671,19 @@ fn discover_config() -> Option<std::path::PathBuf> {
     }
 
     // 3. XDG config dir
-    let xdg = env::var("XDG_CONFIG_HOME")
-        .map_or_else(
-            |_| {
-                let mut home = dirs_fallback_home();
-                home.push(".config");
-                home
-            },
-            PathBuf::from,
-        )
-        .join("logfwd/config.yaml");
-    if xdg.is_file() {
-        return Some(xdg);
+    let xdg_base = env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .ok()
+        .or_else(|| {
+            dirs_fallback_home().map(|mut h| {
+                h.push(".config");
+                h
+            })
+        });
+    if let Some(xdg) = xdg_base.map(|b| b.join("logfwd/config.yaml")) {
+        if xdg.is_file() {
+            return Some(xdg);
+        }
     }
 
     // 4. System config
@@ -688,8 +696,9 @@ fn discover_config() -> Option<std::path::PathBuf> {
 }
 
 /// Fallback home directory lookup (avoids adding a `dirs` dependency).
-fn dirs_fallback_home() -> std::path::PathBuf {
-    env::var("HOME").map_or_else(|_| std::path::PathBuf::from("~"), std::path::PathBuf::from)
+/// Returns `None` when `$HOME` is unset so callers can skip home-relative probes.
+fn dirs_fallback_home() -> Option<std::path::PathBuf> {
+    env::var("HOME").ok().map(std::path::PathBuf::from)
 }
 
 // ---------------------------------------------------------------------------
