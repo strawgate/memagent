@@ -16,6 +16,7 @@ use logfwd_arrow::scanner::Scanner;
 use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::{BatchMetadata, Compression, JsonLinesSink, OtlpProtocol, OtlpSink};
 use std::sync::Arc;
+use reqwest::Client;
 
 fn run_sinks(data: &[u8], validate_utf8: bool) {
     let mut scanner = Scanner::new(ScanConfig {
@@ -37,6 +38,7 @@ fn run_sinks(data: &[u8], validate_utf8: bool) {
         "http://localhost/".to_string(),
         vec![],
         Compression::None,
+        Client::new(),
         Arc::new(ComponentStats::new()),
     );
     json_sink.serialize_batch(&batch);

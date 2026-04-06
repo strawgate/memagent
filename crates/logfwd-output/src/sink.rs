@@ -131,9 +131,9 @@ pub struct AsyncFanoutSink {
     sinks: Vec<Box<dyn Sink>>,
     /// Tracks which sinks have successfully delivered or permanently rejected the current batch.
     /// A `true` value means the sink is "done" with this batch and should be skipped on retry.
-    /// Resets when a new batch arrives (detected by `last_observed_time_ns`).
+    /// Resets at the start of each new batch (when all slots are `true`, meaning the previous
+    /// batch completed fully and the next call must be a new batch).
     completed: Vec<bool>,
-    last_observed_time_ns: u64,
 }
 
 impl AsyncFanoutSink {
@@ -143,7 +143,6 @@ impl AsyncFanoutSink {
         AsyncFanoutSink {
             sinks,
             completed: vec![false; len],
-            last_observed_time_ns: 0,
         }
     }
 }
@@ -155,10 +154,12 @@ impl Sink for AsyncFanoutSink {
         metadata: &'a BatchMetadata,
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
-            // If this is a new batch, reset the completion tracking.
-            if metadata.observed_time_ns != self.last_observed_time_ns {
+            // Reset completion tracking when all sinks finished the previous batch.
+            // All-true means the previous batch completed fully; the next call is a new batch.
+            // Using structural completion (not observed_time_ns) avoids false identity matches
+            // when two batches share the same nanosecond timestamp.
+            if self.completed.iter().all(|&c| c) {
                 self.completed.fill(false);
-                self.last_observed_time_ns = metadata.observed_time_ns;
             }
 
             // Precedence: Rejected(3) > IoError(2) > RetryAfter(1) > Ok(0).
@@ -198,19 +199,6 @@ impl Sink for AsyncFanoutSink {
                         }
                     }
                 }
-            }
-
-            // Check if all sinks are completed.
-            if self.completed.iter().all(|&c| c) {
-                // If worst is Rejected, we still want to return it to the caller,
-                // but since all are completed, next time we would reset?
-                // Wait, if all are completed, we are done. If some were rejected,
-                // should we return Ok or Rejected?
-                // Returning Ok means the worker moves on to the next batch.
-                // Returning Rejected means the worker will drop the batch.
-                // Both result in moving on, but Rejected might increment a failure counter.
-                // However, `worst` is calculated above. If we return `worst`, the worker handles it.
-                // Let's just return `worst` with the max_retry logic.
             }
 
             match worst {
@@ -621,6 +609,52 @@ mod tests {
             matches!(result, SendResult::Ok),
             "all-ok fanout must return Ok, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn fanout_skips_completed_sinks_on_retry() {
+        // s1 completes on the first call; s2 requests a retry.
+        // On the second call (retry), only s2 should be invoked.
+        let (s1, calls1) = FixedSink::new("s1", SendResult::Ok);
+        let (s2, calls2) =
+            FixedSink::new("s2", SendResult::RetryAfter(Duration::from_secs(5)));
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
+
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(
+            matches!(result, SendResult::RetryAfter(_)),
+            "first call should request retry"
+        );
+        assert_eq!(*calls1.lock().unwrap(), 1, "s1 called once");
+        assert_eq!(*calls2.lock().unwrap(), 1, "s2 called once");
+
+        // Retry: s1 is already completed, only s2 is called.
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(
+            matches!(result, SendResult::RetryAfter(_)),
+            "retry should still request retry"
+        );
+        assert_eq!(*calls1.lock().unwrap(), 1, "s1 must not be called on retry");
+        assert_eq!(*calls2.lock().unwrap(), 2, "s2 called again on retry");
+    }
+
+    #[tokio::test]
+    async fn fanout_resets_completion_for_new_batch() {
+        // After a batch where all sinks completed, the next send_batch call must
+        // reset completion so all sinks are invoked again.
+        let (s1, calls1) = FixedSink::new("s1", SendResult::Ok);
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1)]);
+
+        // First batch: s1 completes.
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(matches!(result, SendResult::Ok));
+        assert_eq!(*calls1.lock().unwrap(), 1);
+
+        // Second batch: completion resets because the previous batch finished;
+        // s1 must be called again.
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(matches!(result, SendResult::Ok));
+        assert_eq!(*calls1.lock().unwrap(), 2, "s1 must be called for the new batch");
     }
 
     #[test]
