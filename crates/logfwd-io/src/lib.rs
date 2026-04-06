@@ -1,3 +1,4 @@
+pub mod atomic_write;
 pub mod error;
 pub use error::InputError;
 

@@ -102,10 +102,6 @@ impl FileCheckpointStore {
     pub fn checkpoints_path(&self) -> PathBuf {
         self.data_dir.join("checkpoints.json")
     }
-
-    fn tmp_path(&self) -> PathBuf {
-        self.data_dir.join("checkpoints.json.tmp")
-    }
 }
 
 impl CheckpointStore for FileCheckpointStore {
@@ -123,36 +119,11 @@ impl CheckpointStore for FileCheckpointStore {
     /// 5. `fsync` the parent directory so the rename is durable on
     ///    crash (required on Linux/ext4). (#386)
     fn flush(&mut self) -> io::Result<()> {
-        use std::io::Write as _;
-
         let list: Vec<&SourceCheckpoint> = self.checkpoints.values().collect();
         let json = serde_json::to_vec_pretty(&list)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        let tmp = self.tmp_path();
-        let final_path = self.checkpoints_path();
-
-        {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp)?;
-            file.write_all(&json)?;
-            file.sync_all()?;
-        }
-
-        std::fs::rename(&tmp, &final_path)?;
-
-        // fsync the parent directory so the rename entry is durable.
-        // On ext4, rename metadata lives in the directory — without this
-        // fsync a power failure can revert the rename, losing the checkpoint.
-        // sync_data() suffices: we only need data (directory entries), not
-        // file metadata like mtime/permissions.
-        let dir = std::fs::File::open(&self.data_dir)?;
-        dir.sync_data()?;
-
-        Ok(())
+        crate::atomic_write::atomic_write_file(&self.checkpoints_path(), &json)
     }
 
     fn load(&self, source_id: u64) -> Option<SourceCheckpoint> {

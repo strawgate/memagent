@@ -1,0 +1,100 @@
+//! Canonical OTLP log field names and heuristic variants.
+//!
+//! This module is the **single source of truth** for column names written by
+//! receivers and read by sinks.  Both sides import from here so a rename in
+//! one place cannot silently break the other.
+//!
+//! # Design
+//!
+//! Each semantic role has a **canonical** constant — the name our own receivers
+//! produce — and an optional set of **heuristic variants** that sinks also
+//! accept when consuming batches from external sources (e.g. SQL transforms or
+//! user-defined schemas).
+//!
+//! Sinks MUST check the canonical name first, then fall through to variants.
+
+// ---------------------------------------------------------------------------
+// Timestamp
+// ---------------------------------------------------------------------------
+
+/// Canonical timestamp column — unix epoch nanoseconds (Int64 or Utf8).
+///
+/// Written by the OTLP receiver for `timeUnixNano`.
+pub const TIMESTAMP: &str = "timestamp";
+
+/// Additional names sinks accept for timestamps from external sources.
+/// Includes Elasticsearch-style `@timestamp` and pipeline-style `_timestamp`.
+pub const TIMESTAMP_VARIANTS: &[&str] = &["time", "ts", "@timestamp", "_timestamp"];
+
+/// Elasticsearch-style timestamp field (`@timestamp`).
+pub const TIMESTAMP_AT: &str = "@timestamp";
+
+/// Alternative timestamp column used by some pipelines.
+pub const TIMESTAMP_UNDERSCORE: &str = "_timestamp";
+
+// ---------------------------------------------------------------------------
+// Severity / Level
+// ---------------------------------------------------------------------------
+
+/// Canonical severity column — severity text string (e.g. "INFO", "ERROR").
+///
+/// Written by the OTLP receiver for `severityText`.
+pub const SEVERITY: &str = "level";
+
+/// Additional names sinks accept for severity from external sources.
+pub const SEVERITY_VARIANTS: &[&str] = &["severity", "log_level", "loglevel", "lvl"];
+
+// ---------------------------------------------------------------------------
+// Body / Message
+// ---------------------------------------------------------------------------
+
+/// Canonical body column — the log message text.
+///
+/// Written by the OTLP receiver for the log record `body`.
+pub const BODY: &str = "message";
+
+/// Additional names sinks accept for body from external sources.
+pub const BODY_VARIANTS: &[&str] = &["msg", "_msg", "body"];
+
+/// Raw unparsed line — fallback when no parsed body column exists.
+pub const RAW: &str = "_raw";
+
+// ---------------------------------------------------------------------------
+// Trace context
+// ---------------------------------------------------------------------------
+
+/// Canonical trace ID column — hex-encoded 32-char string.
+pub const TRACE_ID: &str = "trace_id";
+
+/// Canonical span ID column — hex-encoded 16-char string.
+pub const SPAN_ID: &str = "span_id";
+
+/// Canonical trace flags column — Int64.
+pub const TRACE_FLAGS: &str = "trace_flags";
+
+/// Additional names sinks accept for trace flags.
+pub const TRACE_FLAGS_VARIANTS: &[&str] = &["flags"];
+
+// ---------------------------------------------------------------------------
+// Type-conflict struct children (Arrow schema)
+// ---------------------------------------------------------------------------
+
+/// Field names used inside StructArrays that represent type-conflict
+/// resolution (e.g. a column with mixed int/string values).
+pub const CONFLICT_CHILDREN: &[&str] = &["int", "float", "str", "bool"];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Check whether `name` matches the canonical constant or any variant.
+///
+/// ```
+/// # use logfwd_types::field_names;
+/// assert!(field_names::matches_any("ts", field_names::TIMESTAMP, field_names::TIMESTAMP_VARIANTS));
+/// assert!(field_names::matches_any("timestamp", field_names::TIMESTAMP, field_names::TIMESTAMP_VARIANTS));
+/// assert!(!field_names::matches_any("date", field_names::TIMESTAMP, field_names::TIMESTAMP_VARIANTS));
+/// ```
+pub fn matches_any(name: &str, canonical: &str, variants: &[&str]) -> bool {
+    name == canonical || variants.contains(&name)
+}

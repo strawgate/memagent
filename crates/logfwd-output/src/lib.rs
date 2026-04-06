@@ -45,6 +45,7 @@ use arrow::record_batch::RecordBatch;
 
 use logfwd_config::{AuthConfig, Format, OutputConfig};
 use logfwd_types::diagnostics::ComponentStats;
+use logfwd_types::field_names;
 
 // ---------------------------------------------------------------------------
 // HTTP retry helper
@@ -94,7 +95,7 @@ fn is_conflict_struct(fields: &arrow::datatypes::Fields) -> bool {
     !fields.is_empty()
         && fields
             .iter()
-            .all(|f| matches!(f.name().as_str(), "int" | "float" | "str" | "bool"))
+            .all(|f| field_names::CONFLICT_CHILDREN.contains(&f.name().as_str()))
 }
 
 /// JSON output priority: higher wins per row.  Int64 > Float64 > Boolean > Utf8.
@@ -619,7 +620,12 @@ pub fn build_sink_factory(
             })?;
             let protocol = match cfg.protocol.as_deref() {
                 Some("grpc") => OtlpProtocol::Grpc,
-                _ => OtlpProtocol::Http,
+                Some("http") | None => OtlpProtocol::Http,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unknown OTLP protocol '{other}' (expected 'http' or 'grpc')"
+                    )));
+                }
             };
             let compression = match cfg.compression.as_deref() {
                 Some("zstd") => Compression::Zstd,
@@ -628,7 +634,12 @@ pub fn build_sink_factory(
                         "output '{name}': OTLP does not support 'gzip' compression yet"
                     )));
                 }
-                _ => Compression::None,
+                Some("none") | None => Compression::None,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unknown OTLP compression '{other}' (expected 'zstd' or 'none')"
+                    )));
+                }
             };
             let factory = OtlpSinkFactory::new(
                 name.to_string(),
