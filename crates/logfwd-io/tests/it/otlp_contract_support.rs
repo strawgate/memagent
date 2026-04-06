@@ -4,6 +4,7 @@ use opentelemetry_proto::tonic::{
     common::v1::{AnyValue, any_value::Value},
 };
 
+/// Encode a byte slice as a lowercase hex string (used for trace/span IDs).
 pub fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -36,6 +37,10 @@ fn attribute_json_from_any(value: &AnyValue) -> Option<serde_json::Value> {
     }
 }
 
+/// Build the canonical expected JSON row from an OTLP `ExportLogsServiceRequest` oracle.
+///
+/// Extracts the first log record from the request and maps its fields to the
+/// same JSON key names that the logfwd OTLP receiver writes when forwarding.
 pub fn expected_single_row_from_request(request: &ExportLogsServiceRequest) -> serde_json::Value {
     let resource_logs = request
         .resource_logs
@@ -95,6 +100,10 @@ pub fn expected_single_row_from_request(request: &ExportLogsServiceRequest) -> s
     serde_json::Value::Object(object)
 }
 
+/// Build the canonical actual JSON row from an OTLP Collector JSON export.
+///
+/// Extracts the first log record from the collector's captured export and maps
+/// its OTLP JSON fields to the same key names as [`expected_single_row_from_request`].
 pub fn emitted_single_row_from_otlp_json(export: &serde_json::Value) -> serde_json::Value {
     let resource_logs = export
         .get("resourceLogs")
