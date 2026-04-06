@@ -406,16 +406,7 @@ impl StateMachineTest for TailCheckpointTest {
         let total_emitted_unique = emitted_set.len();
 
         // We don't assert 100% coverage because rotation and truncation
-        // can lose data that was overwritten before being read. But we
-        // log it for debugging.
-        if total_written > 0 {
-            let coverage_pct = (total_emitted_unique as f64 / total_written as f64) * 100.0;
-            let _ = coverage_pct;
-            // eprintln!(
-            //     "Coverage: {}/{} lines ({:.1}%)",
-            //     total_emitted_unique, total_written, coverage_pct
-            // );
-        }
+        // can lose data that was overwritten before being read.
 
         drop(sut);
     }
