@@ -334,7 +334,8 @@ impl Pipeline {
                 .unwrap_or_else(|| "output_0".to_string());
             let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
             let output_stats = metrics.add_output(&output_name, &output_type_str);
-            build_sink_factory(&output_name, output_cfg, output_stats).map_err(|e| e.to_string())?
+            build_sink_factory(&output_name, output_cfg, base_path, output_stats)
+                .map_err(|e| e.to_string())?
         } else {
             let mut factories: Vec<Arc<dyn SinkFactory>> = Vec::new();
             for (i, output_cfg) in config.outputs.iter().enumerate() {
@@ -345,7 +346,7 @@ impl Pipeline {
                 let output_type_str = format!("{:?}", output_cfg.output_type).to_lowercase();
                 let output_stats = metrics.add_output(&output_name, &output_type_str);
                 factories.push(
-                    build_sink_factory(&output_name, output_cfg, output_stats)
+                    build_sink_factory(&output_name, output_cfg, base_path, output_stats)
                         .map_err(|e| e.to_string())?,
                 );
             }
@@ -1460,7 +1461,8 @@ mod tests {
             format: Some(Format::Json),
             ..Default::default()
         };
-        let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        let factory =
+            build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
         let sink = factory.create().expect("create should succeed");
         assert_eq!(sink.name(), "test");
@@ -1476,7 +1478,8 @@ mod tests {
             compression: Some("zstd".to_string()),
             ..Default::default()
         };
-        let factory = build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        let factory =
+            build_sink_factory("otel", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "otel");
     }
 
@@ -1487,7 +1490,7 @@ mod tests {
             output_type: OutputType::Otlp,
             ..Default::default()
         };
-        let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
+        let result = build_sink_factory("bad", &cfg, None, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("endpoint"), "got: {err}");

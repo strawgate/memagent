@@ -57,12 +57,13 @@ impl Sink for FileSink {
             }
 
             let bytes_written = self.output_buf.len() as u64;
+            let lines_written = self.output_buf.iter().filter(|&&b| b == b'\n').count() as u64;
             let mut file = self.file.lock().await;
             if let Err(e) = file.write_all(&self.output_buf).await {
                 return SendResult::IoError(e);
             }
 
-            self.stats.inc_lines(batch.num_rows() as u64);
+            self.stats.inc_lines(lines_written);
             self.stats.inc_bytes(bytes_written);
             SendResult::Ok
         })
@@ -128,17 +129,22 @@ impl SinkFactory for FileSinkFactory {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn is_single_use(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::Ordering;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
+
+    static NEXT_TMP_ID: AtomicU64 = AtomicU64::new(0);
 
     fn metadata() -> BatchMetadata {
         BatchMetadata {
@@ -148,11 +154,11 @@ mod tests {
     }
 
     fn temp_path(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("logfwd-output-{name}-{nanos}.tmp"))
+        let unique = NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "logfwd-output-{name}-{}-{unique}.tmp",
+            std::process::id()
+        ))
     }
 
     #[tokio::test]
@@ -195,11 +201,12 @@ mod tests {
     #[tokio::test]
     async fn file_sink_text_mode_passthroughs_raw() {
         let path = temp_path("capture-log");
+        let stats = Arc::new(ComponentStats::new());
         let factory = FileSinkFactory::new(
             "capture".to_string(),
             path.to_string_lossy().into_owned(),
             StdoutFormat::Text,
-            Arc::new(ComponentStats::new()),
+            Arc::clone(&stats),
         )
         .unwrap();
         let mut sink = factory.create().unwrap();
@@ -219,6 +226,40 @@ mod tests {
 
         let body = std::fs::read_to_string(&path).unwrap();
         assert_eq!(body, "first line\nsecond line\n");
+        assert_eq!(stats.lines_total.load(Ordering::Relaxed), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn file_sink_text_mode_skips_null_raw_rows_in_stats() {
+        let path = temp_path("capture-log-null");
+        let stats = Arc::new(ComponentStats::new());
+        let factory = FileSinkFactory::new(
+            "capture".to_string(),
+            path.to_string_lossy().into_owned(),
+            StdoutFormat::Text,
+            Arc::clone(&stats),
+        )
+        .unwrap();
+        let mut sink = factory.create().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![
+                Some("first line"),
+                None,
+                Some("third line"),
+            ]))],
+        )
+        .unwrap();
+
+        sink.send_batch(&batch, &metadata()).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "first line\nthird line\n");
+        assert_eq!(stats.lines_total.load(Ordering::Relaxed), 2);
         let _ = std::fs::remove_file(&path);
     }
 }
