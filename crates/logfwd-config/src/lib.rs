@@ -1007,8 +1007,10 @@ fn validate_host_port(addr: &str) -> Result<(), String> {
     }
 
     let (host, port_str) = if addr.starts_with('[') {
+        // Use find (first ']') not rfind (last ']') so that inputs like
+        // "[::1]]:4317" are rejected rather than treating "[::1]]" as the host.
         let close_bracket = addr
-            .rfind(']')
+            .find(']')
             .ok_or_else(|| format!("'{addr}' has mismatched brackets"))?;
         if addr[1..close_bracket].is_empty() {
             return Err(format!(
@@ -1632,6 +1634,24 @@ output:
         let err = validate_host_port("[]:8080");
         assert!(err.is_err(), "expected error for empty IPv6 brackets");
         assert!(err.unwrap_err().contains("empty IPv6 address"));
+    }
+
+    #[test]
+    fn ipv6_double_closing_bracket_rejected() {
+        // "[::1]]:4317" has a double closing bracket; rfind would accept it by
+        // treating "[::1]]" as the host — find (first ']') correctly rejects it.
+        let err = validate_host_port("[::1]]:4317");
+        assert!(
+            err.is_err(),
+            "expected error for double closing bracket '[::1]]:4317'"
+        );
+    }
+
+    #[test]
+    fn ipv6_valid_address_accepted() {
+        assert!(validate_host_port("[::1]:8080").is_ok());
+        assert!(validate_host_port("[2001:db8::1]:4317").is_ok());
+        assert!(validate_host_port("[fe80::1%eth0]:514").is_ok());
     }
 
     #[test]
