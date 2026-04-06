@@ -8,7 +8,7 @@
 // is scanned independently. Within a line, the scanner iterates
 // through structural positions sequentially.
 
-use crate::scan_config::{ScanConfig, parse_int_fast};
+use crate::scan_config::{ScanConfig, is_integer_lexeme, parse_int_fast};
 use crate::scanner::ScanBuilder;
 use crate::structural::{StreamingClassifier, find_structural_chars};
 
@@ -270,12 +270,13 @@ fn scan_line<B: ScanBuilder>(
                         builder.append_float_by_idx(idx, val);
                     } else if parse_int_fast(val).is_some() {
                         builder.append_int_by_idx(idx, val);
-                    } else {
-                        // Integer that doesn't fit in i64 (e.g. > i64::MAX).
+                    } else if is_integer_lexeme(val) {
+                        // Integer that doesn't fit in i64 (e.g. > i64::MAX or < i64::MIN).
                         // Preserve the original digits as a string rather than
                         // silently losing precision via float64 conversion.
                         builder.append_str_by_idx(idx, val);
                     }
+                    // else: malformed token (e.g. "12x", "+1") — skip silently.
                 }
             }
         }
