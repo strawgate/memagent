@@ -740,6 +740,58 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_timestamp_lowercase_z() {
+        // lowercase 'z' is also valid UTC indicator
+        let upper = parse_timestamp_nanos(b"2024-01-15T10:30:00Z").unwrap();
+        let lower = parse_timestamp_nanos(b"2024-01-15T10:30:00z").unwrap();
+        assert_eq!(upper, lower, "lowercase z should equal uppercase Z");
+    }
+
+    #[test]
+    fn test_parse_timestamp_malformed_timezone_rejects() {
+        // Missing colon: +0530 instead of +05:30
+        assert_eq!(
+            parse_timestamp_nanos(b"2024-01-15T10:30:00+0530"),
+            None,
+            "+0530 (no colon) should be rejected"
+        );
+        // Truncated offset: +05:3 (only one minute digit)
+        assert_eq!(
+            parse_timestamp_nanos(b"2024-01-15T10:30:00+05:3"),
+            None,
+            "+05:3 (truncated) should be rejected"
+        );
+        // Truncated offset: +05 (no minutes at all)
+        assert_eq!(
+            parse_timestamp_nanos(b"2024-01-15T10:30:00+05"),
+            None,
+            "+05 (no minutes) should be rejected"
+        );
+        // Hour out of range
+        assert_eq!(
+            parse_timestamp_nanos(b"2024-01-15T10:30:00+24:00"),
+            None,
+            "+24:00 (hour out of range) should be rejected"
+        );
+        // Minute out of range
+        assert_eq!(
+            parse_timestamp_nanos(b"2024-01-15T10:30:00+05:60"),
+            None,
+            "+05:60 (minute out of range) should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_boundary_offsets() {
+        // +14:00 is the largest valid ISO 8601 offset
+        let result = parse_timestamp_nanos(b"2024-01-15T10:30:00+14:00");
+        assert!(result.is_some(), "+14:00 (max valid offset) should parse");
+        // -12:00 is the smallest valid ISO 8601 offset
+        let result = parse_timestamp_nanos(b"2024-01-15T10:30:00-12:00");
+        assert!(result.is_some(), "-12:00 (min valid offset) should parse");
+    }
+
+    #[test]
     fn wire_format_fixed32() {
         let mut buf = Vec::new();
         // field 8, wire type 5 = (8 << 3) | 5 = 0x45
