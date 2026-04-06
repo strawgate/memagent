@@ -408,15 +408,15 @@ impl SegmentFile {
         })
     }
 
-    /// Read all RecordBatches from a validated segment.
-    ///
-    /// Each `append()` wrote an independent IPC stream (schema + batch + EOS),
-    /// so we create a new `StreamReader` for each sub-stream using a shared
-    /// cursor that tracks the read position across streams.
     /// Maximum data_size we'll allocate for reading (1 GiB).
     /// Defense-in-depth against corrupt footer claiming enormous size.
     const MAX_READ_DATA_SIZE: u64 = 1024 * 1024 * 1024;
 
+    /// Read all `RecordBatch` values from a validated segment.
+    ///
+    /// Each `append()` wrote an independent IPC stream (schema + batch + EOS),
+    /// so this replays the segment by opening a fresh `StreamReader` for each
+    /// sub-stream while a shared cursor tracks the byte position.
     pub fn read_batches(&self) -> io::Result<Vec<RecordBatch>> {
         if self.footer.data_size > Self::MAX_READ_DATA_SIZE {
             return Err(io::Error::new(
@@ -588,7 +588,10 @@ impl SegmentWriter {
             .map_err(|e| io::Error::other(e.to_string()))?;
 
         // Enforce the read-time limit so every written segment can be replayed.
-        let new_data_size = self.data_size + self.ipc_buf.len() as u64;
+        let new_data_size = self
+            .data_size
+            .checked_add(self.ipc_buf.len() as u64)
+            .ok_or_else(|| io::Error::other("segment data_size overflow"))?;
         if new_data_size > SegmentFile::MAX_READ_DATA_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -602,8 +605,14 @@ impl SegmentWriter {
         self.writer.write_all(&self.ipc_buf)?;
         self.hasher.update(&self.ipc_buf);
 
-        self.record_count += batch.num_rows() as u64;
-        self.batch_count += 1;
+        self.record_count = self
+            .record_count
+            .checked_add(batch.num_rows() as u64)
+            .ok_or_else(|| io::Error::other("segment record_count overflow"))?;
+        self.batch_count = self
+            .batch_count
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("segment batch_count overflow"))?;
         self.data_size = new_data_size;
 
         Ok(())
@@ -758,7 +767,6 @@ impl SegmentManager {
             .next_segment_id
             .checked_add(1)
             .ok_or_else(|| io::Error::other("segment ID overflow: u64::MAX reached"))?;
-
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1319,10 +1327,9 @@ mod tests {
     }
 
     #[test]
-    fn open_new_segment_overflow_safety() {
+    fn open_new_segment_overflow_has_no_side_effects() {
         let dir = tempfile::tempdir().unwrap();
         let seg_dir = dir.path().join("segments");
-
         let policy = RotationPolicy::default();
         // Start with next_segment_id at u64::MAX — open_new_segment must fail
         // before creating a file or mutating manager state.
@@ -1338,5 +1345,19 @@ mod tests {
             !seg_dir.exists() || fs::read_dir(&seg_dir).unwrap().next().is_none(),
             "overflow must not leave a partially opened segment on disk"
         );
+    }
+
+    #[test]
+    fn open_new_segment_private_overflow_has_no_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let seg_dir = dir.path().join("segments");
+        let policy = RotationPolicy::default();
+        let mut mgr = SegmentManager::new(seg_dir.clone(), policy, 0, 1).unwrap();
+        mgr.next_segment_id = u64::MAX;
+
+        let err = mgr.open_new_segment().unwrap_err();
+        assert!(err.to_string().contains("segment ID overflow"));
+        assert!(mgr.current.is_none());
+        assert_eq!(fs::read_dir(&seg_dir).unwrap().count(), 0);
     }
 }
