@@ -382,8 +382,8 @@ impl FileDiscovery {
                 tracing::warn!(path = %parent.display(), error = %e, "tail.watch_dir_failed");
             }
 
-            // New files from glob discovery always read from the beginning.
-            if let Err(e) = reader.open_file_at(&path, false) {
+            // New files from glob discovery respect the start_from_end config.
+            if let Err(e) = reader.open_file_at(&path, reader.config.start_from_end) {
                 tracing::warn!(path = %path.display(), error = %e, "tail.open_failed");
             }
 
@@ -456,7 +456,7 @@ impl FileDiscovery {
                     tracing::warn!(path = %path.display(), error = %e, "tail.open_after_rotation_failed");
                 }
             } else if is_new {
-                if let Err(e) = reader.open_file_at(path, false) {
+                if let Err(e) = reader.open_file_at(path, reader.config.start_from_end) {
                     tracing::warn!(path = %path.display(), error = %e, "tail.open_new_file_failed");
                 }
             }
@@ -2395,6 +2395,95 @@ mod tests {
     }
 
     /// #730: Non-existent file paths should not prevent construction.
+    #[test]
+    fn glob_rescan_respects_start_from_end() {
+        // Verify that files discovered during glob rescan (new pods, new log files)
+        // respect the start_from_end config rather than hardcoding false.
+        let dir = tempfile::tempdir().unwrap();
+        let pattern = format!("{}/*.log", dir.path().display());
+
+        // Write an initial file with existing content before the tailer starts.
+        let initial_path = dir.path().join("initial.log");
+        {
+            let mut f = File::create(&initial_path).unwrap();
+            for i in 0..10 {
+                writeln!(f, "old line {i}").unwrap();
+            }
+        }
+
+        let config = TailConfig {
+            start_from_end: true,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // First poll: initial file is opened with start_from_end=true, so no old data.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+        let old_data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            old_data.is_empty(),
+            "initial poll with start_from_end=true should produce no data from existing content"
+        );
+
+        // Now create a NEW file (simulates a new pod log appearing during rescan).
+        let new_path = dir.path().join("new-pod.log");
+        {
+            let mut f = File::create(&new_path).unwrap();
+            for i in 0..10 {
+                writeln!(f, "new pod old line {i}").unwrap();
+            }
+        }
+
+        // Poll enough times for the glob rescan to discover and open the new file.
+        std::thread::sleep(Duration::from_millis(100));
+        let events = tailer.poll().unwrap();
+        let discovered_data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            discovered_data.is_empty(),
+            "glob-rescan-discovered file with start_from_end=true must not return old content, got: {}",
+            String::from_utf8_lossy(&discovered_data)
+        );
+
+        // Appending new content to the discovered file MUST be visible.
+        {
+            let mut f = fs::OpenOptions::new().append(true).open(&new_path).unwrap();
+            writeln!(f, "new pod new line").unwrap();
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+        let new_content: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let s = String::from_utf8_lossy(&new_content);
+        assert!(
+            s.contains("new pod new line"),
+            "newly appended content must be visible after start_from_end discovery, got: {s}"
+        );
+    }
+
     #[test]
     fn test_nonexistent_path_does_not_panic() {
         let dir = tempfile::tempdir().unwrap();
