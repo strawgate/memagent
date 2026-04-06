@@ -272,6 +272,71 @@ This is the most architecturally elegant option, but probably the worst trade fo
 | Contract clarity | medium | best | medium | medium |
 | Fit for current batching model | medium | best | medium | weak |
 
+## Measured POCs
+
+Research benches added in this investigation branch:
+
+- [source_metadata_bench.rs](/Users/billeaston/Documents/repos/memagent-source-metadata-investigation/crates/logfwd-io/tests/source_metadata_bench.rs)
+- [source_metadata_table_bench.rs](/Users/billeaston/Documents/repos/memagent-source-metadata-investigation/crates/logfwd-transform/tests/it/source_metadata_table_bench.rs)
+
+### Ingest-side row injection
+
+Command:
+
+```bash
+cargo test --release -p logfwd-io --test source_metadata_bench \
+  source_metadata_injection_benchmark -- --ignored --nocapture
+```
+
+Observed results on this machine:
+
+| Case | Median time | Approx throughput |
+|---|---:|---:|
+| baseline passthrough (1 MiB) | `0.022 ms` | `~45.0 GiB/s` |
+| inject `_source_id` (1 MiB) | `0.167 ms` | `~5.8 GiB/s` |
+| inject `id+path+input` (1 MiB) | `0.249 ms` | `~3.9 GiB/s` |
+| baseline passthrough (4 MiB) | `0.778 ms` | `~5.0 GiB/s` |
+| inject `_source_id` (4 MiB) | `0.876 ms` | `~4.5 GiB/s` |
+| inject `id+path+input` (4 MiB) | `1.104 ms` | `~3.5 GiB/s` |
+
+Interpretation:
+
+- `_source_id`-only injection on a realistic 4 MiB batch was only about **13-15% slower** than pure passthrough in this narrow POC.
+- injecting `_source_id + _source_path + _input` was more like **40% slower** on the same batch.
+- the fixed-cost story is much worse on tiny chunks, which matters for low-volume or highly fragmented sources.
+
+This makes the hybrid design look better than the direct full-path row design:
+
+- a stable row key appears affordable;
+- a full path-heavy row contract is materially more expensive on the hot path.
+
+### Enrichment-side snapshot construction
+
+Command:
+
+```bash
+cargo test --release -p logfwd-transform \
+  source_metadata_snapshot_benchmark -- --ignored --nocapture
+```
+
+This bench was added but was still compiling during the current investigation pass, so the ingest-side measurements above are the only completed numbers so far. The important thing we will learn from this second bench is whether a live `sources` table with optional parsed Kubernetes columns is clearly cheap enough to treat as a cold-path refresh.
+
+### Source-partitioned batch-size model
+
+Prototype D looks weaker after a quick size model based on the measured 4 MiB POC payload shape above:
+
+- measured line size was about `123.7 bytes/line`
+- current default flush timeout is `100 ms`
+- with `30` active pod sources:
+
+| EPS per source | Source-partitioned batch size per 100 ms | Cross-source combined batch size per 100 ms |
+|---|---:|---:|
+| `100` | `~1.2 KiB` | `~36 KiB` |
+| `300` | `~3.7 KiB` | `~109 KiB` |
+| `600` | `~7.2 KiB` | `~217 KiB` |
+
+So even before we measure actual scanner/DataFusion overhead, source-partitioned batching implies much smaller effective batches under the current timeout-driven pipeline. That reinforces the concern that Prototype D would trade away a lot of batching efficiency just to keep metadata out of rows.
+
 ## Recommendation
 
 Prototype **B** first:

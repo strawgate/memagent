@@ -34,6 +34,7 @@ xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
 walkdir = { workspace = true }
 
 [dev-dependencies]
+bytes = "1"
 dhat = "0.3"
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1"
