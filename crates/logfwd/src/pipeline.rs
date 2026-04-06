@@ -384,7 +384,7 @@ impl Pipeline {
             metrics,
             batch_target_bytes: config.batch_target_bytes.unwrap_or(4 * 1024 * 1024),
             batch_timeout: Duration::from_millis(config.batch_timeout_ms.unwrap_or(100)),
-            poll_interval: Duration::from_millis(10),
+            poll_interval: Duration::from_millis(config.poll_interval_ms.unwrap_or(10)),
             resource_attrs: Arc::new(resource_attrs),
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store,
@@ -828,6 +828,7 @@ impl Pipeline {
                 Err(e) => {
                     // Queued tickets dropped here — safe, not tracked by machine.
                     self.metrics.inc_scan_error();
+                    self.metrics.inc_parse_error();
                     self.metrics.inc_dropped_batch();
                     tracing::warn!(error = %e, "pipeline: scan error (batch dropped)");
                     // Must use `span` (the batch root) not `Span::current()` here —
@@ -976,7 +977,7 @@ impl Pipeline {
                 .record_batch_latency(ack.submitted_at.elapsed().as_nanos() as u64);
         } else {
             self.metrics.inc_dropped_batch();
-            self.metrics.output_error(self.name.as_str());
+            self.metrics.output_error(&ack.output_name);
         }
         self.ack_all_tickets(ack.tickets, ack.success);
     }
@@ -1582,6 +1583,38 @@ output:
         let pipe_cfg = &config.pipelines["default"];
         let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None);
         assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
+    }
+
+    #[test]
+    fn test_pipeline_from_config_propagates_batch_tuning() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
+
+        let yaml = format!(
+            r"
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: {}
+        format: json
+    outputs:
+      - type: stdout
+        format: json
+    batch_target_bytes: 8192
+    batch_timeout_ms: 250
+    poll_interval_ms: 42
+",
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+
+        assert_eq!(pipeline.batch_target_bytes, 8192);
+        assert_eq!(pipeline.batch_timeout, Duration::from_millis(250));
+        assert_eq!(pipeline.poll_interval, Duration::from_millis(42));
     }
 
     #[test]

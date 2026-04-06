@@ -53,6 +53,8 @@ pub struct PipelineMetrics {
     pub dropped_batches_total: AtomicU64,
     /// Batches that failed the scan stage specifically.
     pub scan_errors_total: AtomicU64,
+    /// Parse failures seen during scan/input decode.
+    pub parse_errors_total: AtomicU64,
     // Per-stage cumulative timing (nanoseconds)
     pub scan_nanos_total: AtomicU64,
     pub transform_nanos_total: AtomicU64,
@@ -81,6 +83,7 @@ pub struct PipelineMetrics {
     otel_flush_by_timeout: Counter<u64>,
     otel_dropped_batches: Counter<u64>,
     otel_scan_errors: Counter<u64>,
+    otel_parse_errors: Counter<u64>,
     otel_scan_nanos: Counter<u64>,
     otel_transform_nanos: Counter<u64>,
     otel_output_nanos: Counter<u64>,
@@ -116,6 +119,7 @@ impl PipelineMetrics {
             flush_by_timeout: AtomicU64::new(0),
             dropped_batches_total: AtomicU64::new(0),
             scan_errors_total: AtomicU64::new(0),
+            parse_errors_total: AtomicU64::new(0),
             scan_nanos_total: AtomicU64::new(0),
             transform_nanos_total: AtomicU64::new(0),
             output_nanos_total: AtomicU64::new(0),
@@ -133,6 +137,7 @@ impl PipelineMetrics {
             otel_flush_by_timeout: meter.u64_counter("logfwd_flush_by_timeout").build(),
             otel_dropped_batches: meter.u64_counter("logfwd_dropped_batches").build(),
             otel_scan_errors: meter.u64_counter("logfwd_scan_errors").build(),
+            otel_parse_errors: meter.u64_counter("logfwd_parse_errors").build(),
             otel_scan_nanos: meter.u64_counter("logfwd_stage_scan_nanos").build(),
             otel_transform_nanos: meter.u64_counter("logfwd_stage_transform_nanos").build(),
             otel_output_nanos: meter.u64_counter("logfwd_stage_output_nanos").build(),
@@ -276,6 +281,12 @@ impl PipelineMetrics {
     pub fn inc_scan_error(&self) {
         self.scan_errors_total.fetch_add(1, Ordering::Relaxed);
         self.otel_scan_errors.add(1, &self.otel_attrs);
+    }
+
+    /// Increment the parse-errors counter.
+    pub fn inc_parse_error(&self) {
+        self.parse_errors_total.fetch_add(1, Ordering::Relaxed);
+        self.otel_parse_errors.add(1, &self.otel_attrs);
     }
 
     pub fn alloc_batch_id(&self) -> u64 {
@@ -1010,7 +1021,7 @@ impl DiagnosticsServer {
             let backpressure = pm.backpressure_stalls.load(Ordering::Relaxed);
 
             pipelines_json.push(format!(
-                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"dropped_batches_total":{},"scan_errors_total":{},"last_batch_time_ns":{},"batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{}}}"#,
+                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"dropped_batches_total":{},"scan_errors_total":{},"parse_errors_total":{},"last_batch_time_ns":{},"batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{}}}"#,
                 esc(&pm.name),
                 inputs_json.join(","),
                 esc(&pm.transform_sql),
@@ -1025,6 +1036,7 @@ impl DiagnosticsServer {
                 pm.flush_by_timeout.load(Ordering::Relaxed),
                 pm.dropped_batches_total.load(Ordering::Relaxed),
                 pm.scan_errors_total.load(Ordering::Relaxed),
+                pm.parse_errors_total.load(Ordering::Relaxed),
                 last_batch_ns,
                 batch_latency_avg_ns,
                 inflight,
@@ -1309,6 +1321,7 @@ mod tests {
         pm.flush_by_timeout.store(20, Ordering::Relaxed);
         pm.dropped_batches_total.store(5, Ordering::Relaxed);
         pm.scan_errors_total.store(2, Ordering::Relaxed);
+        pm.parse_errors_total.store(4, Ordering::Relaxed);
         pm.scan_nanos_total.store(100_000_000, Ordering::Relaxed); // 0.1s
         pm.transform_nanos_total
             .store(500_000_000, Ordering::Relaxed); // 0.5s
@@ -1440,6 +1453,7 @@ mod tests {
             body
         );
         assert!(body.contains(r#""scan_errors_total":2"#), "body: {}", body);
+        assert!(body.contains(r#""parse_errors_total":4"#), "body: {}", body);
         assert!(body.contains(r#""rotations":1"#), "body: {}", body);
         assert!(body.contains(r#""parse_errors":0"#), "body: {}", body);
         assert!(
@@ -1582,6 +1596,25 @@ mod tests {
             pm.batch_latency_nanos_total.load(Ordering::Relaxed),
             30_000_000
         );
+    }
+
+    #[test]
+    fn test_pipeline_metrics_failure_counters() {
+        let meter = opentelemetry::global::meter("test");
+        let mut pm = PipelineMetrics::new("test", "", &meter);
+        pm.add_output("sink_a", "stdout");
+        pm.add_output("sink_b", "stdout");
+
+        pm.inc_dropped_batch();
+        pm.inc_scan_error();
+        pm.inc_parse_error();
+        pm.output_error("sink_b");
+
+        assert_eq!(pm.dropped_batches_total.load(Ordering::Relaxed), 1);
+        assert_eq!(pm.scan_errors_total.load(Ordering::Relaxed), 1);
+        assert_eq!(pm.parse_errors_total.load(Ordering::Relaxed), 1);
+        assert_eq!(pm.outputs[0].2.errors(), 0);
+        assert_eq!(pm.outputs[1].2.errors(), 1);
     }
 
     #[test]

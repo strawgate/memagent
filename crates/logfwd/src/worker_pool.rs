@@ -102,6 +102,8 @@ pub struct AckItem {
     pub send_latency_ns: u64,
     /// Batch ID for active-batch tracking in PipelineMetrics.
     pub batch_id: u64,
+    /// Output sink name that produced this ack result.
+    pub output_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +236,7 @@ impl OutputWorkerPool {
                     queue_wait_ns: 0,
                     send_latency_ns: 0,
                     batch_id: item.batch_id,
+                    output_name: self.factory.name().to_string(),
                 })
                 .is_err()
             {
@@ -303,6 +306,7 @@ impl OutputWorkerPool {
                         queue_wait_ns: 0,
                         send_latency_ns: 0,
                         batch_id: item.batch_id,
+                        output_name: self.factory.name().to_string(),
                     })
                     .is_err()
                 {
@@ -334,6 +338,7 @@ impl OutputWorkerPool {
                     queue_wait_ns: 0,
                     send_latency_ns: 0,
                     batch_id: item.batch_id,
+                    output_name: self.factory.name().to_string(),
                 })
                 .is_err()
             {
@@ -524,6 +529,7 @@ async fn worker_task(
                                 queue_wait_ns,
                                 send_latency_ns,
                                 batch_id,
+                                output_name: sink.name().to_string(),
                             })
                             .is_err()
                         {

@@ -444,6 +444,8 @@ pub struct PipelineConfig {
     pub batch_target_bytes: Option<usize>,
     /// Batch flush timeout in milliseconds. Default: 100.
     pub batch_timeout_ms: Option<u64>,
+    /// Input polling interval in milliseconds. Default: 10.
+    pub poll_interval_ms: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +555,7 @@ impl Config {
                     workers: None,
                     batch_target_bytes: None,
                     batch_timeout_ms: None,
+                    poll_interval_ms: None,
                 };
                 let mut map = HashMap::new();
                 map.insert("default".to_string(), pipeline);
@@ -626,6 +629,11 @@ impl Config {
             if pipe.batch_timeout_ms == Some(0) {
                 return Err(ConfigError::Validation(format!(
                     "pipeline '{name}': batch_timeout_ms must be greater than 0"
+                )));
+            }
+            if pipe.poll_interval_ms == Some(0) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{name}': poll_interval_ms must be greater than 0"
                 )));
             }
             if pipe.workers == Some(0) {
@@ -2273,6 +2281,26 @@ pipelines:
         assert!(
             msg.contains("at least one label"),
             "expected 'at least one label' in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn poll_interval_ms_must_be_positive() {
+        let yaml = r"
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    poll_interval_ms: 0
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("poll_interval_ms must be greater than 0"),
+            "got: {msg}"
         );
     }
 
