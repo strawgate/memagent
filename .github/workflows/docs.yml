@@ -43,8 +43,9 @@ jobs:
             --no-progress
             --accept 200,429
             --max-retries 3
-            --exclude-mail
-            README.md book/src docs
+            --exclude 'mailto:'
+            --exclude-loopback
+            README.md book/src dev-docs docs
 
       - name: Validate required operational doc sections
         run: python3 scripts/docs/validate_operational_sections.py
