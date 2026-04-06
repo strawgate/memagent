@@ -341,9 +341,21 @@ fn render_report(run: &ProfileRun<'_>) -> String {
     let mut out = String::new();
 
     // --- Throughput ---
-    let lines_per_sec = if elapsed_secs > 0.0 { total_rows as f64 / elapsed_secs } else { 0.0 };
-    let mb_per_sec = if elapsed_secs > 0.0 { total_input_bytes as f64 / 1_048_576.0 / elapsed_secs } else { 0.0 };
-    let batches_per_sec = if elapsed_secs > 0.0 { total_batches as f64 / elapsed_secs } else { 0.0 };
+    let lines_per_sec = if elapsed_secs > 0.0 {
+        total_rows as f64 / elapsed_secs
+    } else {
+        0.0
+    };
+    let mb_per_sec = if elapsed_secs > 0.0 {
+        total_input_bytes as f64 / 1_048_576.0 / elapsed_secs
+    } else {
+        0.0
+    };
+    let batches_per_sec = if elapsed_secs > 0.0 {
+        total_batches as f64 / elapsed_secs
+    } else {
+        0.0
+    };
 
     // --- RSS analysis ---
     let rss_values: Vec<f64> = samples.iter().map(|s| s.rss_mb).collect();
@@ -400,8 +412,16 @@ fn render_report(run: &ProfileRun<'_>) -> String {
         .map(|s| s.total_deallocated_bytes)
         .sum();
 
-    let alloc_rate_mb_per_sec = if elapsed_secs > 0.0 { total_allocated as f64 / 1_048_576.0 / elapsed_secs } else { 0.0 };
-    let alloc_rate_per_sec = if elapsed_secs > 0.0 { total_allocs as f64 / elapsed_secs } else { 0.0 };
+    let alloc_rate_mb_per_sec = if elapsed_secs > 0.0 {
+        total_allocated as f64 / 1_048_576.0 / elapsed_secs
+    } else {
+        0.0
+    };
+    let alloc_rate_per_sec = if elapsed_secs > 0.0 {
+        total_allocs as f64 / elapsed_secs
+    } else {
+        0.0
+    };
     let bytes_per_row = if total_rows > 0 {
         total_allocated as f64 / total_rows as f64
     } else {
