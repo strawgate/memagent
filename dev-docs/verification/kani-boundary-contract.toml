@@ -67,6 +67,12 @@ reason = "SendResult aggregation and invariants are Kani-covered and should rema
 issue = 1314
 
 [[seams]]
+path = "crates/logfwd-output/src/sink/health.rs"
+status = "required"
+reason = "Output lifecycle reduction and fanout health aggregation are isolated local proof seams."
+issue = 1439
+
+[[seams]]
 path = "crates/logfwd/src/worker_pool.rs"
 status = "required"
 reason = "Worker dispatch helpers already expose bounded local proof seams."

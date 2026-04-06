@@ -46,7 +46,7 @@ use tracing::Instrument;
 
 use logfwd_io::diagnostics::PipelineMetrics;
 use logfwd_output::BatchMetadata;
-use logfwd_output::sink::{SendResult, Sink, SinkFactory};
+use logfwd_output::sink::{OutputHealthEvent, SendResult, Sink, SinkFactory, reduce_output_health};
 use logfwd_types::pipeline::{BatchTicket, Sending};
 
 use arrow::record_batch::RecordBatch;
@@ -135,6 +135,26 @@ struct WorkerConfig {
 struct WorkerHandle {
     /// Channel to send work items to this worker.
     tx: mpsc::Sender<WorkerMsg>,
+}
+
+fn apply_output_health_event(
+    metrics: &PipelineMetrics,
+    output_name: &str,
+    event: OutputHealthEvent,
+) {
+    let mut matched = false;
+    for (name, _, stats) in &metrics.outputs {
+        if name == output_name {
+            stats.set_health(reduce_output_health(stats.health(), event));
+            matched = true;
+        }
+    }
+    if matched {
+        return;
+    }
+    for (_, _, stats) in &metrics.outputs {
+        stats.set_health(reduce_output_health(stats.health(), event));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +390,11 @@ impl OutputWorkerPool {
     /// 2. **Wait**: join all worker tasks (with `graceful_timeout`).
     /// 3. **Force**: cancel any tasks still running after the timeout.
     pub async fn drain(&mut self, graceful_timeout: Duration) {
+        apply_output_health_event(
+            &self.metrics,
+            self.factory.name(),
+            OutputHealthEvent::ShutdownRequested,
+        );
         // Phase 1 — signal all workers.
         // Use try_send to avoid blocking if a worker's channel is full (e.g.,
         // it is stuck in send_batch). Dropping the Sender below also signals
@@ -421,11 +446,36 @@ impl OutputWorkerPool {
             self.join_set.shutdown().await;
         }
         // After this point all workers have exited and sent their final acks.
+        apply_output_health_event(
+            &self.metrics,
+            self.factory.name(),
+            OutputHealthEvent::ShutdownCompleted,
+        );
     }
 
     /// Spawn a new worker task and return a handle.
     fn spawn_worker(&mut self) -> io::Result<WorkerHandle> {
-        let sink = self.factory.create()?;
+        apply_output_health_event(
+            &self.metrics,
+            self.factory.name(),
+            OutputHealthEvent::StartupRequested,
+        );
+        let sink = match self.factory.create() {
+            Ok(sink) => sink,
+            Err(err) => {
+                apply_output_health_event(
+                    &self.metrics,
+                    self.factory.name(),
+                    OutputHealthEvent::FatalFailure,
+                );
+                return Err(err);
+            }
+        };
+        apply_output_health_event(
+            &self.metrics,
+            sink.name(),
+            OutputHealthEvent::StartupSucceeded,
+        );
         let (tx, rx) = mpsc::channel::<WorkerMsg>(self.channel_capacity);
         let ack_tx = self.ack_tx.clone();
         let id = self.next_id;
@@ -508,7 +558,12 @@ async fn worker_task(
                             resp_bytes = tracing::field::Empty,
                         );
                         let (success, send_latency_ns, retries) = process_item(
-                            id, &mut *sink, item.batch.clone(), &item.metadata, max_retry_delay,
+                            id,
+                            &mut *sink,
+                            &metrics,
+                            item.batch.clone(),
+                            &item.metadata,
+                            max_retry_delay,
                         )
                         .instrument(output_span.clone())
                         .await;
@@ -546,9 +601,13 @@ async fn worker_task(
             }
         }
     }
-    // Graceful sink shutdown (flush, close connection).
+    // Always shut the sink down when the worker exits so resources are flushed
+    // and released. Health transitions for pipeline drain are driven by the
+    // pool-level drain path; idle worker expiry should not make outputs appear
+    // permanently unready because the pool can respawn workers on demand.
     if let Err(e) = sink.shutdown().await {
         tracing::error!(worker_id = id, error = %e, "worker_pool: sink shutdown failed");
+        apply_output_health_event(&metrics, sink.name(), OutputHealthEvent::FatalFailure);
         metrics.output_error(sink.name());
     }
 }
@@ -572,6 +631,7 @@ async fn recv_with_idle_timeout(
 async fn process_item(
     worker_id: usize,
     sink: &mut dyn Sink,
+    metrics: &PipelineMetrics,
     batch: RecordBatch,
     metadata: &BatchMetadata,
     max_retry_delay: Duration,
@@ -608,13 +668,20 @@ async fn process_item(
                     timeout_secs = BATCH_TIMEOUT_SECS,
                     "worker_pool: batch send timed out"
                 );
+                apply_output_health_event(metrics, sink.name(), OutputHealthEvent::FatalFailure);
                 return (false, send_latency_ns, retries_count);
             }
             Ok(SendResult::Ok) => {
+                apply_output_health_event(
+                    metrics,
+                    sink.name(),
+                    OutputHealthEvent::DeliverySucceeded,
+                );
                 return (true, send_latency_ns, retries_count);
             }
             Ok(SendResult::Rejected(reason)) => {
                 tracing::warn!(worker_id, %reason, "worker_pool: batch rejected");
+                apply_output_health_event(metrics, sink.name(), OutputHealthEvent::FatalFailure);
                 return (false, send_latency_ns, retries_count);
             }
             Ok(SendResult::RetryAfter(retry_dur)) => {
@@ -626,16 +693,23 @@ async fn process_item(
                         max_retries = MAX_RETRIES,
                         "worker_pool: RetryAfter exceeded max retries"
                     );
+                    apply_output_health_event(
+                        metrics,
+                        sink.name(),
+                        OutputHealthEvent::FatalFailure,
+                    );
                     return (false, send_latency_ns, retries_count);
                 }
                 retries_count += 1;
                 let sleep_for = retry_dur.min(max_retry_delay);
+                apply_output_health_event(metrics, sink.name(), OutputHealthEvent::Retrying);
                 tracing::warn!(worker_id, ?sleep_for, "worker_pool: rate-limited, retrying");
                 tokio::time::sleep(sleep_for).await;
             }
             Ok(SendResult::IoError(e)) => match backoff.next() {
                 Some(delay) => {
                     retries_count += 1;
+                    apply_output_health_event(metrics, sink.name(), OutputHealthEvent::Retrying);
                     tracing::warn!(
                         worker_id,
                         sleep_ms = delay.as_millis() as u64,
@@ -651,11 +725,19 @@ async fn process_item(
                         error = %e,
                         "worker_pool: gave up after retries"
                     );
+                    apply_output_health_event(
+                        metrics,
+                        sink.name(),
+                        OutputHealthEvent::FatalFailure,
+                    );
                     return (false, send_latency_ns, retries_count);
                 }
             },
             // Future SendResult variants (#[non_exhaustive]) — treat as failure.
-            Ok(_) => return (false, send_latency_ns, retries_count),
+            Ok(_) => {
+                apply_output_health_event(metrics, sink.name(), OutputHealthEvent::FatalFailure);
+                return (false, send_latency_ns, retries_count);
+            }
         }
     }
 }
@@ -987,10 +1069,13 @@ mod tests {
 
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
+    use logfwd_io::diagnostics::ComponentHealth;
     use logfwd_output::BatchMetadata;
     use logfwd_output::sink::{SendResult, Sink, SinkFactory};
+    use std::collections::VecDeque;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A sink that counts calls and optionally simulates failures.
@@ -1057,6 +1142,93 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "counting"
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    enum ScriptedResult {
+        Ok,
+        RetryAfter(Duration),
+        Rejected(&'static str),
+    }
+
+    struct ScriptedSink {
+        name: String,
+        steps: Arc<Mutex<VecDeque<ScriptedResult>>>,
+    }
+
+    impl Sink for ScriptedSink {
+        fn send_batch<'a>(
+            &'a mut self,
+            _batch: &'a RecordBatch,
+            _metadata: &'a BatchMetadata,
+        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+            let step = self
+                .steps
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(ScriptedResult::Ok);
+            Box::pin(async move {
+                match step {
+                    ScriptedResult::Ok => SendResult::Ok,
+                    ScriptedResult::RetryAfter(d) => SendResult::RetryAfter(d),
+                    ScriptedResult::Rejected(msg) => SendResult::Rejected(msg.to_string()),
+                }
+            })
+        }
+
+        fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct ScriptedSinkFactory {
+        name: &'static str,
+        steps: Arc<Mutex<VecDeque<ScriptedResult>>>,
+    }
+
+    impl ScriptedSinkFactory {
+        fn new(name: &'static str, steps: Vec<ScriptedResult>) -> Self {
+            Self {
+                name,
+                steps: Arc::new(Mutex::new(VecDeque::from(steps))),
+            }
+        }
+    }
+
+    impl SinkFactory for ScriptedSinkFactory {
+        fn create(&self) -> io::Result<Box<dyn Sink>> {
+            Ok(Box::new(ScriptedSink {
+                name: self.name.to_string(),
+                steps: Arc::clone(&self.steps),
+            }))
+        }
+
+        fn name(&self) -> &str {
+            self.name
+        }
+    }
+
+    struct FailingCreateFactory {
+        name: &'static str,
+    }
+
+    impl SinkFactory for FailingCreateFactory {
+        fn create(&self) -> io::Result<Box<dyn Sink>> {
+            Err(io::Error::other("create failed"))
+        }
+
+        fn name(&self) -> &str {
+            self.name
         }
     }
 
@@ -1256,5 +1428,114 @@ mod tests {
 
         // All 5 items should have been processed.
         assert_eq!(calls.load(Ordering::Relaxed), 5);
+    }
+
+    #[tokio::test]
+    async fn pool_retrying_output_marks_degraded_then_recovers() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("test", "", &meter);
+        let out_stats = pm.add_output("scripted", "http");
+        let metrics = Arc::new(pm);
+        let factory = Arc::new(ScriptedSinkFactory::new(
+            "scripted",
+            vec![
+                ScriptedResult::RetryAfter(Duration::from_millis(40)),
+                ScriptedResult::Ok,
+            ],
+        ));
+        let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(60), metrics);
+
+        pool.submit(empty_work_item()).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(out_stats.health(), ComponentHealth::Degraded);
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let ack = pool.ack_rx_mut().try_recv().expect("expected ack item");
+        assert!(ack.success);
+        assert_eq!(out_stats.health(), ComponentHealth::Healthy);
+
+        pool.drain(Duration::from_secs(5)).await;
+    }
+
+    #[tokio::test]
+    async fn pool_rejected_output_marks_failed() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("test", "", &meter);
+        let out_stats = pm.add_output("scripted", "http");
+        let metrics = Arc::new(pm);
+        let factory = Arc::new(ScriptedSinkFactory::new(
+            "scripted",
+            vec![ScriptedResult::Rejected("bad request")],
+        ));
+        let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(60), metrics);
+
+        pool.submit(empty_work_item()).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let ack = pool.ack_rx_mut().try_recv().expect("expected ack item");
+        assert!(!ack.success);
+        assert_eq!(out_stats.health(), ComponentHealth::Failed);
+
+        pool.drain(Duration::from_secs(5)).await;
+    }
+
+    #[tokio::test]
+    async fn pool_create_failure_marks_output_failed() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("test", "", &meter);
+        let out_stats = pm.add_output("broken", "http");
+        let metrics = Arc::new(pm);
+        let factory = Arc::new(FailingCreateFactory { name: "broken" });
+        let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(60), metrics);
+
+        pool.submit(empty_work_item()).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let ack = pool.ack_rx_mut().try_recv().expect("expected rejected ack");
+        assert!(!ack.success);
+        assert_eq!(out_stats.health(), ComponentHealth::Failed);
+    }
+
+    #[tokio::test]
+    async fn pool_drain_marks_output_stopped() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("test", "", &meter);
+        let out_stats = pm.add_output("counting", "counting");
+        let metrics = Arc::new(pm);
+        let calls = Arc::new(AtomicU32::new(0));
+        let factory = Arc::new(CountingSinkFactory {
+            calls: Arc::clone(&calls),
+            fail: false,
+            fail_shutdown: false,
+        });
+        let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(60), metrics);
+
+        pool.submit(empty_work_item()).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        pool.drain(Duration::from_secs(5)).await;
+
+        assert_eq!(out_stats.health(), ComponentHealth::Stopped);
+    }
+
+    #[tokio::test]
+    async fn idle_worker_exit_keeps_output_ready() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("test", "", &meter);
+        let out_stats = pm.add_output("counting", "counting");
+        let metrics = Arc::new(pm);
+        let calls = Arc::new(AtomicU32::new(0));
+        let factory = Arc::new(CountingSinkFactory {
+            calls: Arc::clone(&calls),
+            fail: false,
+            fail_shutdown: false,
+        });
+        let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_millis(20), metrics);
+
+        pool.submit(empty_work_item()).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        assert_eq!(out_stats.health(), ComponentHealth::Healthy);
+
+        pool.drain(Duration::from_secs(5)).await;
     }
 }

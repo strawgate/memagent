@@ -14,7 +14,7 @@
 |-----|-------------|
 | [`dev-docs/CRATE_RULES.md`](dev-docs/CRATE_RULES.md) | Per-crate rules enforced by CI |
 | [`dev-docs/CODE_STYLE.md`](dev-docs/CODE_STYLE.md) | Naming, error handling, hot path rules |
-| [`dev-docs/IO_CONTRACTS.md`](dev-docs/IO_CONTRACTS.md) | Receiver/pipeline/sink contracts, checkpoint rules, duplicate/loss windows |
+| [`dev-docs/ADAPTER_CONTRACT.md`](dev-docs/ADAPTER_CONTRACT.md) | Receiver/pipeline/sink contracts, checkpoint rules, duplicate/loss windows, diagnostics/control-plane contract |
 | [`dev-docs/SCANNER_CONTRACT.md`](dev-docs/SCANNER_CONTRACT.md) | Scanner input requirements, output guarantees, limitations |
 | [`dev-docs/PR_PROCESS.md`](dev-docs/PR_PROCESS.md) | Copilot assignment, PR triage, review criteria, merge process |
 | [`dev-docs/CHANGE_MAP.md`](dev-docs/CHANGE_MAP.md) | What must change together for config, pipeline, verification, and crate-boundary edits |

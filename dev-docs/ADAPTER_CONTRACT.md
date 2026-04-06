@@ -2,10 +2,15 @@
 
 This document freezes the correctness contract at the system edges.
 
+It is the canonical contract doc for I/O and control-plane boundaries.
+
 It complements [SCANNER_CONTRACT](SCANNER_CONTRACT.md). The scanner contract
 defines what `Scanner` expects and produces. This document defines what the
-OTLP and file adapters must preserve before data reaches the scanner and after
-data leaves the `RecordBatch` pipeline.
+OTLP, file, diagnostics, and pipeline adapters must preserve before data
+reaches the scanner and after data leaves the `RecordBatch` pipeline.
+
+If you were looking for the older `IO_CONTRACTS.md` name, that file now points
+here.
 
 ## Scope
 
@@ -14,6 +19,8 @@ In-scope:
 - OTLP HTTP input (`crates/logfwd-io/src/otlp_receiver.rs`)
 - OTLP output (`crates/logfwd-output/src/otlp_sink.rs`)
 - File input + framing + checkpointed delivery
+- diagnostics/readiness/status surfaces
+- pipeline checkpoint and output retry semantics
 
 Out-of-scope for now:
 
@@ -31,6 +38,26 @@ Most recurring IO bugs in this repo have been boundary bugs:
 
 The contract below exists so we can test invariant classes instead of adding
 one regression test per incident.
+
+## How To Read This Doc
+
+Each guarantee names:
+
+- the boundary it applies to
+- the current behavior or intended invariant
+- the main enforcement mechanism
+- important gaps or caveats
+
+Enforcement labels:
+
+| Label | Meaning |
+|-------|---------|
+| `Proof` | Enforced by Kani or model checking |
+| `Proptest` | Enforced by property-based tests |
+| `Integration test` | Enforced by deterministic integration or end-to-end tests |
+| `Runtime check` | Enforced by code path checks or bounded behavior in production code |
+| `Documented intent` | Desired contract called out in docs, but not yet strongly enforced |
+| `TODO` | Not yet adequately enforced |
 
 ## OTLP Receiver Contract
 
@@ -145,6 +172,66 @@ The file path is:
 - Duplicate delivery is acceptable when required for at-least-once recovery.
 - Copytruncate is explicitly documented as a race window, not treated as an
   exactly-once path.
+
+## Diagnostics And Control-Plane Contract
+
+The control plane is part of the boundary contract now that `/live`, `/ready`,
+and rich component health snapshots exist.
+
+### Endpoint meanings
+
+- `/live` reports process/control-plane liveness only.
+- `/ready` means safe-to-accept-work.
+- `/admin/v1/status` is the canonical rich status surface.
+
+### Health vocabulary
+
+- `starting` means a component exists but is not yet ready.
+- `healthy` means the component is ready for work.
+- `degraded` means the component is alive but under retry/pressure.
+- `stopping` means shutdown or drain has started and readiness should fail.
+- `stopped` means the component has finished shutting down and is not ready.
+- `failed` means the component hit a fatal condition and is not ready.
+
+### Readiness rules
+
+- `degraded` is visible in status and does not fail readiness by default.
+- `starting`, `stopping`, `stopped`, and `failed` fail readiness.
+- quiet sources must not fail readiness by themselves.
+- readiness reflects the currently wired health sources, not speculative future ones.
+
+### Status-snapshot rules
+
+- status snapshots should carry a state, a reason, and transition timing when available.
+- status roll-ups should be deterministic and local to the semantic seam that owns them.
+- HTTP shell code should not own the policy for deciding what health means.
+
+## Verification Mapping
+
+This architecture relies on multiple verification layers.
+The canonical strategy lives in [VERIFICATION.md](VERIFICATION.md).
+This section maps the I/O contracts to the expected enforcement style.
+
+| Contract class | Preferred enforcement |
+|----------------|-----------------------|
+| Pure helper invariants and local state transitions | Kani |
+| Stateful boundary sequences with many interleavings | proptest and deterministic regression tests |
+| Protocol/lifecycle rules independent of implementation shape | TLA+ |
+| Distributed, crash, timeout, and retry fault scenarios | Turmoil |
+| Wire-level OTLP semantic equivalence | loopback tests and oracle checks |
+| Performance goals | disciplined benchmark validation |
+
+This table is normative for planning,
+not a claim that every item is already complete on `master`.
+
+## Update Rules
+
+- Any PR that changes receiver, pipeline, sink, checkpoint, file lifecycle, or
+  diagnostics/control-plane semantics should update this document in the same PR.
+- If a stronger guarantee is not yet enforced, mark it as `Documented intent`
+  or `TODO` rather than overstating certainty.
+- If a more detailed subsystem contract already has a canonical document, link
+  to it instead of duplicating it here.
 
 ## What still needs to grow
 

@@ -5,6 +5,8 @@
 //! This costs one heap allocation per call but allows heterogeneous sink
 //! collections in the worker pool.
 
+mod health;
+
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -14,6 +16,7 @@ use std::time::Duration;
 use arrow::record_batch::RecordBatch;
 use logfwd_types::diagnostics::ComponentHealth;
 
+pub use self::health::{OutputHealthEvent, aggregate_fanout_health, reduce_output_health};
 use super::BatchMetadata;
 
 // ---------------------------------------------------------------------------
@@ -203,11 +206,7 @@ impl Sink for AsyncFanoutSink {
     }
 
     fn health(&self) -> ComponentHealth {
-        self.sinks
-            .iter()
-            .fold(ComponentHealth::Healthy, |state, sink| {
-                state.combine(sink.health())
-            })
+        aggregate_fanout_health(self.sinks.iter().map(|sink| sink.health()))
     }
 
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
