@@ -1232,5 +1232,7 @@ mod verification {
                 }
             }
         }
+        kani::cover!(result.is_some(), "quote found in range");
+        kani::cover!(result.is_none(), "no quote in range");
     }
 }

@@ -812,6 +812,17 @@ mod verification {
             "control-char escape arm reachable"
         );
 
+        // Guard vacuity for the empty-object comma-strip path (is_empty_obj branch).
+        // For a 2-byte msg, is_empty_obj triggers only when msg == b"{}".
+        kani::cover!(
+            msg[0] == b'{' && msg[1] == b'}' && prefix[1] == b',',
+            "empty-object comma-strip path reachable"
+        );
+        kani::cover!(
+            msg[0] == b'{' && !(msg[1] == b'}' && prefix[1] == b','),
+            "JSON path without comma-strip reachable"
+        );
+
         write_json_line(&msg, Some(&prefix), &mut out);
 
         if msg[0] == b'{' {
