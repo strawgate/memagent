@@ -89,6 +89,29 @@ fn test_hash_udf_missing_args() {
 }
 
 #[test]
+fn test_hash_udf_extra_args() {
+    let udf = HashUdf::new();
+    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::UInt64, true));
+    let args = ScalarFunctionArgs {
+        args: vec![
+            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("a".to_string()))),
+            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("b".to_string()))),
+        ],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly one argument")
+    );
+}
+
+#[test]
 fn test_json_extract_udf_missing_args() {
     let udf = JsonExtractUdf::new(JsonExtractMode::Str);
     let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
@@ -180,5 +203,93 @@ fn test_regexp_extract_udf_missing_args() {
             .unwrap_err()
             .to_string()
             .contains("expects exactly three arguments")
+    );
+}
+
+#[test]
+fn test_json_extract_udf_extra_args() {
+    let udf = JsonExtractUdf::new(JsonExtractMode::Str);
+    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
+    let val = ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("x".to_string())));
+    let args = ScalarFunctionArgs {
+        args: vec![val.clone(), val.clone(), val.clone()],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly two arguments")
+    );
+}
+
+#[test]
+fn test_grok_udf_extra_args() {
+    let udf = GrokUdf::new();
+    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
+    let val = ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("x".to_string())));
+    let args = ScalarFunctionArgs {
+        args: vec![val.clone(), val.clone(), val.clone()],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly two arguments")
+    );
+}
+
+#[test]
+fn test_regexp_extract_udf_extra_args() {
+    let udf = RegexpExtractUdf::new();
+    let return_field = Arc::new(arrow::datatypes::Field::new("r", DataType::Utf8, true));
+    let val = ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("x".to_string())));
+    let args = ScalarFunctionArgs {
+        args: vec![val.clone(), val.clone(), val.clone(), val.clone()],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly three arguments")
+    );
+}
+
+#[test]
+fn test_geo_lookup_udf_extra_args() {
+    let udf = GeoLookupUdf::new(Arc::new(MockGeoDatabase));
+    let return_field = Arc::new(arrow::datatypes::Field::new(
+        "r",
+        DataType::Struct(arrow::datatypes::Fields::empty()),
+        true,
+    ));
+    let val = ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some("x".to_string())));
+    let args = ScalarFunctionArgs {
+        args: vec![val.clone(), val.clone()],
+        number_rows: 1,
+        return_field: Arc::clone(&return_field),
+        arg_fields: vec![],
+    };
+    let result = udf.invoke_with_args(args);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("expects exactly one argument")
     );
 }
