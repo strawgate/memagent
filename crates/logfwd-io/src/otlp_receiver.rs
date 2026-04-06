@@ -28,11 +28,6 @@ const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 /// Bounded channel capacity — limits memory when the pipeline falls behind.
 const CHANNEL_BOUND: usize = 4096;
 
-/// How long the receiver thread waits for the next request before checking
-/// the `is_running` flag.  Shorter values speed up shutdown; longer values
-/// reduce CPU overhead.  100 ms is a good balance.
-const SHUTDOWN_POLL_TIMEOUT: Duration = Duration::from_millis(100);
-
 /// OTLP receiver that listens for log exports via HTTP.
 pub struct OtlpReceiverInput {
     name: String,
@@ -77,23 +72,10 @@ impl OtlpReceiverInput {
             .name("otlp-receiver".into())
             .spawn(move || {
                 while is_running_clone.load(Ordering::Relaxed) {
-                    let mut request = match server_clone.recv_timeout(SHUTDOWN_POLL_TIMEOUT) {
+                    let mut request = match server_clone.recv_timeout(Duration::from_millis(100)) {
                         Ok(Some(req)) => req,
-                        Ok(None) => continue,
-                        Err(e) => {
-                            // Persistent accept-side I/O error — log and break to
-                            // avoid a busy-loop spinning on a broken listener.
-                            eprintln!("OTLP receiver: accept error, shutting down worker: {e}");
-                            break;
-                        }
+                        Ok(None) | Err(_) => continue,
                     };
-
-                    // Re-check after recv_timeout: Drop may have set is_running to false while
-                    // the call was blocking and a real request raced in.  Drop the request and
-                    // exit so handle.join() does not block on body reads.
-                    if !is_running_clone.load(Ordering::Relaxed) {
-                        break;
-                    }
 
                     let url = request.url().to_string();
 
@@ -126,13 +108,6 @@ impl OtlpReceiverInput {
                                 .with_status_code(413),
                         );
                         continue;
-                    }
-
-                    // Final shutdown gate before the blocking body read.  If Drop fired
-                    // between the URL/method checks and here, drop the request rather than
-                    // blocking handle.join() on a potentially slow or stalled upload.
-                    if !is_running_clone.load(Ordering::Relaxed) {
-                        break;
                     }
 
                     // Read body with a hard cap.
@@ -261,7 +236,7 @@ impl OtlpReceiverInput {
                                 .with_header(
                                     "Content-Type: application/json"
                                         .parse::<tiny_http::Header>()
-                                        .expect("static Content-Type header is valid"),
+                                        .unwrap(),
                                 )
                                 .with_status_code(200);
                             let _ = request.respond(response);
@@ -1915,16 +1890,17 @@ mod tests {
     #[test]
     fn receiver_shuts_down_cleanly_on_drop() {
         // Create an input receiver binding to port 0 (OS assigns port).
-        let receiver =
-            OtlpReceiverInput::new("test-drop", "127.0.0.1:0").expect("should bind successfully");
+        let receiver = OtlpReceiverInput::new("test-drop", "127.0.0.1:0")
+            .expect("should bind successfully");
         let local_addr = receiver.local_addr();
 
         // Drop the receiver. This should trigger `Drop`, set `is_running` to false,
         // and join the thread, closing the HTTP server and releasing the port.
         drop(receiver);
 
-        // Drop::join() is synchronous — the port is released before we return from drop().
-        // No sleep needed.
+        // Wait a tiny bit for the OS to actually release the port if needed,
+        // though join() in Drop should make it synchronous.
+        std::thread::sleep(Duration::from_millis(10));
 
         // Try to bind to the exact same port again. If the previous receiver
         // thread didn't shut down properly and leaked the server, this will fail
