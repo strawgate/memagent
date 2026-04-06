@@ -262,7 +262,8 @@ async fn bench_backon_retry(iterations: u64) -> Duration {
                     .with_min_delay(Duration::from_millis(100))
                     .with_max_delay(Duration::from_secs(30))
                     .with_max_times(3)
-                    .with_jitter(),
+                    .with_jitter()
+                    .with_factor(2.0),
             )
             .when(|_e: &&str| true)
             .await;
@@ -545,13 +546,14 @@ async fn main() {
     let glob_elapsed = glob_start.elapsed();
 
     // globset — compile once, match many
-    let globset_start = Instant::now();
-    let mut globset_matches = 0u64;
+    // Compile GlobSet before starting the timer so only matching is measured.
     let mut builder = globset::GlobSetBuilder::new();
     for pattern in &patterns {
         builder.add(globset::Glob::new(pattern).unwrap());
     }
     let set = builder.build().unwrap();
+    let globset_start = Instant::now();
+    let mut globset_matches = 0u64;
     for _ in 0..glob_iters {
         for path in &test_paths {
             if set.is_match(path) {
@@ -561,7 +563,10 @@ async fn main() {
     }
     let globset_elapsed = globset_start.elapsed();
 
+    // glob::Pattern counts per-(pattern, path) pairs; globset counts paths
+    // matching any pattern — use separate denominators for fair comparison.
     let total_checks = glob_iters * patterns.len() as u64 * test_paths.len() as u64;
+    let total_checks_any = glob_iters * test_paths.len() as u64;
     println!(
         "  glob::Pattern:  {:.1}μs per rescan, {:.0} matches/s ({} matches)",
         glob_elapsed.as_micros() as f64 / glob_iters as f64,
@@ -571,7 +576,7 @@ async fn main() {
     println!(
         "  globset::GlobSet: {:.1}μs per rescan, {:.0} matches/s ({} matches)",
         globset_elapsed.as_micros() as f64 / glob_iters as f64,
-        total_checks as f64 / globset_elapsed.as_secs_f64(),
+        total_checks_any as f64 / globset_elapsed.as_secs_f64(),
         globset_matches,
     );
     let speedup = glob_elapsed.as_secs_f64() / globset_elapsed.as_secs_f64();
