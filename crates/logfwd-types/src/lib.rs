@@ -18,3 +18,6 @@ pub mod filter_hints;
 
 /// Canonical OTLP log field names — single source of truth for receiver ↔ sink column names.
 pub mod field_names;
+
+/// Unified I/O action classification — retry, reject, or fatal.
+pub mod io_action;
