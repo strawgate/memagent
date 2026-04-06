@@ -79,7 +79,13 @@ impl OtlpReceiverInput {
                 while is_running_clone.load(Ordering::Relaxed) {
                     let mut request = match server_clone.recv_timeout(SHUTDOWN_POLL_TIMEOUT) {
                         Ok(Some(req)) => req,
-                        Ok(None) | Err(_) => continue,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            // Persistent accept-side I/O error — log and break to
+                            // avoid a busy-loop spinning on a broken listener.
+                            eprintln!("OTLP receiver: accept error, shutting down worker: {e}");
+                            break;
+                        }
                     };
 
                     // Re-check after recv_timeout: Drop may have set is_running to false while
@@ -255,7 +261,7 @@ impl OtlpReceiverInput {
                                 .with_header(
                                     "Content-Type: application/json"
                                         .parse::<tiny_http::Header>()
-                                        .unwrap(),
+                                        .expect("static Content-Type header is valid"),
                                 )
                                 .with_status_code(200);
                             let _ = request.respond(response);
