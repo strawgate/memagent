@@ -168,6 +168,21 @@ impl CriReassembler {
         self.partial_buf.clear();
         self.truncated = false;
     }
+
+    /// Emit any pending partial data and clear the buffer.
+    ///
+    /// Returns `Some(data)` if there was a buffered (incomplete) P-sequence,
+    /// `None` if the buffer was already empty.  Call this before discarding a
+    /// source (e.g. on file rotation) to avoid silently losing partially-assembled
+    /// CRI messages.  The returned slice is invalidated by the next `reset()` or
+    /// `flush()` call.
+    pub fn flush(&mut self) -> Option<&[u8]> {
+        if self.partial_buf.is_empty() {
+            None
+        } else {
+            Some(&self.partial_buf)
+        }
+    }
 }
 
 /// Process a chunk of CRI-formatted log data. Parses each CRI line, reassembles

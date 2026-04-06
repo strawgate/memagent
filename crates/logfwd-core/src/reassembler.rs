@@ -131,6 +131,20 @@ impl CriReassembler {
         !self.pending.is_empty()
     }
 
+    /// Emit any pending partial data without a terminating F line.
+    ///
+    /// Returns `Some(data)` when a buffered P-sequence exists, `None` if the
+    /// buffer is empty. Call this before discarding a source (e.g. on file
+    /// rotation) to avoid silently losing partially-assembled CRI messages.
+    /// The returned slice is valid until the next `reset()` or `flush()`.
+    pub fn flush(&mut self) -> Option<&[u8]> {
+        if self.pending.is_empty() {
+            None
+        } else {
+            Some(&self.pending)
+        }
+    }
+
     /// Returns the configured maximum message size.
     pub fn max_message_size(&self) -> usize {
         self.max_message_size
