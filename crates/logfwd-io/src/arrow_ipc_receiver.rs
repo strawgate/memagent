@@ -35,6 +35,7 @@ pub struct ArrowIpcReceiver {
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
     server: std::sync::Arc<tiny_http::Server>,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Keep the server thread handle alive.
     handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -67,12 +68,22 @@ impl ArrowIpcReceiver {
         };
 
         let (tx, rx) = mpsc::sync_channel(capacity);
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_clone = std::sync::Arc::clone(&shutdown);
 
         let server_clone = std::sync::Arc::clone(&server);
         let handle = std::thread::Builder::new()
             .name("arrow-ipc-receiver".into())
             .spawn(move || {
-                for mut request in server_clone.incoming_requests() {
+                while !shutdown_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    let mut request = match server_clone.try_recv() {
+                        Ok(Some(req)) => req,
+                        Ok(None) | Err(_) => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                            continue;
+                        }
+                    };
+
                     let url = request.url().to_string();
 
                     // Only accept the Arrow IPC endpoint path.
@@ -226,6 +237,7 @@ impl ArrowIpcReceiver {
             rx: Some(rx),
             addr: bound_addr,
             server,
+            shutdown,
             handle: Some(handle),
         })
     }
@@ -311,6 +323,28 @@ fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, InputError> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+    // Regression test for issue #1142: clean shutdown
+    #[test]
+    fn clean_shutdown_releases_port() {
+        let addr = "127.0.0.1:0";
+        let receiver = ArrowIpcReceiver::new("test", addr).unwrap();
+        let port = receiver.local_addr().port();
+
+        // Wait briefly for thread to start blocking
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Drop it
+        drop(receiver);
+
+        // Wait briefly for the OS to actually release the port
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // The port should now be free to bind to immediately
+        let new_addr = format!("127.0.0.1:{}", port);
+        let result = tiny_http::Server::http(&new_addr);
+        assert!(result.is_ok(), "Failed to bind to port {} after drop", port);
+    }
 
 #[cfg(test)]
 mod tests {
@@ -431,6 +465,7 @@ mod tests {
 
 impl Drop for ArrowIpcReceiver {
     fn drop(&mut self) {
+        self.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
         self.rx.take();
         self.server.unblock();
         if let Some(handle) = self.handle.take() {
