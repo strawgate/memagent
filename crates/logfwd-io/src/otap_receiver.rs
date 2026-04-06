@@ -519,11 +519,13 @@ mod tests {
             batch_id,
             arrow_payloads: payloads
                 .iter()
-                .map(|(payload_type, record)| logfwd_otap_proto::otap::ArrowPayload {
-                    schema_id: String::new(),
-                    r#type: *payload_type as i32,
-                    record: record.to_vec(),
-                })
+                .map(
+                    |(payload_type, record)| logfwd_otap_proto::otap::ArrowPayload {
+                        schema_id: String::new(),
+                        r#type: *payload_type as i32,
+                        record: record.to_vec(),
+                    },
+                )
                 .collect(),
             headers: Vec::new(),
         };

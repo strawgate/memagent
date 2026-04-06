@@ -32,6 +32,13 @@
 //! }
 //! enum StatusCode { OK = 0; UNAVAILABLE = 1; INVALID_ARGUMENT = 2; }
 //! ```
+//!
+//! **Wire-format note:** The old hand-rolled encoder used `BATCH_STATUS_OK = 1`,
+//! which mapped to `UNAVAILABLE` in the proto enum. The prost-based encoder
+//! correctly uses `OK = 0`. This is a wire-format fix but a breaking change
+//! for mixed deployments where old senders talk to new receivers (or vice versa).
+//! Old receivers that checked `status_code == 1` for success will misinterpret
+//! the corrected `0` value.
 
 use std::future::Future;
 use std::io;
@@ -141,7 +148,7 @@ pub struct BatchStatus {
 ///
 /// ```text
 /// message BatchArrowRecords {
-///   int64            batch_id       = 1;  // varint (zigzag for signed)
+///   int64            batch_id       = 1;  // standard varint (not zigzag; that's sint64)
 ///   repeated ArrowPayload arrow_payloads = 2;  // length-delimited
 ///   bytes            headers        = 3;  // length-delimited
 /// }
@@ -156,6 +163,9 @@ pub fn encode_batch_arrow_records(
         batch_id,
         arrow_payloads: payloads
             .iter()
+            // Clone is required because the proto struct takes ownership but we
+            // borrow the slice. Changing the signature to consume a Vec would
+            // avoid the clone but would break the public API and all callers.
             .map(|(schema_id, payload_type, record)| ProtoArrowPayload {
                 schema_id: schema_id.clone(),
                 r#type: payload_type.to_proto() as i32,
@@ -187,7 +197,8 @@ pub fn decode_batch_status(data: &[u8]) -> io::Result<BatchStatus> {
     let decoded = ProtoBatchStatus::decode(data)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     let status_code = StatusCode::from_proto(
-        ProtoStatusCode::try_from(decoded.status_code).unwrap_or(ProtoStatusCode::Ok),
+        // Defensive: unknown status codes are treated as errors, not success.
+        ProtoStatusCode::try_from(decoded.status_code).unwrap_or(ProtoStatusCode::InvalidArgument),
     );
 
     Ok(BatchStatus {
