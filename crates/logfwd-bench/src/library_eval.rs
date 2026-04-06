@@ -9,8 +9,8 @@
 //! Run: `cargo run --release --bin library-eval -p logfwd-bench`
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -123,7 +123,13 @@ impl AxumTestServer {
             }
         });
 
-        Self { addr, counter, tx, server_handle, drain_handle }
+        Self {
+            addr,
+            counter,
+            tx,
+            server_handle,
+            drain_handle,
+        }
     }
 
     fn received(&self) -> u64 {
@@ -142,11 +148,7 @@ impl AxumTestServer {
 // Benchmark 1: axum HTTP — sequential + concurrent
 // ---------------------------------------------------------------------------
 
-async fn bench_axum_sequential(
-    addr: SocketAddr,
-    payload: &[u8],
-    iterations: u64,
-) -> Duration {
+async fn bench_axum_sequential(addr: SocketAddr, payload: &[u8], iterations: u64) -> Duration {
     let client = reqwest::Client::builder()
         .pool_max_idle_per_host(4)
         .build()
@@ -305,10 +307,7 @@ fn bench_zstd_compress_sync(data: &[u8], iterations: u64) -> (Duration, usize) {
     (start.elapsed(), total_bytes)
 }
 
-async fn bench_async_compression_compress(
-    data: &[u8],
-    iterations: u64,
-) -> (Duration, usize) {
+async fn bench_async_compression_compress(data: &[u8], iterations: u64) -> (Duration, usize) {
     use async_compression::tokio::bufread::ZstdEncoder;
     use tokio::io::AsyncReadExt;
 
@@ -342,22 +341,32 @@ async fn main() {
 
     println!(
         "Payloads: 1K={} bytes, 10K={} bytes, 100K={} bytes",
-        payload_1k.len(), payload_10k.len(), payload_100k.len()
+        payload_1k.len(),
+        payload_10k.len(),
+        payload_100k.len()
     );
     println!(
         "Compressed: 1K={} bytes, 10K={} bytes, 100K={} bytes\n",
-        compressed_1k.len(), compressed_10k.len(), compressed_100k.len()
+        compressed_1k.len(),
+        compressed_10k.len(),
+        compressed_100k.len()
     );
 
     // -----------------------------------------------------------------------
     // 1. HTTP: axum throughput (sequential + concurrent)
     // -----------------------------------------------------------------------
     println!("--- 1. HTTP Server: axum throughput ---");
-    println!("  (tiny_http omitted — single-threaded blocking, known inferior for async pipelines)\n");
+    println!(
+        "  (tiny_http omitted — single-threaded blocking, known inferior for async pipelines)\n"
+    );
 
     let http_iters = 2_000u64;
 
-    for (label, payload) in [("1K", &payload_1k), ("10K", &payload_10k), ("100K", &payload_100k)] {
+    for (label, payload) in [
+        ("1K", &payload_1k),
+        ("10K", &payload_10k),
+        ("100K", &payload_100k),
+    ] {
         let server = AxumTestServer::start().await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         let elapsed = bench_axum_sequential(server.addr, payload, http_iters).await;
@@ -401,7 +410,11 @@ async fn main() {
         let (sync_elapsed, sync_bytes) = bench_zstd_decode_all(compressed, decomp_iters);
         let (async_elapsed, async_bytes) =
             bench_async_compression_decompress(compressed, decomp_iters).await;
-        println!("  {label} ({} → {} bytes):", compressed.len(), original_size);
+        println!(
+            "  {label} ({} → {} bytes):",
+            compressed.len(),
+            original_size
+        );
         println!(
             "    zstd::decode_all:    {} ({:.1}μs/op)",
             format_throughput(sync_bytes, sync_elapsed),
@@ -412,8 +425,7 @@ async fn main() {
             format_throughput(async_bytes, async_elapsed),
             async_elapsed.as_micros() as f64 / decomp_iters as f64,
         );
-        let overhead =
-            (async_elapsed.as_secs_f64() / sync_elapsed.as_secs_f64() - 1.0) * 100.0;
+        let overhead = (async_elapsed.as_secs_f64() / sync_elapsed.as_secs_f64() - 1.0) * 100.0;
         println!("    → async overhead: {overhead:+.1}%\n");
     }
 
@@ -435,8 +447,7 @@ async fn main() {
         handrolled_elapsed.as_nanos() as f64 / retry_iters as f64,
         handrolled_elapsed.as_secs_f64(),
     );
-    let overhead =
-        (backon_elapsed.as_secs_f64() / handrolled_elapsed.as_secs_f64() - 1.0) * 100.0;
+    let overhead = (backon_elapsed.as_secs_f64() / handrolled_elapsed.as_secs_f64() - 1.0) * 100.0;
     println!("  → backon overhead: {overhead:+.1}%\n");
 
     // -----------------------------------------------------------------------
@@ -473,8 +484,7 @@ async fn main() {
         async_elapsed.as_micros() as f64 / comp_iters as f64,
         json_payload.len() as f64 / (async_bytes as f64 / comp_iters as f64),
     );
-    let overhead =
-        (async_elapsed.as_secs_f64() / sync_elapsed.as_secs_f64() - 1.0) * 100.0;
+    let overhead = (async_elapsed.as_secs_f64() / sync_elapsed.as_secs_f64() - 1.0) * 100.0;
     println!("  → async overhead: {overhead:+.1}%\n");
 
     // -----------------------------------------------------------------------
@@ -483,8 +493,21 @@ async fn main() {
     println!("--- 5. Glob matching: glob vs globset ---");
 
     // Generate realistic file paths (k8s pod logs)
-    let namespaces = ["default", "kube-system", "monitoring", "app-prod", "app-staging"];
-    let pods = ["nginx", "redis", "api-server", "worker", "scheduler", "etcd"];
+    let namespaces = [
+        "default",
+        "kube-system",
+        "monitoring",
+        "app-prod",
+        "app-staging",
+    ];
+    let pods = [
+        "nginx",
+        "redis",
+        "api-server",
+        "worker",
+        "scheduler",
+        "etcd",
+    ];
     let test_paths: Vec<String> = (0..10_000)
         .map(|i| {
             let ns = namespaces[i % namespaces.len()];
@@ -499,7 +522,11 @@ async fn main() {
         "/var/log/pods/kube-system/*/0.log",
         "/var/log/pods/**/worker-*/**",
     ];
-    println!("  {} file paths, {} patterns\n", test_paths.len(), patterns.len());
+    println!(
+        "  {} file paths, {} patterns\n",
+        test_paths.len(),
+        patterns.len()
+    );
 
     // glob crate — must re-parse pattern each time (simulated with string matching)
     let glob_iters = 1_000u64;
@@ -567,22 +594,25 @@ async fn main() {
                 i, i % 100
             ));
         }
-        format!(
-            r#"{{"resourceLogs":[{{"scopeLogs":[{{"logRecords":[{records}]}}]}}]}}"#
-        )
-        .into_bytes()
+        format!(r#"{{"resourceLogs":[{{"scopeLogs":[{{"logRecords":[{records}]}}]}}]}}"#)
+            .into_bytes()
     }
 
-    let json_1k = make_otlp_json(3);     // ~1KB
-    let json_10k = make_otlp_json(30);   // ~10KB
+    let json_1k = make_otlp_json(3); // ~1KB
+    let json_10k = make_otlp_json(30); // ~10KB
     let json_100k = make_otlp_json(300); // ~100KB
 
     let json_iters = 10_000u64;
-    for (label, payload) in [("~1K", &json_1k), ("~10K", &json_10k), ("~100K", &json_100k)] {
+    for (label, payload) in [
+        ("~1K", &json_1k),
+        ("~10K", &json_10k),
+        ("~100K", &json_100k),
+    ] {
         // serde_json
         let serde_start = Instant::now();
         for _ in 0..json_iters {
-            let _: serde_json::Value = serde_json::from_slice(std::hint::black_box(payload)).unwrap();
+            let _: serde_json::Value =
+                serde_json::from_slice(std::hint::black_box(payload)).unwrap();
         }
         let serde_elapsed = serde_start.elapsed();
 
@@ -590,7 +620,8 @@ async fn main() {
         let sonic_start = Instant::now();
         for _ in 0..json_iters {
             let mut payload_copy = payload.clone();
-            let _: sonic_rs::Value = sonic_rs::from_slice(std::hint::black_box(&mut payload_copy)).unwrap();
+            let _: sonic_rs::Value =
+                sonic_rs::from_slice(std::hint::black_box(&mut payload_copy)).unwrap();
         }
         let sonic_elapsed = sonic_start.elapsed();
 
