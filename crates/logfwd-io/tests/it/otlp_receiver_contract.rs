@@ -223,3 +223,27 @@ fn otlp_receiver_invalid_json_bytes_value_returns_400() {
         "rejected request must not enqueue decoded data"
     );
 }
+
+#[test]
+#[should_panic(expected = "expected exactly one complete JSON row")]
+fn poll_single_row_panics_when_one_post_emits_multiple_rows() {
+    let mut receiver = OtlpReceiverInput::new("contract", "127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1/logs", receiver.local_addr());
+
+    let json_body = serde_json::json!({
+        "resourceLogs": [{
+            "scopeLogs": [{
+                "logRecords": [
+                    {"body": {"stringValue": "first"}},
+                    {"body": {"stringValue": "second"}}
+                ]
+            }]
+        }]
+    })
+    .to_string();
+
+    let status = send_status(&url, json_body.as_bytes(), "application/json", None);
+    assert_eq!(status, 200, "multi-record OTLP request should still decode");
+
+    let _ = poll_single_row(&mut receiver, Duration::from_secs(2));
+}

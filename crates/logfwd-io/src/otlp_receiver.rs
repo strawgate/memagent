@@ -1349,6 +1349,30 @@ mod tests {
     }
 
     #[test]
+    fn protojson_integral_normalization_accepts_integral_decimal_forms() {
+        assert_eq!(
+            normalize_protojson_integral_digits(" +001.2300e+2 "),
+            Some((false, "123".to_string()))
+        );
+        assert_eq!(
+            normalize_protojson_integral_digits("-9223372036854775808"),
+            Some((true, "9223372036854775808".to_string()))
+        );
+        assert_eq!(
+            normalize_protojson_integral_digits("0.000e+999999"),
+            Some((false, "0".to_string()))
+        );
+    }
+
+    #[test]
+    fn protojson_integral_normalization_rejects_non_integral_or_oversized_forms() {
+        assert_eq!(normalize_protojson_integral_digits("1.5"), None);
+        assert_eq!(normalize_protojson_integral_digits("1e-1"), None);
+        assert_eq!(normalize_protojson_integral_digits("1e20"), None);
+        assert_eq!(normalize_protojson_integral_digits("1e2147483647"), None);
+    }
+
+    #[test]
     fn out_of_range_json_int_value_returns_error() {
         let result = decode_otlp_logs_json(
             br#"{
