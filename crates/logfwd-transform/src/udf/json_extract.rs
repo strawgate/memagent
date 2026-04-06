@@ -12,7 +12,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, StringArray, StructArray};
+use arrow::array::{Array, StringArray, StructArray, UInt32Array};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
@@ -75,17 +75,6 @@ fn is_conflict_struct_fields(fields: &arrow::datatypes::Fields) -> bool {
 
 /// Reconstruct an NDJSON buffer from `raw_array`, run the scanner for
 /// `field_name`, and return the resulting [`RecordBatch`].
-///
-/// # NULL handling limitation
-///
-/// When `raw_array` contains NULL entries, this function emits an empty line
-/// for each NULL (a bare `\n`) before calling the scanner. The scanner skips
-/// empty lines and therefore produces fewer output rows than the length of
-/// `raw_array`. The row-count check at the end of this function will catch
-/// that mismatch and return a `DataFusionError::Execution` containing the
-/// text `"scanner row count mismatch"`. This is a known limitation: callers
-/// (and tests) that need to handle NULL `_raw` rows must either pre-filter
-/// NULLs or treat the resulting error as expected.
 fn parse_raw(raw_array: &StringArray, field_name: &str) -> Result<RecordBatch, DataFusionError> {
     let mut buf = Vec::with_capacity(raw_array.len() * 128);
     for i in 0..raw_array.len() {
@@ -119,6 +108,24 @@ fn parse_raw(raw_array: &StringArray, field_name: &str) -> Result<RecordBatch, D
     }
 
     Ok(batch)
+}
+
+fn build_non_null_raw(raw_array: &StringArray) -> (StringArray, UInt32Array) {
+    let mut non_null_values = Vec::with_capacity(raw_array.len() - raw_array.null_count());
+    let mut take_indices = Vec::with_capacity(raw_array.len());
+    for i in 0..raw_array.len() {
+        if raw_array.is_null(i) {
+            take_indices.push(None);
+        } else {
+            let idx = non_null_values.len() as u32;
+            take_indices.push(Some(idx));
+            non_null_values.push(raw_array.value(i));
+        }
+    }
+    (
+        StringArray::from(non_null_values),
+        UInt32Array::from(take_indices),
+    )
 }
 
 /// Cast `arr` to [`StringArray`] (Utf8). Accepts Utf8, Utf8View, and LargeUtf8.
@@ -214,12 +221,20 @@ impl ScalarUDFImpl for JsonExtractUdf {
             }
         };
 
-        // --- parse ---
-        let batch = parse_raw(&raw_array, key)?;
-
-        // --- coerce to the declared return type ---
         let target_dt = self.mode.return_type();
         let num_rows = raw_array.len();
+        let (raw_to_parse, take_indices) = build_non_null_raw(&raw_array);
+        if raw_to_parse.is_empty() {
+            return Ok(ColumnarValue::Array(arrow::array::new_null_array(
+                &target_dt, num_rows,
+            )));
+        }
+
+        // --- parse ---
+        let batch = parse_raw(&raw_to_parse, key)?;
+
+        // --- coerce to the declared return type ---
+        let result_rows = raw_to_parse.len();
 
         // 1. Try flat column (single-type field — no conflict in this batch).
         // Skip StructArrays here; they are handled in step 2 below.
@@ -238,7 +253,7 @@ impl ScalarUDFImpl for JsonExtractUdf {
                         } else {
                             // Bare string column — the JSON value is not a number.
                             // Return all-null rather than coercing "200" → 200.
-                            arrow::array::new_null_array(&DataType::Int64, num_rows)
+                            arrow::array::new_null_array(&DataType::Int64, result_rows)
                         }
                     }
                     JsonExtractMode::Float => {
@@ -248,11 +263,12 @@ impl ScalarUDFImpl for JsonExtractUdf {
                             arrow::compute::cast(flat_col, &DataType::Float64)?
                         } else {
                             // Bare string column — the JSON value is not a number.
-                            arrow::array::new_null_array(&DataType::Float64, num_rows)
+                            arrow::array::new_null_array(&DataType::Float64, result_rows)
                         }
                     }
                 };
-                return Ok(ColumnarValue::Array(result));
+                let projected = arrow::compute::take(result.as_ref(), &take_indices, None)?;
+                return Ok(ColumnarValue::Array(projected));
             } // end non-struct flat column branch
         }
 
@@ -297,32 +313,33 @@ impl ScalarUDFImpl for JsonExtractUdf {
                         find_child("float"),
                         find_child("str"),
                         find_child("bool"),
-                        num_rows,
+                        result_rows,
                     )
                 }
                 JsonExtractMode::Int => match find_child("int") {
                     Some(int_col) => arrow::compute::cast(int_col, &DataType::Int64)
                         .unwrap_or_else(|_| {
-                            arrow::array::new_null_array(&DataType::Int64, num_rows)
+                            arrow::array::new_null_array(&DataType::Int64, result_rows)
                         }),
-                    None => arrow::array::new_null_array(&DataType::Int64, num_rows),
+                    None => arrow::array::new_null_array(&DataType::Int64, result_rows),
                 },
                 JsonExtractMode::Float => {
                     if let Some(float_col) = find_child("float") {
                         arrow::compute::cast(float_col, &DataType::Float64).unwrap_or_else(|_| {
-                            arrow::array::new_null_array(&DataType::Float64, num_rows)
+                            arrow::array::new_null_array(&DataType::Float64, result_rows)
                         })
                     } else if let Some(int_col) = find_child("int") {
                         // Promote int to float.
                         arrow::compute::cast(int_col, &DataType::Float64).unwrap_or_else(|_| {
-                            arrow::array::new_null_array(&DataType::Float64, num_rows)
+                            arrow::array::new_null_array(&DataType::Float64, result_rows)
                         })
                     } else {
-                        arrow::array::new_null_array(&DataType::Float64, num_rows)
+                        arrow::array::new_null_array(&DataType::Float64, result_rows)
                     }
                 }
             };
-            return Ok(ColumnarValue::Array(result));
+            let projected = arrow::compute::take(result.as_ref(), &take_indices, None)?;
+            return Ok(ColumnarValue::Array(projected));
         }
 
         // 3. Neither flat nor conflict struct found → all-null.
@@ -344,6 +361,17 @@ mod tests {
     fn make_raw_batch(lines: Vec<&str>) -> RecordBatch {
         let schema = Arc::new(arrow::datatypes::Schema::new(vec![
             arrow::datatypes::Field::new("_raw", DataType::Utf8, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(lines)) as arrow::array::ArrayRef],
+        )
+        .unwrap()
+    }
+
+    fn make_nullable_raw_batch(lines: Vec<Option<&str>>) -> RecordBatch {
+        let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("_raw", DataType::Utf8, true),
         ]));
         RecordBatch::try_new(
             schema,
@@ -511,5 +539,50 @@ mod tests {
             col.is_null(0),
             "json_float on a quoted string must return null"
         );
+    }
+
+    #[tokio::test]
+    async fn test_json_udfs_return_null_for_null_raw() {
+        let batch = make_nullable_raw_batch(vec![
+            Some(r#"{"status": 200, "duration": 1.5, "msg": "ok"}"#),
+            None,
+            Some(r#"{"status": 500, "duration": 2.25, "msg": "error"}"#),
+        ]);
+        let result = query(
+            "SELECT \
+                json(_raw, 'msg') AS msg, \
+                json_int(_raw, 'status') AS status, \
+                json_float(_raw, 'duration') AS duration \
+             FROM logs",
+            batch,
+        )
+        .await;
+        let msg = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let status = result
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let duration = result
+            .column(2)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+
+        assert_eq!(msg.value(0), "ok");
+        assert_eq!(status.value(0), 200);
+        assert!((duration.value(0) - 1.5).abs() < 0.001);
+
+        assert!(msg.is_null(1));
+        assert!(status.is_null(1));
+        assert!(duration.is_null(1));
+
+        assert_eq!(msg.value(2), "error");
+        assert_eq!(status.value(2), 500);
+        assert!((duration.value(2) - 2.25).abs() < 0.001);
     }
 }

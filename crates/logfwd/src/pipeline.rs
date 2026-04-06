@@ -1121,7 +1121,7 @@ fn input_poll_loop(
             checkpoints,
             queued_at: tokio::time::Instant::now(),
         };
-        let _ = blocking_send_channel_msg(input.source.name(), &tx, &metrics, msg);
+        send_shutdown_drain_msg_blocking(input.source.name(), &tx, &metrics, msg);
     }
 }
 
@@ -1184,6 +1184,22 @@ fn blocking_send_channel_msg(
         Err(tokio::sync::mpsc::error::TrySendError::Closed(msg)) => {
             Err(tokio::sync::mpsc::error::SendError(msg))
         }
+    }
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn send_shutdown_drain_msg_blocking(
+    input_name: &str,
+    tx: &tokio::sync::mpsc::Sender<ChannelMsg>,
+    metrics: &PipelineMetrics,
+    msg: ChannelMsg,
+) {
+    if let Err(e) = blocking_send_channel_msg(input_name, tx, metrics, msg) {
+        tracing::warn!(
+            input = input_name,
+            error = %e,
+            "input.channel_closed_on_shutdown_drain"
+        );
     }
 }
 
@@ -1267,7 +1283,13 @@ async fn async_input_poll_loop(
             checkpoints,
             queued_at: tokio::time::Instant::now(),
         };
-        let _ = tx.send(msg).await;
+        if let Err(e) = tx.send(msg).await {
+            tracing::warn!(
+                input = input.source.name(),
+                error = %e,
+                "input.channel_closed_on_shutdown_drain"
+            );
+        }
     }
 }
 
@@ -1453,6 +1475,7 @@ mod tests {
     use logfwd_io::diagnostics::ComponentStats;
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::test_meter;
+    use serial_test::serial;
 
     #[test]
     fn test_build_sink_factory_stdout() {
@@ -1495,6 +1518,20 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("endpoint"), "got: {err}");
+    }
+
+    #[cfg(not(feature = "turmoil"))]
+    #[test]
+    fn test_shutdown_drain_send_closed_channel_is_non_fatal() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<ChannelMsg>(1);
+        drop(rx);
+        let metrics = PipelineMetrics::new("default", "SELECT * FROM logs", &test_meter());
+        let msg = ChannelMsg::Data {
+            bytes: Bytes::from_static(b"{\"level\":\"INFO\"}\n"),
+            checkpoints: vec![],
+            queued_at: tokio::time::Instant::now(),
+        };
+        send_shutdown_drain_msg_blocking("test-input", &tx, &metrics, msg);
     }
 
     #[test]
