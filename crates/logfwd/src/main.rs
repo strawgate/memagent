@@ -166,6 +166,8 @@ async fn main_inner() -> i32 {
         "--blackhole" => cmd_blackhole(&args).await,
         "--generate-json" => cmd_generate_json(&args),
         "--dump-config" => cmd_dump_config(&args),
+        "--init" => cmd_init(),
+        "--completions" => cmd_completions(&args),
         other => {
             eprintln!("{}error{}: unknown command: {other}", red(), reset());
             if let Some(suggestion) = suggest_flag(other) {
@@ -205,7 +207,9 @@ fn print_usage() {
     println!("  logfwd --config <config.yaml> [--validate] [--dry-run]");
     println!("  logfwd --blackhole [bind_addr]");
     println!("  logfwd --generate-json <num_lines> <output_file>");
-    println!("  logfwd --dump-config <config.yaml>");
+    println!("  logfwd --dump-config [config.yaml]");
+    println!("  logfwd --init");
+    println!("  logfwd --completions <shell>");
     println!();
     println!("{}OPTIONS:{}", bold(), reset());
     println!("  -c, --config <path>    Run pipeline from YAML config");
@@ -214,6 +218,8 @@ fn print_usage() {
     println!("      --blackhole [addr] OTLP blackhole receiver (default: 127.0.0.1:4318)");
     println!("      --generate-json    Generate synthetic JSON log file");
     println!("      --dump-config      Print resolved config to stdout");
+    println!("      --init             Generate starter config in current directory");
+    println!("      --completions      Print shell completions (bash, zsh, fish)");
     println!("  -h, --help             Show this help");
     println!("  -V, --version          Show version");
     println!();
@@ -241,6 +247,16 @@ fn print_usage() {
     println!("  logfwd --generate-json 10000 test.json");
     println!(
         "  logfwd --dump-config config.yaml   {}# show resolved config{}",
+        dim(),
+        reset()
+    );
+    println!(
+        "  logfwd --init                      {}# generate starter config{}",
+        dim(),
+        reset()
+    );
+    println!(
+        "  logfwd --completions bash           {}# output bash completions{}",
         dim(),
         reset()
     );
@@ -456,6 +472,169 @@ fn cmd_dump_config(args: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
+fn cmd_init() -> Result<(), CliError> {
+    let path = std::path::Path::new("logfwd.yaml");
+    if path.exists() {
+        return Err(CliError::Config(format!(
+            "{} already exists — refusing to overwrite",
+            path.display()
+        )));
+    }
+
+    let template = r#"# logfwd configuration
+# Docs: https://github.com/strawgate/memagent
+
+# Simple pipeline: tail a log file, transform with SQL, send via OTLP.
+input:
+  type: file
+  path: /var/log/*.log
+  # format: json           # auto-detected; uncomment to force
+
+# SQL transform (optional) — filter, reshape, or enrich logs.
+# Remove this section to forward all logs unmodified.
+transform: |
+  SELECT * FROM logs
+  WHERE level IN ('WARN', 'ERROR')
+
+output:
+  type: otlp
+  endpoint: http://localhost:4318
+
+# Optional: diagnostics dashboard
+# server:
+#   diagnostics: "127.0.0.1:9191"
+"#;
+
+    std::fs::write(path, template)
+        .map_err(|e| CliError::Config(format!("cannot write {}: {e}", path.display())))?;
+    eprintln!(
+        "{}created{} {} — edit it, then run: {}logfwd -c logfwd.yaml --validate{}",
+        green(),
+        reset(),
+        path.display(),
+        bold(),
+        reset(),
+    );
+    Ok(())
+}
+
+fn cmd_completions(args: &[String]) -> Result<(), CliError> {
+    let shell = args.get(2).map_or("", String::as_str);
+    match shell {
+        "bash" => print!("{}", completions_bash()),
+        "zsh" => print!("{}", completions_zsh()),
+        "fish" => print!("{}", completions_fish()),
+        other => {
+            let msg = if other.is_empty() {
+                "--completions requires a shell name".to_string()
+            } else {
+                format!("unknown shell: {other}")
+            };
+            eprintln!("{}error{}: {msg}", red(), reset());
+            eprintln!("  logfwd --completions <bash|zsh|fish>");
+            return Err(CliError::Config(msg));
+        }
+    }
+    Ok(())
+}
+
+fn completions_bash() -> &'static str {
+    r#"# logfwd bash completion — add to ~/.bashrc or /etc/bash_completion.d/logfwd
+_logfwd() {
+    local cur prev commands
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    commands="--config -c --blackhole --generate-json --dump-config --init --completions --help -h --version -V"
+
+    case "$prev" in
+        --config|-c|--dump-config)
+            COMPREPLY=( $(compgen -f -X '!*.yaml' -- "$cur") $(compgen -f -X '!*.yml' -- "$cur") $(compgen -d -- "$cur") )
+            return 0
+            ;;
+        --completions)
+            COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
+            return 0
+            ;;
+    esac
+
+    # After --config <path>, suggest sub-flags
+    local i has_config=0
+    for (( i=1; i < COMP_CWORD; i++ )); do
+        case "${COMP_WORDS[i]}" in
+            --config|-c) has_config=1 ;;
+        esac
+    done
+    if (( has_config )); then
+        COMPREPLY=( $(compgen -W "--validate --check --dry-run" -- "$cur") )
+        return 0
+    fi
+
+    COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+}
+complete -F _logfwd logfwd
+"#
+}
+
+fn completions_zsh() -> &'static str {
+    r#"#compdef logfwd
+# logfwd zsh completion — add to your fpath or source directly
+
+_logfwd() {
+    local -a commands subflags
+    commands=(
+        '--config[Run pipeline from YAML config]:config file:_files -g "*.y(a|)ml"'
+        '-c[Run pipeline from YAML config]:config file:_files -g "*.y(a|)ml"'
+        '--blackhole[OTLP blackhole receiver]:bind addr:'
+        '--generate-json[Generate synthetic JSON log file]:lines: :output file:_files'
+        '--dump-config[Print resolved config]:config file:_files -g "*.y(a|)ml"'
+        '--init[Generate starter config]'
+        '--completions[Print shell completions]:shell:(bash zsh fish)'
+        '--help[Show help]'
+        '-h[Show help]'
+        '--version[Show version]'
+        '-V[Show version]'
+    )
+    subflags=(
+        '--validate[Validate config and exit]'
+        '--check[Validate config and exit]'
+        '--dry-run[Build pipelines without running]'
+    )
+
+    # If --config/-c already appears, offer subflags
+    if (( ${words[(I)--config]} || ${words[(I)-c]} )); then
+        _describe 'flag' subflags
+    else
+        _describe 'command' commands
+    fi
+}
+
+_logfwd "$@"
+"#
+}
+
+fn completions_fish() -> &'static str {
+    r"# logfwd fish completion — save to ~/.config/fish/completions/logfwd.fish
+
+# Disable file completions by default
+complete -c logfwd -f
+
+# Top-level commands
+complete -c logfwd -l config -s c -d 'Run pipeline from YAML config' -rF
+complete -c logfwd -l blackhole -d 'OTLP blackhole receiver'
+complete -c logfwd -l generate-json -d 'Generate synthetic JSON log file'
+complete -c logfwd -l dump-config -d 'Print resolved config' -rF
+complete -c logfwd -l init -d 'Generate starter config'
+complete -c logfwd -l completions -d 'Print shell completions' -xa 'bash zsh fish'
+complete -c logfwd -l help -s h -d 'Show help'
+complete -c logfwd -l version -s V -d 'Show version'
+
+# Sub-flags for --config
+complete -c logfwd -l validate -d 'Validate config and exit' -n '__fish_seen_argument -l config -s c'
+complete -c logfwd -l check -d 'Validate config and exit' -n '__fish_seen_argument -l config -s c'
+complete -c logfwd -l dry-run -d 'Build pipelines without running' -n '__fish_seen_argument -l config -s c'
+"
+}
+
 // ---------------------------------------------------------------------------
 // Config auto-discovery
 // ---------------------------------------------------------------------------
@@ -525,6 +704,8 @@ fn suggest_flag(input: &str) -> Option<&'static str> {
         "--blackhole",
         "--generate-json",
         "--dump-config",
+        "--init",
+        "--completions",
         "--help",
         "-h",
         "--version",
@@ -801,6 +982,9 @@ async fn run_pipelines(
         None
     };
 
+    // Save metrics references for shutdown summary.
+    let pipeline_metrics: Vec<_> = pipelines.iter().map(|p| Arc::clone(p.metrics())).collect();
+
     eprintln!("{}logfwd{} {}v{VERSION}{}", bold(), reset(), dim(), reset());
 
     // Print startup summary after everything is ready.
@@ -894,6 +1078,9 @@ async fn run_pipelines(
         }
     }
 
+    // Print shutdown summary.
+    print_shutdown_stats(&pipeline_metrics, startup_start.elapsed());
+
     if let Err(e) = meter_provider.shutdown() {
         eprintln!(
             "{}warning{}: meter provider shutdown: {e}",
@@ -910,6 +1097,103 @@ async fn run_pipelines(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shutdown summary
+// ---------------------------------------------------------------------------
+
+fn print_shutdown_stats(
+    metrics: &[Arc<logfwd_io::diagnostics::PipelineMetrics>],
+    uptime: std::time::Duration,
+) {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let total_lines_in: u64 = metrics
+        .iter()
+        .map(|m| m.transform_in.lines_total.load(Relaxed))
+        .sum();
+    let total_lines_out: u64 = metrics
+        .iter()
+        .map(|m| m.transform_out.lines_total.load(Relaxed))
+        .sum();
+    let total_bytes_in: u64 = metrics
+        .iter()
+        .map(|m| m.transform_in.bytes_total.load(Relaxed))
+        .sum();
+    let total_batches: u64 = metrics.iter().map(|m| m.batches_total.load(Relaxed)).sum();
+    let total_errors: u64 = metrics
+        .iter()
+        .map(|m| m.transform_errors.load(Relaxed))
+        .sum();
+    let total_dropped: u64 = metrics
+        .iter()
+        .map(|m| m.dropped_batches_total.load(Relaxed))
+        .sum();
+
+    eprintln!();
+    eprintln!(
+        "{}stopped{} · uptime {}",
+        dim(),
+        reset(),
+        format_duration(uptime),
+    );
+
+    if total_lines_in > 0 || total_batches > 0 {
+        eprintln!(
+            "  lines  {} in → {} out  ({} batches)",
+            format_count(total_lines_in),
+            format_count(total_lines_out),
+            format_count(total_batches),
+        );
+        if total_bytes_in > 0 {
+            eprintln!("  bytes  {} in", format_bytes(total_bytes_in));
+        }
+        if total_errors > 0 || total_dropped > 0 {
+            eprintln!(
+                "  {}errors{} {} transform, {} dropped batches",
+                yellow(),
+                reset(),
+                total_errors,
+                total_dropped,
+            );
+        }
+    }
+}
+
+fn format_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+fn format_count(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else if n < 1_000_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else {
+        format!("{:.1}B", n as f64 / 1_000_000_000.0)
+    }
+}
+
+fn format_bytes(b: u64) -> String {
+    if b < 1024 {
+        format!("{b} B")
+    } else if b < 1024 * 1024 {
+        format!("{:.1} KB", b as f64 / 1024.0)
+    } else if b < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", b as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,5 +1506,50 @@ mod cli_tests {
         assert_eq!(out[1], "--config");
         assert_eq!(out[2], "foo.yaml");
         assert_eq!(out[3], "--validate");
+    }
+
+    #[test]
+    fn format_duration_seconds() {
+        assert_eq!(format_duration(std::time::Duration::from_secs(42)), "42s");
+    }
+
+    #[test]
+    fn format_duration_minutes() {
+        assert_eq!(
+            format_duration(std::time::Duration::from_secs(125)),
+            "2m 5s"
+        );
+    }
+
+    #[test]
+    fn format_duration_hours() {
+        assert_eq!(
+            format_duration(std::time::Duration::from_secs(7260)),
+            "2h 1m"
+        );
+    }
+
+    #[test]
+    fn format_count_various() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1_500), "1.5K");
+        assert_eq!(format_count(2_500_000), "2.5M");
+        assert_eq!(format_count(1_200_000_000), "1.2B");
+    }
+
+    #[test]
+    fn format_bytes_various() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0 GB");
+    }
+
+    #[test]
+    fn suggest_flag_includes_new_commands() {
+        assert_eq!(suggest_flag("--ini"), Some("--init"));
+        assert_eq!(suggest_flag("--completion"), Some("--completions"));
+        assert_eq!(suggest_flag("--dump-confi"), Some("--dump-config"));
     }
 }
