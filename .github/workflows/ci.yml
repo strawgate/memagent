@@ -269,7 +269,7 @@ jobs:
           args: >-
             -p logfwd-core
             -Z function-contracts -Z mem-predicates -Z stubbing
-            --harness-filter "byte_search|checkpoint|cri|framer|json_scanner|otlp|scan_config"
+            --harness "byte_search|checkpoint|cri|framer|json_scanner|otlp|scan_config"
         env:
           RUSTC_WRAPPER: ""
 
@@ -291,7 +291,7 @@ jobs:
           args: >-
             -p logfwd-core
             -Z function-contracts -Z mem-predicates -Z stubbing
-            --harness-filter "reassembler|scanner|structural"
+            --harness "reassembler|scanner|structural"
         env:
           RUSTC_WRAPPER: ""
 
