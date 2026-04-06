@@ -38,19 +38,15 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
     // Format: "TIMESTAMP STREAM FLAGS MESSAGE"
     // Find first space (after timestamp).
     let sp1 = find_byte(line, b' ', 0)?;
-    if sp1 == 0 {
-        return None; // empty timestamp is invalid
-    }
-    if sp1 + 1 >= line.len() {
+    // Reject empty timestamp (line starts with space) or no room for stream+flags.
+    if sp1 == 0 || sp1 + 1 >= line.len() {
         return None;
     }
 
     // Find second space (after stream).
     let sp2 = find_byte(line, b' ', sp1 + 1)?;
-    if sp2 == sp1 + 1 {
-        return None; // empty stream name is invalid
-    }
-    if sp2 + 1 >= line.len() {
+    // Reject empty stream (consecutive spaces) or no room for flags.
+    if sp2 == sp1 + 1 || sp2 + 1 >= line.len() {
         return None;
     }
 
