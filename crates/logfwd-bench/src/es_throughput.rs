@@ -127,11 +127,11 @@ fn run_worker(
         observed_time_ns: 0,
     };
 
-    let line_buf = gen_json_lines(batch_lines);
+    let line_bytes = bytes::Bytes::from(gen_json_lines(batch_lines));
     let deadline = Instant::now() + duration;
 
     while Instant::now() < deadline {
-        let batch = match scanner.scan_detached(bytes::Bytes::from(line_buf.clone())) {
+        let batch = match scanner.scan_detached(line_bytes.clone()) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("[worker {worker_id}] scan error: {e}");

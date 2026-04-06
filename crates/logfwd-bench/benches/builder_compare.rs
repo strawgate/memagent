@@ -201,12 +201,12 @@ fn bench_scan(c: &mut Criterion) {
 
         group.bench_function(BenchmarkId::new("streaming", name), |b| {
             let mut scanner = Scanner::new(ScanConfig::default());
-            b.iter(|| scanner.scan(buf.clone()).unwrap());
+            b.iter(|| std::hint::black_box(scanner.scan(buf.clone()).unwrap()));
         });
 
         group.bench_function(BenchmarkId::new("scan_detached", name), |b| {
             let mut scanner = Scanner::new(ScanConfig::default());
-            b.iter(|| scanner.scan_detached(buf.clone()).unwrap());
+            b.iter(|| std::hint::black_box(scanner.scan_detached(buf.clone()).unwrap()));
         });
     }
 
@@ -237,7 +237,7 @@ fn bench_persist(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("streaming", name), |b| {
             let mut scanner = Scanner::new(ScanConfig::default());
             b.iter(|| {
-                let batch = scanner.scan(buf.clone()).unwrap();
+                let batch = std::hint::black_box(scanner.scan(buf.clone()).unwrap());
                 let owned = logfwd_arrow::materialize::detach(&batch);
                 let compressed = write_ipc_zstd(&owned);
                 std::hint::black_box(compressed.len());
@@ -248,7 +248,7 @@ fn bench_persist(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("scan_detached", name), |b| {
             let mut scanner = Scanner::new(ScanConfig::default());
             b.iter(|| {
-                let batch = scanner.scan_detached(buf.clone()).unwrap();
+                let batch = std::hint::black_box(scanner.scan_detached(buf.clone()).unwrap());
                 let compressed = write_ipc_zstd(&batch);
                 std::hint::black_box(compressed.len());
             });
@@ -277,7 +277,7 @@ fn bench_pipeline(c: &mut Criterion) {
         let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         b.iter(|| {
-            let batch = scanner.scan(buf.clone()).unwrap();
+            let batch = std::hint::black_box(scanner.scan(buf.clone()).unwrap());
             let transformed = transform.execute_blocking(batch).unwrap();
             let owned = detach_if_attached(&transformed, &buf);
             let compressed = write_ipc_zstd(&owned);
@@ -289,7 +289,7 @@ fn bench_pipeline(c: &mut Criterion) {
         let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         b.iter(|| {
-            let batch = scanner.scan_detached(buf.clone()).unwrap();
+            let batch = std::hint::black_box(scanner.scan_detached(buf.clone()).unwrap());
             let transformed = transform.execute_blocking(batch).unwrap();
             let compressed = write_ipc_zstd(&transformed);
             std::hint::black_box(compressed.len());
@@ -302,7 +302,7 @@ fn bench_pipeline(c: &mut Criterion) {
         let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").unwrap();
         b.iter(|| {
-            let batch = scanner.scan(buf.clone()).unwrap();
+            let batch = std::hint::black_box(scanner.scan(buf.clone()).unwrap());
             let transformed = transform.execute_blocking(batch).unwrap();
             let owned = detach_if_attached(&transformed, &buf);
             let compressed = write_ipc_zstd(&owned);
@@ -314,7 +314,7 @@ fn bench_pipeline(c: &mut Criterion) {
         let mut scanner = Scanner::new(ScanConfig::default());
         let mut transform = SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").unwrap();
         b.iter(|| {
-            let batch = scanner.scan_detached(buf.clone()).unwrap();
+            let batch = std::hint::black_box(scanner.scan_detached(buf.clone()).unwrap());
             let transformed = transform.execute_blocking(batch).unwrap();
             let compressed = write_ipc_zstd(&transformed);
             std::hint::black_box(compressed.len());
@@ -330,7 +330,7 @@ fn bench_pipeline(c: &mut Criterion) {
         )
         .unwrap();
         b.iter(|| {
-            let batch = scanner.scan(buf.clone()).unwrap();
+            let batch = std::hint::black_box(scanner.scan(buf.clone()).unwrap());
             let transformed = transform.execute_blocking(batch).unwrap();
             let owned = detach_if_attached(&transformed, &buf);
             let compressed = write_ipc_zstd(&owned);
@@ -345,7 +345,7 @@ fn bench_pipeline(c: &mut Criterion) {
         )
         .unwrap();
         b.iter(|| {
-            let batch = scanner.scan_detached(buf.clone()).unwrap();
+            let batch = std::hint::black_box(scanner.scan_detached(buf.clone()).unwrap());
             let transformed = transform.execute_blocking(batch).unwrap();
             let compressed = write_ipc_zstd(&transformed);
             std::hint::black_box(compressed.len());
