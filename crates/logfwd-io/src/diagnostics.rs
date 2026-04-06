@@ -221,7 +221,7 @@ impl PipelineMetrics {
     }
 
     pub fn record_batch(&self, rows: u64, scan_ns: u64, transform_ns: u64, output_ns: u64) {
-        self.batches_total.fetch_add(1, Ordering::Relaxed);
+        self.batches_total.fetch_add(1, Ordering::Release);
         self.batch_rows_total.fetch_add(rows, Ordering::Relaxed);
         self.scan_nanos_total.fetch_add(scan_ns, Ordering::Relaxed);
         self.transform_nanos_total
@@ -256,7 +256,7 @@ impl PipelineMetrics {
     /// Record total batch latency (submission to ack).
     pub fn record_batch_latency(&self, nanos: u64) {
         self.batch_latency_nanos_total
-            .fetch_add(nanos, Ordering::Relaxed);
+            .fetch_add(nanos, Ordering::Release);
         self.otel_batch_latency_nanos.add(nanos, &self.otel_attrs);
     }
 
@@ -1574,12 +1574,12 @@ mod tests {
     fn test_pipeline_metrics_record_batch_latency() {
         let meter = opentelemetry::global::meter("test");
         let pm = PipelineMetrics::new("test", "", &meter);
-        assert_eq!(pm.batch_latency_nanos_total.load(Ordering::Relaxed), 0);
+        assert_eq!(pm.batch_latency_nanos_total.load(Ordering::Acquire), 0);
 
         pm.record_batch_latency(10_000_000);
         pm.record_batch_latency(20_000_000);
         assert_eq!(
-            pm.batch_latency_nanos_total.load(Ordering::Relaxed),
+            pm.batch_latency_nanos_total.load(Ordering::Acquire),
             30_000_000
         );
     }

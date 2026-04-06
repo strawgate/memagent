@@ -2444,6 +2444,7 @@ dependencies = [
  "globset",
  "hyper",
  "hyper-util",
+ "libc",
  "logfwd-arrow",
  "logfwd-core",
  "logfwd-io",

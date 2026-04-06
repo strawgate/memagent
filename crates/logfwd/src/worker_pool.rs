@@ -502,11 +502,12 @@ async fn worker_task(
                             cmp_bytes = tracing::field::Empty,
                             resp_bytes = tracing::field::Empty,
                         );
-                        let (success, send_latency_ns) = process_item(
+                        let (success, send_latency_ns, retries) = process_item(
                             id, &mut *sink, item.batch.clone(), &item.metadata, max_retry_delay,
                         )
-                        .instrument(output_span)
+                        .instrument(output_span.clone())
                         .await;
+                        output_span.record("retries", retries);
                         let output_ns = submitted_at.elapsed().as_nanos() as u64 - queue_wait_ns;
                         // Remove from active_batches immediately — don't wait for the pipeline's
                         // ack select loop, which can be starved by flush_batch.await blocking.
@@ -559,7 +560,7 @@ async fn recv_with_idle_timeout(
 
 /// Process one batch with retry on `RetryAfter` and server errors.
 ///
-/// Returns `(success, send_latency_ns)` where `send_latency_ns` is
+/// Returns `(success, send_latency_ns, retries)` where `send_latency_ns` is
 /// cumulative wall time inside `sink.send_batch()` across all attempts
 /// (excludes backoff sleep).
 async fn process_item(
@@ -568,7 +569,7 @@ async fn process_item(
     batch: RecordBatch,
     metadata: &BatchMetadata,
     max_retry_delay: Duration,
-) -> (bool, u64) {
+) -> (bool, u64, usize) {
     const MAX_RETRIES: usize = 3; // 1 initial + 3 retries = 4 total attempts
     const BATCH_TIMEOUT_SECS: u64 = 60;
 
@@ -581,6 +582,7 @@ async fn process_item(
         .build();
 
     let mut send_latency_ns: u64 = 0;
+    let mut retries_count = 0;
 
     loop {
         // Hard per-batch timeout: prevents one slow/broken batch from
@@ -600,14 +602,14 @@ async fn process_item(
                     timeout_secs = BATCH_TIMEOUT_SECS,
                     "worker_pool: batch send timed out"
                 );
-                return (false, send_latency_ns);
+                return (false, send_latency_ns, retries_count);
             }
             Ok(SendResult::Ok) => {
-                return (true, send_latency_ns);
+                return (true, send_latency_ns, retries_count);
             }
             Ok(SendResult::Rejected(reason)) => {
                 tracing::warn!(worker_id, %reason, "worker_pool: batch rejected");
-                return (false, send_latency_ns);
+                return (false, send_latency_ns, retries_count);
             }
             Ok(SendResult::RetryAfter(retry_dur)) => {
                 // Server specified delay — consume a backoff slot but use
@@ -618,14 +620,16 @@ async fn process_item(
                         max_retries = MAX_RETRIES,
                         "worker_pool: RetryAfter exceeded max retries"
                     );
-                    return (false, send_latency_ns);
+                    return (false, send_latency_ns, retries_count);
                 }
+                retries_count += 1;
                 let sleep_for = retry_dur.min(max_retry_delay);
                 tracing::warn!(worker_id, ?sleep_for, "worker_pool: rate-limited, retrying");
                 tokio::time::sleep(sleep_for).await;
             }
             Ok(SendResult::IoError(e)) => match backoff.next() {
                 Some(delay) => {
+                    retries_count += 1;
                     tracing::warn!(
                         worker_id,
                         sleep_ms = delay.as_millis() as u64,
@@ -641,11 +645,11 @@ async fn process_item(
                         error = %e,
                         "worker_pool: gave up after retries"
                     );
-                    return (false, send_latency_ns);
+                    return (false, send_latency_ns, retries_count);
                 }
             },
             // Future SendResult variants (#[non_exhaustive]) — treat as failure.
-            Ok(_) => return (false, send_latency_ns),
+            Ok(_) => return (false, send_latency_ns, retries_count),
         }
     }
 }

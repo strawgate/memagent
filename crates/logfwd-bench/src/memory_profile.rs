@@ -341,22 +341,26 @@ fn render_report(run: &ProfileRun<'_>) -> String {
     let mut out = String::new();
 
     // --- Throughput ---
-    let lines_per_sec = total_rows as f64 / elapsed_secs;
-    let mb_per_sec = total_input_bytes as f64 / 1_048_576.0 / elapsed_secs;
-    let batches_per_sec = total_batches as f64 / elapsed_secs;
+    let lines_per_sec = if elapsed_secs > 0.0 { total_rows as f64 / elapsed_secs } else { 0.0 };
+    let mb_per_sec = if elapsed_secs > 0.0 { total_input_bytes as f64 / 1_048_576.0 / elapsed_secs } else { 0.0 };
+    let batches_per_sec = if elapsed_secs > 0.0 { total_batches as f64 / elapsed_secs } else { 0.0 };
 
     // --- RSS analysis ---
     let rss_values: Vec<f64> = samples.iter().map(|s| s.rss_mb).collect();
-    let (peak_rss, min_rss) = rss_values
-        .iter()
-        .copied()
-        .fold((f64::NEG_INFINITY, f64::INFINITY), |(peak, min), v| {
-            (peak.max(v), min.min(v))
-        });
+    let (peak_rss, min_rss) = if rss_values.is_empty() {
+        (0.0, 0.0)
+    } else {
+        rss_values
+            .iter()
+            .copied()
+            .fold((f64::NEG_INFINITY, f64::INFINITY), |(peak, min), v| {
+                (peak.max(v), min.min(v))
+            })
+    };
 
     // Steady-state: average of last half of samples
     let steady_start = samples.len() / 2;
-    let steady_rss = if samples.len() > steady_start {
+    let steady_rss = if samples.len() > steady_start && samples.len() - steady_start > 0 {
         let steady_samples = &rss_values[steady_start..];
         steady_samples.iter().sum::<f64>() / steady_samples.len() as f64
     } else {
@@ -396,8 +400,8 @@ fn render_report(run: &ProfileRun<'_>) -> String {
         .map(|s| s.total_deallocated_bytes)
         .sum();
 
-    let alloc_rate_mb_per_sec = total_allocated as f64 / 1_048_576.0 / elapsed_secs;
-    let alloc_rate_per_sec = total_allocs as f64 / elapsed_secs;
+    let alloc_rate_mb_per_sec = if elapsed_secs > 0.0 { total_allocated as f64 / 1_048_576.0 / elapsed_secs } else { 0.0 };
+    let alloc_rate_per_sec = if elapsed_secs > 0.0 { total_allocs as f64 / elapsed_secs } else { 0.0 };
     let bytes_per_row = if total_rows > 0 {
         total_allocated as f64 / total_rows as f64
     } else {
