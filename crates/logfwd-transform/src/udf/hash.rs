@@ -29,6 +29,12 @@ impl HashUdf {
     }
 }
 
+impl Default for HashUdf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScalarUDFImpl for HashUdf {
     fn as_any(&self) -> &dyn Any {
         self
