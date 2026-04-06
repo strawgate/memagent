@@ -4,6 +4,8 @@
 //! this module wires them together.
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,7 +36,7 @@ use logfwd_io::checkpoint::{
 use logfwd_io::diagnostics::{ComponentStats, PipelineMetrics};
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
-use logfwd_io::input::{FileInput, InputEvent, InputSource};
+use logfwd_io::input::{FileInput, InputEvent, InputSource, SourceMetadataEntry};
 use logfwd_io::tail::{ByteOffset, TailConfig};
 use logfwd_output::{
     AsyncFanoutFactory, BatchMetadata, OnceAsyncFactory, SinkFactory, build_sink_factory,
@@ -85,6 +87,11 @@ enum ChannelMsg {
         /// under Turmoil, not wall-clock time.
         queued_at: tokio::time::Instant,
     },
+    /// Cold-path metadata snapshot for source-aware enrichment.
+    SourceMetadata {
+        input_name: Arc<str>,
+        entries: Vec<SourceMetadataEntry>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +124,8 @@ pub struct Pipeline {
     inputs: Vec<InputState>,
     scanner: Scanner,
     transform: SqlTransform,
+    source_metadata_table: Option<Arc<logfwd_transform::enrichment::SourcesTable>>,
+    source_metadata_registry: HashMap<Arc<str>, Vec<SourceMetadataEntry>>,
     /// Optional post-transform processor (e.g., tail-based sampling).
     processor: Option<Box<dyn Processor>>,
     /// Async worker pool. Workers own the actual sink connections; the pipeline
@@ -157,6 +166,17 @@ impl Pipeline {
         }
         let transform_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
         let mut transform = SqlTransform::new(transform_sql).map_err(|e| e.to_string())?;
+        let mut source_metadata_table = if config.inputs.iter().any(|i| i.source_metadata) {
+            let table = Arc::new(logfwd_transform::enrichment::SourcesTable::new("sources"));
+            let enrichment_table: Arc<dyn logfwd_transform::enrichment::EnrichmentTable> =
+                table.clone();
+            transform
+                .add_enrichment_table(enrichment_table)
+                .map_err(|e| format!("enrichment 'sources': {e}"))?;
+            Some(table)
+        } else {
+            None
+        };
 
         // Wire up enrichment sources.
         for enrichment in &config.enrichment {
@@ -298,6 +318,7 @@ impl Pipeline {
 
         // Build inputs (file only for now).
         let mut inputs = Vec::new();
+        let mut source_metadata_registry = HashMap::new();
         for (i, input_cfg) in config.inputs.iter().enumerate() {
             let mut resolved_cfg = input_cfg.clone();
             if let Some(path_str) = &input_cfg.path {
@@ -321,7 +342,18 @@ impl Pipeline {
                 .unwrap_or_else(|| format!("input_{i}"));
             let input_type_str = format!("{:?}", input_cfg.input_type).to_lowercase();
             let input_stats = metrics.add_input(&input_name, &input_type_str);
-            inputs.push(build_input_state(&input_name, &resolved_cfg, input_stats)?);
+            let input_state = build_input_state(&input_name, &resolved_cfg, input_stats)?;
+            if input_state.track_source_metadata {
+                source_metadata_registry.insert(
+                    Arc::<str>::from(input_name.clone()),
+                    input_state.source.source_metadata_snapshot(),
+                );
+            }
+            inputs.push(input_state);
+        }
+
+        if let Some(table) = &mut source_metadata_table {
+            update_sources_table(table, &source_metadata_registry);
         }
 
         // Restore previously saved file offsets by fingerprint (SourceId).
@@ -389,6 +421,8 @@ impl Pipeline {
             inputs,
             scanner,
             transform,
+            source_metadata_table,
+            source_metadata_registry,
             processor: None,
             pool,
             metrics,
@@ -487,6 +521,8 @@ impl Pipeline {
             inputs: vec![],
             scanner,
             transform,
+            source_metadata_table: None,
+            source_metadata_registry: HashMap::new(),
             processor: None,
             pool,
             metrics,
@@ -525,6 +561,8 @@ impl Pipeline {
             inputs: vec![],
             scanner,
             transform,
+            source_metadata_table: None,
+            source_metadata_registry: HashMap::new(),
             processor: None,
             pool,
             metrics,
@@ -660,6 +698,12 @@ impl Pipeline {
                                 flush_interval.reset();
                             }
                         }
+                        Some(ChannelMsg::SourceMetadata { input_name, entries }) => {
+                            self.source_metadata_registry.insert(input_name, entries);
+                            if let Some(table) = &self.source_metadata_table {
+                                update_sources_table(table, &self.source_metadata_registry);
+                            }
+                        }
                         None => break,
                     }
                 }
@@ -698,6 +742,15 @@ impl Pipeline {
                     {
                         self.flush_batch_from(data, checkpoints, row_origins, "drain", queued_at)
                             .await;
+                    }
+                }
+                ChannelMsg::SourceMetadata {
+                    input_name,
+                    entries,
+                } => {
+                    self.source_metadata_registry.insert(input_name, entries);
+                    if let Some(table) = &self.source_metadata_table {
+                        update_sources_table(table, &self.source_metadata_registry);
                     }
                 }
             }
@@ -1072,10 +1125,14 @@ fn input_poll_loop(
     batch_timeout: Duration,
     poll_interval: Duration,
 ) {
+    const SOURCE_METADATA_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
     // Track when the buffer first became non-empty, not when we last
     // sent. This ensures batch_timeout measures "time since first data
     // arrived in this batch", preventing tiny flushes after idle periods.
     let mut buffered_since: Option<Instant> = None;
+    let mut last_source_metadata_hash = None;
+    let mut last_source_metadata_refresh = Instant::now() - SOURCE_METADATA_REFRESH_INTERVAL;
 
     loop {
         if shutdown.is_cancelled() {
@@ -1128,6 +1185,24 @@ fn input_poll_loop(
             }
             if buffered_since.is_none() && !input.buf.is_empty() {
                 buffered_since = Some(Instant::now());
+            }
+        }
+
+        if input.track_source_metadata
+            && last_source_metadata_refresh.elapsed() >= SOURCE_METADATA_REFRESH_INTERVAL
+        {
+            last_source_metadata_refresh = Instant::now();
+            let entries = input.source.source_metadata_snapshot();
+            let next_hash = hash_source_metadata_entries(&entries);
+            if last_source_metadata_hash != Some(next_hash) {
+                last_source_metadata_hash = Some(next_hash);
+                let msg = ChannelMsg::SourceMetadata {
+                    input_name: Arc::clone(&input.input_name),
+                    entries,
+                };
+                if blocking_send_channel_msg(input.source.name(), &tx, &metrics, msg).is_err() {
+                    break;
+                }
             }
         }
 
@@ -1244,9 +1319,14 @@ async fn async_input_poll_loop(
     batch_timeout: Duration,
     poll_interval: Duration,
 ) {
+    const SOURCE_METADATA_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
     // Use tokio::time::Instant (not std::time::Instant) so that elapsed()
     // measures simulated time under Turmoil, not real wall-clock time.
     let mut buffered_since: Option<tokio::time::Instant> = None;
+    let mut last_source_metadata_hash = None;
+    let mut last_source_metadata_refresh =
+        tokio::time::Instant::now() - SOURCE_METADATA_REFRESH_INTERVAL;
 
     loop {
         if shutdown.is_cancelled() {
@@ -1294,6 +1374,24 @@ async fn async_input_poll_loop(
             }
             if buffered_since.is_none() && !input.buf.is_empty() {
                 buffered_since = Some(tokio::time::Instant::now());
+            }
+        }
+
+        if input.track_source_metadata
+            && last_source_metadata_refresh.elapsed() >= SOURCE_METADATA_REFRESH_INTERVAL
+        {
+            last_source_metadata_refresh = tokio::time::Instant::now();
+            let entries = input.source.source_metadata_snapshot();
+            let next_hash = hash_source_metadata_entries(&entries);
+            if last_source_metadata_hash != Some(next_hash) {
+                last_source_metadata_hash = Some(next_hash);
+                let msg = ChannelMsg::SourceMetadata {
+                    input_name: Arc::clone(&input.input_name),
+                    entries,
+                };
+                if tx.send(msg).await.is_err() {
+                    break;
+                }
             }
         }
 
@@ -1509,6 +1607,29 @@ fn now_nanos() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64
+}
+
+fn hash_source_metadata_entries(entries: &[SourceMetadataEntry]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    entries.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn update_sources_table(
+    table: &Arc<logfwd_transform::enrichment::SourcesTable>,
+    registry: &HashMap<Arc<str>, Vec<SourceMetadataEntry>>,
+) {
+    let mut merged = Vec::new();
+    for entries in registry.values() {
+        merged.extend(entries.iter().cloned().map(|entry| {
+            logfwd_transform::enrichment::SourceMetadataEntry {
+                source_id: entry.source_id.0,
+                source_path: entry.source_path,
+                input_name: entry.input_name,
+            }
+        }));
+    }
+    table.update_entries(&merged);
 }
 
 fn push_row_origin_span(

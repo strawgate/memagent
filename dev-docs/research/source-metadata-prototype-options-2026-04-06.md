@@ -357,18 +357,21 @@ Observed results on this machine:
 
 | Case | Median time | Approx throughput |
 |---|---:|---:|
-| baseline passthrough (1 MiB) | `0.022 ms` | `~45.0 GiB/s` |
-| inject `_source_id` (1 MiB) | `0.167 ms` | `~5.8 GiB/s` |
-| inject `id+path+input` (1 MiB) | `0.249 ms` | `~3.9 GiB/s` |
-| baseline passthrough (4 MiB) | `0.778 ms` | `~5.0 GiB/s` |
-| inject `_source_id` (4 MiB) | `0.876 ms` | `~4.5 GiB/s` |
-| inject `id+path+input` (4 MiB) | `1.104 ms` | `~3.5 GiB/s` |
+| baseline passthrough (1 MiB) | `0.016 ms` | `~61.4 GiB/s` |
+| inject `_source_id` (1 MiB) | `0.071 ms` | `~13.8 GiB/s` |
+| inject `id+path+input` (1 MiB) | `0.074 ms` | `~13.1 GiB/s` |
+| baseline passthrough (4 MiB) | `0.059 ms` | `~66.3 GiB/s` |
+| inject `_source_id` (4 MiB) | `0.290 ms` | `~13.5 GiB/s` |
+| inject `id+path+input` (4 MiB) | `0.299 ms` | `~13.1 GiB/s` |
 
 Interpretation:
 
-- `_source_id`-only injection on a realistic 4 MiB batch was only about **13-15% slower** than pure passthrough in this narrow POC.
-- injecting `_source_id + _source_path + _input` was more like **40% slower** on the same batch.
-- the fixed-cost story is much worse on tiny chunks, which matters for low-volume or highly fragmented sources.
+- direct injection is still extremely fast in absolute terms, but it remains a real hot-path rewrite.
+- scan cost also rises once the payload itself gets wider:
+  - baseline 4 MiB scan: `5.550 ms`
+  - with `_source_id`: `6.977 ms`
+  - with `id+path+input`: `10.443 ms`
+- so the more important downside is not just the copy cost, but the fact that payload rewriting permanently widens what the scanner has to chew through.
 
 This makes the hybrid design look better than the direct full-path row design:
 
@@ -384,7 +387,21 @@ cargo test --release -p logfwd-transform \
   source_metadata_snapshot_benchmark -- --ignored --nocapture
 ```
 
-This bench was added but was still compiling during the current investigation pass, so the ingest-side measurements above are the only completed numbers so far. The important thing we will learn from this second bench is whether a live `sources` table with optional parsed Kubernetes columns is clearly cheap enough to treat as a cold-path refresh.
+Observed results on this machine in debug profile:
+
+| Source entries | `sources` only | `sources` + k8s fields |
+|---|---:|---:|
+| `30` | `0.009 ms` | `0.100 ms` |
+| `300` | `0.129 ms` | `0.882 ms` |
+| `3,000` | `1.240 ms` | `10.779 ms` |
+| `10,000` | `5.592 ms` | `53.628 ms` |
+
+Interpretation:
+
+- the plain `sources` snapshot is cheap enough to refresh very freely.
+- CRI path parsing dominates the cold path once we include Kubernetes-derived fields.
+- that strongly suggests we should only rebuild the `sources` snapshot on actual source-topology changes, not on every batch.
+- if needed later, we can split `sources` and `k8s_sources` or cache parsed path metadata by `source_id` to keep refreshes cheap even at larger source counts.
 
 ### Post-scan column attachment
 
@@ -395,8 +412,21 @@ cargo test --release -p logfwd-arrow \
   source_metadata_attach_benchmark -- --ignored --nocapture
 ```
 
-This bench was added in the current pass and is meant to answer the specific
-non-JSON concern:
+Observed results on this machine:
+
+| Rows | `_source_id` UInt64 | `_source_id` UInt64 + `_input` | `_source_id` Utf8 + `_input` |
+|---|---:|---:|---:|
+| `1,000` | `0.003 ms` | `0.006 ms` | `0.028 ms` |
+| `10,000` | `0.020 ms` | `0.116 ms` | `0.391 ms` |
+| `50,000` | `0.088 ms` | `0.322 ms` | `1.602 ms` |
+
+Interpretation:
+
+- post-scan attach of `_source_id` as `UInt64` is effectively negligible.
+- adding `_input` is still comfortably small for large batches.
+- representing `source_id` as `Utf8` is much more expensive than keeping it numeric.
+
+This bench is the most important answer to the specific non-JSON concern:
 
 - attach `_source_id` as `UInt64`
 - attach `_source_id` as `UInt64` plus `_input`
@@ -410,11 +440,12 @@ rewriting.
 
 ### Worst-case sidecar footprint
 
-The current prototype sidecar shape is intentionally tiny:
+The current prototype sidecar shape is still compact:
 
 ```rust
 struct RowOriginSpan {
     source_id: Option<SourceId>,
+    input_name: Option<Arc<str>>,
     rows: usize,
 }
 ```
@@ -422,17 +453,18 @@ struct RowOriginSpan {
 Measured on this machine:
 
 - `size_of::<Option<SourceId>>() = 16`
-- `size_of::<RowOriginSpan>() = 24`
+- `size_of::<Option<Arc<str>>>() = 16`
+- `size_of::<RowOriginSpan>() = 40`
 
 So the worst-case memory shape, where every contributing source only adds one
 row and no spans coalesce, is approximately:
 
 | Contributing spans in one batch | Approx sidecar bytes |
 |---|---:|
-| `1,000` | `~24 KiB` |
-| `10,000` | `~240 KiB` |
-| `100,000` | `~2.4 MiB` |
-| `1,000,000` | `~24 MiB` |
+| `1,000` | `~40 KiB` |
+| `10,000` | `~400 KiB` |
+| `100,000` | `~4.0 MiB` |
+| `1,000,000` | `~40 MiB` |
 
 That is not free, but it is also not catastrophic at realistic batch sizes.
 The more important design rule is:

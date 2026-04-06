@@ -39,6 +39,14 @@ pub enum InputEvent {
     EndOfFile { source_id: Option<SourceId> },
 }
 
+/// Cold-path source metadata for enrichment snapshots.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SourceMetadataEntry {
+    pub source_id: SourceId,
+    pub source_path: Option<String>,
+    pub input_name: Option<String>,
+}
+
 /// Trait for input sources that produce raw bytes.
 pub trait InputSource: Send {
     /// Poll for new events. Returns empty vec if no new data.
@@ -56,6 +64,13 @@ pub trait InputSource: Send {
     /// For file inputs, returns `(SourceId, ByteOffset)` per tailed file.
     /// Default: empty (push sources, generators).
     fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
+        vec![]
+    }
+
+    /// Return a cold-path snapshot of currently known sources.
+    ///
+    /// Intended for enrichment/control-plane use, not per-batch hot-path work.
+    fn source_metadata_snapshot(&self) -> Vec<SourceMetadataEntry> {
         vec![]
     }
 
@@ -123,6 +138,18 @@ impl InputSource for FileInput {
 
     fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
         self.tailer.file_offsets()
+    }
+
+    fn source_metadata_snapshot(&self) -> Vec<SourceMetadataEntry> {
+        self.tailer
+            .file_paths()
+            .into_iter()
+            .map(|(source_id, path)| SourceMetadataEntry {
+                source_id,
+                source_path: Some(path.to_string_lossy().into_owned()),
+                input_name: Some(self.name.clone()),
+            })
+            .collect()
     }
 
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {

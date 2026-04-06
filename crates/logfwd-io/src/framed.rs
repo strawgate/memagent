@@ -12,7 +12,7 @@
 use crate::diagnostics::ComponentStats;
 use crate::filter_hints::FilterHints;
 use crate::format::FormatDecoder;
-use crate::input::{InputEvent, InputSource};
+use crate::input::{InputEvent, InputSource, SourceMetadataEntry};
 use crate::tail::ByteOffset;
 use logfwd_core::checkpoint_tracker::CheckpointTracker;
 use logfwd_types::pipeline::SourceId;
@@ -333,6 +333,10 @@ impl InputSource for FramedInput {
                 (sid, ByteOffset(checkpointable))
             })
             .collect()
+    }
+
+    fn source_metadata_snapshot(&self) -> Vec<SourceMetadataEntry> {
+        self.inner.source_metadata_snapshot()
     }
 
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {
