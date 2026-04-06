@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: publish-e2e-image-${{ github.sha }}
+  group: publish-e2e-image-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
