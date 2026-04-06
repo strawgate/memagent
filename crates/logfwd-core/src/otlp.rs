@@ -466,6 +466,9 @@ fn parse_2digits(s: &[u8], off: usize) -> u8 {
 }
 
 /// Days from 1970-01-01 to the given civil date. Algorithm from Howard Hinnant.
+#[cfg_attr(kani, kani::requires(
+    year >= 1 && year <= 2553 && month >= 1 && month <= 12 && day >= 1 && day <= 31
+))]
 #[cfg_attr(kani, kani::ensures(|result: &i64|
     // Pre-epoch dates (year < 1970) are always negative; epoch-1970-01-01 = day 0.
     (year >= 1970 || *result < 0)
@@ -1193,17 +1196,16 @@ mod verification {
         parse_2digits(&s, off);
     }
 
-    /// Verify days_from_civil contract: year ≥ 1970 implies result ∈ [-366, 213_400].
-    /// Range extends to year 2553 — the maximum year parse_timestamp_nanos accepts —
-    /// so that stub_verified(days_from_civil) is sound for the full input domain.
+    /// Verify days_from_civil contract over the full input domain declared by requires:
+    /// year ∈ [1, 2553], month ∈ [1, 12], day ∈ [1, 31].
+    /// Covers both pre-1970 (result < 0) and post-1970 (result ∈ [-366, 213_400]).
     #[kani::proof_for_contract(days_from_civil)]
     fn verify_days_from_civil_contract() {
         let year: i64 = kani::any();
         let month: u32 = kani::any();
         let day: u32 = kani::any();
-        kani::assume(year >= 1970 && year <= 2553);
-        kani::assume(month >= 1 && month <= 12);
-        kani::assume(day >= 1 && day <= 31);
+        // Kani uses the function's #[kani::requires] to constrain inputs automatically;
+        // no manual assumes needed.
         days_from_civil(year, month, day);
     }
 
