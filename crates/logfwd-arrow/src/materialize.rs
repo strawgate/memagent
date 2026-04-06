@@ -115,7 +115,7 @@ fn cast_views(batch: &RecordBatch) -> RecordBatch {
         fields.push(new_field);
         columns.push(new_col);
     }
-    let new_schema = Arc::new(Schema::new(fields));
+    let new_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
     RecordBatch::try_new(new_schema, columns).expect("schema/column mismatch after cast")
 }
 
@@ -128,7 +128,7 @@ fn cast_column(field: &Arc<Field>, col: &ArrayRef) -> (Arc<Field>, ArrayRef) {
                 field.name(),
                 DataType::Utf8,
                 field.is_nullable(),
-            ));
+            ).with_metadata(field.metadata().clone()));
             (new_field, utf8_col)
         }
         DataType::Struct(struct_fields) => {
@@ -162,7 +162,7 @@ fn cast_column(field: &Arc<Field>, col: &ArrayRef) -> (Arc<Field>, ArrayRef) {
                 field.name(),
                 DataType::Struct(new_struct_fields),
                 field.is_nullable(),
-            ));
+            ).with_metadata(field.metadata().clone()));
             (new_field, Arc::new(new_struct) as ArrayRef)
         }
         _ => (Arc::clone(field), Arc::clone(col)),
@@ -298,5 +298,45 @@ mod tests {
         let owned = detach(&batch);
         assert!(!is_attached(&owned, &buf));
         assert_eq!(owned.num_rows(), 1);
+    }
+
+    #[test]
+    fn detach_preserves_schema_and_field_metadata() {
+        use std::collections::HashMap;
+        let (batch, _buf) = scan(b"{\"msg\":\"hello\"}\n");
+
+        let mut schema_meta = HashMap::new();
+        schema_meta.insert("schema_key".to_string(), "schema_val".to_string());
+
+        let mut field_meta = HashMap::new();
+        field_meta.insert("field_key".to_string(), "field_val".to_string());
+
+        let old_schema = batch.schema();
+        let mut fields = Vec::with_capacity(old_schema.fields().len());
+        for field in old_schema.fields() {
+            fields.push(Arc::new(field.as_ref().clone().with_metadata(field_meta.clone())));
+        }
+        let new_schema = Arc::new(Schema::new_with_metadata(fields, schema_meta));
+
+        // Rebuild batch with metadata
+        let batch_with_meta = RecordBatch::try_new(new_schema.clone(), batch.columns().to_vec()).unwrap();
+
+        let owned = detach(&batch_with_meta);
+
+        // Validate schema metadata
+        assert_eq!(
+            owned.schema().metadata().get("schema_key"),
+            Some(&"schema_val".to_string()),
+            "schema metadata must be preserved"
+        );
+
+        // Validate field metadata
+        let owned_schema = owned.schema();
+        let msg_field = owned_schema.field_with_name("msg").unwrap();
+        assert_eq!(
+            msg_field.metadata().get("field_key"),
+            Some(&"field_val".to_string()),
+            "field metadata must be preserved"
+        );
     }
 }

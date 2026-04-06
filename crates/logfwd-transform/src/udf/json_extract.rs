@@ -291,11 +291,12 @@ impl ScalarUDFImpl for JsonExtractUdf {
             let result: Arc<dyn Array> = match self.mode {
                 JsonExtractMode::Str => {
                     // Coalesce all children to Utf8 (int > float > str priority).
-                    use crate::conflict_schema::merge_to_utf8;
+                    use logfwd_arrow::conflict_schema::merge_to_utf8;
                     merge_to_utf8(
                         find_child("int"),
                         find_child("float"),
                         find_child("str"),
+                        find_child("bool"),
                         num_rows,
                     )
                 }
