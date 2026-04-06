@@ -872,7 +872,7 @@ mod tests {
         // Multi-batch reading: each append writes an independent IPC stream,
         // so read_batches reads them sequentially.
         let batches = seg.read_batches().unwrap();
-        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let total_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
         assert_eq!(total_rows, 100);
     }
 

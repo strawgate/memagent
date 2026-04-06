@@ -282,7 +282,10 @@ impl InputSource for OtlpReceiverInput {
         let mut all = Vec::new();
 
         // Drain all available decoded batches.
-        while let Ok(data) = self.rx.as_ref().expect("rx is Some until drop").try_recv() {
+        let Some(rx) = self.rx.as_ref() else {
+            return Ok(vec![]);
+        };
+        while let Ok(data) = rx.try_recv() {
             all.extend_from_slice(&data);
         }
 
@@ -877,7 +880,7 @@ mod tests {
                 scope_logs: vec![ScopeLogs {
                     log_records: vec![
                         LogRecord {
-                            time_unix_nano: 1705314600_000_000_000,
+                            time_unix_nano: 1_705_314_600_000_000_000,
                             severity_text: "INFO".into(),
                             body: Some(AnyValue {
                                 value: Some(Value::StringValue("hello world".into())),
@@ -917,7 +920,7 @@ mod tests {
         let body = make_test_request();
         let json = decode_otlp_logs(&body).unwrap();
         let text = String::from_utf8(json).unwrap();
-        let lines: Vec<&str> = text.trim().split('\n').collect();
+        let lines: Vec<&str> = text.trim().lines().collect();
 
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"level\":\"INFO\""), "got: {}", lines[0]);
@@ -1238,10 +1241,10 @@ mod tests {
     #[test]
     fn write_f64_finite_unchanged() {
         let mut out = Vec::new();
-        write_f64_to_buf(&mut out, 3.14);
+        write_f64_to_buf(&mut out, 42.5);
         let text = String::from_utf8(out).unwrap();
         assert!(
-            text.starts_with("3.14"),
+            text.starts_with("42.5"),
             "finite float should be formatted normally: {text}"
         );
     }

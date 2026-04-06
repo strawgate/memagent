@@ -238,7 +238,10 @@ impl ArrowIpcReceiver {
     /// Try to receive all available RecordBatches (non-blocking).
     pub fn try_recv_all(&self) -> Vec<RecordBatch> {
         let mut batches = Vec::new();
-        while let Ok(batch) = self.rx.as_ref().expect("rx is Some until drop").try_recv() {
+        let Some(rx) = self.rx.as_ref() else {
+            return batches;
+        };
+        while let Ok(batch) = rx.try_recv() {
             batches.push(batch);
         }
         batches
@@ -246,27 +249,26 @@ impl ArrowIpcReceiver {
 
     /// Blocking receive of the next RecordBatch.
     pub fn recv(&self) -> io::Result<RecordBatch> {
-        self.rx
-            .as_ref()
-            .expect("rx is Some until drop")
-            .recv()
+        let rx = self.rx.as_ref().ok_or_else(|| {
+            io::Error::other("Arrow IPC receiver: channel disconnected (dropped)")
+        })?;
+        rx.recv()
             .map_err(|_| io::Error::other("Arrow IPC receiver: channel disconnected"))
     }
 
     /// Receive with a timeout.
     pub fn recv_timeout(&self, timeout: std::time::Duration) -> io::Result<RecordBatch> {
-        self.rx
-            .as_ref()
-            .expect("rx is Some until drop")
-            .recv_timeout(timeout)
-            .map_err(|e| match e {
-                mpsc::RecvTimeoutError::Timeout => {
-                    io::Error::new(io::ErrorKind::TimedOut, "Arrow IPC receiver: timed out")
-                }
-                mpsc::RecvTimeoutError::Disconnected => {
-                    io::Error::other("Arrow IPC receiver: channel disconnected")
-                }
-            })
+        let rx = self.rx.as_ref().ok_or_else(|| {
+            io::Error::other("Arrow IPC receiver: channel disconnected (dropped)")
+        })?;
+        rx.recv_timeout(timeout).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => {
+                io::Error::new(io::ErrorKind::TimedOut, "Arrow IPC receiver: timed out")
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                io::Error::other("Arrow IPC receiver: channel disconnected")
+            }
+        })
     }
 
     /// Return the name of this receiver.
@@ -306,6 +308,16 @@ fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, InputError> {
     reader
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| InputError::Receiver(format!("failed to read Arrow IPC batch: {e}")))
+}
+
+impl Drop for ArrowIpcReceiver {
+    fn drop(&mut self) {
+        self.rx.take();
+        self.server.unblock();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -426,15 +438,5 @@ mod tests {
     fn decode_ipc_stream_invalid_body() {
         let result = decode_ipc_stream(b"not arrow data");
         assert!(result.is_err());
-    }
-}
-
-impl Drop for ArrowIpcReceiver {
-    fn drop(&mut self) {
-        self.rx.take();
-        self.server.unblock();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
     }
 }

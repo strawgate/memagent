@@ -214,7 +214,7 @@ mod tests {
 
         if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
-            let lines: Vec<&str> = text.trim().split('\n').collect();
+            let lines: Vec<&str> = text.trim().lines().collect();
             assert_eq!(lines.len(), 20);
             // Every line must parse as valid JSON.
             for (i, line) in lines.iter().enumerate() {
@@ -251,7 +251,7 @@ mod tests {
 
         if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
-            let lines: Vec<&str> = text.trim().split('\n').collect();
+            let lines: Vec<&str> = text.trim().lines().collect();
             assert_eq!(lines.len(), 50);
             let mut saw_nested = false;
             for (i, line) in lines.iter().enumerate() {
@@ -319,7 +319,7 @@ mod tests {
         let events = input.poll().unwrap();
         if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
-            let lines: Vec<&str> = text.trim().split('\n').collect();
+            let lines: Vec<&str> = text.trim().lines().collect();
             let ts0 = lines[0]
                 .find("\"timestamp\":")
                 .map(|p| &lines[0][p..p + 50]);
