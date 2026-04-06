@@ -82,6 +82,13 @@ impl OtlpReceiverInput {
                         Ok(None) | Err(_) => continue,
                     };
 
+                    // Re-check after recv_timeout: Drop may have set is_running to false while
+                    // the call was blocking and a real request raced in.  Drop the request and
+                    // exit so handle.join() does not block on body reads.
+                    if !is_running_clone.load(Ordering::Relaxed) {
+                        break;
+                    }
+
                     let url = request.url().to_string();
 
                     // Only accept the exact OTLP endpoint path (with optional query string).
