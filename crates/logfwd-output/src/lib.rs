@@ -988,7 +988,8 @@ mod tests {
             compression: Some("zstd".to_string()),
             ..Default::default()
         };
-        let factory = build_sink_factory("http-good", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        let factory =
+            build_sink_factory("http-good", &cfg, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "http-good");
     }
 

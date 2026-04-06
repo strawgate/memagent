@@ -125,12 +125,9 @@ impl JsonLinesSink {
                 let bound = zstd::zstd_safe::compress_bound(self.batch_buf.len());
                 self.compress_buf.clear();
                 self.compress_buf.reserve(bound);
-                let compressed_len = zstd::bulk::compress_to_buffer(
-                    &self.batch_buf,
-                    &mut self.compress_buf,
-                    1,
-                )
-                .map_err(io::Error::other)?;
+                let compressed_len =
+                    zstd::bulk::compress_to_buffer(&self.batch_buf, &mut self.compress_buf, 1)
+                        .map_err(io::Error::other)?;
                 self.compress_buf.truncate(compressed_len);
                 &self.compress_buf
             }
@@ -166,7 +163,11 @@ impl JsonLinesSink {
             Compression::None => {}
         }
 
-        let response = req.body(payload.to_vec()).send().await.map_err(io::Error::other)?;
+        let response = req
+            .body(payload.to_vec())
+            .send()
+            .await
+            .map_err(io::Error::other)?;
 
         let status = response.status();
 
