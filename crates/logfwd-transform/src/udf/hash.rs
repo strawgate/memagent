@@ -36,6 +36,30 @@ impl HashUdf {
     }
 }
 
+/// Downcast `array` to `$array_ty`, iterate with null-propagation, and return
+/// `(len, UInt64Array::builder)` ready to be finished.
+///
+/// All three string-type arms in `invoke_with_args` are structurally identical;
+/// this macro eliminates the repetition while keeping the per-type error message.
+macro_rules! hash_string_array {
+    ($array:expr, $array_ty:ty, $type_name:literal) => {{
+        let string_array = $array.as_any().downcast_ref::<$array_ty>().ok_or_else(|| {
+            datafusion::error::DataFusionError::Internal(
+                concat!("failed to downcast ", $type_name).to_string(),
+            )
+        })?;
+        let mut builder = UInt64Array::builder(string_array.len());
+        for i in 0..string_array.len() {
+            if string_array.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(fnv1a_hash(string_array.value(i).as_bytes()));
+            }
+        }
+        (string_array.len(), builder)
+    }};
+}
+
 impl ScalarUDFImpl for HashUdf {
     fn as_any(&self) -> &dyn Any {
         self
@@ -66,61 +90,13 @@ impl ScalarUDFImpl for HashUdf {
                 let dt = array.data_type();
                 let (_len, mut builder) = match dt {
                     DataType::Utf8 => {
-                        let string_array = array
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .ok_or_else(|| {
-                                datafusion::error::DataFusionError::Internal(
-                                    "failed to downcast Utf8 to StringArray".to_string(),
-                                )
-                            })?;
-                        let mut builder = UInt64Array::builder(string_array.len());
-                        for i in 0..string_array.len() {
-                            if string_array.is_null(i) {
-                                builder.append_null();
-                            } else {
-                                builder.append_value(fnv1a_hash(string_array.value(i).as_bytes()));
-                            }
-                        }
-                        (string_array.len(), builder)
+                        hash_string_array!(array, StringArray, "Utf8 to StringArray")
                     }
                     DataType::Utf8View => {
-                        let string_array = array
-                            .as_any()
-                            .downcast_ref::<StringViewArray>()
-                            .ok_or_else(|| {
-                                datafusion::error::DataFusionError::Internal(
-                                    "failed to downcast Utf8View to StringViewArray".to_string(),
-                                )
-                            })?;
-                        let mut builder = UInt64Array::builder(string_array.len());
-                        for i in 0..string_array.len() {
-                            if string_array.is_null(i) {
-                                builder.append_null();
-                            } else {
-                                builder.append_value(fnv1a_hash(string_array.value(i).as_bytes()));
-                            }
-                        }
-                        (string_array.len(), builder)
+                        hash_string_array!(array, StringViewArray, "Utf8View to StringViewArray")
                     }
                     DataType::LargeUtf8 => {
-                        let string_array = array
-                            .as_any()
-                            .downcast_ref::<LargeStringArray>()
-                            .ok_or_else(|| {
-                                datafusion::error::DataFusionError::Internal(
-                                    "failed to downcast LargeUtf8 to LargeStringArray".to_string(),
-                                )
-                            })?;
-                        let mut builder = UInt64Array::builder(string_array.len());
-                        for i in 0..string_array.len() {
-                            if string_array.is_null(i) {
-                                builder.append_null();
-                            } else {
-                                builder.append_value(fnv1a_hash(string_array.value(i).as_bytes()));
-                            }
-                        }
-                        (string_array.len(), builder)
+                        hash_string_array!(array, LargeStringArray, "LargeUtf8 to LargeStringArray")
                     }
                     _ => {
                         return Err(datafusion::error::DataFusionError::Execution(format!(
