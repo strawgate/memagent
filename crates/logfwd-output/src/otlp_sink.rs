@@ -15,6 +15,7 @@ use logfwd_core::otlp::{
     parse_timestamp_nanos, varint_len,
 };
 use logfwd_types::diagnostics::ComponentStats;
+use logfwd_types::field_names;
 use zstd::bulk::Compressor as ZstdCompressor;
 
 use super::{BatchMetadata, Compression, str_value};
@@ -504,7 +505,12 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         let col_name = field.name().as_str();
         let field_name = col_name;
         match field_name {
-            "timestamp" | "time" | "ts" => {
+            name if field_names::matches_any(
+                name,
+                field_names::TIMESTAMP,
+                field_names::TIMESTAMP_VARIANTS,
+            ) =>
+            {
                 if timestamp_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -512,7 +518,12 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "level" | "severity" | "log_level" | "loglevel" | "lvl" => {
+            name if field_names::matches_any(
+                name,
+                field_names::SEVERITY,
+                field_names::SEVERITY_VARIANTS,
+            ) =>
+            {
                 if level_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -520,7 +531,12 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "message" | "msg" | "_msg" | "body" => {
+            name if field_names::matches_any(
+                name,
+                field_names::BODY,
+                field_names::BODY_VARIANTS,
+            ) =>
+            {
                 if body_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -528,14 +544,14 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "_raw" => {
+            field_names::RAW => {
                 // Always excluded from attributes; used as per-row body fallback.
                 excluded.push(idx);
                 if raw_col.is_none() {
                     raw_col = Some((idx, batch.column(idx).as_ref()));
                 }
             }
-            "trace_id" => {
+            field_names::TRACE_ID => {
                 if trace_id_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -543,7 +559,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "span_id" => {
+            field_names::SPAN_ID => {
                 if span_id_col.is_none()
                     && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
                 {
@@ -551,7 +567,12 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            "flags" | "trace_flags" => {
+            name if field_names::matches_any(
+                name,
+                field_names::TRACE_FLAGS,
+                field_names::TRACE_FLAGS_VARIANTS,
+            ) =>
+            {
                 if flags_col.is_none() && matches!(field.data_type(), DataType::Int64) {
                     flags_col = Some((idx, batch.column(idx).as_primitive::<Int64Type>()));
                     excluded.push(idx);

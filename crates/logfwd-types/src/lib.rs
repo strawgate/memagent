@@ -15,3 +15,6 @@ pub mod diagnostics;
 
 /// Hints that input sources and parsers can use to filter early.
 pub mod filter_hints;
+
+/// Canonical OTLP log field names — single source of truth for receiver ↔ sink column names.
+pub mod field_names;

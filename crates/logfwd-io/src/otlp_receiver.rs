@@ -18,6 +18,8 @@ use prost::Message;
 use crate::InputError;
 use crate::input::{InputEvent, InputSource};
 
+use logfwd_types::field_names;
+
 /// Maximum request body size: 10 MB.
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
@@ -360,7 +362,8 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
                     // break the JSON line if written via write_json_field directly.
                     if let Some(ns) = ts.parse::<u64>().ok().filter(|&n| n > 0) {
                         out.push(b'"');
-                        out.extend_from_slice(b"timestamp_int\":");
+                        out.extend_from_slice(field_names::TIMESTAMP.as_bytes());
+                        out.extend_from_slice(b"\":");
                         write_u64_to_buf(&mut out, ns);
                         out.push(b',');
                     }
@@ -368,7 +371,7 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
 
                 if let Some(sev) = record.get("severityText").and_then(|v| v.as_str()) {
                     if !sev.is_empty() {
-                        write_json_string_field(&mut out, "level", sev);
+                        write_json_string_field(&mut out, field_names::SEVERITY, sev);
                         out.push(b',');
                     }
                 }
@@ -376,7 +379,7 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
                 if let Some(body_val) = record.get("body") {
                     let body_str = json_any_value_to_string(body_val);
                     if !body_str.is_empty() {
-                        write_json_string_field(&mut out, "message", &body_str);
+                        write_json_string_field(&mut out, field_names::BODY, &body_str);
                         out.push(b',');
                     }
                 }
@@ -400,13 +403,13 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
 
                 if let Some(tid) = record.get("traceId").and_then(|v| v.as_str()) {
                     if !tid.is_empty() {
-                        write_json_string_field(&mut out, "trace_id", tid);
+                        write_json_string_field(&mut out, field_names::TRACE_ID, tid);
                         out.push(b',');
                     }
                 }
                 if let Some(sid) = record.get("spanId").and_then(|v| v.as_str()) {
                     if !sid.is_empty() {
-                        write_json_string_field(&mut out, "span_id", sid);
+                        write_json_string_field(&mut out, field_names::SPAN_ID, sid);
                         out.push(b',');
                     }
                 }
@@ -493,7 +496,7 @@ fn convert_request_to_json_lines(
                 // timestamp (write directly without allocation)
                 if record.time_unix_nano > 0 {
                     out.push(b'"');
-                    out.extend_from_slice(b"timestamp_int");
+                    out.extend_from_slice(field_names::TIMESTAMP.as_bytes());
                     out.extend_from_slice(b"\":");
                     write_u64_to_buf(&mut out, record.time_unix_nano);
                     out.push(b',');
@@ -501,14 +504,14 @@ fn convert_request_to_json_lines(
 
                 // severity
                 if !record.severity_text.is_empty() {
-                    write_json_string_field(&mut out, "level", &record.severity_text);
+                    write_json_string_field(&mut out, field_names::SEVERITY, &record.severity_text);
                     out.push(b',');
                 }
 
                 // body
                 if let Some(ref body_val) = record.body {
                     let body_str = any_value_to_string(body_val);
-                    write_json_string_field(&mut out, "message", &body_str);
+                    write_json_string_field(&mut out, field_names::BODY, &body_str);
                     out.push(b',');
                 }
 
@@ -529,14 +532,14 @@ fn convert_request_to_json_lines(
                 // trace context (write hex directly to avoid allocation)
                 if !record.trace_id.is_empty() {
                     out.push(b'"');
-                    out.extend_from_slice(b"trace_id");
+                    out.extend_from_slice(field_names::TRACE_ID.as_bytes());
                     out.extend_from_slice(b"\":\"");
                     write_hex_to_buf(&mut out, &record.trace_id);
                     out.extend_from_slice(b"\",");
                 }
                 if !record.span_id.is_empty() {
                     out.push(b'"');
-                    out.extend_from_slice(b"span_id");
+                    out.extend_from_slice(field_names::SPAN_ID.as_bytes());
                     out.extend_from_slice(b"\":\"");
                     write_hex_to_buf(&mut out, &record.span_id);
                     out.extend_from_slice(b"\",");

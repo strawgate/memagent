@@ -45,6 +45,7 @@ use arrow::record_batch::RecordBatch;
 
 use logfwd_config::{AuthConfig, Format, OutputConfig};
 use logfwd_types::diagnostics::ComponentStats;
+use logfwd_types::field_names;
 
 // ---------------------------------------------------------------------------
 // HTTP retry helper
@@ -94,7 +95,7 @@ fn is_conflict_struct(fields: &arrow::datatypes::Fields) -> bool {
     !fields.is_empty()
         && fields
             .iter()
-            .all(|f| matches!(f.name().as_str(), "int" | "float" | "str" | "bool"))
+            .all(|f| field_names::CONFLICT_CHILDREN.contains(&f.name().as_str()))
 }
 
 /// JSON output priority: higher wins per row.  Int64 > Float64 > Boolean > Utf8.

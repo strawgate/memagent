@@ -6,6 +6,7 @@ use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 
 use logfwd_types::diagnostics::ComponentStats;
+use logfwd_types::field_names;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -116,9 +117,10 @@ impl ElasticsearchSink {
         let cols = build_col_infos(batch);
         // Check whether any output field is named `@timestamp` or `_timestamp`
         // to avoid injecting a duplicate timestamp key into the document.
-        let has_timestamp_col = cols
-            .iter()
-            .any(|c| c.field_name == "@timestamp" || c.field_name == "_timestamp");
+        let has_timestamp_col = cols.iter().any(|c| {
+            c.field_name == field_names::TIMESTAMP_AT
+                || c.field_name == field_names::TIMESTAMP_UNDERSCORE
+        });
 
         for row in 0..num_rows {
             self.batch_buf.extend_from_slice(action_bytes);
@@ -497,9 +499,10 @@ impl ElasticsearchSink {
         let ts_no_comma = &ts_buf[1..];
 
         let cols = build_col_infos(&batch);
-        let has_timestamp_col = cols
-            .iter()
-            .any(|c| c.field_name == "@timestamp" || c.field_name == "_timestamp");
+        let has_timestamp_col = cols.iter().any(|c| {
+            c.field_name == field_names::TIMESTAMP_AT
+                || c.field_name == field_names::TIMESTAMP_UNDERSCORE
+        });
 
         let mut chunk = Vec::with_capacity(config.stream_chunk_bytes.max(64 * 1024));
         for row in 0..num_rows {

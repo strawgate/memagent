@@ -44,6 +44,7 @@ use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
 use logfwd_types::diagnostics::ComponentStats;
+use logfwd_types::field_names;
 
 use super::{BatchMetadata, build_col_infos, coalesce_as_str, write_row_json};
 
@@ -155,10 +156,9 @@ impl LokiSink {
 
         // Find timestamp column index (prefer `_timestamp`, fall back to `@timestamp`).
         // Timestamp columns are always flat Int64/UInt64 — no struct conflict expected.
-        let ts_col_idx = schema
-            .fields()
-            .iter()
-            .position(|f| f.name() == "_timestamp" || f.name() == "@timestamp");
+        let ts_col_idx = schema.fields().iter().position(|f| {
+            f.name() == field_names::TIMESTAMP_UNDERSCORE || f.name() == field_names::TIMESTAMP_AT
+        });
 
         // Find label ColInfos for configured label columns.
         let label_col_infos: Vec<(String, &super::ColInfo)> = self
@@ -716,7 +716,7 @@ mod tests {
         );
 
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "_timestamp",
+            field_names::TIMESTAMP_UNDERSCORE,
             DataType::Int64,
             true,
         )]));
