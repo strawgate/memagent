@@ -36,7 +36,7 @@ const DEFAULT_RETRY_AFTER_SECS: u64 = 5;
 /// - delta-seconds: `"120"` → `Duration::from_secs(120)`
 /// - HTTP-date: `"Wed, 21 Oct 2015 07:28:00 GMT"` → seconds until that time
 ///
-/// Falls back to `DEFAULT_RETRY_AFTER_SECS` if the value is absent, unparseable,
+/// Falls back to `DEFAULT_RETRY_AFTER_SECS` if the value is absent, unparsable,
 /// or already in the past.
 fn parse_retry_after(header_value: Option<&reqwest::header::HeaderValue>) -> Duration {
     let Some(value) = header_value.and_then(|v| v.to_str().ok()) else {
