@@ -9,7 +9,7 @@ publish = false
 doctest = false
 
 [dependencies]
-base64 = "0.22"
+base64 = { workspace = true }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
@@ -34,15 +34,15 @@ xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
 
 [dev-dependencies]
 logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
-tokio = { version = "1", features = ["rt", "macros"] }
+reqwest = { workspace = true, features = ["rustls-tls", "http2"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
 dhat = "0.3"
-flate2 = "1"
+flate2 = { workspace = true }
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1"
 proptest-state-machine = "0.8"
 serial_test = "3"
-tar = "0.4"
+tar = { workspace = true }
 tempfile = "3.27.0"
 ureq = "3"
 
