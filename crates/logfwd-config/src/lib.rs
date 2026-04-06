@@ -628,6 +628,16 @@ impl Config {
                     "pipeline '{name}': batch_timeout_ms must be greater than 0"
                 )));
             }
+            if pipe.workers == Some(0) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{name}': workers must be greater than 0"
+                )));
+            }
+            if pipe.batch_target_bytes == Some(0) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{name}': batch_target_bytes must be greater than 0"
+                )));
+            }
             if let Some(sql) = &pipe.transform {
                 if sql.trim().is_empty() {
                     return Err(ConfigError::Validation(format!(
@@ -2675,6 +2685,50 @@ pipelines:
         assert!(
             err.to_string().contains("only supported for loki"),
             "expected loki-only message: {err}"
+        );
+    }
+
+    #[test]
+    fn workers_zero_is_rejected() {
+        let yaml = r"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    workers: 0
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("workers"),
+            "expected 'workers' in error: {msg}"
+        );
+        assert!(
+            msg.contains("must be greater than 0"),
+            "expected 'must be greater than 0' in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn batch_target_bytes_zero_is_rejected() {
+        let yaml = r"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    batch_target_bytes: 0
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("batch_target_bytes"),
+            "expected 'batch_target_bytes' in error: {msg}"
         );
     }
 
