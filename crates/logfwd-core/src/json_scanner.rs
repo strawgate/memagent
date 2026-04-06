@@ -324,7 +324,12 @@ fn probe_row_predicates(
     // Track which predicates we've matched. Use a u64 bitmask for up to 64
     // predicates (in practice, queries rarely have more than a handful).
     let mut matched: u64 = 0;
-    let all_matched: u64 = (1u64 << num_predicates) - 1;
+    // Shifting a u64 by 64 is undefined; handle the 64-predicate edge case explicitly.
+    let all_matched: u64 = if num_predicates == 64 {
+        u64::MAX
+    } else {
+        (1u64 << num_predicates) - 1
+    };
 
     let mut pos = skip_whitespace(buf, start, end);
     if pos >= end || buf[pos] != b'{' {

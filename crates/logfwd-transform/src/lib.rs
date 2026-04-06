@@ -283,7 +283,10 @@ fn tighten_facilities(slot: &mut Option<Vec<u8>>, candidate: Vec<u8>) {
 fn expr_as_column(expr: &SqlExpr) -> Option<String> {
     match expr {
         SqlExpr::Identifier(ident) => Some(ident.value.clone()),
-        SqlExpr::CompoundIdentifier(parts) => parts.last().map(|ident| ident.value.clone()),
+        // Reject qualified names (table.column, schema.table.column): they refer to JOIN
+        // columns, not log-row JSON fields. Pushing these as scanner predicates would cause
+        // false negatives (rows incorrectly filtered out).
+        SqlExpr::CompoundIdentifier(_) => None,
         _ => None,
     }
 }
