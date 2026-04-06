@@ -2,6 +2,7 @@
 //! to various formats: stdout JSON/text, JSON lines over HTTP, OTLP protobuf.
 
 mod arrow_ipc_sink;
+mod file_sink;
 mod json_lines;
 mod null;
 mod otap_sink;
@@ -20,6 +21,7 @@ mod loki;
 pub use arrow_ipc_sink::{ArrowIpcSinkFactory, deserialize_ipc, serialize_ipc};
 pub use elasticsearch::{ElasticsearchRequestMode, ElasticsearchSink, ElasticsearchSinkFactory};
 pub use error::OutputError;
+pub use file_sink::{FileSink, FileSinkFactory};
 pub use json_lines::JsonLinesSink;
 pub use loki::{LokiSink, LokiSinkFactory};
 pub use null::{NullSink, NullSinkFactory};
@@ -654,6 +656,25 @@ pub fn build_sink_factory(
                 fmt,
                 stats,
             )))
+        }
+        OutputType::File => {
+            let path = cfg.path.as_ref().ok_or_else(|| {
+                OutputError::Construction(format!("output '{name}': file requires 'path'"))
+            })?;
+            let fmt = match cfg.format.as_ref() {
+                Some(Format::Json) | None => StdoutFormat::Json,
+                Some(Format::Text) => StdoutFormat::Text,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': file format {other:?} is not supported (use json or text)"
+                    )));
+                }
+            };
+            let factory = FileSinkFactory::new(name.to_string(), path.clone(), fmt, stats)
+                .map_err(|e| {
+                    OutputError::Construction(format!("output '{name}': file factory: {e}"))
+                })?;
+            Ok(Arc::new(factory))
         }
         OutputType::Tcp => {
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {

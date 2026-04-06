@@ -1544,6 +1544,33 @@ output:
     }
 
     #[test]
+    fn test_pipeline_from_config_file_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        let output_path = dir.path().join("capture.ndjson");
+        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
+
+        let yaml = format!(
+            r"
+input:
+  type: file
+  path: {}
+  format: json
+output:
+  type: file
+  path: {}
+  format: json
+",
+            log_path.display(),
+            output_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None);
+        assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
+    }
+
+    #[test]
     fn test_pipeline_with_processor() {
         use std::sync::atomic::Ordering;
 

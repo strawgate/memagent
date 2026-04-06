@@ -782,7 +782,7 @@ impl Config {
 
                 // Reject placeholder output types that are not yet implemented.
                 match output.output_type {
-                    OutputType::File | OutputType::Parquet => {
+                    OutputType::Parquet => {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': {} output type is not yet implemented",
                             output.output_type,
@@ -843,6 +843,13 @@ impl Config {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': {} output requires 'path'",
                                 output.output_type,
+                            )));
+                        }
+                        if let Some(fmt) = &output.format
+                            && !matches!(fmt, Format::Json | Format::Text)
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': file output only supports format json or text"
                             )));
                         }
                     }
@@ -1391,7 +1398,7 @@ output:
     fn validation_unimplemented_output_type() {
         // Each placeholder type should be caught by Config::validate() before
         // pipeline construction, not silently accepted.
-        for otype in ["file", "parquet"] {
+        for otype in ["parquet"] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
             );
@@ -1454,6 +1461,7 @@ output:
             ("null", ""),
             ("elasticsearch", "endpoint: http://x"),
             ("loki", "endpoint: http://x"),
+            ("file", "path: /tmp/x.ndjson"),
         ] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  {extra}\n"
@@ -1462,7 +1470,7 @@ output:
         }
 
         // Placeholder output types must be rejected at validation time.
-        for otype in ["file", "parquet"] {
+        for otype in ["parquet"] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
             );
@@ -1477,6 +1485,21 @@ output:
                 "expected 'not yet implemented' for {otype}: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn file_output_accepts_path() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: /tmp/out.ndjson\n";
+        let cfg = Config::load_str(yaml).unwrap();
+        assert_eq!(cfg.pipelines["default"].outputs[0].output_type, OutputType::File);
+    }
+
+    #[test]
+    fn file_output_rejects_console_format() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: /tmp/out.ndjson\n  format: console\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("file output only supports format json or text"));
     }
 
     #[test]

@@ -233,13 +233,21 @@ Push to Grafana Loki. Not yet functional.
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Loki push URL. |
 
-### `file_out` output *(partial)*
+### `file` output *(partial; `file_out` alias supported)*
 
 Write records to a file.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `path` | string | Yes | Destination file path. |
+| `format` | string | No | `json` for NDJSON output, or `text` to write raw lines. |
+
+```yaml
+output:
+  type: file
+  path: /var/log/logfwd/capture.ndjson
+  format: json
+```
 
 ### `parquet` output *(stub)*
 
@@ -260,7 +268,7 @@ Write records to Parquet files. Not yet functional.
 | `stdout` | Implemented | Print to stdout (JSON or coloured text). |
 | `elasticsearch` | Stub | Elasticsearch bulk API. |
 | `loki` | Stub | Grafana Loki push API. |
-| `file_out` | Partial | Write to a file. |
+| `file` | Partial | Write to a file (`file_out` alias supported). |
 | `parquet` | Stub | Write Parquet files. |
 
 ---
@@ -307,14 +315,16 @@ When a field contains mixed types across rows, the scanner emits a single
 type (e.g., a `status` Struct with `int` and `str` children). Legacy
 single-underscore suffixed columns (`status_int`, `level_str`) are not emitted.
 
-Special columns added by the scanner:
+Special columns added by the scanner / input format layer:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `_file_str` | string | Absolute path of the source file (file inputs only). |
-| `_raw_str` | string | Original JSON line (only when `keep_raw: true`). |
-| `_time_ns_int` | int64 | Timestamp from CRI header in nanoseconds (CRI inputs only). |
-| `_stream_str` | string | CRI stream name (`stdout`/`stderr`). |
+| `_raw` | string | Original input line (only when `keep_raw: true`, or when a non-JSON CRI line is wrapped for scanner safety). |
+| `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
+| `_stream` | string | CRI stream name (`stdout` / `stderr`). |
+
+File-backed source-path metadata is not yet exposed as a SQL column. Track that
+gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
 
 ### Built-in UDFs
 
@@ -368,11 +378,10 @@ enrichment:
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
 
-```sql
-SELECT l.level, l.message, k.namespace, k.pod_name, k.container_name
-FROM logs l
-JOIN k8s k ON l._file_str = k.log_path_prefix
-```
+This enrichment table is ready to expose path-derived metadata, but file-backed
+inputs do not yet inject a source-path column into the `logs` table. The join
+shown in older docs is therefore not wired end to end today. Track that runtime
+gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
 
 Columns exposed by `k8s`:
 
@@ -500,12 +509,8 @@ pipelines:
         l.level,
         l.message,
         l.status,
-        k.namespace,
-        k.pod_name,
-        k.container_name,
         lbl.environment
       FROM logs l
-      LEFT JOIN k8s k ON l._file_str = k.log_path_prefix
       CROSS JOIN labels lbl
       WHERE l.level IN ('ERROR', 'WARN')
         OR l.status >= 500
@@ -520,8 +525,6 @@ pipelines:
         format: console
 
 enrichment:
-  k8s:
-    type: k8s_path
   labels:
     type: static
     fields:
