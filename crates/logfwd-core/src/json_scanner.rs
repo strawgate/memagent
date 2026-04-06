@@ -1153,13 +1153,18 @@ mod verification {
 
     /// skip_nested: result is always in [pos, end], and for a single
     /// balanced pair the returned position is past the closer.
+    ///
+    /// Keep this harness on a small fixed buffer: the new >32-depth overflow
+    /// behavior is covered by unit tests and proptests above, while Kani here
+    /// focuses on local crash-freedom and bounds without exploding the search.
     #[kani::proof]
-    #[kani::unwind(18)]
+    #[kani::unwind(10)]
+    #[kani::solver(kissat)]
     fn verify_skip_nested_bounds() {
-        let buf: [u8; 16] = kani::any();
+        let buf: [u8; 8] = kani::any();
         let pos: usize = kani::any();
         let end: usize = kani::any();
-        kani::assume(pos <= end && end <= 16);
+        kani::assume(pos <= end && end <= 8);
 
         // Build bitmasks for this small buffer (1 block)
         let mut rq = [0u64; 1];
@@ -1168,7 +1173,7 @@ mod verification {
         let mut obrk = [0u64; 1];
         let mut cbrk = [0u64; 1];
         let mut i: usize = 0;
-        while i < 16 {
+        while i < 8 {
             let mask = 1u64 << i;
             match buf[i] {
                 b'"' => rq[0] |= mask,
