@@ -1,9 +1,75 @@
-//! Component-level diagnostic counters.
+//! Component-level diagnostic counters and lifecycle snapshots.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Meter};
+
+/// Coarse runtime health for one pipeline component.
+///
+/// This is intentionally small and lock-free so inputs, transform stages, and
+/// sinks can expose lifecycle state through shared diagnostics without adding
+/// mutexes to the hot path.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComponentHealth {
+    /// Component exists but is still starting up or binding resources.
+    Starting = 0,
+    /// Component is healthy and able to participate in the pipeline.
+    Healthy = 1,
+    /// Component is functioning but degraded (for example, retrying).
+    Degraded = 2,
+    /// Component is shutting down and should no longer be considered ready.
+    Stopping = 3,
+    /// Component has stopped and is not available for work.
+    Stopped = 4,
+    /// Component hit a fatal condition and is not able to make progress.
+    Failed = 5,
+}
+
+impl ComponentHealth {
+    /// Stable lowercase string used in diagnostics JSON.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// Returns `true` when the component should count toward readiness.
+    pub fn is_ready(self) -> bool {
+        matches!(self, Self::Healthy | Self::Degraded)
+    }
+
+    /// Combine two component states by keeping the less-ready one.
+    pub fn combine(self, other: Self) -> Self {
+        if self.severity() >= other.severity() {
+            self
+        } else {
+            other
+        }
+    }
+
+    fn severity(self) -> u8 {
+        self as u8
+    }
+
+    fn from_repr(value: u8) -> Self {
+        match value {
+            0 => Self::Starting,
+            1 => Self::Healthy,
+            2 => Self::Degraded,
+            3 => Self::Stopping,
+            4 => Self::Stopped,
+            5 => Self::Failed,
+            _ => Self::Failed,
+        }
+    }
+}
 
 /// Stats for one component. Dual-write: atomics for /api/pipelines,
 /// OTel counters for OTLP push. Both are lock-free on the hot path.
@@ -18,6 +84,8 @@ pub struct ComponentStats {
     pub rotations_total: AtomicU64,
     /// Lines that failed format parsing (e.g. malformed CRI lines).
     pub parse_errors_total: AtomicU64,
+    /// Coarse lifecycle and health snapshot for readiness/diagnostics.
+    health: AtomicU8,
     // OTel counters (for OTLP push)
     otel_lines: Counter<u64>,
     otel_bytes: Counter<u64>,
@@ -36,6 +104,7 @@ impl ComponentStats {
             errors_total: AtomicU64::new(0),
             rotations_total: AtomicU64::new(0),
             parse_errors_total: AtomicU64::new(0),
+            health: AtomicU8::new(ComponentHealth::Healthy as u8),
             otel_lines: meter.u64_counter(format!("{prefix}_lines")).build(),
             otel_bytes: meter.u64_counter(format!("{prefix}_bytes")).build(),
             otel_errors: meter.u64_counter(format!("{prefix}_errors")).build(),
@@ -108,6 +177,16 @@ impl ComponentStats {
     /// Current parse-error count (relaxed load).
     pub fn parse_errors(&self) -> u64 {
         self.parse_errors_total.load(Ordering::Relaxed)
+    }
+
+    /// Update the component's coarse health snapshot.
+    pub fn set_health(&self, health: ComponentHealth) {
+        self.health.store(health as u8, Ordering::Relaxed);
+    }
+
+    /// Current component health (relaxed load).
+    pub fn health(&self) -> ComponentHealth {
+        ComponentHealth::from_repr(self.health.load(Ordering::Relaxed))
     }
 }
 

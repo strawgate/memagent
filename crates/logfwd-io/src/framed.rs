@@ -15,6 +15,7 @@ use crate::format::FormatDecoder;
 use crate::input::{InputEvent, InputSource};
 use crate::tail::ByteOffset;
 use logfwd_core::checkpoint_tracker::CheckpointTracker;
+use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 use std::collections::HashMap;
 use std::io;
@@ -293,6 +294,10 @@ impl InputSource for FramedInput {
 
     fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    fn health(&self) -> ComponentHealth {
+        self.inner.health()
     }
 
     fn apply_hints(&mut self, hints: &FilterHints) {

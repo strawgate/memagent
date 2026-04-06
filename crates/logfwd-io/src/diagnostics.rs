@@ -10,7 +10,7 @@ use opentelemetry::metrics::{Counter, Meter};
 
 // Re-export ComponentStats from logfwd-types so existing `logfwd_io::diagnostics::ComponentStats`
 // paths keep working.
-pub use logfwd_types::diagnostics::ComponentStats;
+pub use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
 // ---------------------------------------------------------------------------
 // Pipeline-level metrics (shared between pipeline thread and diagnostics)
@@ -542,9 +542,12 @@ impl DiagnosticsServer {
 
     fn serve_health(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let uptime = self.start_time.elapsed().as_secs();
+        let component_health = self.aggregate_component_health();
         let body = format!(
-            r#"{{"status":"ok","uptime_seconds":{},"version":"{}"}}"#,
-            uptime, VERSION,
+            r#"{{"status":"ok","component_health":"{}","uptime_seconds":{},"version":"{}"}}"#,
+            component_health.as_str(),
+            uptime,
+            VERSION,
         );
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
@@ -555,14 +558,16 @@ impl DiagnosticsServer {
 
     /// Returns 200 `{"status":"ready"}` when at least one pipeline is
     /// registered (i.e., the agent has finished initialization and is
-    /// functional). Returns 503 before any pipelines are configured.
+    /// functional) and all components are in a ready state. Returns 503 before
+    /// any pipelines are configured or while a component is still starting,
+    /// stopping, stopped, or failed.
     ///
     /// Per-pipeline data-flow freshness (`last_batch_time_ns`) is exposed
     /// via `/api/pipelines` for monitoring dashboards, but is NOT a
     /// readiness gate — a quiet log source should not cause Kubernetes
     /// to mark the pod as unready.
     fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let ready = !self.pipelines.is_empty();
+        let ready = !self.pipelines.is_empty() && self.all_components_ready();
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
@@ -934,9 +939,10 @@ impl DiagnosticsServer {
                 .iter()
                 .map(|(name, typ, stats)| {
                     format!(
-                        r#"{{"name":"{}","type":"{}","lines_total":{},"bytes_total":{},"errors":{},"rotations":{},"parse_errors":{}}}"#,
+                        r#"{{"name":"{}","type":"{}","health":"{}","lines_total":{},"bytes_total":{},"errors":{},"rotations":{},"parse_errors":{}}}"#,
                         esc(name),
                         esc(typ),
+                        stats.health().as_str(),
                         stats.lines(),
                         stats.bytes(),
                         stats.errors(),
@@ -970,9 +976,10 @@ impl DiagnosticsServer {
                 .iter()
                 .map(|(name, typ, stats)| {
                     format!(
-                        r#"{{"name":"{}","type":"{}","lines_total":{},"bytes_total":{},"errors":{}}}"#,
+                        r#"{{"name":"{}","type":"{}","health":"{}","lines_total":{},"bytes_total":{},"errors":{}}}"#,
                         esc(name),
                         esc(typ),
+                        stats.health().as_str(),
                         stats.lines(),
                         stats.bytes(),
                         stats.errors(),
@@ -1021,12 +1028,14 @@ impl DiagnosticsServer {
             };
             let inflight = pm.inflight_batches.load(Ordering::Relaxed);
             let backpressure = pm.backpressure_stalls.load(Ordering::Relaxed);
+            let transform_health = pm.transform_in.health().combine(pm.transform_out.health());
 
             pipelines_json.push(format!(
-                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"dropped_batches_total":{},"scan_errors_total":{},"parse_errors_total":{},"last_batch_time_ns":{},"batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{}}}"#,
+                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","health":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"dropped_batches_total":{},"scan_errors_total":{},"parse_errors_total":{},"last_batch_time_ns":{},"batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{}}}"#,
                 esc(&pm.name),
                 inputs_json.join(","),
                 esc(&pm.transform_sql),
+                transform_health.as_str(),
                 lines_in,
                 lines_out,
                 pm.transform_errors.load(Ordering::Relaxed),
@@ -1065,6 +1074,34 @@ impl DiagnosticsServer {
         let resp = tiny_http::Response::from_string(body).with_header(header);
         request.respond(resp)?;
         Ok(())
+    }
+
+    fn all_components_ready(&self) -> bool {
+        self.pipelines.iter().all(|pm| {
+            pm.transform_in.health().is_ready()
+                && pm.transform_out.health().is_ready()
+                && pm
+                    .inputs
+                    .iter()
+                    .all(|(_, _, stats)| stats.health().is_ready())
+                && pm
+                    .outputs
+                    .iter()
+                    .all(|(_, _, stats)| stats.health().is_ready())
+        })
+    }
+
+    fn aggregate_component_health(&self) -> ComponentHealth {
+        self.pipelines
+            .iter()
+            .flat_map(|pm| {
+                pm.inputs
+                    .iter()
+                    .map(|(_, _, stats)| stats.health())
+                    .chain([pm.transform_in.health(), pm.transform_out.health()])
+                    .chain(pm.outputs.iter().map(|(_, _, stats)| stats.health()))
+            })
+            .fold(ComponentHealth::Healthy, ComponentHealth::combine)
     }
 
     /// Returns a JSON fragment (starting with a comma) for allocator memory
@@ -1395,6 +1432,7 @@ mod tests {
         assert_eq!(stats.lines(), 0);
         assert_eq!(stats.bytes(), 0);
         assert_eq!(stats.errors(), 0);
+        assert_eq!(stats.health(), ComponentHealth::Healthy);
 
         stats.inc_lines(10);
         stats.inc_lines(5);
@@ -1408,6 +1446,9 @@ mod tests {
         stats.inc_errors();
         stats.inc_errors();
         assert_eq!(stats.errors(), 3);
+
+        stats.set_health(ComponentHealth::Degraded);
+        assert_eq!(stats.health(), ComponentHealth::Degraded);
     }
 
     #[test]
@@ -1422,6 +1463,11 @@ mod tests {
         let (status, body) = http_get(port, "/health");
         assert_eq!(status, 200);
         assert!(body.contains(r#""status":"ok""#), "body: {}", body);
+        assert!(
+            body.contains(r#""component_health":"healthy""#),
+            "body: {}",
+            body
+        );
         assert!(
             body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))),
             "body: {}",
@@ -1441,6 +1487,7 @@ mod tests {
         let (status, body) = http_get(port, "/api/pipelines");
         assert_eq!(status, 200);
         assert!(body.contains(r#""name":"default""#), "body: {}", body);
+        assert!(body.contains(r#""health":"healthy""#), "body: {}", body);
         assert!(body.contains(r#""lines_total":1000"#), "body: {}", body);
         assert!(body.contains(r#""lines_in":1000"#), "body: {}", body);
         assert!(body.contains(r#""lines_out":900"#), "body: {}", body);
@@ -1709,6 +1756,25 @@ mod tests {
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 200, "body: {}", body);
         assert!(body.contains(r#""status":"ready""#), "body: {}", body);
+    }
+
+    #[test]
+    fn test_ready_endpoint_with_starting_component_returns_503() {
+        let meter = opentelemetry::global::meter("test");
+        let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
+        let input = pm.add_input("receiver", "otlp");
+        input.set_health(ComponentHealth::Starting);
+
+        let mut server = DiagnosticsServer::new("127.0.0.1:0");
+        server.add_pipeline(Arc::new(pm));
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/ready");
+        assert_eq!(status, 503, "body: {}", body);
+        assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
     }
 
     #[test]

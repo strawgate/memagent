@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
+use logfwd_types::diagnostics::ComponentHealth;
 
 use super::BatchMetadata;
 
@@ -84,6 +85,11 @@ pub trait Sink: Send {
 
     /// Return the human-readable name of this sink (from config).
     fn name(&self) -> &str;
+
+    /// Coarse runtime health for readiness and diagnostics.
+    fn health(&self) -> ComponentHealth {
+        ComponentHealth::Healthy
+    }
 
     /// Gracefully shut down the sink, flushing and releasing resources.
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>>;
@@ -191,6 +197,14 @@ impl Sink for AsyncFanoutSink {
 
     fn name(&self) -> &'static str {
         "fanout"
+    }
+
+    fn health(&self) -> ComponentHealth {
+        self.sinks
+            .iter()
+            .fold(ComponentHealth::Healthy, |state, sink| {
+                state.combine(sink.health())
+            })
     }
 
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
