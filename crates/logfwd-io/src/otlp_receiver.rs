@@ -442,15 +442,15 @@ fn json_any_value_to_string(v: &sonic_rs::Value) -> String {
         if let Some(n) = i.as_i64() {
             let mut buf = Vec::new();
             write_i64_to_buf(&mut buf, n);
-            // SAFETY: write_i64_to_buf only writes ASCII digits and '-'
-            return unsafe { String::from_utf8_unchecked(buf) };
+            // write_i64_to_buf only produces ASCII digits and '-', so from_utf8 always succeeds.
+            return String::from_utf8(buf).unwrap_or_default();
         }
     }
     if let Some(d) = v.get("doubleValue").and_then(JsonValueTrait::as_f64) {
         let mut buf = Vec::new();
         write_f64_to_buf(&mut buf, d);
-        // SAFETY: write_f64_to_buf only writes ASCII characters
-        return unsafe { String::from_utf8_unchecked(buf) };
+        // write_f64_to_buf only produces ASCII characters, so from_utf8 always succeeds.
+        return String::from_utf8(buf).unwrap_or_default();
     }
     if let Some(b) = v.get("boolValue").and_then(JsonValueTrait::as_bool) {
         return if b { "true" } else { "false" }.to_string();

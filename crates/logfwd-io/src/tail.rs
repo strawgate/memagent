@@ -217,9 +217,12 @@ fn glob_root(pattern: &str) -> PathBuf {
             PathBuf::from(trimmed)
         }
     } else {
-        Path::new(prefix)
-            .parent()
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+        let parent = Path::new(prefix).parent().unwrap_or(Path::new(""));
+        if parent.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            parent.to_path_buf()
+        }
     }
 }
 
@@ -231,7 +234,13 @@ fn glob_max_depth(pattern: &str) -> Option<usize> {
         return None;
     }
     let root = glob_root(pattern);
-    let root_depth = root.components().count();
+    // Exclude the CurDir (`.`) component so relative roots don't
+    // inflate the depth count — Path::new(".").components().count() == 1
+    // but logically the root has 0 "meaningful" segments.
+    let root_depth = root
+        .components()
+        .filter(|c| *c != std::path::Component::CurDir)
+        .count();
     let total_depth = Path::new(pattern).components().count();
     // Ensure at least depth 1 — a file is always at depth ≥1 from its directory.
     Some(total_depth.saturating_sub(root_depth).max(1))
@@ -1150,6 +1159,19 @@ mod tests {
     }
 
     #[test]
+    fn glob_root_relative_no_wildcard() {
+        // Bare filename with no path separator or wildcard — parent is current dir.
+        assert_eq!(glob_root("test.log"), PathBuf::from("."));
+        assert_eq!(glob_root("app.log"), PathBuf::from("."));
+    }
+
+    #[test]
+    fn glob_root_relative_mid_filename_wildcard() {
+        // `app*.log` — wildcard mid-filename, root is current dir (parent of "app" is "").
+        assert_eq!(glob_root("app*.log"), PathBuf::from("."));
+    }
+
+    #[test]
     fn glob_max_depth_single_level() {
         // /var/log/*.log → root=/var/log, pattern has 3 components, root has 2 → depth 1
         assert_eq!(glob_max_depth("/var/log/*.log"), Some(1));
@@ -1164,6 +1186,13 @@ mod tests {
     fn glob_max_depth_relative_is_at_least_1() {
         // *.log → root=., 1 component each, but max(0,1) = 1
         assert_eq!(glob_max_depth("*.log"), Some(1));
+    }
+
+    #[test]
+    fn glob_max_depth_relative_subdir() {
+        // */*.log → root=. (0 effective components), pattern has 2 → depth 2.
+        // WalkDir must search at depth 2 to find files in subdirectories.
+        assert_eq!(glob_max_depth("*/*.log"), Some(2));
     }
 
     // ---- end glob helper tests ----
