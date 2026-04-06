@@ -43,6 +43,7 @@ flate2 = { workspace = true }
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1"
 proptest-state-machine = "0.8"
+sha2 = "0.10"
 serial_test = "3"
 tar = { workspace = true }
 tempfile = "3.27.0"

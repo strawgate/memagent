@@ -54,7 +54,9 @@ scanner-ready JSON lines.
 The receiver must preserve these semantic roles when they are present and
 valid:
 
-- `timeUnixNano` / `time_unix_nano` -> `timestamp_int`
+- OTLP HTTP/JSON uses `timeUnixNano`; generated/protobuf code may expose the
+  same semantic field as `time_unix_nano`. Both map to `timestamp_int`, but
+  `time_unix_nano` is not itself an accepted HTTP/JSON key.
 - `severityText` -> `level`
 - `body` -> `message`
 - `traceId` -> `trace_id`
@@ -130,10 +132,11 @@ The file path is:
 
 ### Lifecycle rules
 
-- Rotate, truncate, delete/recreate, and EOF are explicit events.
+- Rotate, truncate, delete/recreate, and terminal EOF are explicit events.
 - `Truncated` must be emitted before post-truncate data so framing state can be
   cleared safely.
-- EOF must flush a trailing partial line rather than silently dropping it.
+- Only terminal EOF may flush a trailing partial line; transient “no new bytes
+  right now” states must not flush buffered partial lines.
 
 ### Delivery semantics
 
