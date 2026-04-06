@@ -205,7 +205,10 @@ impl LokiSink {
             let mut labels: Vec<(String, String)> = self.config.static_labels.clone();
             for (label_name, col_info) in &label_col_infos {
                 if let Some(val) = coalesce_as_str(batch, row, col_info) {
-                    labels.push((label_name.clone(), val));
+                    // Skip empty label values — Loki API rejects them with HTTP 400.
+                    if !val.is_empty() {
+                        labels.push((label_name.clone(), val));
+                    }
                 }
             }
             labels.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -252,10 +255,12 @@ impl LokiSink {
             retained += sort_and_dedup_timestamps(entries) as u64;
 
             // Parse stream_key (JSON array of [key, value] pairs) back into label map.
+            // Static labels are seeded first as immutable identifiers; dynamic labels
+            // from the stream_key fill in any remaining keys but cannot override statics.
             let mut labels_map: HashMap<String, String> = static_labels.iter().cloned().collect();
             if let Ok(pairs) = serde_json::from_str::<Vec<[String; 2]>>(stream_key.as_str()) {
                 for [k, v] in pairs {
-                    labels_map.insert(k, v);
+                    labels_map.entry(k).or_insert(v);
                 }
             }
 
@@ -742,6 +747,90 @@ mod tests {
         assert_eq!(
             entries[1].0, metadata.observed_time_ns,
             "Negative timestamp should fall back to observed_time_ns"
+        );
+    }
+
+    #[test]
+    fn static_label_not_overwritten_by_dynamic() {
+        // Bug #1385: static labels were seeded into labels_map first; dynamic
+        // labels from stream_key were inserted on top, silently overwriting them.
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![("env".to_string(), "prod".to_string())],
+            label_columns: vec!["env".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        // The log record has env="staging" — static label "env"="prod" must survive.
+        let schema = Arc::new(Schema::new(vec![Field::new("env", DataType::Utf8, true)]));
+        let env_arr = StringArray::from(vec![Some("staging")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(env_arr)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        let mut stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let (payload, _) = LokiSink::serialize_loki_json(
+            &mut stream_map,
+            &[("env".to_string(), "prod".to_string())],
+        );
+        // The static label "prod" must not be overwritten by the dynamic "staging".
+        assert!(
+            payload.contains("\"env\":\"prod\""),
+            "static label must not be overwritten; payload: {payload}"
+        );
+    }
+
+    #[test]
+    fn empty_label_value_skipped() {
+        // Bug #1385: empty label values were forwarded to Loki, causing HTTP 400.
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec!["namespace".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "namespace",
+            DataType::Utf8,
+            true,
+        )]));
+        let ns_arr = StringArray::from(vec![Some("")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(ns_arr)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        // There must be exactly one stream; its key must not include "namespace".
+        assert_eq!(stream_map.len(), 1);
+        let key = stream_map.keys().next().unwrap();
+        assert!(
+            !key.contains("namespace"),
+            "empty label value must be excluded from stream key; key: {key}"
         );
     }
 }
