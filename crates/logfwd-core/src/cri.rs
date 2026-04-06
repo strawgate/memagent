@@ -38,12 +38,18 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
     // Format: "TIMESTAMP STREAM FLAGS MESSAGE"
     // Find first space (after timestamp).
     let sp1 = find_byte(line, b' ', 0)?;
+    if sp1 == 0 {
+        return None; // empty timestamp is invalid
+    }
     if sp1 + 1 >= line.len() {
         return None;
     }
 
     // Find second space (after stream).
     let sp2 = find_byte(line, b' ', sp1 + 1)?;
+    if sp2 == sp1 + 1 {
+        return None; // empty stream name is invalid
+    }
     if sp2 + 1 >= line.len() {
         return None;
     }
@@ -776,6 +782,7 @@ mod verification {
 
         if msg[0] == b'{' {
             // Output should be: { + prefix + msg[1..] + \n
+            // Compare byte-by-byte to avoid memcmp unwind assertion inside Kani.
             assert_eq!(out[0], b'{');
             assert_eq!(out[1], prefix[0]);
             assert_eq!(out[2], prefix[1]);
@@ -816,6 +823,22 @@ mod verification {
         // Guard vacuity: ensure both paths are reachable
         kani::cover!(msg[0] == b'{', "JSON path reachable");
         kani::cover!(msg[0] != b'{', "non-JSON path reachable");
+
+        // Guard vacuity for json_escape_bytes arms — Kani must find a model
+        // where each escape branch is exercised (second byte drives escape
+        // since first byte is fixed to non-{ for the non-JSON path).
+        kani::cover!(
+            msg[0] != b'{' && msg[1] == b'"',
+            "quote escape arm reachable"
+        );
+        kani::cover!(
+            msg[0] != b'{' && msg[1] == b'\\',
+            "backslash escape arm reachable"
+        );
+        kani::cover!(
+            msg[0] != b'{' && msg[1] < 0x20,
+            "control-char escape arm reachable"
+        );
 
         write_json_line(&msg, None, &mut out);
 

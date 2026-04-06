@@ -61,7 +61,6 @@ def main() -> int:
         if iso is None:
             unknown_history.append(path)
             continue
-
         ts = datetime.fromisoformat(iso.replace("Z", "+00:00"))
         age_days = (now - ts).days
 
