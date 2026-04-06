@@ -123,6 +123,26 @@ impl FormatDecoder {
             }
         }
     }
+
+    /// Flush any pending CRI aggregator state into `out`.
+    ///
+    /// For CRI/Auto formats: if `process_lines` left a buffered partial-line
+    /// P-sequence without a terminating F chunk, emit the accumulated bytes
+    /// as-is so they are not silently dropped when the source is removed
+    /// (e.g. on file rotation or truncation).  A trailing `\n` is appended so
+    /// the output remains newline-delimited.  No-op for Passthrough formats.
+    pub fn flush_pending(&mut self, out: &mut Vec<u8>) {
+        match self {
+            Self::Passthrough { .. } | Self::PassthroughJson { .. } => {}
+            Self::Cri { aggregator, .. } | Self::Auto { aggregator, .. } => {
+                if let Some(pending) = aggregator.flush() {
+                    out.extend_from_slice(pending);
+                    out.push(b'\n');
+                    aggregator.reset();
+                }
+            }
+        }
+    }
 }
 
 /// Count non-JSON lines in `chunk` and increment the parse-error counter.

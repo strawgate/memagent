@@ -254,7 +254,18 @@ impl InputSource for FramedInput {
                                     self.sources.get_mut(&key).expect("just checked existence");
                                 state.format.process_lines(&remainder, &mut self.out_buf);
 
-                                self.stats.inc_lines(1);
+                                // For CRI/Auto formats a remainder P-line may leave data
+                                // buffered in the aggregator without emitting output.
+                                // Flush pending aggregator state so it is not silently
+                                // dropped when the source is removed below.
+                                let state =
+                                    self.sources.get_mut(&key).expect("just checked existence");
+                                state.format.flush_pending(&mut self.out_buf);
+
+                                // Only count a line when output was actually produced.
+                                if !self.out_buf.is_empty() {
+                                    self.stats.inc_lines(1);
+                                }
 
                                 // Remainder was flushed — update tracker so
                                 // checkpointable_offset advances past the
@@ -604,6 +615,74 @@ mod tests {
         // Fresh data starts clean (no stale "partial" prefix)
         let events3 = framed.poll().unwrap();
         assert_eq!(collect_data(events3), b"fresh\n");
+    }
+
+    #[test]
+    fn cri_partial_line_flushed_on_rotation() {
+        // A CRI P (partial) line in the remainder must not be silently dropped
+        // when a Rotated event is received.  The accumulated bytes should be
+        // emitted as-is via flush_pending() before the source state is removed.
+        let stats = make_stats();
+        // Partial CRI P line with no trailing newline — goes to state.remainder.
+        let partial_cri = b"2024-01-15T10:30:00Z stdout P partial_message".to_vec();
+        let source = MockSource::new(vec![
+            vec![InputEvent::Data {
+                bytes: partial_cri,
+                source_id: None,
+            }],
+            vec![InputEvent::Rotated { source_id: None }],
+            vec![InputEvent::Data {
+                bytes: b"2024-01-15T10:30:00Z stdout F fresh\n".to_vec(),
+                source_id: None,
+            }],
+        ]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats)),
+            stats,
+        );
+
+        // Poll 1: partial CRI P line lands in the remainder (no output).
+        let events1 = framed.poll().unwrap();
+        assert!(
+            collect_data(events1).is_empty(),
+            "partial line should produce no output"
+        );
+
+        // Poll 2: Rotated — remainder is flushed, CRI partial data must be emitted.
+        let events2 = framed.poll().unwrap();
+        assert!(
+            events2
+                .iter()
+                .any(|e| matches!(e, InputEvent::Rotated { .. })),
+            "Rotated event must be forwarded"
+        );
+        let flushed = collect_data(events2);
+        assert!(
+            !flushed.is_empty(),
+            "CRI partial data must be emitted on rotation, not silently dropped"
+        );
+        // The flushed bytes must contain the CRI message content.
+        assert!(
+            flushed
+                .windows(b"partial_message".len())
+                .any(|w| w == b"partial_message"),
+            "flushed output must contain the CRI partial message bytes"
+        );
+
+        // Poll 3: fresh data after rotation — only fresh content (aggregator state cleared).
+        let events3 = framed.poll().unwrap();
+        let fresh = collect_data(events3);
+        assert!(
+            fresh.windows(b"fresh".len()).any(|w| w == b"fresh"),
+            "fresh CRI F line must be emitted after rotation"
+        );
+        assert!(
+            !fresh
+                .windows(b"partial_message".len())
+                .any(|w| w == b"partial_message"),
+            "stale partial_message must not appear in post-rotation output"
+        );
     }
 
     #[test]
