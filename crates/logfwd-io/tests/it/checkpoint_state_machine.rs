@@ -368,7 +368,7 @@ impl StateMachineTest for TailCheckpointTest {
         // tracking across transitions).
     }
 
-    fn teardown(mut sut: Self::SystemUnderTest, ref_state: RefState) {
+    fn teardown(mut sut: Self::SystemUnderTest, _ref_state: RefState) {
         // Final drain: poll multiple times.
         for _ in 0..5 {
             sut.do_poll();
