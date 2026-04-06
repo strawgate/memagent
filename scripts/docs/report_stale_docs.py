@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 import subprocess
 
 STALE_DAYS = 90
@@ -23,20 +24,33 @@ class FileAge:
     last_commit_iso: str
 
 
-def git_last_commit_iso(path: Path) -> str:
+def is_shallow_repository() -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() == "true"
+
+
+def git_last_commit_iso(path: Path) -> Optional[str]:
     result = subprocess.run(
         ["git", "log", "-1", "--format=%cI", "--", str(path)],
         check=True,
         capture_output=True,
         text=True,
     )
-    return result.stdout.strip()
+    iso = result.stdout.strip()
+    return iso or None
 
 
 def main() -> int:
     now = datetime.now(timezone.utc)
     stale: list[FileAge] = []
     fresh: list[FileAge] = []
+    unknown_history: list[Path] = []
+    shallow_repo = is_shallow_repository()
 
     for path in TARGETS:
         if not path.exists():
@@ -44,6 +58,9 @@ def main() -> int:
             return 1
 
         iso = git_last_commit_iso(path)
+        if iso is None:
+            unknown_history.append(path)
+            continue
         ts = datetime.fromisoformat(iso.replace("Z", "+00:00"))
         age_days = (now - ts).days
 
@@ -54,6 +71,10 @@ def main() -> int:
             fresh.append(entry)
 
     print(f"Operational doc freshness report (threshold: {STALE_DAYS} days)")
+    if unknown_history:
+        prefix = "shallow checkout" if shallow_repo else "missing git history"
+        paths = ", ".join(str(path) for path in unknown_history)
+        print(f"- NOTE freshness incomplete ({prefix}) for: {paths}")
     for entry in fresh:
         print(f"- OK   {entry.path} ({entry.days_old}d, last_commit={entry.last_commit_iso})")
     for entry in stale:
