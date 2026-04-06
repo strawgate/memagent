@@ -30,6 +30,31 @@ const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
 /// Default retry-after delay in seconds when the server does not send a Retry-After header.
 const DEFAULT_RETRY_AFTER_SECS: u64 = 5;
 
+/// Parse the `Retry-After` header value (RFC 9110 §10.2.4).
+///
+/// Accepts both formats:
+/// - delta-seconds: `"120"` → `Duration::from_secs(120)`
+/// - HTTP-date: `"Wed, 21 Oct 2015 07:28:00 GMT"` → seconds until that time
+///
+/// Falls back to `DEFAULT_RETRY_AFTER_SECS` if the value is absent, unparseable,
+/// or already in the past.
+fn parse_retry_after(header_value: Option<&reqwest::header::HeaderValue>) -> Duration {
+    let Some(value) = header_value.and_then(|v| v.to_str().ok()) else {
+        return Duration::from_secs(DEFAULT_RETRY_AFTER_SECS);
+    };
+    // Try delta-seconds first (the common case for machine-to-machine APIs).
+    if let Ok(secs) = value.parse::<u64>() {
+        return Duration::from_secs(secs);
+    }
+    // Fall back to HTTP-date (RFC 9110 IMF-fixdate).
+    if let Ok(target) = httpdate::parse_http_date(value) {
+        if let Ok(delay) = target.duration_since(std::time::SystemTime::now()) {
+            return delay;
+        }
+    }
+    Duration::from_secs(DEFAULT_RETRY_AFTER_SECS)
+}
+
 // ---------------------------------------------------------------------------
 // OtlpSink
 // ---------------------------------------------------------------------------
@@ -297,15 +322,8 @@ impl OtlpSink {
                 let status = response.status();
 
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    let retry_after = response
-                        .headers()
-                        .get("Retry-After")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(DEFAULT_RETRY_AFTER_SECS);
-                    return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
-                        retry_after,
-                    )));
+                    let delay = parse_retry_after(response.headers().get("Retry-After"));
+                    return Ok(super::sink::SendResult::RetryAfter(delay));
                 }
 
                 if status.is_success() {
@@ -318,15 +336,8 @@ impl OtlpSink {
                 // present, otherwise fall back to the default.  Check before
                 // reading the body to avoid an unnecessary allocation.
                 if status.is_server_error() {
-                    let retry_after = response
-                        .headers()
-                        .get("Retry-After")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(DEFAULT_RETRY_AFTER_SECS);
-                    return Ok(super::sink::SendResult::RetryAfter(Duration::from_secs(
-                        retry_after,
-                    )));
+                    let delay = parse_retry_after(response.headers().get("Retry-After"));
+                    return Ok(super::sink::SendResult::RetryAfter(delay));
                 }
 
                 // Error — read body as bytes to avoid String allocation.
