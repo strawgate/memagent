@@ -29,6 +29,7 @@ use opentelemetry_proto::tonic::{
     resource::v1::Resource,
 };
 use serial_test::serial;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use crate::otlp_contract_support::{
@@ -65,10 +66,8 @@ impl OtelcolProcess {
     }
 }
 
-fn allocate_local_addr() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    let addr = listener.local_addr().expect("read ephemeral port");
-    addr.to_string()
+fn allocate_local_listener() -> io::Result<TcpListener> {
+    TcpListener::bind("127.0.0.1:0")
 }
 
 fn platform() -> (&'static str, &'static str) {
@@ -91,6 +90,17 @@ fn otelcol_download_url() -> String {
     )
 }
 
+fn otelcol_archive_name() -> String {
+    let (os, arch) = platform();
+    format!("otelcol-contrib_{OTELCOL_VERSION}_{os}_{arch}.tar.gz")
+}
+
+fn otelcol_checksums_url() -> String {
+    format!(
+        "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{OTELCOL_VERSION}/opentelemetry-collector-releases_otelcol-contrib_checksums.txt"
+    )
+}
+
 fn cached_otelcol_binary_path() -> PathBuf {
     env::temp_dir()
         .join("memagent-otelcol-cache")
@@ -98,30 +108,101 @@ fn cached_otelcol_binary_path() -> PathBuf {
         .join(OTELCOL_BINARY_NAME)
 }
 
+fn cached_otelcol_archive_path() -> PathBuf {
+    env::temp_dir()
+        .join("memagent-otelcol-cache")
+        .join(OTELCOL_VERSION)
+        .join(otelcol_archive_name())
+}
+
+fn fetch_expected_otelcol_archive_sha256() -> io::Result<String> {
+    let response = ureq::get(&otelcol_checksums_url())
+        .call()
+        .map_err(|err| io::Error::other(format!("failed to download otelcol checksums: {err}")))?;
+    let mut checksums = String::new();
+    response
+        .into_body()
+        .into_reader()
+        .read_to_string(&mut checksums)?;
+
+    let archive_name = otelcol_archive_name();
+    for line in checksums.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(sha) = parts.next() else {
+            continue;
+        };
+        let Some(name) = parts.next() else {
+            continue;
+        };
+        if name == archive_name {
+            return Ok(sha.to_string());
+        }
+    }
+
+    Err(io::Error::other(format!(
+        "checksum manifest did not contain {archive_name}"
+    )))
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn verify_archive_checksum(path: &Path, expected_sha256: &str) -> io::Result<()> {
+    let actual = sha256_file(path)?;
+    if actual == expected_sha256 {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "checksum mismatch for {}: expected {expected_sha256}, got {actual}",
+            path.display()
+        )))
+    }
+}
+
 fn ensure_otelcol_binary() -> io::Result<PathBuf> {
     if let Some(path) = env::var_os("OTELCOL_BIN") {
         return Ok(PathBuf::from(path));
     }
 
+    let expected_sha256 = fetch_expected_otelcol_archive_sha256()?;
+    let archive = cached_otelcol_archive_path();
     let binary = cached_otelcol_binary_path();
-    if binary.exists() {
-        return Ok(binary);
-    }
 
-    let parent = binary
+    let parent = archive
         .parent()
         .ok_or_else(|| io::Error::other("otelcol cache path has no parent"))?;
     fs::create_dir_all(parent)?;
 
-    let url = otelcol_download_url();
-    eprintln!("downloading official otelcol oracle from {url}");
-    let response = ureq::get(&url)
-        .call()
-        .map_err(|err| io::Error::other(format!("failed to download otelcol: {err}")))?;
-    let reader = response.into_body().into_reader();
-    let gzip = GzDecoder::new(reader);
-    let mut archive = tar::Archive::new(gzip);
+    if !archive.exists() {
+        let url = otelcol_download_url();
+        eprintln!("downloading official otelcol oracle from {url}");
+        let response = ureq::get(&url)
+            .call()
+            .map_err(|err| io::Error::other(format!("failed to download otelcol: {err}")))?;
+        let tmp_archive = archive.with_extension("tmp");
+        let mut reader = response.into_body().into_reader();
+        let mut file = File::create(&tmp_archive)?;
+        io::copy(&mut reader, &mut file)?;
+        verify_archive_checksum(&tmp_archive, &expected_sha256)?;
+        fs::rename(&tmp_archive, &archive)?;
+    }
 
+    verify_archive_checksum(&archive, &expected_sha256)?;
+
+    let file = File::open(&archive)?;
+    let gzip = GzDecoder::new(file);
+    let mut archive = tar::Archive::new(gzip);
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?;
@@ -129,9 +210,8 @@ fn ensure_otelcol_binary() -> io::Result<PathBuf> {
             .file_name()
             .is_some_and(|name| name == OTELCOL_BINARY_NAME)
         {
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes)?;
-            fs::write(&binary, bytes)?;
+            let mut file = File::create(&binary)?;
+            io::copy(&mut entry, &mut file)?;
 
             #[cfg(unix)]
             {
@@ -192,16 +272,20 @@ fn yaml_single_quoted(value: &str) -> String {
 
 fn start_otelcol() -> io::Result<(OtelcolProcess, String)> {
     let binary = ensure_otelcol_binary()?;
-    let temp_dir = tempfile::tempdir()?;
-    let receiver_addr = allocate_local_addr();
-    let output_path = temp_dir.path().join("collector-output.json");
-    let stdout_path = temp_dir.path().join("collector-stdout.log");
-    let stderr_path = temp_dir.path().join("collector-stderr.log");
-    let config_path = temp_dir.path().join("otelcol.yaml");
+    let mut last_error: Option<io::Error> = None;
 
-    let output_path_yaml = yaml_single_quoted(&output_path.to_string_lossy());
-    let config = format!(
-        r#"receivers:
+    for _attempt in 0..3 {
+        let temp_dir = tempfile::tempdir()?;
+        let listener = allocate_local_listener()?;
+        let receiver_addr = listener.local_addr()?.to_string();
+        let output_path = temp_dir.path().join("collector-output.json");
+        let stdout_path = temp_dir.path().join("collector-stdout.log");
+        let stderr_path = temp_dir.path().join("collector-stderr.log");
+        let config_path = temp_dir.path().join("otelcol.yaml");
+
+        let output_path_yaml = yaml_single_quoted(&output_path.to_string_lossy());
+        let config = format!(
+            r#"receivers:
   otlp:
     protocols:
       http:
@@ -222,35 +306,48 @@ service:
       receivers: [otlp]
       exporters: [file]
 "#,
-        output_path_yaml = output_path_yaml,
-    );
-    fs::write(&config_path, config)?;
+            output_path_yaml = output_path_yaml,
+        );
+        fs::write(&config_path, config)?;
 
-    let stdout = File::create(&stdout_path)?;
-    let stderr = File::create(&stderr_path)?;
-    let child = Command::new(binary)
-        .arg("--config")
-        .arg(&config_path)
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()?;
+        let stdout = File::create(&stdout_path)?;
+        let stderr = File::create(&stderr_path)?;
+        drop(listener);
 
-    let process = OtelcolProcess {
-        child,
-        temp_dir,
-        output_path,
-        stdout_path,
-        stderr_path,
-    };
+        let child = Command::new(&binary)
+            .arg("--config")
+            .arg(&config_path)
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .spawn()?;
 
-    if let Err(err) = wait_for_port(&receiver_addr, Duration::from_secs(30)) {
-        return Err(io::Error::other(format!(
-            "{err}; collector diagnostics:\n{}",
-            process.diagnostics()
-        )));
+        let process = OtelcolProcess {
+            child,
+            temp_dir,
+            output_path,
+            stdout_path,
+            stderr_path,
+        };
+
+        match wait_for_port(&receiver_addr, Duration::from_secs(30)) {
+            Ok(()) => return Ok((process, format!("http://{receiver_addr}/v1/logs"))),
+            Err(err) => {
+                let diagnostics = process.diagnostics();
+                let bind_race = diagnostics.contains("address already in use");
+                last_error = Some(io::Error::other(format!(
+                    "{err}; collector diagnostics:\n{}",
+                    diagnostics
+                )));
+                drop(process);
+                if bind_race {
+                    continue;
+                }
+                break;
+            }
+        }
     }
 
-    Ok((process, format!("http://{receiver_addr}/v1/logs")))
+    Err(last_error.unwrap_or_else(|| io::Error::other("failed to start otelcol")))
 }
 
 fn start_otelcol_filelog_to_receiver(

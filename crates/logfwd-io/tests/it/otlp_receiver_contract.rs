@@ -27,13 +27,10 @@ fn poll_single_row(input: &mut dyn InputSource, timeout: Duration) -> serde_json
             }
         }
 
-        if !buf.is_empty() {
-            let line = String::from_utf8(buf)
-                .expect("receiver emits utf8 json")
-                .lines()
-                .next()
-                .expect("one decoded row")
-                .to_string();
+        if let Some(newline) = buf.iter().position(|b| *b == b'\n') {
+            let line = String::from_utf8(buf.drain(..=newline).collect())
+                .expect("receiver emits utf8 json");
+            let line = line.trim_end_matches('\n');
             return serde_json::from_str(&line)
                 .unwrap_or_else(|e| panic!("valid json row: {e}; line={line}"));
         }
