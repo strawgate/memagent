@@ -33,6 +33,7 @@
 //! Pure dispatch logic is extracted into `dispatch_step` and proved with
 //! Kani.  See the `kani_proofs` module below.
 
+use backon::{BackoffBuilder, ExponentialBuilder};
 use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
@@ -568,11 +569,17 @@ async fn process_item(
     metadata: &BatchMetadata,
     max_retry_delay: Duration,
 ) -> (bool, u64) {
-    const MAX_RETRIES: u32 = 3; // 1 initial + 3 retries = 4 total attempts
+    const MAX_RETRIES: usize = 3; // 1 initial + 3 retries = 4 total attempts
     const BATCH_TIMEOUT_SECS: u64 = 60;
 
-    let mut delay = Duration::from_millis(100);
-    let mut attempts = 0u32;
+    let mut backoff = ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(100))
+        .with_max_delay(max_retry_delay)
+        .with_factor(2.0)
+        .with_max_times(MAX_RETRIES)
+        .with_jitter()
+        .build();
+
     let mut send_latency_ns: u64 = 0;
 
     loop {
@@ -596,7 +603,6 @@ async fn process_item(
                 return (false, send_latency_ns);
             }
             Ok(SendResult::Ok) => {
-                tracing::Span::current().record("retries", attempts);
                 return (true, send_latency_ns);
             }
             Ok(SendResult::Rejected(reason)) => {
@@ -604,7 +610,9 @@ async fn process_item(
                 return (false, send_latency_ns);
             }
             Ok(SendResult::RetryAfter(retry_dur)) => {
-                if attempts >= MAX_RETRIES {
+                // Server specified delay — consume a backoff slot but use
+                // the server's delay (capped at max_retry_delay).
+                if backoff.next().is_none() {
                     tracing::error!(
                         worker_id,
                         max_retries = MAX_RETRIES,
@@ -615,12 +623,18 @@ async fn process_item(
                 let sleep_for = retry_dur.min(max_retry_delay);
                 tracing::warn!(worker_id, ?sleep_for, "worker_pool: rate-limited, retrying");
                 tokio::time::sleep(sleep_for).await;
-                // Reset delay to initial — server specified the backoff, don't compound it.
-                delay = Duration::from_millis(100);
-                attempts += 1;
             }
-            Ok(SendResult::IoError(e)) => {
-                if attempts >= MAX_RETRIES {
+            Ok(SendResult::IoError(e)) => match backoff.next() {
+                Some(delay) => {
+                    tracing::warn!(
+                        worker_id,
+                        sleep_ms = delay.as_millis() as u64,
+                        error = %e,
+                        "worker_pool: transient error, retrying with jitter"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                None => {
                     tracing::error!(
                         worker_id,
                         max_retries = MAX_RETRIES,
@@ -629,16 +643,7 @@ async fn process_item(
                     );
                     return (false, send_latency_ns);
                 }
-                tracing::warn!(
-                    worker_id,
-                    attempt = attempts,
-                    error = %e,
-                    "worker_pool: transient error, retrying"
-                );
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(max_retry_delay);
-                attempts += 1;
-            }
+            },
             // Future SendResult variants (#[non_exhaustive]) — treat as failure.
             Ok(_) => return (false, send_latency_ns),
         }

@@ -31,6 +31,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 arrow = { version = "55", default-features = false, features = ["ipc_compression"] }
+backon = { version = "1", default-features = false, features = ["tokio-sleep"] }
 bytes = "1"
 arrow-json = "55"
 datafusion = { version = "48", default-features = false, features = [
@@ -39,15 +40,18 @@ datafusion = { version = "48", default-features = false, features = [
     "regex_expressions",
     "recursive_protection",
 ] }
+globset = "0.4"
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-client", "trace", "metrics"] }
 serde = { version = "1", features = ["derive"] }
+sonic-rs = "0.5"
 tokio = { version = "1" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-opentelemetry = "0.32"
 turmoil = "0.7"
+walkdir = "2"
 thiserror = { version = "2", default-features = false }
 anyhow = "1"
 

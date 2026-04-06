@@ -14,7 +14,7 @@ logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 arrow = { workspace = true }
 crossbeam-channel = "0.5"
-glob = "0.3"
+globset = { workspace = true }
 libc = "0.2"
 memchr = "2"
 notify = "8"
@@ -26,10 +26,12 @@ opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-message
 prost = "0.14"
 serde = { workspace = true }
 serde_json = "1"
+sonic-rs = { workspace = true }
 socket2 = { version = "0.6", features = ["all"] }
 tiny_http = "0.12"
 zstd = "0.13"
 xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 dhat = "0.3"
