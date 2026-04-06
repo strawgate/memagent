@@ -864,6 +864,12 @@ mod verification {
         kani::assume(month >= 1 && month <= 12);
         kani::assume(day >= 1 && day <= 31);
 
+        // Cover checks ensure the assume region is actually exercised (non-vacuous proof).
+        kani::cover!(year == 1970 && month == 1 && day == 1, "epoch start");
+        kani::cover!(year == 2100 && month == 12 && day == 31, "upper boundary");
+        kani::cover!(year == 2000 && month == 2 && day == 29, "leap-year Feb 29");
+        kani::cover!(year == 1971 && month == 6 && day == 15, "typical mid-range");
+
         let result = days_from_civil(year, month, day);
 
         let oracle = naive_days_from_epoch(year, month, day);
