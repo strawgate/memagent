@@ -126,9 +126,7 @@ fn bench_batch_pipeline(c: &mut Criterion) {
                         .scan_detached(data_bytes.clone())
                         .expect("scan should not fail");
                     let result = transform.execute_blocking(batch).unwrap();
-                    // encode_batch writes to sink's internal buffer (side effect);
-                    // no black_box needed — sink is observable outside the closure.
-                    sink.encode_batch(&result, &meta);
+                    std::hint::black_box(sink.encode_batch(&result, &meta));
                 });
             },
         );

@@ -96,13 +96,30 @@ _bench-pair name rx_config tx_config seconds="10":
     set -euo pipefail
     LOGFWD=./target/release/logfwd
     $LOGFWD --config {{rx_config}} &
-    RX=$!; sleep 5
-    for i in $(seq 1 10); do
-        if curl -sf http://127.0.0.1:9091/api/stats > /dev/null 2>&1; then
+    RX=$!;
+
+    # Poll /ready until the diagnostics HTTP server is up (503 → 200).
+    # /ready returns 200 once diagnostics registers the pipeline, which happens
+    # just before pipeline.run_async() spawns and binds receiver sockets.
+    # The extra sleep 1 after the check gives run_async() time to complete
+    # socket binding before the sender process starts connecting.
+    READY=0
+    for i in {1..10}; do
+        if curl --fail --silent --connect-timeout 1 --max-time 1 http://127.0.0.1:9091/ready >/dev/null; then
+            READY=1
             break
         fi
         sleep 1
     done
+    if [ "$READY" -ne 1 ]; then
+        echo "receiver pipeline did not become ready after 10 retries (~20s)" >&2
+        kill $RX 2>/dev/null || true
+        wait $RX 2>/dev/null || true
+        exit 1
+    fi
+    # Give run_async() time to bind receiver sockets after /ready returns.
+    sleep 1
+
     $LOGFWD --config {{tx_config}} &
     TX=$!; sleep {{seconds}}
     STATS=$(curl -s http://127.0.0.1:9091/api/stats 2>/dev/null || echo '{}')
