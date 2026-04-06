@@ -466,7 +466,15 @@ fn parse_2digits(s: &[u8], off: usize) -> u8 {
 }
 
 /// Days from 1970-01-01 to the given civil date. Algorithm from Howard Hinnant.
-#[cfg_attr(kani, kani::ensures(|result: &i64| year < 1970 || *result >= -366))]
+#[cfg_attr(kani, kani::ensures(|result: &i64|
+    // Pre-epoch dates (year < 1970) are always negative; epoch-1970-01-01 = day 0.
+    (year >= 1970 || *result < 0)
+    // Post-1970 lower bound: at most one leap-year worth before epoch boundary.
+    && (year < 1970 || *result >= -366)
+    // Upper bound: days_from_civil(2553, 12, 31) ≈ 213_301; 213_400 gives margin.
+    // Required so `stub_verified(days_from_civil)` keeps nanos arithmetic within u64.
+    && *result <= 213_400
+))]
 fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
     let m = if month <= 2 {
@@ -853,6 +861,8 @@ mod verification {
     /// oracle serves as the Kani-compatible reference. A chrono-based
     /// oracle test below covers the same property in test mode.
     #[kani::proof]
+    #[kani::unwind(142)] // naive_days_from_epoch: up to 130 year-loop + 11 month-loop iterations + 1
+    #[kani::solver(kissat)]
     fn verify_days_from_civil_oracle() {
         let year: i64 = kani::any();
         let month: u32 = kani::any();
@@ -861,6 +871,12 @@ mod verification {
         kani::assume(year >= 1970 && year <= 2100);
         kani::assume(month >= 1 && month <= 12);
         kani::assume(day >= 1 && day <= 31);
+
+        // Cover checks ensure the assume region is actually exercised (non-vacuous proof).
+        kani::cover!(year == 1970 && month == 1 && day == 1, "epoch start");
+        kani::cover!(year == 2100 && month == 12 && day == 31, "upper boundary");
+        kani::cover!(year == 2000 && month == 2 && day == 29, "leap-year Feb 29");
+        kani::cover!(year == 1971 && month == 6 && day == 15, "typical mid-range");
 
         let result = days_from_civil(year, month, day);
 
@@ -1085,6 +1101,7 @@ mod verification {
     }
 
     /// Prove encode_varint_field produces tag + varint value.
+    #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(12)]
     fn verify_encode_varint_field() {
@@ -1123,7 +1140,8 @@ mod verification {
 
     /// Prove parse_timestamp_nanos never panics for any 32-byte input.
     #[kani::proof]
-    #[kani::unwind(12)]
+    #[kani::unwind(14)] // fractional while loop: up to 12 iters (len=32, frac_start=20) + 2 margin
+    #[kani::solver(kissat)]
     fn verify_parse_timestamp_no_panic() {
         let bytes: [u8; 32] = kani::any();
         let len: usize = kani::any_where(|&l: &usize| l <= 32);
@@ -1148,6 +1166,7 @@ mod verification {
     }
 
     /// Prove encode_bytes_field content correctness: tag + length + exact data.
+    #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(12)]
     fn verify_encode_bytes_field_content() {
@@ -1189,13 +1208,15 @@ mod verification {
         parse_2digits(&s, off);
     }
 
-    /// Verify days_from_civil contract: year ≥ 1970 implies result ≥ -366.
+    /// Verify days_from_civil contract: year ≥ 1970 implies result ∈ [-366, 213_400].
+    /// Range extends to year 2553 — the maximum year parse_timestamp_nanos accepts —
+    /// so that stub_verified(days_from_civil) is sound for the full input domain.
     #[kani::proof_for_contract(days_from_civil)]
     fn verify_days_from_civil_contract() {
         let year: i64 = kani::any();
         let month: u32 = kani::any();
         let day: u32 = kani::any();
-        kani::assume(year >= 1970 && year <= 2200);
+        kani::assume(year >= 1970 && year <= 2553);
         kani::assume(month >= 1 && month <= 12);
         kani::assume(day >= 1 && day <= 31);
         days_from_civil(year, month, day);
@@ -1209,16 +1230,19 @@ mod verification {
     #[kani::stub_verified(parse_4digits)]
     #[kani::stub_verified(parse_2digits)]
     #[kani::stub_verified(days_from_civil)]
+    #[kani::solver(kissat)]
     #[kani::unwind(12)]
     fn verify_parse_timestamp_compositional() {
         let ts: [u8; 24] = kani::any();
         let len: usize = kani::any_where(|&l: &usize| l >= 19 && l <= 24);
         let result = parse_timestamp_nanos(&ts[..len]);
 
-        // If it parsed successfully, the result must be bounded
+        // If it parsed successfully, the result must be bounded.
+        // Upper bound: days ≤ 213_400 (contract), hour/min/sec ≤ 99 (parse_2digits contract),
+        // frac < 1_000_000_000. parse_timestamp_nanos does not validate hour/min/sec ranges.
+        // Overflow safety is checked automatically by Kani's arithmetic instrumentation.
         if let Some(nanos) = result {
-            // Year 2553 upper bound (2553-12-31T23:59:59.999999999Z).
-            const MAX_NANOS: u64 = 18_429_292_799_999_999_999;
+            const MAX_NANOS: u64 = 18_438_122_439_999_999_999;
             assert!(nanos <= MAX_NANOS);
         }
     }
