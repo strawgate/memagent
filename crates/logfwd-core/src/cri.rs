@@ -783,18 +783,33 @@ mod verification {
             assert_eq!(out[4], b'\n');
             assert_eq!(out.len(), 5);
         } else {
-            // Non-JSON: wrapped as {"_raw":"..."}\n — ends with \n
-            assert_eq!(out[out.len() - 1], b'\n');
-            // Output starts with {"_raw":"  — check byte-by-byte (no memcmp).
-            assert_eq!(out[0], b'{');
-            assert_eq!(out[1], b'"');
-            assert_eq!(out[2], b'_');
-            assert_eq!(out[3], b'r');
-            assert_eq!(out[4], b'a');
-            assert_eq!(out[5], b'w');
-            assert_eq!(out[6], b'"');
-            assert_eq!(out[7], b':');
-            assert_eq!(out[8], b'"');
+            // Non-JSON: wrapped as {"_raw":"..."}\n
+            // Build an independent oracle using the same escaping rules as
+            // json_escape_bytes to verify the full output, not just a prefix.
+            let mut oracle = Vec::with_capacity(64);
+            oracle.extend_from_slice(b"{\"_raw\":\"");
+            for &b in &msg {
+                match b {
+                    b'"' => oracle.extend_from_slice(b"\\\""),
+                    b'\\' => oracle.extend_from_slice(b"\\\\"),
+                    0x08 => oracle.extend_from_slice(b"\\b"),
+                    b'\t' => oracle.extend_from_slice(b"\\t"),
+                    b'\n' => oracle.extend_from_slice(b"\\n"),
+                    0x0C => oracle.extend_from_slice(b"\\f"),
+                    b'\r' => oracle.extend_from_slice(b"\\r"),
+                    0x00..=0x1F | 0x7F => {
+                        oracle.extend_from_slice(b"\\u00");
+                        let hi = (b >> 4) & 0x0F;
+                        let lo = b & 0x0F;
+                        oracle.push(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 });
+                        oracle.push(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 });
+                    }
+                    _ => oracle.push(b),
+                }
+            }
+            oracle.extend_from_slice(b"\"}");
+            oracle.push(b'\n');
+            assert_eq!(out, oracle, "non-JSON path must match oracle");
         }
     }
 
@@ -829,16 +844,32 @@ mod verification {
             assert_eq!(out[0], msg[0]);
             assert_eq!(out[1], msg[1]);
         } else {
-            // Non-JSON: wrapped as {"_raw":"..."}\n — check prefix byte by byte
-            assert_eq!(out[0], b'{');
-            assert_eq!(out[1], b'"');
-            assert_eq!(out[2], b'_');
-            assert_eq!(out[3], b'r');
-            assert_eq!(out[4], b'a');
-            assert_eq!(out[5], b'w');
-            assert_eq!(out[6], b'"');
-            assert_eq!(out[7], b':');
-            assert_eq!(out[8], b'"');
+            // Non-JSON: wrapped as {"_raw":"..."}\n
+            // Build an independent oracle to verify the full output.
+            let mut oracle = Vec::with_capacity(64);
+            oracle.extend_from_slice(b"{\"_raw\":\"");
+            for &b in &msg {
+                match b {
+                    b'"' => oracle.extend_from_slice(b"\\\""),
+                    b'\\' => oracle.extend_from_slice(b"\\\\"),
+                    0x08 => oracle.extend_from_slice(b"\\b"),
+                    b'\t' => oracle.extend_from_slice(b"\\t"),
+                    b'\n' => oracle.extend_from_slice(b"\\n"),
+                    0x0C => oracle.extend_from_slice(b"\\f"),
+                    b'\r' => oracle.extend_from_slice(b"\\r"),
+                    0x00..=0x1F | 0x7F => {
+                        oracle.extend_from_slice(b"\\u00");
+                        let hi = (b >> 4) & 0x0F;
+                        let lo = b & 0x0F;
+                        oracle.push(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 });
+                        oracle.push(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 });
+                    }
+                    _ => oracle.push(b),
+                }
+            }
+            oracle.extend_from_slice(b"\"}");
+            oracle.push(b'\n');
+            assert_eq!(out, oracle, "non-JSON no-prefix path must match oracle");
         }
     }
 }
