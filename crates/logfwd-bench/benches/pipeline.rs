@@ -241,7 +241,8 @@ fn bench_output(c: &mut Criterion) {
         b.iter(|| {
             buf.clear();
             for row in 0..batch.num_rows() {
-                logfwd_output::write_row_json(&batch, row, &cols, &mut buf).unwrap();
+                logfwd_output::write_row_json(&batch, row, &cols, &mut buf)
+                    .expect("JSON serialization should not fail");
                 buf.push(b'\n');
             }
             std::hint::black_box(buf.len());

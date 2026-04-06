@@ -710,6 +710,7 @@ impl SqlTransform {
         ctx.register_udf(ScalarUDF::from(udf::JsonExtractUdf::new(
             udf::JsonExtractMode::Float,
         )));
+        ctx.register_udf(ScalarUDF::from(udf::HashUdf::new()));
         if let Some(ref db) = self.geo_database {
             ctx.register_udf(ScalarUDF::from(udf::geo_lookup::GeoLookupUdf::new(
                 Arc::clone(db),
@@ -981,6 +982,37 @@ mod tests {
         assert_eq!(result2.num_columns(), 3);
         assert_eq!(result2.num_rows(), 1);
         assert!(result2.column_by_name("region").is_some());
+    }
+
+    #[test]
+    fn test_hash_udf() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "trace_id",
+            DataType::Utf8,
+            true,
+        )]));
+        let vals: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("trace123"),
+            None,
+            Some("trace123"),
+            Some("other_trace"),
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![vals]).unwrap();
+
+        let mut transform = SqlTransform::new("SELECT hash(trace_id) AS h FROM logs").unwrap();
+        let result = transform.execute_blocking(batch).unwrap();
+        let col = result
+            .column_by_name("h")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap();
+
+        assert!(!col.is_null(0));
+        assert!(col.is_null(1));
+        assert!(!col.is_null(2));
+        assert_eq!(col.value(0), col.value(2));
+        assert_ne!(col.value(0), col.value(3));
     }
 
     #[test]
