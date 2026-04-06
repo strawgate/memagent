@@ -890,6 +890,7 @@ mod verification {
 
     /// Oracle proof: prefix_xor matches naive bit-by-bit running XOR
     /// for ALL u64 inputs. Exhaustive — no gap.
+    #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(65)] // proof loop: while i < 64
     fn verify_prefix_xor() {
@@ -999,6 +1000,7 @@ mod verification {
 
     /// Crash-freedom: process_block never panics for any combination
     /// of 10 arbitrary u64 bitmasks and any block_len 0..=64.
+    #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
     fn verify_process_block_no_panic() {
@@ -1021,6 +1023,7 @@ mod verification {
     }
 
     /// Tail masking: no bits set beyond block_len in any output field.
+    #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
     fn verify_process_block_tail_mask() {
@@ -1052,6 +1055,7 @@ mod verification {
     /// braces) never overlap with in_string mask. Only covers the
     /// no-backslash case — with escapes, the exclusion is verified
     /// by the compositional proof below.
+    #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
     fn verify_in_string_exclusion() {

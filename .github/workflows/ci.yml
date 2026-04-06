@@ -247,7 +247,8 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
   # -------------------------------------------------------------------------
-  # Kani formal verification
+  # Kani formal verification — single job running all proofs.
+  # kissat solver annotations on slow proofs keep total runtime within budget.
   # -------------------------------------------------------------------------
   kani:
     name: Kani proofs
@@ -257,14 +258,16 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.core == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
       - name: Run Kani verification
         uses: model-checking/kani-github-action@v1
         with:
-          args: -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
+          args: >-
+            -p logfwd-core
+            -Z function-contracts -Z mem-predicates -Z stubbing
         env:
           RUSTC_WRAPPER: ""
 
