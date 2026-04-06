@@ -426,9 +426,11 @@ impl Pipeline {
         self
     }
 
-    /// Add a chain of post-transform processors.
+    /// Append a chain of post-transform processors to any already registered via
+    /// `with_processor`.  Calling `with_processor(a).with_processors(vec![b, c])`
+    /// produces the three-stage chain `[a, b, c]`.
     pub fn with_processors(mut self, processors: Vec<Box<dyn Processor>>) -> Self {
-        self.processors = processors;
+        self.processors.extend(processors);
         self
     }
 
