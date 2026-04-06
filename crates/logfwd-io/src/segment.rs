@@ -349,7 +349,7 @@ impl SegmentFile {
         if let Err(e) = file.seek(SeekFrom::Start(0)) {
             return SegmentStatus::Corrupt(
                 path.to_path_buf(),
-                format!("seek to start failed: {e}"),
+                format!("seek to start failed: {e} (kind: {:?})", e.kind()),
             );
         }
         let mut remaining = match usize::try_from(bytes_to_hash) {
@@ -754,6 +754,11 @@ impl SegmentManager {
     }
 
     fn open_new_segment(&mut self) -> io::Result<()> {
+        let next_segment_id = self
+            .next_segment_id
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("segment ID overflow: u64::MAX reached"))?;
+
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -772,10 +777,7 @@ impl SegmentManager {
             writer,
             opened_at: Instant::now(),
         });
-        self.next_segment_id = self
-            .next_segment_id
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("segment ID overflow: u64::MAX reached"))?;
+        self.next_segment_id = next_segment_id;
 
         Ok(())
     }
@@ -1322,15 +1324,19 @@ mod tests {
         let seg_dir = dir.path().join("segments");
 
         let policy = RotationPolicy::default();
-        // Start with next_segment_id at u64::MAX — the first open_new_segment
-        // call succeeds (uses MAX), the post-increment must return an error.
+        // Start with next_segment_id at u64::MAX — open_new_segment must fail
+        // before creating a file or mutating manager state.
         let mut mgr = SegmentManager::new(seg_dir.clone(), policy, 0, u64::MAX).unwrap();
 
-        // First append: opens segment u64::MAX — the increment overflows.
         let err = mgr.append(&make_batch(1)).unwrap_err();
         assert!(
             err.to_string().contains("segment ID overflow"),
             "unexpected error: {err}"
+        );
+        assert_eq!(mgr.current_segment_id(), None);
+        assert!(
+            !seg_dir.exists() || fs::read_dir(&seg_dir).unwrap().next().is_none(),
+            "overflow must not leave a partially opened segment on disk"
         );
     }
 }
