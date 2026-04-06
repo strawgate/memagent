@@ -1,6 +1,6 @@
 # Configuration Reference
 
-logfwd is configured with a YAML file passed via `--config <path>`.
+logfwd is configured with a YAML file passed via `--config <config.yaml>`.
 
 ## Overview
 
@@ -155,7 +155,6 @@ The `format` field controls how raw bytes from the input are parsed into log rec
 | `json` | Newline-delimited JSON. Each line must be a single JSON object. |
 | `raw` | Treat each line as an opaque string stored in `_raw_str`. |
 | `logfmt` | Key=value pairs (e.g. `level=info msg="hello"`). *Not yet implemented.* |
-| `syslog` | RFC 5424 syslog. *Not yet implemented.* |
 | `console` | Human-readable coloured output for interactive debugging. Output mode only. |
 
 ---
@@ -450,8 +449,6 @@ When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitori
 | `/api/logs` | GET | Recent log lines from logfwd's own stderr (ring buffer). |
 | `/api/history` | GET | Time-series data (1-hour window) for dashboard charts. |
 | `/api/traces` | GET | Recent batch processing spans for detailed latency analysis. |
-
-Note: The `/metrics` (Prometheus) endpoint was removed in favor of `/api/pipelines`. It returns `410 Gone`. The `/api/system` route mentioned in some older documentation does not exist.
 
 ---
 

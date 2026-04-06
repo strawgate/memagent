@@ -20,6 +20,7 @@ use crate::batch_accumulator::{AccumulatorAction, BatchAccumulator};
 use opentelemetry::metrics::Meter;
 use tracing::Instrument;
 
+use crate::processor::Processor;
 use crate::worker_pool::{AckItem, OutputWorkerPool, WorkItem};
 use logfwd_arrow::scanner::Scanner;
 use logfwd_config::{
@@ -106,6 +107,8 @@ pub struct Pipeline {
     inputs: Vec<InputState>,
     scanner: Scanner,
     transform: SqlTransform,
+    /// Optional post-transform processor (e.g., tail-based sampling).
+    processor: Option<Box<dyn Processor>>,
     /// Async worker pool. Workers own the actual sink connections; the pipeline
     /// submits `WorkItem`s and receives `AckItem`s for checkpoint advancement.
     pool: OutputWorkerPool,
@@ -375,6 +378,7 @@ impl Pipeline {
             inputs,
             scanner,
             transform,
+            processor: None,
             pool,
             metrics,
             batch_target_bytes: config.batch_target_bytes.unwrap_or(4 * 1024 * 1024),
@@ -411,6 +415,12 @@ impl Pipeline {
     /// Replace the checkpoint store. Useful for injecting an in-memory store in tests.
     pub fn with_checkpoint_store(mut self, store: Box<dyn CheckpointStore>) -> Self {
         self.checkpoint_store = Some(store);
+        self
+    }
+
+    /// Add a post-transform processor (e.g. tail-based sampling).
+    pub fn with_processor(mut self, processor: Box<dyn Processor>) -> Self {
+        self.processor = Some(processor);
         self
     }
 
@@ -463,6 +473,7 @@ impl Pipeline {
             inputs: vec![],
             scanner,
             transform,
+            processor: None,
             pool,
             metrics,
             batch_target_bytes: 64 * 1024,
@@ -500,6 +511,7 @@ impl Pipeline {
             inputs: vec![],
             scanner,
             transform,
+            processor: None,
             pool,
             metrics,
             batch_target_bytes: 64 * 1024,
@@ -888,6 +900,13 @@ impl Pipeline {
             transform_elapsed.as_nanos() as u64,
             now_nanos(),
         );
+        // Pass through optional processor.
+        let result = if let Some(ref mut processor) = self.processor {
+            processor.process(result)
+        } else {
+            result
+        };
+
         self.metrics
             .transform_out
             .inc_lines(result.num_rows() as u64);
@@ -1522,6 +1541,103 @@ output:
         let pipe_cfg = &config.pipelines["default"];
         let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None);
         assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
+    }
+
+    #[test]
+    fn test_pipeline_with_processor() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+
+        // Write 4 lines.
+        let mut data = String::new();
+        for i in 0..4 {
+            data.push_str(&format!(r#"{{"level":"INFO","seq":{}}}"#, i));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r"
+input:
+  type: file
+  path: {}
+  format: json
+output:
+  type: stdout
+  format: json
+",
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+
+        // Custom processor that drops rows where seq is odd.
+        #[derive(Debug)]
+        struct DropOddProcessor;
+        impl Processor for DropOddProcessor {
+            fn process(
+                &mut self,
+                batch: arrow::record_batch::RecordBatch,
+            ) -> arrow::record_batch::RecordBatch {
+                // Drop rows where seq is odd
+                let seq_array = batch
+                    .column_by_name("seq")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap();
+                let mut indices = vec![];
+                for i in 0..seq_array.len() {
+                    if seq_array.value(i) % 2 == 0 {
+                        indices.push(i as u32);
+                    }
+                }
+                let indices_array = arrow::array::UInt32Array::from(indices);
+                arrow::compute::take_record_batch(&batch, &indices_array).unwrap()
+            }
+        }
+
+        pipeline = pipeline.with_processor(Box::new(DropOddProcessor));
+
+        pipeline.batch_timeout = Duration::from_millis(10);
+        pipeline.poll_interval = Duration::from_millis(5);
+
+        let shutdown = CancellationToken::new();
+        let sd_clone = shutdown.clone();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            sd_clone.cancel();
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(result.is_ok(), "got: {:?}", result.err());
+
+        // Input reads 4 lines, but transform output drops 2 lines via processor.
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert_eq!(
+            lines_in, 4,
+            "expected transform_in to be 4, got {}",
+            lines_in
+        );
+
+        let lines_out = pipeline
+            .metrics
+            .transform_out
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert_eq!(
+            lines_out, 2,
+            "expected transform_out to be 2, got {}",
+            lines_out
+        );
     }
 
     #[test]

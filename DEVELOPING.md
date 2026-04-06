@@ -189,3 +189,9 @@ Oracle tests compare against sonic-rs as ground truth. Our scanner does first-wr
 - **`Scanner::scan`**: zero-copy `StringViewArray` views into `bytes::Bytes` buffer. 20% faster. Buffer must stay alive. For real-time query-then-discard.
 
 Both use the same `StreamingBuilder` (which implements `ScanBuilder`), sharing the generic `scan_streaming()` loop.
+
+### Receiver socket binding races paired bench runs
+
+In `_bench-pair`, the receiver diagnostics HTTP server (`/ready`) can return `200 OK` before `run_async()` has finished binding the actual TCP/UDP receiver sockets. Starting the sender immediately after the readiness check causes intermittent connection-refused failures in CI.
+
+Fix: poll `http://127.0.0.1:9091/ready` (which returns 503 until at least one pipeline is registered), then sleep 1 second to let `run_async()` complete socket binding before spawning the sender. Without this grace period, the race window is ~1 ms and triggers roughly 10 % of the time on loaded CI runners. (See PR #1320.)

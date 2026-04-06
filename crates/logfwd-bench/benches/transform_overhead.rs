@@ -228,7 +228,7 @@ fn bench_context_reuse(c: &mut Criterion) {
             transform.execute_blocking(batch.clone()).expect("warmup");
 
             b.iter(|| {
-                transform.execute_blocking(batch.clone()).expect("execute");
+                std::hint::black_box(transform.execute_blocking(batch.clone()).expect("execute"));
             });
         });
 
@@ -236,7 +236,7 @@ fn bench_context_reuse(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("cold_start", name), |b| {
             b.iter(|| {
                 let mut transform = SqlTransform::new(sql).expect("sql");
-                transform.execute_blocking(batch.clone()).expect("execute");
+                std::hint::black_box(transform.execute_blocking(batch.clone()).expect("execute"));
             });
         });
     }
@@ -257,7 +257,7 @@ fn bench_batch_size_scaling(c: &mut Criterion) {
             let mut transform = SqlTransform::new("SELECT * FROM logs").expect("sql");
             transform.execute_blocking(batch.clone()).expect("warmup");
             b.iter(|| {
-                transform.execute_blocking(batch.clone()).expect("execute");
+                std::hint::black_box(transform.execute_blocking(batch.clone()).expect("execute"));
             });
         });
 
@@ -266,7 +266,7 @@ fn bench_batch_size_scaling(c: &mut Criterion) {
                 SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").expect("sql");
             transform.execute_blocking(batch.clone()).expect("warmup");
             b.iter(|| {
-                transform.execute_blocking(batch.clone()).expect("execute");
+                std::hint::black_box(transform.execute_blocking(batch.clone()).expect("execute"));
             });
         });
 
@@ -276,7 +276,7 @@ fn bench_batch_size_scaling(c: &mut Criterion) {
                     .expect("sql");
             transform.execute_blocking(batch.clone()).expect("warmup");
             b.iter(|| {
-                transform.execute_blocking(batch.clone()).expect("execute");
+                std::hint::black_box(transform.execute_blocking(batch.clone()).expect("execute"));
             });
         });
     }
@@ -338,7 +338,7 @@ fn bench_query_complexity(c: &mut Criterion) {
             let mut transform = SqlTransform::new(sql).expect("sql");
             transform.execute_blocking(batch.clone()).expect("warmup");
             b.iter(|| {
-                transform.execute_blocking(batch.clone()).expect("execute");
+                std::hint::black_box(transform.execute_blocking(batch.clone()).expect("execute"));
             });
         });
     }

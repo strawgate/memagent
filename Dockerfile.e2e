@@ -6,7 +6,7 @@ FROM rust:1.94-bookworm AS builder
 # release-profile settings that make per-scenario rebuilds expensive.
 ARG RUSTFLAGS=""
 ARG CARGO_BUILD_JOBS="2"
-ARG CARGO_PROFILE_RELEASE_LTO="off"
+ARG CARGO_PROFILE_RELEASE_LTO="false"
 ARG CARGO_PROFILE_RELEASE_CODEGEN_UNITS="16"
 ARG CARGO_PROFILE_RELEASE_DEBUG="0"
 
@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/src/target \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}" \
     CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG}" \
     RUSTFLAGS="${RUSTFLAGS}" \
-    cargo build --release --bin logfwd && \
+    cargo build --locked --release --bin logfwd && \
     strip target/release/logfwd && \
     cp target/release/logfwd /logfwd
 

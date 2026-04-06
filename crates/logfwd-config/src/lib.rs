@@ -623,6 +623,18 @@ impl Config {
         }
 
         for (name, pipe) in &self.pipelines {
+            if pipe.batch_timeout_ms == Some(0) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{name}': batch_timeout_ms must be greater than 0"
+                )));
+            }
+            if let Some(sql) = &pipe.transform {
+                if sql.trim().is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{name}': transform SQL cannot be empty"
+                    )));
+                }
+            }
             if pipe.inputs.is_empty() {
                 return Err(ConfigError::Validation(format!(
                     "pipeline '{name}' has no inputs"
@@ -653,12 +665,26 @@ impl Config {
                                 "pipeline '{name}' input '{label}': udp/tcp input requires 'listen'"
                             )));
                         }
+                        if let Some(addr) = &input.listen {
+                            if let Err(msg) = validate_bind_addr(addr) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': {msg}"
+                                )));
+                            }
+                        }
                     }
                     InputType::Otlp => {
                         if input.listen.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'listen' is required for otlp inputs"
                             )));
+                        }
+                        if let Some(addr) = &input.listen {
+                            if let Err(msg) = validate_bind_addr(addr) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': {msg}"
+                                )));
+                            }
                         }
                     }
                     // ArrowIpc is always rejected below as "not yet supported";
@@ -828,6 +854,13 @@ impl Config {
                                 output.output_type,
                             )));
                         }
+                        if let Some(ep) = &output.endpoint {
+                            if let Err(msg) = validate_host_port(ep) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': {msg}",
+                                )));
+                            }
+                        }
                     }
                     OutputType::Parquet => {
                         // Parquet output not yet implemented
@@ -952,6 +985,18 @@ fn validate_bind_addr(addr: &str) -> Result<(), String> {
     addr.parse::<std::net::SocketAddr>()
         .map(|_| ())
         .map_err(|e| format!("'{addr}' is not a valid host:port address: {e}"))
+}
+
+/// Validate that a string has a valid `host:port` format where port is a u16.
+/// This allows hostnames as well as IP addresses.
+fn validate_host_port(addr: &str) -> Result<(), String> {
+    let (_, port_str) = addr
+        .rsplit_once(':')
+        .ok_or_else(|| format!("'{addr}' is missing a port (expected format host:port)"))?;
+    port_str
+        .parse::<u16>()
+        .map_err(|_| format!("'{addr}' has an invalid port '{port_str}'"))?;
+    Ok(())
 }
 
 /// Validate that a log level string is a recognised tracing level.
