@@ -419,8 +419,10 @@ fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, Inp
             .ok_or_else(|| InputError::Receiver("invalid OTLP JSON intValue".into()))?;
         return Ok(Some(parsed.to_string()));
     }
-    if let Some(d) = v.get("doubleValue").and_then(parse_protojson_f64) {
-        return Ok(Some(d.to_string()));
+    if let Some(dv) = v.get("doubleValue") {
+        let parsed = parse_protojson_f64(dv)
+            .ok_or_else(|| InputError::Receiver("invalid OTLP JSON doubleValue".into()))?;
+        return Ok(Some(parsed.to_string()));
     }
     if let Some(b) = v.get("boolValue").and_then(serde_json::Value::as_bool) {
         return Ok(Some(if b { "true" } else { "false" }.to_string()));
@@ -450,9 +452,14 @@ fn write_json_any_value_field_from_json(
         return Ok(true);
     }
 
-    if let Some(d) = value.get("doubleValue").and_then(parse_protojson_f64) {
+    if let Some(dv) = value.get("doubleValue") {
+        let parsed = parse_protojson_f64(dv).ok_or_else(|| {
+            InputError::Receiver(format!(
+                "invalid OTLP JSON doubleValue for key {key}: not a valid float"
+            ))
+        })?;
         write_json_key(out, key);
-        write_f64_to_buf(out, d);
+        write_f64_to_buf(out, parsed);
         return Ok(true);
     }
 
@@ -1330,6 +1337,26 @@ mod tests {
         );
 
         assert!(result.is_err(), "invalid intValue must fail");
+    }
+
+    #[test]
+    fn invalid_json_double_value_returns_error() {
+        let result = decode_otlp_logs_json(
+            br#"{
+                "resourceLogs": [{
+                    "scopeLogs": [{
+                        "logRecords": [{
+                            "attributes": [{
+                                "key": "latency_ratio",
+                                "value": {"doubleValue": "not-a-double"}
+                            }]
+                        }]
+                    }]
+                }]
+            }"#,
+        );
+
+        assert!(result.is_err(), "invalid doubleValue must fail");
     }
 
     #[test]
