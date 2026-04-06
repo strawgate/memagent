@@ -349,10 +349,9 @@ fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'
 
         match b {
             b'{' | b'[' if (blocks.open_brace[block] | blocks.open_bracket[block]) & mask != 0 => {
-                if depth == MAX_TRACKED_DEPTH {
-                    return end; // fail closed when opener stack capacity is exceeded
+                if depth < MAX_TRACKED_DEPTH {
+                    opener_stack[depth as usize] = b;
                 }
-                opener_stack[depth as usize] = b;
                 depth += 1;
                 pos += 1;
             }
@@ -362,7 +361,7 @@ fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'
                 if depth == 0 {
                     return pos;
                 }
-                depth = depth.saturating_sub(1);
+                depth -= 1;
                 if depth < MAX_TRACKED_DEPTH {
                     let expected = if opener_stack[depth as usize] == b'{' {
                         b'}'
@@ -972,6 +971,29 @@ mod tests {
 
         assert_eq!(builder.rows.len(), 1);
         assert!(builder.rows[0].is_empty());
+    }
+
+    #[test]
+    fn test_deeply_nested_object_graceful_handling() {
+        // Create an object with depth 35: 35 '{' followed by 35 '}'
+        let mut buf_str = "{\"a\":".to_string();
+        for _ in 0..35 {
+            buf_str.push_str("{\"x\":");
+        }
+        buf_str.push_str("1");
+        for _ in 0..35 {
+            buf_str.push_str("}");
+        }
+        buf_str.push_str(",\"b\":2}");
+
+        let buf = buf_str.as_bytes();
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(row.iter().any(|(k, v)| k == "b" && v == "int:2"));
     }
 }
 

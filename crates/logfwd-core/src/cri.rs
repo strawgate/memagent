@@ -316,7 +316,26 @@ fn write_json_line(msg: &[u8], json_prefix: Option<&[u8]>, out: &mut Vec<u8>) {
     if msg.first() == Some(&b'{') {
         if let Some(prefix) = json_prefix {
             out.push(b'{');
-            out.extend_from_slice(prefix);
+
+            let mut is_empty_obj = false;
+            let mut i = 1;
+            while i < msg.len() {
+                match msg[i] {
+                    b' ' | b'\t' | b'\r' | b'\n' => i += 1,
+                    b'}' => {
+                        is_empty_obj = true;
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+
+            if is_empty_obj && prefix.last() == Some(&b',') {
+                out.extend_from_slice(&prefix[..prefix.len() - 1]);
+            } else {
+                out.extend_from_slice(prefix);
+            }
+
             out.extend_from_slice(&msg[1..]);
         } else {
             out.extend_from_slice(msg);
@@ -433,6 +452,20 @@ mod tests {
         let (count, errors) = process_cri_to_buf(chunk, &mut reassembler, None, &mut out);
         assert_eq!(count, 1);
         assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn test_write_json_line_empty_object_no_trailing_comma() {
+        // If msg is an empty JSON object like {}, the injected prefix should not
+        // end with a comma. Otherwise, the result is `{"prefix":"val",}` which
+        // is invalid JSON.
+        let mut out = Vec::new();
+        write_json_line(b"{}", Some(b"\"prefix\":\"val\","), &mut out);
+        assert_eq!(out, b"{\"prefix\":\"val\"}\n");
+
+        let mut out = Vec::new();
+        write_json_line(b"{ \t\r\n}", Some(b"\"prefix\":\"val\","), &mut out);
+        assert_eq!(out, b"{\"prefix\":\"val\" \t\r\n}\n");
     }
 
     #[test]
