@@ -197,6 +197,7 @@ mod verification {
     }
 
     /// Prove NewlineFramer line ranges are valid sub-ranges of input.
+    #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(34)]
     fn verify_newline_framer_ranges_valid() {
@@ -247,6 +248,7 @@ mod verification {
     /// Prove NewlineFramer produces correct line content — each returned
     /// range contains no newlines, and boundaries align with actual \n bytes.
     /// This is the oracle proof — verifies the framer produces the same lines as naive split-on-newline.
+    #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(18)]
     fn verify_newline_framer_content_correct() {
@@ -312,6 +314,7 @@ mod verification {
     /// start_j > end_i — they are separated by at least one newline byte.
     /// This is stronger than the bounds proof: it rules out duplicated or
     /// reversed ranges that would cause double-processing of bytes.
+    #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(18)]
     fn verify_newline_framer_ranges_non_overlapping() {
