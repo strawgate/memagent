@@ -48,26 +48,37 @@ export function computeStats(traces: TraceRecord[]): TraceStats | null {
     queueNs = 0,
     errors = 0;
   for (const t of done) {
-    const e2e = t.scan_ns + t.transform_ns + t.queue_wait_ns + t.output_ns;
+    const sNs = Number(t.scan_ns) || 0;
+    const xNs = Number(t.transform_ns) || 0;
+    const qNs = Number(t.queue_wait_ns) || 0;
+    const oNs = Number(t.output_ns) || 0;
+    const e2e = sNs + xNs + qNs + oNs;
     totalNs += e2e;
-    scanNs += t.scan_ns;
-    xfmNs += t.transform_ns;
-    queueNs += t.queue_wait_ns;
-    outNs += t.output_ns;
+    scanNs += sNs;
+    xfmNs += xNs;
+    queueNs += qNs;
+    outNs += oNs;
     if (t.errors > 0) errors++;
   }
 
   // Use min/max of start times to get the true observation window
-  let minT = done[0].start_unix_ns,
-    maxT = done[0].start_unix_ns;
+  let minT = Number(done[0].start_unix_ns) || 0,
+    maxT = Number(done[0].start_unix_ns) || 0;
   for (const t of done) {
-    if (t.start_unix_ns < minT) minT = t.start_unix_ns;
-    if (t.start_unix_ns > maxT) maxT = t.start_unix_ns;
+    const startT = Number(t.start_unix_ns) || 0;
+    if (startT < minT) minT = startT;
+    if (startT > maxT) maxT = startT;
   }
   const windowSec = Math.max(1, (maxT - minT) / 1e9);
 
   const sorted = done
-    .map((t) => t.scan_ns + t.transform_ns + t.queue_wait_ns + t.output_ns)
+    .map(
+      (t) =>
+        (Number(t.scan_ns) || 0) +
+        (Number(t.transform_ns) || 0) +
+        (Number(t.queue_wait_ns) || 0) +
+        (Number(t.output_ns) || 0)
+    )
     .sort((a, b) => a - b);
   const p90ns = sorted[Math.floor(sorted.length * 0.9)] ?? 0;
 

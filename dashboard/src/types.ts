@@ -82,13 +82,13 @@ export interface ConfigResponse {
 export interface TraceRecord {
   trace_id: string;
   pipeline: string;
-  start_unix_ns: number;
-  total_ns: number;
-  scan_ns: number;
-  transform_ns: number;
-  output_ns: number;
+  start_unix_ns: string;
+  total_ns: string;
+  scan_ns: string;
+  transform_ns: string;
+  output_ns: string;
   /** Absolute wall-clock start of the output span (ns). Use this to position the output bar. */
-  output_start_unix_ns?: number;
+  output_start_unix_ns?: string;
   /** Rows extracted by the scanner (before SQL filter). */
   scan_rows: number;
   /** Rows into SQL transform (= scan_rows for non-empty scans). */
@@ -98,13 +98,13 @@ export interface TraceRecord {
   /** Raw bytes fed to the scanner. */
   bytes_in: number;
   /** Time data waited in channel before processing, nanoseconds. */
-  queue_wait_ns: number;
+  queue_wait_ns: string;
   /** Worker that processed this batch (-1 if unknown). */
   worker_id: number;
   /** Nanoseconds from request send start to response headers received. */
-  send_ns?: number;
+  send_ns?: string;
   /** Nanoseconds from response headers to body fully read. */
-  recv_ns?: number;
+  recv_ns?: string;
   /** Milliseconds Elasticsearch spent processing (`took` field). */
   took_ms?: number;
   /** Number of retries before success or permanent failure. */
@@ -124,7 +124,7 @@ export interface TraceRecord {
   /** Current stage when in_progress: "scan" | "transform" | "output" */
   stage?: string;
   /** Unix ns when the current in-progress stage started. */
-  stage_start_unix_ns?: number;
+  stage_start_unix_ns?: string;
 }
 
 export interface TracesResponse {

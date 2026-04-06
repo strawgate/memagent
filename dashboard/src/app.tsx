@@ -331,7 +331,7 @@ export function App() {
       if (tracesData && tracesData.traces.length > 0) {
         const done = tracesData.traces.filter((t) => !t.in_progress).slice(0, 50);
         if (done.length > 0) {
-          const avgMs = done.reduce((s, t) => s + t.total_ns, 0) / done.length / 1e6;
+          const avgMs = done.reduce((s, t) => s + (Number(t.total_ns ?? "0") || 0), 0) / done.length / 1e6;
           series[6].ring.push(avgMs);
           series[6].value =
             avgMs >= 1000 ? `${(avgMs / 1000).toFixed(1)}s` : `${avgMs.toFixed(0)}ms`;

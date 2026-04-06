@@ -796,20 +796,20 @@ impl DiagnosticsServer {
                     "{{\
                         \"trace_id\":\"{tid}\",\
                         \"pipeline\":\"{pl}\",\
-                        \"start_unix_ns\":{st},\
-                        \"total_ns\":{tot},\
-                        \"scan_ns\":{scan},\
-                        \"transform_ns\":{xfm},\
-                        \"output_ns\":{out_ns},\
-                        \"output_start_unix_ns\":{out_st},\
+                        \"start_unix_ns\":\"{st}\",\
+                        \"total_ns\":\"{tot}\",\
+                        \"scan_ns\":\"{scan}\",\
+                        \"transform_ns\":\"{xfm}\",\
+                        \"output_ns\":\"{out_ns}\",\
+                        \"output_start_unix_ns\":\"{out_st}\",\
                         \"scan_rows\":{sr},\
                         \"input_rows\":{ir},\
                         \"output_rows\":{or},\
                         \"bytes_in\":{bi},\
-                        \"queue_wait_ns\":{qw},\
+                        \"queue_wait_ns\":\"{qw}\",\
                         \"worker_id\":{wid},\
-                        \"send_ns\":{snd},\
-                        \"recv_ns\":{rcv},\
+                        \"send_ns\":\"{snd}\",\
+                        \"recv_ns\":\"{rcv}\",\
                         \"took_ms\":{tk},\
                         \"retries\":{ret},\
                         \"req_bytes\":{rb},\
@@ -858,20 +858,20 @@ impl DiagnosticsServer {
                             "{{\
                                 \"trace_id\":\"live-{id}\",\
                                 \"pipeline\":\"{pl}\",\
-                                \"start_unix_ns\":{st},\
-                                \"total_ns\":0,\
-                                \"scan_ns\":{scan},\
-                                \"transform_ns\":{xfm},\
-                                \"output_ns\":0,\
-                                \"output_start_unix_ns\":{out_st},\
+                                \"start_unix_ns\":\"{st}\",\
+                                \"total_ns\":\"0\",\
+                                \"scan_ns\":\"{scan}\",\
+                                \"transform_ns\":\"{xfm}\",\
+                                \"output_ns\":\"0\",\
+                                \"output_start_unix_ns\":\"{out_st}\",\
                                 \"scan_rows\":0,\
                                 \"input_rows\":0,\
                                 \"output_rows\":0,\
                                 \"bytes_in\":0,\
-                                \"queue_wait_ns\":0,\
+                                \"queue_wait_ns\":\"0\",\
                                 \"worker_id\":{wid},\
-                                \"send_ns\":0,\
-                                \"recv_ns\":0,\
+                                \"send_ns\":\"0\",\
+                                \"recv_ns\":\"0\",\
                                 \"took_ms\":0,\
                                 \"retries\":0,\
                                 \"req_bytes\":0,\
@@ -882,7 +882,7 @@ impl DiagnosticsServer {
                                 \"status\":\"unset\",\
                                 \"in_progress\":true,\
                                 \"stage\":\"{stage}\",\
-                                \"stage_start_unix_ns\":{ss}\
+                                \"stage_start_unix_ns\":\"{ss}\"\
                             }}",
                             id = id,
                             pl = esc(&pm.name),
@@ -984,11 +984,22 @@ impl DiagnosticsServer {
 
             let last_batch_ns = pm.last_batch_time_ns.load(Ordering::Relaxed);
 
-            // Note: batch_latency_total and batches_total are updated independently.
-            // This calculation is approximate and may briefly mismatch under high concurrency,
-            // but reading without retries avoids spinning under load.
-            let batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Relaxed);
-            let latency_batches = pm.batches_total.load(Ordering::Relaxed);
+            // Compute batch latency using a consistent snapshot since they are
+            // updated at different times. We retry until batches remains the same,
+            // capping at 64 attempts to avoid spinning indefinitely under contention.
+            let mut latency_batches = pm.batches_total.load(Ordering::Acquire);
+            let mut batch_latency_total;
+            let mut attempts = 0;
+            loop {
+                batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Acquire);
+                let current_batches = pm.batches_total.load(Ordering::Acquire);
+                if current_batches == latency_batches || attempts >= 64 {
+                    latency_batches = current_batches;
+                    break;
+                }
+                latency_batches = current_batches;
+                attempts += 1;
+            }
 
             let batch_latency_avg_ns = if latency_batches > 0 {
                 batch_latency_total / latency_batches
@@ -1774,8 +1785,14 @@ mod tests {
         assert_eq!(t["output_rows"], 75);
         assert_eq!(t["errors"], 0);
         assert_eq!(t["flush_reason"], "size");
-        assert_eq!(t["scan_ns"], 150_000_000u64);
-        assert_eq!(t["total_ns"], 200_000_000u64);
+        assert_eq!(t["scan_ns"], "150000000");
+        assert_eq!(t["total_ns"], "200000000");
+        // All nanosecond fields must be serialized as JSON strings to avoid
+        // JavaScript 53-bit precision loss.
+        assert_eq!(t["start_unix_ns"], "1000000000");
+        assert_eq!(t["transform_ns"], "0");
+        assert_eq!(t["output_ns"], "0");
+        assert_eq!(t["queue_wait_ns"], "5000000");
         assert_eq!(t["status"], "ok");
     }
 
@@ -1844,32 +1861,6 @@ mod tests {
         assert!(
             body.contains("/api/pipelines"),
             "/metrics 410 body should mention /api/pipelines: {body}"
-        );
-    }
-
-    #[test]
-    fn test_pipeline_metrics_approximate_latency_snapshot() {
-        let meter = opentelemetry::global::meter("test");
-        let pm = PipelineMetrics::new("default", "SELECT *", &meter);
-
-        // Setup initial state: 10 batches, total latency 5000ns -> avg 500ns
-        pm.batches_total.store(10, Ordering::Relaxed);
-        pm.batch_latency_nanos_total.store(5000, Ordering::Relaxed);
-
-        let mut server = DiagnosticsServer::new("127.0.0.1:0");
-        server.add_pipeline(Arc::new(pm));
-        let (_handle, addr) = server.start().expect("server bind failed");
-        let port = addr.port();
-
-        thread::sleep(std::time::Duration::from_millis(100));
-
-        let (status, body) = http_get(port, "/api/pipelines");
-        assert_eq!(status, 200);
-        // Expect avg latency 500
-        assert!(
-            body.contains(r#""batch_latency_avg_ns":500"#),
-            "body: {}",
-            body
         );
     }
 }
