@@ -98,9 +98,11 @@ _bench-pair name rx_config tx_config seconds="10":
     $LOGFWD --config {{rx_config}} &
     RX=$!;
 
-    # Poll /ready (HTTP 200 only after pipeline.run_async() registers the
-    # pipeline) — this is distinct from /api/stats which becomes available
-    # before receiver sockets are bound.
+    # Poll /ready until the diagnostics HTTP server is up (503 → 200).
+    # /ready returns 200 once diagnostics registers the pipeline, which happens
+    # just before pipeline.run_async() spawns and binds receiver sockets.
+    # The extra sleep 1 after the check gives run_async() time to complete
+    # socket binding before the sender process starts connecting.
     READY=0
     for i in {1..10}; do
         if curl --fail --silent --connect-timeout 1 --max-time 1 http://127.0.0.1:9091/ready >/dev/null; then
@@ -115,6 +117,8 @@ _bench-pair name rx_config tx_config seconds="10":
         wait $RX 2>/dev/null || true
         exit 1
     fi
+    # Give run_async() time to bind receiver sockets after /ready returns.
+    sleep 1
 
     $LOGFWD --config {{tx_config}} &
     TX=$!; sleep {{seconds}}
