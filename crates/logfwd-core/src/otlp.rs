@@ -401,6 +401,10 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         return None;
     }
 
+    if hour > 23 || min > 59 || sec > 60 {
+        return None;
+    }
+
     // Reject years that would overflow u64 nanos (year > ~584 from epoch).
     // Year 2554 can exceed u64::MAX nanos; 2553-12-31T23:59:59.999999999Z fits.
     if year > 2553 {
@@ -658,6 +662,18 @@ mod tests {
         assert_eq!(parse_timestamp_nanos(b"not a timestamp"), None);
         assert_eq!(parse_timestamp_nanos(b""), None);
         assert_eq!(parse_timestamp_nanos(b"2024"), None);
+    }
+
+    #[test]
+    fn test_parse_timestamp_nanos_invalid_time() {
+        // Bug #1047: Invalid time of day should return None
+        assert_eq!(parse_timestamp_nanos(b"2024-01-01T99:99:99Z"), None);
+        // Invalid hour
+        assert_eq!(parse_timestamp_nanos(b"2024-01-01T24:00:00Z"), None);
+        // Invalid minute
+        assert_eq!(parse_timestamp_nanos(b"2024-01-01T23:60:00Z"), None);
+        // Invalid second (leap second 60 is allowed, 61 is not)
+        assert_eq!(parse_timestamp_nanos(b"2024-01-01T23:59:61Z"), None);
     }
 
     #[test]

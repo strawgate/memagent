@@ -986,7 +986,8 @@ pub(crate) fn parse_rfc3339_nanos(s: &str) -> Option<i64> {
     let min: u32 = s.get(14..16)?.parse().ok()?;
     let sec: u32 = s.get(17..19)?.parse().ok()?;
 
-    if hour >= 24 || min >= 60 || sec >= 60 {
+    if hour >= 24 || min >= 60 || sec > 60 {
+        // sec > 60 allows leap seconds (60)
         return None;
     }
 
@@ -1826,6 +1827,48 @@ mod tests {
             }
         }
         assert!(found, "status attr not found in log_attrs");
+    }
+
+    #[test]
+    fn test_parse_timestamp_to_nanos_integer() {
+        // Bug #1028: correctly scale magnitude-based epoch values
+        // seconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1705314600"),
+            Some(1_705_314_600_000_000_000)
+        );
+        // milliseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1705314600123"),
+            Some(1_705_314_600_123_000_000)
+        );
+        // microseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1705314600123456"),
+            Some(1_705_314_600_123_456_000)
+        );
+        // nanoseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1705314600123456789"),
+            Some(1_705_314_600_123_456_789)
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_to_nanos_overflow() {
+        // Bug #1085: integer seconds should not panic on overflow (e.g. year 2300)
+        // 10_413_792_000 seconds = ~year 2300.
+        // Multiply by 1_000_000_000 -> 10_413_792_000_000_000_000, which overflows i64.
+        assert_eq!(parse_timestamp_to_nanos("10413792000"), None);
+    }
+
+    #[test]
+    fn test_parse_rfc3339_nanos_invalid_time() {
+        // Bug #1088: reject invalid time values
+        assert_eq!(parse_rfc3339_nanos("2024-01-01T99:99:99Z"), None);
+        assert_eq!(parse_rfc3339_nanos("2024-01-01T24:00:00Z"), None);
+        assert_eq!(parse_rfc3339_nanos("2024-01-01T23:60:00Z"), None);
+        assert_eq!(parse_rfc3339_nanos("2024-01-01T23:59:61Z"), None); // 60 is leap second, 61 is invalid
     }
 
     #[test]

@@ -52,24 +52,28 @@ function computeStats(traces: TraceRecord[]) {
     queueNs = 0,
     errors = 0;
   for (const t of done) {
-    const e2e = t.scan_ns + t.transform_ns + t.queue_wait_ns + t.output_ns;
+    const e2e =
+      Number(t.scan_ns) + Number(t.transform_ns) + Number(t.queue_wait_ns) + Number(t.output_ns);
     totalNs += e2e;
-    scanNs += t.scan_ns;
-    xfmNs += t.transform_ns;
-    queueNs += t.queue_wait_ns;
-    outNs += t.output_ns;
+    scanNs += Number(t.scan_ns);
+    xfmNs += Number(t.transform_ns);
+    queueNs += Number(t.queue_wait_ns);
+    outNs += Number(t.output_ns);
     if (t.errors > 0) errors++;
   }
   // Use min/max of start times to get the true observation window
-  let minT = done[0].start_unix_ns,
-    maxT = done[0].start_unix_ns;
+  let minT = Number(done[0].start_unix_ns),
+    maxT = Number(done[0].start_unix_ns);
   for (const t of done) {
-    if (t.start_unix_ns < minT) minT = t.start_unix_ns;
-    if (t.start_unix_ns > maxT) maxT = t.start_unix_ns;
+    if (Number(t.start_unix_ns) < minT) minT = Number(t.start_unix_ns);
+    if (Number(t.start_unix_ns) > maxT) maxT = Number(t.start_unix_ns);
   }
-  const windowSec = Math.max(1, (maxT - minT) / 1e9);
+  const windowSec = Math.max(1, (Number(maxT) - Number(minT)) / 1e9);
   const sorted = done
-    .map((t) => t.scan_ns + t.transform_ns + t.queue_wait_ns + t.output_ns)
+    .map(
+      (t) =>
+        Number(t.scan_ns) + Number(t.transform_ns) + Number(t.queue_wait_ns) + Number(t.output_ns)
+    )
     .sort((a, b) => a - b);
   const p90ns = sorted[Math.floor(sorted.length * 0.9)] ?? 0;
   return {
@@ -221,13 +225,13 @@ export function layoutSwimlane(
     const h = laneH(li);
 
     for (const t of lane.traces) {
-      const startMs = t.start_unix_ns / 1e6;
-      let scanMs = t.scan_ns / 1e6;
-      let xfmMs = t.transform_ns / 1e6;
-      let outMs = t.output_ns / 1e6;
+      const startMs = Number(t.start_unix_ns) / 1e6;
+      let scanMs = Number(t.scan_ns) / 1e6;
+      let xfmMs = Number(t.transform_ns) / 1e6;
+      let outMs = Number(t.output_ns) / 1e6;
 
-      if (t.in_progress && t.stage && t.stage_start_unix_ns) {
-        const stageStartMs = t.stage_start_unix_ns / 1e6;
+      if (t.in_progress && t.stage && Number(t.stage_start_unix_ns)) {
+        const stageStartMs = Number(t.stage_start_unix_ns) / 1e6;
         // Clamp: stageStart must be in the past and not older than 60s (stale guard)
         if (stageStartMs > 0 && stageStartMs <= nowMs && nowMs - stageStartMs < 60_000) {
           const live = Math.max(1, nowMs - stageStartMs);
@@ -295,15 +299,15 @@ export function layoutSwimlane(
         });
       } else {
         // Worker row
-        const sendMs = (t.send_ns ?? 0) / 1e6;
-        const recvMs = (t.recv_ns ?? 0) / 1e6;
+        const sendMs = Number(t.send_ns ?? 0) / 1e6;
+        const recvMs = Number(t.recv_ns ?? 0) / 1e6;
 
         const workerAssigned = t.in_progress
-          ? (t.worker_id ?? -1) >= 0 && (t.output_start_unix_ns ?? 0) > 0
+          ? (t.worker_id ?? -1) >= 0 && (Number(t.output_start_unix_ns) ?? 0) > 0
           : true;
         const outStartMs =
-          (t.output_start_unix_ns ?? 0) > 0
-            ? t.output_start_unix_ns! / 1e6
+          (Number(t.output_start_unix_ns) ?? 0) > 0
+            ? Number(t.output_start_unix_ns)! / 1e6
             : startMs + scanMs + xfmMs;
         const actualQueueMs = Math.max(0, outStartMs - (startMs + scanMs + xfmMs));
 
@@ -313,7 +317,7 @@ export function layoutSwimlane(
         // TODO: thread firstSeen into layoutSwimlane if animation needs testing.
         let barEndMs: number;
         if (t.in_progress && !workerAssigned) {
-          const stageStartMs = (t.stage_start_unix_ns ?? 0) / 1e6;
+          const stageStartMs = (Number(t.stage_start_unix_ns) ?? 0) / 1e6;
           barEndMs =
             stageStartMs > 0
               ? Math.max(startMs + scanMs + xfmMs + 1, nowMs)
@@ -684,17 +688,19 @@ function hitTest(
   let best: TraceRecord | null = null;
   let bestDist = Infinity;
   for (const t of lanes[li].traces) {
-    const scanMs = t.scan_ns / 1e6;
-    const xfmMs = t.transform_ns / 1e6;
-    const outMs = t.output_ns / 1e6;
-    const sMs = t.start_unix_ns / 1e6;
+    const scanMs = Number(t.scan_ns) / 1e6;
+    const xfmMs = Number(t.transform_ns) / 1e6;
+    const outMs = Number(t.output_ns) / 1e6;
+    const sMs = Number(t.start_unix_ns) / 1e6;
 
     let midMs: number;
     if (laneId === SCAN_LANE) {
       midMs = sMs + (scanMs + xfmMs) / 2;
     } else {
       const outStartMs =
-        (t.output_start_unix_ns ?? 0) > 0 ? t.output_start_unix_ns! / 1e6 : sMs + scanMs + xfmMs;
+        (Number(t.output_start_unix_ns) ?? 0) > 0
+          ? Number(t.output_start_unix_ns)! / 1e6
+          : sMs + scanMs + xfmMs;
       midMs = (sMs + outStartMs + outMs) / 2;
     }
 
@@ -710,39 +716,40 @@ function hitTest(
 // ─── detail panel ────────────────────────────────────────────────────────────
 
 function DetailPanel({ t }: { t: TraceRecord }) {
-  const e2e = t.scan_ns + t.transform_ns + t.queue_wait_ns + t.output_ns;
+  const e2e =
+    Number(t.scan_ns) + Number(t.transform_ns) + Number(t.queue_wait_ns) + Number(t.output_ns);
   const pct = (ns: number) => (e2e > 0 ? `${((ns / e2e) * 100).toFixed(0)}%` : "–");
-  const hasSendRecv = (t.send_ns ?? 0) > 0 || (t.recv_ns ?? 0) > 0;
+  const hasSendRecv = Number(t.send_ns ?? 0) > 0 || Number(t.recv_ns ?? 0) > 0;
   return (
     <div class="t2-detail">
       <div class="t2-stage-boxes">
         <div class="t2-stage-box" style={`border-top:2px solid ${C.scan}`}>
           <div class="t2-stage-label">scan</div>
-          <div class="t2-stage-dur">{fmtNs(t.scan_ns)}</div>
-          <div class="t2-stage-sub">{pct(t.scan_ns)}</div>
+          <div class="t2-stage-dur">{fmtNs(Number(t.scan_ns))}</div>
+          <div class="t2-stage-sub">{pct(Number(t.scan_ns))}</div>
           {t.scan_rows > 0 && <div class="t2-stage-sub">{fmtRows(t.scan_rows)} rows</div>}
         </div>
         <div class="t2-stage-box" style={`border-top:2px solid ${C.transform}`}>
           <div class="t2-stage-label">transform</div>
-          <div class="t2-stage-dur">{fmtNs(t.transform_ns)}</div>
-          <div class="t2-stage-sub">{pct(t.transform_ns)}</div>
+          <div class="t2-stage-dur">{fmtNs(Number(t.transform_ns))}</div>
+          <div class="t2-stage-sub">{pct(Number(t.transform_ns))}</div>
           <div class="t2-stage-sub">
             {fmtRows(t.input_rows)}→{fmtRows(t.output_rows)}
           </div>
         </div>
-        {t.queue_wait_ns > 0 && (
+        {Number(t.queue_wait_ns) > 0 && (
           <div class="t2-stage-box" style="border-top:2px solid #6b7280">
             <div class="t2-stage-label">queue wait</div>
-            <div class="t2-stage-dur">{fmtNs(t.queue_wait_ns)}</div>
-            <div class="t2-stage-sub">{pct(t.queue_wait_ns)}</div>
+            <div class="t2-stage-dur">{fmtNs(Number(t.queue_wait_ns))}</div>
+            <div class="t2-stage-sub">{pct(Number(t.queue_wait_ns))}</div>
           </div>
         )}
         {hasSendRecv ? (
           <>
             <div class="t2-stage-box" style={`border-top:2px solid ${C.send}`}>
               <div class="t2-stage-label">send req</div>
-              <div class="t2-stage-dur">{fmtNs(t.send_ns ?? 0)}</div>
-              <div class="t2-stage-sub">{pct(t.send_ns ?? 0)}</div>
+              <div class="t2-stage-dur">{fmtNs(Number(t.send_ns ?? 0))}</div>
+              <div class="t2-stage-sub">{pct(Number(t.send_ns ?? 0))}</div>
               {(t.req_bytes ?? 0) > 0 && (
                 <div class="t2-stage-sub">
                   {fmtBytes(t.req_bytes!)}
@@ -753,8 +760,8 @@ function DetailPanel({ t }: { t: TraceRecord }) {
             </div>
             <div class="t2-stage-box" style={`border-top:2px solid ${C.recv}`}>
               <div class="t2-stage-label">recv resp</div>
-              <div class="t2-stage-dur">{fmtNs(t.recv_ns ?? 0)}</div>
-              <div class="t2-stage-sub">{pct(t.recv_ns ?? 0)}</div>
+              <div class="t2-stage-dur">{fmtNs(Number(t.recv_ns ?? 0))}</div>
+              <div class="t2-stage-sub">{pct(Number(t.recv_ns ?? 0))}</div>
               {(t.took_ms ?? 0) > 0 && <div class="t2-stage-sub">ES took {t.took_ms}ms</div>}
               {(t.resp_bytes ?? 0) > 0 && (
                 <div class="t2-stage-sub">{fmtBytes(t.resp_bytes!)} received</div>
@@ -764,8 +771,8 @@ function DetailPanel({ t }: { t: TraceRecord }) {
         ) : (
           <div class="t2-stage-box" style={`border-top:2px solid ${C.output}`}>
             <div class="t2-stage-label">output</div>
-            <div class="t2-stage-dur">{fmtNs(t.output_ns)}</div>
-            <div class="t2-stage-sub">{pct(t.output_ns)}</div>
+            <div class="t2-stage-dur">{fmtNs(Number(t.output_ns))}</div>
+            <div class="t2-stage-sub">{pct(Number(t.output_ns))}</div>
             <div class="t2-stage-sub">{fmtRows(t.output_rows)} rows sent</div>
           </div>
         )}
@@ -815,9 +822,9 @@ const DEFAULT_WORKERS = 16;
 
 /** Pick the tightest window that comfortably shows ~10 batches. */
 function autoWindow(traces: TraceRecord[]): number {
-  const done = traces.filter((t) => t.total_ns > 0);
+  const done = traces.filter((t) => Number(t.total_ns) > 0);
   if (done.length === 0) return WINDOW_OPTIONS[1].ms; // default 30s until data arrives
-  const avgMs = done.reduce((s, t) => s + t.total_ns, 0) / done.length / 1e6;
+  const avgMs = done.reduce((s, t) => s + Number(t.total_ns), 0) / done.length / 1e6;
   if (avgMs < 500) return WINDOW_OPTIONS[0].ms; // <0.5s batches → 5s window
   if (avgMs < 3_000) return WINDOW_OPTIONS[1].ms; // <3s batches → 30s window
   if (avgMs < 12_000) return WINDOW_OPTIONS[2].ms; // <12s batches → 2m window
@@ -909,7 +916,7 @@ export function TraceExplorer({ traces }: Props) {
   const allWorkers = Math.max(0, allLanesRef.current.length - 1); // exclude scan lane
   const shownWorkers = Math.max(0, lanesRef.current.length - 1);
   const hiddenCount = Math.max(0, allWorkers - shownWorkers);
-  const hasSendRecv = traces.some((t) => (t.send_ns ?? 0) > 0);
+  const hasSendRecv = traces.some((t) => Number(t.send_ns ?? 0) > 0);
 
   const handleClick = (e: MouseEvent) => {
     if (!canvasRef.current) return;
