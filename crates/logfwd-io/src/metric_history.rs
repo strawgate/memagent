@@ -79,11 +79,11 @@ impl MetricBuffer {
 
     /// Push a new high-resolution point. Automatically downsamples to lower tiers.
     fn push(&mut self, t: f64, v: f64) {
-        if t.is_nan() {
-            return; // reject NaN timestamps — they break tier trimming
+        if !t.is_finite() {
+            return; // reject NaN and Infinity timestamps — they break tier trimming
         }
-        if v.is_nan() {
-            return; // reject NaN values — they are meaningless and pollute history
+        if !v.is_finite() {
+            return; // reject NaN and Infinity values — they are meaningless and pollute history
         }
         let p = Point { t, v };
 
@@ -242,5 +242,32 @@ mod tests {
         assert_eq!(points.len(), 2);
         assert!((points[0].t - 1.0).abs() < f64::EPSILON);
         assert!((points[1].t - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_infinity_and_nan_rejection() {
+        let mut buf = MetricBuffer::new("test");
+        buf.push(1.0, 10.0);
+
+        // Push non-finite timestamps
+        buf.push(f64::INFINITY, 20.0);
+        buf.push(f64::NEG_INFINITY, 30.0);
+        buf.push(f64::NAN, 40.0);
+
+        // Push non-finite values
+        buf.push(2.0, f64::INFINITY);
+        buf.push(3.0, f64::NEG_INFINITY);
+        buf.push(4.0, f64::NAN);
+
+        // Push a valid point to ensure it still works
+        buf.push(5.0, 50.0);
+
+        let points = buf.points();
+        // Only 1.0 and 5.0 should be accepted
+        assert_eq!(points.len(), 2);
+        assert!((points[0].t - 1.0).abs() < f64::EPSILON);
+        assert!((points[1].t - 5.0).abs() < f64::EPSILON);
+        assert!((points[0].v - 10.0).abs() < f64::EPSILON);
+        assert!((points[1].v - 50.0).abs() < f64::EPSILON);
     }
 }

@@ -984,22 +984,11 @@ impl DiagnosticsServer {
 
             let last_batch_ns = pm.last_batch_time_ns.load(Ordering::Relaxed);
 
-            // Compute batch latency using a consistent snapshot since they are
-            // updated at different times. We retry until batches remains the same,
-            // capping at 64 attempts to avoid spinning indefinitely under contention.
-            let mut latency_batches = pm.batches_total.load(Ordering::Acquire);
-            let mut batch_latency_total;
-            let mut attempts = 0;
-            loop {
-                batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Acquire);
-                let current_batches = pm.batches_total.load(Ordering::Acquire);
-                if current_batches == latency_batches || attempts >= 64 {
-                    latency_batches = current_batches;
-                    break;
-                }
-                latency_batches = current_batches;
-                attempts += 1;
-            }
+            // Note: batch_latency_total and batches_total are updated independently.
+            // This calculation is approximate and may briefly mismatch under high concurrency,
+            // but reading without retries avoids spinning under load.
+            let batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Relaxed);
+            let latency_batches = pm.batches_total.load(Ordering::Relaxed);
 
             let batch_latency_avg_ns = if latency_batches > 0 {
                 batch_latency_total / latency_batches
@@ -1855,6 +1844,32 @@ mod tests {
         assert!(
             body.contains("/api/pipelines"),
             "/metrics 410 body should mention /api/pipelines: {body}"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_metrics_approximate_latency_snapshot() {
+        let meter = opentelemetry::global::meter("test");
+        let pm = PipelineMetrics::new("default", "SELECT *", &meter);
+
+        // Setup initial state: 10 batches, total latency 5000ns -> avg 500ns
+        pm.batches_total.store(10, Ordering::Relaxed);
+        pm.batch_latency_nanos_total.store(5000, Ordering::Relaxed);
+
+        let mut server = DiagnosticsServer::new("127.0.0.1:0");
+        server.add_pipeline(Arc::new(pm));
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/api/pipelines");
+        assert_eq!(status, 200);
+        // Expect avg latency 500
+        assert!(
+            body.contains(r#""batch_latency_avg_ns":500"#),
+            "body: {}",
+            body
         );
     }
 }
