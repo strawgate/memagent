@@ -554,25 +554,18 @@ impl Pipeline {
     /// and the provided sink.
     #[cfg(feature = "turmoil")]
     pub fn for_simulation(name: &str, sink: Box<dyn logfwd_output::Sink>) -> Self {
-        use logfwd_arrow::scanner::Scanner;
-        use logfwd_core::scan_config::ScanConfig;
-
-        let scan_config = ScanConfig::default();
-        let scanner = Scanner::new(scan_config);
-        let transform = SqlTransform::new("SELECT * FROM logs").expect("default SQL");
         let meter = opentelemetry::global::meter("test");
         let metrics = Arc::new(PipelineMetrics::new(name, "SELECT * FROM logs", &meter));
         let factory = Arc::new(OnceAsyncFactory::new(name.to_string(), sink));
         let pool = OutputWorkerPool::new(factory, 1, Duration::MAX, Arc::clone(&metrics));
 
+        // Start with empty inputs and input_transforms so that each with_input()
+        // call adds exactly one entry to both, keeping input_index in sync with
+        // the transform and accumulator vectors in run_async.
         Pipeline {
             name: name.to_string(),
             inputs: vec![],
-            input_transforms: vec![InputTransform {
-                scanner,
-                transform,
-                input_name: "simulation".to_string(),
-            }],
+            input_transforms: vec![],
             processors: vec![],
             pool,
             metrics,
@@ -596,24 +589,17 @@ impl Pipeline {
         factory: Arc<dyn SinkFactory>,
         max_workers: usize,
     ) -> Self {
-        use logfwd_arrow::scanner::Scanner;
-        use logfwd_core::scan_config::ScanConfig;
-
-        let scan_config = ScanConfig::default();
-        let scanner = Scanner::new(scan_config);
-        let transform = SqlTransform::new("SELECT * FROM logs").expect("default SQL");
         let meter = opentelemetry::global::meter("test");
         let metrics = Arc::new(PipelineMetrics::new(name, "SELECT * FROM logs", &meter));
         let pool = OutputWorkerPool::new(factory, max_workers, Duration::MAX, Arc::clone(&metrics));
 
+        // Start with empty inputs and input_transforms so that each with_input()
+        // call adds exactly one entry to both, keeping input_index in sync with
+        // the transform and accumulator vectors in run_async.
         Pipeline {
             name: name.to_string(),
             inputs: vec![],
-            input_transforms: vec![InputTransform {
-                scanner,
-                transform,
-                input_name: "simulation".to_string(),
-            }],
+            input_transforms: vec![],
             processors: vec![],
             pool,
             metrics,
