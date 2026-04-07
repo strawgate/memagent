@@ -986,10 +986,13 @@ fn validate_input_format_read_only(
         InputType::Generator | InputType::Otlp => matches!(format, Format::Json),
         InputType::Udp | InputType::Tcp => matches!(format, Format::Json | Format::Raw),
         InputType::ArrowIpc => false,
-        _ => {
+        other => {
+            tracing::warn!(
+                "validate_input_format_read_only: unhandled input type {other:?} for input {name}"
+            );
             return Err(format!(
                 "input '{name}': type {:?} is not yet supported in read-only validation",
-                input_type
+                other
             ));
         }
     };
