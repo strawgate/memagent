@@ -50,7 +50,7 @@ serde = { version = "1", features = ["derive"] }
 sonic-rs = "0.5"
 tokio = { version = "1" }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-opentelemetry = "0.32"
 turmoil = "0.7"
 walkdir = "2"

@@ -127,19 +127,10 @@ fn main() {
     } else if args.iter().any(|a| a == "--medium") {
         120
     } else {
-        args.iter()
-            .position(|a| a == "--duration")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(300)
+        parse_positive_u64_flag(&args, "--duration", 300)
     };
 
-    let batch_lines: usize = args
-        .iter()
-        .position(|a| a == "--batch")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10_000);
+    let batch_lines = parse_positive_usize_flag(&args, "--batch", 10_000);
 
     let use_wide = args.iter().any(|a| a == "--wide");
     let use_mixed = args.iter().any(|a| a == "--mixed");
@@ -308,6 +299,43 @@ fn main() {
         schema_name,
         sql,
     });
+}
+
+fn parse_positive_u64_flag(args: &[String], flag: &str, default: u64) -> u64 {
+    parse_positive_flag(args, flag, default, |raw| raw.parse::<u64>().ok())
+}
+
+fn parse_positive_usize_flag(args: &[String], flag: &str, default: usize) -> usize {
+    parse_positive_flag(args, flag, default, |raw| raw.parse::<usize>().ok())
+}
+
+fn parse_positive_flag<T>(
+    args: &[String],
+    flag: &str,
+    default: T,
+    parse: impl Fn(&str) -> Option<T>,
+) -> T
+where
+    T: PartialEq + From<u8> + Copy + std::fmt::Display,
+{
+    match args.iter().rposition(|arg| arg == flag) {
+        Some(idx) => match args.get(idx + 1) {
+            Some(raw) => match parse(raw) {
+                Some(value) if value != T::from(0) => value,
+                _ => {
+                    eprintln!(
+                        "warning: {flag} expects a positive integer; using default {default}"
+                    );
+                    default
+                }
+            },
+            None => {
+                eprintln!("warning: {flag} expects a value; using default {default}");
+                default
+            }
+        },
+        None => default,
+    }
 }
 
 struct ProfileRun<'a> {
@@ -720,5 +748,57 @@ mod tests {
         assert!(report.contains("### Verdict"));
         assert!(report.contains("| Schema | narrow (5 fields) |"));
         assert!(report.contains("| RSS per batch (10000 rows) |"));
+    }
+
+    #[test]
+    fn parse_positive_flags_fall_back_for_zero_and_invalid_values() {
+        let args = vec![
+            "memory-profile".to_string(),
+            "--duration".to_string(),
+            "0".to_string(),
+            "--batch".to_string(),
+            "nope".to_string(),
+        ];
+
+        assert_eq!(parse_positive_u64_flag(&args, "--duration", 300), 300);
+        assert_eq!(parse_positive_usize_flag(&args, "--batch", 10_000), 10_000);
+    }
+
+    #[test]
+    fn parse_positive_flags_use_last_occurrence() {
+        let args = vec![
+            "memory-profile".to_string(),
+            "--duration".to_string(),
+            "0".to_string(),
+            "--duration".to_string(),
+            "60".to_string(),
+        ];
+
+        assert_eq!(parse_positive_u64_flag(&args, "--duration", 300), 60);
+    }
+
+    #[test]
+    fn parse_positive_flags_fall_back_for_missing_values() {
+        let args = vec!["memory-profile".to_string(), "--duration".to_string()];
+
+        assert_eq!(parse_positive_u64_flag(&args, "--duration", 300), 300);
+    }
+
+    #[test]
+    fn render_report_handles_empty_samples() {
+        let run = ProfileRun {
+            samples: &[],
+            total_elapsed: Duration::from_secs(0),
+            total_rows: 0,
+            total_batches: 0,
+            total_input_bytes: 0,
+            batch_lines: 10_000,
+            schema_name: "narrow (5 fields)",
+            sql: "SELECT * FROM logs",
+        };
+
+        let report = render_report(&run);
+        assert!(report.contains("## Sustained Memory Profile Results"));
+        assert!(report.contains("| Peak RSS | 0.0 MB |"));
     }
 }

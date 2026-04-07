@@ -38,7 +38,10 @@ struct GeneratedRowRefs<'a> {
 fn make_metadata() -> BatchMetadata {
     BatchMetadata {
         resource_attrs: Arc::new(vec![
-            ("service.name".to_string(), "smart-codegen-bench".to_string()),
+            (
+                "service.name".to_string(),
+                "smart-codegen-bench".to_string(),
+            ),
             ("service.namespace".to_string(), "bench".to_string()),
         ]),
         observed_time_ns: 1_710_000_000_000_000_000,
@@ -82,11 +85,15 @@ fn make_batch(rows: usize, wide: bool) -> RecordBatch {
         })
         .collect();
     let span_ids: Vec<Option<&str>> = (0..rows)
-        .map(|i| if i % 7 == 0 { None } else { Some("0011223344556677") })
+        .map(|i| {
+            if i % 7 == 0 {
+                None
+            } else {
+                Some("0011223344556677")
+            }
+        })
         .collect();
-    let hosts: Vec<Option<String>> = (0..rows)
-        .map(|i| Some(format!("host-{}", i % 8)))
-        .collect();
+    let hosts: Vec<Option<String>> = (0..rows).map(|i| Some(format!("host-{}", i % 8))).collect();
     let statuses: Vec<Option<i64>> = (0..rows).map(|i| Some(200 + (i % 5) as i64)).collect();
     let durations: Vec<Option<f64>> = (0..rows).map(|i| Some((i % 100) as f64 * 1.25)).collect();
     let successes: Vec<Option<bool>> = (0..rows).map(|i| Some(i % 11 != 0)).collect();
@@ -246,7 +253,9 @@ fn populate_generated_record(
         let (sev, sev_text) = parse_severity(level.as_bytes());
         record.severity_number = sev as i32;
         if (sev as i32) != (Severity::Unspecified as i32) {
-            record.severity_text.push_str(&String::from_utf8_lossy(sev_text));
+            record
+                .severity_text
+                .push_str(&String::from_utf8_lossy(sev_text));
         }
     }
     if let Some(arr) = columns.message_col
@@ -693,7 +702,9 @@ fn main() {
             || {
                 encoded.clear();
                 encoded.reserve(request.encoded_len());
-                request.encode(&mut encoded).expect("encode generated request");
+                request
+                    .encode(&mut encoded)
+                    .expect("encode generated request");
                 black_box(&encoded);
             },
         );
@@ -754,9 +765,16 @@ fn main() {
     }
 
     println!("\nOTAP boundary");
-    for (name, payload_size, iterations) in [("small", 512usize, 20_000usize), ("large", 64 * 1024usize, 1_000usize)] {
+    for (name, payload_size, iterations) in [
+        ("small", 512usize, 20_000usize),
+        ("large", 64 * 1024usize, 1_000usize),
+    ] {
         let payloads = vec![
-            ("logs".to_string(), ArrowPayloadType::Logs, vec![0x11; payload_size]),
+            (
+                "logs".to_string(),
+                ArrowPayloadType::Logs,
+                vec![0x11; payload_size],
+            ),
             (
                 "log_attrs".to_string(),
                 ArrowPayloadType::LogAttrs,
@@ -827,8 +845,13 @@ fn main() {
         let status = manual_decode_batch_status(&status_buf).expect("manual status");
         black_box(status);
     });
-    run("otap status decode generated", 100_000, status_bytes, || {
-        let status = decode_batch_status(&status_buf).expect("generated status");
-        black_box(status);
-    });
+    run(
+        "otap status decode generated",
+        100_000,
+        status_bytes,
+        || {
+            let status = decode_batch_status(&status_buf).expect("generated status");
+            black_box(status);
+        },
+    );
 }

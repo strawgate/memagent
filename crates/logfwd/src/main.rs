@@ -7,7 +7,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use std::env;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 
 use opentelemetry::metrics::MeterProvider;
@@ -63,6 +63,10 @@ impl From<io::Error> for CliError {
 fn use_color() -> bool {
     // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
     env::var_os("NO_COLOR").is_none() && unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
+}
+
+fn use_json_logs_for_stderr(is_terminal: bool) -> bool {
+    !is_terminal
 }
 
 macro_rules! style {
@@ -831,6 +835,22 @@ async fn run_pipelines(
 
     let shutdown = CancellationToken::new();
 
+    #[cfg(unix)]
+    let (mut sigterm, mut sighup) = {
+        use tokio::signal::unix::{SignalKind, signal};
+        let sigterm = signal(SignalKind::terminate()).map_err(|err| {
+            CliError::Runtime(io::Error::other(format!(
+                "failed to register SIGTERM handler: {err}"
+            )))
+        })?;
+        let sighup = signal(SignalKind::hangup()).map_err(|err| {
+            CliError::Runtime(io::Error::other(format!(
+                "failed to register SIGHUP handler: {err}"
+            )))
+        })?;
+        (sigterm, sighup)
+    };
+
     // Listen for SIGINT (Ctrl-C) and SIGTERM to trigger graceful shutdown.
     #[cfg(feature = "dhat-heap")]
     let profiler = dhat::Profiler::new_heap();
@@ -856,13 +876,8 @@ async fn run_pipelines(
 
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{SignalKind, signal};
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
             // Install a SIGHUP handler so logrotate / supervisors don't kill us.
             // Config reload is not yet implemented; we ignore SIGHUP and log a warning.
-            let mut sighup =
-                signal(SignalKind::hangup()).expect("failed to register SIGHUP handler");
             loop {
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => break,
@@ -911,9 +926,18 @@ async fn run_pipelines(
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("LOGFWD_LOG")
         .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_writer(io::stderr)
-        .with_target(true);
+    let fmt_layer = if use_json_logs_for_stderr(io::stderr().is_terminal()) {
+        tracing_subscriber::fmt::layer()
+            .json()
+            .with_writer(io::stderr)
+            .with_target(true)
+            .boxed()
+    } else {
+        tracing_subscriber::fmt::layer()
+            .with_writer(io::stderr)
+            .with_target(true)
+            .boxed()
+    };
     // Apply env_filter only to the fmt layer so it doesn't suppress OTel spans.
     let _ = tracing_subscriber::registry()
         .with(fmt_layer.with_filter(env_filter))
@@ -1517,5 +1541,11 @@ mod cli_tests {
         assert_eq!(suggest_flag("--ini"), Some("--init"));
         assert_eq!(suggest_flag("--completion"), Some("--completions"));
         assert_eq!(suggest_flag("--dump-confi"), Some("--dump-config"));
+    }
+
+    #[test]
+    fn json_logs_are_used_only_when_stderr_is_not_a_tty() {
+        assert!(!use_json_logs_for_stderr(true));
+        assert!(use_json_logs_for_stderr(false));
     }
 }

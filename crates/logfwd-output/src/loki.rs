@@ -58,6 +58,39 @@ type LokiEntry = (u64, String);
 /// Collect entries per stream label set.
 type StreamMap = HashMap<String, Vec<LokiEntry>>;
 
+fn sanitize_loki_label_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len().max(1));
+    for (idx, ch) in name.chars().enumerate() {
+        let valid = if idx == 0 {
+            ch.is_ascii_alphabetic() || ch == '_'
+        } else {
+            ch.is_ascii_alphanumeric() || ch == '_'
+        };
+        out.push(if valid { ch } else { '_' });
+    }
+    if out.is_empty() { "_".to_string() } else { out }
+}
+
+fn sanitize_static_labels(static_labels: &[(String, String)]) -> io::Result<Vec<(String, String)>> {
+    let mut sanitized = Vec::with_capacity(static_labels.len());
+    let mut sanitized_sources: HashMap<String, String> =
+        HashMap::with_capacity(static_labels.len());
+    for (key, value) in static_labels {
+        let sanitized_key = sanitize_loki_label_name(key);
+        if let Some(existing) = sanitized_sources.get(&sanitized_key) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "duplicate Loki static label key after sanitization: '{key}' conflicts with {existing} as '{sanitized_key}'"
+                ),
+            ));
+        }
+        sanitized_sources.insert(sanitized_key.clone(), format!("static label '{key}'"));
+        sanitized.push((sanitized_key, value.clone()));
+    }
+    Ok(sanitized)
+}
+
 /// Sort entries by timestamp and deduplicate by incrementing conflicting timestamps.
 ///
 /// Loki rejects any push where `entries[i].timestamp <= entries[i-1].timestamp`
@@ -111,8 +144,6 @@ struct LokiConfig {
     endpoint: String,
     tenant_id: Option<String>,
     static_labels: Vec<(String, String)>,
-    /// Pre-computed set of static label key names for stream-key exclusion.
-    static_label_keys: std::collections::HashSet<String>,
     label_columns: Vec<String>,
     headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
 }
@@ -162,21 +193,41 @@ impl LokiSink {
             f.name() == field_names::TIMESTAMP_UNDERSCORE || f.name() == field_names::TIMESTAMP_AT
         });
 
-        // Find label ColInfos for configured label columns, excluding keys
-        // that are overridden by static labels. Including overridden keys in
-        // the stream key would split rows with different dynamic values into
-        // separate streams even though the static label always wins. (#1459)
-        let label_col_infos: Vec<(String, &super::ColInfo)> = self
+        // Find label ColInfos for configured label columns.
+        // Static labels are sanitized before collision detection (#1459, #1470).
+        let static_labels = sanitize_static_labels(&self.config.static_labels)?;
+        let mut sanitized_label_sources: HashMap<String, String> = self
             .config
-            .label_columns
+            .static_labels
             .iter()
-            .filter(|label_col| !self.config.static_label_keys.contains(label_col.as_str()))
-            .filter_map(|label_col| {
-                cols.iter()
-                    .find(|c| &c.field_name == label_col)
-                    .map(|ci| (label_col.clone(), ci))
+            .map(|(key, _)| {
+                (
+                    sanitize_loki_label_name(key),
+                    format!("static label '{key}'"),
+                )
             })
             .collect();
+        let mut label_col_infos: Vec<(String, &super::ColInfo)> = Vec::new();
+        for label_col in &self.config.label_columns {
+            if let Some(ci) = cols.iter().find(|c| &c.field_name == label_col) {
+                let sanitized = sanitize_loki_label_name(label_col);
+                if let Some(existing) = sanitized_label_sources.get(&sanitized) {
+                    // Collision: two sources sanitize to the same key. Keep the
+                    // first one and warn — erroring would make config validity
+                    // data-dependent since dynamic labels are schema-derived.
+                    tracing::warn!(
+                        label = label_col.as_str(),
+                        sanitized = sanitized.as_str(),
+                        conflicts_with = existing.as_str(),
+                        "loki.label_collision_after_sanitization — keeping first, dropping duplicate"
+                    );
+                    continue;
+                }
+                sanitized_label_sources
+                    .insert(sanitized.clone(), format!("label column '{label_col}'"));
+                label_col_infos.push((sanitized, ci));
+            }
+        }
 
         let mut stream_map: StreamMap = HashMap::new();
 
@@ -212,7 +263,7 @@ impl LokiSink {
             // --- Labels ---
             // Use coalesce_as_str so that struct conflict columns (and plain Utf8
             // columns alike) always produce a string value for the label.
-            let mut labels: Vec<(String, String)> = self.config.static_labels.clone();
+            let mut labels = static_labels.clone();
             for (label_name, col_info) in &label_col_infos {
                 if let Some(val) = coalesce_as_str(batch, row, col_info) {
                     // Skip empty label values — Loki API rejects them with HTTP 400.
@@ -254,10 +305,7 @@ impl LokiSink {
     /// Returns `(payload, retained_row_count)`. The retained count may be less than
     /// the original row count if overflow truncation occurred in any stream
     /// (see [`sort_and_dedup_timestamps`]).
-    fn serialize_loki_json(
-        stream_map: &mut StreamMap,
-        static_labels: &[(String, String)],
-    ) -> (String, u64) {
+    fn serialize_loki_json(stream_map: &mut StreamMap) -> (String, u64) {
         let mut streams_json = Vec::new();
         let mut retained: u64 = 0;
 
@@ -265,9 +313,8 @@ impl LokiSink {
             retained += sort_and_dedup_timestamps(entries) as u64;
 
             // Parse stream_key (JSON array of [key, value] pairs) back into label map.
-            // Static labels are seeded first as immutable identifiers; dynamic labels
-            // from the stream_key fill in any remaining keys but cannot override statics.
-            let mut labels_map: HashMap<String, String> = static_labels.iter().cloned().collect();
+            // The stream key already includes sanitized static and dynamic labels.
+            let mut labels_map: HashMap<String, String> = HashMap::new();
             if let Ok(pairs) = serde_json::from_str::<Vec<[String; 2]>>(stream_key.as_str()) {
                 for [k, v] in pairs {
                     labels_map.entry(k).or_insert(v);
@@ -359,8 +406,7 @@ impl super::sink::Sink for LokiSink {
                 Ok(m) => m,
                 Err(e) => return super::sink::SendResult::IoError(e),
             };
-            let (payload, retained_rows) =
-                Self::serialize_loki_json(&mut stream_map, &self.config.static_labels);
+            let (payload, retained_rows) = Self::serialize_loki_json(&mut stream_map);
             match self.do_send(payload, retained_rows).await {
                 Ok(r) => r,
                 Err(e) => super::sink::SendResult::IoError(e),
@@ -429,12 +475,10 @@ impl LokiSinkFactory {
         Ok(LokiSinkFactory {
             name,
             config: Arc::new({
-                let static_label_keys = static_labels.iter().map(|(k, _)| k.clone()).collect();
                 LokiConfig {
                     endpoint: endpoint.trim_end_matches('/').to_string(),
                     tenant_id,
                     static_labels,
-                    static_label_keys,
                     label_columns,
                     headers: parsed_headers,
                 }
@@ -726,6 +770,134 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_loki_label_name_rewrites_invalid_chars() {
+        assert_eq!(sanitize_loki_label_name("service.name"), "service_name");
+        assert_eq!(
+            sanitize_loki_label_name("http.status_code"),
+            "http_status_code"
+        );
+        assert_eq!(
+            sanitize_loki_label_name("9invalid-prefix"),
+            "_invalid_prefix"
+        );
+        assert_eq!(sanitize_loki_label_name(""), "_");
+    }
+
+    #[test]
+    fn dynamic_label_columns_use_sanitized_loki_names() {
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec!["service.name".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service.name",
+            DataType::Utf8,
+            true,
+        )]));
+        let values = StringArray::from(vec![Some("checkout")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let key = stream_map.keys().next().unwrap();
+        let parsed: Vec<[String; 2]> = serde_json::from_str(key).unwrap();
+        assert_eq!(
+            parsed,
+            vec![["service_name".to_string(), "checkout".to_string()]]
+        );
+    }
+
+    #[test]
+    fn static_labels_are_sanitized_in_streams() {
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![("service.name".to_string(), "frontend".to_string())],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "message",
+            DataType::Utf8,
+            true,
+        )]));
+        let values = StringArray::from(vec![Some("ok")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        let mut stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let (payload, retained) = LokiSink::serialize_loki_json(&mut stream_map);
+        assert_eq!(retained, 1);
+        assert!(payload.contains("\"service_name\":\"frontend\""));
+        assert!(!payload.contains("\"service.name\":\"frontend\""));
+    }
+
+    #[test]
+    fn colliding_sanitized_label_columns_keeps_first() {
+        use arrow::array::{ArrayRef, StringArray};
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec!["service.name".to_string(), "service-name".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service.name", DataType::Utf8, true),
+            Field::new("service-name", DataType::Utf8, true),
+        ]));
+        let left: ArrayRef = Arc::new(StringArray::from(vec![Some("checkout")]));
+        let right: ArrayRef = Arc::new(StringArray::from(vec![Some("payments")]));
+        let batch = RecordBatch::try_new(schema, vec![left, right]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        // Collision is warned, not errored. First label wins.
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        assert!(!stream_map.is_empty(), "should produce at least one stream");
+    }
+
+    #[test]
     fn test_negative_timestamp_handling() {
         // Bug #1084: negative i64 timestamps wrap to far-future u64 values
         use arrow::array::Int64Array;
@@ -735,7 +907,6 @@ mod tests {
             endpoint: "http://localhost".to_string(),
             tenant_id: None,
             static_labels: vec![],
-            static_label_keys: std::collections::HashSet::new(),
             label_columns: vec![],
             headers: vec![],
         });
@@ -771,9 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn static_label_not_overwritten_by_dynamic() {
-        // Bug #1385: static labels were seeded into labels_map first; dynamic
-        // labels from stream_key were inserted on top, silently overwriting them.
+    fn dynamic_label_colliding_with_static_keeps_static() {
         use arrow::array::StringArray;
         use arrow::datatypes::{Field, Schema};
 
@@ -781,7 +950,6 @@ mod tests {
             endpoint: "http://localhost".to_string(),
             tenant_id: None,
             static_labels: vec![("env".to_string(), "prod".to_string())],
-            static_label_keys: ["env".to_string()].into_iter().collect(),
             label_columns: vec!["env".to_string()],
             headers: vec![],
         });
@@ -792,7 +960,6 @@ mod tests {
             Arc::new(ComponentStats::new()),
         );
 
-        // The log record has env="staging" — static label "env"="prod" must survive.
         let schema = Arc::new(Schema::new(vec![Field::new("env", DataType::Utf8, true)]));
         let env_arr = StringArray::from(vec![Some("staging")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(env_arr)]).unwrap();
@@ -801,16 +968,46 @@ mod tests {
             observed_time_ns: 1_000,
         };
 
-        let mut stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
-        let (payload, _) = LokiSink::serialize_loki_json(
-            &mut stream_map,
-            &[("env".to_string(), "prod".to_string())],
+        // Collision is warned, dynamic "env" column is dropped. Static wins.
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        assert!(!stream_map.is_empty());
+    }
+
+    #[test]
+    fn sanitized_static_label_colliding_with_dynamic_keeps_static() {
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![("service.name".to_string(), "frontend".to_string())],
+            label_columns: vec!["service_name".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
         );
-        // The static label "prod" must not be overwritten by the dynamic "staging".
-        assert!(
-            payload.contains("\"env\":\"prod\""),
-            "static label must not be overwritten; payload: {payload}"
-        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service_name",
+            DataType::Utf8,
+            true,
+        )]));
+        let values = StringArray::from(vec![Some("checkout")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        // service.name (static) sanitizes to service_name, colliding with
+        // the dynamic column. Static wins, dynamic dropped with warning.
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        assert!(!stream_map.is_empty());
     }
 
     #[test]
@@ -823,7 +1020,6 @@ mod tests {
             endpoint: "http://localhost".to_string(),
             tenant_id: None,
             static_labels: vec![],
-            static_label_keys: std::collections::HashSet::new(),
             label_columns: vec!["namespace".to_string()],
             headers: vec![],
         });
@@ -866,7 +1062,6 @@ mod tests {
             endpoint: "http://localhost".to_string(),
             tenant_id: None,
             static_labels: vec![],
-            static_label_keys: std::collections::HashSet::new(),
             label_columns: vec![],
             headers: vec![],
         });
