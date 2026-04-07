@@ -202,7 +202,13 @@ and rich component health snapshots exist.
 
 ### Status-snapshot rules
 
-- status snapshots should carry a state, a reason, and transition timing when available.
+- top-level status snapshots should carry:
+  - a state
+  - a machine-stable reason
+  - `observed_at_unix_ns`
+- aggregated component-health snapshots should also carry `readiness_impact`
+  so control-plane consumers do not have to infer whether a visible state is
+  gating readiness.
 - status roll-ups should be deterministic and local to the semantic seam that owns them.
 - HTTP shell code should not own the policy for deciding what health means.
 

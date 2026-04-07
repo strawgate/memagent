@@ -9,7 +9,7 @@
 
 use std::io;
 use std::io::Read as _;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
@@ -20,6 +20,7 @@ use prost::Message;
 
 use crate::InputError;
 use crate::input::{InputEvent, InputSource};
+use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::field_names;
 
 /// Maximum request body size: 10 MB.
@@ -39,6 +40,8 @@ pub struct OtlpReceiverInput {
     handle: Option<std::thread::JoinHandle<()>>,
     /// Shutdown mechanism for the background thread.
     is_running: Arc<AtomicBool>,
+    /// Source-owned health snapshot for readiness and diagnostics.
+    health: Arc<AtomicU8>,
 }
 
 impl OtlpReceiverInput {
@@ -67,6 +70,8 @@ impl OtlpReceiverInput {
         let server_clone = Arc::clone(&server);
         let is_running = Arc::new(AtomicBool::new(true));
         let is_running_clone = Arc::clone(&is_running);
+        let health = Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr()));
+        let health_clone = Arc::clone(&health);
 
         let handle = std::thread::Builder::new()
             .name("otlp-receiver".into())
@@ -75,7 +80,11 @@ impl OtlpReceiverInput {
                     let mut request = match server_clone.recv_timeout(Duration::from_millis(100)) {
                         Ok(Some(req)) => req,
                         Ok(None) => continue, // timeout — check is_running and retry
-                        Err(_) => break,      // server error — exit thread
+                        Err(_) => {
+                            health_clone
+                                .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                            break;
+                        }
                     };
 
                     let url = request.url().to_string();
@@ -232,6 +241,8 @@ impl OtlpReceiverInput {
 
                     match send_result {
                         Ok(()) => {
+                            health_clone
+                                .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
                             // Return standard OTLP success response with Content-Type header.
                             let response = tiny_http::Response::from_string("{}")
                                 .with_header(
@@ -243,6 +254,8 @@ impl OtlpReceiverInput {
                             let _ = request.respond(response);
                         }
                         Err(mpsc::TrySendError::Full(_)) => {
+                            health_clone
+                                .store(ComponentHealth::Degraded.as_repr(), Ordering::Relaxed);
                             let _ = request.respond(
                                 tiny_http::Response::from_string(
                                     "too many requests: pipeline backpressure",
@@ -251,6 +264,10 @@ impl OtlpReceiverInput {
                             );
                         }
                         Err(mpsc::TrySendError::Disconnected(_)) => {
+                            if is_running_clone.load(Ordering::Relaxed) {
+                                health_clone
+                                    .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                            }
                             let _ = request.respond(
                                 tiny_http::Response::from_string(
                                     "service unavailable: pipeline disconnected",
@@ -270,6 +287,7 @@ impl OtlpReceiverInput {
             server,
             handle: Some(handle),
             is_running,
+            health,
         })
     }
 
@@ -281,12 +299,16 @@ impl OtlpReceiverInput {
 
 impl Drop for OtlpReceiverInput {
     fn drop(&mut self) {
+        self.health
+            .store(ComponentHealth::Stopping.as_repr(), Ordering::Relaxed);
         self.is_running.store(false, Ordering::Relaxed);
         self.rx.take();
         self.server.unblock();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+        self.health
+            .store(ComponentHealth::Stopped.as_repr(), Ordering::Relaxed);
     }
 }
 
@@ -311,6 +333,20 @@ impl InputSource for OtlpReceiverInput {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn health(&self) -> ComponentHealth {
+        let stored = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
+        if self
+            .handle
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+            && self.is_running.load(Ordering::Relaxed)
+        {
+            ComponentHealth::Failed
+        } else {
+            stored
+        }
     }
 }
 
@@ -1788,9 +1824,17 @@ mod tests {
             status == 429 || status == 503,
             "expected 429 or 503 for backpressure, got {status}"
         );
+        assert_eq!(receiver.health(), ComponentHealth::Degraded);
 
         // Drain the two buffered entries so the receiver is valid.
         let _ = receiver.poll().unwrap();
+
+        let resp = ureq::post(&url)
+            .header("content-type", "application/json")
+            .send(body.as_bytes())
+            .expect("request after drain failed");
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(receiver.health(), ComponentHealth::Healthy);
     }
 
     // Bug #686: /v1/logsFOO and /v1/logs/extra should return 404, not 200.
@@ -1836,7 +1880,7 @@ mod tests {
             "Application/JSON should be decoded as JSON and return 200"
         );
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
         let data = receiver.poll().unwrap();
         assert!(
             !data.is_empty(),
@@ -1908,6 +1952,59 @@ mod tests {
         // with "Address already in use".
         let _new_receiver = OtlpReceiverInput::new("test-drop-2", &local_addr.to_string())
             .expect("should bind successfully to the exact same port");
+    }
+
+    #[test]
+    fn receiver_health_is_healthy_while_running() {
+        let receiver =
+            OtlpReceiverInput::new("test-health", "127.0.0.1:0").expect("should bind successfully");
+
+        assert_eq!(receiver.health(), ComponentHealth::Healthy);
+    }
+
+    #[test]
+    fn receiver_health_reports_stopping_when_shutdown_requested() {
+        let receiver = OtlpReceiverInput::new("test-health-stop", "127.0.0.1:0")
+            .expect("should bind successfully");
+        receiver.is_running.store(false, Ordering::Relaxed);
+        receiver
+            .health
+            .store(ComponentHealth::Stopping.as_repr(), Ordering::Relaxed);
+
+        assert_eq!(receiver.health(), ComponentHealth::Stopping);
+    }
+
+    #[test]
+    fn receiver_health_reports_failed_when_server_thread_exits() {
+        let mut receiver = OtlpReceiverInput::new("test-health-failed", "127.0.0.1:0")
+            .expect("should bind successfully");
+        receiver.handle = Some(std::thread::spawn(|| {}));
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert_eq!(receiver.health(), ComponentHealth::Failed);
+    }
+
+    #[test]
+    fn receiver_health_reports_failed_when_pipeline_disconnects() {
+        let mut receiver =
+            OtlpReceiverInput::new_with_capacity("test-disconnect", "127.0.0.1:0", 16)
+                .expect("should bind successfully");
+        let port = receiver.local_addr().port();
+        let url = format!("http://127.0.0.1:{port}/v1/logs");
+        receiver.rx.take();
+
+        let status = match ureq::post(&url)
+            .header("content-type", "application/json")
+            .send(
+                br#"{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"body":{"stringValue":"hello"}}]}]}]}"#,
+            ) {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+
+        assert_eq!(status, 503);
+        assert_eq!(receiver.health(), ComponentHealth::Failed);
     }
 
     // Valid OTLP JSON should still return 200 after the 400 fix.
