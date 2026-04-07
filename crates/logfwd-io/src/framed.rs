@@ -34,6 +34,9 @@ const MAX_REMAINDER_BYTES: usize = 2 * 1024 * 1024;
 struct SourceState {
     /// Partial-line bytes after the last newline.
     remainder: Vec<u8>,
+    /// After an overflow discard, drop bytes until the next newline so we
+    /// do not emit a suffix from the oversized record as a fresh line.
+    discard_until_newline: bool,
     /// Per-source format processor (CRI aggregator state is source-scoped).
     format: FormatDecoder,
     /// Kani-proven checkpoint offset tracker. Tracks the relationship
@@ -104,6 +107,7 @@ impl InputSource for FramedInput {
                         let template = &self.format_template;
                         self.sources.entry(key).or_insert_with(|| SourceState {
                             remainder: Vec::new(),
+                            discard_until_newline: false,
                             format: template.new_instance(),
                             tracker: CheckpointTracker::new(0),
                         })
@@ -116,7 +120,7 @@ impl InputSource for FramedInput {
 
                     // Find last newline — everything before is complete lines,
                     // everything after is the new remainder.
-                    let last_newline_pos = memchr::memrchr(b'\n', &chunk);
+                    let mut last_newline_pos = memchr::memrchr(b'\n', &chunk);
 
                     // Compute the last newline position relative to the NEW
                     // bytes only (for the checkpoint tracker). The tracker
@@ -136,6 +140,24 @@ impl InputSource for FramedInput {
 
                     // Update checkpoint tracker with the new read.
                     state.tracker.apply_read(n_bytes, last_newline_in_new_bytes);
+
+                    if state.discard_until_newline {
+                        match memchr::memchr(b'\n', &chunk) {
+                            Some(pos) => {
+                                state.discard_until_newline = false;
+                                chunk = chunk.split_off(pos + 1);
+                                if chunk.is_empty() {
+                                    continue;
+                                }
+                                last_newline_pos = memchr::memrchr(b'\n', &chunk);
+                            }
+                            None => {
+                                // All new bytes still belong to the discarded oversized record.
+                                state.tracker.apply_remainder_consumed();
+                                continue;
+                            }
+                        }
+                    }
 
                     match last_newline_pos {
                         Some(pos) => {
@@ -161,9 +183,11 @@ impl InputSource for FramedInput {
                                     // state (the discarded prefix may have broken CRI P/F
                                     // sequence alignment).
                                     state.format.reset();
-                                    // Discard the remainder entirely to avoid garbling the next record
-                                    // (#1030) and advance the checkpoint tracker so it does not rewind (#973).
+                                    // Discard the remainder entirely to avoid garbling the next
+                                    // record (#1030), then keep dropping bytes until a newline
+                                    // terminates the oversized record.
                                     state.remainder.clear();
+                                    state.discard_until_newline = true;
                                     state.tracker.apply_remainder_consumed();
                                 } else {
                                     let state = self.sources.get_mut(&key).expect("just inserted");
@@ -188,6 +212,7 @@ impl InputSource for FramedInput {
                                 let state = self.sources.get_mut(&key).expect("just inserted");
                                 state.format.reset();
                                 state.remainder.clear();
+                                state.discard_until_newline = true;
                                 state.tracker.apply_remainder_consumed();
                             } else {
                                 let state = self.sources.get_mut(&key).expect("just inserted");
@@ -369,6 +394,20 @@ mod tests {
             )
         }
 
+        fn from_chunks_for_source(source_id: SourceId, chunks: Vec<&[u8]>) -> Self {
+            Self::new(
+                chunks
+                    .into_iter()
+                    .map(|c| {
+                        vec![InputEvent::Data {
+                            bytes: c.to_vec(),
+                            source_id: Some(source_id),
+                        }]
+                    })
+                    .collect(),
+            )
+        }
+
         fn with_offsets(mut self, offsets: Vec<(SourceId, ByteOffset)>) -> Self {
             self.offsets = offsets;
             self
@@ -482,10 +521,10 @@ mod tests {
         let stats = make_stats();
         // Send > 2 MiB without a newline.
         let big = vec![b'x'; MAX_REMAINDER_BYTES + 1];
-        let source = MockSource::from_chunks(vec![&big, b"\n"]).with_offsets(vec![(
-            SourceId(1),
-            ByteOffset((MAX_REMAINDER_BYTES + 1) as u64),
-        )]);
+        let source =
+            MockSource::from_chunks_for_source(SourceId(1), vec![&big, b"\n"]).with_offsets(vec![
+                (SourceId(1), ByteOffset((MAX_REMAINDER_BYTES + 1) as u64)),
+            ]);
 
         let mut framed = FramedInput::new(
             Box::new(source),
@@ -504,7 +543,7 @@ mod tests {
         );
 
         // The overflow remainder is discarded.
-        let state = framed.sources.get(&None).unwrap();
+        let state = framed.sources.get(&Some(SourceId(1))).unwrap();
         assert_eq!(
             state.remainder.len(),
             0,
@@ -515,15 +554,11 @@ mod tests {
         let cp = framed.checkpoint_data();
         assert_eq!(cp[0].1, ByteOffset((MAX_REMAINDER_BYTES + 1) as u64));
 
-        // Second poll: a newline terminates the discarded data, emitting an empty line
-        // (which collect_data doesn't see since we didn't send any more bytes before \n,
-        // so it's a 0-length record or ignored depending on passthrough).
+        // Second poll: a newline terminates the discarded data and should not
+        // emit a phantom empty record.
         let events2 = framed.poll().unwrap();
         let data2 = collect_data(events2);
-        assert!(
-            data2.is_empty() || data2 == b"\n",
-            "no garbled prefix should be emitted"
-        );
+        assert!(data2.is_empty(), "discarded overflow must not emit a line");
     }
 
     #[test]
@@ -556,13 +591,38 @@ mod tests {
             "overflow tail must be discarded entirely"
         );
 
-        // Second poll: a newline terminates the discarded remainder — the line
-        // is empty (avoids garbled record).
+        // Second poll: a newline terminates the discarded remainder and should
+        // not emit a phantom empty record.
         let events2 = framed.poll().unwrap();
         let data2 = collect_data(events2);
-        assert!(
-            data2.is_empty() || data2 == b"\n",
-            "no garbled prefix should be emitted"
+        assert!(data2.is_empty(), "discarded overflow must not emit a line");
+    }
+
+    #[test]
+    fn overflow_discards_continuation_bytes_until_newline() {
+        let stats = make_stats();
+        let big = vec![b'x'; MAX_REMAINDER_BYTES + 1];
+        let source = MockSource::from_chunks(vec![&big, b"suffix still dropped\nnext\n"]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            Arc::clone(&stats),
+        );
+
+        let events1 = framed.poll().unwrap();
+        assert!(collect_data(events1).is_empty());
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        let events2 = framed.poll().unwrap();
+        assert_eq!(
+            collect_data(events2),
+            b"next\n",
+            "continuation bytes from the discarded oversized line must be dropped"
         );
     }
 
