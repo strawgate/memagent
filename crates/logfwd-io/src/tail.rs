@@ -2383,9 +2383,10 @@ mod tests {
         );
     }
 
-    /// #800: read_new_data must not exceed MAX_READ_PER_POLL.
+    /// #800: when the configured budget exceeds the hard cap, reads must clamp
+    /// exactly at MAX_READ_PER_POLL rather than "within one extra buffer".
     #[test]
-    fn test_read_cap_prevents_oom() {
+    fn test_read_cap_clamps_exactly_at_max_read_per_poll() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("large.log");
 
@@ -2403,11 +2404,13 @@ mod tests {
         let config = TailConfig {
             start_from_end: false,
             poll_interval_ms: 10,
+            per_file_read_budget_bytes: FileTailer::MAX_READ_PER_POLL * 2,
             ..Default::default()
         };
         let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
 
-        // First poll should read at most MAX_READ_PER_POLL bytes.
+        // First poll should read exactly MAX_READ_PER_POLL bytes because the
+        // configured budget exceeds the hard cap and the file is larger still.
         std::thread::sleep(Duration::from_millis(50));
         let events = tailer.poll().unwrap();
 
@@ -2419,14 +2422,13 @@ mod tests {
             })
             .sum();
 
-        assert!(
-            total_bytes <= FileTailer::MAX_READ_PER_POLL,
-            "read should be capped at MAX_READ_PER_POLL, got {} bytes",
-            total_bytes
+        assert_eq!(
+            total_bytes,
+            FileTailer::MAX_READ_PER_POLL,
+            "first poll should clamp exactly at MAX_READ_PER_POLL"
         );
-        assert!(total_bytes > 0, "should read some data");
 
-        // Second poll should read the remaining data.
+        // Second poll should read the remaining 1 MiB.
         std::thread::sleep(Duration::from_millis(50));
         let events2 = tailer.poll().unwrap();
         let total_bytes2: usize = events2
@@ -2436,7 +2438,11 @@ mod tests {
                 _ => None,
             })
             .sum();
-        assert!(total_bytes2 > 0, "second poll should read remaining data");
+        assert_eq!(
+            total_bytes2,
+            target_size - FileTailer::MAX_READ_PER_POLL,
+            "second poll should read the exact remainder"
+        );
     }
 
     /// #656: set_offset must reset to 0 if offset > file size.
@@ -2932,10 +2938,12 @@ mod tests {
             })
             .sum();
 
-        // With the capped read slice the hot file must not exceed the budget at all.
-        assert!(
-            hot_bytes <= 64 * 1024,
-            "hot file should be budget-limited, got {hot_bytes}"
+        // The hot file is larger than the fairness budget, so one poll should
+        // read exactly one budget slice, not one extra buffer.
+        assert_eq!(
+            hot_bytes,
+            64 * 1024,
+            "hot file should clamp exactly to the configured budget"
         );
         assert!(cold_bytes > 0, "cold file should still be read this cycle");
     }
