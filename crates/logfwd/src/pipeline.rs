@@ -1782,7 +1782,6 @@ fn now_nanos() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
     use std::sync::atomic::Ordering;
     // std::time::Instant is cfg-gated in the parent module for turmoil compatibility,
     // but tests need it for timeout deadlines regardless of the turmoil feature flag.
@@ -1795,6 +1794,9 @@ mod tests {
     use logfwd_io::diagnostics::ComponentStats;
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::test_meter;
+
+    #[cfg(not(feature = "turmoil"))]
+    use std::collections::VecDeque;
 
     #[cfg(not(feature = "turmoil"))]
     struct MockHealthSource {

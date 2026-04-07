@@ -5,6 +5,7 @@ use std::io;
 
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::tail::ByteOffset;
+use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 
 /// A mock InputSource that returns pre-loaded chunks one at a time.
@@ -42,6 +43,12 @@ impl InputSource for ChannelInputSource {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn health(&self) -> ComponentHealth {
+        // The turmoil simulation source is preloaded and has no independent
+        // runtime lifecycle beyond the harness driving its queued chunks.
+        ComponentHealth::Healthy
     }
 
     fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
