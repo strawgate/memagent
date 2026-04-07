@@ -48,6 +48,7 @@ jobs:
   # Frontend checks — format, lint, typecheck run in parallel via matrix
   # -------------------------------------------------------------------------
   frontend-checks:
+    if: github.event_name == 'push'  # push-to-main only; dashboard changes are rare
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -88,6 +89,7 @@ jobs:
   # Frontend tests — vitest with coverage
   # -------------------------------------------------------------------------
   frontend-test:
+    if: github.event_name == 'push'  # push-to-main only
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -162,7 +164,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny
         run: |
@@ -197,7 +199,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests
         run: cargo nextest run --profile ci
@@ -215,7 +217,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests
         run: cargo nextest run --profile ci
@@ -228,6 +230,7 @@ jobs:
   # -------------------------------------------------------------------------
   build-check:
     name: Build check (aarch64)
+    needs: [lint]
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
@@ -241,7 +244,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: aarch64
 
       - name: Install cross-compilation toolchain
@@ -263,7 +266,7 @@ jobs:
     needs: [changes]
     # Always run on push to master; on PRs only when logfwd-core changed.
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.core == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -286,7 +289,7 @@ jobs:
     name: Turmoil simulation
     needs: [changes]
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -296,7 +299,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Turmoil simulation tests
         run: cargo test -p logfwd --features turmoil --test turmoil_sim
 
@@ -307,7 +310,7 @@ jobs:
     name: TLA+ model checking
     needs: [changes]
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -342,3 +345,19 @@ jobs:
 
       - name: PipelineBatch — liveness
         run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg -workers auto
+
+  # -------------------------------------------------------------------------
+  # Conclusion — single required status check for branch protection.
+  # Pattern from rust-analyzer and cargo: set ONE required check
+  # ("conclusion") instead of maintaining a list of individual job names.
+  # -------------------------------------------------------------------------
+  conclusion:
+    name: CI conclusion
+    if: ${{ !cancelled() }}
+    needs: [lint, test-linux, build-check]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          jq -C <<< '${{ toJson(needs) }}'
+          jq --exit-status 'all(.result == "success" or .result == "skipped")' \
+            <<< '${{ toJson(needs) }}'
