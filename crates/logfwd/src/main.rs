@@ -197,7 +197,7 @@ enum Commands {
     Blackhole {
         #[arg(
             value_name = "BIND_ADDR",
-            help = "Bind address (default: 0.0.0.0:4318)"
+            help = "Bind address (default: 127.0.0.1:4318)"
         )]
         bind_addr: Option<String>,
     },
