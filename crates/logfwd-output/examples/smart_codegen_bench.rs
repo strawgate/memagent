@@ -11,8 +11,9 @@ use logfwd_core::otlp::{
 };
 use logfwd_output::{
     ArrowPayloadType, BatchMetadata, BatchStatus, Compression, DecodedPayload, OtlpProtocol,
-    OtlpSink, StatusCode, decode_batch_arrow_records, decode_batch_status,
-    encode_batch_arrow_records,
+    OtlpSink, StatusCode, decode_batch_arrow_records, decode_batch_arrow_records_generated_fast,
+    decode_batch_status, decode_batch_status_generated_fast, encode_batch_arrow_records,
+    encode_batch_arrow_records_generated_fast,
 };
 use logfwd_types::diagnostics::ComponentStats;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
@@ -647,6 +648,42 @@ fn main() {
             },
         );
 
+        sink.encode_batch_generated_fast(batch, &metadata);
+        let generated_fast_bytes = sink.encoded_payload().len();
+        run(
+            &format!("otlp generated fast {name}"),
+            iterations,
+            generated_fast_bytes,
+            || {
+                sink.encode_batch_generated_fast(batch, &metadata);
+                black_box(sink.encoded_payload());
+            },
+        );
+
+        sink.encode_rows_only_for_bench(batch, &metadata);
+        let manual_rows_bytes = sink.encoded_payload().len();
+        run(
+            &format!("otlp rows manual {name}"),
+            iterations,
+            manual_rows_bytes,
+            || {
+                sink.encode_rows_only_for_bench(batch, &metadata);
+                black_box(sink.encoded_payload());
+            },
+        );
+
+        sink.encode_rows_only_generated_fast_for_bench(batch, &metadata);
+        let generated_fast_rows_bytes = sink.encoded_payload().len();
+        run(
+            &format!("otlp rows generated fast {name}"),
+            iterations,
+            generated_fast_rows_bytes,
+            || {
+                sink.encode_rows_only_generated_fast_for_bench(batch, &metadata);
+                black_box(sink.encoded_payload());
+            },
+        );
+
         let naive = build_generated_request_naive(batch, &metadata);
         let naive_bytes = naive.encoded_len();
         run(
@@ -817,6 +854,16 @@ fn main() {
             },
         );
         run(
+            &format!("otap encode generated fast {name}"),
+            iterations,
+            bytes,
+            || {
+                let mut buf = Vec::with_capacity(bytes);
+                encode_batch_arrow_records_generated_fast(&mut buf, 42, &payloads, headers);
+                black_box(buf);
+            },
+        );
+        run(
             &format!("otap decode manual {name}"),
             iterations,
             bytes,
@@ -831,6 +878,16 @@ fn main() {
             bytes,
             || {
                 let decoded = decode_batch_arrow_records(&encoded).expect("generated decode");
+                black_box(decoded);
+            },
+        );
+        run(
+            &format!("otap decode generated fast {name}"),
+            iterations,
+            bytes,
+            || {
+                let decoded = decode_batch_arrow_records_generated_fast(&encoded)
+                    .expect("generated fast decode");
                 black_box(decoded);
             },
         );
@@ -851,6 +908,16 @@ fn main() {
         status_bytes,
         || {
             let status = decode_batch_status(&status_buf).expect("generated status");
+            black_box(status);
+        },
+    );
+    run(
+        "otap status decode generated fast",
+        100_000,
+        status_bytes,
+        || {
+            let status =
+                decode_batch_status_generated_fast(&status_buf).expect("generated fast status");
             black_box(status);
         },
     );
