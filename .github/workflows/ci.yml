@@ -393,7 +393,7 @@ jobs:
         run: cargo llvm-cov report --html --output-dir htmlcov
 
       - name: Generate Coverage Summary
-        run: cargo llvm-cov report > coverage-summary.txt
+        run: cargo llvm-cov report --summary-only > coverage-summary.txt
 
       - name: Write to Job Summary
         run: |
