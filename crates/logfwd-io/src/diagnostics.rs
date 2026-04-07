@@ -1089,7 +1089,7 @@ impl DiagnosticsServer {
         } else {
             "not_ready"
         };
-        let component_health = policy::aggregate_component_health(&self.pipelines);
+        let component_health = ready_snapshot.component_health;
         let ready_reason = ready_snapshot.reason;
         let component_reason = policy::health_reason(component_health);
         let readiness_impact = policy::readiness_impact(component_health);

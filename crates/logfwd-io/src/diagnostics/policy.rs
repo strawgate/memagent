@@ -36,6 +36,7 @@ enum ReadyReasonTag {
 pub(super) struct ReadinessSnapshot {
     pub ready: bool,
     pub reason: &'static str,
+    pub component_health: ComponentHealth,
 }
 
 /// Roll component health up across all registered pipelines and component
@@ -53,9 +54,12 @@ pub(super) fn aggregate_component_health(pipelines: &[Arc<PipelineMetrics>]) -> 
         .fold(ComponentHealth::Healthy, ComponentHealth::combine)
 }
 
-/// Human-readable machine-stable reason for an aggregated component state.
-pub(super) const fn health_reason(health: ComponentHealth) -> &'static str {
-    match health_reason_tag(health) {
+/// Human-readable machine-stable label for a [`HealthReasonTag`].
+///
+/// Single source of truth for the tag-to-label mapping, used by both
+/// [`health_reason`] and [`ready_reason_label`].
+const fn health_reason_tag_label(tag: HealthReasonTag) -> &'static str {
+    match tag {
         HealthReasonTag::AllHealthy => "all_components_healthy",
         HealthReasonTag::DegradedButOperational => "components_degraded_but_operational",
         HealthReasonTag::Starting => "components_starting",
@@ -63,6 +67,11 @@ pub(super) const fn health_reason(health: ComponentHealth) -> &'static str {
         HealthReasonTag::Stopped => "components_stopped",
         HealthReasonTag::Failed => "components_failed",
     }
+}
+
+/// Human-readable machine-stable reason for an aggregated component state.
+pub(super) const fn health_reason(health: ComponentHealth) -> &'static str {
+    health_reason_tag_label(health_reason_tag(health))
 }
 
 /// Whether the given health state blocks readiness.
@@ -75,6 +84,10 @@ pub(super) const fn readiness_impact(health: ComponentHealth) -> &'static str {
 }
 
 /// Return readiness and reason from one shared aggregate snapshot.
+///
+/// The returned [`ReadinessSnapshot`] includes the aggregated
+/// [`ComponentHealth`] so that callers can reuse it without a second
+/// traversal (avoiding a TOCTOU window if health changes between calls).
 pub(super) fn readiness_snapshot(pipelines: &[Arc<PipelineMetrics>]) -> ReadinessSnapshot {
     let has_pipelines = !pipelines.is_empty();
     let aggregate = aggregate_component_health(pipelines);
@@ -82,6 +95,7 @@ pub(super) fn readiness_snapshot(pipelines: &[Arc<PipelineMetrics>]) -> Readines
     ReadinessSnapshot {
         ready,
         reason: ready_reason_label(reason_tag),
+        component_health: aggregate,
     }
 }
 
@@ -118,14 +132,7 @@ const fn ready_reason_tag(has_pipelines: bool, aggregate: ComponentHealth) -> Re
 const fn ready_reason_label(reason: ReadyReasonTag) -> &'static str {
     match reason {
         ReadyReasonTag::NoPipelines => "no_pipelines_registered",
-        ReadyReasonTag::Health(tag) => match tag {
-            HealthReasonTag::AllHealthy => "all_components_healthy",
-            HealthReasonTag::DegradedButOperational => "components_degraded_but_operational",
-            HealthReasonTag::Starting => "components_starting",
-            HealthReasonTag::Stopping => "components_stopping",
-            HealthReasonTag::Stopped => "components_stopped",
-            HealthReasonTag::Failed => "components_failed",
-        },
+        ReadyReasonTag::Health(tag) => health_reason_tag_label(tag),
     }
 }
 
