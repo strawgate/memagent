@@ -130,6 +130,10 @@ impl InputSource for FileInput {
         &self.name
     }
 
+    fn health(&self) -> ComponentHealth {
+        self.tailer.health()
+    }
+
     fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
         self.tailer.file_offsets()
     }

@@ -17,6 +17,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 
 /// Byte offset within a file. Newtype prevents mixing with SourceId.
@@ -1165,6 +1166,19 @@ impl FileTailer {
         self.update_error_backoff(had_error);
 
         Ok(events)
+    }
+
+    /// Coarse runtime health for file discovery and read loops.
+    ///
+    /// Error bursts that put the tailer into poll backoff are surfaced as
+    /// `Degraded` so readiness/status can reflect tailer trouble without
+    /// pretending the component is fully failed.
+    pub fn health(&self) -> ComponentHealth {
+        if self.consecutive_error_polls > 0 || self.error_backoff_until.is_some() {
+            ComponentHealth::Degraded
+        } else {
+            ComponentHealth::Healthy
+        }
     }
 
     fn update_error_backoff(&mut self, had_error: bool) {
@@ -2826,6 +2840,38 @@ mod tests {
             second_delay > first_delay,
             "exponential backoff should grow"
         );
+    }
+
+    #[test]
+    fn test_error_backoff_marks_tailer_degraded_until_clean_poll() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("health.log");
+        File::create(&log_path).unwrap();
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 0,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+        assert_eq!(tailer.health(), ComponentHealth::Healthy);
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        tailer.discovery.fs_events = rx;
+        tx.send(Err(notify::Error::generic("boom-health"))).unwrap();
+
+        let _ = tailer.poll().unwrap();
+        assert_eq!(tailer.health(), ComponentHealth::Degraded);
+
+        let until = tailer
+            .error_backoff_until
+            .expect("error poll should schedule backoff");
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let _ = tailer.poll().unwrap();
+        assert_eq!(tailer.health(), ComponentHealth::Healthy);
     }
 
     /// #544: file I/O and watcher errors must not use eprintln!.

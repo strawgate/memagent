@@ -164,6 +164,9 @@ The file path is:
   cleared safely.
 - Only terminal EOF may flush a trailing partial line; transient “no new bytes
   right now” states must not flush buffered partial lines.
+- Tailer watcher/file I/O error bursts that trigger poll backoff should surface
+  as `degraded` control-plane health, and a later clean poll should recover the
+  file input to `healthy`.
 
 ### Delivery semantics
 
