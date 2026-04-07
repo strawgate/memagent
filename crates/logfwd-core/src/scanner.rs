@@ -328,7 +328,7 @@ mod kani_proofs {
     use super::BuilderState;
 
     /// Operations for the Builder protocol.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
     enum BuilderOp {
         BeginBatch,
         BeginRow,
@@ -448,7 +448,7 @@ mod kani_proofs {
             let transition_ok = transition(state, op);
             let oracle_ok = oracle.check_and_apply(op);
 
-            // The protocol transition function and the oracle must agree on validity.
+            // The production state machine and the oracle must agree on validity.
             assert_eq!(
                 transition_ok.is_some(),
                 oracle_ok,
