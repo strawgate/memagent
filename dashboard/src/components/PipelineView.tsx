@@ -1,7 +1,8 @@
 import { useRef, useState } from "preact/hooks";
 import { fmt, fmtBytes } from "../lib/format";
 import { RateTracker } from "../lib/rates";
-import type { BottleneckData, ComponentData, PipelineData, TraceRecord } from "../types";
+import type { ComponentData, PipelineData, TraceRecord } from "../types";
+import { BottleneckBadge } from "./BottleneckBadge";
 import { TraceExplorer } from "./TraceExplorer";
 
 const POLL_OPTIONS = [
@@ -45,29 +46,6 @@ function typeLabel(type: string): string {
   return map[type.toLowerCase()] ?? type;
 }
 
-// Bottleneck badge: emoji + label + tooltip from server reason.
-function BottleneckBadge({ b }: { b: BottleneckData }) {
-  const configs: Record<
-    BottleneckData["stage"],
-    { emoji: string; label: string; style: string }
-  > = {
-    output: { emoji: "🔴", label: "output-bound", style: "color:#f87171" },
-    input: { emoji: "🟠", label: "input-bound", style: "color:#fb923c" },
-    transform: { emoji: "🟡", label: "transform-bound", style: "color:#facc15" },
-    scan: { emoji: "🟡", label: "scan-bound", style: "color:#facc15" },
-    none: { emoji: "🟢", label: "healthy", style: "color:#4ade80" },
-  };
-  const { emoji, label, style } = configs[b.stage] ?? configs.none;
-  return (
-    <span
-      title={b.reason}
-      style={`font-size:11px;font-weight:600;${style};margin-left:8px;cursor:default`}
-    >
-      {emoji} {label}
-    </span>
-  );
-}
-
 // Names like "input_0", "output_1" are auto-generated and not worth showing.
 function isGenericName(name: string): boolean {
   return /^(input|output)_\d+$/.test(name);
@@ -86,7 +64,7 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
 
   return (
     <div class="section">
-      <div class="heading" style="display:flex;align-items:center">
+      <div class="heading heading-flex">
         Pipeline: {p.name}
         {p.bottleneck && <BottleneckBadge b={p.bottleneck} />}
       </div>

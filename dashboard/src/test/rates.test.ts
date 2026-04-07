@@ -196,28 +196,6 @@ describe("RateTracker — same-timestamp edge case (dt=0)", () => {
   });
 });
 
-// ─── tick() deprecation ───────────────────────────────────────────────────────
-
-describe("RateTracker — tick() is a no-op", () => {
-  it("tick() does not throw", () => {
-    const tracker = new RateTracker();
-    expect(() => tracker.tick()).not.toThrow();
-  });
-
-  it("calling tick() does not affect rate calculation", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    const tracker = new RateTracker(1.0);
-    tracker.rate("k", 0);
-    advance(1000);
-    tracker.tick(); // should do nothing
-    tracker.tick();
-    const r = tracker.rate("k", 100);
-    expect(r).toBeCloseTo(100, 5);
-    vi.useRealTimers();
-  });
-});
-
 // ─── property-based tests ─────────────────────────────────────────────────────
 
 describe("RateTracker — property-based invariants", () => {
