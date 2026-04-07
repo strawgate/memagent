@@ -571,23 +571,22 @@ impl DiagnosticsServer {
     /// explicit lifecycle wiring lands, so this endpoint is only as honest as
     /// the currently wired health sources.
     fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let ready = policy::is_ready(&self.pipelines);
-        let reason = policy::ready_reason(&self.pipelines);
+        let snapshot = policy::readiness_snapshot(&self.pipelines);
         let observed_at_unix_ns = now_nanos();
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        if ready {
+        if snapshot.ready {
             let body = format!(
                 r#"{{"status":"ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                reason, observed_at_unix_ns
+                snapshot.reason, observed_at_unix_ns
             );
             let resp = tiny_http::Response::from_string(body).with_header(header);
             request.respond(resp)?;
         } else {
             let body = format!(
                 r#"{{"status":"not_ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                reason, observed_at_unix_ns
+                snapshot.reason, observed_at_unix_ns
             );
             let resp = tiny_http::Response::from_string(body)
                 .with_status_code(503)
@@ -1084,13 +1083,14 @@ impl DiagnosticsServer {
             ));
         }
 
-        let ready = if policy::is_ready(&self.pipelines) {
+        let ready_snapshot = policy::readiness_snapshot(&self.pipelines);
+        let ready = if ready_snapshot.ready {
             "ready"
         } else {
             "not_ready"
         };
         let component_health = policy::aggregate_component_health(&self.pipelines);
-        let ready_reason = policy::ready_reason(&self.pipelines);
+        let ready_reason = ready_snapshot.reason;
         let component_reason = policy::health_reason(component_health);
         let readiness_impact = policy::readiness_impact(component_health);
 
