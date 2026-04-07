@@ -12,7 +12,7 @@ doctest = false
 prost = "0.14"
 
 [build-dependencies]
-logfwd-proto-build = { path = "../logfwd-proto-build" }
+logfwd-proto-build = { version = "0.1.0", path = "../logfwd-proto-build" }
 
 [lints]
 workspace = true
