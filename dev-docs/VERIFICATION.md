@@ -137,8 +137,10 @@ python3 scripts/verify_kani_boundary_contract.py
 just kani-boundary
 ```
 
-CI runs this check from the lint workflow so boundary drift is caught before
-the more expensive build and test jobs.
+CI runs this check in the dedicated `Verification guardrail` job, and the
+required `CI conclusion` status depends on that guardrail passing. This keeps
+required seam drift visible as its own blocking check instead of burying it
+inside the broader lint job.
 
 ### Proof quality requirements
 

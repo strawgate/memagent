@@ -152,14 +152,6 @@ jobs:
       - name: Actionlint
         run: ./actionlint
 
-      - name: Set up Python for Kani boundary contract
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Kani boundary contract
-        run: python3 scripts/verify_kani_boundary_contract.py
-
       # --- Expensive steps below — only reached if fast checks pass ---
 
       - uses: Swatinem/rust-cache@v2
@@ -182,6 +174,23 @@ jobs:
         with:
           token: ${{ github.token }}
           args: "--deny=vuln --deny=unsound --deny=yanked"
+
+  # -------------------------------------------------------------------------
+  # Verification guardrail — fail fast when the non-core Kani boundary
+  # contract drifts so PRs get a dedicated blocking signal.
+  # -------------------------------------------------------------------------
+  verification-guardrail:
+    name: Verification guardrail
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python for Kani boundary contract
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Kani boundary contract
+        run: python3 scripts/verify_kani_boundary_contract.py
 
   # -------------------------------------------------------------------------
   # Tests — Linux and macOS in parallel
@@ -352,7 +361,7 @@ jobs:
   conclusion:
     name: CI conclusion
     if: ${{ !cancelled() }}
-    needs: [lint, test-linux, build-check]
+    needs: [verification-guardrail, lint, test-linux, build-check]
     runs-on: ubuntu-latest
     steps:
       - run: |
