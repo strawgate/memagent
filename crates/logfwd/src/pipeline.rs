@@ -757,7 +757,8 @@ impl Pipeline {
                             {
                                 self.metrics.inc_flush_by_size();
                                 self.flush_batch_from(data, checkpoints, "size", queued_at, input_index).await;
-                                flush_interval.reset();
+                                // Do NOT reset flush_interval here — size-triggered flushes
+                                // from one input must not starve timeout flushes for others.
                             }
                         }
                         None => break,
