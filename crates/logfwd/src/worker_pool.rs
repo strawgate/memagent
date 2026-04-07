@@ -145,16 +145,30 @@ fn apply_output_health_event(
     let mut matched = false;
     for (name, _, stats) in &metrics.outputs {
         if name == output_name {
-            stats.set_health(reduce_output_health(stats.health(), event));
+            stats.update_health(|current| reduce_output_health(current, event));
             matched = true;
         }
     }
     if matched {
         return;
     }
-    for (_, _, stats) in &metrics.outputs {
-        stats.set_health(reduce_output_health(stats.health(), event));
+
+    let broadcast_to_all =
+        metrics.outputs.len() > 1 && (output_name == "fanout" || output_name == metrics.name);
+    if broadcast_to_all {
+        for (_, _, stats) in &metrics.outputs {
+            stats.update_health(|current| reduce_output_health(current, event));
+        }
+        return;
     }
+
+    tracing::warn!(
+        output_name,
+        pipeline = %metrics.name,
+        event = ?event,
+        output_count = metrics.outputs.len(),
+        "worker_pool: ignoring health event for unknown output"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1537,5 +1551,32 @@ mod tests {
         assert_eq!(out_stats.health(), ComponentHealth::Healthy);
 
         pool.drain(Duration::from_secs(5)).await;
+    }
+
+    #[test]
+    fn unknown_output_name_does_not_mutate_registered_outputs() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("pipe", "", &meter);
+        let out_stats = pm.add_output("known", "http");
+
+        apply_output_health_event(&pm, "unknown", OutputHealthEvent::FatalFailure);
+
+        assert_eq!(out_stats.health(), ComponentHealth::Healthy);
+    }
+
+    #[test]
+    fn fanout_rollup_events_broadcast_to_all_outputs() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("pipe", "", &meter);
+        let out_a = pm.add_output("output_0", "http");
+        let out_b = pm.add_output("output_1", "stdout");
+
+        apply_output_health_event(&pm, "fanout", OutputHealthEvent::Retrying);
+        assert_eq!(out_a.health(), ComponentHealth::Degraded);
+        assert_eq!(out_b.health(), ComponentHealth::Degraded);
+
+        apply_output_health_event(&pm, "pipe", OutputHealthEvent::ShutdownCompleted);
+        assert_eq!(out_a.health(), ComponentHealth::Stopped);
+        assert_eq!(out_b.health(), ComponentHealth::Stopped);
     }
 }

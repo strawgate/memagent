@@ -20,6 +20,10 @@ export function StatusBar({ connected, componentHealth, ready, totalErrors, vers
   const pillText = connected
     ? ready !== "ready"
       ? "not ready"
+      : componentHealth === "failed"
+      ? "failed"
+      : componentHealth === "stopped"
+      ? "stopped"
       : totalErrors > 0
       ? `${totalErrors} errors`
       : componentHealth === "degraded"

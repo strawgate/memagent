@@ -122,6 +122,31 @@ impl ComponentStats {
         self.health.store(health.as_repr(), Ordering::Relaxed);
     }
 
+    /// Atomically reduce the component's health snapshot.
+    ///
+    /// This is used when multiple workers can publish lifecycle transitions
+    /// concurrently and later observations must be derived from the most recent
+    /// committed state rather than a stale read.
+    pub fn update_health<F>(&self, reducer: F) -> ComponentHealth
+    where
+        F: Fn(ComponentHealth) -> ComponentHealth,
+    {
+        let mut observed = self.health.load(Ordering::Relaxed);
+        loop {
+            let current = ComponentHealth::from_repr(observed);
+            let next = reducer(current);
+            match self.health.compare_exchange_weak(
+                observed,
+                next.as_repr(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return next,
+                Err(retry) => observed = retry,
+            }
+        }
+    }
+
     /// Current component health (relaxed load).
     pub fn health(&self) -> ComponentHealth {
         ComponentHealth::from_repr(self.health.load(Ordering::Relaxed))
@@ -131,5 +156,28 @@ impl ComponentStats {
 impl Default for ComponentStats {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ComponentHealth, ComponentStats};
+
+    #[test]
+    fn update_health_uses_latest_committed_state() {
+        let stats = ComponentStats::new();
+
+        let next = stats.update_health(|current| {
+            assert_eq!(current, ComponentHealth::Healthy);
+            ComponentHealth::Failed
+        });
+        assert_eq!(next, ComponentHealth::Failed);
+
+        let next = stats.update_health(|current| {
+            assert_eq!(current, ComponentHealth::Failed);
+            ComponentHealth::Healthy
+        });
+        assert_eq!(next, ComponentHealth::Healthy);
+        assert_eq!(stats.health(), ComponentHealth::Healthy);
     }
 }

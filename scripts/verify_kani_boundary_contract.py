@@ -4,8 +4,18 @@
 from __future__ import annotations
 
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError as exc:  # pragma: no cover - script-level failure path
+        raise SystemExit(
+            "error: Python 3.11+ or the 'tomli' package is required to read "
+            "dev-docs/verification/kani-boundary-contract.toml"
+        ) from exc
 
 
 ROOT = Path(__file__).resolve().parents[1]
