@@ -200,6 +200,7 @@ logfwd --config <file> --validate        Validate config syntax
 logfwd --config <file> --dry-run         Build pipeline, check SQL, don't start
 logfwd --blackhole [bind_addr]           Start OTLP blackhole receiver for testing
 logfwd --generate-json <n> <file>        Generate synthetic JSON log data
+logfwd --effective-config [file]         Validate and print effective runnable config
 logfwd --wizard                          Interactive config wizard
 logfwd --version                         Print version
 ```
