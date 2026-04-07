@@ -202,6 +202,7 @@ logfwd --blackhole [bind_addr]           Start OTLP blackhole receiver for testi
 logfwd --generate-json <n> <file>        Generate synthetic JSON log data
 logfwd --effective-config [file]         Validate and print effective runnable config
 logfwd --wizard                          Interactive config wizard
+logfwd --completions <shell>             Generate shell completions (bash, zsh, fish, nushell, powershell, elvish)
 logfwd --version                         Print version
 ```
 
