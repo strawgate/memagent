@@ -63,6 +63,7 @@ pub(crate) const fn reduce_receiver_health(
 mod tests {
     use super::{ReceiverHealthEvent, reduce_receiver_health};
     use logfwd_types::diagnostics::ComponentHealth;
+    use proptest::prelude::*;
 
     #[test]
     fn noop_success_does_not_heal_degraded_or_failed() {
@@ -104,6 +105,51 @@ mod tests {
             reduce_receiver_health(ComponentHealth::Healthy, ReceiverHealthEvent::FatalFailure),
             ComponentHealth::Failed
         );
+    }
+
+    fn apply_events(initial: ComponentHealth, events: &[ReceiverHealthEvent]) -> ComponentHealth {
+        events.iter().copied().fold(initial, reduce_receiver_health)
+    }
+
+    fn arb_event() -> impl Strategy<Value = ReceiverHealthEvent> {
+        prop_oneof![
+            Just(ReceiverHealthEvent::DeliveryAccepted),
+            Just(ReceiverHealthEvent::DeliveryNoop),
+            Just(ReceiverHealthEvent::Backpressure),
+            Just(ReceiverHealthEvent::FatalFailure),
+            Just(ReceiverHealthEvent::ShutdownRequested),
+            Just(ReceiverHealthEvent::ShutdownCompleted),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn failed_state_is_sticky_across_any_event_sequence(
+            events in proptest::collection::vec(arb_event(), 0..16)
+        ) {
+            let out = apply_events(ComponentHealth::Failed, &events);
+            prop_assert_eq!(out, ComponentHealth::Failed);
+        }
+
+        #[test]
+        fn stopped_state_is_sticky_across_any_event_sequence(
+            events in proptest::collection::vec(arb_event(), 0..16)
+        ) {
+            let out = apply_events(ComponentHealth::Stopped, &events);
+            prop_assert_eq!(out, ComponentHealth::Stopped);
+        }
+
+        #[test]
+        fn stopping_only_advances_to_stopped_on_explicit_shutdown_completion(
+            events in proptest::collection::vec(arb_event(), 0..16)
+        ) {
+            let out = apply_events(ComponentHealth::Stopping, &events);
+            if events.contains(&ReceiverHealthEvent::ShutdownCompleted) {
+                prop_assert!(matches!(out, ComponentHealth::Stopping | ComponentHealth::Stopped));
+            } else {
+                prop_assert_eq!(out, ComponentHealth::Stopping);
+            }
+        }
     }
 }
 
@@ -189,6 +235,46 @@ mod verification {
         kani::cover!(
             current == ComponentHealth::Healthy,
             "healthy_failure_turns_failed"
+        );
+    }
+
+    #[kani::proof]
+    fn verify_shutdown_requested_only_moves_non_terminal_receivers_to_stopping() {
+        let current = ComponentHealth::from_repr(kani::any());
+        let out = reduce_receiver_health(current, ReceiverHealthEvent::ShutdownRequested);
+
+        match current {
+            ComponentHealth::Stopped | ComponentHealth::Failed => assert_eq!(out, current),
+            _ => assert_eq!(out, ComponentHealth::Stopping),
+        }
+
+        kani::cover!(
+            current == ComponentHealth::Healthy,
+            "healthy_shutdown_requested_becomes_stopping"
+        );
+        kani::cover!(
+            current == ComponentHealth::Failed,
+            "failed_shutdown_requested_stays_failed"
+        );
+    }
+
+    #[kani::proof]
+    fn verify_shutdown_completed_stops_only_non_failed_receivers() {
+        let current = ComponentHealth::from_repr(kani::any());
+        let out = reduce_receiver_health(current, ReceiverHealthEvent::ShutdownCompleted);
+
+        match current {
+            ComponentHealth::Failed => assert_eq!(out, ComponentHealth::Failed),
+            _ => assert_eq!(out, ComponentHealth::Stopped),
+        }
+
+        kani::cover!(
+            current == ComponentHealth::Stopping,
+            "stopping_shutdown_completed_becomes_stopped"
+        );
+        kani::cover!(
+            current == ComponentHealth::Failed,
+            "failed_shutdown_completed_stays_failed"
         );
     }
 }

@@ -45,6 +45,7 @@ where
 mod tests {
     use super::{aggregate_output_health, idle_health_after_worker_insert};
     use logfwd_io::diagnostics::ComponentHealth;
+    use proptest::prelude::*;
 
     #[test]
     fn inserting_worker_keeps_terminal_pool_phases() {
@@ -83,6 +84,39 @@ mod tests {
             ComponentHealth::Stopping
         );
     }
+
+    fn arb_health() -> impl Strategy<Value = ComponentHealth> {
+        (0u8..=5).prop_map(ComponentHealth::from_repr)
+    }
+
+    proptest! {
+        #[test]
+        fn aggregate_output_health_matches_maximum_repr_over_all_inputs(
+            idle in arb_health(),
+            slots in proptest::collection::vec(arb_health(), 0..16)
+        ) {
+            let out = aggregate_output_health(idle, slots.iter().copied());
+            let expected = slots
+                .iter()
+                .copied()
+                .fold(idle, ComponentHealth::combine);
+            prop_assert_eq!(out, expected);
+            prop_assert!(out.as_repr() >= idle.as_repr());
+            for slot in &slots {
+                prop_assert!(out.as_repr() >= slot.as_repr());
+            }
+        }
+
+        #[test]
+        fn aggregate_output_health_is_permutation_invariant_for_live_slots(
+            idle in arb_health(),
+            slots in proptest::collection::vec(arb_health(), 0..8)
+        ) {
+            let forward = aggregate_output_health(idle, slots.iter().copied());
+            let reverse = aggregate_output_health(idle, slots.iter().rev().copied());
+            prop_assert_eq!(forward, reverse);
+        }
+    }
 }
 
 #[cfg(kani)]
@@ -114,30 +148,58 @@ mod verification {
 
     #[kani::proof]
     #[kani::unwind(3)]
-    fn verify_aggregate_output_health_preserves_idle_terminal_state() {
+    fn verify_aggregate_output_health_returns_worst_of_idle_and_children() {
         let idle = ComponentHealth::from_repr(kani::any());
         let a = ComponentHealth::from_repr(kani::any());
         let b = ComponentHealth::from_repr(kani::any());
         let out = aggregate_output_health(idle, [a, b]);
 
-        if matches!(idle, ComponentHealth::Stopping | ComponentHealth::Stopped) {
-            assert_eq!(out, idle);
-        }
-        if idle == ComponentHealth::Failed {
-            assert_eq!(out, ComponentHealth::Failed);
-        }
+        assert!(out.as_repr() >= idle.as_repr());
+        assert!(out.as_repr() >= a.as_repr());
+        assert!(out.as_repr() >= b.as_repr());
+        assert!(out == idle || out == a || out == b);
 
         kani::cover!(
             idle == ComponentHealth::Stopping
                 && a == ComponentHealth::Healthy
                 && b == ComponentHealth::Degraded,
-            "stopping_idle_dominates_children"
+            "stopping_idle_beats_ready_children"
         );
         kani::cover!(
             idle == ComponentHealth::Healthy
                 && a == ComponentHealth::Healthy
                 && b == ComponentHealth::Degraded,
             "degraded_child_surfaces"
+        );
+        kani::cover!(
+            idle == ComponentHealth::Stopping
+                && a == ComponentHealth::Failed
+                && b == ComponentHealth::Healthy,
+            "failed_child_beats_stopping_idle"
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn verify_aggregate_output_health_is_associative_over_three_children() {
+        let idle = ComponentHealth::from_repr(kani::any());
+        let a = ComponentHealth::from_repr(kani::any());
+        let b = ComponentHealth::from_repr(kani::any());
+        let c = ComponentHealth::from_repr(kani::any());
+
+        let left = aggregate_output_health(idle, [a, b, c]);
+        let right = aggregate_output_health(
+            idle,
+            [aggregate_output_health(ComponentHealth::Healthy, [a, b]), c],
+        );
+        assert_eq!(left, right);
+
+        kani::cover!(
+            idle == ComponentHealth::Healthy
+                && a == ComponentHealth::Degraded
+                && b == ComponentHealth::Starting
+                && c == ComponentHealth::Failed,
+            "mixed_three_child_associativity_case"
         );
     }
 }
