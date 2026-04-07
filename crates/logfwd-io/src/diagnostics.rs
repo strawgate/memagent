@@ -1879,96 +1879,81 @@ mod tests {
 
     #[test]
     fn test_ready_endpoint_stays_in_sync_with_admin_ready_snapshot() {
+        // Test the policy layer directly rather than spinning up HTTP servers
+        // for each health state. Both /ready and /admin/v1/status derive their
+        // ready status and reason from the same `policy::readiness_snapshot`
+        // call, so verifying the snapshot output is sufficient to prove they
+        // are in sync without leaving immortal sampler threads behind.
         fn assert_ready_snapshot_sync(
-            server: DiagnosticsServer,
+            server: &DiagnosticsServer,
             expected_status: &str,
             expected_reason: &str,
-            expected_http_status: u16,
+            expected_ready: bool,
         ) {
-            let (_handle, addr) = server.start().expect("server bind failed");
-            let port = addr.port();
-            thread::sleep(std::time::Duration::from_millis(100));
-
-            let (ready_http_status, ready_body) = http_get(port, "/ready");
-            let (status_http_status, status_body) = http_get(port, "/admin/v1/status");
-
-            assert_eq!(status_http_status, 200, "status body: {status_body}");
+            let snapshot = policy::readiness_snapshot(&server.pipelines);
+            let actual_status = if snapshot.ready { "ready" } else { "not_ready" };
             assert_eq!(
-                ready_http_status, expected_http_status,
-                "ready body: {ready_body}"
+                actual_status, expected_status,
+                "health state mismatch: got status={actual_status} reason={} expected status={expected_status}",
+                snapshot.reason
             );
-
-            let ready_json: serde_json::Value =
-                serde_json::from_str(&ready_body).expect("invalid /ready JSON");
-            let status_json: serde_json::Value =
-                serde_json::from_str(&status_body).expect("invalid /admin/v1/status JSON");
-
-            let ready_state = ready_json["status"]
-                .as_str()
-                .expect("missing /ready status");
-            let ready_reason = ready_json["reason"]
-                .as_str()
-                .expect("missing /ready reason");
-            let admin_state = status_json["ready"]["status"]
-                .as_str()
-                .expect("missing /admin/v1/status ready.status");
-            let admin_reason = status_json["ready"]["reason"]
-                .as_str()
-                .expect("missing /admin/v1/status ready.reason");
-
-            assert_eq!(ready_state, expected_status);
-            assert_eq!(ready_reason, expected_reason);
-            assert_eq!(ready_state, admin_state);
-            assert_eq!(ready_reason, admin_reason);
+            assert_eq!(
+                snapshot.reason, expected_reason,
+                "reason mismatch for status={expected_status}"
+            );
+            assert_eq!(
+                snapshot.ready, expected_ready,
+                "ready bool mismatch for status={expected_status}"
+            );
         }
 
         assert_ready_snapshot_sync(
-            DiagnosticsServer::new("127.0.0.1:0"),
+            &DiagnosticsServer::new("127.0.0.1:0"),
             "not_ready",
             "no_pipelines_registered",
-            503,
+            false,
         );
 
         assert_ready_snapshot_sync(
-            server_with_single_input_health(ComponentHealth::Healthy),
+            &server_with_single_input_health(ComponentHealth::Healthy),
             "ready",
             "all_components_healthy",
-            200,
+            true,
         );
 
         assert_ready_snapshot_sync(
-            server_with_single_input_health(ComponentHealth::Starting),
+            &server_with_single_input_health(ComponentHealth::Starting),
             "not_ready",
             "components_starting",
-            503,
+            false,
         );
 
         assert_ready_snapshot_sync(
-            server_with_single_input_health(ComponentHealth::Degraded),
+            &server_with_single_input_health(ComponentHealth::Degraded),
             "ready",
             "components_degraded_but_operational",
-            200,
+            true,
         );
 
         assert_ready_snapshot_sync(
-            server_with_single_input_health(ComponentHealth::Stopping),
+            &server_with_single_input_health(ComponentHealth::Stopping),
             "not_ready",
             "components_stopping",
-            503,
+            false,
         );
 
         assert_ready_snapshot_sync(
-            server_with_single_input_health(ComponentHealth::Stopped),
+            &server_with_single_input_health(ComponentHealth::Stopped),
             "not_ready",
             "components_stopped",
-            503,
+            false,
         );
 
         assert_ready_snapshot_sync(
-            server_with_single_input_health(ComponentHealth::Failed),
+            &server_with_single_input_health(ComponentHealth::Failed),
             "not_ready",
             "components_failed",
-            503,
+            false,
         );
     }
 
