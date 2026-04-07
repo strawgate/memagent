@@ -26,9 +26,16 @@ enum ReadinessImpactTag {
     Gating,
 }
 
-/// Return `true` when the diagnostics server should report ready.
-pub(super) fn is_ready(pipelines: &[Arc<PipelineMetrics>]) -> bool {
-    !pipelines.is_empty() && pipelines.iter().all(|pm| pipeline_is_ready(pm))
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadyReasonTag {
+    NoPipelines,
+    Health(HealthReasonTag),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ReadinessSnapshot {
+    pub ready: bool,
+    pub reason: &'static str,
 }
 
 /// Roll component health up across all registered pipelines and component
@@ -67,6 +74,17 @@ pub(super) const fn readiness_impact(health: ComponentHealth) -> &'static str {
     }
 }
 
+/// Return readiness and reason from one shared aggregate snapshot.
+pub(super) fn readiness_snapshot(pipelines: &[Arc<PipelineMetrics>]) -> ReadinessSnapshot {
+    let has_pipelines = !pipelines.is_empty();
+    let aggregate = aggregate_component_health(pipelines);
+    let (ready, reason_tag) = readiness_snapshot_from_state(has_pipelines, aggregate);
+    ReadinessSnapshot {
+        ready,
+        reason: ready_reason_label(reason_tag),
+    }
+}
+
 const fn health_reason_tag(health: ComponentHealth) -> HealthReasonTag {
     match health {
         ComponentHealth::Healthy => HealthReasonTag::AllHealthy,
@@ -89,12 +107,40 @@ const fn readiness_impact_tag(health: ComponentHealth) -> ReadinessImpactTag {
     }
 }
 
-/// Machine-stable reason for the top-level readiness snapshot.
-pub(super) fn ready_reason(pipelines: &[Arc<PipelineMetrics>]) -> &'static str {
-    if pipelines.is_empty() {
-        return "no_pipelines_registered";
+const fn ready_reason_tag(has_pipelines: bool, aggregate: ComponentHealth) -> ReadyReasonTag {
+    if !has_pipelines {
+        ReadyReasonTag::NoPipelines
+    } else {
+        ReadyReasonTag::Health(health_reason_tag(aggregate))
     }
-    health_reason(aggregate_component_health(pipelines))
+}
+
+const fn ready_reason_label(reason: ReadyReasonTag) -> &'static str {
+    match reason {
+        ReadyReasonTag::NoPipelines => "no_pipelines_registered",
+        ReadyReasonTag::Health(tag) => match tag {
+            HealthReasonTag::AllHealthy => "all_components_healthy",
+            HealthReasonTag::DegradedButOperational => "components_degraded_but_operational",
+            HealthReasonTag::Starting => "components_starting",
+            HealthReasonTag::Stopping => "components_stopping",
+            HealthReasonTag::Stopped => "components_stopped",
+            HealthReasonTag::Failed => "components_failed",
+        },
+    }
+}
+
+const fn readiness_snapshot_from_state(
+    has_pipelines: bool,
+    aggregate: ComponentHealth,
+) -> (bool, ReadyReasonTag) {
+    (
+        has_pipelines
+            && matches!(
+                readiness_impact_tag(aggregate),
+                ReadinessImpactTag::Ready | ReadinessImpactTag::NonBlocking
+            ),
+        ready_reason_tag(has_pipelines, aggregate),
+    )
 }
 
 /// Return the health view exposed for the transform section in `/admin/v1/status`.
@@ -103,19 +149,6 @@ pub(super) fn transform_health(pipeline: &PipelineMetrics) -> ComponentHealth {
         .transform_in
         .health()
         .combine(pipeline.transform_out.health())
-}
-
-fn pipeline_is_ready(pipeline: &PipelineMetrics) -> bool {
-    pipeline.transform_in.health().is_ready()
-        && pipeline.transform_out.health().is_ready()
-        && pipeline
-            .inputs
-            .iter()
-            .all(|(_, _, stats)| stats.health().is_ready())
-        && pipeline
-            .outputs
-            .iter()
-            .all(|(_, _, stats)| stats.health().is_ready())
 }
 
 #[cfg(test)]
@@ -134,10 +167,10 @@ mod tests {
 
     #[test]
     fn ready_requires_pipelines_and_ready_components() {
-        assert!(!is_ready(&[]));
+        assert!(!readiness_snapshot(&[]).ready);
 
         let pm = pipeline_with_io();
-        assert!(is_ready(&[Arc::new(pm)]));
+        assert!(readiness_snapshot(&[Arc::new(pm)]).ready);
     }
 
     #[test]
@@ -145,7 +178,7 @@ mod tests {
         let pm = pipeline_with_io();
         pm.inputs[0].2.set_health(ComponentHealth::Starting);
 
-        assert!(!is_ready(&[Arc::new(pm)]));
+        assert!(!readiness_snapshot(&[Arc::new(pm)]).ready);
     }
 
     #[test]
@@ -171,14 +204,27 @@ mod tests {
 
     #[test]
     fn ready_reason_tracks_empty_and_degraded_states() {
-        assert_eq!(ready_reason(&[]), "no_pipelines_registered");
+        assert_eq!(readiness_snapshot(&[]).reason, "no_pipelines_registered");
 
         let pm = pipeline_with_io();
         pm.outputs[0].2.set_health(ComponentHealth::Degraded);
         assert_eq!(
-            ready_reason(&[Arc::new(pm)]),
+            readiness_snapshot(&[Arc::new(pm)]).reason,
             "components_degraded_but_operational"
         );
+    }
+
+    #[test]
+    fn readiness_snapshot_is_consistent_for_empty_and_degraded_states() {
+        let empty = readiness_snapshot(&[]);
+        assert!(!empty.ready);
+        assert_eq!(empty.reason, "no_pipelines_registered");
+
+        let pm = pipeline_with_io();
+        pm.outputs[0].2.set_health(ComponentHealth::Degraded);
+        let degraded = readiness_snapshot(&[Arc::new(pm)]);
+        assert!(degraded.ready);
+        assert_eq!(degraded.reason, "components_degraded_but_operational");
     }
 
     fn arb_health() -> impl Strategy<Value = ComponentHealth> {
@@ -204,12 +250,23 @@ mod tests {
                 prop_assert_eq!(impact, "gating");
             }
         }
+
+        #[test]
+        fn readiness_snapshot_ready_matches_component_readiness_when_pipelines_exist(
+            health in arb_health()
+        ) {
+            let (ready, _reason) = readiness_snapshot_from_state(true, health);
+            prop_assert_eq!(ready, health.is_ready());
+        }
     }
 }
 
 #[cfg(kani)]
 mod verification {
-    use super::{HealthReasonTag, ReadinessImpactTag, health_reason_tag, readiness_impact_tag};
+    use super::{
+        HealthReasonTag, ReadyReasonTag, ReadinessImpactTag, health_reason_tag,
+        readiness_impact_tag, readiness_snapshot_from_state,
+    };
     use logfwd_types::diagnostics::ComponentHealth;
 
     #[kani::proof]
@@ -254,6 +311,35 @@ mod verification {
         kani::cover!(
             health == ComponentHealth::Stopped,
             "stopped_reason_labelled"
+        );
+    }
+
+    #[kani::proof]
+    fn verify_readiness_snapshot_requires_pipelines() {
+        let aggregate = ComponentHealth::from_repr(kani::any());
+        let (ready, reason) = readiness_snapshot_from_state(false, aggregate);
+        assert!(!ready);
+        assert_eq!(reason, ReadyReasonTag::NoPipelines);
+
+        kani::cover!(
+            aggregate == ComponentHealth::Healthy,
+            "healthy_without_pipelines_not_ready"
+        );
+    }
+
+    #[kani::proof]
+    fn verify_readiness_snapshot_reason_matches_health_when_pipelines_exist() {
+        let aggregate = ComponentHealth::from_repr(kani::any());
+        let (_ready, reason) = readiness_snapshot_from_state(true, aggregate);
+        assert_eq!(reason, ReadyReasonTag::Health(health_reason_tag(aggregate)));
+
+        kani::cover!(
+            aggregate == ComponentHealth::Degraded,
+            "degraded_reason_with_pipelines"
+        );
+        kani::cover!(
+            aggregate == ComponentHealth::Failed,
+            "failed_reason_with_pipelines"
         );
     }
 }
