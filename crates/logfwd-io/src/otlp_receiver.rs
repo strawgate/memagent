@@ -1005,9 +1005,7 @@ fn append_attribute_value(
     match &value.value {
         Some(Value::IntValue(v)) => builder.append_i64_value_by_idx(idx, *v),
         Some(Value::DoubleValue(v)) => builder.append_f64_value_by_idx(idx, *v),
-        Some(Value::BoolValue(v)) => {
-            builder.append_decoded_str_by_idx(idx, if *v { b"true" } else { b"false" });
-        }
+        Some(Value::BoolValue(v)) => builder.append_bool_by_idx(idx, *v),
         Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
         _ => {}
@@ -1441,7 +1439,8 @@ mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, Int64Array, StringArray, StringViewArray};
+    use arrow::array::{Array, BooleanArray, Int64Array, StringArray, StringViewArray};
+    use arrow::datatypes::DataType;
     use bytes::Bytes;
     use logfwd_arrow::Scanner;
     use logfwd_core::scan_config::ScanConfig;
@@ -1562,7 +1561,73 @@ mod tests {
                 })
                 .collect();
         }
+        if let Some(array) = array.as_any().downcast_ref::<BooleanArray>() {
+            return (0..array.len())
+                .map(|idx| {
+                    if array.is_null(idx) {
+                        "NULL".to_string()
+                    } else {
+                        array.value(idx).to_string()
+                    }
+                })
+                .collect();
+        }
         panic!("unsupported test array type: {:?}", array.data_type());
+    }
+
+    #[test]
+    fn structured_batch_preserves_boolean_type_and_dotted_attributes() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("checkout-api".into())),
+                        }),
+                    }],
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "sampled".into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::BoolValue(true)),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let batch = convert_request_to_batch(&request).expect("structured decode succeeds");
+
+        let sampled = batch
+            .column_by_name("sampled")
+            .expect("sampled column must exist");
+        assert_eq!(sampled.data_type(), &DataType::Boolean);
+        let sampled = sampled
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("sampled must be BooleanArray");
+        assert!(sampled.value(0), "sampled=true must be preserved as bool");
+
+        let service_name = batch
+            .column_by_name("service.name")
+            .expect("dotted attribute must keep original column name");
+        let service_name = service_name
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("service.name should remain a flat string column");
+        assert_eq!(service_name.value(0), "checkout-api");
+        assert!(
+            batch.column_by_name("service_name").is_none(),
+            "dotted attributes must not require sanitized internal-name coupling"
+        );
     }
 
     #[test]

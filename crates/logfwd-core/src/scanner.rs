@@ -95,6 +95,8 @@ pub trait ScanBuilder {
     fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
     /// Append a float value (as raw ASCII) at the given column index.
     fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
+    /// Append a boolean value at the given column index.
+    fn append_bool_by_idx(&mut self, idx: usize, value: bool);
     /// Record a null value at the given column index.
     fn append_null_by_idx(&mut self, idx: usize);
     /// Store the raw unparsed line (only called when `keep_raw` is set).
@@ -199,19 +201,36 @@ fn scan_line<B: ScanBuilder>(
                 }
             }
             b't' | b'f' => {
-                let s = pos;
-                while pos < end
-                    && buf[pos] != b','
-                    && buf[pos] != b'}'
-                    && buf[pos] != b' '
-                    && buf[pos] != b'\t'
-                    && buf[pos] != b'\r'
+                if buf[pos] == b't'
+                    && pos + 4 <= end
+                    && &buf[pos..pos + 4] == b"true"
+                    && (pos + 4 >= end || is_json_delimiter(buf[pos + 4]))
                 {
-                    pos += 1;
-                }
-                if wanted {
-                    let idx = builder.resolve_field(key);
-                    builder.append_str_by_idx(idx, &buf[s..pos]);
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        builder.append_bool_by_idx(idx, true);
+                    }
+                    pos += 4;
+                } else if buf[pos] == b'f'
+                    && pos + 5 <= end
+                    && &buf[pos..pos + 5] == b"false"
+                    && (pos + 5 >= end || is_json_delimiter(buf[pos + 5]))
+                {
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        builder.append_bool_by_idx(idx, false);
+                    }
+                    pos += 5;
+                } else {
+                    while pos < end
+                        && buf[pos] != b','
+                        && buf[pos] != b'}'
+                        && buf[pos] != b' '
+                        && buf[pos] != b'\t'
+                        && buf[pos] != b'\r'
+                    {
+                        pos += 1;
+                    }
                 }
             }
             b'n' => {
@@ -278,6 +297,11 @@ fn skip_ws(buf: &[u8], mut pos: usize, end: usize) -> usize {
         }
     }
     pos
+}
+
+#[inline(always)]
+fn is_json_delimiter(c: u8) -> bool {
+    c == b',' || c == b'}' || c == b']' || c == b' ' || c == b'\t' || c == b'\r' || c == b'\n'
 }
 
 #[cfg(kani)]

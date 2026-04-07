@@ -46,6 +46,10 @@ impl ScanBuilder for StreamingBuilder {
         self.append_float_by_idx(idx, v);
     }
     #[inline(always)]
+    fn append_bool_by_idx(&mut self, idx: usize, v: bool) {
+        self.append_bool_by_idx(idx, v);
+    }
+    #[inline(always)]
     fn append_null_by_idx(&mut self, idx: usize) {
         self.append_null_by_idx(idx);
     }
@@ -118,7 +122,7 @@ impl Scanner {
 #[cfg(test)]
 mod tests {
     use crate::scanner::Scanner;
-    use arrow::array::{Array, Int64Array, StringArray};
+    use arrow::array::{Array, BooleanArray, Int64Array, StringArray};
     use bytes::Bytes;
     use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 
@@ -282,16 +286,26 @@ mod tests {
                 b"{\"a\":true,\"b\":false,\"c\":null}\n".to_vec(),
             ))
             .unwrap();
-        // Single-type string field: bare name
+        // Single-type bool field: bare name
         assert_eq!(
             batch
                 .column_by_name("a")
                 .unwrap()
                 .as_any()
-                .downcast_ref::<StringArray>()
+                .downcast_ref::<BooleanArray>()
                 .unwrap()
                 .value(0),
-            "true"
+            true
+        );
+        assert_eq!(
+            batch
+                .column_by_name("b")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .unwrap()
+                .value(0),
+            false
         );
     }
     #[test]
@@ -376,10 +390,10 @@ mod tests {
                 .column_by_name("ok")
                 .unwrap()
                 .as_any()
-                .downcast_ref::<StringArray>()
+                .downcast_ref::<BooleanArray>()
                 .unwrap()
                 .value(0),
-            "true"
+            true
         );
     }
     #[test]

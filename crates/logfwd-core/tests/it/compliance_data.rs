@@ -6,7 +6,7 @@
 //! Run:
 //!   cargo test -p logfwd-core --test compliance_data
 
-use arrow::array::{Array, Float64Array, Int64Array, StringArray, StructArray};
+use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray, StructArray};
 use arrow::compute;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
@@ -77,6 +77,16 @@ fn get_float(batch: &RecordBatch, col_name: &str, row: usize) -> Option<f64> {
     Some(arr.value(row))
 }
 
+/// Extract a bool column value from a RecordBatch.
+fn get_bool(batch: &RecordBatch, col_name: &str, row: usize) -> Option<bool> {
+    let col = batch.column_by_name(col_name)?;
+    if col.is_null(row) {
+        return None;
+    }
+    let arr = col.as_any().downcast_ref::<BooleanArray>()?;
+    Some(arr.value(row))
+}
+
 /// Check that a column exists and the given row IS null.
 fn assert_null(batch: &RecordBatch, col_name: &str, row: usize) {
     if let Some(col) = batch.column_by_name(col_name) {
@@ -141,6 +151,18 @@ fn get_struct_float(batch: &RecordBatch, field: &str, row: usize) -> Option<f64>
             .downcast_ref::<Float64Array>()?
             .value(row),
     )
+}
+
+/// Extract a bool value from the `"bool"` child of a conflict StructArray column.
+fn get_struct_bool(batch: &RecordBatch, field: &str, row: usize) -> Option<bool> {
+    let col = batch.column_by_name(field)?;
+    let sa = col.as_any().downcast_ref::<StructArray>()?;
+    let child_idx = sa.fields().iter().position(|f| f.name() == "bool")?;
+    let bool_col = sa.column(child_idx);
+    if bool_col.is_null(row) {
+        return None;
+    }
+    Some(bool_col.as_any().downcast_ref::<BooleanArray>()?.value(row))
 }
 
 /// Assert that the named child field of a conflict StructArray column is null at `row`.
@@ -345,12 +367,12 @@ fn compliance_float_precision() {
 }
 
 #[test]
-fn compliance_boolean_as_string() {
+fn compliance_boolean_typed() {
     let input = b"{\"flag\":true}\n{\"flag\":false}\n";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(get_str(batch, "flag", 0), Some("true".to_string()));
-        assert_eq!(get_str(batch, "flag", 1), Some("false".to_string()));
+        assert_eq!(get_bool(batch, "flag", 0), Some(true));
+        assert_eq!(get_bool(batch, "flag", 1), Some(false));
     });
 }
 
@@ -686,13 +708,14 @@ fn compliance_mixed_type_across_rows() {
         // Row 2: string "text"
         assert_eq!(get_struct_str(batch, "v", 2), Some("text".to_string()));
 
-        // Row 3: bool stored as string
-        assert_eq!(get_struct_str(batch, "v", 3), Some("true".to_string()));
+        // Row 3: bool
+        assert_eq!(get_struct_bool(batch, "v", 3), Some(true));
 
         // Row 4: null — all typed children should be null for this row.
         assert_struct_child_null(batch, "v", "int", 4);
         assert_struct_child_null(batch, "v", "float", 4);
         assert_struct_child_null(batch, "v", "str", 4);
+        assert_struct_child_null(batch, "v", "bool", 4);
     });
 }
 
