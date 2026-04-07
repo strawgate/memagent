@@ -69,7 +69,7 @@ issue = 1306
 [[seams]]
 path = "crates/logfwd-io/src/otlp_receiver.rs"
 status = "recommended"
-reason = "The file still mixes HTTP/runtime shell code with pure protojson parsing and escaping helpers; track it explicitly without requiring in-file Kani until the helper seam is isolated further."
+reason = "The file still mixes HTTP/runtime shell code with pure protojson parsing and escaping helpers; one local hex-encoding proof now exists, but broader in-file Kani should wait for further helper isolation."
 issue = 1484
 
 [[seams]]
