@@ -24,8 +24,8 @@ use opentelemetry_proto::tonic::common::v1::AnyValue;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use prost::Message;
 
-use crate::diagnostics::ComponentStats;
 use crate::InputError;
+use crate::diagnostics::ComponentStats;
 use crate::input::{InputEvent, InputSource};
 use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::field_names;
@@ -133,13 +133,7 @@ impl OtlpReceiverInput {
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
     #[cfg(test)]
     fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
-        Self::new_with_capacity_mode_and_stats(
-            name,
-            addr,
-            capacity,
-            ReceiverMode::JsonLines,
-            None,
-        )
+        Self::new_with_capacity_mode_and_stats(name, addr, capacity, ReceiverMode::JsonLines, None)
     }
 
     #[cfg(test)]
@@ -693,16 +687,18 @@ fn decode_otlp_logs_with_mode_json(
 ) -> Result<ReceiverPayload, InputError> {
     let accounted_bytes = body.len() as u64;
     match mode {
-        ReceiverMode::JsonLines => decode_otlp_logs_json(body).map(|lines| ReceiverPayload::JsonLines {
-            lines,
-            accounted_bytes,
-        }),
-        ReceiverMode::StructuredBatch => decode_otlp_logs_json_to_batch(body).map(|batch| {
-            ReceiverPayload::Batch {
+        ReceiverMode::JsonLines => {
+            decode_otlp_logs_json(body).map(|lines| ReceiverPayload::JsonLines {
+                lines,
+                accounted_bytes,
+            })
+        }
+        ReceiverMode::StructuredBatch => {
+            decode_otlp_logs_json_to_batch(body).map(|batch| ReceiverPayload::Batch {
                 batch,
                 accounted_bytes,
-            }
-        }),
+            })
+        }
     }
 }
 
@@ -803,12 +799,12 @@ fn decode_otlp_logs_with_mode(
             lines,
             accounted_bytes,
         }),
-        ReceiverMode::StructuredBatch => decode_otlp_logs_to_batch(body).map(|batch| {
-            ReceiverPayload::Batch {
+        ReceiverMode::StructuredBatch => {
+            decode_otlp_logs_to_batch(body).map(|batch| ReceiverPayload::Batch {
                 batch,
                 accounted_bytes,
-            }
-        }),
+            })
+        }
     }
 }
 

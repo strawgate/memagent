@@ -72,17 +72,10 @@ fn send_status(url: &str, body: &[u8], content_type: &str, content_encoding: Opt
     }
 }
 
-fn make_framed_otlp_input(
-    stats: Arc<ComponentStats>,
-    structured: bool,
-) -> (FramedInput, String) {
+fn make_framed_otlp_input(stats: Arc<ComponentStats>, structured: bool) -> (FramedInput, String) {
     let receiver = if structured {
-        OtlpReceiverInput::new_structured_with_stats(
-            "contract",
-            "127.0.0.1:0",
-            Arc::clone(&stats),
-        )
-        .expect("structured receiver should start")
+        OtlpReceiverInput::new_structured_with_stats("contract", "127.0.0.1:0", Arc::clone(&stats))
+            .expect("structured receiver should start")
     } else {
         OtlpReceiverInput::new_with_stats("contract", "127.0.0.1:0", Arc::clone(&stats))
             .expect("legacy receiver should start")
@@ -303,9 +296,9 @@ fn otlp_receiver_legacy_and_structured_account_the_same_input_bytes() {
             );
         } else {
             assert!(
-                events
-                    .iter()
-                    .any(|event| matches!(event, InputEvent::Data { bytes, .. } if !bytes.is_empty())),
+                events.iter().any(
+                    |event| matches!(event, InputEvent::Data { bytes, .. } if !bytes.is_empty())
+                ),
                 "legacy ingress should emit framed data"
             );
         }
@@ -320,7 +313,11 @@ fn otlp_receiver_legacy_and_structured_account_the_same_input_bytes() {
             expected_bytes,
             "both OTLP modes should account the accepted protobuf payload bytes"
         );
-        assert_eq!(stats.errors(), 0, "successful request should not count errors");
+        assert_eq!(
+            stats.errors(),
+            0,
+            "successful request should not count errors"
+        );
         assert_eq!(
             stats.parse_errors(),
             0,
@@ -346,7 +343,11 @@ fn otlp_receiver_legacy_and_structured_rejections_increment_parse_errors() {
         );
         assert_eq!(stats.lines(), 0, "rejected request must not count lines");
         assert_eq!(stats.bytes(), 0, "rejected request must not count bytes");
-        assert_eq!(stats.errors(), 0, "parse rejection should not count transport errors");
+        assert_eq!(
+            stats.errors(),
+            0,
+            "parse rejection should not count transport errors"
+        );
         assert_eq!(
             stats.parse_errors(),
             1,
