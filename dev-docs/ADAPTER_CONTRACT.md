@@ -70,11 +70,25 @@ scanner-ready JSON lines.
 - Unsupported paths return `404`.
 - Wrong methods return `405`.
 - Bodies over the configured hard cap are rejected with `413`.
-- Supported encodings are `identity` and `zstd`.
+- Supported encodings are `identity`, `zstd`, and `gzip`.
 - Malformed JSON, malformed protobuf, or malformed OTLP JSON field encodings
   are rejected with `400`.
 - Backpressure returns `429`.
 - A disconnected pipeline returns `503`.
+
+### Diagnostics accounting rules
+
+- Input diagnostics must charge OTLP request bytes from the accepted request
+  body size at the receiver boundary as received on the wire, not from
+  downstream Arrow memory estimates or post-decompression payload size.
+- Legacy OTLP JSON-lines ingress and structured OTLP batch ingress must report
+  the same `lines_total` and same `bytes_total` for the same accepted
+  request body.
+- Rejected OTLP payloads must not increment `lines_total` or `bytes_total`.
+- Malformed OTLP payloads must increment input `parse_errors_total`.
+- Transport and request-handling failures (read errors, unsupported encodings,
+  disconnected downstream channel, oversized compressed bodies) must increment
+  input `errors_total`.
 
 ### Semantic field rules
 
@@ -252,6 +266,9 @@ not hide startup behind an otherwise healthy component.
   gating readiness.
 - status roll-ups should be deterministic and local to the semantic seam that owns them.
 - HTTP shell code should not own the policy for deciding what health means.
+- input `bytes_total` is a source-accounting metric, not an Arrow-memory
+  metric. Structured receivers must propagate source payload size explicitly
+  rather than deriving bytes from `RecordBatch::get_array_memory_size()`.
 
 ## Verification Mapping
 

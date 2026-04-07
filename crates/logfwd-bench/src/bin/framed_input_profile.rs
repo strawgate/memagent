@@ -327,6 +327,7 @@ impl MockSource {
                 vec![InputEvent::Data {
                     bytes: chunk.clone(),
                     source_id: None,
+                    accounted_bytes: chunk.len() as u64,
                 }]
             })
             .collect();

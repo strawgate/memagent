@@ -268,9 +268,11 @@ impl InputSource for TcpInput {
         for (i, data) in client_data.into_iter().enumerate() {
             if let Some(bytes) = data {
                 if !bytes.is_empty() {
+                    let accounted_bytes = bytes.len() as u64;
                     events.push(InputEvent::Data {
                         bytes,
                         source_id: Some(self.clients[i].source_id),
+                        accounted_bytes,
                     });
                 }
             }
@@ -343,7 +345,10 @@ mod tests {
 
         // Should have accepted the connection and read data.
         assert_eq!(events.len(), 1);
-        if let InputEvent::Data { bytes, source_id } = &events[0] {
+        if let InputEvent::Data {
+            bytes, source_id, ..
+        } = &events[0]
+        {
             let text = String::from_utf8_lossy(bytes);
             assert!(text.contains("hello"), "got: {text}");
             assert!(text.contains("world"), "got: {text}");

@@ -498,6 +498,11 @@ When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitori
 | `/admin/v1/history` | GET | Time-series data (1-hour window) for dashboard charts. |
 | `/admin/v1/traces` | GET | Recent batch processing spans for detailed latency analysis. |
 
+For input diagnostics, `bytes_total` reflects source payload bytes accepted at
+the input boundary. For structured receivers such as OTLP, this is the
+accepted request-body size as received on the wire, not the in-memory Arrow
+batch footprint or the post-decompression payload size.
+
 ---
 
 ## Storage configuration

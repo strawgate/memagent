@@ -93,8 +93,12 @@ impl InputSource for FramedInput {
 
         for event in raw_events {
             match event {
-                InputEvent::Data { bytes, source_id } => {
-                    self.stats.inc_bytes(bytes.len() as u64);
+                InputEvent::Data {
+                    bytes,
+                    source_id,
+                    accounted_bytes,
+                } => {
+                    self.stats.inc_bytes(accounted_bytes);
 
                     let key = source_id;
                     let n_bytes = bytes.len() as u64;
@@ -219,13 +223,22 @@ impl InputSource for FramedInput {
                         result_events.push(InputEvent::Data {
                             bytes: data,
                             source_id,
+                            accounted_bytes: 0,
                         });
                     }
                 }
-                InputEvent::Batch { batch, source_id } => {
+                InputEvent::Batch {
+                    batch,
+                    source_id,
+                    accounted_bytes,
+                } => {
                     self.stats.inc_lines(batch.num_rows() as u64);
-                    self.stats.inc_bytes(batch.get_array_memory_size() as u64);
-                    result_events.push(InputEvent::Batch { batch, source_id });
+                    self.stats.inc_bytes(accounted_bytes);
+                    result_events.push(InputEvent::Batch {
+                        batch,
+                        source_id,
+                        accounted_bytes: 0,
+                    });
                 }
                 // Rotation/truncation: clear framing state + forward event.
                 //
@@ -285,6 +298,7 @@ impl InputSource for FramedInput {
                                     result_events.push(InputEvent::Data {
                                         bytes: data,
                                         source_id: key,
+                                        accounted_bytes: 0,
                                     });
                                 }
                             }
@@ -376,6 +390,7 @@ mod tests {
                         vec![InputEvent::Data {
                             bytes: c.to_vec(),
                             source_id: None,
+                            accounted_bytes: c.len() as u64,
                         }]
                     })
                     .collect(),
@@ -394,6 +409,7 @@ mod tests {
                         vec![InputEvent::Data {
                             bytes: c.to_vec(),
                             source_id: Some(sid),
+                            accounted_bytes: c.len() as u64,
                         }]
                     })
                     .collect(),
@@ -523,10 +539,11 @@ mod tests {
         let stats = make_stats();
         let batch = make_batch();
         let expected_rows = batch.num_rows() as u64;
-        let expected_bytes = batch.get_array_memory_size() as u64;
+        let expected_bytes = 1234;
         let source = MockSource::new(vec![vec![InputEvent::Batch {
             batch,
             source_id: None,
+            accounted_bytes: expected_bytes,
         }]]);
         let mut framed = FramedInput::new(
             Box::new(source),
@@ -539,6 +556,26 @@ mod tests {
         assert!(matches!(events[0], InputEvent::Batch { .. }));
         assert_eq!(stats.lines(), expected_rows);
         assert_eq!(stats.bytes(), expected_bytes);
+    }
+
+    #[test]
+    fn data_events_use_accounted_bytes_for_stats() {
+        let stats = make_stats();
+        let source = MockSource::new(vec![vec![InputEvent::Data {
+            bytes: b"line\n".to_vec(),
+            source_id: None,
+            accounted_bytes: 99,
+        }]]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            Arc::clone(&stats),
+        );
+
+        let events = framed.poll().unwrap();
+        assert_eq!(collect_data(events), b"line\n");
+        assert_eq!(stats.lines(), 1);
+        assert_eq!(stats.bytes(), 99);
     }
 
     #[test]
@@ -717,11 +754,13 @@ mod tests {
             vec![InputEvent::Data {
                 bytes: b"partial".to_vec(),
                 source_id: None,
+                accounted_bytes: 7,
             }],
             vec![InputEvent::Rotated { source_id: None }],
             vec![InputEvent::Data {
                 bytes: b"fresh\n".to_vec(),
                 source_id: None,
+                accounted_bytes: 6,
             }],
         ]);
         let mut framed = FramedInput::new(
@@ -810,6 +849,7 @@ mod tests {
             vec![InputEvent::Data {
                 bytes: b"no-newline".to_vec(),
                 source_id: None,
+                accounted_bytes: 10,
             }],
             vec![InputEvent::EndOfFile { source_id: None }],
         ]);
@@ -837,6 +877,7 @@ mod tests {
             vec![InputEvent::Data {
                 bytes: b"complete\npartial".to_vec(),
                 source_id: None,
+                accounted_bytes: 16,
             }],
             vec![InputEvent::EndOfFile { source_id: None }],
         ]);
@@ -863,6 +904,7 @@ mod tests {
             vec![InputEvent::Data {
                 bytes: b"line\n".to_vec(),
                 source_id: None,
+                accounted_bytes: 5,
             }],
             vec![InputEvent::EndOfFile { source_id: None }],
         ]);
@@ -896,10 +938,12 @@ mod tests {
                 InputEvent::Data {
                     bytes: b"hello-from-A".to_vec(),
                     source_id: Some(sid_a),
+                    accounted_bytes: 12,
                 },
                 InputEvent::Data {
                     bytes: b"hello-from-B".to_vec(),
                     source_id: Some(sid_b),
+                    accounted_bytes: 12,
                 },
             ],
             // Poll 2: complete the lines from each source
@@ -907,10 +951,12 @@ mod tests {
                 InputEvent::Data {
                     bytes: b"-done\n".to_vec(),
                     source_id: Some(sid_a),
+                    accounted_bytes: 6,
                 },
                 InputEvent::Data {
                     bytes: b"-done\n".to_vec(),
                     source_id: Some(sid_b),
+                    accounted_bytes: 6,
                 },
             ],
         ]);
@@ -930,7 +976,10 @@ mod tests {
         let mut output_a = Vec::new();
         let mut output_b = Vec::new();
         for e in events2 {
-            if let InputEvent::Data { bytes, source_id } = e {
+            if let InputEvent::Data {
+                bytes, source_id, ..
+            } = e
+            {
                 match source_id {
                     Some(sid) if sid == sid_a => output_a.extend_from_slice(&bytes),
                     Some(sid) if sid == sid_b => output_b.extend_from_slice(&bytes),
@@ -955,10 +1004,12 @@ mod tests {
                 InputEvent::Data {
                     bytes: b"partial-A".to_vec(),
                     source_id: Some(sid_a),
+                    accounted_bytes: 9,
                 },
                 InputEvent::Data {
                     bytes: b"partial-B".to_vec(),
                     source_id: Some(sid_b),
+                    accounted_bytes: 9,
                 },
             ],
             // Truncation
@@ -967,6 +1018,7 @@ mod tests {
             vec![InputEvent::Data {
                 bytes: b"fresh-A\n".to_vec(),
                 source_id: Some(sid_a),
+                accounted_bytes: 8,
             }],
         ]);
 
@@ -997,6 +1049,7 @@ mod tests {
         let source = MockSource::new(vec![vec![InputEvent::Data {
             bytes: b"hello\nwor".to_vec(),
             source_id: Some(sid),
+            accounted_bytes: 9,
         }]])
         .with_offsets(vec![(sid, ByteOffset(1000))]);
 
@@ -1025,6 +1078,7 @@ mod tests {
         let source = MockSource::new(vec![vec![InputEvent::Data {
             bytes: b"complete\n".to_vec(),
             source_id: Some(sid),
+            accounted_bytes: 9,
         }]])
         .with_offsets(vec![(sid, ByteOffset(500))]);
 
@@ -1061,16 +1115,19 @@ mod tests {
             vec![InputEvent::Data {
                 bytes: b"2024-01-15T10:30:00Z stdout P hello \n".to_vec(),
                 source_id: Some(sid_a),
+                accounted_bytes: 38,
             }],
             // Source B: CRI full line (must NOT merge with A's partial)
             vec![InputEvent::Data {
                 bytes: b"2024-01-15T10:30:01Z stderr F {\"msg\":\"world\"}\n".to_vec(),
                 source_id: Some(sid_b),
+                accounted_bytes: 50,
             }],
             // Source A: CRI full line (completes A's partial)
             vec![InputEvent::Data {
                 bytes: b"2024-01-15T10:30:02Z stdout F from-A\n".to_vec(),
                 source_id: Some(sid_a),
+                accounted_bytes: 39,
             }],
         ]);
 
@@ -1116,11 +1173,13 @@ mod tests {
             vec![InputEvent::Data {
                 bytes: b"hello\nwor".to_vec(),
                 source_id: Some(sid),
+                accounted_bytes: 9,
             }],
             // Second read: 3 bytes, newline at position 1 (the 'd\n')
             vec![InputEvent::Data {
                 bytes: b"ld\n".to_vec(),
                 source_id: Some(sid),
+                accounted_bytes: 3,
             }],
         ])
         .with_offsets(vec![(sid, ByteOffset(12))]);

@@ -94,6 +94,7 @@ fn io_worker_loop(
         let events = match input.source.poll() {
             Ok(e) => e,
             Err(e) => {
+                input.stats.inc_errors();
                 input.stats.set_health(reduce_component_health(
                     input.stats.health(),
                     HealthTransitionEvent::PollFailed,

@@ -103,6 +103,7 @@ impl InputSource for UdpInput {
         // We re-use `self.buf` for recv and build the output in a separate vec
         // only when data actually arrives.
         let mut total: Option<Vec<u8>> = None;
+        let mut source_bytes: u64 = 0;
 
         // Drain all available datagrams in one poll cycle.
         loop {
@@ -113,6 +114,7 @@ impl InputSource for UdpInput {
                     // just continue draining.
                 }
                 Ok(n) => {
+                    source_bytes = source_bytes.saturating_add(n as u64);
                     let data = &self.buf[..n];
                     let out = total.get_or_insert_with(|| Vec::with_capacity(4096));
                     out.extend_from_slice(data);
@@ -151,10 +153,14 @@ impl InputSource for UdpInput {
         );
 
         match total {
-            Some(bytes) => Ok(vec![InputEvent::Data {
-                bytes,
-                source_id: None,
-            }]),
+            Some(bytes) => {
+                let accounted_bytes = source_bytes;
+                Ok(vec![InputEvent::Data {
+                    bytes,
+                    source_id: None,
+                    accounted_bytes,
+                }])
+            }
             None => Ok(Vec::new()),
         }
     }
@@ -209,6 +215,32 @@ mod tests {
         assert_eq!(events.len(), 1);
         if let InputEvent::Data { bytes, .. } = &events[0] {
             assert!(bytes.ends_with(b"\n"), "expected trailing newline");
+        }
+    }
+
+    #[test]
+    fn accounted_bytes_excludes_synthetic_trailing_newline() {
+        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+
+        let sender = StdSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(b"no newline", addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+        assert_eq!(events.len(), 1);
+        if let InputEvent::Data {
+            bytes,
+            accounted_bytes,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(*accounted_bytes, 10);
+            assert_eq!(bytes.len(), 11);
+            assert!(bytes.ends_with(b"\n"), "expected trailing newline");
+        } else {
+            panic!("expected InputEvent::Data variant");
         }
     }
 
