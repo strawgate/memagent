@@ -327,12 +327,33 @@ impl SegmentFile {
         }
 
         let mut file = File::open(&self.path)?;
+
+        // Cross-check data_size against the actual file size to catch truncated
+        // or corrupt segments before allocating.  A valid segment has at minimum
+        // a header (HEADER_SIZE bytes) + data + footer (FOOTER_SIZE bytes).
+        let file_size = file.metadata()?.len();
+        let max_possible_data_size = file_size
+            .saturating_sub(HEADER_SIZE as u64)
+            .saturating_sub(FOOTER_SIZE as u64);
+        if self.footer.data_size > max_possible_data_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "segment data_size {} exceeds maximum possible {} for file size {} — likely truncated or corrupt",
+                    self.footer.data_size, max_possible_data_size, file_size,
+                ),
+            ));
+        }
+
         file.seek(SeekFrom::Start(HEADER_SIZE as u64))?;
 
         let mut ipc_data = vec![0u8; self.footer.data_size as usize];
         file.read_exact(&mut ipc_data)?;
 
-        let mut batches = Vec::with_capacity(self.footer.batch_count as usize);
+        // Do not pre-allocate with batch_count — a corrupt footer could claim
+        // an enormous count and cause an OOM before we parse or validate any
+        // IPC batches from the already-read payload.
+        let mut batches = Vec::new();
 
         // Use a single Cursor over the whole IPC data. Each StreamReader
         // consumes one sub-stream and advances the cursor position.
@@ -945,6 +966,99 @@ mod tests {
             SegmentFile::open(&seg.path, Some(0xBBBB)),
             SegmentStatus::SchemaMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn corrupt_data_size_prevented_from_oom() {
+        // A corrupt footer claiming an enormous data_size must be rejected
+        // before any allocation happens, not cause OOM or panic.
+        let dir = tempfile::tempdir().unwrap();
+        let header = SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: FLAG_ZSTD,
+            segment_id: 1,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+        let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
+        writer.append(&make_batch(10)).unwrap();
+        let seg = writer.finish().unwrap();
+
+        // Tamper: overwrite the footer with a data_size claiming the entire u64 range.
+        let mut data = fs::read(&seg.path).unwrap();
+        let len = data.len();
+        let mut fake_footer = seg.footer;
+        fake_footer.data_size = u64::MAX;
+        let fake_bytes = fake_footer.to_bytes();
+        data[(len - FOOTER_SIZE)..].copy_from_slice(&fake_bytes);
+        fs::write(&seg.path, &data).unwrap();
+
+        let corrupt = SegmentFile {
+            path: seg.path.clone(),
+            header: seg.header,
+            footer: fake_footer,
+        };
+        let err = corrupt.read_batches().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        // With u64::MAX the 1 GiB absolute cap fires before the file-size
+        // cross-check is ever reached.
+        assert!(
+            err.to_string().contains("exceeds maximum"),
+            "unexpected error: {err}"
+        );
+
+        // Smaller lie: claim more data than fits in the file — this validates
+        // the file-size cross-check path rather than the absolute cap.
+        let mut fake_footer2 = seg.footer;
+        fake_footer2.data_size = (len * 2) as u64;
+        let fake_bytes2 = fake_footer2.to_bytes();
+        data[(len - FOOTER_SIZE)..].copy_from_slice(&fake_bytes2);
+        fs::write(&seg.path, &data).unwrap();
+
+        let corrupt2 = SegmentFile {
+            path: seg.path.clone(),
+            header: seg.header,
+            footer: fake_footer2,
+        };
+        let err2 = corrupt2.read_batches().unwrap_err();
+        assert_eq!(err2.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err2.to_string().contains("exceeds maximum"),
+            "unexpected error: {err2}"
+        );
+    }
+
+    #[test]
+    fn truncated_segment_returns_invalid_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: FLAG_ZSTD,
+            segment_id: 1,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+
+        let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
+        writer.append(&make_batch(10)).unwrap();
+        let seg = writer.finish().unwrap();
+
+        // Truncate the file so the footer's data_size no longer fits.
+        let len = fs::metadata(&seg.path).unwrap().len();
+        OpenOptions::new()
+            .write(true)
+            .open(&seg.path)
+            .unwrap()
+            .set_len(len - 1)
+            .unwrap();
+
+        let truncated = SegmentFile {
+            path: seg.path.clone(),
+            header: seg.header,
+            footer: seg.footer,
+        };
+        let err = truncated.read_batches().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
