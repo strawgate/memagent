@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -359,6 +359,39 @@ pub struct MemoryStats {
     pub active: usize,
 }
 
+// ---------------------------------------------------------------------------
+// ServerHandle — owns the background threads spawned by DiagnosticsServer::start
+// ---------------------------------------------------------------------------
+
+/// Owns the background threads spawned by [`DiagnosticsServer::start`].
+///
+/// Dropping this value signals the metric-sampler thread to exit (via the
+/// shared `running` flag), unblocks the tiny_http server so its thread can
+/// return, and then joins both threads.  Keep this value alive for as long
+/// as the server should run.
+pub struct ServerHandle {
+    running: Arc<AtomicBool>,
+    sampler_handle: Option<JoinHandle<()>>,
+    http_server: Arc<tiny_http::Server>,
+    http_handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for ServerHandle {
+    fn drop(&mut self) {
+        // Signal the sampler loop to exit.
+        self.running.store(false, Ordering::Relaxed);
+        // Unblock the HTTP thread's `incoming_requests()` iterator.
+        self.http_server.unblock();
+        // Join both threads (ignore panics — we're in Drop).
+        if let Some(h) = self.sampler_handle.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.http_handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 /// Lightweight diagnostics HTTP server. Runs on a dedicated thread, reads
 /// atomic counters — no locking on the hot path.
 pub struct DiagnosticsServer {
@@ -421,12 +454,17 @@ impl DiagnosticsServer {
     /// Spawn the server on a background thread. Binds synchronously before
     /// returning so that port-in-use errors are reported at startup.
     ///
-    /// Returns `(handle, bound_addr)` on success. `bound_addr` reflects the
+    /// Returns `(handle, bound_addr)` on success.  `bound_addr` reflects the
     /// actual address after OS port assignment (useful when `bind_addr` uses
-    /// port 0). Returns an `io::Error` on bind failure.
-    pub fn start(self) -> io::Result<(JoinHandle<()>, std::net::SocketAddr)> {
-        let server = tiny_http::Server::http(&self.bind_addr)
-            .map_err(|e| io::Error::other(e.to_string()))?;
+    /// port 0).  Returns an `io::Error` on bind failure.
+    ///
+    /// The returned [`ServerHandle`] owns both background threads.  Drop it
+    /// (or let it go out of scope) to shut the server down cleanly.
+    pub fn start(self) -> io::Result<(ServerHandle, std::net::SocketAddr)> {
+        let server = Arc::new(
+            tiny_http::Server::http(&self.bind_addr)
+                .map_err(|e| io::Error::other(e.to_string()))?,
+        );
         let bound_addr = server
             .server_addr()
             .to_ip()
@@ -439,27 +477,48 @@ impl DiagnosticsServer {
             tracing::warn!(error = %e, "stderr capture failed");
         }
 
+        // Shared shutdown flag — set to false by ServerHandle::drop.
+        let running = Arc::new(AtomicBool::new(true));
+
         // Background metric sampler — records pipeline + process metrics
         // every 2s into the history buffer, regardless of dashboard activity.
         let sampler_pipelines = self.pipelines.clone();
         let sampler_history = Arc::clone(&self.history);
         let sampler_mem_fn = self.memory_stats_fn;
-        thread::Builder::new()
+        let sampler_running = Arc::clone(&running);
+        let sampler_handle = thread::Builder::new()
             .name("metric-sampler".into())
             .spawn(move || {
-                loop {
+                while sampler_running.load(Ordering::Relaxed) {
                     thread::sleep(std::time::Duration::from_secs(2));
-                    sample_metrics(&sampler_pipelines, &sampler_history, sampler_mem_fn);
+                    // Re-check the flag after sleeping so we exit promptly on
+                    // shutdown rather than performing one last sample.
+                    if sampler_running.load(Ordering::Relaxed) {
+                        sample_metrics(&sampler_pipelines, &sampler_history, sampler_mem_fn);
+                    }
                 }
             })
             .ok();
 
-        let handle = thread::spawn(move || {
-            for request in server.incoming_requests() {
-                let _ = self.handle_request(request);
-            }
-        });
-        Ok((handle, bound_addr))
+        let http_server = Arc::clone(&server);
+        let http_handle = thread::Builder::new()
+            .name("diagnostics-http".into())
+            .spawn(move || {
+                for request in server.incoming_requests() {
+                    let _ = self.handle_request(request);
+                }
+            })
+            .ok();
+
+        Ok((
+            ServerHandle {
+                running,
+                sampler_handle,
+                http_server,
+                http_handle,
+            },
+            bound_addr,
+        ))
     }
 
     fn handle_request(
