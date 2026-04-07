@@ -62,6 +62,10 @@ use super::arrow_ipc_sink::serialize_ipc;
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{BatchMetadata, Compression};
 
+mod generated_fast {
+    include!("generated/otap_fast_v1.rs");
+}
+
 /// Content-Type for protobuf-encoded OTAP messages.
 const CONTENT_TYPE_PROTOBUF: &str = "application/x-protobuf";
 
@@ -177,6 +181,16 @@ pub fn encode_batch_arrow_records(
     message.encode(buf).expect("vec-backed encode cannot fail");
 }
 
+/// Benchmark/reference path: encode OTAP with the checked-in fast generator.
+pub fn encode_batch_arrow_records_generated_fast(
+    buf: &mut Vec<u8>,
+    batch_id: i64,
+    payloads: &[(String, ArrowPayloadType, Vec<u8>)],
+    headers: &[u8],
+) {
+    generated_fast::encode_batch_arrow_records_generated_fast(buf, batch_id, payloads, headers);
+}
+
 /// Decode a `BatchStatus` response from protobuf bytes.
 ///
 /// ```text
@@ -208,6 +222,11 @@ pub fn decode_batch_status(data: &[u8]) -> io::Result<BatchStatus> {
     })
 }
 
+/// Benchmark/reference path: decode OTAP `BatchStatus` with the checked-in fast generator.
+pub fn decode_batch_status_generated_fast(data: &[u8]) -> io::Result<BatchStatus> {
+    generated_fast::decode_batch_status_generated_fast(data)
+}
+
 /// Decode a `BatchArrowRecords` from protobuf bytes.
 ///
 /// Returns the batch_id and a list of (schema_id, payload_type, ipc_bytes)
@@ -221,6 +240,13 @@ pub fn decode_batch_arrow_records(data: &[u8]) -> io::Result<(i64, Vec<DecodedPa
         .map(|payload| (payload.schema_id, payload.r#type as u32, payload.record))
         .collect();
     Ok((decoded.batch_id, payloads, decoded.headers))
+}
+
+/// Benchmark/reference path: decode `BatchArrowRecords` with the checked-in fast generator.
+pub fn decode_batch_arrow_records_generated_fast(
+    data: &[u8],
+) -> io::Result<(i64, Vec<DecodedPayload>, Vec<u8>)> {
+    generated_fast::decode_batch_arrow_records_generated_fast(data)
 }
 
 // ---------------------------------------------------------------------------

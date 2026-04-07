@@ -20,6 +20,10 @@ use zstd::bulk::Compressor as ZstdCompressor;
 
 use super::{BatchMetadata, Compression, str_value};
 
+mod generated {
+    include!("generated/otlp_log_record_fast_v1.rs");
+}
+
 // ---------------------------------------------------------------------------
 // InstrumentationScope constants
 // ---------------------------------------------------------------------------
@@ -128,6 +132,24 @@ impl OtlpSink {
     /// Encode a full ExportLogsServiceRequest from a RecordBatch.
     /// Returns the raw protobuf bytes in `self.encoder_buf`.
     pub fn encode_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) {
+        self.encode_batch_with_row_encoder(batch, metadata, encode_row_as_log_record);
+    }
+
+    /// Benchmark/reference path: encode using the generated fast-row encoder.
+    pub fn encode_batch_generated_fast(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) {
+        self.encode_batch_with_row_encoder(
+            batch,
+            metadata,
+            generated::encode_row_as_log_record_fast_v1,
+        );
+    }
+
+    fn encode_batch_with_row_encoder(
+        &mut self,
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+        mut encode_row: impl FnMut(&BatchColumns<'_>, usize, &BatchMetadata, &mut Vec<u8>),
+    ) {
         self.encoder_buf.clear();
         let num_rows = batch.num_rows();
         if num_rows == 0 {
@@ -159,7 +181,7 @@ impl OtlpSink {
 
         for row in 0..num_rows {
             let start = records_buf.len();
-            encode_row_as_log_record(&columns, row, metadata, &mut records_buf);
+            encode_row(&columns, row, metadata, &mut records_buf);
             record_ranges.push((start, records_buf.len()));
         }
 
@@ -259,7 +281,8 @@ impl OtlpSink {
         }
     }
 
-    /// Returns the raw encoded OTLP protobuf payload produced by [`Self::encode_batch`].
+    /// Returns the raw encoded OTLP protobuf payload produced by one of the
+    /// encode methods on this sink.
     pub fn encoded_payload(&self) -> &[u8] {
         &self.encoder_buf
     }

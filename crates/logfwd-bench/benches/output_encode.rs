@@ -456,6 +456,17 @@ fn bench_output_encode(c: &mut Criterion) {
             );
 
             group.bench_with_input(
+                BenchmarkId::new("otlp_encode_generated_fast", &label),
+                &batch,
+                |b, batch| {
+                    let mut sink = make_otlp_sink(Compression::None);
+                    b.iter(|| {
+                        std::hint::black_box(sink.encode_batch_generated_fast(batch, &meta));
+                    });
+                },
+            );
+
+            group.bench_with_input(
                 BenchmarkId::new("json_lines_zstd", &label),
                 &batch,
                 |b, batch| {
