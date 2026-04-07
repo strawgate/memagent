@@ -431,7 +431,23 @@ impl Pipeline {
     }
 
     /// Add an input source for testing. Bypasses config-based input construction.
-    pub fn with_input(mut self, _name: &str, source: Box<dyn InputSource>) -> Self {
+    ///
+    /// Each call pushes a matching `InputTransform` (default SQL passthrough)
+    /// so that `input_index` never exceeds `input_transforms.len()` during
+    /// `run_async`. Without this, `accumulators[input_index]` and
+    /// `self.input_transforms[input_index]` would panic with index out of bounds
+    /// when more than one input is added to a simulation pipeline.
+    pub fn with_input(mut self, name: &str, source: Box<dyn InputSource>) -> Self {
+        use logfwd_core::scan_config::ScanConfig;
+        let scan_config = ScanConfig::default();
+        let scanner = Scanner::new(scan_config);
+        let transform =
+            SqlTransform::new("SELECT * FROM logs").expect("default passthrough SQL must be valid");
+        self.input_transforms.push(InputTransform {
+            scanner,
+            transform,
+            input_name: name.to_string(),
+        });
         self.inputs.push(InputState {
             source,
             buf: BytesMut::with_capacity(self.batch_target_bytes),
