@@ -230,7 +230,6 @@ jobs:
   # -------------------------------------------------------------------------
   build-check:
     name: Build check (aarch64)
-    needs: [lint]
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
