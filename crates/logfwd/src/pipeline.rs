@@ -736,8 +736,12 @@ impl Pipeline {
                                 accumulators[input_index].ingest(bytes, checkpoints, queued_at)
                             {
                                 self.metrics.inc_flush_by_size();
+                                // Do NOT reset flush_interval here. With per-input accumulators,
+                                // flush_interval is shared across all inputs. Resetting it on a
+                                // size-triggered flush from one hot input would prevent the
+                                // periodic tick from ever firing for quieter inputs, leaving
+                                // their partial batches in the accumulator until shutdown.
                                 self.flush_batch_from(data, checkpoints, "size", queued_at, input_index).await;
-                                flush_interval.reset();
                             }
                         }
                         None => break,
