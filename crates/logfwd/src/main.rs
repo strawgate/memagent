@@ -165,35 +165,61 @@ struct Cli {
 enum Commands {
     /// Run pipeline from YAML config.
     Run {
-        #[arg(short = 'c', long = "config", value_name = "FILE")]
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "FILE",
+            help = "Path to YAML config file"
+        )]
         config: Option<String>,
     },
     /// Validate config and exit.
     Validate {
-        #[arg(short = 'c', long = "config", value_name = "FILE")]
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "FILE",
+            help = "Path to YAML config file"
+        )]
         config: Option<String>,
     },
     /// Build pipelines without running.
     DryRun {
-        #[arg(short = 'c', long = "config", value_name = "FILE")]
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "FILE",
+            help = "Path to YAML config file"
+        )]
         config: Option<String>,
     },
     /// Start OTLP blackhole receiver for testing.
     Blackhole {
-        #[arg(value_name = "BIND_ADDR")]
+        #[arg(
+            value_name = "BIND_ADDR",
+            help = "Bind address (default: 0.0.0.0:4318)"
+        )]
         bind_addr: Option<String>,
     },
     /// Generate synthetic JSON log data.
     GenerateJson {
-        #[arg(value_name = "NUM_LINES")]
+        #[arg(value_name = "NUM_LINES", help = "Number of lines to generate")]
         num_lines: usize,
-        #[arg(value_name = "OUTPUT_FILE")]
+        #[arg(
+            value_name = "OUTPUT_FILE",
+            help = "Path to write generated JSON lines"
+        )]
         output_file: String,
     },
     /// Validate and print effective runnable config.
     #[command(alias = "dump-config")]
     EffectiveConfig {
-        #[arg(short = 'c', long = "config", value_name = "FILE")]
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "FILE",
+            help = "Path to YAML config file"
+        )]
         config: Option<String>,
     },
     /// Generate starter config in current directory.
@@ -202,7 +228,7 @@ enum Commands {
     Wizard,
     /// Print shell completions.
     Completions {
-        #[arg(value_name = "SHELL")]
+        #[arg(value_name = "SHELL", help = "Target shell")]
         shell: CompletionShell,
     },
 }

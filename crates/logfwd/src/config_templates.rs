@@ -1,30 +1,45 @@
 use std::fmt::Write as _;
 
+/// A reusable input snippet presented by the interactive wizard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InputTemplate {
+    /// Stable template identifier.
     pub(crate) id: &'static str,
+    /// Human-friendly label shown in prompts.
     pub(crate) label: &'static str,
+    /// YAML fragment injected into the generated config.
     pub(crate) snippet: &'static str,
 }
 
+/// A reusable output snippet presented by the interactive wizard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OutputTemplate {
+    /// Stable template identifier.
     pub(crate) id: &'static str,
+    /// Human-friendly label shown in prompts.
     pub(crate) label: &'static str,
+    /// YAML fragment injected into the generated config.
     pub(crate) snippet: &'static str,
 }
 
+/// A full end-to-end starter scenario (input, transform, output).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) struct UseCaseTemplate {
+    /// Stable template identifier.
     pub(crate) id: &'static str,
+    /// Short scenario title.
     pub(crate) title: &'static str,
+    /// One-line scenario description.
     pub(crate) description: &'static str,
+    /// Input YAML snippet for the scenario.
     pub(crate) input: &'static str,
+    /// Output YAML snippet for the scenario.
     pub(crate) output: &'static str,
+    /// SQL transform used by the scenario.
     pub(crate) transform: &'static str,
 }
 
+/// Input presets currently surfaced by `logfwd wizard`.
 pub(crate) const INPUT_TEMPLATES: &[InputTemplate] = &[
     InputTemplate {
         id: "file_json",
@@ -53,6 +68,7 @@ pub(crate) const INPUT_TEMPLATES: &[InputTemplate] = &[
     },
 ];
 
+/// Output presets currently surfaced by `logfwd wizard`.
 pub(crate) const OUTPUT_TEMPLATES: &[OutputTemplate] = &[
     OutputTemplate {
         id: "otlp",
@@ -252,6 +268,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
     },
 ];
 
+/// Render a complete config from an input/output template pair and SQL text.
 pub(crate) fn render_config(
     input: &InputTemplate,
     output: &OutputTemplate,
@@ -275,6 +292,7 @@ pub(crate) fn render_config(
     out
 }
 
+/// Render one complete config from a single use-case preset.
 #[allow(dead_code)]
 pub(crate) fn render_use_case(use_case: &UseCaseTemplate) -> String {
     let mut out = String::new();
