@@ -294,11 +294,12 @@ export function App() {
         // Build next array keyed by trace_id, reusing previous objects when all
         // render-affecting fields are unchanged to preserve referential stability.
         const prevById = new Map(prev.map((t) => [t.trace_id, t]));
-        let anyChanged = false;
         const next = incoming.map((t) => {
           const p = prevById.get(t.trace_id);
           if (
             p &&
+            p.pipeline === t.pipeline &&
+            p.start_unix_ns === t.start_unix_ns &&
             p.total_ns === t.total_ns &&
             p.status === t.status &&
             p.in_progress === t.in_progress &&
@@ -326,10 +327,10 @@ export function App() {
           ) {
             return p;
           }
-          anyChanged = true;
           return t;
         });
-        if (!anyChanged && next.length === prev.length) return prev;
+        // Always return `next`: it preserves referential stability for unchanged
+        // objects (via prevById lookup) while also reflecting server-side reordering.
         return next;
       });
     }
