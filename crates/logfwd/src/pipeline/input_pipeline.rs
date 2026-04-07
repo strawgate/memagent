@@ -81,7 +81,7 @@ fn io_worker_loop(
     input_index: usize,
 ) {
     let mut buffered_since: Option<Instant> = None;
-    let mut last_bp_warn = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
+    let mut last_bp_warn: Option<Instant> = None;
 
     'io_loop: loop {
         if shutdown.is_cancelled() {
@@ -131,12 +131,14 @@ fn io_worker_loop(
                             match tx.try_send(chunk) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(chunk)) => {
-                                    if last_bp_warn.elapsed() >= Duration::from_secs(5) {
+                                    if last_bp_warn
+                                        .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
+                                    {
                                         tracing::warn!(
                                             input = input.source.name(),
                                             "input.backpressure"
                                         );
-                                        last_bp_warn = Instant::now();
+                                        last_bp_warn = Some(Instant::now());
                                     }
                                     metrics.inc_backpressure_stall();
                                     if tx.blocking_send(chunk).is_err() {
@@ -157,9 +159,14 @@ fn io_worker_loop(
                         match tx.try_send(item) {
                             Ok(()) => {}
                             Err(mpsc::error::TrySendError::Full(item)) => {
-                                if last_bp_warn.elapsed() >= Duration::from_secs(5) {
-                                    tracing::warn!(input = input.source.name(), "input.backpressure");
-                                    last_bp_warn = Instant::now();
+                                if last_bp_warn
+                                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
+                                {
+                                    tracing::warn!(
+                                        input = input.source.name(),
+                                        "input.backpressure"
+                                    );
+                                    last_bp_warn = Some(Instant::now());
                                 }
                                 metrics.inc_backpressure_stall();
                                 if tx.blocking_send(item).is_err() {
@@ -211,9 +218,9 @@ fn io_worker_loop(
             match tx.try_send(chunk) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(chunk)) => {
-                    if last_bp_warn.elapsed() >= Duration::from_secs(5) {
+                    if last_bp_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
                         tracing::warn!(input = input.source.name(), "input.backpressure");
-                        last_bp_warn = Instant::now();
+                        last_bp_warn = Some(Instant::now());
                     }
                     metrics.inc_backpressure_stall();
                     if tx.blocking_send(chunk).is_err() {
