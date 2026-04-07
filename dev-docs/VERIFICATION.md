@@ -252,7 +252,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-types/diagnostics/health.rs` | `ComponentHealth` lattice (`combine`, readiness, storage repr) | Kani exhaustive (4 proofs) + unit tests |
 | `logfwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (8 proofs: ColVariant field preservation, variant_dt, is_conflict_struct, json/str priority contracts) |
 | `logfwd-output/sink.rs` | SendResult outcome variants for the async Sink trait | Kani (4 proofs: Ok/RetryAfter/Rejected variant invariants, mutual exclusion) |
-| `logfwd-output/sink/health.rs` | Output health reducer + fanout roll-up semantics | Kani (5 proofs: retrying terminal preservation, shutdown completion, startup recovery, fanout commutativity, fatal-failure drain preservation) + unit tests |
+| `logfwd-output/sink/health.rs` | Output health reducer + fanout roll-up semantics | Kani (7 proofs: retrying terminal preservation, shutdown completion, startup recovery, delivery recovery, shutdown request semantics, fanout commutativity, fatal-failure drain preservation) + unit tests + proptest sequence/aggregation checks |
 | `logfwd-io/otlp_receiver.rs` | OTLP proto→JSON transcoding helpers (from_utf8_unchecked safety) | Kani (4 proofs: write_i64 ASCII-only, write_f64 ASCII-only, hex encoding, JSON escaping) |
 | `logfwd-io/receiver_health.rs` | Standalone receiver health reducer (`noop`, backpressure, fatal, shutdown) | Kani exhaustive (6 proofs) + unit tests + proptest sequence checks |
 | `logfwd-io/format.rs` | CRI metadata injection, Auto-mode fallthrough to passthrough | Kani (4 proofs: inject_cri_metadata output structure, JSON vs plain-text path dispatch) |
