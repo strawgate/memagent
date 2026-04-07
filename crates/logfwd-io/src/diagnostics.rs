@@ -873,6 +873,22 @@ impl DiagnosticsServer {
                     }
                 }
 
+                // Fallback: read scan/transform timing from root span attributes
+                // (batch span carries these directly when child spans are absent)
+                let root_attr_u64 = |key: &str| -> u64 {
+                    root.attrs
+                        .iter()
+                        .find(|kv| kv[0] == key)
+                        .and_then(|kv| kv[1].parse().ok())
+                        .unwrap_or(0)
+                };
+                if scan_ns == 0 {
+                    scan_ns = root_attr_u64("scan_ns");
+                }
+                if transform_ns == 0 {
+                    transform_ns = root_attr_u64("transform_ns");
+                }
+
                 // Extract well-known attributes from root span.
                 let attr = |key: &str| -> &str {
                     root.attrs
