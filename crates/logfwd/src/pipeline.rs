@@ -444,7 +444,6 @@ impl Pipeline {
     }
 
     /// Add an input source for testing. Bypasses config-based input construction.
-    /// Add an input source for testing. Bypasses config-based input construction.
     ///
     /// Each new input gets its own passthrough `Scanner + SqlTransform` pair
     /// (`SELECT * FROM logs`) to keep `input_transforms` in sync with `inputs`.
