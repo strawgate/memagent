@@ -45,4 +45,5 @@ User-facing documentation lives in `book/src/`. See `book/src/SUMMARY.md` for th
 
 - `just ci` must pass
 - See `dev-docs/VERIFICATION.md` for proof requirements (Kani, TLA+, proptest)
+- For control-plane or state-machine fixes in mixed async/runtime code, prefer extracting a local pure reducer/state module and add Kani + proptest coverage there when feasible
 - See `dev-docs/CODE_STYLE.md` for style rules

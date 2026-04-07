@@ -43,6 +43,12 @@ reason = "Pure escaping helpers are already Kani-targeted here."
 issue = 1314
 
 [[seams]]
+path = "crates/logfwd-io/src/receiver_health.rs"
+status = "required"
+reason = "Standalone receiver lifecycle reduction is now an isolated pure seam and should stay Kani-covered."
+issue = 1314
+
+[[seams]]
 path = "crates/logfwd-io/src/tail.rs"
 status = "required"
 reason = "The EOF emission state machine is a local proof seam despite living in an IO crate."
@@ -76,6 +82,12 @@ issue = 1439
 path = "crates/logfwd/src/worker_pool.rs"
 status = "required"
 reason = "Worker dispatch helpers already expose bounded local proof seams."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd/src/worker_pool/health.rs"
+status = "required"
+reason = "Pool-level health insertion and aggregation policy is isolated here and should remain Kani-covered."
 issue = 1314
 
 [[seams]]

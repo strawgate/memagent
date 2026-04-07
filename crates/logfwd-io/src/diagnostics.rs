@@ -206,10 +206,22 @@ impl PipelineMetrics {
     }
 
     pub fn output_error(&self, output_name: &str) {
+        let mut matched = false;
         for (name, _, stats) in &self.outputs {
             if name == output_name {
                 stats.inc_errors();
-                break;
+                matched = true;
+            }
+        }
+        if matched {
+            return;
+        }
+
+        let is_fanout_runtime_name = output_name == "fanout" || output_name.starts_with("fanout(");
+        let is_pipeline_rollup_name = output_name == self.name;
+        if self.outputs.len() > 1 && (is_fanout_runtime_name || is_pipeline_rollup_name) {
+            for (_, _, stats) in &self.outputs {
+                stats.inc_errors();
             }
         }
     }
@@ -1666,6 +1678,32 @@ mod tests {
         assert_eq!(pm.scan_errors_total.load(Ordering::Relaxed), 1);
         assert_eq!(pm.parse_errors_total.load(Ordering::Relaxed), 1);
         assert_eq!(pm.outputs[0].2.errors(), 0);
+        assert_eq!(pm.outputs[1].2.errors(), 1);
+    }
+
+    #[test]
+    fn test_pipeline_metrics_output_error_broadcasts_fanout_runtime_name() {
+        let meter = opentelemetry::global::meter("test");
+        let mut pm = PipelineMetrics::new("test", "", &meter);
+        pm.add_output("sink_a", "stdout");
+        pm.add_output("sink_b", "stdout");
+
+        pm.output_error("fanout(sink_a,sink_b)");
+
+        assert_eq!(pm.outputs[0].2.errors(), 1);
+        assert_eq!(pm.outputs[1].2.errors(), 1);
+    }
+
+    #[test]
+    fn test_pipeline_metrics_output_error_broadcasts_pipeline_rollup_name() {
+        let meter = opentelemetry::global::meter("test");
+        let mut pm = PipelineMetrics::new("pipe", "", &meter);
+        pm.add_output("sink_a", "stdout");
+        pm.add_output("sink_b", "stdout");
+
+        pm.output_error("pipe");
+
+        assert_eq!(pm.outputs[0].2.errors(), 1);
         assert_eq!(pm.outputs[1].2.errors(), 1);
     }
 

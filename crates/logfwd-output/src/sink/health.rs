@@ -41,8 +41,14 @@ pub const fn reduce_output_health(
             | ComponentHealth::Failed => current,
             _ => ComponentHealth::Starting,
         },
-        OutputHealthEvent::StartupSucceeded | OutputHealthEvent::DeliverySucceeded => match current
-        {
+        OutputHealthEvent::StartupSucceeded => match current {
+            ComponentHealth::Degraded => ComponentHealth::Degraded,
+            ComponentHealth::Stopping | ComponentHealth::Stopped | ComponentHealth::Failed => {
+                current
+            }
+            _ => ComponentHealth::Healthy,
+        },
+        OutputHealthEvent::DeliverySucceeded => match current {
             ComponentHealth::Stopping | ComponentHealth::Stopped | ComponentHealth::Failed => {
                 current
             }
@@ -54,7 +60,10 @@ pub const fn reduce_output_health(
             }
             _ => ComponentHealth::Degraded,
         },
-        OutputHealthEvent::FatalFailure => ComponentHealth::Failed,
+        OutputHealthEvent::FatalFailure => match current {
+            ComponentHealth::Stopping | ComponentHealth::Stopped => current,
+            _ => ComponentHealth::Failed,
+        },
         OutputHealthEvent::ShutdownRequested => match current {
             ComponentHealth::Stopped | ComponentHealth::Failed => current,
             _ => ComponentHealth::Stopping,
@@ -85,6 +94,7 @@ where
 mod tests {
     use super::{OutputHealthEvent, aggregate_fanout_health, reduce_output_health};
     use logfwd_types::diagnostics::ComponentHealth;
+    use proptest::prelude::*;
 
     #[test]
     fn fanout_health_uses_worst_child_state() {
@@ -139,6 +149,24 @@ mod tests {
     }
 
     #[test]
+    fn startup_success_does_not_clear_retrying_degradation() {
+        assert_eq!(
+            reduce_output_health(
+                ComponentHealth::Degraded,
+                OutputHealthEvent::StartupSucceeded
+            ),
+            ComponentHealth::Degraded
+        );
+        assert_eq!(
+            reduce_output_health(
+                ComponentHealth::Starting,
+                OutputHealthEvent::StartupSucceeded
+            ),
+            ComponentHealth::Healthy
+        );
+    }
+
+    #[test]
     fn retrying_degrades_non_terminal_outputs() {
         assert_eq!(
             reduce_output_health(ComponentHealth::Healthy, OutputHealthEvent::Retrying),
@@ -181,6 +209,60 @@ mod tests {
             reduce_output_health(ComponentHealth::Degraded, OutputHealthEvent::FatalFailure),
             ComponentHealth::Failed
         );
+        assert_eq!(
+            reduce_output_health(ComponentHealth::Stopping, OutputHealthEvent::FatalFailure),
+            ComponentHealth::Stopping
+        );
+    }
+
+    fn apply_events(initial: ComponentHealth, events: &[OutputHealthEvent]) -> ComponentHealth {
+        events.iter().copied().fold(initial, reduce_output_health)
+    }
+
+    fn arb_event() -> impl Strategy<Value = OutputHealthEvent> {
+        prop_oneof![
+            Just(OutputHealthEvent::StartupRequested),
+            Just(OutputHealthEvent::StartupSucceeded),
+            Just(OutputHealthEvent::DeliverySucceeded),
+            Just(OutputHealthEvent::Retrying),
+            Just(OutputHealthEvent::FatalFailure),
+            Just(OutputHealthEvent::ShutdownRequested),
+            Just(OutputHealthEvent::ShutdownCompleted),
+        ]
+    }
+
+    fn arb_health() -> impl Strategy<Value = ComponentHealth> {
+        (0u8..=5).prop_map(ComponentHealth::from_repr)
+    }
+
+    proptest! {
+        #[test]
+        fn failed_output_state_is_sticky_across_any_event_sequence(
+            events in proptest::collection::vec(arb_event(), 0..16)
+        ) {
+            let out = apply_events(ComponentHealth::Failed, &events);
+            prop_assert_eq!(out, ComponentHealth::Failed);
+        }
+
+        #[test]
+        fn stopped_output_state_is_sticky_across_any_event_sequence(
+            events in proptest::collection::vec(arb_event(), 0..16)
+        ) {
+            let out = apply_events(ComponentHealth::Stopped, &events);
+            prop_assert_eq!(out, ComponentHealth::Stopped);
+        }
+
+        #[test]
+        fn fanout_health_matches_maximum_repr_over_all_children(
+            children in proptest::collection::vec(arb_health(), 0..16)
+        ) {
+            let out = aggregate_fanout_health(children.iter().copied());
+            let expected = children
+                .iter()
+                .copied()
+                .fold(ComponentHealth::Healthy, ComponentHealth::combine);
+            prop_assert_eq!(out, expected);
+        }
     }
 }
 
@@ -190,6 +272,7 @@ mod verification {
     use logfwd_types::diagnostics::ComponentHealth;
 
     #[kani::proof]
+    #[kani::unwind(3)]
     fn verify_retrying_degrades_only_non_terminal_outputs() {
         let current = ComponentHealth::from_repr(kani::any());
         let out = reduce_output_health(current, OutputHealthEvent::Retrying);
@@ -200,9 +283,19 @@ mod verification {
             }
             _ => assert_eq!(out, ComponentHealth::Degraded),
         }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Healthy),
+            "healthy_retrying"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Stopped),
+            "stopped_retrying"
+        );
     }
 
     #[kani::proof]
+    #[kani::unwind(3)]
     fn verify_shutdown_completed_preserves_failed_outputs() {
         let current = ComponentHealth::from_repr(kani::any());
         let out = reduce_output_health(current, OutputHealthEvent::ShutdownCompleted);
@@ -212,15 +305,123 @@ mod verification {
         } else {
             assert_eq!(out, ComponentHealth::Stopped);
         }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Failed),
+            "failed_shutdown_completed"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Healthy),
+            "healthy_shutdown_completed"
+        );
     }
 
     #[kani::proof]
+    #[kani::unwind(3)]
+    fn verify_startup_succeeded_preserves_retrying_degradation() {
+        let current = ComponentHealth::from_repr(kani::any());
+        let out = reduce_output_health(current, OutputHealthEvent::StartupSucceeded);
+
+        match current {
+            ComponentHealth::Degraded => assert_eq!(out, ComponentHealth::Degraded),
+            ComponentHealth::Stopping | ComponentHealth::Stopped | ComponentHealth::Failed => {
+                assert_eq!(out, current)
+            }
+            _ => assert_eq!(out, ComponentHealth::Healthy),
+        }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Degraded),
+            "degraded_startup_succeeded"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Starting),
+            "starting_startup_succeeded"
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn verify_delivery_succeeded_recovers_only_non_terminal_outputs() {
+        let current = ComponentHealth::from_repr(kani::any());
+        let out = reduce_output_health(current, OutputHealthEvent::DeliverySucceeded);
+
+        match current {
+            ComponentHealth::Stopping | ComponentHealth::Stopped | ComponentHealth::Failed => {
+                assert_eq!(out, current)
+            }
+            _ => assert_eq!(out, ComponentHealth::Healthy),
+        }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Degraded),
+            "degraded_delivery_succeeded_recovers"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Failed),
+            "failed_delivery_succeeded_stays_failed"
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn verify_shutdown_requested_only_moves_non_terminal_outputs_to_stopping() {
+        let current = ComponentHealth::from_repr(kani::any());
+        let out = reduce_output_health(current, OutputHealthEvent::ShutdownRequested);
+
+        match current {
+            ComponentHealth::Stopped | ComponentHealth::Failed => assert_eq!(out, current),
+            _ => assert_eq!(out, ComponentHealth::Stopping),
+        }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Healthy),
+            "healthy_shutdown_requested_becomes_stopping"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Failed),
+            "failed_shutdown_requested_stays_failed"
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
     fn verify_fanout_health_is_commutative_for_two_children() {
         let a = ComponentHealth::from_repr(kani::any());
         let b = ComponentHealth::from_repr(kani::any());
         assert_eq!(
             aggregate_fanout_health([a, b]),
             aggregate_fanout_health([b, a])
+        );
+
+        kani::cover!(
+            a == ComponentHealth::Healthy && b == ComponentHealth::Degraded,
+            "healthy_degraded_pair"
+        );
+        kani::cover!(
+            a == ComponentHealth::Stopping && b == ComponentHealth::Healthy,
+            "stopping_healthy_pair"
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn verify_fatal_failure_preserves_drain_phase() {
+        let current = ComponentHealth::from_repr(kani::any());
+        let out = reduce_output_health(current, OutputHealthEvent::FatalFailure);
+
+        match current {
+            ComponentHealth::Stopping | ComponentHealth::Stopped => assert_eq!(out, current),
+            _ => assert_eq!(out, ComponentHealth::Failed),
+        }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Stopping),
+            "stopping_fatal_failure"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Healthy),
+            "healthy_fatal_failure"
         );
     }
 }
