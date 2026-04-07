@@ -27,7 +27,7 @@ data source is required.
 | `generator.total_events` | integer | No | `0` | Total events to emit before stopping. `0` means infinite. |
 | `generator.profile` | string | No | `logs` | `logs` for generic synthetic request logs, `record` for flat JSON rows assembled from attributes and generated fields. |
 | `generator.complexity` | string | No | `simple` | Size/shape for the `logs` profile: `simple` or `complex`. Ignored by the `record` profile. |
-| `generator.attributes` | object | No | `{}` | Static scalar JSON fields written into every `record` row. |
+| `generator.attributes` | object | No | `{}` | Static scalar JSON fields written into every `record` row (`string`, `number`, `boolean`, or `null`). |
 | `generator.sequence.field` | string | No | unset | Output field name for a monotonic generated sequence in `record` rows. |
 | `generator.sequence.start` | integer | No | `1` | Initial value for the generated sequence. |
 | `generator.event_created_unix_nano_field` | string | No | unset | Adds a source-created nanosecond timestamp field to each `record` row. |
@@ -46,6 +46,7 @@ input:
       service: bench-emitter
       status: 200
       sampled: true
+      deleted_at: null
     sequence:
       field: seq
     event_created_unix_nano_field: event_created_unix_nano

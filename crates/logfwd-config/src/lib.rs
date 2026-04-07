@@ -215,6 +215,7 @@ impl fmt::Display for Format {
 // ---------------------------------------------------------------------------
 
 /// Named generator output profiles.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GeneratorProfileConfig {
@@ -226,21 +227,31 @@ pub enum GeneratorProfileConfig {
 }
 
 /// Controls the size and shape of synthetic generator rows.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GeneratorComplexityConfig {
+    /// Flat request-style logs around a couple hundred bytes.
     #[default]
     Simple,
+    /// Request-style logs with occasional nested objects and arrays.
     Complex,
 }
 
 /// Static scalar attribute value for generated `record` rows.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
 pub enum GeneratorAttributeValueConfig {
+    /// JSON null scalar.
+    Null,
+    /// UTF-8 text scalar.
     String(String),
+    /// Signed 64-bit integer scalar.
     Integer(i64),
+    /// 64-bit floating point scalar.
     Float(f64),
+    /// Boolean scalar.
     Bool(bool),
 }
 
@@ -2844,6 +2855,7 @@ pipelines:
             service: bench-emitter
             status: 200
             sampled: true
+            deleted_at: null
           sequence:
             field: seq
     outputs:
@@ -2883,6 +2895,10 @@ pipelines:
         assert_eq!(
             generator.attributes.get("sampled"),
             Some(&GeneratorAttributeValueConfig::Bool(true))
+        );
+        assert_eq!(
+            generator.attributes.get("deleted_at"),
+            Some(&GeneratorAttributeValueConfig::Null)
         );
         assert_eq!(
             generator.sequence.as_ref().map(|seq| seq.field.as_str()),
@@ -2972,6 +2988,135 @@ pipelines:
             err.to_string()
                 .contains("must not duplicate a generator.attributes key"),
             "expected duplicate generated field rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_input_rejects_zero_batch_size() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          batch_size: 0
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("batch_size must be at least 1"),
+            "expected zero batch size rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_input_rejects_empty_attribute_key() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+          attributes:
+            "": run-123
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("attributes keys must not be empty"),
+            "expected empty attribute key rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_input_rejects_non_finite_attribute_values() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+          attributes:
+            ratio: .nan
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("float values must be finite"),
+            "expected non-finite attribute rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_input_rejects_empty_event_created_field_name() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+          event_created_unix_nano_field: " "
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("event_created_unix_nano_field must not be empty"),
+            "expected empty event_created field rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_input_rejects_event_created_field_name_duplicate_with_attribute() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+          attributes:
+            created: run-123
+          event_created_unix_nano_field: created
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must not duplicate a generator.attributes key"),
+            "expected event_created/attribute duplication rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_input_rejects_event_created_field_name_duplicate_with_sequence() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+          sequence:
+            field: seq
+          event_created_unix_nano_field: seq
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must not duplicate generator.sequence.field"),
+            "expected event_created/sequence duplication rejection: {err}"
         );
     }
 

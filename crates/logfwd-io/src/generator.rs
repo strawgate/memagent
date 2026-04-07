@@ -10,6 +10,7 @@ use std::io::Write;
 use crate::input::{InputEvent, InputSource};
 
 /// Controls the complexity/size of generated lines.
+#[non_exhaustive]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GeneratorComplexity {
     /// Flat JSON object, ~200 bytes per line.
@@ -20,6 +21,7 @@ pub enum GeneratorComplexity {
 }
 
 /// Named generator output profiles.
+#[non_exhaustive]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GeneratorProfile {
     /// Synthetic request-like JSON logs.
@@ -31,17 +33,26 @@ pub enum GeneratorProfile {
 
 /// Monotonic generated field configuration.
 pub struct GeneratorGeneratedField {
+    /// Output field name for the generated sequence in record rows.
     pub field: String,
+    /// Initial monotonic sequence value.
     pub start: u64,
 }
 
 /// Static scalar attribute value written into generated `record` rows.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum GeneratorAttributeValue {
+    /// UTF-8 text scalar.
     String(String),
+    /// Signed 64-bit integer scalar.
     Integer(i64),
+    /// 64-bit floating point scalar.
     Float(f64),
+    /// Boolean scalar.
     Bool(bool),
+    /// JSON null scalar.
+    Null,
 }
 
 /// Configuration for the generator input.
@@ -156,25 +167,43 @@ impl GeneratorInput {
     fn generate_batch(&mut self) -> io::Result<()> {
         self.buf.clear();
         let n = self.config.batch_size;
+        let batch_created_unix_nano = self
+            .record_fields
+            .event_created_unix_nano_field
+            .as_ref()
+            .map(|_| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            });
+        let mut batch_offset = 0u128;
         for _ in 0..n {
             if self.config.total_events > 0 && self.counter >= self.config.total_events {
                 self.done = true;
                 break;
             }
-            self.write_event()?;
+            let event_created_unix_nano = batch_created_unix_nano.map(|base| base + batch_offset);
+            let len_before = self.buf.len();
+            self.write_event(event_created_unix_nano)?;
+            if self.done {
+                self.buf.truncate(len_before);
+                break;
+            }
             self.buf.push(b'\n');
             self.counter += 1;
+            batch_offset += 1;
         }
         Ok(())
     }
 
-    fn write_event(&mut self) -> io::Result<()> {
+    fn write_event(&mut self, event_created_unix_nano: Option<u128>) -> io::Result<()> {
         match self.config.profile {
             GeneratorProfile::Logs => {
                 self.write_logs_event();
                 Ok(())
             }
-            GeneratorProfile::Record => self.write_record_event(),
+            GeneratorProfile::Record => self.write_record_event(event_created_unix_nano),
         }
     }
 
@@ -235,7 +264,7 @@ impl GeneratorInput {
         }
     }
 
-    fn write_record_event(&mut self) -> io::Result<()> {
+    fn write_record_event(&mut self, event_created_unix_nano: Option<u128>) -> io::Result<()> {
         self.buf.push(b'{');
         let mut first = true;
         for encoded_field in &self.record_fields.attributes {
@@ -246,19 +275,17 @@ impl GeneratorInput {
             self.buf.extend_from_slice(encoded_field);
         }
         if let Some(sequence) = &self.record_fields.sequence {
-            let value = sequence.start.checked_add(self.counter).ok_or_else(|| {
-                io::Error::other(format!(
-                    "generator sequence '{}' overflowed u64",
-                    sequence.field
-                ))
-            })?;
+            let Some(value) = sequence.start.checked_add(self.counter) else {
+                self.done = true;
+                return Ok(());
+            };
             write_json_u64_field(&mut self.buf, &sequence.field, value, &mut first);
         }
-        if let Some(field) = &self.record_fields.event_created_unix_nano_field {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            write_json_u128_field(&mut self.buf, field, now.as_nanos(), &mut first);
+        if let (Some(field), Some(event_created_unix_nano)) = (
+            &self.record_fields.event_created_unix_nano_field,
+            event_created_unix_nano,
+        ) {
+            write_json_u128_field(&mut self.buf, field, event_created_unix_nano, &mut first);
         }
         self.buf.push(b'}');
         Ok(())
@@ -366,10 +393,18 @@ fn encode_static_field(key: &str, value: &GeneratorAttributeValue) -> Vec<u8> {
             let _ = write!(&mut out, "{value}");
         }
         GeneratorAttributeValue::Float(value) => {
-            let _ = write!(&mut out, "{value}");
+            if value.is_finite() {
+                let rendered = serde_json::to_string(value).expect("finite float serializes");
+                out.extend_from_slice(rendered.as_bytes());
+            } else {
+                out.extend_from_slice(b"null");
+            }
         }
         GeneratorAttributeValue::Bool(value) => {
             out.extend_from_slice(if *value { b"true" } else { b"false" });
+        }
+        GeneratorAttributeValue::Null => {
+            out.extend_from_slice(b"null");
         }
     }
     out
@@ -722,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn record_profile_errors_on_sequence_overflow() {
+    fn record_profile_stops_on_sequence_overflow() {
         let mut input = GeneratorInput::new(
             "bench-input",
             GeneratorConfig {
@@ -737,14 +772,18 @@ mod tests {
             },
         );
 
-        let err = match input.poll() {
-            Ok(_) => panic!("expected sequence overflow error"),
-            Err(err) => err,
+        let events = input.poll().unwrap();
+        let InputEvent::Data { bytes, .. } = &events[0] else {
+            panic!("expected Data event");
         };
-        assert!(
-            err.to_string().contains("overflowed u64"),
-            "expected sequence overflow error: {err}"
-        );
+        let rows: Vec<serde_json::Value> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["seq"], u64::MAX);
+        assert!(input.poll().unwrap().is_empty());
     }
 
     #[test]
@@ -791,5 +830,26 @@ mod tests {
         assert_eq!(row["service"], "svc\tname");
         assert_eq!(row["ratio"], 1.25);
         assert_eq!(row["sampled"], false);
+    }
+
+    #[test]
+    fn encode_static_field_serializes_floats_as_json_numbers() {
+        let encoded = encode_static_field("ratio", &GeneratorAttributeValue::Float(1.0));
+        assert_eq!(std::str::from_utf8(&encoded).unwrap(), "\"ratio\":1.0");
+    }
+
+    #[test]
+    fn encode_static_field_serializes_non_finite_floats_as_null() {
+        let encoded = encode_static_field("ratio", &GeneratorAttributeValue::Float(f64::NAN));
+        assert_eq!(std::str::from_utf8(&encoded).unwrap(), "\"ratio\":null");
+    }
+
+    #[test]
+    fn encode_static_field_serializes_null_attribute() {
+        let encoded = encode_static_field("deleted_at", &GeneratorAttributeValue::Null);
+        assert_eq!(
+            std::str::from_utf8(&encoded).unwrap(),
+            "\"deleted_at\":null"
+        );
     }
 }

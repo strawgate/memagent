@@ -1529,11 +1529,13 @@ fn build_input_state(
                 total_events: generator_cfg.and_then(|c| c.total_events).unwrap_or(0),
                 complexity: match generator_cfg.and_then(|c| c.complexity.clone()) {
                     Some(GeneratorComplexityConfig::Complex) => GeneratorComplexity::Complex,
-                    _ => GeneratorComplexity::Simple,
+                    Some(GeneratorComplexityConfig::Simple) | None => GeneratorComplexity::Simple,
+                    Some(_) => GeneratorComplexity::Simple,
                 },
                 profile: match generator_cfg.and_then(|c| c.profile.clone()) {
                     Some(GeneratorProfileConfig::Record) => GeneratorProfile::Record,
-                    _ => GeneratorProfile::Logs,
+                    Some(GeneratorProfileConfig::Logs) | None => GeneratorProfile::Logs,
+                    Some(_) => GeneratorProfile::Logs,
                 },
                 attributes: generator_cfg
                     .map(|c| {
@@ -1544,6 +1546,9 @@ fn build_input_state(
                                     GeneratorAttributeValueConfig::String(v) => {
                                         GeneratorAttributeValue::String(v.clone())
                                     }
+                                    GeneratorAttributeValueConfig::Null => {
+                                        GeneratorAttributeValue::Null
+                                    }
                                     GeneratorAttributeValueConfig::Integer(v) => {
                                         GeneratorAttributeValue::Integer(*v)
                                     }
@@ -1553,6 +1558,7 @@ fn build_input_state(
                                     GeneratorAttributeValueConfig::Bool(v) => {
                                         GeneratorAttributeValue::Bool(*v)
                                     }
+                                    _ => GeneratorAttributeValue::Null,
                                 };
                                 (k.clone(), value)
                             })
@@ -1656,7 +1662,9 @@ mod tests {
     use serial_test::serial;
     use std::time::Instant;
 
+    use logfwd_arrow::scanner::Scanner;
     use logfwd_config::{Format, OutputConfig, OutputType};
+    use logfwd_core::scan_config::ScanConfig;
     use logfwd_io::diagnostics::ComponentStats;
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::test_meter;
@@ -1821,8 +1829,50 @@ output:
 "#;
         let config = logfwd_config::Config::load_str(yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
-        let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None);
-        assert!(pipeline.is_ok(), "got: {:?}", pipeline.err());
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None)
+            .unwrap_or_else(|err| panic!("unexpected pipeline build error: {err}"));
+        let events = pipeline.inputs[0].source.poll().unwrap();
+        let bytes = match &events[0] {
+            InputEvent::Data { bytes, .. } => bytes,
+            _ => panic!("expected generator data event"),
+        };
+        let mut scanner = Scanner::new(ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            keep_raw: false,
+            validate_utf8: false,
+        });
+        let batch = scanner.scan_detached(Bytes::from(bytes.clone())).unwrap();
+        let benchmark_id = batch
+            .column_by_name("benchmark_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        let pod_name = batch
+            .column_by_name("pod_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        let stream_id = batch
+            .column_by_name("stream_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        let seq = batch
+            .column_by_name("seq")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap();
+
+        assert_eq!(benchmark_id.value(0), "run-123");
+        assert_eq!(pod_name.value(0), "emitter-0");
+        assert_eq!(stream_id.value(0), "emitter-0");
+        assert_eq!(seq.value(0), 1);
+        assert!(batch.column_by_name("event_created_unix_nano").is_some());
     }
 
     #[test]
