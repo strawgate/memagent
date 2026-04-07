@@ -56,8 +56,14 @@ mod tests {
 
     #[test]
     fn parse_error_messages_match_previous_behavior() {
-        assert_eq!(format!("{}", ParseError::InvalidFormat("oops")), "invalid format: oops");
-        assert_eq!(format!("{}", ParseError::BufferExhausted), "buffer exhausted");
+        assert_eq!(
+            format!("{}", ParseError::InvalidFormat("oops")),
+            "invalid format: oops"
+        );
+        assert_eq!(
+            format!("{}", ParseError::BufferExhausted),
+            "buffer exhausted"
+        );
         assert_eq!(format!("{}", ParseError::Truncated), "truncated input");
     }
 
