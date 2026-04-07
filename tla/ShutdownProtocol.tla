@@ -8,7 +8,7 @@
  *
  * Production capacities:
  *   io_cpu channel      = 4
- *   shared pipeline rx  = 16
+ *   shared pipeline rx  = 3 (reduced from 16 to keep TLC state space tractable)
  *
  * Shutdown cascade:
  *   shutdown signal
@@ -31,7 +31,7 @@ CONSTANTS
 
 ASSUME NumInputs >= 1 /\ NumInputs <= 4
 ASSUME IoChannelCapacity >= 1 /\ IoChannelCapacity <= 4
-ASSUME PipelineChannelCapacity >= 1 /\ PipelineChannelCapacity <= 16
+ASSUME PipelineChannelCapacity >= 1 /\ PipelineChannelCapacity <= 4
 ASSUME MaxItems >= 1 /\ MaxItems <= 4
 
 (* -----------------------------------------------------------------------
@@ -214,10 +214,11 @@ MarkIoChannelsDrained ==
                    pipeline_channel_drained, workers_joined, pool_drained,
                    machine_stopped, forced>>
 
-\* 4) CPU worker exits once io side is fully drained.
+\* 4) CPU worker i exits once its own io_alive is down and its own io_channel is empty.
+\* Each CPU worker exits independently — it does not wait for other workers.
 CpuWorkerStop(i) ==
-    /\ io_channels_drained
     /\ cpu_alive[i]
+    /\ ~io_alive[i]
     /\ Len(io_channels[i]) = 0
     /\ cpu_alive' = [cpu_alive EXCEPT ![i] = FALSE]
     /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
@@ -357,6 +358,26 @@ NoStopBeforeJoin ==
 
 NormalStopImpliesPoolDrained ==
     (machine_stopped /\ ~forced) => pool_drained
+
+\* Helper: sum a function f over a set S.
+RECURSIVE SumFn(_, _)
+SumFn(S, f) ==
+    IF S = {} THEN 0
+    ELSE LET i == CHOOSE x \in S : TRUE
+         IN  f[i] + SumFn(S \ {i}, f)
+
+\* Conservation: items are never created or destroyed, only moved between buffers.
+\*   per-input: produced by I/O = still in io_channel + forwarded to pipeline by CPU
+\*   global:    sum of cpu_forwarded = items in pipeline_channel + items consumed
+\*              consumed = pool_pending (each consumed item is submitted to pool)
+\*              pool_acked <= pool_pending (acked <= submitted)
+\* This invariant is independent of action preconditions and catches model errors.
+MassConservation ==
+    /\ \A i \in Inputs :
+        input_produced[i] = Len(io_channels[i]) + cpu_forwarded[i]
+    /\ SumFn(Inputs, cpu_forwarded) = Len(pipeline_channel) + consumed
+    /\ consumed = pool_pending
+    /\ pool_acked <= pool_pending
 
 (* -----------------------------------------------------------------------
  * Liveness properties
