@@ -17,13 +17,21 @@ fmt:
 fmt-check:
     cargo fmt --check
 
-# Run clippy lints
+# Clippy — default-members only (skips datafusion, ~30s)
 clippy:
     cargo clippy -- -D warnings
 
-# Run all tests
+# Clippy — full workspace including datafusion (~3min, CI uses this)
+clippy-all:
+    cargo clippy --workspace -- -D warnings
+
+# Tests — default-members only (skips datafusion)
 test:
     cargo nextest run --profile ci
+
+# Tests — full workspace (CI uses this)
+test-all:
+    cargo nextest run --workspace --profile ci
 
 # Run Kani formal verification proofs (logfwd-core only)
 # Requires: cargo install --locked kani-verifier && cargo kani setup
@@ -34,15 +42,17 @@ kani:
 kani-boundary:
     python3 scripts/verify_kani_boundary_contract.py
 
-# Run all tests with nextest (parallel, faster output)
-nextest:
-    cargo nextest run
+# Lint — fast (default-members, skips datafusion)
+lint: fmt-check clippy toml-check
 
-# Lint everything: format, clippy, TOML, deny (matches CI Lint job)
-lint: fmt-check kani-boundary clippy toml-check deny
+# Lint — full workspace (CI uses this)
+lint-all: fmt-check kani-boundary clippy-all toml-check deny
 
-# Full CI suite: lint + test (run before pushing)
+# Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test
+
+# Full CI — everything including datafusion (run before pushing)
+ci-all: lint-all test-all
 
 # Check TOML formatting (Cargo.toml, etc.)
 toml-check:
