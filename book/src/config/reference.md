@@ -105,7 +105,7 @@ Emit synthetic records for benchmarks, demos, and pipeline tests.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `generator` | object | Yes | Generator settings. See [Input Types](inputs.md#generator) for the detailed nested fields. |
+| `generator` | object | No | Generator settings. If omitted, runtime defaults are used, including `batch_size: 1000` and `events_per_sec: 0`. See [Input Types](inputs.md#generator) for the detailed nested fields. |
 
 ```yaml
 input:
@@ -162,7 +162,7 @@ input:
 ### `arrow_ipc` input *(not yet supported)*
 
 Reserved for future Arrow IPC ingest. Config parsing recognizes the type, but
-runtime validation currently rejects it.
+config validation currently rejects it.
 
 ---
 
