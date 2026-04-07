@@ -27,6 +27,7 @@ use logfwd_types::diagnostics::ComponentHealth;
 use prost::Message;
 
 use crate::InputError;
+use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
 
 /// Maximum request body size: 10 MB.
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -105,6 +106,13 @@ impl OtapReceiver {
             .name("otap-receiver".into())
             .spawn(move || {
                 while !shutdown_clone.load(Ordering::Relaxed) {
+                    let store_event = |health: &AtomicU8, event| {
+                        let current = ComponentHealth::from_repr(health.load(Ordering::Relaxed));
+                        health.store(
+                            reduce_receiver_health(current, event).as_repr(),
+                            Ordering::Relaxed,
+                        );
+                    };
                     let mut request = match server_clone.try_recv() {
                         Ok(Some(req)) => req,
                         Ok(None) => {
@@ -114,8 +122,7 @@ impl OtapReceiver {
                         // Exit the worker thread on accept-side I/O failure instead of
                         // spinning forever and silently dropping all future requests.
                         Err(_) => {
-                            health_clone
-                                .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                            store_event(&health_clone, ReceiverHealthEvent::FatalFailure);
                             break;
                         }
                     };
@@ -215,6 +222,7 @@ impl OtapReceiver {
 
                     // Skip empty batches.
                     if flat.num_rows() == 0 {
+                        store_event(&health_clone, ReceiverHealthEvent::DeliveryNoop);
                         let resp_body =
                             encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
                         let _ = request.respond(
@@ -232,8 +240,7 @@ impl OtapReceiver {
                     // Send to pipeline via bounded channel.
                     match tx.try_send(flat) {
                         Ok(()) => {
-                            health_clone
-                                .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
+                            store_event(&health_clone, ReceiverHealthEvent::DeliveryAccepted);
                             let resp_body =
                                 encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
                             let _ = request.respond(
@@ -247,8 +254,7 @@ impl OtapReceiver {
                             );
                         }
                         Err(mpsc::TrySendError::Full(_)) => {
-                            health_clone
-                                .store(ComponentHealth::Degraded.as_repr(), Ordering::Relaxed);
+                            store_event(&health_clone, ReceiverHealthEvent::Backpressure);
                             let _ = request.respond(
                                 tiny_http::Response::from_string(
                                     "too many requests: pipeline backpressure",
@@ -258,8 +264,7 @@ impl OtapReceiver {
                         }
                         Err(mpsc::TrySendError::Disconnected(_)) => {
                             if !shutdown_clone.load(Ordering::Relaxed) {
-                                health_clone
-                                    .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                                store_event(&health_clone, ReceiverHealthEvent::FatalFailure);
                             }
                             let _ = request.respond(
                                 tiny_http::Response::from_string(
@@ -497,16 +502,22 @@ fn encode_batch_status(batch_id: i64, status_code: u32) -> Vec<u8> {
 
 impl Drop for OtapReceiver {
     fn drop(&mut self) {
-        self.health
-            .store(ComponentHealth::Stopping.as_repr(), Ordering::Relaxed);
+        let current = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
+        self.health.store(
+            reduce_receiver_health(current, ReceiverHealthEvent::ShutdownRequested).as_repr(),
+            Ordering::Relaxed,
+        );
         self.shutdown.store(true, Ordering::Relaxed);
         self.rx.take();
         self.server.unblock();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
-        self.health
-            .store(ComponentHealth::Stopped.as_repr(), Ordering::Relaxed);
+        let current = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
+        self.health.store(
+            reduce_receiver_health(current, ReceiverHealthEvent::ShutdownCompleted).as_repr(),
+            Ordering::Relaxed,
+        );
     }
 }
 

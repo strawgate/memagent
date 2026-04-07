@@ -23,6 +23,7 @@ use arrow::record_batch::RecordBatch;
 use logfwd_types::diagnostics::ComponentHealth;
 
 use crate::InputError;
+use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
 
 /// Maximum request body size: 10 MB.
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -84,6 +85,13 @@ impl ArrowIpcReceiver {
             .name("arrow-ipc-receiver".into())
             .spawn(move || {
                 while !shutdown_clone.load(Ordering::Relaxed) {
+                    let store_event = |health: &AtomicU8, event| {
+                        let current = ComponentHealth::from_repr(health.load(Ordering::Relaxed));
+                        health.store(
+                            reduce_receiver_health(current, event).as_repr(),
+                            Ordering::Relaxed,
+                        );
+                    };
                     let mut request = match server_clone.try_recv() {
                         Ok(Some(req)) => req,
                         Ok(None) => {
@@ -93,8 +101,7 @@ impl ArrowIpcReceiver {
                         // Exit the worker thread on accept-side I/O failure instead of
                         // spinning forever and silently dropping all future requests.
                         Err(_) => {
-                            health_clone
-                                .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                            store_event(&health_clone, ReceiverHealthEvent::FatalFailure);
                             break;
                         }
                     };
@@ -223,8 +230,7 @@ impl ArrowIpcReceiver {
 
                     match send_error {
                         Some(429) => {
-                            health_clone
-                                .store(ComponentHealth::Degraded.as_repr(), Ordering::Relaxed);
+                            store_event(&health_clone, ReceiverHealthEvent::Backpressure);
                             let _ = request.respond(
                                 tiny_http::Response::from_string(
                                     "too many requests: pipeline backpressure",
@@ -234,8 +240,7 @@ impl ArrowIpcReceiver {
                         }
                         Some(503) => {
                             if !shutdown_clone.load(Ordering::Relaxed) {
-                                health_clone
-                                    .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                                store_event(&health_clone, ReceiverHealthEvent::FatalFailure);
                             }
                             let _ = request.respond(
                                 tiny_http::Response::from_string(
@@ -246,10 +251,14 @@ impl ArrowIpcReceiver {
                         }
                         Some(_) => unreachable!(),
                         None => {
-                            if sent_rows {
-                                health_clone
-                                    .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
-                            }
+                            store_event(
+                                &health_clone,
+                                if sent_rows {
+                                    ReceiverHealthEvent::DeliveryAccepted
+                                } else {
+                                    ReceiverHealthEvent::DeliveryNoop
+                                },
+                            );
                             let _ = request.respond(
                                 tiny_http::Response::from_string("").with_status_code(200),
                             );
@@ -365,16 +374,22 @@ fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, InputError> {
 
 impl Drop for ArrowIpcReceiver {
     fn drop(&mut self) {
-        self.health
-            .store(ComponentHealth::Stopping.as_repr(), Ordering::Relaxed);
+        let current = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
+        self.health.store(
+            reduce_receiver_health(current, ReceiverHealthEvent::ShutdownRequested).as_repr(),
+            Ordering::Relaxed,
+        );
         self.shutdown.store(true, Ordering::Relaxed);
         self.rx.take();
         self.server.unblock();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
-        self.health
-            .store(ComponentHealth::Stopped.as_repr(), Ordering::Relaxed);
+        let current = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
+        self.health.store(
+            reduce_receiver_health(current, ReceiverHealthEvent::ShutdownCompleted).as_repr(),
+            Ordering::Relaxed,
+        );
     }
 }
 

@@ -33,6 +33,8 @@
 //! Pure dispatch logic is extracted into `dispatch_step` and proved with
 //! Kani.  See the `kani_proofs` module below.
 
+mod health;
+
 use backon::{BackoffBuilder, ExponentialBuilder};
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -46,10 +48,14 @@ use tracing::Instrument;
 
 use logfwd_io::diagnostics::{ComponentHealth, ComponentStats, PipelineMetrics};
 use logfwd_output::BatchMetadata;
-use logfwd_output::sink::{OutputHealthEvent, SendResult, Sink, SinkFactory, reduce_output_health};
+use logfwd_output::sink::{OutputHealthEvent, SendResult, Sink, SinkFactory};
 use logfwd_types::pipeline::{BatchTicket, Sending};
 
 use arrow::record_batch::RecordBatch;
+
+use self::health::{
+    aggregate_output_health, idle_health_after_worker_insert, reduce_worker_slot_health,
+};
 
 // ---------------------------------------------------------------------------
 // Public message types
@@ -166,11 +172,7 @@ impl OutputHealthTracker {
     }
 
     fn aggregate(state: &OutputHealthState) -> ComponentHealth {
-        state
-            .worker_slots
-            .values()
-            .copied()
-            .fold(state.idle_health, ComponentHealth::combine)
+        aggregate_output_health(state.idle_health, state.worker_slots.values().copied())
     }
 
     fn insert_worker(&self, worker_id: usize, initial: ComponentHealth) -> ComponentHealth {
@@ -178,12 +180,7 @@ impl OutputHealthTracker {
             .state
             .lock()
             .expect("output health tracker mutex poisoned during worker insertion");
-        if !matches!(
-            state.idle_health,
-            ComponentHealth::Stopping | ComponentHealth::Stopped | ComponentHealth::Failed
-        ) {
-            state.idle_health = ComponentHealth::Healthy;
-        }
+        state.idle_health = idle_health_after_worker_insert(state.idle_health);
         state.worker_slots.insert(worker_id, initial);
         let aggregate = Self::aggregate(&state);
         drop(state);
@@ -205,7 +202,7 @@ impl OutputHealthTracker {
             );
             return aggregate;
         };
-        let next = reduce_output_health(current, event);
+        let next = reduce_worker_slot_health(current, event);
         state.worker_slots.insert(worker_id, next);
         let aggregate = Self::aggregate(&state);
         drop(state);
