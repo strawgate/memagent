@@ -176,7 +176,7 @@ tracks it as in_flight (it was already `begin_send`'d). The TLA+ model has no
 Rust code exactly: `fail()` returns `BatchTicket<Queued, C>` but the BTreeMap
 entry in `in_flight[source]` is not removed until `apply_ack` is called.
 
-### 2. Rejected batches advance the checkpoint
+### 2. Explicit permanent rejects advance the checkpoint
 
 `RejectBatch` is aliased to `AckBatch` — same state transition. Permanently-
 undeliverable data must not block checkpoint progress forever; that would
@@ -187,6 +187,12 @@ records) and differs from Fluent Bit (drops the route, retries via backlog).
 **Implication:** if a batch is rejected, the data in that batch is lost. This
 is the correct behavior for a log forwarder where corrupted or oversized data
 cannot be retried, but it must be explicitly documented and metered.
+
+Control-plane and retry-exhaustion failures are a different category. They
+must not be modeled as `RejectBatch`. In the current Rust rollout those
+outcomes are held unresolved so checkpoints do not advance past undelivered
+data; graceful drain may therefore fall back to `ForceStop`, with replay on
+restart covering the unresolved batches.
 
 ### 3. `pending_acks` is correctly abstracted away
 

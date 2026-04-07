@@ -1196,7 +1196,7 @@ impl Pipeline {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Apply a pool `AckItem` — ack or reject its tickets and advance the machine.
+    /// Apply a pool `AckItem` at the worker/checkpoint seam.
     ///
     /// Called from the `select!` loop when a pool worker finishes a batch.
     fn apply_pool_ack(&mut self, ack: AckItem) {
@@ -1212,13 +1212,15 @@ impl Pipeline {
             self.metrics
                 .record_batch_latency(ack.submitted_at.elapsed().as_nanos() as u64);
         } else {
-            self.metrics.inc_dropped_batch();
+            if ack.outcome.is_permanent_reject() {
+                self.metrics.inc_dropped_batch();
+            }
             self.metrics.output_error(&ack.output_name);
         }
         self.ack_all_tickets(ack.tickets, default_ticket_disposition(&ack.outcome));
     }
 
-    /// Ack or reject all Sending tickets and apply receipts to the machine.
+    /// Finalize Sending tickets and apply receipts to the machine when present.
     /// When a checkpoint advances, the new offset is persisted to the store.
     /// Flushes are throttled to at most once per 5 seconds to avoid fsync storms.
     fn ack_all_tickets(
@@ -1230,24 +1232,37 @@ impl Pipeline {
             return;
         };
         let mut any_advanced = false;
+        let mut held = 0usize;
         for ticket in tickets {
             let receipt = match disposition {
-                TicketDisposition::Ack => ticket.ack(),
-                TicketDisposition::Reject => ticket.reject(),
+                TicketDisposition::Ack => Some(ticket.ack()),
+                TicketDisposition::Reject => Some(ticket.reject()),
+                TicketDisposition::Hold => {
+                    held += 1;
+                    None
+                }
             };
-            let advance = machine.apply_ack(receipt);
-            if advance.advanced {
-                if let (Some(ref mut store), Some(offset)) =
-                    (self.checkpoint_store.as_mut(), advance.checkpoint)
-                {
-                    store.update(SourceCheckpoint {
-                        source_id: advance.source.0,
-                        path: None, // path is metadata, not required for restore
-                        offset,
-                    });
-                    any_advanced = true;
+            if let Some(receipt) = receipt {
+                let advance = machine.apply_ack(receipt);
+                if advance.advanced {
+                    if let (Some(ref mut store), Some(offset)) =
+                        (self.checkpoint_store.as_mut(), advance.checkpoint)
+                    {
+                        store.update(SourceCheckpoint {
+                            source_id: advance.source.0,
+                            path: None, // path is metadata, not required for restore
+                            offset,
+                        });
+                        any_advanced = true;
+                    }
                 }
             }
+        }
+        if held > 0 {
+            tracing::warn!(
+                held_tickets = held,
+                "pipeline: leaving tickets unresolved so checkpoints do not advance past undelivered data"
+            );
         }
         // Flush to disk at most once per checkpoint_flush_interval to amortize fsync cost.
         // Advance the timer even on failure to prevent retry flooding.
@@ -3026,8 +3041,8 @@ output:
         assert!(result.unwrap().is_ok(), "immediate shutdown must not error");
     }
 
-    /// Output errors must not crash the pipeline — batches are dropped
-    /// and processing continues.
+    /// Output errors must not crash the pipeline. Retry/control-plane
+    /// failures are surfaced as output errors without advancing checkpoints.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_output_errors_do_not_crash() {
         let dir = tempfile::tempdir().unwrap();
@@ -3088,16 +3103,13 @@ output:
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_async_fanout_output_errors_only_increment_failing_output() {
+    async fn test_async_fanout_output_errors_do_not_count_as_permanent_drops() {
         // This test verifies that a persistently-failing output does not
-        // crash the pipeline and is recorded as a dropped batch.
+        // crash the pipeline and is not misclassified as a permanent drop.
         //
         // With the async worker pool, retries are built into the pool. An
         // always-failing sink causes the pool to exhaust retries and return a
-        // non-delivered AckItem outcome, which increments dropped_batches_total.
-        //
-        // Per-sink error tracking within async fanout is not currently
-        // supported by the pool's ack protocol (tracked in issue #702).
+        // non-delivered AckItem outcome that should HOLD the checkpoint seam.
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("fanout_output_err.log");
 
@@ -3127,7 +3139,8 @@ pipelines:
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
-        // always-failing: fails every call — pool exhausts retries → dropped
+        // always-failing: fails every call — pool exhausts retries and the
+        // pipeline must hold checkpoint progress instead of rejecting it.
         pipeline = pipeline.with_sink(Box::new(FailingSink::new(u32::MAX)));
         pipeline.batch_timeout = Duration::from_millis(20);
 
@@ -3146,13 +3159,23 @@ pipelines:
             "fanout output errors should not crash pipeline"
         );
 
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert!(
+            lines_in > 0,
+            "data should still reach transform despite output failure"
+        );
+
         let dropped = pipeline
             .metrics
             .dropped_batches_total
             .load(Ordering::Relaxed);
-        assert!(
-            dropped > 0,
-            "expected dropped_batches_total > 0, got {dropped}"
+        assert_eq!(
+            dropped, 0,
+            "retry/control-plane failures should not count as permanent drops"
         );
     }
 
@@ -3662,7 +3685,7 @@ output:
         std::thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                if metrics.dropped_batches_total.load(Ordering::Relaxed) > 0 {
+                if metrics.outputs[0].2.errors() > 0 {
                     std::thread::sleep(Duration::from_millis(50));
                     sd.cancel();
                     return;

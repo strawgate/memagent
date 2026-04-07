@@ -160,6 +160,12 @@ BTreeMap entry in `in_flight[source]` is not removed until `apply_ack` is called
 This models the Rust code exactly: `fail()` returns `BatchTicket<Queued, C>` but does not
 touch the BTreeMap.
 
+Current implication at the worker/checkpoint seam: a non-advancing failure
+cannot be resolved by calling `fail()` alone unless the runtime still holds the
+batch payload and can resubmit it. Until that richer retry path exists, held
+worker outcomes remain unresolved and are replayed after restart if shutdown
+force-stops with tickets still in flight.
+
 ### Suffix only on type conflict
 
 Bare column names by default. Suffixed columns (`_int`, `_str`, `_float`) only when a
