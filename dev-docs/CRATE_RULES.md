@@ -39,6 +39,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Tests use tempfiles, not real filesystems | Convention |
 | Deps: core + arrow + notify + serde | Cargo.toml |
 | `InputSource` implementations must define `health()` explicitly; no optimistic trait default | Compilation + code review |
+| `InputSource` trait-shape changes must pass cross-workspace compile checks for turmoil tests and bench binaries (`cargo test -p logfwd --features turmoil --test turmoil_sim --no-run`, `cargo build -p logfwd-bench --bin framed_input_profile`) | CI/local verification checklist |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
 ## logfwd-transform
