@@ -266,6 +266,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd/worker_pool.rs` | MRU dispatch decision + runtime worker-pool integration | Kani (3 dispatch proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
 | `logfwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `logfwd-arrow/streaming_builder.rs` | StructArray conflict column assembly (StringView) | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
+| `logfwd-arrow/conflict_schema.rs` | Conflict-struct detection + row-level precedence selection | Kani recommended (2 proofs) + unit tests |
 | `scanner_conformance.rs` (accumulation) | BytesMut accumulation → Bytes → Scanner equivalence | proptest (3 tests × 256 cases: random split, single chunk, per-line split; full value comparison) |
 
 ### Verification tiers
