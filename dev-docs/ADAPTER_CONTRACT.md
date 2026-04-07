@@ -9,9 +9,6 @@ defines what `Scanner` expects and produces. This document defines what the
 OTLP, file, diagnostics, and pipeline adapters must preserve before data
 reaches the scanner and after data leaves the `RecordBatch` pipeline.
 
-If you were looking for the older `IO_CONTRACTS.md` name, that file now points
-here.
-
 ## Scope
 
 In-scope:
