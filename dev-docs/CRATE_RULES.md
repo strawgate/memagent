@@ -38,7 +38,6 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | IO is expected here | — |
 | Tests use tempfiles, not real filesystems | Convention |
 | Deps: core + arrow + notify + serde | Cargo.toml |
-| `InputSource` implementations must define `health()` explicitly; no optimistic trait default | Compilation + code review |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
 ## logfwd-transform

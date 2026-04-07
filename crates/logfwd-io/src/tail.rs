@@ -20,8 +20,6 @@ use std::time::{Duration, Instant};
 use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 
-use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
-
 /// Byte offset within a file. Newtype prevents mixing with SourceId.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ByteOffset(pub u64);
@@ -1014,8 +1012,6 @@ pub struct FileTailer {
     consecutive_error_polls: u32,
     /// Next time we're allowed to run a full poll after an error burst.
     error_backoff_until: Option<Instant>,
-    /// Source-owned health snapshot for diagnostics/readiness integration.
-    health: ComponentHealth,
 }
 
 impl FileTailer {
@@ -1062,7 +1058,6 @@ impl FileTailer {
             last_poll: Instant::now(),
             consecutive_error_polls: 0,
             error_backoff_until: None,
-            health: ComponentHealth::Healthy,
         };
 
         // Open existing files. Warn about missing paths (#730).
@@ -1185,7 +1180,11 @@ impl FileTailer {
     /// `Degraded` so readiness/status can reflect tailer trouble without
     /// pretending the component is fully failed.
     pub fn health(&self) -> ComponentHealth {
-        self.health
+        if self.consecutive_error_polls > 0 || self.error_backoff_until.is_some() {
+            ComponentHealth::Degraded
+        } else {
+            ComponentHealth::Healthy
+        }
     }
 
     fn update_error_backoff(&mut self, had_error: bool) {
@@ -1205,15 +1204,9 @@ impl FileTailer {
                 backoff_ms,
                 "tail.poll_backoff_after_error"
             );
-            self.health = reduce_polling_input_health(
-                self.health,
-                PollingInputHealthEvent::ErrorBackoffObserved,
-            );
         } else {
             self.consecutive_error_polls = 0;
             self.error_backoff_until = None;
-            self.health =
-                reduce_polling_input_health(self.health, PollingInputHealthEvent::PollHealthy);
         }
     }
 
@@ -3015,6 +3008,8 @@ mod tests {
 
 #[cfg(kani)]
 mod verification {
+    use super::*;
+
     /// Pure model of the `eof_emitted` state transition in `FileTailer::poll()`.
     ///
     /// Mirrors the logic from the `ReadResult::Data`, `ReadResult::TruncatedThenData`,

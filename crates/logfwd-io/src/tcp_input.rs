@@ -14,7 +14,6 @@ use logfwd_types::pipeline::SourceId;
 use socket2::SockRef;
 
 use crate::input::{InputEvent, InputSource};
-use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
 
 /// Maximum number of concurrent TCP client connections.
 const MAX_CLIENTS: usize = 1024;
@@ -299,14 +298,11 @@ impl InputSource for TcpInput {
             keep
         });
 
-        self.health = reduce_polling_input_health(
-            self.health,
-            if under_pressure {
-                PollingInputHealthEvent::BackpressureObserved
-            } else {
-                PollingInputHealthEvent::PollHealthy
-            },
-        );
+        self.health = if under_pressure {
+            ComponentHealth::Degraded
+        } else {
+            ComponentHealth::Healthy
+        };
 
         Ok(events)
     }

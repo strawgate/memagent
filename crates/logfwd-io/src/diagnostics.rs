@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -408,8 +408,6 @@ pub struct DiagnosticsServer {
     trace_buf: Option<crate::span_exporter::SpanBuffer>,
     server: Option<Arc<tiny_http::Server>>,
     handle: Option<JoinHandle<()>>,
-    sampler_handle: Option<JoinHandle<()>>,
-    shutdown: Arc<AtomicBool>,
 }
 
 impl DiagnosticsServer {
@@ -426,8 +424,6 @@ impl DiagnosticsServer {
             trace_buf: None,
             server: None,
             handle: None,
-            sampler_handle: None,
-            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -455,30 +451,17 @@ impl DiagnosticsServer {
         self.memory_stats_fn = Some(f);
     }
 
-    /// Spawn the HTTP server and metric-sampler threads. Binds synchronously
-    /// before returning so that port-in-use errors are reported at startup.
+    /// Spawn the server on a background thread. Binds synchronously before
+    /// returning so that port-in-use errors are reported at startup.
     ///
-    /// Returns the bound socket address on success. The address reflects the
-    /// actual OS-assigned port (useful when `bind_addr` uses port 0). The
-    /// background thread handles are retained internally and are cleaned up
-    /// when this `DiagnosticsServer` is dropped.
-    ///
-    /// Returns `AlreadyExists` if `start()` has already been called without
-    /// an intervening drop. Returns an `io::Error` on bind failure.
+    /// Returns `(handle, bound_addr)` on success. `bound_addr` reflects the
+    /// actual address after OS port assignment (useful when `bind_addr` uses
+    /// port 0). Returns an `io::Error` on bind failure.
     pub fn start(&mut self) -> io::Result<std::net::SocketAddr> {
-        if self.handle.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "DiagnosticsServer::start() called while already running",
-            ));
-        }
-
-        let server = Arc::new(
-            tiny_http::Server::http(&self.bind_addr)
-                .map_err(|e| io::Error::other(e.to_string()))?,
-        );
+        let server = Arc::new(tiny_http::Server::http(&self.bind_addr)
+            .map_err(|e| io::Error::other(e.to_string()))?);
         self.server = Some(Arc::clone(&server));
-        self.shutdown.store(false, Ordering::Relaxed);
+
         let bound_addr = server
             .server_addr()
             .to_ip()
@@ -493,37 +476,26 @@ impl DiagnosticsServer {
 
         // Background metric sampler — records pipeline + process metrics
         // every 2s into the history buffer, regardless of dashboard activity.
-        // Checks the shared shutdown flag so it exits cleanly when dropped.
         let sampler_pipelines = self.pipelines.clone();
         let sampler_history = Arc::clone(&self.history);
         let sampler_mem_fn = self.memory_stats_fn;
-        let sampler_shutdown = Arc::clone(&self.shutdown);
-        let sampler_handle = thread::Builder::new()
+        thread::Builder::new()
             .name("metric-sampler".into())
             .spawn(move || {
-                while !sampler_shutdown.load(Ordering::Relaxed) {
+                loop {
                     thread::sleep(std::time::Duration::from_secs(2));
-                    if !sampler_shutdown.load(Ordering::Relaxed) {
-                        sample_metrics(&sampler_pipelines, &sampler_history, sampler_mem_fn);
-                    }
+                    sample_metrics(&sampler_pipelines, &sampler_history, sampler_mem_fn);
                 }
             })
             .ok();
-        self.sampler_handle = sampler_handle;
 
         let server_clone = Arc::clone(&server);
-        let shutdown_clone = Arc::clone(&self.shutdown);
+
         let handler = Arc::new(self.clone_for_handler());
 
         let handle = thread::spawn(move || {
-            while !shutdown_clone.load(Ordering::Relaxed) {
-                match server_clone.recv_timeout(std::time::Duration::from_millis(100)) {
-                    Ok(Some(request)) => {
-                        let _ = handler.handle_request(request);
-                    }
-                    Ok(None) => {}   // timeout — loop back to check shutdown flag
-                    Err(_) => break, // server error — exit loop
-                }
+            for request in server_clone.incoming_requests() {
+                let _ = handler.handle_request(request);
             }
         });
         self.handle = Some(handle);
@@ -543,8 +515,6 @@ impl DiagnosticsServer {
             trace_buf: self.trace_buf.clone(),
             server: None,
             handle: None,
-            sampler_handle: None,
-            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -614,8 +584,8 @@ impl DiagnosticsServer {
         Ok(())
     }
 
-    /// Returns a small reasoned readiness snapshot when at least one pipeline
-    /// is registered and the current explicit component health snapshots are
+    /// Returns 200 `{"status":"ready"}` when at least one pipeline is
+    /// registered and the current explicit component health snapshots are
     /// ready. Returns 503 before any pipelines are configured or while a
     /// component is still starting, stopping, stopped, or failed.
     ///
@@ -629,24 +599,15 @@ impl DiagnosticsServer {
     /// the currently wired health sources.
     fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let ready = policy::is_ready(&self.pipelines);
-        let reason = policy::ready_reason(&self.pipelines);
-        let observed_at_unix_ns = now_nanos();
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
         if ready {
-            let body = format!(
-                r#"{{"status":"ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                reason, observed_at_unix_ns
-            );
-            let resp = tiny_http::Response::from_string(body).with_header(header);
+            let resp =
+                tiny_http::Response::from_string(r#"{"status":"ready"}"#).with_header(header);
             request.respond(resp)?;
         } else {
-            let body = format!(
-                r#"{{"status":"not_ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                reason, observed_at_unix_ns
-            );
-            let resp = tiny_http::Response::from_string(body)
+            let resp = tiny_http::Response::from_string(r#"{"status":"not_ready"}"#)
                 .with_status_code(503)
                 .with_header(header);
             request.respond(resp)?;
@@ -1181,21 +1142,14 @@ impl DiagnosticsServer {
     }
 }
 
+
 impl Drop for DiagnosticsServer {
     fn drop(&mut self) {
-        // Signal both threads to exit.
-        self.shutdown.store(true, Ordering::Relaxed);
-        // Unblock the HTTP accept loop so it sees the shutdown flag.
+
         if let Some(server) = self.server.as_ref() {
             server.unblock();
         }
-        // Join the HTTP handler thread.
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-        // Join the metric-sampler thread. The sampler sleeps for 2s per iteration,
-        // so worst-case wait is ~2s; acceptable since Drop is not on a hot path.
-        if let Some(handle) = self.sampler_handle.take() {
             let _ = handle.join();
         }
     }
@@ -1863,11 +1817,6 @@ mod tests {
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 503, "body: {}", body);
         assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
-        assert!(
-            body.contains(r#""reason":"no_pipelines_registered""#),
-            "body: {}",
-            body
-        );
     }
 
     #[test]
@@ -1888,11 +1837,6 @@ mod tests {
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 200, "body: {}", body);
         assert!(body.contains(r#""status":"ready""#), "body: {}", body);
-        assert!(
-            body.contains(r#""reason":"all_components_healthy""#),
-            "body: {}",
-            body
-        );
     }
 
     #[test]
@@ -1912,68 +1856,6 @@ mod tests {
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 503, "body: {}", body);
         assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
-        assert!(
-            body.contains(r#""reason":"components_starting""#),
-            "body: {}",
-            body
-        );
-    }
-
-    #[test]
-    fn test_ready_endpoint_with_degraded_input_stays_200() {
-        let meter = opentelemetry::global::meter("test");
-        let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
-        let input = pm.add_input("receiver", "tcp");
-        input.set_health(ComponentHealth::Degraded);
-
-        let mut server = DiagnosticsServer::new("127.0.0.1:0");
-        server.add_pipeline(Arc::new(pm));
-        let addr = server.start().expect("server bind failed");
-        let port = addr.port();
-
-        thread::sleep(std::time::Duration::from_millis(100));
-
-        let (status, body) = http_get(port, "/ready");
-        assert_eq!(status, 200, "body: {}", body);
-        assert!(body.contains(r#""status":"ready""#), "body: {}", body);
-        assert!(
-            body.contains(r#""reason":"components_degraded_but_operational""#),
-            "body: {}",
-            body
-        );
-    }
-
-    #[test]
-    fn test_status_endpoint_shows_degraded_input_as_non_blocking() {
-        let meter = opentelemetry::global::meter("test");
-        let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
-        let input = pm.add_input("receiver", "tcp");
-        input.set_health(ComponentHealth::Degraded);
-
-        let mut server = DiagnosticsServer::new("127.0.0.1:0");
-        server.add_pipeline(Arc::new(pm));
-        let addr = server.start().expect("server bind failed");
-        let port = addr.port();
-
-        thread::sleep(std::time::Duration::from_millis(100));
-
-        let (status, body) = http_get(port, "/admin/v1/status");
-        assert_eq!(status, 200, "body: {}", body);
-        assert!(
-            body.contains(r#""ready":{"status":"ready""#),
-            "body: {}",
-            body
-        );
-        assert!(
-            body.contains(r#""component_health":{"status":"degraded","reason":"components_degraded_but_operational","readiness_impact":"non_blocking""#),
-            "body: {}",
-            body
-        );
-        assert!(
-            body.contains(r#""inputs":[{"name":"receiver","type":"tcp","health":"degraded""#),
-            "body: {}",
-            body
-        );
     }
 
     #[test]

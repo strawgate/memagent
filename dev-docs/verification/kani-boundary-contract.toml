@@ -7,12 +7,6 @@ reason = "Pure StructArray conflict-column assembly invariants are already Kani-
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-arrow/src/conflict_schema.rs"
-status = "recommended"
-reason = "Conflict-struct detection and row-level precedence selection are bounded pure seams; full Arrow batch normalization remains too dynamic for required Kani."
-issue = 1485
-
-[[seams]]
 path = "crates/logfwd-types/src/pipeline/batch.rs"
 status = "required"
 reason = "Typestate batch transitions are a core local proof seam outside logfwd-core."
@@ -53,24 +47,6 @@ path = "crates/logfwd-io/src/receiver_health.rs"
 status = "required"
 reason = "Standalone receiver lifecycle reduction is now an isolated pure seam and should stay Kani-covered."
 issue = 1314
-
-[[seams]]
-path = "crates/logfwd-io/src/polling_input_health.rs"
-status = "required"
-reason = "Polling input source-origin lifecycle reduction is an isolated local seam for tail, TCP, and UDP health."
-issue = 1415
-
-[[seams]]
-path = "crates/logfwd-io/src/diagnostics/policy.rs"
-status = "required"
-reason = "Control-plane readiness and component-health labeling must stay aligned with shared health semantics."
-issue = 1306
-
-[[seams]]
-path = "crates/logfwd-io/src/otlp_receiver.rs"
-status = "recommended"
-reason = "The file still mixes HTTP/runtime shell code with pure protojson parsing and escaping helpers; track it explicitly without requiring in-file Kani until the helper seam is isolated further."
-issue = 1484
 
 [[seams]]
 path = "crates/logfwd-io/src/tail.rs"
@@ -118,6 +94,12 @@ issue = 1314
 path = "crates/logfwd-io/src/diagnostics.rs"
 status = "exempt"
 reason = "Still mixes HTTP shell code, JSON formatting, and runtime snapshot assembly; pure policy extraction is tracked separately."
+issue = 1438
+
+[[seams]]
+path = "crates/logfwd-io/src/diagnostics/policy.rs"
+status = "recommended"
+reason = "Local readiness and health-rollup policy is isolated here and is a good future Kani target."
 issue = 1438
 
 [[seams]]

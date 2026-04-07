@@ -48,7 +48,12 @@ pub trait InputSource: Send {
     fn name(&self) -> &str;
 
     /// Coarse runtime health for readiness and diagnostics.
-    fn health(&self) -> ComponentHealth;
+    ///
+    /// The default is optimistic until a concrete input type wires explicit
+    /// lifecycle state into the control plane.
+    fn health(&self) -> ComponentHealth {
+        ComponentHealth::Healthy
+    }
 
     /// Apply filter hints for predicate pushdown. Inputs that support
     /// pushdown use these to skip data early (e.g., XDP severity filtering).

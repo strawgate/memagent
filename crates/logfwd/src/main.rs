@@ -967,11 +967,9 @@ async fn run_pipelines(
         }
         #[cfg(unix)]
         server.set_memory_stats_fn(jemalloc_stats);
-        // Use the actual bound address (not the configured addr) so that
-        // port 0 prints the correct OS-assigned port in the startup summary.
-        let bound_addr = server.start()?;
+        let _bound_addr = server.start()?;
         _diag_server = Some(server);
-        Some(bound_addr)
+        Some(addr.clone())
     } else {
         None
     };

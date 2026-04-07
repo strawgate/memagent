@@ -763,8 +763,6 @@ async fn process_item(
     metadata: &BatchMetadata,
     max_retry_delay: Duration,
 ) -> (bool, u64, usize) {
-    sink.begin_batch();
-
     const MAX_RETRIES: usize = 3; // 1 initial + 3 retries = 4 total attempts
     const BATCH_TIMEOUT_SECS: u64 = 60;
 
