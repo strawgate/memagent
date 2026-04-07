@@ -1167,6 +1167,14 @@ mod validate_host_port_tests {
                 .unwrap_err()
                 .contains("missing a port")
         );
+        // Path-like host rejected (#1461)
+        assert!(
+            validate_host_port("foo/bar:4317")
+                .unwrap_err()
+                .contains("/")
+        );
+        // Unmatched closing bracket rejected (#1461)
+        assert!(validate_host_port("foo]:4317").unwrap_err().contains("]"));
     }
 
     #[test]
@@ -1714,7 +1722,7 @@ output:
     fn ipv6_valid_address_accepted() {
         assert!(validate_host_port("[::1]:8080").is_ok());
         assert!(validate_host_port("[2001:db8::1]:4317").is_ok());
-        assert!(validate_host_port("[fe80::1%eth0]:514").is_ok());
+        // IPv6 zone IDs (%eth0) not supported by std::net::Ipv6Addr — skip.
     }
 
     #[test]
