@@ -347,6 +347,7 @@ mod tests {
         name: String,
         events: VecDeque<Vec<InputEvent>>,
         offsets: Vec<(SourceId, ByteOffset)>,
+        health: ComponentHealth,
     }
 
     impl MockSource {
@@ -355,6 +356,7 @@ mod tests {
                 name: "mock".to_string(),
                 events: batches.into(),
                 offsets: vec![],
+                health: ComponentHealth::Healthy,
             }
         }
 
@@ -376,6 +378,11 @@ mod tests {
             self.offsets = offsets;
             self
         }
+
+        fn with_health(mut self, health: ComponentHealth) -> Self {
+            self.health = health;
+            self
+        }
     }
 
     impl InputSource for MockSource {
@@ -385,6 +392,10 @@ mod tests {
 
         fn name(&self) -> &str {
             &self.name
+        }
+
+        fn health(&self) -> ComponentHealth {
+            self.health
         }
 
         fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
@@ -418,6 +429,19 @@ mod tests {
 
         let events = framed.poll().unwrap();
         assert_eq!(collect_data(events), b"line1\nline2\n");
+    }
+
+    #[test]
+    fn framed_input_forwards_inner_health() {
+        let stats = make_stats();
+        let source = MockSource::new(vec![]).with_health(ComponentHealth::Degraded);
+        let framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            stats,
+        );
+
+        assert_eq!(framed.health(), ComponentHealth::Degraded);
     }
 
     #[test]

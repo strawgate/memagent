@@ -1782,6 +1782,7 @@ fn now_nanos() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::sync::atomic::Ordering;
     // std::time::Instant is cfg-gated in the parent module for turmoil compatibility,
     // but tests need it for timeout deadlines regardless of the turmoil feature flag.
@@ -1794,6 +1795,48 @@ mod tests {
     use logfwd_io::diagnostics::ComponentStats;
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::test_meter;
+
+    #[cfg(not(feature = "turmoil"))]
+    struct MockHealthSource {
+        name: String,
+        polls: VecDeque<io::Result<Vec<InputEvent>>>,
+        next_healths: VecDeque<ComponentHealth>,
+        current_health: ComponentHealth,
+    }
+
+    #[cfg(not(feature = "turmoil"))]
+    impl MockHealthSource {
+        fn new(
+            polls: Vec<io::Result<Vec<InputEvent>>>,
+            next_healths: Vec<ComponentHealth>,
+            current_health: ComponentHealth,
+        ) -> Self {
+            Self {
+                name: "mock-health-input".to_string(),
+                polls: polls.into(),
+                next_healths: next_healths.into(),
+                current_health,
+            }
+        }
+    }
+
+    #[cfg(not(feature = "turmoil"))]
+    impl InputSource for MockHealthSource {
+        fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+            if let Some(next) = self.next_healths.pop_front() {
+                self.current_health = next;
+            }
+            self.polls.pop_front().unwrap_or_else(|| Ok(vec![]))
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn health(&self) -> ComponentHealth {
+            self.current_health
+        }
+    }
 
     #[test]
     fn test_build_sink_factory_stdout() {
@@ -1851,6 +1894,135 @@ mod tests {
             input_index: 0,
         };
         send_shutdown_drain_msg_blocking("test-input", &tx, &metrics, msg);
+    }
+
+    #[cfg(not(feature = "turmoil"))]
+    #[test]
+    fn test_input_poll_loop_adopts_degraded_health_and_recovers() {
+        let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
+        let source = Box::new(MockHealthSource::new(
+            vec![Ok(vec![]), Ok(vec![])],
+            vec![ComponentHealth::Degraded, ComponentHealth::Healthy],
+            ComponentHealth::Starting,
+        ));
+        let input = InputState {
+            source,
+            buf: BytesMut::new(),
+            stats: Arc::clone(&stats),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel::<ChannelMsg>(1);
+        let metrics = Arc::new(PipelineMetrics::new(
+            "test",
+            "SELECT * FROM logs",
+            &test_meter(),
+        ));
+        let shutdown = CancellationToken::new();
+        let shutdown_for_thread = shutdown.clone();
+
+        let handle = std::thread::spawn(move || {
+            input_poll_loop(
+                input,
+                tx,
+                metrics,
+                shutdown_for_thread,
+                1024,
+                Duration::from_secs(60),
+                Duration::from_millis(5),
+                0,
+            );
+        });
+
+        let mut saw_degraded = false;
+        for _ in 0..200 {
+            if stats.health() == ComponentHealth::Degraded {
+                saw_degraded = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            saw_degraded,
+            "input poll loop should adopt degraded source health"
+        );
+
+        let mut saw_recovered = false;
+        for _ in 0..200 {
+            if stats.health() == ComponentHealth::Healthy {
+                saw_recovered = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            saw_recovered,
+            "input poll loop should recover after healthy source poll"
+        );
+
+        shutdown.cancel();
+        handle.join().unwrap();
+        assert_eq!(stats.health(), ComponentHealth::Stopped);
+    }
+
+    #[cfg(not(feature = "turmoil"))]
+    #[test]
+    fn test_input_poll_loop_preserves_observed_health_until_shutdown_completion() {
+        let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
+        let source = Box::new(MockHealthSource::new(
+            vec![
+                Ok(vec![InputEvent::Data {
+                    bytes: b"{\"msg\":\"x\"}\n".to_vec(),
+                    source_id: None,
+                }]),
+                Ok(vec![]),
+            ],
+            vec![ComponentHealth::Degraded, ComponentHealth::Degraded],
+            ComponentHealth::Starting,
+        ));
+        let input = InputState {
+            source,
+            buf: BytesMut::new(),
+            stats: Arc::clone(&stats),
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMsg>(1);
+        let metrics = Arc::new(PipelineMetrics::new(
+            "test",
+            "SELECT * FROM logs",
+            &test_meter(),
+        ));
+        let shutdown = CancellationToken::new();
+        let shutdown_for_thread = shutdown.clone();
+
+        let handle = std::thread::spawn(move || {
+            input_poll_loop(
+                input,
+                tx,
+                metrics,
+                shutdown_for_thread,
+                1,
+                Duration::from_secs(60),
+                Duration::from_millis(5),
+                0,
+            );
+        });
+
+        let _msg = rx.blocking_recv().expect("expected one drained batch");
+
+        let mut saw_degraded = false;
+        for _ in 0..200 {
+            if stats.health() == ComponentHealth::Degraded {
+                saw_degraded = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            saw_degraded,
+            "input stats should reflect degraded observed health"
+        );
+
+        shutdown.cancel();
+        handle.join().unwrap();
+        assert_eq!(stats.health(), ComponentHealth::Stopped);
     }
 
     #[test]

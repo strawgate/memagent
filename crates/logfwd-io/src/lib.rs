@@ -14,6 +14,7 @@ pub mod input;
 pub mod metric_history;
 pub mod otap_receiver;
 pub mod otlp_receiver;
+pub(crate) mod polling_input_health;
 pub(crate) mod receiver_health;
 /// Checkpoint segment file format, writer, reader, and recovery.
 pub mod segment;

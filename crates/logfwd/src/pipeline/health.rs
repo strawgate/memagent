@@ -56,6 +56,7 @@ pub(super) const fn reduce_component_health(
 mod tests {
     use super::{HealthTransitionEvent, reduce_component_health};
     use logfwd_io::diagnostics::ComponentHealth;
+    use proptest::prelude::*;
 
     #[test]
     fn observed_updates_non_terminal_states() {
@@ -122,6 +123,59 @@ mod tests {
             ComponentHealth::Stopped
         );
     }
+
+    fn arb_health() -> impl Strategy<Value = ComponentHealth> {
+        prop_oneof![
+            Just(ComponentHealth::Starting),
+            Just(ComponentHealth::Healthy),
+            Just(ComponentHealth::Degraded),
+            Just(ComponentHealth::Stopping),
+            Just(ComponentHealth::Stopped),
+            Just(ComponentHealth::Failed),
+        ]
+    }
+
+    fn arb_event() -> impl Strategy<Value = HealthTransitionEvent> {
+        prop_oneof![
+            arb_health().prop_map(HealthTransitionEvent::Observed),
+            Just(HealthTransitionEvent::PollFailed),
+            Just(HealthTransitionEvent::ShutdownRequested),
+            Just(HealthTransitionEvent::ShutdownCompleted),
+        ]
+    }
+
+    fn apply_events(initial: ComponentHealth, events: &[HealthTransitionEvent]) -> ComponentHealth {
+        events
+            .iter()
+            .copied()
+            .fold(initial, reduce_component_health)
+    }
+
+    proptest! {
+        #[test]
+        fn failed_state_is_sticky_across_any_event_sequence(
+            events in proptest::collection::vec(arb_event(), 0..16)
+        ) {
+            let out = apply_events(ComponentHealth::Failed, &events);
+            prop_assert_eq!(out, ComponentHealth::Failed);
+        }
+
+        #[test]
+        fn stopped_state_is_sticky_across_any_event_sequence(
+            events in proptest::collection::vec(arb_event(), 0..16)
+        ) {
+            let out = apply_events(ComponentHealth::Stopped, &events);
+            prop_assert_eq!(out, ComponentHealth::Stopped);
+        }
+
+        #[test]
+        fn shutdown_requested_never_recovers_to_ready_without_full_restart(
+            events in proptest::collection::vec(arb_event(), 0..16)
+        ) {
+            let out = apply_events(ComponentHealth::Stopping, &events);
+            prop_assert!(matches!(out, ComponentHealth::Stopping | ComponentHealth::Stopped | ComponentHealth::Failed));
+        }
+    }
 }
 
 #[cfg(kani)]
@@ -169,6 +223,26 @@ mod verification {
         kani::cover!(
             current == ComponentHealth::Failed,
             "failed preserves on shutdown request"
+        );
+    }
+
+    #[kani::proof]
+    fn verify_shutdown_completed_stops_only_non_failed_components() {
+        let current = ComponentHealth::from_repr(kani::any());
+        let out = reduce_component_health(current, HealthTransitionEvent::ShutdownCompleted);
+
+        match current {
+            ComponentHealth::Failed => assert_eq!(out, ComponentHealth::Failed),
+            _ => assert_eq!(out, ComponentHealth::Stopped),
+        }
+
+        kani::cover!(
+            current == ComponentHealth::Stopping,
+            "stopping transitions to stopped"
+        );
+        kani::cover!(
+            current == ComponentHealth::Failed,
+            "failed preserves on shutdown completed"
         );
     }
 

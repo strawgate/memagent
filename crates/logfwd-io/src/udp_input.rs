@@ -10,6 +10,7 @@ use logfwd_types::diagnostics::ComponentHealth;
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::input::{InputEvent, InputSource};
+use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
 
 /// Maximum UDP payload: 65535 (IP max) - 20 (IP header) - 8 (UDP header).
 const MAX_UDP_PAYLOAD: usize = 65507;
@@ -140,11 +141,14 @@ impl InputSource for UdpInput {
             }
         }
 
-        self.health = if under_pressure {
-            ComponentHealth::Degraded
-        } else {
-            ComponentHealth::Healthy
-        };
+        self.health = reduce_polling_input_health(
+            self.health,
+            if under_pressure {
+                PollingInputHealthEvent::BackpressureObserved
+            } else {
+                PollingInputHealthEvent::PollHealthy
+            },
+        );
 
         match total {
             Some(bytes) => Ok(vec![InputEvent::Data {
