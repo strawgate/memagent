@@ -288,7 +288,27 @@ export function App() {
       api.stats(),
       api.traces(),
     ]);
-    if (tracesData) setTraces(tracesData.traces);
+    if (tracesData) {
+      setTraces((prev) => {
+        const incoming = tracesData.traces;
+        // Fast path: if trace_ids haven't changed and lengths match, keep prev reference
+        if (
+          prev.length === incoming.length &&
+          prev.every((t, i) => t.trace_id === incoming[i].trace_id)
+        ) {
+          // Update in-place fields that may have changed (total_ns, status, etc.)
+          let changed = false;
+          for (let i = 0; i < prev.length; i++) {
+            if (prev[i].total_ns !== incoming[i].total_ns || prev[i].status !== incoming[i].status) {
+              changed = true;
+              break;
+            }
+          }
+          return changed ? incoming : prev;
+        }
+        return incoming;
+      });
+    }
 
     if (statusData) {
       setConnected(true);
@@ -359,7 +379,7 @@ export function App() {
       // Batch latency: rolling average of total_ns from recent traces.
       // This gives true ms/batch rather than the cumulative-rate approximation.
       if (tracesData && tracesData.traces.length > 0) {
-        const done = tracesData.traces.filter((t) => !t.in_progress).slice(0, 50);
+        const done = tracesData.traces.filter((t) => !t.in_progress && Number(t.total_ns) > 0).slice(0, 50);
         if (done.length > 0) {
           const avgMs = done.reduce((s, t) => s + (Number(t.total_ns ?? "0") || 0), 0) / done.length / 1e6;
           series[6].ring.push(avgMs);
