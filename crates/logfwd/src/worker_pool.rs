@@ -34,7 +34,7 @@
 //! Kani.  See the `kani_proofs` module below.
 
 use backon::{BackoffBuilder, ExponentialBuilder};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,7 +44,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use logfwd_io::diagnostics::PipelineMetrics;
+use logfwd_io::diagnostics::{ComponentHealth, ComponentStats, PipelineMetrics};
 use logfwd_output::BatchMetadata;
 use logfwd_output::sink::{OutputHealthEvent, SendResult, Sink, SinkFactory, reduce_output_health};
 use logfwd_types::pipeline::{BatchTicket, Sending};
@@ -127,6 +127,7 @@ struct WorkerConfig {
     cancel: CancellationToken,
     max_retry_delay: Duration,
     metrics: Arc<PipelineMetrics>,
+    output_health: Arc<OutputHealthTracker>,
 }
 
 // Worker handle (held by pool)
@@ -137,38 +138,101 @@ struct WorkerHandle {
     tx: mpsc::Sender<WorkerMsg>,
 }
 
-fn apply_output_health_event(
-    metrics: &PipelineMetrics,
-    output_name: &str,
-    event: OutputHealthEvent,
-) {
-    let mut matched = false;
-    for (name, _, stats) in &metrics.outputs {
-        if name == output_name {
-            stats.update_health(|current| reduce_output_health(current, event));
-            matched = true;
+struct OutputHealthTracker {
+    outputs: Vec<Arc<ComponentStats>>,
+    state: std::sync::Mutex<OutputHealthState>,
+}
+
+struct OutputHealthState {
+    worker_slots: HashMap<usize, ComponentHealth>,
+    idle_health: ComponentHealth,
+}
+
+impl OutputHealthTracker {
+    fn new(outputs: Vec<Arc<ComponentStats>>) -> Self {
+        Self {
+            outputs,
+            state: std::sync::Mutex::new(OutputHealthState {
+                worker_slots: HashMap::new(),
+                idle_health: ComponentHealth::Healthy,
+            }),
         }
     }
-    if matched {
-        return;
-    }
 
-    let broadcast_to_all =
-        metrics.outputs.len() > 1 && (output_name == "fanout" || output_name == metrics.name);
-    if broadcast_to_all {
-        for (_, _, stats) in &metrics.outputs {
-            stats.update_health(|current| reduce_output_health(current, event));
+    fn publish(&self, health: ComponentHealth) {
+        for stats in &self.outputs {
+            stats.set_health(health);
         }
-        return;
     }
 
-    tracing::warn!(
-        output_name,
-        pipeline = %metrics.name,
-        event = ?event,
-        output_count = metrics.outputs.len(),
-        "worker_pool: ignoring health event for unknown output"
-    );
+    fn aggregate(state: &OutputHealthState) -> ComponentHealth {
+        state
+            .worker_slots
+            .values()
+            .copied()
+            .fold(state.idle_health, ComponentHealth::combine)
+    }
+
+    fn insert_worker(&self, worker_id: usize, initial: ComponentHealth) -> ComponentHealth {
+        let mut state = self.state.lock().unwrap();
+        if !matches!(
+            state.idle_health,
+            ComponentHealth::Stopping | ComponentHealth::Stopped
+        ) {
+            state.idle_health = ComponentHealth::Healthy;
+        }
+        state.worker_slots.insert(worker_id, initial);
+        let aggregate = Self::aggregate(&state);
+        drop(state);
+        self.publish(aggregate);
+        aggregate
+    }
+
+    fn apply_worker_event(&self, worker_id: usize, event: OutputHealthEvent) -> ComponentHealth {
+        let mut state = self.state.lock().unwrap();
+        let current = state
+            .worker_slots
+            .get(&worker_id)
+            .copied()
+            .unwrap_or(ComponentHealth::Healthy);
+        let next = reduce_output_health(current, event);
+        state.worker_slots.insert(worker_id, next);
+        let aggregate = Self::aggregate(&state);
+        drop(state);
+        self.publish(aggregate);
+        aggregate
+    }
+
+    fn remove_worker(&self, worker_id: usize) -> ComponentHealth {
+        let mut state = self.state.lock().unwrap();
+        state.worker_slots.remove(&worker_id);
+        let aggregate = Self::aggregate(&state);
+        drop(state);
+        self.publish(aggregate);
+        aggregate
+    }
+
+    fn has_active_workers(&self) -> bool {
+        !self.state.lock().unwrap().worker_slots.is_empty()
+    }
+
+    fn set_pool_health(&self, health: ComponentHealth) {
+        let mut state = self.state.lock().unwrap();
+        state.idle_health = health;
+        let aggregate = Self::aggregate(&state);
+        drop(state);
+        self.publish(aggregate);
+    }
+
+    #[cfg(test)]
+    fn slot_health(&self, worker_id: usize) -> Option<ComponentHealth> {
+        self.state
+            .lock()
+            .unwrap()
+            .worker_slots
+            .get(&worker_id)
+            .copied()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +270,8 @@ pub struct OutputWorkerPool {
     max_retry_delay: Duration,
     /// Pipeline metrics for updating active-batch worker assignment.
     metrics: Arc<PipelineMetrics>,
+    /// Aggregated output health across live worker-local slots.
+    output_health: Arc<OutputHealthTracker>,
 }
 
 impl OutputWorkerPool {
@@ -221,6 +287,13 @@ impl OutputWorkerPool {
             "OutputWorkerPool::new: max_workers must be >= 1, got {max_workers}"
         );
         let (ack_tx, ack_rx) = mpsc::unbounded_channel();
+        let output_health = Arc::new(OutputHealthTracker::new(
+            metrics
+                .outputs
+                .iter()
+                .map(|(_, _, stats)| Arc::clone(stats))
+                .collect(),
+        ));
         OutputWorkerPool {
             workers: VecDeque::with_capacity(max_workers),
             factory,
@@ -234,6 +307,7 @@ impl OutputWorkerPool {
             next_id: 0,
             max_retry_delay: Duration::from_secs(30),
             metrics,
+            output_health,
         }
     }
 
@@ -404,11 +478,8 @@ impl OutputWorkerPool {
     /// 2. **Wait**: join all worker tasks (with `graceful_timeout`).
     /// 3. **Force**: cancel any tasks still running after the timeout.
     pub async fn drain(&mut self, graceful_timeout: Duration) {
-        apply_output_health_event(
-            &self.metrics,
-            self.factory.name(),
-            OutputHealthEvent::ShutdownRequested,
-        );
+        self.output_health
+            .set_pool_health(ComponentHealth::Stopping);
         // Phase 1 — signal all workers.
         // Use try_send to avoid blocking if a worker's channel is full (e.g.,
         // it is stuck in send_batch). Dropping the Sender below also signals
@@ -460,45 +531,34 @@ impl OutputWorkerPool {
             self.join_set.shutdown().await;
         }
         // After this point all workers have exited and sent their final acks.
-        apply_output_health_event(
-            &self.metrics,
-            self.factory.name(),
-            OutputHealthEvent::ShutdownCompleted,
-        );
+        self.output_health.set_pool_health(ComponentHealth::Stopped);
     }
 
     /// Spawn a new worker task and return a handle.
     fn spawn_worker(&mut self) -> io::Result<WorkerHandle> {
-        apply_output_health_event(
-            &self.metrics,
-            self.factory.name(),
-            OutputHealthEvent::StartupRequested,
-        );
         let sink = match self.factory.create() {
             Ok(sink) => sink,
             Err(err) => {
-                apply_output_health_event(
-                    &self.metrics,
-                    self.factory.name(),
-                    OutputHealthEvent::FatalFailure,
-                );
+                if !self.output_health.has_active_workers() {
+                    self.output_health.set_pool_health(ComponentHealth::Failed);
+                }
                 return Err(err);
             }
         };
-        apply_output_health_event(
-            &self.metrics,
-            sink.name(),
-            OutputHealthEvent::StartupSucceeded,
-        );
         let (tx, rx) = mpsc::channel::<WorkerMsg>(self.channel_capacity);
         let ack_tx = self.ack_tx.clone();
         let id = self.next_id;
         self.next_id += 1;
+        self.output_health
+            .insert_worker(id, ComponentHealth::Starting);
+        self.output_health
+            .apply_worker_event(id, OutputHealthEvent::StartupSucceeded);
         let cfg = WorkerConfig {
             cancel: self.cancel.clone(),
             idle_timeout: self.idle_timeout,
             max_retry_delay: self.max_retry_delay,
             metrics: Arc::clone(&self.metrics),
+            output_health: Arc::clone(&self.output_health),
         };
 
         self.join_set.spawn(worker_task(id, sink, rx, ack_tx, cfg));
@@ -537,6 +597,7 @@ async fn worker_task(
         cancel,
         max_retry_delay,
         metrics,
+        output_health,
     } = cfg;
     loop {
         tokio::select! {
@@ -576,14 +637,8 @@ async fn worker_task(
                             cmp_bytes = tracing::field::Empty,
                             resp_bytes = tracing::field::Empty,
                         );
-                        let (success, send_latency_ns, retries) = process_item(
-                            id,
-                            &mut *sink,
-                            &metrics,
-                            batch,
-                            &metadata,
-                            max_retry_delay,
-                        )
+                        let (success, send_latency_ns, retries) =
+                            process_item(id, &mut *sink, &output_health, batch, &metadata, max_retry_delay)
                         .instrument(output_span.clone())
                         .await;
                         output_span.record("retries", retries);
@@ -628,6 +683,7 @@ async fn worker_task(
         tracing::error!(worker_id = id, error = %e, "worker_pool: sink shutdown failed");
         metrics.output_error(sink.name());
     }
+    output_health.remove_worker(id);
 }
 
 /// Receive with idle timeout — returns `None` on timeout or channel close.
@@ -649,7 +705,7 @@ async fn recv_with_idle_timeout(
 async fn process_item(
     worker_id: usize,
     sink: &mut dyn Sink,
-    metrics: &PipelineMetrics,
+    output_health: &OutputHealthTracker,
     batch: RecordBatch,
     metadata: &BatchMetadata,
     max_retry_delay: Duration,
@@ -686,20 +742,16 @@ async fn process_item(
                     timeout_secs = BATCH_TIMEOUT_SECS,
                     "worker_pool: batch send timed out"
                 );
-                apply_output_health_event(metrics, sink.name(), OutputHealthEvent::FatalFailure);
+                output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
                 return (false, send_latency_ns, retries_count);
             }
             Ok(SendResult::Ok) => {
-                apply_output_health_event(
-                    metrics,
-                    sink.name(),
-                    OutputHealthEvent::DeliverySucceeded,
-                );
+                output_health.apply_worker_event(worker_id, OutputHealthEvent::DeliverySucceeded);
                 return (true, send_latency_ns, retries_count);
             }
             Ok(SendResult::Rejected(reason)) => {
                 tracing::warn!(worker_id, %reason, "worker_pool: batch rejected");
-                apply_output_health_event(metrics, sink.name(), OutputHealthEvent::FatalFailure);
+                output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
                 return (false, send_latency_ns, retries_count);
             }
             Ok(SendResult::RetryAfter(retry_dur)) => {
@@ -711,23 +763,19 @@ async fn process_item(
                         max_retries = MAX_RETRIES,
                         "worker_pool: RetryAfter exceeded max retries"
                     );
-                    apply_output_health_event(
-                        metrics,
-                        sink.name(),
-                        OutputHealthEvent::FatalFailure,
-                    );
+                    output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
                     return (false, send_latency_ns, retries_count);
                 }
                 retries_count += 1;
                 let sleep_for = retry_dur.min(max_retry_delay);
-                apply_output_health_event(metrics, sink.name(), OutputHealthEvent::Retrying);
+                output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
                 tracing::warn!(worker_id, ?sleep_for, "worker_pool: rate-limited, retrying");
                 tokio::time::sleep(sleep_for).await;
             }
             Ok(SendResult::IoError(e)) => match backoff.next() {
                 Some(delay) => {
                     retries_count += 1;
-                    apply_output_health_event(metrics, sink.name(), OutputHealthEvent::Retrying);
+                    output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
                     tracing::warn!(
                         worker_id,
                         sleep_ms = delay.as_millis() as u64,
@@ -743,17 +791,13 @@ async fn process_item(
                         error = %e,
                         "worker_pool: gave up after retries"
                     );
-                    apply_output_health_event(
-                        metrics,
-                        sink.name(),
-                        OutputHealthEvent::FatalFailure,
-                    );
+                    output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
                     return (false, send_latency_ns, retries_count);
                 }
             },
             // Future SendResult variants (#[non_exhaustive]) — treat as failure.
             Ok(_) => {
-                apply_output_health_event(metrics, sink.name(), OutputHealthEvent::FatalFailure);
+                output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
                 return (false, send_latency_ns, retries_count);
             }
         }
@@ -1094,7 +1138,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     /// A sink that counts calls and optionally simulates failures.
     struct CountingSink {
@@ -1563,29 +1607,97 @@ mod tests {
     }
 
     #[test]
-    fn unknown_output_name_does_not_mutate_registered_outputs() {
-        let meter = logfwd_test_utils::test_meter();
-        let mut pm = PipelineMetrics::new("pipe", "", &meter);
-        let out_stats = pm.add_output("known", "http");
-
-        apply_output_health_event(&pm, "unknown", OutputHealthEvent::FatalFailure);
-
-        assert_eq!(out_stats.health(), ComponentHealth::Healthy);
-    }
-
-    #[test]
-    fn fanout_rollup_events_broadcast_to_all_outputs() {
+    fn output_health_tracker_keeps_worst_live_worker_state() {
         let meter = logfwd_test_utils::test_meter();
         let mut pm = PipelineMetrics::new("pipe", "", &meter);
         let out_a = pm.add_output("output_0", "http");
         let out_b = pm.add_output("output_1", "stdout");
+        let tracker = OutputHealthTracker::new(vec![Arc::clone(&out_a), Arc::clone(&out_b)]);
 
-        apply_output_health_event(&pm, "fanout", OutputHealthEvent::Retrying);
+        tracker.insert_worker(1, ComponentHealth::Healthy);
+        tracker.insert_worker(2, ComponentHealth::Healthy);
+        tracker.apply_worker_event(1, OutputHealthEvent::Retrying);
+
+        assert_eq!(out_a.health(), ComponentHealth::Degraded);
+        assert_eq!(out_b.health(), ComponentHealth::Degraded);
+        assert_eq!(tracker.slot_health(1), Some(ComponentHealth::Degraded));
+        assert_eq!(tracker.slot_health(2), Some(ComponentHealth::Healthy));
+
+        tracker.apply_worker_event(2, OutputHealthEvent::DeliverySucceeded);
+
         assert_eq!(out_a.health(), ComponentHealth::Degraded);
         assert_eq!(out_b.health(), ComponentHealth::Degraded);
 
-        apply_output_health_event(&pm, "pipe", OutputHealthEvent::ShutdownCompleted);
-        assert_eq!(out_a.health(), ComponentHealth::Stopped);
-        assert_eq!(out_b.health(), ComponentHealth::Stopped);
+        tracker.remove_worker(1);
+
+        assert_eq!(out_a.health(), ComponentHealth::Healthy);
+        assert_eq!(out_b.health(), ComponentHealth::Healthy);
+        assert_eq!(tracker.slot_health(1), None);
+        assert_eq!(tracker.slot_health(2), Some(ComponentHealth::Healthy));
+    }
+
+    #[test]
+    fn output_health_tracker_keeps_pool_phase_over_late_worker_events() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("pipe", "", &meter);
+        let out_stats = pm.add_output("output_0", "http");
+        let tracker = OutputHealthTracker::new(vec![Arc::clone(&out_stats)]);
+
+        tracker.insert_worker(1, ComponentHealth::Healthy);
+        tracker.set_pool_health(ComponentHealth::Stopping);
+        assert_eq!(out_stats.health(), ComponentHealth::Stopping);
+
+        tracker.apply_worker_event(1, OutputHealthEvent::DeliverySucceeded);
+        assert_eq!(out_stats.health(), ComponentHealth::Stopping);
+
+        tracker.remove_worker(1);
+        assert_eq!(out_stats.health(), ComponentHealth::Stopping);
+
+        tracker.set_pool_health(ComponentHealth::Stopped);
+        assert_eq!(out_stats.health(), ComponentHealth::Stopped);
+    }
+
+    #[tokio::test]
+    async fn create_failure_with_live_worker_does_not_mark_output_failed() {
+        #[derive(Default)]
+        struct OneShotFactory {
+            created: AtomicBool,
+        }
+
+        impl SinkFactory for OneShotFactory {
+            fn create(&self) -> io::Result<Box<dyn Sink>> {
+                if self.created.swap(true, Ordering::Relaxed) {
+                    Err(io::Error::other("create failed"))
+                } else {
+                    Ok(Box::new(CountingSink {
+                        name: "oneshot".into(),
+                        calls: Arc::new(AtomicU32::new(0)),
+                        fail: false,
+                        fail_shutdown: false,
+                    }))
+                }
+            }
+
+            fn name(&self) -> &'static str {
+                "oneshot"
+            }
+        }
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("pipe", "", &meter);
+        let out_stats = pm.add_output("oneshot", "http");
+        let metrics = Arc::new(pm);
+        let factory = Arc::new(OneShotFactory::default());
+        let mut pool = OutputWorkerPool::new(factory, 2, Duration::from_secs(60), metrics);
+
+        let handle = pool.spawn_worker().expect("first worker should spawn");
+        pool.workers.push_front(handle);
+        assert_eq!(out_stats.health(), ComponentHealth::Healthy);
+
+        let err = pool.spawn_worker().err().expect("second spawn should fail");
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(out_stats.health(), ComponentHealth::Healthy);
+
+        pool.drain(Duration::from_secs(5)).await;
     }
 }

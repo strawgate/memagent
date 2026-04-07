@@ -202,6 +202,11 @@ and rich component health snapshots exist.
 - `failed` means the component hit a fatal condition and is not ready.
 - output startup success must not clear an already-`degraded` retrying state;
   only a later successful delivery may recover that output to `healthy`.
+- output health should be aggregated from live worker-local slots rather than
+  a single shared scalar; one worker becoming `healthy` must not clear a worse
+  state still held by another live worker.
+- once drain begins, the pool-level `stopping` or `stopped` phase must remain
+  visible even if an in-flight worker later reports delivery success.
 - per-worker sink shutdown errors during idle exit or scale-in should count as
   output errors, but must not by themselves make the shared output health
   permanently `failed`.
