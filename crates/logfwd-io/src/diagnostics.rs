@@ -501,14 +501,24 @@ impl DiagnosticsServer {
             .map_err(|e| io::Error::other(format!("failed to spawn metric-sampler: {e}")))?;
 
         let http_server = Arc::clone(&server);
-        let http_handle = thread::Builder::new()
+        let http_handle = match thread::Builder::new()
             .name("diagnostics-http".into())
             .spawn(move || {
                 for request in server.incoming_requests() {
                     let _ = self.handle_request(request);
                 }
-            })
-            .map_err(|e| io::Error::other(format!("failed to spawn diagnostics-http: {e}")))?;
+            }) {
+            Ok(handle) => handle,
+            Err(e) => {
+                // Stop the sampler thread before propagating the error so it
+                // does not leak.
+                running.store(false, Ordering::Relaxed);
+                let _ = sampler_handle.join();
+                return Err(io::Error::other(format!(
+                    "failed to spawn diagnostics-http: {e}"
+                )));
+            }
+        };
 
         Ok((
             ServerHandle {
