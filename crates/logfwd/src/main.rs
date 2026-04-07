@@ -470,6 +470,8 @@ fn cmd_wizard() -> Result<(), CliError> {
         sql.trim()
     };
     let cfg = render_config(input, output, sql);
+    validate_generated_config_read_only(&cfg, &path)?;
+
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -496,6 +498,32 @@ fn cmd_wizard() -> Result<(), CliError> {
         reset()
     );
     Ok(())
+}
+
+fn validate_generated_config_read_only(
+    config_yaml: &str,
+    output_path: &std::path::Path,
+) -> Result<(), CliError> {
+    let config = logfwd_config::Config::load_str(config_yaml)
+        .map_err(|e| CliError::Config(e.to_string()))?;
+    let base_path = output_path.parent();
+    let mut validation_errors = Vec::new();
+    let result = validate_pipelines_read_only(
+        &config,
+        base_path,
+        |_name| {},
+        |err| validation_errors.push(err),
+    );
+    match result {
+        Ok(()) => Ok(()),
+        Err(_) if validation_errors.is_empty() => Err(CliError::Config(
+            "generated config failed validation".to_owned(),
+        )),
+        Err(_) => Err(CliError::Config(format!(
+            "generated config failed validation:\n{}",
+            validation_errors.join("\n")
+        ))),
+    }
 }
 
 fn prompt_select(prompt: &str, options: &[&str]) -> Result<usize, CliError> {
@@ -1789,5 +1817,50 @@ output:
                 );
             }
         }
+    }
+
+    #[test]
+    fn generated_wizard_config_is_validated_before_write() {
+        let output_path = std::path::Path::new("logfwd.generated.yaml");
+        let invalid_yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+output:
+  type: null
+transform: |
+  SELECT level AS x, msg AS x FROM logs
+"#;
+        let err = validate_generated_config_read_only(invalid_yaml, output_path)
+            .expect_err("invalid generated config should fail validation");
+        assert!(
+            err.to_string()
+                .contains("generated config failed validation"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn effective_config_validation_matches_runtime_sql_planning_errors() {
+        let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+output:
+  type: null
+transform: |
+  SELECT level AS x, msg AS x FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines_inner(&config, None, |_name| {}, |_err| {});
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            runtime.is_err(),
+            "runtime validation should reject duplicate aliases"
+        );
+        assert!(
+            read_only.is_err(),
+            "effective-config validation should reject duplicate aliases"
+        );
     }
 }
