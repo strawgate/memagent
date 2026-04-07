@@ -360,7 +360,7 @@ async fn cmd_config(args: &[String]) -> Result<(), CliError> {
 
     if validate_only || dry_run {
         // Both --validate and --dry-run build pipelines to catch SQL/wiring errors.
-        return validate_pipelines(&config, dry_run, base_path);
+        return validate_pipelines(&config, dry_run, false, base_path);
     }
 
     run_pipelines(config, base_path, config_path, &config_yaml).await
@@ -432,8 +432,11 @@ fn cmd_dump_config(args: &[String]) -> Result<(), CliError> {
     let config_yaml = std::fs::read_to_string(&config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
 
-    // Validate that the config parses before dumping.
-    logfwd_config::Config::load_str(&config_yaml).map_err(|e| CliError::Config(e.to_string()))?;
+    // Validate parse + pipeline wiring (same depth as --validate) before dumping.
+    let config = logfwd_config::Config::load_str(&config_yaml)
+        .map_err(|e| CliError::Config(e.to_string()))?;
+    let base_path = std::path::Path::new(&config_path).parent();
+    validate_pipelines(&config, false, true, base_path)?;
 
     eprintln!("{}# validated from {config_path}{}", dim(), reset());
     print!("{config_yaml}");
@@ -725,6 +728,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 fn validate_pipelines(
     config: &logfwd_config::Config,
     dry_run: bool,
+    quiet: bool,
     base_path: Option<&std::path::Path>,
 ) -> Result<(), CliError> {
     use logfwd::pipeline::Pipeline;
@@ -749,8 +753,10 @@ fn validate_pipelines(
                     errors += 1;
                     continue;
                 }
-                // Success output goes to stdout so scripts can capture it.
-                println!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
+                if !quiet {
+                    // Success output goes to stdout so scripts can capture it.
+                    println!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
+                }
             }
             Err(e) => {
                 eprintln!("  {}error{}: pipeline '{name}': {e}", red(), reset());
@@ -766,13 +772,15 @@ fn validate_pipelines(
     }
 
     let label = if dry_run { "dry run ok" } else { "config ok" };
-    // Success summary goes to stdout so scripts can parse it reliably.
-    println!(
-        "{}{label}{}: {} pipeline(s)",
-        green(),
-        reset(),
-        config.pipelines.len(),
-    );
+    if !quiet {
+        // Success summary goes to stdout so scripts can parse it reliably.
+        println!(
+            "{}{label}{}: {} pipeline(s)",
+            green(),
+            reset(),
+            config.pipelines.len(),
+        );
+    }
     Ok(())
 }
 
@@ -1547,5 +1555,28 @@ mod cli_tests {
     fn json_logs_are_used_only_when_stderr_is_not_a_tty() {
         assert!(!use_json_logs_for_stderr(true));
         assert!(use_json_logs_for_stderr(false));
+    }
+
+    #[test]
+    fn dump_config_rejects_invalid_pipeline() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config_path = dir.path().join("bad.yaml");
+        let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+  format: raw
+output:
+  type: null
+"#;
+        std::fs::write(&config_path, yaml).expect("write bad config");
+
+        let args = vec![
+            "logfwd".to_string(),
+            "--dump-config".to_string(),
+            config_path.to_string_lossy().into_owned(),
+        ];
+        let err = cmd_dump_config(&args).expect_err("invalid pipeline should fail");
+        assert!(err.to_string().contains("error(s) during validation"));
     }
 }
