@@ -43,7 +43,7 @@ Then read every source file in the module(s) you'll modify — including tests.
 ## Code Quality
 
 - Run `just ci` before considering any change complete
-- Zero clippy warnings, all tests pass, `cargo fmt` clean
+- Zero clippy warnings, all tests pass, formatting clean
 - No `.unwrap()` in production code — use `?` or `.expect("reason")`
 - No per-line heap allocations in hot paths (scanner, format parser, CRI parser, OTLP encoder, compress)
 - No new dependencies without justification
@@ -52,9 +52,9 @@ Then read every source file in the module(s) you'll modify — including tests.
 
 ## Double-Check (Do Not Skip)
 
-1. `cargo check` — compiles
-2. `cargo test` — all tests pass
-3. `cargo clippy -- -D warnings` — zero warnings
-4. `cargo fmt --check` — formatted
+1. `just check` — compiles
+2. `just test` — all tests pass
+3. `just clippy` — zero warnings
+4. `just fmt-check` — formatted
 5. Self-review your diff line by line
 6. Re-read the original issue — did you address every point?

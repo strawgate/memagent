@@ -10,7 +10,7 @@ on:
       - "scripts/docs/**"
       - ".github/workflows/docs.yml"
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "book/**"
       - "dev-docs/**"

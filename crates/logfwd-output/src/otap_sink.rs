@@ -1005,7 +1005,10 @@ mod tests {
         let fast_status =
             decode_batch_status_generated_fast(&status_buf).expect("generated fast status decode");
         assert_eq!(fast_status.batch_id, generated_status.batch_id);
-        assert_eq!(fast_status.status_code as u32, generated_status.status_code as u32);
+        assert_eq!(
+            fast_status.status_code as u32,
+            generated_status.status_code as u32
+        );
         assert_eq!(fast_status.status_message, generated_status.status_message);
     }
 }

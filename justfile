@@ -3,6 +3,10 @@
 # Usage:  just --list
 
 # Default recipe: run all checks (same as CI)
+
+# Limit cargo parallelism to avoid starving other processes.
+# Override with: JOBS=8 just test-all
+export CARGO_BUILD_JOBS := env("JOBS", "2")
 default: ci
 
 # Format all Rust code
@@ -379,7 +383,7 @@ install-hooks:
     set -euo pipefail
     HOOKS_DIR=$(git rev-parse --git-common-dir)/hooks
     mkdir -p "$HOOKS_DIR"
-    printf '#!/bin/sh\nset -e\nRUSTC_WRAPPER="" cargo fmt --check\nRUSTC_WRAPPER="" cargo clippy -- -D warnings\nRUSTC_WRAPPER="" cargo check --all-targets\n' \
+    printf '#!/bin/sh\nset -e\njust fmt-check\njust clippy\njust check\n' \
         > "$HOOKS_DIR/pre-commit"
     chmod +x "$HOOKS_DIR/pre-commit"
     echo "Pre-commit hook installed ($HOOKS_DIR/pre-commit)"
