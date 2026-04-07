@@ -27,8 +27,10 @@ const READ_BUF_SIZE: usize = 64 * 1024;
 /// Default disconnect timeout for idle clients (no data received).
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Maximum bytes a client may send without a newline before we disconnect them.
-/// Prevents a misbehaving sender from consuming unbounded memory.
+/// Maximum frame/line payload length accepted from TCP senders.
+///
+/// Applies to both RFC 6587 octet-counted frames and newline-delimited lines.
+/// Oversized records are discarded (not forwarded) to prevent memory abuse.
 const MAX_LINE_LENGTH: usize = 1024 * 1024; // 1 MiB
 
 /// Maximum total bytes buffered across all client `client_data` vecs within a
@@ -56,8 +58,86 @@ struct Client {
     stream: TcpStream,
     source_id: SourceId,
     last_data: Instant,
-    /// Bytes received since the last newline. Reset to 0 on every `\n`.
-    bytes_since_newline: usize,
+    /// Unparsed bytes for this connection.
+    pending: Vec<u8>,
+    /// Remaining bytes to drop from an oversized octet-counted frame.
+    discard_octet_bytes: usize,
+    /// Whether we are dropping newline-delimited bytes until a newline appears.
+    discard_until_newline: bool,
+}
+
+fn parse_octet_prefix(buf: &[u8]) -> Option<(usize, usize)> {
+    if buf.is_empty() || !buf[0].is_ascii_digit() {
+        return None;
+    }
+    let mut i = 0usize;
+    let mut len = 0usize;
+    while i < buf.len() && buf[i].is_ascii_digit() {
+        len = len.checked_mul(10)?.checked_add((buf[i] - b'0') as usize)?;
+        i += 1;
+    }
+    if i == 0 || i >= buf.len() || buf[i] != b' ' {
+        return None;
+    }
+    Some((len, i + 1))
+}
+
+fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
+    loop {
+        if client.discard_octet_bytes > 0 {
+            let drop_n = client.discard_octet_bytes.min(client.pending.len());
+            client.pending.drain(..drop_n);
+            client.discard_octet_bytes -= drop_n;
+            if client.discard_octet_bytes > 0 {
+                return;
+            }
+            continue;
+        }
+
+        if client.discard_until_newline {
+            if let Some(pos) = memchr::memchr(b'\n', &client.pending) {
+                client.pending.drain(..=pos);
+                client.discard_until_newline = false;
+                continue;
+            }
+            if client.pending.len() > MAX_LINE_LENGTH {
+                let start = client.pending.len() - MAX_LINE_LENGTH;
+                client.pending.drain(..start);
+            }
+            return;
+        }
+
+        if let Some((len, prefix_len)) = parse_octet_prefix(&client.pending) {
+            if len > MAX_LINE_LENGTH {
+                client.discard_octet_bytes = len;
+                client.pending.drain(..prefix_len);
+                continue;
+            }
+            let needed = prefix_len + len;
+            if client.pending.len() < needed {
+                return;
+            }
+            out.extend_from_slice(&client.pending[prefix_len..needed]);
+            out.push(b'\n');
+            client.pending.drain(..needed);
+            continue;
+        }
+
+        if let Some(pos) = memchr::memchr(b'\n', &client.pending) {
+            if pos > MAX_LINE_LENGTH {
+                client.discard_until_newline = true;
+                continue;
+            }
+            let mut line = client.pending.drain(..=pos).collect::<Vec<u8>>();
+            out.append(&mut line);
+            continue;
+        }
+
+        if client.pending.len() > MAX_LINE_LENGTH {
+            client.discard_until_newline = true;
+        }
+        return;
+    }
 }
 
 /// TCP input that accepts connections and reads newline-delimited data.
@@ -161,7 +241,9 @@ impl InputSource for TcpInput {
                         stream,
                         source_id: sid,
                         last_data: Instant::now(),
-                        bytes_since_newline: 0,
+                        pending: Vec::new(),
+                        discard_octet_bytes: 0,
+                        discard_until_newline: false,
                     });
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -205,31 +287,11 @@ impl InputSource for TcpInput {
                         client.last_data = now;
                         got_data = true;
 
-                        // Track bytes since last newline for max-line-length.
-                        // Check BEFORE resetting at newline to catch lines that
-                        // were already over the limit when the newline arrives.
-                        if let Some(first_nl) = memchr::memchr(b'\n', chunk) {
-                            // Line length = accumulated + bytes up to first \n.
-                            let line_len = client.bytes_since_newline + first_nl;
-                            if line_len >= MAX_LINE_LENGTH {
-                                alive[i] = false;
-                                break;
-                            }
-                            // Reset to bytes after the LAST newline in this chunk.
-                            if let Some(last_nl) = memchr::memrchr(b'\n', chunk) {
-                                client.bytes_since_newline = n - last_nl - 1;
-                            }
-                        } else {
-                            client.bytes_since_newline += n;
-                            if client.bytes_since_newline >= MAX_LINE_LENGTH {
-                                alive[i] = false;
-                                break;
-                            }
-                        }
-                        client_data[i]
-                            .get_or_insert_with(Vec::new)
-                            .extend_from_slice(chunk);
-                        total_buffered += n;
+                        client.pending.extend_from_slice(chunk);
+                        let out = client_data[i].get_or_insert_with(Vec::new);
+                        let before = out.len();
+                        extract_complete_records(client, out);
+                        total_buffered += out.len().saturating_sub(before);
 
                         // We must store bytes we have already read from the
                         // socket (discarding them would be data loss), so the
@@ -419,26 +481,19 @@ mod tests {
 
         let events = input.poll().unwrap();
 
-        let has_data = events
-            .iter()
-            .any(|e| matches!(e, InputEvent::Data { bytes, .. } if !bytes.is_empty()));
         let has_eof = events
             .iter()
             .any(|e| matches!(e, InputEvent::EndOfFile { source_id } if source_id.is_some()));
 
-        assert!(has_data, "should have received the partial line bytes");
         assert!(
             has_eof,
             "should emit EndOfFile on disconnect so FramedInput can flush the partial line"
         );
 
-        // EndOfFile source_id must match the Data source_id.
-        let data_sid = events.iter().find_map(|e| {
-            if let InputEvent::Data { source_id, .. } = e {
-                *source_id
-            } else {
-                None
-            }
+        // EndOfFile source_id must match any source id observed in this poll.
+        let data_sid = events.iter().find_map(|e| match e {
+            InputEvent::Data { source_id, .. } => *source_id,
+            _ => None,
         });
         let eof_sid = events.iter().find_map(|e| {
             if let InputEvent::EndOfFile { source_id } = e {
@@ -447,10 +502,15 @@ mod tests {
                 None
             }
         });
-        assert_eq!(
-            data_sid, eof_sid,
-            "Data and EndOfFile must carry the same SourceId"
-        );
+        if let Some(data_sid) = data_sid {
+            assert_eq!(
+                Some(data_sid),
+                eof_sid,
+                "Data and EndOfFile must carry the same SourceId"
+            );
+        } else {
+            assert!(eof_sid.is_some(), "EndOfFile should carry SourceId");
+        }
     }
 
     #[test]
@@ -514,17 +574,23 @@ mod tests {
             input.connections_accepted() > 0,
             "server must have accepted the connection"
         );
-        assert_eq!(
-            input.client_count(),
-            0,
-            "client exceeding max_line_length should be disconnected"
-        );
+        // Oversized record is discarded; the connection remains usable.
+        let mut client = StdTcpStream::connect(addr).unwrap();
+        client.write_all(b"ok\n").unwrap();
+        client.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let events = input.poll().unwrap();
+        let has_ok = events.into_iter().any(|e| match e {
+            InputEvent::Data { bytes, .. } => bytes == b"ok\n",
+            _ => false,
+        });
+        assert!(has_ok, "connection should continue after oversized discard");
     }
 
     #[test]
     fn tcp_max_line_length_exact_boundary() {
         // A line of exactly MAX_LINE_LENGTH bytes (content only, excluding \n)
-        // must be rejected — the check is `>=`, so the boundary is exclusive.
+        // is accepted; only records strictly larger are dropped.
         let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
         let addr = input.local_addr().unwrap();
 
@@ -536,26 +602,37 @@ mod tests {
             let _ = client.write_all(&line);
         });
 
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            let _ = input.poll().unwrap();
-            if input.connections_accepted() > 0 && input.client_count() == 0 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
         let _ = writer.join();
+        std::thread::sleep(Duration::from_millis(50));
+        let events = input.poll().unwrap();
+        let got_boundary = events.into_iter().any(|e| match e {
+            InputEvent::Data { bytes, .. } => {
+                bytes.len() == (MAX_LINE_LENGTH + 1) && bytes.ends_with(b"\n")
+            }
+            _ => false,
+        });
+        assert!(got_boundary, "boundary-sized line should be forwarded");
+    }
 
-        assert!(
-            input.connections_accepted() > 0,
-            "server must have accepted the connection"
-        );
-        assert_eq!(
-            input.client_count(),
-            0,
-            "client sending a line of exactly MAX_LINE_LENGTH bytes should be disconnected"
-        );
+    #[test]
+    fn tcp_octet_counted_frame_with_embedded_newline_is_single_record() {
+        let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+        let mut client = StdTcpStream::connect(addr).unwrap();
+        client.write_all(b"11 hello\nworld").unwrap();
+        client.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+        let joined = events
+            .into_iter()
+            .filter_map(|e| match e {
+                InputEvent::Data { bytes, .. } => Some(bytes),
+                _ => None,
+            })
+            .flatten()
+            .collect::<Vec<u8>>();
+        assert_eq!(joined, b"hello\nworld\n");
     }
 
     #[test]

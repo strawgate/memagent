@@ -288,6 +288,21 @@ pub struct GeneratorInputConfig {
     pub event_created_unix_nano_field: Option<String>,
 }
 
+/// TLS/mTLS configuration for transport inputs.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TlsInputConfig {
+    /// PEM-encoded server certificate chain.
+    pub cert_file: Option<String>,
+    /// PEM-encoded private key for `cert_file`.
+    pub key_file: Option<String>,
+    /// PEM-encoded CA bundle used to verify client certs (mTLS).
+    pub client_ca_file: Option<String>,
+    /// Require and verify client certificates.
+    #[serde(default)]
+    pub require_client_auth: bool,
+}
+
 /// A single input source.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -314,6 +329,9 @@ pub struct InputConfig {
     /// `SqlTransform` pair. Overrides the pipeline-level `transform` field
     /// for this input only.
     pub sql: Option<String>,
+    /// Optional TLS/mTLS transport hardening for network inputs.
+    #[serde(default)]
+    pub tls: Option<TlsInputConfig>,
 }
 
 /// A single output destination.
@@ -782,6 +800,37 @@ impl Config {
                                 )));
                             }
                         }
+                        if let Some(tls) = &input.tls {
+                            if matches!(input.input_type, InputType::Udp) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': TLS is not supported for UDP inputs (DTLS is not implemented)"
+                                )));
+                            }
+                            let has_cert =
+                                tls.cert_file.as_ref().is_some_and(|v| !v.trim().is_empty());
+                            let has_key =
+                                tls.key_file.as_ref().is_some_and(|v| !v.trim().is_empty());
+                            if has_cert != has_key {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': tls.cert_file and tls.key_file must be set together"
+                                )));
+                            }
+                            if !has_cert && tls.require_client_auth {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': tls.require_client_auth requires tls.cert_file and tls.key_file"
+                                )));
+                            }
+                            if tls.require_client_auth
+                                && tls
+                                    .client_ca_file
+                                    .as_ref()
+                                    .is_none_or(|v| v.trim().is_empty())
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': tls.client_ca_file is required when tls.require_client_auth=true"
+                                )));
+                            }
+                        }
                     }
                     InputType::Otlp => {
                         if input.listen.is_none() {
@@ -814,6 +863,11 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'listen' is not supported for file inputs"
                             )));
                         }
+                        if input.tls.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'tls' is not supported for file inputs"
+                            )));
+                        }
                     }
                     InputType::Tcp | InputType::Udp => {
                         if input.generator.is_some() {
@@ -838,6 +892,11 @@ impl Config {
                         }
                     }
                     InputType::Otlp => {
+                        if input.tls.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'tls' is not supported for otlp inputs"
+                            )));
+                        }
                         if input.generator.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
@@ -860,6 +919,11 @@ impl Config {
                         }
                     }
                     InputType::Generator => {
+                        if input.tls.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'tls' is not supported for generator inputs"
+                            )));
+                        }
                         if input.listen.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'listen' is not supported for generator inputs; use generator.events_per_sec"
@@ -2839,6 +2903,71 @@ pipelines:
         assert!(
             err.to_string().contains("max_open_files"),
             "expected max_open_files rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn tcp_tls_requires_cert_and_key_together() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 0.0.0.0:514
+        tls:
+          cert_file: /tmp/server.pem
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("tls.cert_file and tls.key_file must be set together"),
+            "expected cert/key pairing rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn tcp_mtls_requires_client_ca() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 0.0.0.0:514
+        tls:
+          cert_file: /tmp/server.pem
+          key_file: /tmp/server.key
+          require_client_auth: true
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("tls.client_ca_file is required when tls.require_client_auth=true"),
+            "expected mTLS CA rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn udp_rejects_tls_block() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: udp
+        listen: 0.0.0.0:514
+        tls:
+          cert_file: /tmp/server.pem
+          key_file: /tmp/server.key
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("TLS is not supported for UDP"),
+            "expected UDP TLS rejection: {err}"
         );
     }
 
