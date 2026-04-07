@@ -4,7 +4,10 @@
 //! previous handwritten protobuf helpers that lived in `logfwd-output`.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use logfwd_core::otlp::{decode_tag, decode_varint, encode_bytes_field, encode_tag, encode_varint, encode_varint_field, skip_field};
+use logfwd_core::otlp::{
+    decode_tag, decode_varint, encode_bytes_field, encode_tag, encode_varint, encode_varint_field,
+    skip_field,
+};
 use logfwd_output::{
     ArrowPayloadType, BatchStatus, DecodedPayload, StatusCode, decode_batch_arrow_records,
     decode_batch_status, encode_batch_arrow_records,
@@ -64,19 +67,19 @@ fn manual_decode_batch_status(data: &[u8]) -> std::io::Result<BatchStatus> {
     let mut pos = 0;
 
     while pos < data.len() {
-        let (field_number, wire_type, new_pos) =
-            decode_tag(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let (field_number, wire_type, new_pos) = decode_tag(data, pos)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         pos = new_pos;
         match (field_number, wire_type) {
             (1, 0) => {
-                let (val, new_pos) =
-                    decode_varint(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let (val, new_pos) = decode_varint(data, pos)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 batch_id = val as i64;
                 pos = new_pos;
             }
             (2, 0) => {
-                let (val, new_pos) =
-                    decode_varint(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let (val, new_pos) = decode_varint(data, pos)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 status_code = match val {
                     0 => StatusCode::Ok,
                     1 => StatusCode::Unavailable,
@@ -86,8 +89,8 @@ fn manual_decode_batch_status(data: &[u8]) -> std::io::Result<BatchStatus> {
                 pos = new_pos;
             }
             (3, 2) => {
-                let (len, new_pos) =
-                    decode_varint(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let (len, new_pos) = decode_varint(data, pos)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 let end = new_pos + len as usize;
                 if end > data.len() {
                     return Err(std::io::Error::new(
@@ -119,13 +122,13 @@ fn manual_decode_arrow_payload(data: &[u8]) -> std::io::Result<DecodedPayload> {
     let mut pos = 0;
 
     while pos < data.len() {
-        let (field_number, wire_type, new_pos) =
-            decode_tag(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let (field_number, wire_type, new_pos) = decode_tag(data, pos)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         pos = new_pos;
         match (field_number, wire_type) {
             (1, 2) => {
-                let (len, new_pos) =
-                    decode_varint(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let (len, new_pos) = decode_varint(data, pos)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 let end = new_pos + len as usize;
                 if end > data.len() {
                     return Err(std::io::Error::new(
@@ -137,14 +140,14 @@ fn manual_decode_arrow_payload(data: &[u8]) -> std::io::Result<DecodedPayload> {
                 pos = end;
             }
             (2, 0) => {
-                let (val, new_pos) =
-                    decode_varint(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let (val, new_pos) = decode_varint(data, pos)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 payload_type = val as u32;
                 pos = new_pos;
             }
             (3, 2) => {
-                let (len, new_pos) =
-                    decode_varint(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let (len, new_pos) = decode_varint(data, pos)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 let end = new_pos + len as usize;
                 if end > data.len() {
                     return Err(std::io::Error::new(
@@ -174,19 +177,19 @@ fn manual_decode_batch_arrow_records(
     let mut pos = 0;
 
     while pos < data.len() {
-        let (field_number, wire_type, new_pos) =
-            decode_tag(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let (field_number, wire_type, new_pos) = decode_tag(data, pos)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         pos = new_pos;
         match (field_number, wire_type) {
             (1, 0) => {
-                let (val, new_pos) =
-                    decode_varint(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let (val, new_pos) = decode_varint(data, pos)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 batch_id = val as i64;
                 pos = new_pos;
             }
             (2, 2) => {
-                let (len, new_pos) =
-                    decode_varint(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let (len, new_pos) = decode_varint(data, pos)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 let end = new_pos + len as usize;
                 if end > data.len() {
                     return Err(std::io::Error::new(
@@ -198,8 +201,8 @@ fn manual_decode_batch_arrow_records(
                 pos = end;
             }
             (3, 2) => {
-                let (len, new_pos) =
-                    decode_varint(data, pos).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let (len, new_pos) = decode_varint(data, pos)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 let end = new_pos + len as usize;
                 if end > data.len() {
                     return Err(std::io::Error::new(
@@ -222,7 +225,11 @@ fn manual_decode_batch_arrow_records(
 
 fn make_payloads(bytes_per_payload: usize) -> Vec<(String, ArrowPayloadType, Vec<u8>)> {
     let mk = |name: &str, payload_type: ArrowPayloadType, byte: u8| {
-        (name.to_string(), payload_type, vec![byte; bytes_per_payload])
+        (
+            name.to_string(),
+            payload_type,
+            vec![byte; bytes_per_payload],
+        )
     };
     vec![
         mk("logs", ArrowPayloadType::Logs, 0x11),
@@ -239,7 +246,8 @@ fn bench_otap_proto(c: &mut Criterion) {
     for (label, payload_size) in [("small", 512usize), ("large", 64 * 1024usize)] {
         let payloads = make_payloads(payload_size);
         let headers = b"authorization: bearer bench-token";
-        let total_bytes: usize = payloads.iter().map(|(_, _, r)| r.len()).sum::<usize>() + headers.len();
+        let total_bytes: usize =
+            payloads.iter().map(|(_, _, r)| r.len()).sum::<usize>() + headers.len();
 
         group.throughput(Throughput::Bytes(total_bytes as u64));
 

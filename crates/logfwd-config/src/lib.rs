@@ -310,6 +310,10 @@ pub struct InputConfig {
     /// Generator-specific configuration.
     #[serde(default)]
     pub generator: Option<GeneratorInputConfig>,
+    /// Per-input SQL transform. When set, this input gets its own Scanner +
+    /// `SqlTransform` pair. Overrides the pipeline-level `transform` field
+    /// for this input only.
+    pub sql: Option<String>,
 }
 
 /// A single output destination.
@@ -963,6 +967,15 @@ impl Config {
                     return Err(ConfigError::Validation(format!(
                         "pipeline '{name}' input '{label}': max_open_files must be at least 1"
                     )));
+                }
+
+                // Reject whitespace-only per-input SQL (mirrors pipeline-level check).
+                if let Some(sql) = &input.sql {
+                    if sql.trim().is_empty() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' input '{label}': per-input sql cannot be empty"
+                        )));
+                    }
                 }
             }
 
