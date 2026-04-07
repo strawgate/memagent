@@ -44,6 +44,10 @@ impl InputSource for ChannelInputSource {
         &self.name
     }
 
+    fn health(&self) -> logfwd_types::diagnostics::ComponentHealth {
+        logfwd_types::diagnostics::ComponentHealth::Healthy
+    }
+
     fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
         if self.offset > 0 {
             vec![(self.source_id, ByteOffset(self.offset))]
