@@ -871,10 +871,10 @@ impl Config {
                     }
                     OutputType::Stdout => {
                         if let Some(fmt) = &output.format
-                            && !matches!(fmt, Format::Json | Format::Text)
+                            && !matches!(fmt, Format::Json | Format::Text | Format::Console)
                         {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': stdout output only supports format json or text"
+                                "pipeline '{name}' output '{label}': stdout output only supports format json, text, or console"
                             )));
                         }
                     }
@@ -1663,6 +1663,14 @@ output:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("file output only supports format json or text"));
+    }
+
+    #[test]
+    fn stdout_output_accepts_console_format() {
+        // console is a valid stdout format — build_sink_factory maps it to
+        // StdoutFormat::Console, so validation must not reject it (#1465 regression fix).
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: stdout\n  format: console\n";
+        Config::load_str(yaml).expect("stdout with format: console should be valid");
     }
 
     #[test]
