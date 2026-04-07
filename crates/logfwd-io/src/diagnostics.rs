@@ -12,7 +12,8 @@ use opentelemetry::metrics::{Counter, Meter};
 // paths keep working.
 pub use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
-mod policy;
+pub mod policy;
+pub mod models;
 
 // ---------------------------------------------------------------------------
 // Pipeline-level metrics (shared between pipeline thread and diagnostics)
