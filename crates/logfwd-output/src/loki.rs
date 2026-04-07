@@ -111,6 +111,8 @@ struct LokiConfig {
     endpoint: String,
     tenant_id: Option<String>,
     static_labels: Vec<(String, String)>,
+    /// Pre-computed set of static label key names for stream-key exclusion.
+    static_label_keys: std::collections::HashSet<String>,
     label_columns: Vec<String>,
     headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
 }
@@ -160,11 +162,15 @@ impl LokiSink {
             f.name() == field_names::TIMESTAMP_UNDERSCORE || f.name() == field_names::TIMESTAMP_AT
         });
 
-        // Find label ColInfos for configured label columns.
+        // Find label ColInfos for configured label columns, excluding keys
+        // that are overridden by static labels. Including overridden keys in
+        // the stream key would split rows with different dynamic values into
+        // separate streams even though the static label always wins. (#1459)
         let label_col_infos: Vec<(String, &super::ColInfo)> = self
             .config
             .label_columns
             .iter()
+            .filter(|label_col| !self.config.static_label_keys.contains(label_col.as_str()))
             .filter_map(|label_col| {
                 cols.iter()
                     .find(|c| &c.field_name == label_col)
@@ -422,12 +428,16 @@ impl LokiSinkFactory {
 
         Ok(LokiSinkFactory {
             name,
-            config: Arc::new(LokiConfig {
-                endpoint: endpoint.trim_end_matches('/').to_string(),
-                tenant_id,
-                static_labels,
-                label_columns,
-                headers: parsed_headers,
+            config: Arc::new({
+                let static_label_keys = static_labels.iter().map(|(k, _)| k.clone()).collect();
+                LokiConfig {
+                    endpoint: endpoint.trim_end_matches('/').to_string(),
+                    tenant_id,
+                    static_labels,
+                    static_label_keys,
+                    label_columns,
+                    headers: parsed_headers,
+                }
             }),
             client: Arc::new(client),
             stats,
@@ -725,6 +735,7 @@ mod tests {
             endpoint: "http://localhost".to_string(),
             tenant_id: None,
             static_labels: vec![],
+            static_label_keys: std::collections::HashSet::new(),
             label_columns: vec![],
             headers: vec![],
         });
@@ -770,6 +781,7 @@ mod tests {
             endpoint: "http://localhost".to_string(),
             tenant_id: None,
             static_labels: vec![("env".to_string(), "prod".to_string())],
+            static_label_keys: ["env".to_string()].into_iter().collect(),
             label_columns: vec!["env".to_string()],
             headers: vec![],
         });
@@ -811,6 +823,7 @@ mod tests {
             endpoint: "http://localhost".to_string(),
             tenant_id: None,
             static_labels: vec![],
+            static_label_keys: std::collections::HashSet::new(),
             label_columns: vec!["namespace".to_string()],
             headers: vec![],
         });
@@ -853,6 +866,7 @@ mod tests {
             endpoint: "http://localhost".to_string(),
             tenant_id: None,
             static_labels: vec![],
+            static_label_keys: std::collections::HashSet::new(),
             label_columns: vec![],
             headers: vec![],
         });

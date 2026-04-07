@@ -128,13 +128,19 @@ pub trait SinkFactory: Send + Sync + 'static {
 /// `Rejected > IoError > RetryAfter > Ok`. This ensures that an explicit
 /// rejection is never masked by a later transient I/O error.
 pub struct AsyncFanoutSink {
+    name: String,
     sinks: Vec<Box<dyn Sink>>,
 }
 
 impl AsyncFanoutSink {
     /// Create a fanout sink wrapping the given child sinks.
+    ///
+    /// The sink name is derived from child sink names so that ack items
+    /// carry a meaningful `output_name` instead of the opaque "fanout". (#1462)
     pub fn new(sinks: Vec<Box<dyn Sink>>) -> Self {
-        AsyncFanoutSink { sinks }
+        let child_names: Vec<&str> = sinks.iter().map(|s| s.name()).collect();
+        let name = format!("fanout({})", child_names.join(","));
+        AsyncFanoutSink { name, sinks }
     }
 }
 
@@ -189,8 +195,8 @@ impl Sink for AsyncFanoutSink {
         })
     }
 
-    fn name(&self) -> &'static str {
-        "fanout"
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
@@ -334,7 +340,7 @@ mod verification {
         };
         assert!(out, "Rejected must dominate RetryAfter/Ok");
 
-        // Any IoError dominates everything.
+        // Rejected dominates IoError (not the other way around). (#1468)
         let io = SendResult::IoError(io::Error::other("io"));
         assert!(matches!(io, SendResult::IoError(_)));
     }

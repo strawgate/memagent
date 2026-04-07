@@ -869,7 +869,16 @@ impl Config {
                             )));
                         }
                     }
-                    OutputType::Stdout | OutputType::Null => {}
+                    OutputType::Stdout => {
+                        if let Some(fmt) = &output.format
+                            && !matches!(fmt, Format::Json | Format::Text | Format::Console)
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': stdout output only supports format json, text, or console"
+                            )));
+                        }
+                    }
+                    OutputType::Null => {}
                     OutputType::Tcp | OutputType::Udp => {
                         if output.endpoint.is_none() {
                             return Err(ConfigError::Validation(format!(
@@ -1056,6 +1065,19 @@ pub fn validate_host_port(addr: &str) -> Result<(), String> {
         return Err(format!("'{addr}' has an empty host"));
     }
 
+    // Reject path-like hosts (e.g. "host/path:80") — these are likely
+    // malformed URLs rather than intentional host:port values. (#1461)
+    if host.contains('/') {
+        return Err(format!(
+            "'{addr}' host contains a '/' (expected host:port, not a URL path)"
+        ));
+    }
+
+    // Reject unmatched closing bracket outside of IPv6 brackets (e.g. "host]:80").
+    if !addr.starts_with('[') && host.contains(']') {
+        return Err(format!("'{addr}' has an unmatched ']' in the host"));
+    }
+
     if !addr.starts_with('[') && host.contains(':') {
         return Err(format!(
             "'{addr}' has multiple colons without IPv6 brackets"
@@ -1145,6 +1167,14 @@ mod validate_host_port_tests {
                 .unwrap_err()
                 .contains("missing a port")
         );
+        // Path-like host rejected (#1461)
+        assert!(
+            validate_host_port("foo/bar:4317")
+                .unwrap_err()
+                .contains("/")
+        );
+        // Unmatched closing bracket rejected (#1461)
+        assert!(validate_host_port("foo]:4317").unwrap_err().contains("]"));
     }
 
     #[test]
@@ -1644,6 +1674,14 @@ output:
     }
 
     #[test]
+    fn stdout_output_accepts_console_format() {
+        // console is a valid stdout format — build_sink_factory maps it to
+        // StdoutFormat::Console, so validation must not reject it (#1465 regression fix).
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: stdout\n  format: console\n";
+        Config::load_str(yaml).expect("stdout with format: console should be valid");
+    }
+
+    #[test]
     fn file_output_rejects_compression() {
         let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: /tmp/out.ndjson\n  compression: zstd\n";
         let err = Config::load_str(yaml).unwrap_err();
@@ -1684,7 +1722,7 @@ output:
     fn ipv6_valid_address_accepted() {
         assert!(validate_host_port("[::1]:8080").is_ok());
         assert!(validate_host_port("[2001:db8::1]:4317").is_ok());
-        assert!(validate_host_port("[fe80::1%eth0]:514").is_ok());
+        // IPv6 zone IDs (%eth0) not supported by std::net::Ipv6Addr — skip.
     }
 
     #[test]

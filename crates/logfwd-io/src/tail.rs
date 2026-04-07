@@ -493,7 +493,13 @@ impl FileDiscovery {
                     had_error = true;
                 }
             } else if is_new {
-                if let Err(e) = reader.open_file_at(path, reader.config.start_from_end) {
+                // If the file was previously evicted from the LRU cache it has
+                // a saved offset in `evicted_offsets`. In that case we must NOT
+                // seek to end — `open_file_at` will restore the evicted offset
+                // (or start from 0 if the identity no longer matches). (#1460)
+                let has_evicted = reader.evicted_offsets.contains_key(path);
+                let seek_end = !has_evicted && reader.config.start_from_end;
+                if let Err(e) = reader.open_file_at(path, seek_end) {
                     tracing::warn!(path = %path.display(), error = %e, "tail.open_new_file_failed");
                     had_error = true;
                 }

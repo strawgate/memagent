@@ -240,8 +240,9 @@ pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'stat
         2 => {
             // Length-delimited.
             let (len, new_pos) = decode_varint(buf, pos)?;
+            let len_usize = usize::try_from(len).map_err(|_| "skip: length overflow")?;
             let end = new_pos
-                .checked_add(len as usize)
+                .checked_add(len_usize)
                 .ok_or("skip: length-delimited overflow")?;
             if end > buf.len() {
                 return Err("skip: length-delimited overflow");
@@ -450,6 +451,16 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         b'Z' | b'z' if tz_start + 1 == ts.len() => 0,
         b'+' | b'-' if tz_start + 6 == ts.len() => {
             if ts[tz_start + 3] != b':' {
+                return None;
+            }
+            // Validate that timezone digits are actually ASCII digits before
+            // calling parse_2digits, which silently returns 0 for non-digits
+            // and would treat garbage as +00:00. (#1467)
+            if !ts[tz_start + 1].is_ascii_digit()
+                || !ts[tz_start + 2].is_ascii_digit()
+                || !ts[tz_start + 4].is_ascii_digit()
+                || !ts[tz_start + 5].is_ascii_digit()
+            {
                 return None;
             }
             let tz_h = parse_2digits(ts, tz_start + 1) as i64;
@@ -709,6 +720,17 @@ mod tests {
         // the sentinel for "parse failed". This is a known limitation
         // documented in the audit — callers use observed_time as fallback.
         assert_eq!(parse_timestamp_nanos(b"1970-01-01T00:00:00Z"), Some(0));
+    }
+
+    #[test]
+    fn parse_timestamp_rejects_non_digit_timezone() {
+        // Regression: non-digit bytes in timezone offset must be rejected (#1467).
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+0a:30"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+02:3x"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+ab:cd"), None);
+        // Valid offsets should still work.
+        assert!(parse_timestamp_nanos(b"2024-01-15T10:30:00+05:30").is_some());
+        assert!(parse_timestamp_nanos(b"2024-01-15T10:30:00-08:00").is_some());
     }
 
     #[test]

@@ -83,7 +83,12 @@ impl MetricBuffer {
             return; // reject NaN and Infinity timestamps — they break tier trimming
         }
         if !v.is_finite() {
-            return; // reject NaN and Infinity values — they are meaningless and pollute history
+            // Value is non-finite — don't record it, but still trim all tiers
+            // so that stale points are evicted even during NaN bursts. (#1464)
+            for tier in &mut self.tiers {
+                tier.trim(t);
+            }
+            return;
         }
         let p = Point { t, v };
 
