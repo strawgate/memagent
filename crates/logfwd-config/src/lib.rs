@@ -795,6 +795,16 @@ impl Config {
                         "pipeline '{name}' input '{label}': max_open_files must be at least 1"
                     )));
                 }
+
+                // per-input sql cannot be empty or whitespace-only; SqlTransform::new
+                // would reject it at runtime, breaking the --validate promise.
+                if let Some(sql) = &input.sql {
+                    if sql.trim().is_empty() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' input '{label}': per-input sql cannot be empty"
+                        )));
+                    }
+                }
             }
 
             for (i, output) in pipe.outputs.iter().enumerate() {
@@ -2943,5 +2953,40 @@ pipelines:
             err.to_string().contains("only supported for loki"),
             "expected loki-only message: {err}"
         );
+    }
+
+    #[test]
+    fn per_input_empty_sql_rejected() {
+        let yaml = r"
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+        sql: '   '
+    outputs:
+      - type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("per-input sql cannot be empty"),
+            "expected per-input sql empty error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn per_input_sql_valid_passes_validation() {
+        let yaml = r"
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+        sql: 'SELECT * FROM logfwd'
+    outputs:
+      - type: stdout
+";
+        Config::load_str(yaml).expect("valid per-input sql should pass validation");
     }
 }
