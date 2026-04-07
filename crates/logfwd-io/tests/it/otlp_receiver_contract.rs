@@ -3,9 +3,13 @@
 //! These tests verify that semantically equivalent OTLP requests preserve the
 //! same decoded meaning across JSON, protobuf, and compressed protobuf paths.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::otlp_contract_support::expected_single_row_from_request;
+use logfwd_io::diagnostics::ComponentStats;
+use logfwd_io::format::FormatDecoder;
+use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::otlp_receiver::OtlpReceiverInput;
 use opentelemetry_proto::tonic::{
@@ -66,6 +70,44 @@ fn send_status(url: &str, body: &[u8], content_type: &str, content_encoding: Opt
         Err(ureq::Error::StatusCode(code)) => code,
         Err(err) => panic!("unexpected OTLP request error: {err}"),
     }
+}
+
+fn make_framed_otlp_input(
+    stats: Arc<ComponentStats>,
+    structured: bool,
+) -> (FramedInput, String) {
+    let receiver = if structured {
+        OtlpReceiverInput::new_structured_with_stats(
+            "contract",
+            "127.0.0.1:0",
+            Arc::clone(&stats),
+        )
+        .expect("structured receiver should start")
+    } else {
+        OtlpReceiverInput::new_with_stats("contract", "127.0.0.1:0", Arc::clone(&stats))
+            .expect("legacy receiver should start")
+    };
+    let url = format!("http://{}/v1/logs", receiver.local_addr());
+    let framed = FramedInput::new(
+        Box::new(receiver),
+        FormatDecoder::passthrough_json(Arc::clone(&stats)),
+        stats,
+    );
+    (framed, url)
+}
+
+fn poll_until_events(input: &mut dyn InputSource, timeout: Duration) -> Vec<InputEvent> {
+    let deadline = Instant::now() + timeout;
+
+    while Instant::now() < deadline {
+        let events = input.poll().expect("poll receiver");
+        if !events.is_empty() {
+            return events;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    panic!("timed out waiting for OTLP receiver events");
 }
 
 fn semantic_request() -> ExportLogsServiceRequest {
@@ -236,6 +278,81 @@ fn otlp_receiver_invalid_json_bytes_value_returns_400() {
         events.is_empty(),
         "rejected request must not enqueue decoded data"
     );
+}
+
+#[test]
+fn otlp_receiver_legacy_and_structured_account_the_same_input_bytes() {
+    let request = semantic_request();
+    let protobuf_body = request.encode_to_vec();
+    let expected_bytes = protobuf_body.len() as u64;
+
+    for structured in [false, true] {
+        let stats = Arc::new(ComponentStats::new());
+        let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats), structured);
+
+        let status = send_status(&url, &protobuf_body, "application/x-protobuf", None);
+        assert_eq!(status, 200, "request should succeed");
+
+        let events = poll_until_events(&mut input, Duration::from_secs(2));
+        if structured {
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, InputEvent::Batch { batch, .. } if batch.num_rows() == 1)),
+                "structured ingress should emit one-row batch"
+            );
+        } else {
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, InputEvent::Data { bytes, .. } if !bytes.is_empty())),
+                "legacy ingress should emit framed data"
+            );
+        }
+
+        assert_eq!(
+            stats.lines(),
+            1,
+            "both OTLP modes should account one input row"
+        );
+        assert_eq!(
+            stats.bytes(),
+            expected_bytes,
+            "both OTLP modes should account the accepted protobuf payload bytes"
+        );
+        assert_eq!(stats.errors(), 0, "successful request should not count errors");
+        assert_eq!(
+            stats.parse_errors(),
+            0,
+            "successful request should not count parse errors"
+        );
+    }
+}
+
+#[test]
+fn otlp_receiver_legacy_and_structured_rejections_increment_parse_errors() {
+    for structured in [false, true] {
+        let stats = Arc::new(ComponentStats::new());
+        let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats), structured);
+
+        let status = send_status(&url, b"not valid protobuf", "application/x-protobuf", None);
+        assert_eq!(status, 400, "invalid protobuf must be rejected");
+
+        std::thread::sleep(Duration::from_millis(20));
+        let events = input.poll().expect("poll receiver after rejected request");
+        assert!(
+            events.is_empty(),
+            "rejected request must not enqueue decoded data"
+        );
+        assert_eq!(stats.lines(), 0, "rejected request must not count lines");
+        assert_eq!(stats.bytes(), 0, "rejected request must not count bytes");
+        assert_eq!(stats.errors(), 0, "parse rejection should not count transport errors");
+        assert_eq!(
+            stats.parse_errors(),
+            1,
+            "invalid protobuf should increment parse errors"
+        );
+    }
 }
 
 #[test]
