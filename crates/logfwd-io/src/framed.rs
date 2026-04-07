@@ -387,6 +387,10 @@ mod tests {
             &self.name
         }
 
+        fn health(&self) -> ComponentHealth {
+            ComponentHealth::Healthy
+        }
+
         fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
             self.offsets.clone()
         }

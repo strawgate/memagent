@@ -8,6 +8,7 @@ use std::io;
 use std::io::Write;
 
 use crate::input::{InputEvent, InputSource};
+use logfwd_types::diagnostics::ComponentHealth;
 
 /// Controls the complexity/size of generated lines.
 #[non_exhaustive]
@@ -329,6 +330,12 @@ impl InputSource for GeneratorInput {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn health(&self) -> ComponentHealth {
+        // Generator input has no independent bind/startup/shutdown lifecycle.
+        // It is either idle or emitting synthetic events under pipeline control.
+        ComponentHealth::Healthy
     }
 }
 
