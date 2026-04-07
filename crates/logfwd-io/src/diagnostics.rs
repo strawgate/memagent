@@ -458,8 +458,10 @@ impl DiagnosticsServer {
     /// actual address after OS port assignment (useful when `bind_addr` uses
     /// port 0). Returns an `io::Error` on bind failure.
     pub fn start(&mut self) -> io::Result<std::net::SocketAddr> {
-        let server = Arc::new(tiny_http::Server::http(&self.bind_addr)
-            .map_err(|e| io::Error::other(e.to_string()))?);
+        let server = Arc::new(
+            tiny_http::Server::http(&self.bind_addr)
+                .map_err(|e| io::Error::other(e.to_string()))?,
+        );
         self.server = Some(Arc::clone(&server));
 
         let bound_addr = server
@@ -1142,10 +1144,8 @@ impl DiagnosticsServer {
     }
 }
 
-
 impl Drop for DiagnosticsServer {
     fn drop(&mut self) {
-
         if let Some(server) = self.server.as_ref() {
             server.unblock();
         }
