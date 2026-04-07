@@ -186,13 +186,9 @@ See the [Deployment Guide](book/src/deployment/kubernetes.md) for resource sizin
 
 ## Output Destinations
 
-| Output          | Status         | Description |
-|-----------------|----------------|-------------|
-| `otlp`          | Implemented | OTLP protobuf over HTTP or gRPC |
-| `http`          | Implemented | JSON lines over HTTP POST, optional zstd |
-| `stdout`        | Implemented | JSON or colored console output |
-| `elasticsearch` | Implemented | Bulk API with retry and per-document error handling |
-| `loki`          | Implemented | Grafana Loki push API with label grouping |
+For current output support status, see the canonical tables in the
+[Configuration Reference](book/src/config/reference.md#output-types). The
+README and task-oriented guides intentionally avoid duplicating status claims.
 
 ---
 

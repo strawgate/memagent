@@ -1,5 +1,8 @@
 # Input Types
 
+Support status lives in the [Configuration Reference](reference.md#input-types).
+This page focuses on usage notes and examples.
+
 ## File
 
 Tail one or more log files with glob pattern support.

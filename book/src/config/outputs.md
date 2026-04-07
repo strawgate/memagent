@@ -1,5 +1,8 @@
 # Output Types
 
+Support status lives in the [Configuration Reference](reference.md#output-types).
+This page focuses on usage notes and examples.
+
 ## OTLP
 
 Send logs as OpenTelemetry protobuf over HTTP or gRPC.

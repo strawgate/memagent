@@ -12,6 +12,10 @@ logfwd supports two layout styles:
 Environment variables are expanded using `${VAR}` syntax anywhere in the file. If a
 variable is not set the placeholder is left as-is.
 
+This page is the canonical source for config support and status. Other docs may
+show examples or task-oriented guidance, but support-status claims for inputs,
+outputs, and config-only surfaces should link back here.
+
 ---
 
 ## Simple layout
@@ -95,7 +99,23 @@ input:
   format: cri
 ```
 
-### `udp` input *(not yet implemented)*
+### `generator` input
+
+Emit synthetic records for benchmarks, demos, and pipeline tests.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `generator` | object | No | Generator settings. If omitted, runtime defaults are used, including `batch_size: 1000` and `events_per_sec: 0`. See [Input Types](inputs.md#generator) for the detailed nested fields. |
+
+```yaml
+input:
+  type: generator
+  generator:
+    events_per_sec: 50000
+    batch_size: 4096
+```
+
+### `udp` input
 
 Listen for log lines on a UDP socket.
 
@@ -110,7 +130,7 @@ input:
   format: json
 ```
 
-### `tcp` input *(not yet implemented)*
+### `tcp` input
 
 Accept log lines on a TCP socket.
 
@@ -125,11 +145,24 @@ input:
   format: json
 ```
 
-### `otlp` input *(not yet implemented)*
+### `otlp` input
 
 Receive OTLP log records from another agent or SDK.
 
-No extra fields required; the listen address will be configurable in a future release.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:4318`. |
+
+```yaml
+input:
+  type: otlp
+  listen: 0.0.0.0:4318
+```
+
+### `arrow_ipc` input *(not yet supported)*
+
+Reserved for future Arrow IPC ingest. Config parsing recognizes the type, but
+config validation currently rejects it.
 
 ---
 
@@ -138,9 +171,11 @@ No extra fields required; the listen address will be configurable in a future re
 | Value | Status | Description |
 |-------|--------|-------------|
 | `file` | Implemented | Tail files matching a glob pattern. |
-| `udp` | Planned | Receive log lines over UDP. |
-| `tcp` | Planned | Accept log lines over TCP. |
-| `otlp` | Planned | Receive OTLP logs. |
+| `generator` | Implemented | Emit synthetic JSON-like records from an in-process source. |
+| `udp` | Implemented | Receive log lines over UDP. |
+| `tcp` | Implemented | Accept log lines over TCP. |
+| `otlp` | Implemented | Receive OTLP logs over a bound listen address. |
+| `arrow_ipc` | Not yet supported | Reserved for future Arrow IPC ingest. |
 
 ---
 
@@ -188,14 +223,14 @@ output:
   compression: zstd
 ```
 
-### `http` output
+### `http` output *(not yet supported)*
 
 POST log records as newline-delimited JSON to an HTTP endpoint.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Full URL, e.g. `http://ingest.example.com/logs`. |
-| `compression` | string | No | Reserved for future use. HTTP output is not yet implemented. |
+| `compression` | string | No | Reserved for future use. |
 
 ```yaml
 output:
@@ -217,23 +252,23 @@ output:
   format: console
 ```
 
-### `elasticsearch` output *(stub)*
+### `elasticsearch` output
 
-Ship to Elasticsearch via the bulk API. Not yet functional.
+Ship to Elasticsearch via the Bulk API.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Elasticsearch base URL. |
 
-### `loki` output *(stub)*
+### `loki` output
 
-Push to Grafana Loki. Not yet functional.
+Push to Grafana Loki.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Loki push URL. |
 
-### `file` output *(partial; `file_out` alias supported)*
+### `file` output *(`file_out` alias supported)*
 
 Write records to a file.
 
@@ -249,9 +284,9 @@ output:
   format: json
 ```
 
-### `parquet` output *(stub)*
+### `parquet` output *(not yet supported)*
 
-Write records to Parquet files. Not yet functional.
+Write records to Parquet files.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -264,12 +299,16 @@ Write records to Parquet files. Not yet functional.
 | Value | Status | Description |
 |-------|--------|-------------|
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
-| `http` | Planned | JSON lines over HTTP POST (not yet implemented). |
+| `http` | Not yet supported | Reserved for newline-delimited JSON over HTTP POST. |
 | `stdout` | Implemented | Print to stdout (JSON or coloured text). |
-| `elasticsearch` | Stub | Elasticsearch bulk API. |
-| `loki` | Stub | Grafana Loki push API. |
-| `file` | Partial | Write to a file (`file_out` alias supported). |
-| `parquet` | Stub | Write Parquet files. |
+| `elasticsearch` | Implemented | Elasticsearch Bulk API with retry and request-mode controls. |
+| `loki` | Implemented | Grafana Loki push API with label grouping. |
+| `file` | Implemented | Write NDJSON or text to a local file (`file_out` alias supported). |
+| `null` | Implemented | Drop records intentionally for tests and benchmark baselines. |
+| `tcp` | Implemented | Send records to a TCP endpoint. |
+| `udp` | Implemented | Send records to a UDP endpoint. |
+| `arrow_ipc` | Implemented | Send Arrow IPC payloads to an HTTP endpoint. |
+| `parquet` | Not yet supported | Reserved for Parquet file output. |
 
 ---
 
