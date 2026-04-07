@@ -25,6 +25,7 @@ use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_output::{BatchMetadata, Compression};
+use logfwd_types::diagnostics::ComponentHealth;
 use pprof::ProfilerGuardBuilder;
 
 const DEFAULT_LINES: usize = 200_000;
@@ -341,6 +342,12 @@ impl InputSource for MockSource {
 
     fn name(&self) -> &'static str {
         "mock"
+    }
+
+    fn health(&self) -> ComponentHealth {
+        // Benchmark input is deterministic in-process test scaffolding with no
+        // separate bind/startup/failure lifecycle.
+        ComponentHealth::Healthy
     }
 }
 

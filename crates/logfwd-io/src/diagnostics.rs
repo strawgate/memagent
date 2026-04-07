@@ -571,23 +571,22 @@ impl DiagnosticsServer {
     /// explicit lifecycle wiring lands, so this endpoint is only as honest as
     /// the currently wired health sources.
     fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let ready = policy::is_ready(&self.pipelines);
-        let reason = policy::ready_reason(&self.pipelines);
+        let snapshot = policy::readiness_snapshot(&self.pipelines);
         let observed_at_unix_ns = now_nanos();
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        if ready {
+        if snapshot.ready {
             let body = format!(
                 r#"{{"status":"ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                reason, observed_at_unix_ns
+                snapshot.reason, observed_at_unix_ns
             );
             let resp = tiny_http::Response::from_string(body).with_header(header);
             request.respond(resp)?;
         } else {
             let body = format!(
                 r#"{{"status":"not_ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                reason, observed_at_unix_ns
+                snapshot.reason, observed_at_unix_ns
             );
             let resp = tiny_http::Response::from_string(body)
                 .with_status_code(503)
@@ -1084,13 +1083,14 @@ impl DiagnosticsServer {
             ));
         }
 
-        let ready = if policy::is_ready(&self.pipelines) {
+        let ready_snapshot = policy::readiness_snapshot(&self.pipelines);
+        let ready = if ready_snapshot.ready {
             "ready"
         } else {
             "not_ready"
         };
-        let component_health = policy::aggregate_component_health(&self.pipelines);
-        let ready_reason = policy::ready_reason(&self.pipelines);
+        let component_health = ready_snapshot.component_health;
+        let ready_reason = ready_snapshot.reason;
         let component_reason = policy::health_reason(component_health);
         let readiness_impact = policy::readiness_impact(component_health);
 
@@ -1381,6 +1381,17 @@ mod tests {
         pm.inflight_batches.store(3, Ordering::Relaxed);
         pm.backpressure_stalls.store(7, Ordering::Relaxed);
         pm.transform_errors.store(3, Ordering::Relaxed);
+
+        let mut server = DiagnosticsServer::new("127.0.0.1:0");
+        server.add_pipeline(Arc::new(pm));
+        server
+    }
+
+    fn server_with_single_input_health(health: ComponentHealth) -> DiagnosticsServer {
+        let meter = opentelemetry::global::meter("test");
+        let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
+        let input = pm.add_input("receiver", "tcp");
+        input.set_health(health);
 
         let mut server = DiagnosticsServer::new("127.0.0.1:0");
         server.add_pipeline(Arc::new(pm));
@@ -1863,6 +1874,86 @@ mod tests {
             body.contains(r#""reason":"components_degraded_but_operational""#),
             "body: {}",
             body
+        );
+    }
+
+    #[test]
+    fn test_ready_endpoint_stays_in_sync_with_admin_ready_snapshot() {
+        // Test the policy layer directly rather than spinning up HTTP servers
+        // for each health state. Both /ready and /admin/v1/status derive their
+        // ready status and reason from the same `policy::readiness_snapshot`
+        // call, so verifying the snapshot output is sufficient to prove they
+        // are in sync without leaving immortal sampler threads behind.
+        fn assert_ready_snapshot_sync(
+            server: &DiagnosticsServer,
+            expected_status: &str,
+            expected_reason: &str,
+            expected_ready: bool,
+        ) {
+            let snapshot = policy::readiness_snapshot(&server.pipelines);
+            let actual_status = if snapshot.ready { "ready" } else { "not_ready" };
+            assert_eq!(
+                actual_status, expected_status,
+                "health state mismatch: got status={actual_status} reason={} expected status={expected_status}",
+                snapshot.reason
+            );
+            assert_eq!(
+                snapshot.reason, expected_reason,
+                "reason mismatch for status={expected_status}"
+            );
+            assert_eq!(
+                snapshot.ready, expected_ready,
+                "ready bool mismatch for status={expected_status}"
+            );
+        }
+
+        assert_ready_snapshot_sync(
+            &DiagnosticsServer::new("127.0.0.1:0"),
+            "not_ready",
+            "no_pipelines_registered",
+            false,
+        );
+
+        assert_ready_snapshot_sync(
+            &server_with_single_input_health(ComponentHealth::Healthy),
+            "ready",
+            "all_components_healthy",
+            true,
+        );
+
+        assert_ready_snapshot_sync(
+            &server_with_single_input_health(ComponentHealth::Starting),
+            "not_ready",
+            "components_starting",
+            false,
+        );
+
+        assert_ready_snapshot_sync(
+            &server_with_single_input_health(ComponentHealth::Degraded),
+            "ready",
+            "components_degraded_but_operational",
+            true,
+        );
+
+        assert_ready_snapshot_sync(
+            &server_with_single_input_health(ComponentHealth::Stopping),
+            "not_ready",
+            "components_stopping",
+            false,
+        );
+
+        assert_ready_snapshot_sync(
+            &server_with_single_input_health(ComponentHealth::Stopped),
+            "not_ready",
+            "components_stopped",
+            false,
+        );
+
+        assert_ready_snapshot_sync(
+            &server_with_single_input_health(ComponentHealth::Failed),
+            "not_ready",
+            "components_failed",
+            false,
         );
     }
 
