@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
@@ -48,6 +48,7 @@ jobs:
   # Frontend checks — format, lint, typecheck run in parallel via matrix
   # -------------------------------------------------------------------------
   frontend-checks:
+    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -88,6 +89,7 @@ jobs:
   # Frontend tests — vitest with coverage
   # -------------------------------------------------------------------------
   frontend-test:
+    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -162,7 +164,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny
         run: |
@@ -197,14 +199,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests
         run: cargo nextest run --profile ci
 
   test-macos:
     name: Test (macOS)
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -215,7 +217,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests
         run: cargo nextest run --profile ci
@@ -241,7 +243,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: aarch64
 
       - name: Install cross-compilation toolchain
@@ -261,9 +263,9 @@ jobs:
   kani:
     name: Kani proofs
     needs: [changes]
-    # Always run on push to master; on PRs only when logfwd-core changed.
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.core == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -285,9 +287,7 @@ jobs:
   turmoil:
     name: Turmoil simulation
     needs: [changes]
-    if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-      (github.event.pull_request.draft == false)
+    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -296,7 +296,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Turmoil simulation tests
         run: cargo test -p logfwd --features turmoil --test turmoil_sim
 
@@ -307,7 +307,8 @@ jobs:
     name: TLA+ model checking
     needs: [changes]
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -342,3 +343,19 @@ jobs:
 
       - name: PipelineBatch — liveness
         run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg -workers auto
+
+  # -------------------------------------------------------------------------
+  # Conclusion — single required status check for branch protection.
+  # Pattern from rust-analyzer and cargo: set ONE required check
+  # ("conclusion") instead of maintaining a list of individual job names.
+  # -------------------------------------------------------------------------
+  conclusion:
+    name: CI conclusion
+    if: ${{ !cancelled() }}
+    needs: [lint, test-linux, build-check]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          jq -C <<< '${{ toJson(needs) }}'
+          jq --exit-status 'all(.result == "success" or .result == "skipped")' \
+            <<< '${{ toJson(needs) }}'

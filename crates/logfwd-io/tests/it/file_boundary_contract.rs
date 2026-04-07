@@ -92,6 +92,10 @@ fn poll_until_data(
     panic!("timed out waiting for {} file input items", min_items);
 }
 
+fn checkpoint_map(input: &dyn InputSource) -> HashMap<SourceId, ByteOffset> {
+    input.checkpoint_data().into_iter().collect()
+}
+
 #[test]
 fn checkpoint_advances_only_at_real_newline_boundaries() {
     let dir = tempfile::tempdir().unwrap();
@@ -217,4 +221,148 @@ fn glob_sources_keep_partial_lines_and_checkpoints_isolated() {
             "checkpoint must advance independently per source"
         );
     }
+}
+
+#[test]
+fn glob_sources_eof_flush_remainders_and_advance_checkpoints_independently() {
+    let dir = tempfile::tempdir().unwrap();
+    let a_path = dir.path().join("a.log");
+    let b_path = dir.path().join("b.log");
+    fs::write(&a_path, b"tail-A").unwrap();
+    fs::write(&b_path, b"tail-B").unwrap();
+
+    let pattern = format!("{}/*.log", dir.path().display());
+    let mut input = make_framed_glob_input(&pattern);
+
+    let initial_events = input.poll().expect("initial poll");
+    assert!(
+        initial_events
+            .iter()
+            .all(|event| !matches!(event, InputEvent::Data { .. })),
+        "partial lines should remain buffered until EOF flush"
+    );
+
+    let initial_checkpoints = checkpoint_map(&input);
+    assert_eq!(
+        initial_checkpoints.len(),
+        2,
+        "expected both sources to be tracked"
+    );
+    assert!(
+        initial_checkpoints
+            .values()
+            .all(|offset| *offset == ByteOffset(0)),
+        "neither source should be checkpointable before EOF flush"
+    );
+
+    let emitted = poll_until_data(&mut input, Duration::from_secs(2), 2);
+    let mut emitted_by_source = HashMap::new();
+    for (source_id, bytes) in emitted {
+        let source_id = source_id.expect("EOF flush must preserve source identity");
+        emitted_by_source.insert(source_id, bytes);
+    }
+
+    let expected_values: HashSet<Vec<u8>> = [b"tail-A\n".to_vec(), b"tail-B\n".to_vec()]
+        .into_iter()
+        .collect();
+    let actual_values: HashSet<Vec<u8>> = emitted_by_source.values().cloned().collect();
+    assert_eq!(
+        actual_values, expected_values,
+        "EOF flush must emit each source remainder independently"
+    );
+
+    let checkpoints = checkpoint_map(&input);
+    assert_eq!(
+        checkpoints.len(),
+        2,
+        "expected checkpoint entries for both files"
+    );
+    for (source_id, emitted_bytes) in emitted_by_source {
+        let expected_file_len = match emitted_bytes.as_slice() {
+            b"tail-A\n" => fs::metadata(&a_path).unwrap().len(),
+            b"tail-B\n" => fs::metadata(&b_path).unwrap().len(),
+            _ => panic!("unexpected emitted EOF-flush payload"),
+        };
+        assert_eq!(
+            checkpoints.get(&source_id),
+            Some(&ByteOffset(expected_file_len)),
+            "EOF flush should advance checkpoint to the real file length"
+        );
+    }
+}
+
+#[test]
+fn checkpoint_restore_keeps_complete_and_partial_sources_isolated() {
+    let dir = tempfile::tempdir().unwrap();
+    let a_path = dir.path().join("a.log");
+    let b_path = dir.path().join("b.log");
+    fs::write(&a_path, b"alpha\n").unwrap();
+    fs::write(&b_path, b"br").unwrap();
+
+    let pattern = format!("{}/*.log", dir.path().display());
+    let mut first_run = make_framed_glob_input(&pattern);
+
+    let emitted = poll_until_data(&mut first_run, Duration::from_secs(2), 1);
+    assert_eq!(emitted.len(), 1, "only the complete source should emit");
+    let complete_source = emitted[0].0.expect("file input must carry source id");
+    assert_eq!(emitted[0].1, b"alpha\n");
+
+    let checkpoints = checkpoint_map(&first_run);
+    assert_eq!(
+        checkpoints.len(),
+        2,
+        "expected both sources in checkpoint state"
+    );
+    assert_eq!(
+        checkpoints.get(&complete_source),
+        Some(&ByteOffset(fs::metadata(&a_path).unwrap().len())),
+        "the complete source should checkpoint at its file length"
+    );
+
+    let partial_source = checkpoints
+        .iter()
+        .find_map(|(source_id, offset)| {
+            (*source_id != complete_source).then_some((*source_id, *offset))
+        })
+        .expect("expected a second source");
+    assert_eq!(
+        partial_source.1,
+        ByteOffset(0),
+        "the partial source must remain at checkpoint 0 before restart"
+    );
+
+    let mut second_run = make_framed_glob_input(&pattern);
+    for (source_id, offset) in checkpoints {
+        second_run.set_offset_by_source(source_id, offset.0);
+    }
+
+    let mut b_file = fs::OpenOptions::new().append(true).open(&b_path).unwrap();
+    b_file.write_all(b"avo-long\n").unwrap();
+    b_file.flush().unwrap();
+
+    let resumed = poll_until_data(&mut second_run, Duration::from_secs(2), 1);
+    assert_eq!(resumed.len(), 1, "only the incomplete source should resume");
+    let resumed_source = resumed[0]
+        .0
+        .expect("resumed file input must carry source id");
+    assert_ne!(
+        resumed_source, complete_source,
+        "the already-checkpointed source must not replay on restart"
+    );
+    assert_eq!(
+        resumed[0].1, b"bravo-long\n",
+        "the partial source should resume from its last checkpoint boundary"
+    );
+
+    let resumed_checkpoints = checkpoint_map(&second_run);
+    assert_eq!(
+        resumed_checkpoints.get(&complete_source),
+        Some(&ByteOffset(fs::metadata(&a_path).unwrap().len())),
+        "restored complete-source checkpoint should stay intact"
+    );
+    assert_eq!(
+        resumed_checkpoints.get(&resumed_source),
+        Some(&ByteOffset(fs::metadata(&b_path).unwrap().len())),
+        "resumed partial source should advance to its full file length"
+    );
 }

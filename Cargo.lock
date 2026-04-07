@@ -2510,7 +2510,6 @@ dependencies = [
  "proptest",
  "sonic-rs",
  "tempfile",
- "thiserror",
  "wide",
 ]
 
