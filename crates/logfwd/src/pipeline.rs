@@ -644,8 +644,15 @@ impl Pipeline {
     /// Delegates to `run_async` on a tokio runtime. The sync interface exists
     /// for test convenience; production uses `run_async` directly.
     pub fn run(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.enable_all();
+        if let Ok(threads_raw) = std::env::var("TOKIO_WORKER_THREADS")
+            && let Ok(threads) = threads_raw.parse::<usize>()
+            && threads > 0
+        {
+            builder.worker_threads(threads);
+        }
+        builder
             .build()
             .expect("failed to create tokio runtime")
             .block_on(self.run_async(shutdown))

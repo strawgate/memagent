@@ -71,7 +71,11 @@ pub fn run_rate_bench(
 ) -> Vec<RateBenchResult> {
     let mut results = Vec::new();
     for &eps in DEFAULT_EPS_LEVELS {
-        let label = if eps == 0 { "unlimited".to_string() } else { format!("{eps}") };
+        let label = if eps == 0 {
+            "unlimited".to_string()
+        } else {
+            format!("{eps}")
+        };
         eprintln!("=== Rate bench: {label} eps ===");
         match run_single_rate(logfwd_binary, bench_dir, blackhole_addr, eps) {
             Ok(r) => {
@@ -329,7 +333,11 @@ pub fn print_rate_results_markdown(results: &[RateBenchResult]) {
     println!("| Target (eps) | Actual (eps) | RSS Memory | CPU % |");
     println!("|:------------:|:------------:|:----------:|:-----:|");
     for r in results {
-        let target = if r.eps == 0 { "unlimited".to_string() } else { r.eps.to_string() };
+        let target = if r.eps == 0 {
+            "unlimited".to_string()
+        } else {
+            r.eps.to_string()
+        };
         println!(
             "| {:>12} | {:>12.1} | {:>7} KiB | {:>5.1}% |",
             target, r.actual_eps, r.rss_kb, r.cpu_percent
@@ -352,7 +360,11 @@ pub fn print_rate_results_table(results: &[RateBenchResult]) {
         "------------", "------------", "---------", "-----"
     );
     for r in results {
-        let target = if r.eps == 0 { "unlimited".to_string() } else { r.eps.to_string() };
+        let target = if r.eps == 0 {
+            "unlimited".to_string()
+        } else {
+            r.eps.to_string()
+        };
         println!(
             "  {:<14} {:<14.1} {:<14} {:<10.1}",
             target, r.actual_eps, r.rss_kb, r.cpu_percent
@@ -374,7 +386,11 @@ pub fn write_rate_gh_bench_json(results: &[RateBenchResult], path: &Path) {
     let entries: Vec<Entry> = results
         .iter()
         .flat_map(|r| {
-            let tag = if r.eps == 0 { "unlimited".to_string() } else { format!("{}", r.eps) };
+            let tag = if r.eps == 0 {
+                "unlimited".to_string()
+            } else {
+                format!("{}", r.eps)
+            };
             [
                 Entry {
                     name: format!("rate-bench/{tag}-eps/rss-kb"),
