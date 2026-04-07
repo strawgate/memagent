@@ -672,10 +672,15 @@ fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, InputError> {
     Ok(convert_request_to_json_lines(&request))
 }
 
-fn decode_otlp_logs_with_mode(body: &[u8], mode: ReceiverMode) -> Result<ReceiverPayload, InputError> {
+fn decode_otlp_logs_with_mode(
+    body: &[u8],
+    mode: ReceiverMode,
+) -> Result<ReceiverPayload, InputError> {
     match mode {
         ReceiverMode::JsonLines => decode_otlp_logs(body).map(ReceiverPayload::JsonLines),
-        ReceiverMode::StructuredBatch => decode_otlp_logs_to_batch(body).map(ReceiverPayload::Batch),
+        ReceiverMode::StructuredBatch => {
+            decode_otlp_logs_to_batch(body).map(ReceiverPayload::Batch)
+        }
     }
 }
 
@@ -706,9 +711,7 @@ fn decode_otlp_logs_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
 }
 
 /// Shared conversion: ExportLogsServiceRequest -> newline-delimited JSON bytes.
-fn convert_request_to_json_lines(
-    request: &ExportLogsServiceRequest,
-) -> Vec<u8> {
+fn convert_request_to_json_lines(request: &ExportLogsServiceRequest) -> Vec<u8> {
     let mut out = Vec::new();
 
     for resource_logs in &request.resource_logs {
@@ -831,7 +834,8 @@ fn convert_request_to_batch(request: &ExportLogsServiceRequest) -> Result<Record
                 }
 
                 if !record.severity_text.is_empty() {
-                    builder.append_decoded_str_by_idx(severity_idx, record.severity_text.as_bytes());
+                    builder
+                        .append_decoded_str_by_idx(severity_idx, record.severity_text.as_bytes());
                 }
 
                 if let Some(ref body_val) = record.body {
@@ -875,10 +879,9 @@ fn append_attribute_value(
     match &value.value {
         Some(Value::IntValue(v)) => builder.append_i64_value_by_idx(idx, *v),
         Some(Value::DoubleValue(v)) => builder.append_f64_value_by_idx(idx, *v),
-        Some(Value::BoolValue(v)) => builder.append_decoded_str_by_idx(
-            idx,
-            if *v { b"true" } else { b"false" },
-        ),
+        Some(Value::BoolValue(v)) => {
+            builder.append_decoded_str_by_idx(idx, if *v { b"true" } else { b"false" })
+        }
         Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
         _ => {}
@@ -912,10 +915,9 @@ fn append_any_value_as_string(
             let value = v.to_string();
             builder.append_decoded_str_by_idx(idx, value.as_bytes());
         }
-        Some(Value::BoolValue(v)) => builder.append_decoded_str_by_idx(
-            idx,
-            if *v { b"true" } else { b"false" },
-        ),
+        Some(Value::BoolValue(v)) => {
+            builder.append_decoded_str_by_idx(idx, if *v { b"true" } else { b"false" })
+        }
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
         _ => {}
     }
@@ -1359,7 +1361,10 @@ mod tests {
 
         assert_eq!(legacy.num_columns(), structured.num_columns());
         for idx in 0..legacy.num_columns() {
-            assert_eq!(legacy.schema().field(idx).name(), structured.schema().field(idx).name());
+            assert_eq!(
+                legacy.schema().field(idx).name(),
+                structured.schema().field(idx).name()
+            );
             assert_eq!(
                 column_values(legacy.column(idx).as_ref()),
                 column_values(structured.column(idx).as_ref())

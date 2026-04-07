@@ -17,9 +17,6 @@ use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-// std::time::Instant is used in test helpers (deadline loops, timing assertions).
-#[cfg(test)]
-use std::time::Instant;
 
 #[cfg(any(test, feature = "turmoil"))]
 use bytes::Bytes;
@@ -51,7 +48,7 @@ use logfwd_transform::SqlTransform;
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use tokio_util::sync::CancellationToken;
 
-#[cfg(any(test, feature = "turmoil"))]
+#[cfg(feature = "turmoil")]
 use self::health::{HealthTransitionEvent, reduce_component_health};
 
 // ---------------------------------------------------------------------------
@@ -1155,7 +1152,7 @@ async fn async_input_poll_loop(
     input_index: usize,
 ) {
     let mut buffered_since: Option<tokio::time::Instant> = None;
-    loop {
+    'poll_loop: loop {
         if shutdown.is_cancelled() {
             input.stats.set_health(reduce_component_health(
                 input.stats.health(),
@@ -1201,7 +1198,7 @@ async fn async_input_poll_loop(
                             .await
                             {
                                 if tx.send(msg).await.is_err() {
-                                    return;
+                                    break 'poll_loop;
                                 }
                             }
                             buffered_since = None;
@@ -1217,7 +1214,7 @@ async fn async_input_poll_loop(
                         .await
                         {
                             if tx.send(msg).await.is_err() {
-                                return;
+                                break 'poll_loop;
                             }
                         }
                     }
@@ -1585,7 +1582,6 @@ fn now_nanos() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
     use std::sync::atomic::Ordering;
     // std::time::Instant is cfg-gated in the parent module for turmoil compatibility,
     // but tests need it for timeout deadlines regardless of the turmoil feature flag.
@@ -1923,12 +1919,10 @@ output:
         impl Processor for DropOddProcessor {
             fn process(
                 &mut self,
-                batch: arrow::record_batch::RecordBatch,
+                batch: RecordBatch,
                 _meta: &BatchMetadata,
-            ) -> Result<
-                smallvec::SmallVec<[arrow::record_batch::RecordBatch; 1]>,
-                crate::processor::ProcessorError,
-            > {
+            ) -> Result<smallvec::SmallVec<[RecordBatch; 1]>, crate::processor::ProcessorError>
+            {
                 // Drop rows where seq is odd
                 let seq_array = batch
                     .column_by_name("seq")
@@ -1947,7 +1941,7 @@ output:
                 Ok(smallvec::smallvec![filtered])
             }
 
-            fn flush(&mut self) -> smallvec::SmallVec<[arrow::record_batch::RecordBatch; 1]> {
+            fn flush(&mut self) -> smallvec::SmallVec<[RecordBatch; 1]> {
                 smallvec::SmallVec::new()
             }
 

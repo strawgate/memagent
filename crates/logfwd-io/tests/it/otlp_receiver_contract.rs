@@ -186,12 +186,7 @@ fn otlp_receiver_preserves_semantics_across_json_protobuf_zstd_and_gzip() {
         .write_all(&protobuf_body)
         .expect("gzip write should succeed");
     let gzip_body = encoder.finish().expect("gzip finish should succeed");
-    let status = send_status(
-        &url,
-        &gzip_body,
-        "application/x-protobuf",
-        Some("gzip"),
-    );
+    let status = send_status(&url, &gzip_body, "application/x-protobuf", Some("gzip"));
     assert_eq!(status, 200, "gzip OTLP request should succeed");
     let gzip_row = poll_single_row(&mut receiver, Duration::from_secs(2));
 

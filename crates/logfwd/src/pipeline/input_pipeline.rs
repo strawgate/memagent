@@ -82,7 +82,7 @@ fn io_worker_loop(
 ) {
     let mut buffered_since: Option<Instant> = None;
 
-    loop {
+    'io_loop: loop {
         if shutdown.is_cancelled() {
             input.stats.set_health(reduce_component_health(
                 input.stats.health(),
@@ -130,13 +130,16 @@ fn io_worker_loop(
                             match tx.try_send(chunk) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(chunk)) => {
-                                    tracing::warn!(input = input.source.name(), "input.backpressure");
+                                    tracing::warn!(
+                                        input = input.source.name(),
+                                        "input.backpressure"
+                                    );
                                     metrics.inc_backpressure_stall();
                                     if tx.blocking_send(chunk).is_err() {
-                                        return;
+                                        break 'io_loop;
                                     }
                                 }
-                                Err(mpsc::error::TrySendError::Closed(_)) => return,
+                                Err(mpsc::error::TrySendError::Closed(_)) => break 'io_loop,
                             }
                             buffered_since = None;
                         }
@@ -153,10 +156,10 @@ fn io_worker_loop(
                                 tracing::warn!(input = input.source.name(), "input.backpressure");
                                 metrics.inc_backpressure_stall();
                                 if tx.blocking_send(item).is_err() {
-                                    return;
+                                    break 'io_loop;
                                 }
                             }
-                            Err(mpsc::error::TrySendError::Closed(_)) => return,
+                            Err(mpsc::error::TrySendError::Closed(_)) => break 'io_loop,
                         }
                     }
                     InputEvent::Rotated { .. } => {
@@ -772,18 +775,16 @@ output:
         impl crate::processor::Processor for FailingProcessor {
             fn process(
                 &mut self,
-                _batch: arrow::record_batch::RecordBatch,
+                _batch: RecordBatch,
                 _meta: &logfwd_output::BatchMetadata,
-            ) -> Result<
-                smallvec::SmallVec<[arrow::record_batch::RecordBatch; 1]>,
-                crate::processor::ProcessorError,
-            > {
+            ) -> Result<smallvec::SmallVec<[RecordBatch; 1]>, crate::processor::ProcessorError>
+            {
                 Err(crate::processor::ProcessorError::Transient(
                     "test transient error".to_string(),
                 ))
             }
 
-            fn flush(&mut self) -> smallvec::SmallVec<[arrow::record_batch::RecordBatch; 1]> {
+            fn flush(&mut self) -> smallvec::SmallVec<[RecordBatch; 1]> {
                 smallvec::SmallVec::new()
             }
 

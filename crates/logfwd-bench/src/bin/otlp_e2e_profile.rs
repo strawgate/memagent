@@ -149,7 +149,15 @@ fn run_case(mode: ReceiverMode, case: &Case, iterations: usize, timeout: Duratio
     let metadata = generators::make_metadata();
     let mut totals = Totals::default();
 
-    let scanned_batch = warm_up(mode, &poster, &url, &request_body, case.rows, timeout, &mut input);
+    let scanned_batch = warm_up(
+        mode,
+        &poster,
+        &url,
+        &request_body,
+        case.rows,
+        timeout,
+        &mut input,
+    );
 
     for _ in 0..iterations {
         let t0 = Instant::now();
@@ -309,6 +317,8 @@ fn poll_until_payload(
     let mut backoff = Duration::from_millis(5);
     let max_backoff = Duration::from_millis(200);
     let mut all_lines = Vec::new();
+    let mut all_batches = Vec::new();
+    let mut total_batch_rows = 0usize;
 
     while Instant::now() < deadline {
         for event in input.poll().expect("input poll must succeed") {
@@ -316,11 +326,17 @@ fn poll_until_payload(
                 InputEvent::Data { bytes, .. } => {
                     all_lines.extend_from_slice(&bytes);
                 }
-                InputEvent::Batch { batch, .. } if batch.num_rows() >= expected_rows => {
-                    return ReceiverOutput::Batch(batch);
+                InputEvent::Batch { batch, .. } => {
+                    total_batch_rows += batch.num_rows();
+                    all_batches.push(batch);
+                    if total_batch_rows >= expected_rows {
+                        let schema = all_batches[0].schema();
+                        let batch = arrow::compute::concat_batches(&schema, &all_batches)
+                            .expect("benchmark batches should concatenate");
+                        return ReceiverOutput::Batch(batch);
+                    }
                 }
-                InputEvent::Batch { .. }
-                | InputEvent::Rotated { .. }
+                InputEvent::Rotated { .. }
                 | InputEvent::Truncated { .. }
                 | InputEvent::EndOfFile { .. } => {}
             }
@@ -333,8 +349,9 @@ fn poll_until_payload(
     }
 
     panic!(
-        "timed out waiting for {expected_rows} rows; only got {} lines",
-        newline_count(&all_lines)
+        "timed out waiting for {expected_rows} rows; only got {} lines / {} batch rows",
+        newline_count(&all_lines),
+        total_batch_rows
     );
 }
 

@@ -1,6 +1,6 @@
 use std::future::Future;
-use std::io::Write as _;
 use std::io;
+use std::io::Write as _;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
