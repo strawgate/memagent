@@ -67,6 +67,12 @@ reason = "Control-plane readiness and component-health labeling must stay aligne
 issue = 1306
 
 [[seams]]
+path = "crates/logfwd-io/src/otlp_receiver.rs"
+status = "recommended"
+reason = "The file still mixes HTTP/runtime shell code with pure protojson parsing and escaping helpers; track it explicitly without requiring in-file Kani until the helper seam is isolated further."
+issue = 1484
+
+[[seams]]
 path = "crates/logfwd-io/src/tail.rs"
 status = "required"
 reason = "The EOF emission state machine is a local proof seam despite living in an IO crate."
