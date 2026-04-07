@@ -133,6 +133,11 @@ do not stop at patching the shell. Extract the transition policy into a local pu
 reducer or state module when feasible, then add Kani proofs for single-step invariants
 and proptest sequence coverage for multi-step behavior.
 
+If a review tool or human review finds a state-machine bug in mixed async/runtime code,
+do not stop at patching the shell. Extract the transition policy into a local pure
+reducer or state module when feasible, then add Kani proofs for single-step invariants
+and proptest sequence coverage for multi-step behavior.
+
 ### Running proofs
 
 ```bash
