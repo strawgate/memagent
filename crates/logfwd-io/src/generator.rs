@@ -8,6 +8,7 @@ use std::io;
 use std::io::Write;
 
 use crate::input::{InputEvent, InputSource};
+use logfwd_types::diagnostics::ComponentHealth;
 
 /// Controls the complexity/size of generated lines.
 #[non_exhaustive]
@@ -330,6 +331,12 @@ impl InputSource for GeneratorInput {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn health(&self) -> ComponentHealth {
+        // Generator input has no independent bind/startup/shutdown lifecycle.
+        // It is either idle or emitting synthetic events under pipeline control.
+        ComponentHealth::Healthy
+    }
 }
 
 fn write_json_u64_field(out: &mut Vec<u8>, key: &str, value: u64, first: &mut bool) {
@@ -413,6 +420,12 @@ fn encode_static_field(key: &str, value: &GeneratorAttributeValue) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generator_health_is_explicitly_healthy() {
+        let input = GeneratorInput::new("test", GeneratorConfig::default());
+        assert_eq!(input.health(), ComponentHealth::Healthy);
+    }
 
     #[test]
     fn generates_valid_json_lines() {

@@ -557,8 +557,8 @@ impl DiagnosticsServer {
         Ok(())
     }
 
-    /// Returns 200 `{"status":"ready"}` when at least one pipeline is
-    /// registered and the current explicit component health snapshots are
+    /// Returns a small reasoned readiness snapshot when at least one pipeline
+    /// is registered and the current explicit component health snapshots are
     /// ready. Returns 503 before any pipelines are configured or while a
     /// component is still starting, stopping, stopped, or failed.
     ///
@@ -572,15 +572,24 @@ impl DiagnosticsServer {
     /// the currently wired health sources.
     fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let ready = policy::is_ready(&self.pipelines);
+        let reason = policy::ready_reason(&self.pipelines);
+        let observed_at_unix_ns = now_nanos();
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
         if ready {
-            let resp =
-                tiny_http::Response::from_string(r#"{"status":"ready"}"#).with_header(header);
+            let body = format!(
+                r#"{{"status":"ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
+                reason, observed_at_unix_ns
+            );
+            let resp = tiny_http::Response::from_string(body).with_header(header);
             request.respond(resp)?;
         } else {
-            let resp = tiny_http::Response::from_string(r#"{"status":"not_ready"}"#)
+            let body = format!(
+                r#"{{"status":"not_ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
+                reason, observed_at_unix_ns
+            );
+            let resp = tiny_http::Response::from_string(body)
                 .with_status_code(503)
                 .with_header(header);
             request.respond(resp)?;
@@ -1777,6 +1786,11 @@ mod tests {
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 503, "body: {}", body);
         assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
+        assert!(
+            body.contains(r#""reason":"no_pipelines_registered""#),
+            "body: {}",
+            body
+        );
     }
 
     #[test]
@@ -1797,6 +1811,11 @@ mod tests {
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 200, "body: {}", body);
         assert!(body.contains(r#""status":"ready""#), "body: {}", body);
+        assert!(
+            body.contains(r#""reason":"all_components_healthy""#),
+            "body: {}",
+            body
+        );
     }
 
     #[test]
@@ -1816,6 +1835,68 @@ mod tests {
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 503, "body: {}", body);
         assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
+        assert!(
+            body.contains(r#""reason":"components_starting""#),
+            "body: {}",
+            body
+        );
+    }
+
+    #[test]
+    fn test_ready_endpoint_with_degraded_input_stays_200() {
+        let meter = opentelemetry::global::meter("test");
+        let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
+        let input = pm.add_input("receiver", "tcp");
+        input.set_health(ComponentHealth::Degraded);
+
+        let mut server = DiagnosticsServer::new("127.0.0.1:0");
+        server.add_pipeline(Arc::new(pm));
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/ready");
+        assert_eq!(status, 200, "body: {}", body);
+        assert!(body.contains(r#""status":"ready""#), "body: {}", body);
+        assert!(
+            body.contains(r#""reason":"components_degraded_but_operational""#),
+            "body: {}",
+            body
+        );
+    }
+
+    #[test]
+    fn test_status_endpoint_shows_degraded_input_as_non_blocking() {
+        let meter = opentelemetry::global::meter("test");
+        let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
+        let input = pm.add_input("receiver", "tcp");
+        input.set_health(ComponentHealth::Degraded);
+
+        let mut server = DiagnosticsServer::new("127.0.0.1:0");
+        server.add_pipeline(Arc::new(pm));
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/admin/v1/status");
+        assert_eq!(status, 200, "body: {}", body);
+        assert!(
+            body.contains(r#""ready":{"status":"ready""#),
+            "body: {}",
+            body
+        );
+        assert!(
+            body.contains(r#""component_health":{"status":"degraded","reason":"components_degraded_but_operational","readiness_impact":"non_blocking""#),
+            "body: {}",
+            body
+        );
+        assert!(
+            body.contains(r#""inputs":[{"name":"receiver","type":"tcp","health":"degraded""#),
+            "body: {}",
+            body
+        );
     }
 
     #[test]

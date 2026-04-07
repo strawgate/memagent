@@ -8,6 +8,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use serial_test::serial;
 
+use logfwd_io::diagnostics::ComponentHealth;
 use logfwd_io::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
@@ -45,6 +46,10 @@ impl InputSource for MockSource {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn health(&self) -> ComponentHealth {
+        ComponentHealth::Healthy
     }
 }
 

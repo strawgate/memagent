@@ -162,6 +162,9 @@ The file path is:
 - Rotate, truncate, delete/recreate, and terminal EOF are explicit events.
 - `Truncated` must be emitted before post-truncate data so framing state can be
   cleared safely.
+- Every `InputSource` implementation must define its control-plane `health()`
+  semantics explicitly; input lifecycle truth must not rely on a trait-level
+  default.
 - Only terminal EOF may flush a trailing partial line; transient “no new bytes
   right now” states must not flush buffered partial lines.
 - Tailer watcher/file I/O error bursts that trigger poll backoff should surface
@@ -172,6 +175,10 @@ The file path is:
   budget, and recover to `healthy` after a clean poll.
 - UDP inputs should surface `degraded` when the kernel reports receive-buffer
   pressure (`ENOBUFS`/`ENOMEM`) and recover to `healthy` after a clean poll.
+- `FramedInput` should forward the wrapped input's health rather than inventing
+  its own parallel lifecycle policy.
+- Generator-style inputs with no independent bind/startup/shutdown lifecycle may
+  report steady `healthy`, but that choice must still be explicit in code.
 
 ### Delivery semantics
 
