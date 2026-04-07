@@ -1,237 +1,191 @@
-# logfwd
+# typos
 
-A Rust log forwarder that tails files, parses JSON and Kubernetes CRI logs with portable SIMD, transforms with SQL, and ships to any OTLP-compatible collector — at 1.7 million lines/second on a single ARM64 core.
+> **Source code spell checker**
 
-```
-log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → your collector
-```
+Finds and corrects spelling mistakes among source code:
+- Fast enough to run on monorepos
+- Low false positives so you can run on PRs
 
----
+![Screenshot](./docs/screenshot.png)
 
-## Quick Start
 
-Try logfwd in 60 seconds — no collector, no infrastructure, just a terminal.
+[![Downloads](https://img.shields.io/github/downloads/crate-ci/typos/total.svg)](https://github.com/crate-ci/typos/releases)
+[![codecov](https://codecov.io/gh/crate-ci/typos/branch/master/graph/badge.svg)](https://codecov.io/gh/crate-ci/typos)
+[![Documentation](https://img.shields.io/badge/docs-master-blue.svg)][Documentation]
+![License](https://img.shields.io/crates/l/typos.svg)
+[![Crates Status](https://img.shields.io/crates/v/typos.svg)][Crates.io]
 
-**1. Install**
-
-```bash
-# Download the latest release (macOS Apple Silicon shown — see Install section for all platforms)
-curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd-darwin-arm64 -o logfwd
-chmod +x logfwd
-
-# Or build from source (Rust 1.85+)
-cargo build --release -p logfwd && cp target/release/logfwd .
-```
-
-**2. Generate test data**
-
-```bash
-./logfwd --generate-json 100000 logs.json
-```
-
-**3. Create a pipeline**
-
-```yaml
-# config.yaml
-input:
-  type: file
-  path: logs.json
-  format: json
-
-transform: |
-  SELECT level, message, status, duration_ms
-  FROM logs
-  WHERE level = 'ERROR' AND duration_ms > 50
-
-output:
-  type: stdout
-  format: console
-```
-
-**4. Run it**
-
-```bash
-./logfwd --config config.yaml
-```
-
-You'll see only the records that match your SQL filter:
-
-```
-ERROR  request handled GET /api/v2/products/10049  status=500 duration_ms=92
-ERROR  request handled POST /api/v1/orders/10121  status=503 duration_ms=78
-...
-```
-
-Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/getting-started/quickstart.md) to keep going.
-
----
-
-## Why logfwd?
-
-| What | How |
-|------|-----|
-| **Fast SIMD parsing** | One pass per buffer with portable SIMD — 10 broadcast-compare ops per 64-byte block, runs on x86_64 and ARM64 |
-| **Low-copy pipeline** | Apache Arrow `StringViewArray` stores views into the read buffer — string data isn't copied from scanner to RecordBatch |
-| **SQL transforms** | Every batch runs through a DataFusion SQL query. Filter, reshape, regex-extract, join enrichment tables — standard SQL |
-| **OTLP native** | Encodes directly to OTLP protobuf. Works with any OpenTelemetry Collector, Grafana Alloy, or OTLP-speaking backend |
-| **Kani-verified core** | The framer, aggregator, and OTLP wire-format code are verified with the [Kani model checker](https://github.com/model-checking/kani) — exhaustive bounded proofs that these paths cannot panic, overflow, or produce invalid output |
-| **Single static binary** | One statically-linked file (~15 MB). No JVM, no Python, no Lua, no runtime dependencies |
-
----
-
-## SQL Transforms
-
-The SQL transform is why you'd pick logfwd over a plain forwarder. Every parsed batch becomes a DataFusion table named `logs`.
-
-```sql
--- Forward only errors and slow requests
-SELECT level, message, duration_ms, status
-FROM logs
-WHERE level = 'ERROR' OR duration_ms > 1000
-```
-
-```sql
--- Extract fields with regex, rename columns
-SELECT
-  level,
-  regexp_extract(message, 'request_id=([a-f0-9-]+)', 1) AS request_id,
-  status
-FROM logs
-WHERE status >= 400
-```
-
-Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](book/src/config/sql-transforms.md).
-
----
-
-## Install
-
-```bash
-# Binary (pick your platform)
-#   logfwd-linux-amd64, logfwd-linux-arm64, logfwd-darwin-amd64, logfwd-darwin-arm64
-curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd-linux-amd64 -o logfwd
-chmod +x logfwd
-sudo mv logfwd /usr/local/bin/
-
-# Docker
-docker run --rm -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  ghcr.io/strawgate/memagent:latest --config /etc/logfwd/config.yaml
-
-# From source (requires Rust 1.85+)
-cargo build --release -p logfwd
-```
-
-See [Installation](book/src/getting-started/installation.md) for all platforms and options.
-
----
-
-## Configuration
-
-### Simple — one pipeline
-
-```yaml
-input:
-  type: file
-  path: /var/log/app/*.log
-  format: json
-
-transform: SELECT level, message, status FROM logs WHERE status >= 400
-
-output:
-  type: otlp
-  endpoint: http://otel-collector:4318/v1/logs
-  compression: zstd
-```
-
-### Advanced — multiple named pipelines
-
-```yaml
-pipelines:
-  errors:
-    inputs:
-      - type: file
-        path: /var/log/pods/**/*.log
-        format: cri
-    transform: SELECT * FROM logs WHERE level = 'ERROR'
-    outputs:
-      - type: otlp
-        endpoint: http://otel-collector:4318/v1/logs
-
-  debug:
-    inputs:
-      - type: file
-        path: /var/log/pods/**/*.log
-        format: cri
-    outputs:
-      - type: stdout
-        format: console
-```
-
-See the [Configuration Reference](book/src/config/reference.md) for all YAML fields, input/output types, and enrichment tables.
-
----
-
-## Kubernetes
-
-```bash
-kubectl apply -f deploy/daemonset.yml
-kubectl -n collectors rollout status daemonset/logfwd
-```
-
-Runs one logfwd pod per node, reads all container logs from `/var/log`. Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
-
-See the [Deployment Guide](book/src/deployment/kubernetes.md) for resource sizing, OTLP collector integration, and CRI log format details.
-
----
-
-## Output Destinations
-
-For current output support status, see the canonical tables in the
-[Configuration Reference](book/src/config/reference.md#output-types). The
-README and task-oriented guides intentionally avoid duplicating status claims.
-
----
-
-## CLI Reference
-
-```
-logfwd --config <file>                   Run the pipeline
-logfwd --config <file> --validate        Validate config syntax
-logfwd --config <file> --dry-run         Build pipeline, check SQL, don't start
-logfwd --blackhole [bind_addr]           Start OTLP blackhole receiver for testing
-logfwd --generate-json <n> <file>        Generate synthetic JSON log data
-logfwd --version                         Print version
-```
-
----
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE)
 
 ## Documentation
 
-**Start here by goal**
+- [Installation](#install)
+- [Getting Started](#getting-started)
+  - [False Positives](#false-positives)
+  - [Integrations](#integrations)
+    - [GitHub Action](docs/github-action.md)
+    - [pre-commit](docs/pre-commit.md)
+    - [Custom](#custom)
+  - [Debugging](#debugging)
+- [Reference](docs/reference.md)
+- [FAQ](#faq)
+- [Comparison with other spell checkers](docs/comparison.md)
+- [Projects using typos](https://github.com/crate-ci/typos/wiki)
+- [Benchmarks](benchsuite/runs)
+- [Design](docs/design.md)
+- [Contribute](CONTRIBUTING.md)
+- [CHANGELOG](CHANGELOG.md)
 
-- Not sure where to begin: [Choose the Right Guide](book/src/getting-started/which-guide.md)
-- Run logfwd quickly: [Quick Start](book/src/getting-started/quickstart.md)
-- Build a safer production baseline: [Your First Pipeline](book/src/getting-started/first-pipeline.md)
-- Debug failures: [Troubleshooting](book/src/troubleshooting.md)
+## Install
 
-**User guides** — [book/src/](book/src/)
+[Download](https://github.com/crate-ci/typos/releases) a pre-built binary
+(installable via [gh-install](https://github.com/crate-ci/gh-install)).
 
-| Guide | Description |
-|-------|-------------|
-| [Choose the Right Guide](book/src/getting-started/which-guide.md) | Goal-based chooser for operators, contributors, and evaluators |
-| [Quick Start](book/src/getting-started/quickstart.md) | Working pipeline in 10 minutes with copy/paste commands |
-| [Your First Pipeline](book/src/getting-started/first-pipeline.md) | Production config with monitoring and validation |
-| [Configuration Reference](book/src/config/reference.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
-| [SQL Transforms](book/src/config/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
-| [Deployment](book/src/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |
-| [Troubleshooting](book/src/troubleshooting.md) | Common errors, debug mode, diagnostics API |
+Or use rust to install:
+```console
+$ cargo install typos-cli --locked
+```
 
-**Developer guides**
+Or use [Homebrew](https://brew.sh/) to install:
+```console
+$ brew install typos-cli
+```
 
-| Guide | Description |
-|-------|-------------|
-| [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute — PR process, pre-commit checks |
-| [Architecture](dev-docs/ARCHITECTURE.md) | Pipeline data flow, SIMD stages, crate map |
-| [Design](dev-docs/DESIGN.md) | Vision, target architecture, decision records |
-| [Verification](dev-docs/VERIFICATION.md) | TLA+, Kani, proptest — tool selection, proof status |
+Or use [Conda](https://conda.io/) to install:
+```console
+$ conda install typos
+```
+
+Or use [Pacman](https://wiki.archlinux.org/title/pacman) to install:
+```console
+$ sudo pacman -S typos
+```
+
+## Getting Started
+
+Most commonly, you'll either want to see what typos are available with
+```console
+$ typos
+```
+
+Or have them fixed
+```console
+$ typos --write-changes
+$ typos -w
+```
+If there is any ambiguity (multiple possible corrections), `typos` will just report it to the user and move on.
+
+### False Positives
+
+Sometimes, what looks like a typo is intentional, like with people's names, acronyms, or localized content.
+
+To mark a word or an identifier (grouping of words) as valid, add it to your [`_typos.toml`](docs/reference.md) by declaring itself as the valid spelling:
+```toml
+[default]
+extend-ignore-identifiers-re = [
+    # *sigh* this just isn't worth the cost of fixing
+    "AttributeID.*Supress.*",
+]
+
+[default.extend-identifiers]
+# *sigh* this just isn't worth the cost of fixing
+AttributeIDSupressMenu = "AttributeIDSupressMenu"
+
+[default.extend-words]
+# Don't correct the surname "Teh"
+teh = "teh"
+```
+For more ways to ignore or extend the dictionary with examples, see the [config reference](docs/reference.md).
+
+For cases like localized content, you can disable spell checking of file contents while still checking the file name:
+```toml
+[type.po]
+extend-glob = ["*.po"]
+check-file = false
+```
+(run `typos --type-list` to see configured file types)
+
+If you need some more flexibility, you can completely exclude some files from consideration:
+```toml
+[files]
+extend-exclude = ["localized/*.po"]
+```
+
+### Integrations
+
+- [GitHub Actions](docs/github-action.md)
+- [pre-commit](docs/pre-commit.md)
+- [🐊Putout Processor](https://github.com/putoutjs/putout-processor-typos)
+- [Visual Studio Code](https://github.com/tekumara/typos-vscode)
+- [typos-lsp (Language Server Protocol server)](https://github.com/tekumara/typos-vscode)
+- [GitLab Code Quality](https://github.com/tahv/typos-gitlab-code-quality)
+
+#### Custom
+
+`typos` provides several building blocks for custom native integrations
+- `-` reads from `stdin`, `--write-changes` will be written to `stdout`
+- `--diff` to provide a diff
+- `--format json` to get jsonlines with exit code 0 on no errors, code 2 on typos, anything else is an error.
+
+Examples:
+```console
+$ # Read file from stdin, write corrected version to stdout
+$ typos - --write-changes
+$ # Creates a diff of what would change
+$ typos dir/file --diff
+$ # Fully programmatic control
+$ typos dir/file --format json
+```
+
+### Debugging
+
+You can see what the effective config looks like by running
+```console
+$ typos --dump-config -
+```
+
+You can then see how typos is processing your project with
+```console
+$ typos --files
+$ typos --identifiers
+$ typos --words
+```
+
+If you need to dig in more, you can enable debug logging with `-v`
+
+## FAQ
+
+### Why was ... not corrected?
+
+**Does the file show up in `typos --files`?**
+If not, check your config with `typos --dump-config -`.
+The `[files]` table controls how we walk files.
+If you are using `files.extend-exclude`,
+are you running into [#593](https://github.com/crate-ci/typos/issues/593)?
+If you are using `files.ignore-vcs = true`,
+is the file in your `.gitignore` but git tracks it anyways?
+Prefer allowing the file explicitly (see [#909](https://github.com/crate-ci/typos/issues/909)).
+
+**Does the identifier show up in `typos --identifiers` or the word show up in `typos --words`?**
+If not, it might be subject to one of typos' heuristics for
+detecting non-words (like hashes) or
+unambiguous words (like words after a `\` escape).
+
+If it is showing up, likely `typos` doesn't know about it yet.
+
+`typos` maintains a list of known typo corrections to keep the false positive
+count low so it can safely run unassisted.
+
+This is in contrast to most spell checking UIs people use where there is a
+known list of valid words.  In this case, the spell checker tries to guess your
+intent by finding the closest-looking word.  It then has a gauge for when a
+word isn't close enough and assumes you know best.  The user has the
+opportunity to verify these corrections and explicitly allow or reject them.
+
+For more on the trade offs of these approaches, see [Design](docs/design.md).
+
+- To correct it locally, see also our [False Positives documentation](#false-positives).
+- To contribute your correction, see [Contribute](CONTRIBUTING.md)
+
+[Crates.io]: https://crates.io/crates/typos-cli
+[Documentation]: https://docs.rs/typos
