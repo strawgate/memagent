@@ -99,6 +99,12 @@ pub trait Sink: Send {
 
     /// Gracefully shut down the sink, flushing and releasing resources.
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>>;
+
+    /// Signal that a new batch is starting.
+    ///
+    /// Sinks that track partial retry state (like Fanout) can use this to reset
+    /// their state before the worker pool retry loop begins.
+    fn begin_batch(&mut self) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -133,15 +139,24 @@ pub trait SinkFactory: Send + Sync + 'static {
 // AsyncFanoutSink
 // ---------------------------------------------------------------------------
 
+/// Tracks the progress of a single batch through one child sink.
+#[derive(Clone, Debug, PartialEq)]
+enum ChildState {
+    Pending,
+    Ok,
+    Rejected(String),
+}
+
 /// Multiplexes output to multiple async [`Sink`] instances.
 ///
-/// Sends every batch to **all** child sinks regardless of failures. After all
-/// sinks have been called the worst result is returned using the precedence:
-/// `Rejected > IoError > RetryAfter > Ok`. This ensures that an explicit
-/// rejection is never masked by a later transient I/O error.
+/// Sends every batch to all child sinks. It tracks which children have
+/// successfully processed the current batch to prevent duplicate deliveries on
+/// retry. It also ensures that all children reach a terminal state (`Ok` or
+/// `Rejected`) before returning a terminal result to the worker pool.
 pub struct AsyncFanoutSink {
     name: String,
     sinks: Vec<Box<dyn Sink>>,
+    states: Vec<ChildState>,
 }
 
 impl AsyncFanoutSink {
@@ -152,48 +167,89 @@ impl AsyncFanoutSink {
     pub fn new(sinks: Vec<Box<dyn Sink>>) -> Self {
         let child_names: Vec<&str> = sinks.iter().map(|s| s.name()).collect();
         let name = format!("fanout({})", child_names.join(","));
-        AsyncFanoutSink { name, sinks }
+        let states = vec![ChildState::Pending; sinks.len()];
+        AsyncFanoutSink {
+            name,
+            sinks,
+            states,
+        }
     }
 }
 
 impl Sink for AsyncFanoutSink {
+    fn begin_batch(&mut self) {
+        for state in &mut self.states {
+            *state = ChildState::Pending;
+        }
+        for sink in &mut self.sinks {
+            sink.begin_batch();
+        }
+    }
+
     fn send_batch<'a>(
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
-            // Precedence: Rejected(3) > IoError(2) > RetryAfter(1) > Ok(0).
-            // We track the highest-priority failure seen so far; a later result
-            // can only raise the severity, never lower it.
-            let mut worst: SendResult = SendResult::Ok;
+            let mut any_pending = false;
+            let mut any_io_error = false;
             let mut max_retry: Option<Duration> = None;
-            for sink in &mut self.sinks {
+
+            for (i, sink) in self.sinks.iter_mut().enumerate() {
+                if self.states[i] != ChildState::Pending {
+                    continue;
+                }
+
                 match sink.send_batch(batch, metadata).await {
-                    SendResult::Ok => {}
+                    SendResult::Ok => {
+                        self.states[i] = ChildState::Ok;
+                    }
+                    SendResult::Rejected(reason) => {
+                        self.states[i] = ChildState::Rejected(reason);
+                    }
                     SendResult::RetryAfter(d) => {
+                        any_pending = true;
                         if max_retry.is_none_or(|prev| d > prev) {
                             max_retry = Some(d);
                         }
                     }
-                    // Only overwrite worst if the new result has strictly higher precedence.
-                    SendResult::IoError(e) => {
-                        if !matches!(worst, SendResult::Rejected(_)) {
-                            worst = SendResult::IoError(e);
-                        }
-                    }
-                    SendResult::Rejected(reason) => {
-                        // Rejected is the highest precedence — always overwrite.
-                        worst = SendResult::Rejected(reason);
+                    SendResult::IoError(_) => {
+                        any_pending = true;
+                        any_io_error = true;
                     }
                 }
             }
-            match worst {
-                SendResult::Ok => match max_retry {
+
+            if any_pending {
+                // At least one child still needs retrying.
+                // We must return a retryable error to the worker pool so it keeps driving
+                // the retry loop. Returning a terminal error like Rejected here would
+                // silently drop the batch for the pending children.
+                match max_retry {
                     Some(d) => SendResult::RetryAfter(d),
-                    None => SendResult::Ok,
-                },
-                other => other,
+                    None => {
+                        // We must have seen an IoError if there are pending items but no RetryAfter.
+                        debug_assert!(any_io_error);
+                        SendResult::IoError(io::Error::other("fanout child transient error"))
+                    }
+                }
+            } else {
+                // All children have reached a terminal state (Ok or Rejected).
+                // Return the worst result (Rejected > Ok).
+                let mut first_rejection = None;
+                for state in &self.states {
+                    if let ChildState::Rejected(reason) = state {
+                        first_rejection = Some(reason.clone());
+                        break;
+                    }
+                }
+
+                if let Some(reason) = first_rejection {
+                    SendResult::Rejected(reason)
+                } else {
+                    SendResult::Ok
+                }
             }
         })
     }
@@ -325,7 +381,7 @@ mod verification {
         kani::cover!(true, "all three variants are mutually exclusive");
     }
 
-    /// Regression proof for #1344:
+    /// Regression proof for #1344 and #1233:
     /// the aggregation policy here must reflect `AsyncFanoutSink::send_batch`.
     /// We intentionally avoid modeling retry-loop/backoff behavior because that
     /// logic is implemented elsewhere (worker pool), not in this module.
@@ -348,17 +404,16 @@ mod verification {
             assert!(d.as_millis() as u64 == d1_ms || d.as_millis() as u64 == d2_ms);
         }
 
-        // Any Rejected result dominates RetryAfter.
+        // Pending results (IoError, RetryAfter) dominate terminal (Rejected, Ok)
+        // to prevent partial-delivery bugs.
+        let pending = SendResult::IoError(io::Error::other("io"));
         let rejected = SendResult::Rejected("rejected".to_string());
-        let out = match rejected {
-            SendResult::Rejected(_) => true,
+
+        let out = match (&pending, &rejected) {
+            (SendResult::IoError(_), _) => true,
             _ => false,
         };
-        assert!(out, "Rejected must dominate RetryAfter/Ok");
-
-        // Rejected dominates IoError (not the other way around). (#1468)
-        let io = SendResult::IoError(io::Error::other("io"));
-        assert!(matches!(io, SendResult::IoError(_)));
+        assert!(out, "Pending must dominate Rejected");
     }
 }
 
@@ -522,30 +577,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fanout_rejected_beats_io_error() {
-        // Rejected has higher precedence than IoError; a later IoError must not
-        // overwrite an earlier Rejected.
+    async fn fanout_io_error_beats_rejected_for_retries() {
+        // Pending states (IoError, RetryAfter) must beat Rejected so the worker pool
+        // keeps retrying the partial failure.
         let (s1, _) = FixedSink::new("s1", SendResult::Rejected("explicit reject".into()));
         let (s2, _) = FixedSink::new("s2", SendResult::IoError(io::Error::other("network")));
         let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
 
         let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
         assert!(
-            matches!(result, SendResult::Rejected(_)),
-            "Rejected must beat IoError, got {result:?}"
+            matches!(result, SendResult::IoError(_)),
+            "IoError must beat Rejected to ensure retries, got {result:?}"
         );
     }
 
     #[tokio::test]
-    async fn fanout_io_error_beats_retry() {
+    async fn fanout_does_not_retry_successful_siblings() {
+        let (s1, calls1) = FixedSink::new("s1", SendResult::Ok);
+        let (s2, calls2) = FixedSink::new("s2", SendResult::RetryAfter(Duration::from_secs(1)));
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
+
+        fanout.begin_batch();
+
+        // First attempt
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(matches!(result, SendResult::RetryAfter(_)));
+        assert_eq!(*calls1.lock().unwrap(), 1);
+        assert_eq!(*calls2.lock().unwrap(), 1);
+
+        // Second attempt (simulating worker pool retry)
+        let result2 = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(matches!(result2, SendResult::RetryAfter(_)));
+        // s1 should NOT be called again
+        assert_eq!(*calls1.lock().unwrap(), 1, "s1 must not be retried");
+        assert_eq!(*calls2.lock().unwrap(), 2, "s2 must be retried");
+
+        // Now start a new batch
+        fanout.begin_batch();
+        let result3 = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(matches!(result3, SendResult::RetryAfter(_)));
+        assert_eq!(
+            *calls1.lock().unwrap(),
+            2,
+            "s1 should be called on new batch"
+        );
+        assert_eq!(*calls2.lock().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn fanout_retry_after_beats_io_error() {
         let (s1, _) = FixedSink::new("s1", SendResult::RetryAfter(Duration::from_secs(5)));
         let (s2, _) = FixedSink::new("s2", SendResult::IoError(io::Error::other("net")));
         let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
 
         let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
         assert!(
-            matches!(result, SendResult::IoError(_)),
-            "IoError must beat RetryAfter, got {result:?}"
+            matches!(result, SendResult::RetryAfter(_)),
+            "RetryAfter must beat IoError so server rate limits are respected, got {result:?}"
         );
     }
 
