@@ -14,6 +14,7 @@ members = [
     "crates/logfwd-bench",
     "crates/logfwd-competitive-bench",
     "crates/logfwd-test-utils",
+    "crates/logfwd-ebpf-proto",
 ]
 # default-members: crates that compile without datafusion (~30s vs ~3min).
 # Bare `cargo check/clippy` uses these. Use `--workspace` or `-p logfwd`

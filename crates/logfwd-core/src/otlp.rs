@@ -1221,13 +1221,22 @@ mod verification {
     /// 1. buf.len() == predicted tag_len + val_len
     /// 2. Decoding buf gives back the original field_number (wire_type=0) and value
     /// 3. Both extremes of the constrained field-number range are reachable
+    ///
+    /// field_number <= 16 keeps the tag varint to 1 byte for most values
+    /// while still exercising multi-byte tags (field 16 → tag byte = 128,
+    /// which is 2-byte varint). Previous range <= 1000 caused SAT solver
+    /// timeouts on CI runners (~60 min) because the two decode loops with
+    /// full u64 value create a very large symbolic problem. The 1–16 range
+    /// covers 1-byte and 2-byte tag encodings, which is the interesting
+    /// boundary. Value remains fully symbolic (u64) to verify all 10 varint
+    /// bytes.
     #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(12)]
     fn verify_encode_varint_field() {
         let field_number: u32 = kani::any();
         let value: u64 = kani::any();
-        kani::assume(field_number > 0 && field_number <= 1000);
+        kani::assume(field_number > 0 && field_number <= 16);
 
         let mut buf = Vec::with_capacity(20); // tag max 5 bytes + value max 10 bytes + margin
         encode_varint_field(&mut buf, field_number, value);
@@ -1274,7 +1283,7 @@ mod verification {
         // Property 3: non-vacuity — confirm both extremes of the assumed range
         kani::cover!(field_number == 1 && value == 0, "min field, zero value");
         kani::cover!(
-            field_number == 1000 && value == u64::MAX,
+            field_number == 16 && value == u64::MAX,
             "max field, max value"
         );
     }

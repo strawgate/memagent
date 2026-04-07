@@ -831,33 +831,58 @@ mod verification {
 
         // Guard vacuity for the empty-object comma-strip path (is_empty_obj branch).
         // For a 2-byte msg, is_empty_obj triggers only when msg == b"{}".
+        // The code strips trailing whitespace from prefix before checking for a
+        // trailing comma, so we cover both the direct case (prefix[1] == b',')
+        // and the whitespace-stripped case (prefix[0] == b',' with ws suffix).
         kani::cover!(
             msg[0] == b'{' && msg[1] == b'}' && prefix[1] == b',',
-            "empty-object comma-strip path reachable"
+            "empty-object comma-strip path reachable (direct)"
         );
         kani::cover!(
-            msg[0] == b'{' && !(msg[1] == b'}' && prefix[1] == b','),
+            msg[0] == b'{'
+                && msg[1] == b'}'
+                && prefix[0] == b','
+                && matches!(prefix[1], b' ' | b'\t' | b'\r' | b'\n'),
+            "empty-object comma-strip path reachable (ws-stripped)"
+        );
+        kani::cover!(
+            msg[0] == b'{' && msg[1] != b'}',
             "JSON path without comma-strip reachable"
         );
 
         write_json_line(&msg, Some(&prefix), &mut out);
 
         if msg[0] == b'{' {
-            let strips_trailing_comma = msg[1] == b'}' && prefix[1] == b',';
-
-            // Output should be: { + prefix + msg[1..] + \n, except that the
-            // empty-object path strips a trailing comma from prefix.
-            assert_eq!(out[0], b'{');
-            assert_eq!(out[1], prefix[0]);
-            if strips_trailing_comma {
-                assert_eq!(out[2], msg[1]);
-                assert_eq!(out[3], b'\n');
-                assert_eq!(out.len(), 4);
+            // Mirror the code's prefix_end whitespace-stripping logic.
+            let is_ws = |b: u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n');
+            let prefix_end: usize = if is_ws(prefix[1]) {
+                if is_ws(prefix[0]) { 0 } else { 1 }
             } else {
+                2
+            };
+
+            let is_empty_obj = msg[1] == b'}';
+            let strips_trailing_comma =
+                is_empty_obj && prefix_end > 0 && prefix[prefix_end - 1] == b',';
+
+            // Output: { + (possibly trimmed) prefix + msg[1..] + \n
+            assert_eq!(out[0], b'{');
+
+            if strips_trailing_comma {
+                // Code emits prefix[..prefix_end-1] then prefix[prefix_end..],
+                // then msg[1..], then \n.
+                let trimmed_len = (prefix_end - 1) + (2 - prefix_end);
+                let expected_len = 1 + trimmed_len + 1 + 1; // '{' + prefix parts + msg[1] + '\n'
+                assert_eq!(out.len(), expected_len);
+                assert_eq!(out[out.len() - 1], b'\n');
+                assert_eq!(out[out.len() - 2], msg[1]);
+            } else {
+                // Full prefix emitted: { + prefix[0] + prefix[1] + msg[1] + \n
+                assert_eq!(out.len(), 5);
+                assert_eq!(out[1], prefix[0]);
                 assert_eq!(out[2], prefix[1]);
                 assert_eq!(out[3], msg[1]);
                 assert_eq!(out[4], b'\n');
-                assert_eq!(out.len(), 5);
             }
         } else {
             // Non-JSON: wrapped as {"_raw":"..."}\n — ends with \n

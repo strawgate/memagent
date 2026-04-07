@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[package.metadata.cargo-machete]
+# Documented ignores: prost is required for the generated protobuf types,
+# and logfwd-proto-build is a build dependency utilized in the build script.
+ignored = ["logfwd-proto-build", "prost"]
+
 [lib]
 doctest = false
 

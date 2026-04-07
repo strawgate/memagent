@@ -2537,8 +2537,6 @@ dependencies = [
  "fastrand",
  "glob",
  "globset",
- "hyper",
- "hyper-util",
  "libc",
  "logfwd-arrow",
  "logfwd-core",
@@ -2556,9 +2554,7 @@ dependencies = [
  "sonic-rs",
  "stats_alloc",
  "tempfile",
- "tiny_http",
  "tokio",
- "tower-http",
  "zstd",
 ]
 
@@ -2597,7 +2593,6 @@ dependencies = [
  "criterion",
  "logfwd-arrow",
  "logfwd-test-utils",
- "logfwd-types",
  "memchr",
  "memmap2",
  "proptest",
@@ -2605,6 +2600,10 @@ dependencies = [
  "tempfile",
  "wide",
 ]
+
+[[package]]
+name = "logfwd-ebpf-proto"
+version = "0.1.0"
 
 [[package]]
 name = "logfwd-io"
