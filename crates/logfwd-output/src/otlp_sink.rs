@@ -144,6 +144,26 @@ impl OtlpSink {
         );
     }
 
+    /// Benchmark/reference path: encode only the concatenated LogRecord payloads using the
+    /// handwritten row encoder.
+    pub fn encode_rows_only_for_bench(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) {
+        self.encode_rows_only_with_row_encoder(batch, metadata, encode_row_as_log_record);
+    }
+
+    /// Benchmark/reference path: encode only the concatenated LogRecord payloads using the
+    /// generated fast row encoder.
+    pub fn encode_rows_only_generated_fast_for_bench(
+        &mut self,
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+    ) {
+        self.encode_rows_only_with_row_encoder(
+            batch,
+            metadata,
+            generated::encode_row_as_log_record_fast_v1,
+        );
+    }
+
     fn encode_batch_with_row_encoder(
         &mut self,
         batch: &RecordBatch,
@@ -278,6 +298,39 @@ impl OtlpSink {
                 otlp::SCOPE_LOGS_LOG_RECORDS,
                 &records_buf[start..end],
             );
+        }
+    }
+
+    fn encode_rows_only_with_row_encoder(
+        &mut self,
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+        mut encode_row: impl FnMut(&BatchColumns<'_>, usize, &BatchMetadata, &mut Vec<u8>),
+    ) {
+        self.encoder_buf.clear();
+        let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return;
+        }
+
+        let normalized;
+        let batch = if batch
+            .schema()
+            .fields()
+            .iter()
+            .any(|f| matches!(f.data_type(), DataType::Struct(_)))
+        {
+            normalized = normalize_conflict_columns(batch.clone());
+            &normalized
+        } else {
+            batch
+        };
+
+        let columns = resolve_batch_columns(batch);
+        self.encoder_buf.reserve(num_rows * 128);
+
+        for row in 0..num_rows {
+            encode_row(&columns, row, metadata, &mut self.encoder_buf);
         }
     }
 

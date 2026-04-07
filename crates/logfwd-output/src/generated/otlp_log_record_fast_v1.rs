@@ -14,6 +14,7 @@ use logfwd_core::otlp::{
 };
 
 /// Generated v1 OTLP LogRecord encoder.
+#[inline(always)]
 pub(super) fn encode_row_as_log_record_fast_v1(
     columns: &BatchColumns<'_>,
     row: usize,

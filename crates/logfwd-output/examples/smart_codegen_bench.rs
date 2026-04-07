@@ -660,6 +660,30 @@ fn main() {
             },
         );
 
+        sink.encode_rows_only_for_bench(batch, &metadata);
+        let manual_rows_bytes = sink.encoded_payload().len();
+        run(
+            &format!("otlp rows manual {name}"),
+            iterations,
+            manual_rows_bytes,
+            || {
+                sink.encode_rows_only_for_bench(batch, &metadata);
+                black_box(sink.encoded_payload());
+            },
+        );
+
+        sink.encode_rows_only_generated_fast_for_bench(batch, &metadata);
+        let generated_fast_rows_bytes = sink.encoded_payload().len();
+        run(
+            &format!("otlp rows generated fast {name}"),
+            iterations,
+            generated_fast_rows_bytes,
+            || {
+                sink.encode_rows_only_generated_fast_for_bench(batch, &metadata);
+                black_box(sink.encoded_payload());
+            },
+        );
+
         let naive = build_generated_request_naive(batch, &metadata);
         let naive_bytes = naive.encoded_len();
         run(
