@@ -871,6 +871,10 @@ impl Config {
                             )));
                         }
                         if let Some(generator) = &input.generator {
+                            let is_record_profile = matches!(
+                                generator.profile,
+                                Some(GeneratorProfileConfig::Record)
+                            );
                             if generator.attributes.keys().any(|key| key.trim().is_empty()) {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': generator.attributes keys must not be empty"
@@ -883,6 +887,15 @@ impl Config {
                             {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': generator.attributes float values must be finite"
+                                )));
+                            }
+                            if !is_record_profile
+                                && (!generator.attributes.is_empty()
+                                    || generator.sequence.is_some()
+                                    || generator.event_created_unix_nano_field.is_some())
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': generator.attributes, generator.sequence, and generator.event_created_unix_nano_field require generator.profile=record"
                                 )));
                             }
                             if let Some(sequence) = &generator.sequence {
@@ -2987,6 +3000,26 @@ pipelines:
             err.to_string()
                 .contains("must not duplicate a generator.attributes key"),
             "expected duplicate generated field rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_input_rejects_record_fields_without_record_profile() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          attributes:
+            benchmark_id: run-123
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("require generator.profile=record"),
+            "expected record profile requirement rejection: {err}"
         );
     }
 
