@@ -538,25 +538,18 @@ impl Pipeline {
     /// and the provided sink.
     #[cfg(feature = "turmoil")]
     pub fn for_simulation(name: &str, sink: Box<dyn logfwd_output::Sink>) -> Self {
-        use logfwd_arrow::scanner::Scanner;
-        use logfwd_core::scan_config::ScanConfig;
-
-        let scan_config = ScanConfig::default();
-        let scanner = Scanner::new(scan_config);
-        let transform = SqlTransform::new("SELECT * FROM logs").expect("default SQL");
         let meter = opentelemetry::global::meter("test");
         let metrics = Arc::new(PipelineMetrics::new(name, "SELECT * FROM logs", &meter));
         let factory = Arc::new(OnceAsyncFactory::new(name.to_string(), sink));
         let pool = OutputWorkerPool::new(factory, 1, Duration::MAX, Arc::clone(&metrics));
 
+        // Start with empty inputs and input_transforms so that each with_input()
+        // call adds exactly one entry to both, keeping input_index in sync with
+        // the transform and accumulator vectors in run_async.
         Pipeline {
             name: name.to_string(),
             inputs: vec![],
-            input_transforms: vec![InputTransform {
-                scanner,
-                transform,
-                input_name: "simulation".to_string(),
-            }],
+            input_transforms: vec![],
             processors: vec![],
             pool,
             metrics,
@@ -580,24 +573,17 @@ impl Pipeline {
         factory: Arc<dyn SinkFactory>,
         max_workers: usize,
     ) -> Self {
-        use logfwd_arrow::scanner::Scanner;
-        use logfwd_core::scan_config::ScanConfig;
-
-        let scan_config = ScanConfig::default();
-        let scanner = Scanner::new(scan_config);
-        let transform = SqlTransform::new("SELECT * FROM logs").expect("default SQL");
         let meter = opentelemetry::global::meter("test");
         let metrics = Arc::new(PipelineMetrics::new(name, "SELECT * FROM logs", &meter));
         let pool = OutputWorkerPool::new(factory, max_workers, Duration::MAX, Arc::clone(&metrics));
 
+        // Start with empty inputs and input_transforms so that each with_input()
+        // call adds exactly one entry to both, keeping input_index in sync with
+        // the transform and accumulator vectors in run_async.
         Pipeline {
             name: name.to_string(),
             inputs: vec![],
-            input_transforms: vec![InputTransform {
-                scanner,
-                transform,
-                input_name: "simulation".to_string(),
-            }],
+            input_transforms: vec![],
             processors: vec![],
             pool,
             metrics,
@@ -729,25 +715,11 @@ impl Pipeline {
                     break;
                 }
 
-                msg = rx.recv() => {
-                    match msg {
-                        Some(ChannelMsg::Data { bytes, checkpoints, queued_at, input_index }) => {
-                            if let AccumulatorAction::Flush { data, checkpoints, queued_at, .. } =
-                                accumulators[input_index].ingest(bytes, checkpoints, queued_at)
-                            {
-                                self.metrics.inc_flush_by_size();
-                                // Do NOT reset flush_interval here. With per-input accumulators,
-                                // flush_interval is shared across all inputs. Resetting it on a
-                                // size-triggered flush from one hot input would prevent the
-                                // periodic tick from ever firing for quieter inputs, leaving
-                                // their partial batches in the accumulator until shutdown.
-                                self.flush_batch_from(data, checkpoints, "size", queued_at, input_index).await;
-                            }
-                        }
-                        None => break,
-                    }
-                }
-
+                // Flush timer fires before data ingestion in the biased ordering so that
+                // a hot input constantly sending messages cannot starve the periodic
+                // flush check for quieter inputs. Without this, low-volume inputs could
+                // have their partial batches held past batch_timeout if rx.recv() is
+                // always ready.
                 _ = flush_interval.tick() => {
                     for (idx, acc) in accumulators.iter_mut().enumerate() {
                         if let AccumulatorAction::Flush { data, checkpoints, queued_at, .. } =
@@ -787,6 +759,25 @@ impl Pipeline {
                                 tracing::warn!(error = %e, "processor error during heartbeat");
                             }
                         }
+                    }
+                }
+
+                msg = rx.recv() => {
+                    match msg {
+                        Some(ChannelMsg::Data { bytes, checkpoints, queued_at, input_index }) => {
+                            if let AccumulatorAction::Flush { data, checkpoints, queued_at, .. } =
+                                accumulators[input_index].ingest(bytes, checkpoints, queued_at)
+                            {
+                                self.metrics.inc_flush_by_size();
+                                // Do NOT reset flush_interval here. With per-input accumulators,
+                                // flush_interval is shared across all inputs. Resetting it on a
+                                // size-triggered flush from one hot input would prevent the
+                                // periodic tick from ever firing for quieter inputs, leaving
+                                // their partial batches in the accumulator until shutdown.
+                                self.flush_batch_from(data, checkpoints, "size", queued_at, input_index).await;
+                            }
+                        }
+                        None => break,
                     }
                 }
             }
