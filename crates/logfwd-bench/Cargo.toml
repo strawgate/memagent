@@ -62,6 +62,10 @@ name = "output_encode"
 harness = false
 
 [[bench]]
+name = "otap_proto"
+harness = false
+
+[[bench]]
 name = "full_chain"
 harness = false
 

@@ -258,6 +258,11 @@ impl OtlpSink {
             );
         }
     }
+
+    /// Returns the raw encoded OTLP protobuf payload produced by [`Self::encode_batch`].
+    pub fn encoded_payload(&self) -> &[u8] {
+        &self.encoder_buf
+    }
 }
 
 impl OtlpSink {
