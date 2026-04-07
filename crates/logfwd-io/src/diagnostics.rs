@@ -456,12 +456,14 @@ impl DiagnosticsServer {
     /// Spawn the server on a background thread. Binds synchronously before
     /// returning so that port-in-use errors are reported at startup.
     ///
-    /// Returns `(handle, bound_addr)` on success. `bound_addr` reflects the
-    /// actual address after OS port assignment (useful when `bind_addr` uses
-    /// port 0). Returns an `io::Error` on bind failure.
+    /// Returns the bound address on success. The address reflects the actual
+    /// OS-assigned port (useful when `bind_addr` uses port 0). Returns an
+    /// `io::Error` on bind failure.
     pub fn start(&mut self) -> io::Result<std::net::SocketAddr> {
-        let server = Arc::new(tiny_http::Server::http(&self.bind_addr)
-            .map_err(|e| io::Error::other(e.to_string()))?);
+        let server = Arc::new(
+            tiny_http::Server::http(&self.bind_addr)
+                .map_err(|e| io::Error::other(e.to_string()))?,
+        );
         self.server = Some(Arc::clone(&server));
         self.shutdown.store(false, Ordering::Relaxed);
         let bound_addr = server
@@ -497,7 +499,9 @@ impl DiagnosticsServer {
 
         let handle = thread::spawn(move || {
             while !shutdown_clone.load(Ordering::Relaxed) {
-                if let Ok(Some(request)) = server_clone.recv_timeout(std::time::Duration::from_millis(100)) {
+                if let Ok(Some(request)) =
+                    server_clone.recv_timeout(std::time::Duration::from_millis(100))
+                {
                     let _ = handler.handle_request(request);
                 }
             }
@@ -1155,7 +1159,6 @@ impl DiagnosticsServer {
         }
     }
 }
-
 
 impl Drop for DiagnosticsServer {
     fn drop(&mut self) {
@@ -1896,7 +1899,7 @@ mod tests {
 
         let mut server = DiagnosticsServer::new("127.0.0.1:0");
         server.add_pipeline(Arc::new(pm));
-        let (_handle, addr) = server.start().expect("server bind failed");
+        let addr = server.start().expect("server bind failed");
         let port = addr.port();
 
         thread::sleep(std::time::Duration::from_millis(100));
@@ -1920,7 +1923,7 @@ mod tests {
 
         let mut server = DiagnosticsServer::new("127.0.0.1:0");
         server.add_pipeline(Arc::new(pm));
-        let (_handle, addr) = server.start().expect("server bind failed");
+        let addr = server.start().expect("server bind failed");
         let port = addr.port();
 
         thread::sleep(std::time::Duration::from_millis(100));
