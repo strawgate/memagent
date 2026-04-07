@@ -1081,7 +1081,12 @@ impl Config {
                         // Parquet output not yet implemented
                     }
                     OutputType::Http => {
-                        unreachable!("http outputs are rejected before per-type validation")
+                        // Defensive: Http is rejected above, but guard here so
+                        // any future refactor that reorders validation never
+                        // reaches sink construction via a silent fall-through.
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': http output type is not yet implemented",
+                        )));
                     }
                 }
 
