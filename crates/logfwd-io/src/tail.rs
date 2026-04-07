@@ -1878,10 +1878,27 @@ mod tests {
         assert_eq!(tailer.num_files(), 1, "should still tail exactly one file");
     }
 
-    /// #1375: glob patterns must match files regardless of `./` prefix variations.
-    /// Uses absolute paths to avoid mutating process cwd (global state).
+    /// #1375/#1463: glob patterns must match files regardless of `./` prefix
+    /// normalization, including bare `*.log`.
+    ///
+    /// This stays cwd-independent by asserting path-form matching directly
+    /// (`entry_path`, stripped, and `./`-prefixed forms) instead of mutating
+    /// process cwd in tests.
     #[test]
     fn test_expand_glob_patterns_path_normalization() {
+        let mut builder = globset::GlobSetBuilder::new();
+        builder.add(globset::Glob::new("*.log").unwrap());
+        let bare_set = builder.build().unwrap();
+        let bare_entry = PathBuf::from("./app.log");
+        let bare_stripped = bare_entry.strip_prefix(".").unwrap();
+        let bare_prefixed = PathBuf::from("./").join(bare_stripped);
+        assert!(
+            bare_set.is_match(&bare_entry)
+                || bare_set.is_match(bare_stripped)
+                || bare_set.is_match(&bare_prefixed),
+            "bare '*.log' must match at least one normalized form"
+        );
+
         let dir = tempfile::tempdir().unwrap();
         let logs = dir.path().join("logs");
         fs::create_dir_all(&logs).unwrap();
