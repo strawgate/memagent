@@ -133,15 +133,14 @@ The required merge gate is the `CI conclusion` job, which currently depends on
 `Verification guardrail`, `lint`, `test-linux`, and `build-check`. A PR with a
 red required check is not mergeable.
 
-Some other jobs, including macOS coverage and heavier verification jobs such as
-Kani or TLC, may be conditional based on paths, labels, or event type. Do not
-assume they always ran; first confirm whether they were expected to run in the
-current CI context.
+Some other jobs, including the Linux-only `Code Coverage` job, the conditional
+`Test (macOS)` job, and heavier verification jobs such as Kani or TLC, may be
+conditional based on paths, labels, or event type. Do not assume they always
+ran; first confirm whether they were expected to run in the current CI context.
 
 If CI is red, identify the specific failing job from the CI output and ask the
 author to fix it. Do not suggest merging with a failing required job on the
-grounds that "it's probably flaky" — investigate first. macOS CI disables
-sccache (known reliability issue); Linux CI uses sccache. If a test passes on
+grounds that "it's probably flaky" — investigate first. If a test passes on
 Linux but fails on macOS, it is likely a target-specific SIMD path, a
 filesystem case-sensitivity issue, or a timing-dependent test.
 

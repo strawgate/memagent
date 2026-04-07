@@ -529,7 +529,7 @@ server:
   metrics_endpoint: ${METRICS_PUSH_URL}
 ```
 
-If the variable is not set, the placeholder is left as-is (no error).
+If the variable is not set, config loading fails fast with a validation error.
 
 ---
 
