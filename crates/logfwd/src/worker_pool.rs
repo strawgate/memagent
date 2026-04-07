@@ -61,6 +61,7 @@ use self::health::{
 const DRAIN_CANCEL_GRACE: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const DRAIN_CANCEL_GRACE: Duration = Duration::from_millis(50);
+const MAX_REJECTION_REASON_BYTES: usize = 256;
 
 // ---------------------------------------------------------------------------
 // Public message types
@@ -90,12 +91,51 @@ pub struct WorkItem {
 }
 
 /// Result from a worker after processing one [`WorkItem`].
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DeliveryOutcome {
+    /// The batch was delivered successfully.
+    Delivered,
+    /// The sink rejected the batch permanently.
+    Rejected { reason: String },
+    /// Retries were exhausted before delivery could succeed.
+    RetryExhausted,
+    /// A hard per-batch timeout elapsed while sending.
+    TimedOut,
+    /// The pool was drained before this item could be delivered.
+    PoolClosed,
+    /// The selected worker channel closed before the item could be enqueued.
+    WorkerChannelClosed,
+    /// No worker could be created or selected for this item.
+    NoWorkersAvailable,
+    /// Catch-all for future sink result variants.
+    InternalFailure,
+}
+
+impl DeliveryOutcome {
+    /// Returns `true` if this outcome represents successful delivery to the sink.
+    pub const fn is_delivered(&self) -> bool {
+        matches!(self, Self::Delivered)
+    }
+}
+
+fn bound_rejection_reason(mut reason: String) -> String {
+    if reason.len() <= MAX_REJECTION_REASON_BYTES {
+        return reason;
+    }
+    let mut boundary = MAX_REJECTION_REASON_BYTES;
+    while boundary > 0 && !reason.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    reason.truncate(boundary);
+    reason.push_str("...");
+    reason
+}
+
 pub struct AckItem {
     /// The tickets from the corresponding `WorkItem`, plus delivery outcome.
     pub tickets: Vec<BatchTicket<Sending, u64>>,
-    /// `true` if the batch was successfully delivered, `false` otherwise
-    /// (permanent rejection, timeout, or panic recovery).
-    pub success: bool,
+    /// Delivery outcome from the worker/pool.
+    pub outcome: DeliveryOutcome,
     /// Passed through from WorkItem for metrics recording.
     pub num_rows: u64,
     /// When the corresponding WorkItem was submitted.
@@ -377,7 +417,7 @@ impl OutputWorkerPool {
                 .ack_tx
                 .send(AckItem {
                     tickets: item.tickets,
-                    success: false,
+                    outcome: DeliveryOutcome::PoolClosed,
                     num_rows: item.num_rows,
                     submitted_at: item.submitted_at,
                     scan_ns: item.scan_ns,
@@ -447,7 +487,7 @@ impl OutputWorkerPool {
                     .ack_tx
                     .send(AckItem {
                         tickets: item.tickets,
-                        success: false,
+                        outcome: DeliveryOutcome::WorkerChannelClosed,
                         num_rows: item.num_rows,
                         submitted_at: item.submitted_at,
                         scan_ns: item.scan_ns,
@@ -479,7 +519,7 @@ impl OutputWorkerPool {
                 .ack_tx
                 .send(AckItem {
                     tickets: item.tickets,
-                    success: false,
+                    outcome: DeliveryOutcome::NoWorkersAvailable,
                     num_rows: item.num_rows,
                     submitted_at: item.submitted_at,
                     scan_ns: item.scan_ns,
@@ -691,7 +731,7 @@ async fn worker_task(
                             cmp_bytes = tracing::field::Empty,
                             resp_bytes = tracing::field::Empty,
                         );
-                        let (success, send_latency_ns, retries) =
+                        let (outcome, send_latency_ns, retries) =
                             process_item(id, &mut *sink, &output_health, batch, &metadata, max_retry_delay)
                         .instrument(output_span.clone())
                         .await;
@@ -701,26 +741,25 @@ async fn worker_task(
                         // ack select loop, which can be starved by flush_batch.await blocking.
                         metrics.finish_active_batch(batch_id);
                         drop(span);
-                        if ack_tx
-                            .send(AckItem {
-                                tickets,
-                                success,
-                                num_rows,
-                                submitted_at,
-                                scan_ns,
-                                transform_ns,
-                                output_ns,
-                                queue_wait_ns,
-                                send_latency_ns,
-                                batch_id,
-                                output_name: sink.name().to_string(),
-                            })
-                            .is_err()
-                        {
+                        let ack = AckItem {
+                            tickets,
+                            outcome,
+                            num_rows,
+                            submitted_at,
+                            scan_ns,
+                            transform_ns,
+                            output_ns,
+                            queue_wait_ns,
+                            send_latency_ns,
+                            batch_id,
+                            output_name: sink.name().to_string(),
+                        };
+                        if let Err(send_err) = ack_tx.send(ack) {
+                            let lost_ack = send_err.0;
                             tracing::warn!(
                                 worker_id = id,
-                                num_rows,
-                                success,
+                                num_rows = lost_ack.num_rows,
+                                "outcome" = ?lost_ack.outcome,
                                 "worker: ack channel closed, ack lost"
                             );
                         }
@@ -752,7 +791,7 @@ async fn recv_with_idle_timeout(
 
 /// Process one batch with retry on `RetryAfter` and server errors.
 ///
-/// Returns `(success, send_latency_ns, retries)` where `send_latency_ns` is
+/// Returns `(outcome, send_latency_ns, retries)` where `send_latency_ns` is
 /// cumulative wall time inside `sink.send_batch()` across all attempts
 /// (excludes backoff sleep).
 async fn process_item(
@@ -762,7 +801,7 @@ async fn process_item(
     batch: RecordBatch,
     metadata: &BatchMetadata,
     max_retry_delay: Duration,
-) -> (bool, u64, usize) {
+) -> (DeliveryOutcome, u64, usize) {
     sink.begin_batch();
 
     const MAX_RETRIES: usize = 3; // 1 initial + 3 retries = 4 total attempts
@@ -798,16 +837,22 @@ async fn process_item(
                     "worker_pool: batch send timed out"
                 );
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
-                return (false, send_latency_ns, retries_count);
+                return (DeliveryOutcome::TimedOut, send_latency_ns, retries_count);
             }
             Ok(SendResult::Ok) => {
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::DeliverySucceeded);
-                return (true, send_latency_ns, retries_count);
+                return (DeliveryOutcome::Delivered, send_latency_ns, retries_count);
             }
             Ok(SendResult::Rejected(reason)) => {
                 tracing::warn!(worker_id, %reason, "worker_pool: batch rejected");
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
-                return (false, send_latency_ns, retries_count);
+                return (
+                    DeliveryOutcome::Rejected {
+                        reason: bound_rejection_reason(reason),
+                    },
+                    send_latency_ns,
+                    retries_count,
+                );
             }
             Ok(SendResult::RetryAfter(retry_dur)) => {
                 // Server specified delay — consume a backoff slot but use
@@ -819,7 +864,11 @@ async fn process_item(
                         "worker_pool: RetryAfter exceeded max retries"
                     );
                     output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
-                    return (false, send_latency_ns, retries_count);
+                    return (
+                        DeliveryOutcome::RetryExhausted,
+                        send_latency_ns,
+                        retries_count,
+                    );
                 }
                 retries_count += 1;
                 let sleep_for = retry_dur.min(max_retry_delay);
@@ -847,13 +896,21 @@ async fn process_item(
                         "worker_pool: gave up after retries"
                     );
                     output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
-                    return (false, send_latency_ns, retries_count);
+                    return (
+                        DeliveryOutcome::RetryExhausted,
+                        send_latency_ns,
+                        retries_count,
+                    );
                 }
             },
             // Future SendResult variants (#[non_exhaustive]) — treat as failure.
             Ok(_) => {
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
-                return (false, send_latency_ns, retries_count);
+                return (
+                    DeliveryOutcome::InternalFailure,
+                    send_latency_ns,
+                    retries_count,
+                );
             }
         }
     }
@@ -1120,6 +1177,20 @@ mod tests {
     // -----------------------------------------------------------------------
     // Pure dispatch_step tests (no async required)
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn rejection_reason_bound_keeps_short_messages() {
+        let reason = "bad request".to_string();
+        assert_eq!(bound_rejection_reason(reason.clone()), reason);
+    }
+
+    #[test]
+    fn rejection_reason_bound_truncates_long_messages() {
+        let reason = "x".repeat(MAX_REJECTION_REASON_BYTES + 32);
+        let bounded = bound_rejection_reason(reason);
+        assert!(bounded.ends_with("..."));
+        assert!(bounded.len() <= MAX_REJECTION_REASON_BYTES + 3);
+    }
 
     #[test]
     fn dispatch_empty_pool_spawns() {
@@ -1591,7 +1662,7 @@ mod tests {
 
         let ack = pool.ack_rx_mut().try_recv();
         assert!(ack.is_ok(), "expected an ack item");
-        assert!(ack.unwrap().success);
+        assert_eq!(ack.unwrap().outcome, DeliveryOutcome::Delivered);
 
         pool.drain(Duration::from_secs(5)).await;
     }
@@ -1612,7 +1683,11 @@ mod tests {
 
         let ack = pool.ack_rx_mut().try_recv();
         assert!(ack.is_ok(), "expected an ack item after retries exhausted");
-        assert!(!ack.unwrap().success, "ack should indicate failure");
+        assert_eq!(
+            ack.unwrap().outcome,
+            DeliveryOutcome::RetryExhausted,
+            "ack should report retries exhausted"
+        );
 
         pool.drain(Duration::from_secs(5)).await;
     }
@@ -1716,7 +1791,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(80)).await;
         let ack = pool.ack_rx_mut().try_recv().expect("expected ack item");
-        assert!(ack.success);
+        assert_eq!(ack.outcome, DeliveryOutcome::Delivered);
         assert_eq!(out_stats.health(), ComponentHealth::Healthy);
 
         pool.drain(Duration::from_secs(5)).await;
@@ -1738,7 +1813,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         let ack = pool.ack_rx_mut().try_recv().expect("expected ack item");
-        assert!(!ack.success);
+        assert_eq!(
+            ack.outcome,
+            DeliveryOutcome::Rejected {
+                reason: "bad request".to_string()
+            }
+        );
         assert_eq!(out_stats.health(), ComponentHealth::Failed);
 
         pool.drain(Duration::from_secs(5)).await;
@@ -1757,7 +1837,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let ack = pool.ack_rx_mut().try_recv().expect("expected rejected ack");
-        assert!(!ack.success);
+        assert_eq!(ack.outcome, DeliveryOutcome::NoWorkersAvailable);
         assert_eq!(out_stats.health(), ComponentHealth::Failed);
     }
 

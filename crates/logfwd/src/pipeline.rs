@@ -3,6 +3,7 @@
 //! Single thread per pipeline. All components are already built and tested;
 //! this module wires them together.
 
+mod checkpoint_policy;
 mod health;
 
 use std::collections::HashMap;
@@ -44,6 +45,7 @@ use logfwd_transform::SqlTransform;
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use tokio_util::sync::CancellationToken;
 
+use self::checkpoint_policy::{TicketDisposition, default_ticket_disposition};
 use self::health::{HealthTransitionEvent, reduce_component_health};
 
 // ---------------------------------------------------------------------------
@@ -1036,7 +1038,7 @@ impl Pipeline {
         // Handle zero-row scan results. Still ack tickets — the input bytes
         // were consumed. Without this, filtered data causes infinite re-read.
         if batch.num_rows() == 0 {
-            self.ack_all_tickets(sending, true);
+            self.ack_all_tickets(sending, TicketDisposition::Ack);
             // Record batch with 0 rows so batches_total and scan timing are tracked.
             self.metrics
                 .record_batch(0, scan_elapsed.as_nanos() as u64, 0, 0);
@@ -1065,7 +1067,7 @@ impl Pipeline {
                 tracing::warn!(error = %e, "pipeline: transform error (batch dropped)");
                 tracing::Span::current().record("errors", 1u64);
                 // Reject tickets — transform failed, data not delivered.
-                self.ack_all_tickets(sending, false);
+                self.ack_all_tickets(sending, TicketDisposition::Reject);
                 self.metrics.finish_active_batch(batch_id);
                 return;
             }
@@ -1089,19 +1091,19 @@ impl Pipeline {
                 Ok(batches) => batches,
                 Err(crate::processor::ProcessorError::Transient(e)) => {
                     tracing::warn!(error = %e, "transient processor error, rejecting batch");
-                    self.ack_all_tickets(sending, false);
+                    self.ack_all_tickets(sending, TicketDisposition::Reject);
                     self.metrics.finish_active_batch(batch_id);
                     return;
                 }
                 Err(crate::processor::ProcessorError::Permanent(e)) => {
                     tracing::error!(error = %e, "permanent processor error, dropping batch");
-                    self.ack_all_tickets(sending, true); // ack but don't forward
+                    self.ack_all_tickets(sending, TicketDisposition::Ack); // ack but don't forward
                     self.metrics.finish_active_batch(batch_id);
                     return;
                 }
                 Err(crate::processor::ProcessorError::Fatal(e)) => {
                     tracing::error!(error = %e, "fatal processor error, shutting down");
-                    self.ack_all_tickets(sending, false);
+                    self.ack_all_tickets(sending, TicketDisposition::Reject);
                     self.metrics.finish_active_batch(batch_id);
                     // TODO(#1404): trigger pipeline shutdown on fatal processor error
                     return;
@@ -1129,7 +1131,7 @@ impl Pipeline {
                 !self.processors.iter().any(|p| p.is_stateful()),
                 "ACKing on empty output is unsafe when stateful processors are present"
             );
-            self.ack_all_tickets(sending, true);
+            self.ack_all_tickets(sending, TicketDisposition::Ack);
             self.metrics.record_batch(
                 0,
                 scan_elapsed.as_nanos() as u64,
@@ -1156,7 +1158,7 @@ impl Pipeline {
                         error = %e,
                         "processor chain returned incompatible schemas; rejecting batch"
                     );
-                    self.ack_all_tickets(sending, false);
+                    self.ack_all_tickets(sending, TicketDisposition::Reject);
                     self.metrics.finish_active_batch(batch_id);
                     return;
                 }
@@ -1202,7 +1204,7 @@ impl Pipeline {
             .inflight_batches
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         self.metrics.finish_active_batch(ack.batch_id);
-        if ack.success {
+        if ack.outcome.is_delivered() {
             self.metrics
                 .record_batch(ack.num_rows, ack.scan_ns, ack.transform_ns, ack.output_ns);
             self.metrics.record_queue_wait(ack.queue_wait_ns);
@@ -1213,7 +1215,7 @@ impl Pipeline {
             self.metrics.inc_dropped_batch();
             self.metrics.output_error(&ack.output_name);
         }
-        self.ack_all_tickets(ack.tickets, ack.success);
+        self.ack_all_tickets(ack.tickets, default_ticket_disposition(&ack.outcome));
     }
 
     /// Ack or reject all Sending tickets and apply receipts to the machine.
@@ -1222,17 +1224,16 @@ impl Pipeline {
     fn ack_all_tickets(
         &mut self,
         tickets: Vec<logfwd_types::pipeline::BatchTicket<logfwd_types::pipeline::Sending, u64>>,
-        success: bool,
+        disposition: TicketDisposition,
     ) {
         let Some(ref mut machine) = self.machine else {
             return;
         };
         let mut any_advanced = false;
         for ticket in tickets {
-            let receipt = if success {
-                ticket.ack()
-            } else {
-                ticket.reject()
+            let receipt = match disposition {
+                TicketDisposition::Ack => ticket.ack(),
+                TicketDisposition::Reject => ticket.reject(),
             };
             let advance = machine.apply_ack(receipt);
             if advance.advanced {
@@ -1699,7 +1700,6 @@ fn build_input_state(
                 }),
                 event_created_unix_nano_field: generator_cfg
                     .and_then(|c| c.event_created_unix_nano_field.clone()),
-                ..Default::default()
             };
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Generator, &format)?;
@@ -3092,11 +3092,11 @@ output:
         // crash the pipeline and is recorded as a dropped batch.
         //
         // With the async worker pool, retries are built into the pool. An
-        // always-failing sink causes the pool to exhaust retries and return
-        // AckItem { success: false }, which increments dropped_batches_total.
+        // always-failing sink causes the pool to exhaust retries and return a
+        // non-delivered AckItem outcome, which increments dropped_batches_total.
         //
         // Per-sink error tracking within async fanout is not currently
-        // supported by the pool's AckItem protocol (tracked in issue #702).
+        // supported by the pool's ack protocol (tracked in issue #702).
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("fanout_output_err.log");
 
