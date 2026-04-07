@@ -1699,7 +1699,6 @@ fn build_input_state(
                 }),
                 event_created_unix_nano_field: generator_cfg
                     .and_then(|c| c.event_created_unix_nano_field.clone()),
-                ..Default::default()
             };
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Generator, &format)?;
