@@ -112,6 +112,7 @@ pub enum DeliveryOutcome {
 }
 
 impl DeliveryOutcome {
+    /// Returns `true` if this outcome represents successful delivery to the sink.
     pub const fn is_delivered(&self) -> bool {
         matches!(self, Self::Delivered)
     }

@@ -22,7 +22,13 @@ pub(super) enum TicketDisposition {
 pub(super) const fn default_ticket_disposition(outcome: &DeliveryOutcome) -> TicketDisposition {
     match outcome {
         DeliveryOutcome::Delivered => TicketDisposition::Ack,
-        _ => TicketDisposition::Reject,
+        DeliveryOutcome::Rejected { .. }
+        | DeliveryOutcome::RetryExhausted
+        | DeliveryOutcome::TimedOut
+        | DeliveryOutcome::PoolClosed
+        | DeliveryOutcome::WorkerChannelClosed
+        | DeliveryOutcome::NoWorkersAvailable
+        | DeliveryOutcome::InternalFailure => TicketDisposition::Reject,
     }
 }
 
