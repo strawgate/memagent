@@ -723,6 +723,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_timestamp_rejects_non_digit_timezone() {
+        // Regression: non-digit bytes in timezone offset must be rejected (#1467).
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+0a:30"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+02:3x"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+ab:cd"), None);
+        // Valid offsets should still work.
+        assert!(parse_timestamp_nanos(b"2024-01-15T10:30:00+05:30").is_some());
+        assert!(parse_timestamp_nanos(b"2024-01-15T10:30:00-08:00").is_some());
+    }
+
+    #[test]
     fn parse_timestamp_invalid_returns_zero() {
         assert_eq!(parse_timestamp_nanos(b"not a timestamp"), None);
         assert_eq!(parse_timestamp_nanos(b""), None);
