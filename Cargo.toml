@@ -15,18 +15,16 @@ members = [
     "crates/logfwd-competitive-bench",
     "crates/logfwd-test-utils",
 ]
-# default-members: crates that compile without datafusion (~30s vs ~3min).
-# Bare `cargo check/clippy` uses these. Use `--workspace` or `-p logfwd`
-# to include logfwd-transform (datafusion) and the binary crate.
-# CI always uses --workspace.
+# default-members: all non-bench crates — keep in sync with members
 default-members = [
     "crates/logfwd-config",
     "crates/logfwd-types",
     "crates/logfwd-core",
     "crates/logfwd-arrow",
+    "crates/logfwd-transform",
     "crates/logfwd-io",
     "crates/logfwd-output",
-    "crates/logfwd-test-utils",
+    "crates/logfwd",
 ]
 
 [workspace.package]

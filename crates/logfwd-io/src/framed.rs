@@ -367,24 +367,6 @@ mod tests {
             )
         }
 
-        /// Like `from_chunks` but attaches a specific `SourceId` to every event.
-        /// Use this when the test needs `checkpoint_data()` to exercise the tracker
-        /// (source state is keyed by `Option<SourceId>`, so the event source_id must
-        /// match the ids returned by `checkpoint_data()`).
-        fn from_chunks_with_source(chunks: Vec<&[u8]>, sid: SourceId) -> Self {
-            Self::new(
-                chunks
-                    .into_iter()
-                    .map(|c| {
-                        vec![InputEvent::Data {
-                            bytes: c.to_vec(),
-                            source_id: Some(sid),
-                        }]
-                    })
-                    .collect(),
-            )
-        }
-
         fn with_offsets(mut self, offsets: Vec<(SourceId, ByteOffset)>) -> Self {
             self.offsets = offsets;
             self
@@ -474,13 +456,12 @@ mod tests {
     #[test]
     fn remainder_discarded_on_overflow() {
         let stats = make_stats();
-        // Send > 2 MiB without a newline, attributed to SourceId(1) so that the
-        // tracker state is stored under Some(SourceId(1)) — matching the key that
-        // checkpoint_data() will look up when translating inner offsets.
-        let sid = SourceId(1);
+        // Send > 2 MiB without a newline.
         let big = vec![b'x'; MAX_REMAINDER_BYTES + 1];
-        let source = MockSource::from_chunks_with_source(vec![&big, b"\n"], sid)
-            .with_offsets(vec![(sid, ByteOffset((MAX_REMAINDER_BYTES + 1) as u64))]);
+        let source = MockSource::from_chunks(vec![&big, b"\n"]).with_offsets(vec![(
+            SourceId(1),
+            ByteOffset((MAX_REMAINDER_BYTES + 1) as u64),
+        )]);
 
         let mut framed = FramedInput::new(
             Box::new(source),
@@ -499,7 +480,7 @@ mod tests {
         );
 
         // The overflow remainder is discarded.
-        let state = framed.sources.get(&Some(sid)).unwrap();
+        let state = framed.sources.get(&None).unwrap();
         assert_eq!(
             state.remainder.len(),
             0,
@@ -507,14 +488,8 @@ mod tests {
         );
 
         // Checkpoint must advance to the read offset (so it does not rewind).
-        // This assertion now exercises the CheckpointTracker via the per-source state
-        // because the event source_id matches the key used in checkpoint_data().
         let cp = framed.checkpoint_data();
-        assert_eq!(
-            cp[0].1,
-            ByteOffset((MAX_REMAINDER_BYTES + 1) as u64),
-            "checkpoint must advance after overflow discard (#973)"
-        );
+        assert_eq!(cp[0].1, ByteOffset((MAX_REMAINDER_BYTES + 1) as u64));
 
         // Second poll: a newline terminates the discarded data, emitting an empty line
         // (which collect_data doesn't see since we didn't send any more bytes before \n,

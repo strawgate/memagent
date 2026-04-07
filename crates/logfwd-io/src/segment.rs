@@ -206,18 +206,7 @@ impl SegmentFile {
     pub fn open(path: &Path, expected_sql_hash: Option<u64>) -> SegmentStatus {
         let meta = match fs::metadata(path) {
             Ok(m) => m,
-            // File vanished between directory listing and open — not a segment.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return SegmentStatus::NotASegment(path.to_path_buf());
-            }
-            // Permission denied or other IO error — treat as corruption so recovery
-            // does not silently skip data that may still be readable after a fix.
-            Err(e) => {
-                return SegmentStatus::Corrupt(
-                    path.to_path_buf(),
-                    format!("cannot stat file: {e}"),
-                );
-            }
+            Err(_) => return SegmentStatus::NotASegment(path.to_path_buf()),
         };
         let file_size = meta.len();
 
@@ -227,17 +216,7 @@ impl SegmentFile {
 
         let mut file = match File::open(path) {
             Ok(f) => f,
-            // File vanished between stat and open — not a segment.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return SegmentStatus::NotASegment(path.to_path_buf());
-            }
-            // Permission denied or other IO error — treat as corruption.
-            Err(e) => {
-                return SegmentStatus::Corrupt(
-                    path.to_path_buf(),
-                    format!("cannot open file: {e}"),
-                );
-            }
+            Err(_) => return SegmentStatus::NotASegment(path.to_path_buf()),
         };
 
         // Read footer (last FOOTER_SIZE bytes).
@@ -262,11 +241,7 @@ impl SegmentFile {
         }
         let header = match SegmentHeader::from_bytes(&header_buf) {
             Ok(h) => h,
-            // Header magic/version wrong — this is corruption (file was opened and has
-            // valid size, but content is wrong), not merely "not a segment".
-            Err(e) => {
-                return SegmentStatus::Corrupt(path.to_path_buf(), format!("invalid header: {e}"));
-            }
+            Err(_) => return SegmentStatus::NotASegment(path.to_path_buf()),
         };
 
         // Verify sizes are consistent.

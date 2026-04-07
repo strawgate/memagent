@@ -137,17 +137,6 @@ ingested by `OtlpReceiverInput` must preserve the same semantics.
 
 This is the cross-crate compatibility rule that catches sink/receiver drift.
 
-## Fanout Sink Contract
-
-`AsyncFanoutSink` multiplexes a batch to multiple child sinks. It does not
-track per-child delivery state: on any non-Ok result (IoError or RetryAfter),
-the worker pool retries the entire batch against all children, including those
-that already succeeded. Downstream sinks must therefore be idempotent and
-handle duplicate batches gracefully.
-
-Result precedence across children is: `Rejected > IoError > RetryAfter > Ok`.
-A single child rejection dominates any number of transient I/O errors.
-
 ## File Input Contract
 
 The file path is:

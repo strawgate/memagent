@@ -35,34 +35,6 @@ use arrow::array::{Array, StringBuilder, StructArray};
 use arrow::datatypes::{DataType, Field, Fields, Schema};
 use arrow::record_batch::RecordBatch;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConflictValueSource {
-    Int,
-    Float,
-    Str,
-    Bool,
-}
-
-#[allow(clippy::fn_params_excessive_bools)] // Pure presence flags, not a config API
-fn pick_conflict_value_source(
-    int_present: bool,
-    float_present: bool,
-    str_present: bool,
-    bool_present: bool,
-) -> Option<ConflictValueSource> {
-    if int_present {
-        Some(ConflictValueSource::Int)
-    } else if float_present {
-        Some(ConflictValueSource::Float)
-    } else if str_present {
-        Some(ConflictValueSource::Str)
-    } else if bool_present {
-        Some(ConflictValueSource::Bool)
-    } else {
-        None
-    }
-}
-
 /// Returns `true` iff every child field name is one of the conflict-type names.
 ///
 /// An empty struct is never a conflict struct.
@@ -190,26 +162,13 @@ pub fn merge_to_utf8(
 
     let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 8);
     for i in 0..num_rows {
-        match pick_conflict_value_source(
-            int_arr.is_some_and(|a| !a.is_null(i)),
-            float_arr.is_some_and(|a| !a.is_null(i)),
-            str_arr.is_some_and(|a| !a.is_null(i)),
-            bool_arr.is_some_and(|a| !a.is_null(i)),
-        ) {
-            Some(ConflictValueSource::Int) => {
-                builder.append_value(int_arr.expect("int presence was checked above").value(i));
-            }
-            Some(ConflictValueSource::Float) => builder.append_value(
-                float_arr
-                    .expect("float presence was checked above")
-                    .value(i),
-            ),
-            Some(ConflictValueSource::Str) => {
-                builder.append_value(str_arr.expect("str presence was checked above").value(i));
-            }
-            Some(ConflictValueSource::Bool) => {
-                builder.append_value(bool_arr.expect("bool presence was checked above").value(i));
-            }
+        let val = int_arr
+            .and_then(|a| (!a.is_null(i)).then(|| a.value(i)))
+            .or_else(|| float_arr.and_then(|a| (!a.is_null(i)).then(|| a.value(i))))
+            .or_else(|| str_arr.and_then(|a| (!a.is_null(i)).then(|| a.value(i))))
+            .or_else(|| bool_arr.and_then(|a| (!a.is_null(i)).then(|| a.value(i))));
+        match val {
+            Some(v) => builder.append_value(v),
             None => builder.append_null(),
         }
     }

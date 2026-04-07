@@ -253,7 +253,6 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `cri.rs` | CRI log parsing + partial line reassembly | Kani exhaustive (8 proofs) |
 | `otlp.rs` | Protobuf wire format + OTLP encoding + timestamp parsing | Kani mixed exhaustive + bounded (30 proofs incl. 3 contract verifications) |
 | `pipeline/lifecycle.rs` | Pipeline state machine (ordered ACK, drain, shutdown) | Kani exhaustive (6 proofs) + proptest + **TLA+** |
-| `logfwd/pipeline/health.rs` | Pipeline component-health transition reducer (`observed`, poll failure, shutdown) | Kani exhaustive (4 proofs) + unit tests + proptest sequence checks |
 | `pipeline/batch.rs` | BatchTicket typestate (ack/nack/fail/reject) | Kani exhaustive (5 proofs) + compile-time |
 | `logfwd-types/diagnostics/health.rs` | `ComponentHealth` lattice (`combine`, readiness, storage repr) | Kani exhaustive (4 proofs) + unit tests |
 | `logfwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (8 proofs: ColVariant field preservation, variant_dt, is_conflict_struct, json/str priority contracts) |

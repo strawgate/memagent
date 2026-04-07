@@ -177,12 +177,15 @@ impl GeneratorInput {
                     .unwrap_or_default()
                     .as_nanos()
             });
-        for batch_offset in 0_u128..n as u128 {
+        let batch_offset = 0u128;
+        for (batch_offset_iter, _) in (0..n).enumerate() {
             if self.config.total_events > 0 && self.counter >= self.config.total_events {
                 self.done = true;
                 break;
             }
-            let event_created_unix_nano = batch_created_unix_nano.map(|base| base + batch_offset);
+            let current_batch_offset = batch_offset + batch_offset_iter as u128;
+            let event_created_unix_nano =
+                batch_created_unix_nano.map(|base| base + current_batch_offset);
             let len_before = self.buf.len();
             self.write_event(event_created_unix_nano);
             if self.done {
@@ -196,8 +199,12 @@ impl GeneratorInput {
 
     fn write_event(&mut self, event_created_unix_nano: Option<u128>) {
         match self.config.profile {
-            GeneratorProfile::Logs => self.write_logs_event(),
-            GeneratorProfile::Record => self.write_record_event(event_created_unix_nano),
+            GeneratorProfile::Logs => {
+                self.write_logs_event();
+            }
+            GeneratorProfile::Record => {
+                self.write_record_event(event_created_unix_nano);
+            }
         }
     }
 

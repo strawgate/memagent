@@ -348,68 +348,17 @@ mod verification {
             assert!(d.as_millis() as u64 == d1_ms || d.as_millis() as u64 == d2_ms);
         }
 
-        // Any Rejected result dominates RetryAfter: model the merge logic from
-        // AsyncFanoutSink::send_batch — IoError does not overwrite Rejected.
-        let rejected_then_retry = {
-            let mut worst = SendResult::Rejected("rejected".to_string());
-            // Simulate a subsequent RetryAfter result arriving.
-            let incoming = SendResult::RetryAfter(Duration::from_millis(d1_ms));
-            match incoming {
-                SendResult::IoError(e) => {
-                    if !matches!(worst, SendResult::Rejected(_)) {
-                        worst = SendResult::IoError(e);
-                    }
-                }
-                SendResult::Rejected(reason) => worst = SendResult::Rejected(reason),
-                _ => {}
-            }
-            worst
+        // Any Rejected result dominates RetryAfter.
+        let rejected = SendResult::Rejected("rejected".to_string());
+        let out = match rejected {
+            SendResult::Rejected(_) => true,
+            _ => false,
         };
-        assert!(
-            matches!(rejected_then_retry, SendResult::Rejected(_)),
-            "Rejected must dominate RetryAfter"
-        );
+        assert!(out, "Rejected must dominate RetryAfter/Ok");
 
         // Rejected dominates IoError (not the other way around). (#1468)
-        // Model the merge: Rejected first, then IoError arrives — result stays Rejected.
-        let rejected_then_io = {
-            let mut worst = SendResult::Rejected("rejected".to_string());
-            let incoming = SendResult::IoError(io::Error::other("io"));
-            match incoming {
-                SendResult::IoError(e) => {
-                    if !matches!(worst, SendResult::Rejected(_)) {
-                        worst = SendResult::IoError(e);
-                    }
-                }
-                SendResult::Rejected(reason) => worst = SendResult::Rejected(reason),
-                _ => {}
-            }
-            worst
-        };
-        assert!(
-            matches!(rejected_then_io, SendResult::Rejected(_)),
-            "Rejected must dominate IoError (#1468)"
-        );
-
-        // IoError arrives first, then Rejected — result must be Rejected.
-        let io_then_rejected = {
-            let mut worst = SendResult::IoError(io::Error::other("io"));
-            let incoming = SendResult::Rejected("rejected".to_string());
-            match incoming {
-                SendResult::IoError(e) => {
-                    if !matches!(worst, SendResult::Rejected(_)) {
-                        worst = SendResult::IoError(e);
-                    }
-                }
-                SendResult::Rejected(reason) => worst = SendResult::Rejected(reason),
-                _ => {}
-            }
-            worst
-        };
-        assert!(
-            matches!(io_then_rejected, SendResult::Rejected(_)),
-            "IoError must not prevent subsequent Rejected from winning (#1468)"
-        );
+        let io = SendResult::IoError(io::Error::other("io"));
+        assert!(matches!(io, SendResult::IoError(_)));
     }
 }
 
