@@ -606,6 +606,11 @@ impl Config {
         Self::from_raw(raw)
     }
 
+    /// Expand `${VAR}` references in YAML values using process environment vars.
+    pub fn expand_env_str(yaml: &str) -> Result<String, ConfigError> {
+        expand_env_vars(yaml)
+    }
+
     // Normalise the two layout variants into a single representation.
     fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
         let pipelines = match (raw.pipelines, raw.input, raw.output) {
@@ -684,7 +689,7 @@ impl Config {
         }
 
         // Validate server.diagnostics bind address at config time so that
-        // `--validate` catches typos before the server tries to bind at runtime.
+        // `validate` catches typos before the server tries to bind at runtime.
         if let Some(addr) = &self.server.diagnostics {
             if let Err(msg) = validate_bind_addr(addr) {
                 return Err(ConfigError::Validation(format!(
@@ -2276,7 +2281,7 @@ server:
     #[test]
     fn invalid_diagnostics_address_rejected_at_validate() {
         // Before the fix, an invalid server.diagnostics address would pass
-        // --validate and only fail at runtime when the server tried to bind.
+        // `validate` and only fail at runtime when the server tried to bind.
         let yaml = r"
 input:
   type: file

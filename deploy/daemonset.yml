@@ -32,6 +32,7 @@ spec:
           image: ghcr.io/strawgate/logfwd:latest
           imagePullPolicy: IfNotPresent
           args:
+            - "run"
             - "--config"
             - "/etc/logfwd/pipeline.yaml"
           securityContext:

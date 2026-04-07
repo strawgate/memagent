@@ -55,7 +55,7 @@ input:
     event_created_unix_nano_field: event_created_unix_nano
 ```
 
-Use `--generate-json <num_lines> <output_file>` on the CLI to write a fixed number of lines to a file instead.
+Use `generate-json <num_lines> <output_file>` on the CLI to write a fixed number of lines to a file instead.
 
 ## UDP
 

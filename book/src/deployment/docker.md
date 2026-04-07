@@ -20,7 +20,7 @@ docker run -d \
   -v ./config.yaml:/etc/logfwd/config.yaml:ro \
   -p 9090:9090 \
   ghcr.io/strawgate/logfwd:latest \
-  --config /etc/logfwd/config.yaml
+  run --config /etc/logfwd/config.yaml
 ```
 
 ## Validate container health
@@ -52,7 +52,7 @@ docker run -d \
   -v ./config.last-known-good.yaml:/etc/logfwd/config.yaml:ro \
   -p 9090:9090 \
   ghcr.io/strawgate/logfwd:<known-good-tag> \
-  --config /etc/logfwd/config.yaml
+  run --config /etc/logfwd/config.yaml
 ```
 
 Then validate with the same diagnostics commands above.

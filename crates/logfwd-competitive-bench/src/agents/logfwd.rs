@@ -57,7 +57,7 @@ pipelines:
 
     fn command(&self, binary: &Path, config: &Path, _ctx: &BenchContext) -> Command {
         let mut cmd = Command::new(binary);
-        cmd.arg("--config").arg(config);
+        cmd.arg("run").arg("--config").arg(config);
         cmd
     }
 

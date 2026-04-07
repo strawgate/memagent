@@ -26,7 +26,7 @@ cargo build --release -p logfwd && cp target/release/logfwd .
 **2. Generate test data**
 
 ```bash
-./logfwd --generate-json 100000 logs.json
+./logfwd generate-json 100000 logs.json
 ```
 
 **3. Create a pipeline**
@@ -51,7 +51,7 @@ output:
 **4. Run it**
 
 ```bash
-./logfwd --config config.yaml
+./logfwd run --config config.yaml
 ```
 
 You'll see only the records that match your SQL filter:
@@ -115,7 +115,7 @@ sudo mv logfwd /usr/local/bin/
 
 # Docker
 docker run --rm -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  ghcr.io/strawgate/memagent:latest --config /etc/logfwd/config.yaml
+  ghcr.io/strawgate/memagent:latest run --config /etc/logfwd/config.yaml
 
 # From source (requires Rust 1.85+)
 cargo build --release -p logfwd
@@ -195,13 +195,18 @@ README and task-oriented guides intentionally avoid duplicating status claims.
 ## CLI Reference
 
 ```
-logfwd --config <file>                   Run the pipeline
-logfwd --config <file> --validate        Validate config syntax
-logfwd --config <file> --dry-run         Build pipeline, check SQL, don't start
-logfwd --blackhole [bind_addr]           Start OTLP blackhole receiver for testing
-logfwd --generate-json <n> <file>        Generate synthetic JSON log data
+logfwd run --config <file>               Run the pipeline
+logfwd validate --config <file>          Validate config syntax
+logfwd dry-run --config <file>           Build pipeline, check SQL, don't start
+logfwd blackhole [bind_addr]             Start OTLP blackhole receiver for testing
+logfwd generate-json <n> <file>          Generate synthetic JSON log data
+logfwd effective-config [--config file]  Validate and print effective runnable config
+logfwd wizard                            Interactive config wizard
+logfwd completions <shell>               Generate shell completions (bash, zsh, fish, nushell, powershell, elvish)
 logfwd --version                         Print version
 ```
+
+For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.md) (20 common app/source patterns).
 
 ---
 

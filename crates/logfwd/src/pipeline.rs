@@ -522,7 +522,7 @@ impl Pipeline {
     /// Validate the SQL plan by running a probe batch through each
     /// per-input transform.
     ///
-    /// Called by `--dry-run` to surface planning errors (duplicate aliases,
+    /// Called by `dry-run` to surface planning errors (duplicate aliases,
     /// bad window specs, etc.) before the first real batch arrives.
     pub fn validate_sql_plan(&mut self) -> Result<(), String> {
         for it in &mut self.input_transforms {

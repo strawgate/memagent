@@ -10,16 +10,53 @@ use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::WithExportConfig;
 use tokio_util::sync::CancellationToken;
 
+mod config_templates;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const GIT_HASH: &str = env!("LOGFWD_GIT_HASH");
-const GIT_DIRTY: &str = env!("LOGFWD_GIT_DIRTY");
-const BUILD_DATE: &str = env!("LOGFWD_BUILD_DATE");
-const BUILD_TARGET: &str = env!("LOGFWD_TARGET");
-const BUILD_PROFILE: &str = env!("LOGFWD_PROFILE");
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("LOGFWD_GIT_HASH"),
+    env!("LOGFWD_GIT_DIRTY"),
+    " ",
+    env!("LOGFWD_BUILD_DATE"),
+    ", ",
+    env!("LOGFWD_TARGET"),
+    ", ",
+    env!("LOGFWD_PROFILE"),
+    ")"
+);
+const CLI_AFTER_HELP: &str = r"Examples:
+  logfwd run --config config.yaml
+  logfwd validate --config config.yaml
+  logfwd dry-run --config config.yaml
+  logfwd effective-config --config config.yaml
+  logfwd blackhole
+  logfwd generate-json 10000 test.json
+  logfwd wizard
+  logfwd completions bash
+
+Environment:
+  LOGFWD_CONFIG    Config file path (auto-discovered if not set)
+  LOGFWD_LOG       Set log filter (for example LOGFWD_LOG=debug)
+  RUST_LOG         Fallback if LOGFWD_LOG is not set
+
+Config Search Order:
+  1. --config <path>
+  2. $LOGFWD_CONFIG
+  3. ./logfwd.yaml
+  4. ~/.config/logfwd/config.yaml
+  5. /etc/logfwd/config.yaml
+
+Exit Codes:
+  0 success
+  1 configuration error
+  2 runtime error";
 
 // Exit codes.
 const EXIT_OK: i32 = 0;
@@ -98,22 +135,76 @@ fn reset() -> &'static str {
     if use_color() { "\x1b[0m" } else { "" }
 }
 
-/// Print a usage example with a dim comment aligned to column 42.
-fn print_example(cmd: &str, comment: &str) {
-    let pad = 42usize.saturating_sub(cmd.len());
-    println!("  {cmd}{:pad$}{}# {comment}{}", "", dim(), reset());
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Elvish,
+    Fish,
+    #[value(name = "powershell", alias = "pwsh", alias = "power-shell")]
+    PowerShell,
+    Zsh,
+    Nushell,
 }
 
-/// Print a "did you mean ...?" hint on stderr.
-fn print_hint(suggestion: &str) {
-    eprintln!(
-        "{}hint{}: did you mean {}{}{}?",
-        dim(),
-        reset(),
-        bold(),
-        suggestion,
-        reset()
-    );
+#[derive(Debug, Parser)]
+#[command(
+    name = "logfwd",
+    about = "Fast log forwarder with SQL transforms",
+    long_about = "Fast log forwarder with SQL transforms",
+    version = VERSION,
+    long_version = LONG_VERSION,
+    next_line_help = true,
+    after_help = CLI_AFTER_HELP
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Run pipeline from YAML config.
+    Run {
+        #[arg(short = 'c', long = "config", value_name = "FILE")]
+        config: Option<String>,
+    },
+    /// Validate config and exit.
+    Validate {
+        #[arg(short = 'c', long = "config", value_name = "FILE")]
+        config: Option<String>,
+    },
+    /// Build pipelines without running.
+    DryRun {
+        #[arg(short = 'c', long = "config", value_name = "FILE")]
+        config: Option<String>,
+    },
+    /// Start OTLP blackhole receiver for testing.
+    Blackhole {
+        #[arg(value_name = "BIND_ADDR")]
+        bind_addr: Option<String>,
+    },
+    /// Generate synthetic JSON log data.
+    GenerateJson {
+        #[arg(value_name = "NUM_LINES")]
+        num_lines: usize,
+        #[arg(value_name = "OUTPUT_FILE")]
+        output_file: String,
+    },
+    /// Validate and print effective runnable config.
+    #[command(alias = "dump-config")]
+    EffectiveConfig {
+        #[arg(short = 'c', long = "config", value_name = "FILE")]
+        config: Option<String>,
+    },
+    /// Generate starter config in current directory.
+    Init,
+    /// Interactive config wizard.
+    Wizard,
+    /// Print shell completions.
+    Completions {
+        #[arg(value_name = "SHELL")]
+        shell: CompletionShell,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -129,13 +220,34 @@ fn main() {
 
 #[tokio::main]
 async fn main_inner() -> i32 {
-    let args: Vec<String> = env::args().collect();
+    // Emit a deprecation notice before clap parses so the alias still works
+    // transparently while guiding scripts to the new subcommand name.
+    if env::args().any(|a| a == "dump-config") {
+        eprintln!(
+            "{}warning{}: `dump-config` is deprecated — use `effective-config` instead",
+            yellow(),
+            reset()
+        );
+    }
 
-    if args.len() < 2 {
-        // No args: check for config in well-known locations before showing help.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            let code = match err.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => EXIT_OK,
+                _ => EXIT_CONFIG,
+            };
+            let _ = err.print();
+            return code;
+        }
+    };
+
+    let result = if let Some(command) = cli.command {
+        run_command(command).await
+    } else {
         if let Some(path) = discover_config() {
             eprintln!(
-                "{}hint{}: found config at {}{}{} — running it.",
+                "{}hint{}: found config at {}{}{}",
                 dim(),
                 reset(),
                 bold(),
@@ -143,59 +255,18 @@ async fn main_inner() -> i32 {
                 reset(),
             );
             eprintln!(
-                "{}      (use --config <path> to specify a different file){}",
+                "{}      run {}logfwd run --config {}{}",
                 dim(),
+                bold(),
+                path.display(),
                 reset()
             );
             eprintln!();
-            let synth_args = vec![
-                args[0].clone(),
-                "--config".to_string(),
-                path.to_string_lossy().to_string(),
-            ];
-            return match cmd_config(&synth_args).await {
-                Ok(()) => EXIT_OK,
-                Err(e) => {
-                    eprintln!("{}error{}: {e}", red(), reset());
-                    e.exit_code()
-                }
-            };
         }
-        print_usage();
+        let mut cmd = Cli::command();
+        let _ = cmd.print_help();
+        println!();
         return EXIT_OK;
-    }
-
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print_usage();
-        return EXIT_OK;
-    }
-
-    if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!(
-            "logfwd {VERSION} ({GIT_HASH}{GIT_DIRTY} {BUILD_DATE}, {BUILD_TARGET}, {BUILD_PROFILE})"
-        );
-        return EXIT_OK;
-    }
-
-    // Normalise arg order: allow flags like --validate before --config.
-    // Scan for the primary command flag regardless of position.
-    let args = normalize_args(args);
-
-    let result = match args[1].as_str() {
-        "--config" | "-c" => cmd_config(&args).await,
-        "--blackhole" => cmd_blackhole(&args).await,
-        "--generate-json" => cmd_generate_json(&args),
-        "--dump-config" => cmd_dump_config(&args),
-        "--init" => cmd_init(),
-        "--completions" => cmd_completions(&args),
-        other => {
-            eprintln!("{}error{}: unknown command: {other}", red(), reset());
-            if let Some(suggestion) = suggest_flag(other) {
-                print_hint(suggestion);
-            }
-            eprintln!("Run {}logfwd --help{} for usage.", bold(), reset());
-            return EXIT_CONFIG;
-        }
     };
 
     match result {
@@ -207,146 +278,40 @@ async fn main_inner() -> i32 {
     }
 }
 
-fn print_usage() {
-    println!(
-        "{}logfwd{} {}v{VERSION}{} -- fast log forwarder with SQL transforms",
-        bold(),
-        reset(),
-        dim(),
-        reset(),
-    );
-    println!();
-    println!("{}USAGE:{}", bold(), reset());
-    println!("  logfwd --config <config.yaml> [--validate] [--dry-run]");
-    println!("  logfwd --blackhole [bind_addr]");
-    println!("  logfwd --generate-json <num_lines> <output_file>");
-    println!("  logfwd --dump-config [config.yaml]");
-    println!("  logfwd --init");
-    println!("  logfwd --completions <shell>");
-    println!();
-    println!("{}OPTIONS:{}", bold(), reset());
-    println!("  -c, --config <path>    Run pipeline from YAML config");
-    println!("      --validate         Validate config and exit (alias: --check)");
-    println!("      --dry-run          Build pipelines without running");
-    println!("      --blackhole [addr] OTLP blackhole receiver (default: 127.0.0.1:4318)");
-    println!("      --generate-json    Generate synthetic JSON log file");
-    println!("      --dump-config      Print resolved config to stdout");
-    println!("      --init             Generate starter config in current directory");
-    println!("      --completions      Print shell completions (bash, zsh, fish)");
-    println!("  -h, --help             Show this help");
-    println!("  -V, --version          Show version");
-    println!();
-    println!("{}EXAMPLES:{}", bold(), reset());
-    print_example("logfwd -c config.yaml", "run pipelines");
-    print_example("logfwd -c config.yaml --validate", "validate config only");
-    print_example("logfwd -c config.yaml --dry-run", "test SQL planning");
-    print_example("logfwd --blackhole", "start OTLP test receiver");
-    print_example("logfwd --generate-json 10000 test.json", "synthetic data");
-    print_example("logfwd --dump-config config.yaml", "show resolved config");
-    print_example("logfwd --init", "generate starter config");
-    print_example("logfwd --completions bash", "output bash completions");
-    println!();
-    println!("{}ENVIRONMENT:{}", bold(), reset());
-    println!("  LOGFWD_CONFIG          Config file path (auto-discovered if not set)");
-    println!("  LOGFWD_LOG             Set log filter (e.g. LOGFWD_LOG=debug)");
-    println!("  RUST_LOG               Fallback if LOGFWD_LOG is not set");
-    println!();
-    println!("{}CONFIG SEARCH ORDER:{}", bold(), reset());
-    print_example("1. --config <path>", "explicit flag always wins");
-    print_example("2. $LOGFWD_CONFIG", "environment variable");
-    print_example("3. ./logfwd.yaml", "current directory");
-    println!("  4. ~/.config/logfwd/config.yaml");
-    println!("  5. /etc/logfwd/config.yaml");
-    println!();
-    println!("{}EXIT CODES:{}", bold(), reset());
-    println!("  0  Success");
-    println!("  1  Configuration error");
-    println!("  2  Runtime error");
-    println!();
-    println!(
-        "{}Respects NO_COLOR (https://no-color.org){}",
-        dim(),
-        reset(),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Arg normalisation
-// ---------------------------------------------------------------------------
-
-/// Reorder args so that --config/-c always appears at position 1.
-///
-/// Users of tools like `nginx -t -c config` expect to put flags before the
-/// config path. This allows `logfwd --validate --config foo.yaml` in addition
-/// to the canonical `logfwd --config foo.yaml --validate`.
-fn normalize_args(args: Vec<String>) -> Vec<String> {
-    // If already in canonical form, nothing to do.
-    if args.get(1).is_some_and(|a| a == "--config" || a == "-c") {
-        return args;
-    }
-
-    // Find --config/-c anywhere in the arg list.
-    let config_pos = args
-        .iter()
-        .skip(1)
-        .position(|a| a == "--config" || a == "-c")
-        .map(|i| i + 1);
-
-    let Some(pos) = config_pos else {
-        return args;
-    };
-
-    // config_path is the value after --config/-c.
-    if pos + 1 >= args.len() {
-        return args;
-    }
-
-    // Build normalised list: program, --config, path, then everything else.
-    let mut out = Vec::with_capacity(args.len());
-    out.push(args[0].clone());
-    out.push(args[pos].clone());
-    out.push(args[pos + 1].clone());
-    for (i, a) in args.iter().enumerate().skip(1) {
-        if i == pos || i == pos + 1 {
-            continue;
+async fn run_command(command: Commands) -> Result<(), CliError> {
+    match command {
+        Commands::Run { config } => {
+            let config_path = resolve_config_path(config.as_deref())?;
+            cmd_run(&config_path, false, false).await
         }
-        out.push(a.clone());
+        Commands::Validate { config } => {
+            let config_path = resolve_config_path(config.as_deref())?;
+            cmd_run(&config_path, true, false).await
+        }
+        Commands::DryRun { config } => {
+            let config_path = resolve_config_path(config.as_deref())?;
+            cmd_run(&config_path, false, true).await
+        }
+        Commands::Blackhole { bind_addr } => cmd_blackhole(bind_addr.as_deref()).await,
+        Commands::GenerateJson {
+            num_lines,
+            output_file,
+        } => cmd_generate_json(num_lines, &output_file),
+        Commands::EffectiveConfig { config } => cmd_effective_config(config.as_deref()),
+        Commands::Init => cmd_init(),
+        Commands::Wizard => cmd_wizard(),
+        Commands::Completions { shell } => {
+            cmd_completions(shell);
+            Ok(())
+        }
     }
-    out
 }
 
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
-async fn cmd_config(args: &[String]) -> Result<(), CliError> {
-    if args.len() < 3 {
-        eprintln!("{}error{}: --config requires a path", red(), reset(),);
-        eprintln!("  logfwd --config <config.yaml> [--validate] [--dry-run]");
-        return Err(CliError::Config("missing config path".to_owned()));
-    }
-
-    let config_path = &args[2];
-    let mut validate_only = false;
-    let mut dry_run = false;
-
-    // Parse flags after the config path — reject unknown flags with suggestions.
-    for arg in &args[3..] {
-        match arg.as_str() {
-            "--validate" | "--check" => validate_only = true,
-            "--dry-run" => dry_run = true,
-            other => {
-                eprintln!("{}error{}: unknown flag: {other}", red(), reset());
-                let config_flags = &["--validate", "--check", "--dry-run"];
-                if let Some(closest) = closest_match(other, config_flags) {
-                    print_hint(closest);
-                }
-                eprintln!("  logfwd --config <config.yaml> [--validate] [--dry-run]");
-                return Err(CliError::Config(format!("unknown flag: {other}")));
-            }
-        }
-    }
-
+async fn cmd_run(config_path: &str, validate_only: bool, dry_run: bool) -> Result<(), CliError> {
     let config_yaml = std::fs::read_to_string(config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
     let config = match logfwd_config::Config::load_str(&config_yaml) {
@@ -359,15 +324,15 @@ async fn cmd_config(args: &[String]) -> Result<(), CliError> {
     let base_path = std::path::Path::new(config_path).parent();
 
     if validate_only || dry_run {
-        // Both --validate and --dry-run build pipelines to catch SQL/wiring errors.
-        return validate_pipelines(&config, dry_run, false, base_path);
+        // Both `validate` and `dry-run` build pipelines to catch SQL/wiring errors.
+        return validate_pipelines(&config, dry_run, base_path);
     }
 
     run_pipelines(config, base_path, config_path, &config_yaml).await
 }
 
-async fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
-    let addr = args.get(2).map_or("127.0.0.1:4318", String::as_str);
+async fn cmd_blackhole(bind_addr: Option<&str>) -> Result<(), CliError> {
+    let addr = bind_addr.unwrap_or("127.0.0.1:4318");
 
     // Validate addr using the same hostname-accepting logic as the config
     // validator (validate_host_port) so that a hostname like `localhost:4318`
@@ -396,50 +361,33 @@ async fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
     run_pipelines(config, None, "<blackhole>", &yaml).await
 }
 
-fn cmd_generate_json(args: &[String]) -> Result<(), CliError> {
-    if args.len() < 4 {
-        eprintln!(
-            "{}error{}: --generate-json requires <num_lines> <output_file>",
-            red(),
-            reset(),
-        );
-        return Err(CliError::Config("missing arguments".to_owned()));
-    }
-    let num_lines: usize = match args[2].parse() {
-        Ok(n) => n,
-        Err(e) => {
-            return Err(CliError::Config(format!("invalid num_lines: {e}")));
-        }
-    };
-    generate_json_log_file(num_lines, &args[3]).map_err(CliError::Runtime)
+fn cmd_generate_json(num_lines: usize, output_file: &str) -> Result<(), CliError> {
+    generate_json_log_file(num_lines, output_file).map_err(CliError::Runtime)
 }
 
-fn cmd_dump_config(args: &[String]) -> Result<(), CliError> {
-    let config_path = if args.len() >= 3 {
-        args[2].clone()
-    } else if let Some(path) = discover_config() {
-        path.to_string_lossy().to_string()
-    } else {
-        eprintln!(
-            "{}error{}: --dump-config requires a config file",
-            red(),
-            reset()
-        );
-        eprintln!("  logfwd --dump-config <config.yaml>");
-        return Err(CliError::Config("no config file found".to_owned()));
-    };
+fn cmd_effective_config(config_path: Option<&str>) -> Result<(), CliError> {
+    let config_path = resolve_config_path(config_path)?;
 
     let config_yaml = std::fs::read_to_string(&config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
+    let effective_yaml = logfwd_config::Config::expand_env_str(&config_yaml)
+        .map_err(|e| CliError::Config(e.to_string()))?;
 
-    // Validate parse + pipeline wiring (same depth as --validate) before dumping.
+    // Read-only validation for inspection flows: reject configs that would
+    // fail format or SQL-plan checks without constructing runtime inputs that
+    // bind sockets or touch long-lived resources.
     let config = logfwd_config::Config::load_str(&config_yaml)
         .map_err(|e| CliError::Config(e.to_string()))?;
     let base_path = std::path::Path::new(&config_path).parent();
-    validate_pipelines(&config, false, true, base_path)?;
+    validate_pipelines_read_only(
+        &config,
+        base_path,
+        |_name| {},
+        |err| eprintln!("  {}error{}: {err}", red(), reset()),
+    )?;
 
     eprintln!("{}# validated from {config_path}{}", dim(), reset());
-    print!("{config_yaml}");
+    print!("{effective_yaml}");
     Ok(())
 }
 
@@ -463,7 +411,7 @@ transform: |
 
 output:
   type: otlp
-  endpoint: http://localhost:4318
+  endpoint: http://localhost:4318/v1/logs
 
 # Optional: diagnostics dashboard
 # server:
@@ -486,7 +434,7 @@ output:
             }
         })?;
     eprintln!(
-        "{}created{} {} — edit it, then run: {}logfwd -c logfwd.yaml --validate{}",
+        "{}created{} {} — edit it, then run: {}logfwd validate --config logfwd.yaml{}",
         green(),
         reset(),
         path.display(),
@@ -496,121 +444,204 @@ output:
     Ok(())
 }
 
-fn cmd_completions(args: &[String]) -> Result<(), CliError> {
-    let shell = args.get(2).map_or("", String::as_str);
-    match shell {
-        "bash" => print!("{}", completions_bash()),
-        "zsh" => print!("{}", completions_zsh()),
-        "fish" => print!("{}", completions_fish()),
-        other => {
-            let msg = if other.is_empty() {
-                "--completions requires a shell name".to_string()
-            } else {
-                format!("unknown shell: {other}")
-            };
-            eprintln!("{}error{}: {msg}", red(), reset());
-            eprintln!("  logfwd --completions <bash|zsh|fish>");
-            return Err(CliError::Config(msg));
-        }
+fn cmd_wizard() -> Result<(), CliError> {
+    use config_templates::{INPUT_TEMPLATES, OUTPUT_TEMPLATES, render_config};
+
+    if !io::stdin().is_terminal() {
+        return Err(CliError::Config(
+            "wizard requires an interactive terminal on stdin".to_owned(),
+        ));
     }
+    println!("{}logfwd config wizard{}", bold(), reset());
+    println!("Pick what you want to collect and where to send it.");
+    println!();
+
+    let input_idx = prompt_select(
+        "What do you want to collect?",
+        &INPUT_TEMPLATES.iter().map(|t| t.label).collect::<Vec<_>>(),
+    )?;
+    let output_idx = prompt_select(
+        "Where do you want to send logs?",
+        &OUTPUT_TEMPLATES.iter().map(|t| t.label).collect::<Vec<_>>(),
+    )?;
+
+    let sql = prompt_text(
+        "Optional SQL transform (blank = SELECT * FROM logs)",
+        "SELECT * FROM logs",
+    )?;
+
+    let output_path = prompt_text("Output file path", "logfwd.generated.yaml")?;
+    let path = std::path::PathBuf::from(output_path.trim());
+
+    let input = &INPUT_TEMPLATES[input_idx];
+    let output = &OUTPUT_TEMPLATES[output_idx];
+    let sql = if sql.trim().is_empty() {
+        "SELECT * FROM logs"
+    } else {
+        sql.trim()
+    };
+    let cfg = render_config(input, output, sql);
+    validate_generated_config_read_only(&cfg, &path)?;
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(cfg.as_bytes()))
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                CliError::Config(format!(
+                    "{} already exists — refusing to overwrite",
+                    path.display()
+                ))
+            } else {
+                CliError::Config(format!("cannot write {}: {e}", path.display()))
+            }
+        })?;
+
+    eprintln!("{}created{} {}", green(), reset(), path.as_path().display(),);
+    eprintln!(
+        "{}next{}: run {}logfwd validate --config {}{}",
+        dim(),
+        reset(),
+        bold(),
+        path.display(),
+        reset()
+    );
     Ok(())
 }
 
-fn completions_bash() -> &'static str {
-    r#"# logfwd bash completion — add to ~/.bashrc or /etc/bash_completion.d/logfwd
-_logfwd() {
-    local cur prev commands
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="--config -c --blackhole --generate-json --dump-config --init --completions --help -h --version -V"
-
-    case "$prev" in
-        --config|-c|--dump-config)
-            COMPREPLY=( $(compgen -f -X '!*.yaml' -- "$cur") $(compgen -f -X '!*.yml' -- "$cur") $(compgen -d -- "$cur") )
-            return 0
-            ;;
-        --completions)
-            COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
-            return 0
-            ;;
-    esac
-
-    # After --config <path>, suggest sub-flags
-    local i has_config=0
-    for (( i=1; i < COMP_CWORD; i++ )); do
-        case "${COMP_WORDS[i]}" in
-            --config|-c) has_config=1 ;;
-        esac
-    done
-    if (( has_config )); then
-        COMPREPLY=( $(compgen -W "--validate --check --dry-run" -- "$cur") )
-        return 0
-    fi
-
-    COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
-}
-complete -F _logfwd logfwd
-"#
+fn validate_generated_config_read_only(
+    config_yaml: &str,
+    output_path: &std::path::Path,
+) -> Result<(), CliError> {
+    let config = logfwd_config::Config::load_str(config_yaml)
+        .map_err(|e| CliError::Config(e.to_string()))?;
+    let base_path = output_path.parent();
+    let mut validation_errors = Vec::new();
+    let result = validate_pipelines_read_only(
+        &config,
+        base_path,
+        |_name| {},
+        |err| validation_errors.push(err),
+    );
+    match result {
+        Ok(()) => Ok(()),
+        Err(_) if validation_errors.is_empty() => Err(CliError::Config(
+            "generated config failed validation".to_owned(),
+        )),
+        Err(_) => Err(CliError::Config(format!(
+            "generated config failed validation:\n{}",
+            validation_errors.join("\n")
+        ))),
+    }
 }
 
-fn completions_zsh() -> &'static str {
-    r#"#compdef logfwd
-# logfwd zsh completion — add to your fpath or source directly
+fn prompt_select(prompt: &str, options: &[&str]) -> Result<usize, CliError> {
+    let mut stdout = io::stdout();
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock();
+    loop {
+        println!("{prompt}");
+        for (i, option) in options.iter().enumerate() {
+            println!("  {}) {option}", i + 1);
+        }
+        print!("Enter choice [1-{}]: ", options.len());
+        stdout.flush()?;
 
-_logfwd() {
-    local -a commands subflags
-    commands=(
-        '--config[Run pipeline from YAML config]:config file:_files -g "*.y(a|)ml"'
-        '-c[Run pipeline from YAML config]:config file:_files -g "*.y(a|)ml"'
-        '--blackhole[OTLP blackhole receiver]:bind addr:'
-        '--generate-json[Generate synthetic JSON log file]:lines: :output file:_files'
-        '--dump-config[Print resolved config]:config file:_files -g "*.y(a|)ml"'
-        '--init[Generate starter config]'
-        '--completions[Print shell completions]:shell:(bash zsh fish)'
-        '--help[Show help]'
-        '-h[Show help]'
-        '--version[Show version]'
-        '-V[Show version]'
-    )
-    subflags=(
-        '--validate[Validate config and exit]'
-        '--check[Validate config and exit]'
-        '--dry-run[Build pipelines without running]'
-    )
-
-    # If --config/-c already appears, offer subflags
-    if (( ${words[(I)--config]} || ${words[(I)-c]} )); then
-        _describe 'flag' subflags
-    else
-        _describe 'command' commands
-    fi
+        let line = read_wizard_line(&mut stdin)?;
+        let trimmed = line.trim();
+        if let Ok(v) = trimmed.parse::<usize>()
+            && (1..=options.len()).contains(&v)
+        {
+            println!();
+            return Ok(v - 1);
+        }
+        eprintln!(
+            "{}invalid choice{}: enter a number from 1 to {}",
+            yellow(),
+            reset(),
+            options.len()
+        );
+    }
 }
 
-_logfwd "$@"
-"#
+fn prompt_text(prompt: &str, default: &str) -> Result<String, CliError> {
+    let mut stdout = io::stdout();
+    print!("{prompt} [{default}]: ");
+    stdout.flush()?;
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock();
+    let line = read_wizard_line(&mut stdin)?;
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        Ok(default.to_owned())
+    } else {
+        Ok(trimmed.to_owned())
+    }
 }
 
-fn completions_fish() -> &'static str {
-    r"# logfwd fish completion — save to ~/.config/fish/completions/logfwd.fish
+fn read_wizard_line<R: io::BufRead>(reader: &mut R) -> Result<String, CliError> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Err(CliError::Config(
+            "stdin closed while reading wizard input".to_owned(),
+        ));
+    }
+    Ok(line)
+}
 
-# Disable file completions by default
-complete -c logfwd -f
+fn cmd_completions(shell: CompletionShell) {
+    let mut cmd = Cli::command();
+    let mut stdout = io::stdout();
 
-# Top-level commands
-complete -c logfwd -l config -s c -d 'Run pipeline from YAML config' -rF
-complete -c logfwd -l blackhole -d 'OTLP blackhole receiver'
-complete -c logfwd -l generate-json -d 'Generate synthetic JSON log file'
-complete -c logfwd -l dump-config -d 'Print resolved config' -rF
-complete -c logfwd -l init -d 'Generate starter config'
-complete -c logfwd -l completions -d 'Print shell completions' -xa 'bash zsh fish'
-complete -c logfwd -l help -s h -d 'Show help'
-complete -c logfwd -l version -s V -d 'Show version'
+    match shell {
+        CompletionShell::Bash => {
+            clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "logfwd", &mut stdout);
+        }
+        CompletionShell::Elvish => {
+            clap_complete::generate(
+                clap_complete::Shell::Elvish,
+                &mut cmd,
+                "logfwd",
+                &mut stdout,
+            );
+        }
+        CompletionShell::Fish => {
+            clap_complete::generate(clap_complete::Shell::Fish, &mut cmd, "logfwd", &mut stdout);
+        }
+        CompletionShell::PowerShell => {
+            clap_complete::generate(
+                clap_complete::Shell::PowerShell,
+                &mut cmd,
+                "logfwd",
+                &mut stdout,
+            );
+        }
+        CompletionShell::Zsh => {
+            clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, "logfwd", &mut stdout);
+        }
+        CompletionShell::Nushell => {
+            clap_complete::generate(
+                clap_complete_nushell::Nushell,
+                &mut cmd,
+                "logfwd",
+                &mut stdout,
+            );
+        }
+    }
+}
 
-# Sub-flags for --config
-complete -c logfwd -l validate -d 'Validate config and exit' -n '__fish_seen_argument -l config -s c'
-complete -c logfwd -l check -d 'Validate config and exit' -n '__fish_seen_argument -l config -s c'
-complete -c logfwd -l dry-run -d 'Build pipelines without running' -n '__fish_seen_argument -l config -s c'
-"
+fn resolve_config_path(config_path: Option<&str>) -> Result<String, CliError> {
+    if let Some(path) = config_path {
+        return Ok(path.to_owned());
+    }
+    if let Some(path) = discover_config() {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    Err(CliError::Config(
+        "no config file found (use --config or set LOGFWD_CONFIG)".to_owned(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -666,74 +697,20 @@ fn discover_config() -> Option<std::path::PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Fuzzy flag suggestions (Levenshtein distance)
-// ---------------------------------------------------------------------------
-
-/// Suggest the closest known top-level command flag for a mistyped input.
-fn suggest_flag(input: &str) -> Option<&'static str> {
-    let known = &[
-        "--config",
-        "-c",
-        "--blackhole",
-        "--generate-json",
-        "--dump-config",
-        "--init",
-        "--completions",
-        "--help",
-        "-h",
-        "--version",
-        "-V",
-    ];
-    closest_match(input, known)
-}
-
-/// Return the closest string from `candidates` if within edit distance 3.
-fn closest_match<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
-    let mut best: Option<(&str, usize)> = None;
-    for &candidate in candidates {
-        let dist = edit_distance(input, candidate);
-        if dist <= 3 && best.as_ref().is_none_or(|(_, d)| dist < *d) {
-            best = Some((candidate, dist));
-        }
-    }
-    best.map(|(s, _)| s)
-}
-
-/// Levenshtein edit distance between two strings.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let m = a.len();
-    let n = b.len();
-
-    let mut prev = (0..=n).collect::<Vec<_>>();
-    let mut curr = vec![0; n + 1];
-
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
-}
-
-// ---------------------------------------------------------------------------
 // Pipeline runner
 // ---------------------------------------------------------------------------
 
-/// Validate config by building all pipelines. Used by `--validate`, `--dry-run`,
-/// and `--dump-config`. When `quiet` is true, success output is suppressed
-/// (errors are still printed); this is used by `--dump-config` to avoid
-/// polluting stdout with per-pipeline status lines.
-fn validate_pipelines(
+/// Validate config by building all pipelines. Used by `validate` and `dry-run`.
+fn validate_pipelines_inner<FReady, FError>(
     config: &logfwd_config::Config,
-    dry_run: bool,
-    quiet: bool,
     base_path: Option<&std::path::Path>,
-) -> Result<(), CliError> {
+    mut on_ready: FReady,
+    mut on_error: FError,
+) -> Result<(), CliError>
+where
+    FReady: FnMut(&str),
+    FError: FnMut(String),
+{
     use logfwd::pipeline::Pipeline;
 
     // Build a no-op meter for validation (no OTel export needed).
@@ -748,21 +725,14 @@ fn validate_pipelines(
                 // errors (duplicate aliases, bad window specs) that only
                 // surface on the first real batch at runtime.
                 if let Err(e) = pipeline.validate_sql_plan() {
-                    eprintln!(
-                        "  {}error{}: pipeline '{name}' SQL plan: {e}",
-                        red(),
-                        reset()
-                    );
+                    on_error(format!("pipeline '{name}' SQL plan: {e}"));
                     errors += 1;
                     continue;
                 }
-                if !quiet {
-                    // Success output goes to stdout so scripts can capture it.
-                    println!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
-                }
+                on_ready(name);
             }
             Err(e) => {
-                eprintln!("  {}error{}: pipeline '{name}': {e}", red(), reset());
+                on_error(format!("pipeline '{name}': {e}"));
                 errors += 1;
             }
         }
@@ -774,16 +744,282 @@ fn validate_pipelines(
         )));
     }
 
-    let label = if dry_run { "dry run ok" } else { "config ok" };
-    if !quiet {
-        // Success summary goes to stdout so scripts can parse it reliably.
-        println!(
-            "{}{label}{}: {} pipeline(s)",
-            green(),
-            reset(),
-            config.pipelines.len(),
-        );
+    Ok(())
+}
+
+fn validate_pipelines_read_only<FReady, FError>(
+    config: &logfwd_config::Config,
+    base_path: Option<&std::path::Path>,
+    mut on_ready: FReady,
+    mut on_error: FError,
+) -> Result<(), CliError>
+where
+    FReady: FnMut(&str),
+    FError: FnMut(String),
+{
+    let mut errors = 0;
+    for (name, pipe_cfg) in &config.pipelines {
+        match validate_pipeline_read_only(pipe_cfg, base_path) {
+            Ok(()) => on_ready(name),
+            Err(err) => {
+                on_error(format!("pipeline '{name}': {err}"));
+                errors += 1;
+            }
+        }
     }
+
+    if errors > 0 {
+        return Err(CliError::Config(format!(
+            "{errors} error(s) during validation"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_transform_probe_read_only(
+    transform: &mut logfwd_transform::SqlTransform,
+) -> Result<(), String> {
+    use arrow::array::{ArrayRef, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+
+    let fields: Vec<Field> = if transform.analyzer().referenced_columns.is_empty() {
+        vec![
+            Field::new("_raw", DataType::Utf8, true),
+            Field::new("level", DataType::Utf8, true),
+            Field::new("msg", DataType::Utf8, true),
+        ]
+    } else {
+        transform
+            .analyzer()
+            .referenced_columns
+            .iter()
+            .map(|name| Field::new(name, DataType::Utf8, true))
+            .collect()
+    };
+
+    let schema = Arc::new(Schema::new(fields.clone()));
+    let arrays: Vec<ArrayRef> = fields
+        .iter()
+        .map(|_| Arc::new(StringArray::from(vec![Some("x")])) as ArrayRef)
+        .collect();
+    let batch = RecordBatch::try_new(schema, arrays)
+        .map_err(|e| format!("failed to build probe batch: {e}"))?;
+    transform
+        .execute_blocking(batch)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn validate_pipeline_read_only(
+    config: &logfwd_config::PipelineConfig,
+    base_path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    use logfwd_config::{EnrichmentConfig, Format, GeoDatabaseFormat, InputType};
+    use logfwd_transform::SqlTransform;
+    use std::path::PathBuf;
+
+    if config.workers == Some(0) {
+        return Err("workers must be >= 1".to_owned());
+    }
+    if config.batch_target_bytes == Some(0) {
+        return Err("batch_target_bytes must be > 0".to_owned());
+    }
+
+    let mut enrichment_tables: Vec<Arc<dyn logfwd_transform::enrichment::EnrichmentTable>> =
+        Vec::new();
+    let mut geo_database: Option<Arc<dyn logfwd_transform::enrichment::GeoDatabase>> = None;
+
+    for enrichment in &config.enrichment {
+        match enrichment {
+            EnrichmentConfig::GeoDatabase(geo_cfg) => {
+                let mut path = PathBuf::from(&geo_cfg.path);
+                if path.is_relative()
+                    && let Some(base) = base_path
+                {
+                    path = base.join(path);
+                }
+                let db: Arc<dyn logfwd_transform::enrichment::GeoDatabase> = match geo_cfg.format {
+                    GeoDatabaseFormat::Mmdb => {
+                        let mmdb = logfwd_transform::udf::geo_lookup::MmdbDatabase::open(&path)
+                            .map_err(|e| {
+                                format!("failed to open geo database '{}': {e}", path.display())
+                            })?;
+                        Arc::new(mmdb)
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported geo database format: {:?}",
+                            geo_cfg.format
+                        ));
+                    }
+                };
+                geo_database = Some(db);
+            }
+            EnrichmentConfig::Static(cfg) => {
+                let labels: Vec<(String, String)> = cfg
+                    .labels
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let table = Arc::new(
+                    logfwd_transform::enrichment::StaticTable::new(&cfg.table_name, &labels)
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?,
+                );
+                enrichment_tables.push(table);
+            }
+            EnrichmentConfig::HostInfo(_) => {
+                enrichment_tables
+                    .push(Arc::new(logfwd_transform::enrichment::HostInfoTable::new()));
+            }
+            EnrichmentConfig::K8sPath(cfg) => {
+                enrichment_tables.push(Arc::new(logfwd_transform::enrichment::K8sPathTable::new(
+                    &cfg.table_name,
+                )));
+            }
+            EnrichmentConfig::Csv(cfg) => {
+                let mut path = PathBuf::from(&cfg.path);
+                if path.is_relative()
+                    && let Some(base) = base_path
+                {
+                    path = base.join(path);
+                }
+                let table = Arc::new(logfwd_transform::enrichment::CsvFileTable::new(
+                    &cfg.table_name,
+                    &path,
+                ));
+                table
+                    .reload()
+                    .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                enrichment_tables.push(table);
+            }
+            EnrichmentConfig::Jsonl(cfg) => {
+                let mut path = PathBuf::from(&cfg.path);
+                if path.is_relative()
+                    && let Some(base) = base_path
+                {
+                    path = base.join(path);
+                }
+                let table = Arc::new(logfwd_transform::enrichment::JsonLinesFileTable::new(
+                    &cfg.table_name,
+                    &path,
+                ));
+                table
+                    .reload()
+                    .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                enrichment_tables.push(table);
+            }
+        }
+    }
+
+    let pipeline_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
+    for (i, input_cfg) in config.inputs.iter().enumerate() {
+        let input_name = input_cfg
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("input_{i}"));
+        let format = input_cfg
+            .format
+            .clone()
+            .unwrap_or(match input_cfg.input_type {
+                InputType::File => Format::Auto,
+                _ => Format::Json,
+            });
+        validate_input_format_read_only(&input_name, input_cfg.input_type.clone(), &format)?;
+
+        let input_sql = input_cfg.sql.as_deref().unwrap_or(pipeline_sql);
+        let mut transform = SqlTransform::new(input_sql).map_err(|e| e.to_string())?;
+        if let Some(ref db) = geo_database {
+            transform.set_geo_database(Arc::clone(db));
+        }
+        for table in &enrichment_tables {
+            transform
+                .add_enrichment_table(Arc::clone(table))
+                .map_err(|e| format!("input '{}': enrichment error: {e}", input_name))?;
+        }
+        validate_transform_probe_read_only(&mut transform)
+            .map_err(|e| format!("input '{}': {e}", input_name))?;
+    }
+
+    Ok(())
+}
+
+fn validate_input_format_read_only(
+    name: &str,
+    input_type: logfwd_config::InputType,
+    format: &logfwd_config::Format,
+) -> Result<(), String> {
+    use logfwd_config::{Format, InputType};
+
+    let supported = match input_type {
+        InputType::File => matches!(
+            format,
+            Format::Cri | Format::Auto | Format::Json | Format::Raw
+        ),
+        InputType::Generator | InputType::Otlp => matches!(format, Format::Json),
+        InputType::Udp | InputType::Tcp => matches!(format, Format::Json | Format::Raw),
+        InputType::ArrowIpc => false,
+        _ => {
+            return Err(format!(
+                "input '{name}': type {:?} is not yet supported in read-only validation",
+                input_type
+            ));
+        }
+    };
+
+    if supported {
+        return Ok(());
+    }
+
+    Err(format!(
+        "input '{name}': format {:?} is not supported for {:?} inputs",
+        format, input_type
+    ))
+}
+
+#[cfg(test)]
+fn collect_yaml_files_recursive(
+    dir: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_yaml_files_recursive(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "yaml") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn validate_pipelines(
+    config: &logfwd_config::Config,
+    dry_run: bool,
+    base_path: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+    validate_pipelines_inner(
+        config,
+        base_path,
+        |name| {
+            // Success output goes to stdout so scripts can capture it.
+            println!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
+        },
+        |err| {
+            eprintln!("  {}error{}: {err}", red(), reset());
+        },
+    )?;
+
+    let label = if dry_run { "dry run ok" } else { "config ok" };
+    // Success summary goes to stdout so scripts can parse it reliably.
+    println!(
+        "{}{label}{}: {} pipeline(s)",
+        green(),
+        reset(),
+        config.pipelines.len(),
+    );
     Ok(())
 }
 
@@ -1442,71 +1678,89 @@ mod cli_tests {
     use super::*;
 
     #[test]
-    fn edit_distance_identical() {
-        assert_eq!(edit_distance("--config", "--config"), 0);
+    fn clap_parses_validate_subcommand() {
+        let cli = Cli::try_parse_from(["logfwd", "validate", "--config", "foo.yaml"])
+            .expect("parser should accept validate subcommand");
+        match cli.command.expect("command") {
+            Commands::Validate { config } => assert_eq!(config.as_deref(), Some("foo.yaml")),
+            other => panic!("expected validate command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn edit_distance_one_off() {
-        assert_eq!(edit_distance("--confg", "--config"), 1);
+    fn clap_rejects_unknown_old_top_level_flags() {
+        let err = Cli::try_parse_from(["logfwd", "--config", "foo.yaml"])
+            .expect_err("parser should reject old top-level flags");
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
-    fn edit_distance_swap() {
-        assert_eq!(edit_distance("--conifg", "--config"), 2);
+    fn clap_parses_effective_config_with_optional_config_flag() {
+        let with_path = Cli::try_parse_from(["logfwd", "effective-config", "--config", "foo.yaml"])
+            .expect("parser should accept effective-config with path");
+        match with_path.command.expect("command") {
+            Commands::EffectiveConfig { config } => assert_eq!(config.as_deref(), Some("foo.yaml")),
+            other => panic!("expected effective-config command, got {other:?}"),
+        }
+
+        let without_path = Cli::try_parse_from(["logfwd", "effective-config"])
+            .expect("parser should accept effective-config without path");
+        match without_path.command.expect("command") {
+            Commands::EffectiveConfig { config } => assert!(config.is_none()),
+            other => panic!("expected effective-config command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn suggest_flag_typo() {
-        assert_eq!(suggest_flag("--confg"), Some("--config"));
-        assert_eq!(suggest_flag("--confi"), Some("--config"));
-        assert_eq!(suggest_flag("--blackhol"), Some("--blackhole"));
-        assert_eq!(suggest_flag("--versin"), Some("--version"));
+    fn clap_parses_blackhole_default_form() {
+        let cli = Cli::try_parse_from(["logfwd", "blackhole"])
+            .expect("parser should accept blackhole without addr");
+        match cli.command.expect("command") {
+            Commands::Blackhole { bind_addr } => assert!(bind_addr.is_none()),
+            other => panic!("expected blackhole command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn suggest_flag_no_match() {
-        assert_eq!(suggest_flag("--something-totally-different"), None);
+    fn clap_completions_supports_nushell_and_powershell_alias() {
+        let nu = Cli::try_parse_from(["logfwd", "completions", "nushell"])
+            .expect("nushell should parse");
+        match nu.command.expect("command") {
+            Commands::Completions { shell } => assert!(matches!(shell, CompletionShell::Nushell)),
+            other => panic!("expected completions command, got {other:?}"),
+        }
+
+        let pwsh = Cli::try_parse_from(["logfwd", "completions", "pwsh"])
+            .expect("pwsh alias should parse");
+        match pwsh.command.expect("command") {
+            Commands::Completions { shell } => {
+                assert!(matches!(shell, CompletionShell::PowerShell))
+            }
+            other => panic!("expected completions command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn closest_match_prefers_exact() {
-        let candidates = &["--check", "--config"];
-        assert_eq!(closest_match("--check", candidates), Some("--check"));
+    fn clap_parses_generate_json_subcommand() {
+        let cli = Cli::try_parse_from(["logfwd", "generate-json", "5", "out.json"])
+            .expect("generate-json should parse");
+        match cli.command.expect("command") {
+            Commands::GenerateJson {
+                num_lines,
+                output_file,
+            } => {
+                assert_eq!(num_lines, 5);
+                assert_eq!(output_file, "out.json");
+            }
+            other => panic!("expected generate-json command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn closest_match_within_threshold() {
-        let flags = &["--validate", "--check", "--dry-run"];
-        assert_eq!(closest_match("--validat", flags), Some("--validate"));
-        assert_eq!(closest_match("--chck", flags), Some("--check"));
-        assert_eq!(closest_match("--dry-ru", flags), Some("--dry-run"));
-    }
-
-    #[test]
-    fn normalize_args_canonical() {
-        let args = vec![
-            "logfwd".to_string(),
-            "--config".to_string(),
-            "foo.yaml".to_string(),
-            "--validate".to_string(),
-        ];
-        let out = normalize_args(args.clone());
-        assert_eq!(out, args);
-    }
-
-    #[test]
-    fn normalize_args_reorders() {
-        let args = vec![
-            "logfwd".to_string(),
-            "--validate".to_string(),
-            "--config".to_string(),
-            "foo.yaml".to_string(),
-        ];
-        let out = normalize_args(args);
-        assert_eq!(out[1], "--config");
-        assert_eq!(out[2], "foo.yaml");
-        assert_eq!(out[3], "--validate");
+    fn clap_supports_help_subcommand() {
+        let err = Cli::try_parse_from(["logfwd", "help"])
+            .expect_err("help subcommand should trigger help display");
+        assert_eq!(err.kind(), ErrorKind::DisplayHelp);
     }
 
     #[test]
@@ -1548,22 +1802,28 @@ mod cli_tests {
     }
 
     #[test]
-    fn suggest_flag_includes_new_commands() {
-        assert_eq!(suggest_flag("--ini"), Some("--init"));
-        assert_eq!(suggest_flag("--completion"), Some("--completions"));
-        assert_eq!(suggest_flag("--dump-confi"), Some("--dump-config"));
-    }
-
-    #[test]
     fn json_logs_are_used_only_when_stderr_is_not_a_tty() {
         assert!(!use_json_logs_for_stderr(true));
         assert!(use_json_logs_for_stderr(false));
     }
 
     #[test]
-    fn dump_config_rejects_invalid_pipeline() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let config_path = dir.path().join("bad.yaml");
+    fn wizard_template_renders_with_sql() {
+        let input = &config_templates::INPUT_TEMPLATES[0];
+        let output = &config_templates::OUTPUT_TEMPLATES[0];
+        let cfg = config_templates::render_config(
+            input,
+            output,
+            "SELECT * FROM logs WHERE level='ERROR'",
+        );
+        assert!(cfg.contains("input:"));
+        assert!(cfg.contains("output:"));
+        assert!(cfg.contains("transform: |"));
+        assert!(cfg.contains("WHERE level='ERROR'"));
+    }
+
+    #[test]
+    fn validate_pipelines_read_only_rejects_otlp_raw() {
         let yaml = r#"
 input:
   type: otlp
@@ -1572,14 +1832,159 @@ input:
 output:
   type: null
 "#;
-        std::fs::write(&config_path, yaml).expect("write bad config");
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let result = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(matches!(result, Err(CliError::Config(_))));
+    }
+    #[test]
+    fn read_wizard_line_rejects_eof() {
+        let mut cursor = io::Cursor::new(Vec::<u8>::new());
+        let err = read_wizard_line(&mut cursor).expect_err("EOF should fail");
+        assert_eq!(err.to_string(), "stdin closed while reading wizard input");
+    }
 
-        let args = vec![
-            "logfwd".to_string(),
-            "--dump-config".to_string(),
-            config_path.to_string_lossy().into_owned(),
-        ];
-        let err = cmd_dump_config(&args).expect_err("invalid pipeline should fail");
-        assert!(err.to_string().contains("error(s) during validation"));
+    #[test]
+    fn effective_config_validation_does_not_bind_runtime_ports() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test port");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let mut file = tempfile::NamedTempFile::new().expect("temp config");
+        writeln!(
+            file,
+            r#"input:
+  type: otlp
+  listen: 127.0.0.1:{port}
+output:
+  type: null
+"#
+        )
+        .expect("write config");
+
+        cmd_effective_config(Some(file.path().to_str().expect("utf-8 temp path")))
+            .expect("read-only validation should not bind the configured port");
+    }
+
+    #[test]
+    fn templates_avoid_unsupported_syslog_and_bare_otlp_http_endpoints() {
+        for input in config_templates::INPUT_TEMPLATES {
+            assert!(
+                !input.snippet.contains("format: syslog"),
+                "wizard input template should not emit unsupported syslog format: {}",
+                input.id
+            );
+        }
+        for output in config_templates::OUTPUT_TEMPLATES {
+            if output.id == "otlp" {
+                assert!(
+                    output.snippet.contains("/v1/logs"),
+                    "wizard OTLP output should include the HTTP logs path"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generated_wizard_config_is_validated_before_write() {
+        let output_path = std::path::Path::new("logfwd.generated.yaml");
+        let invalid_yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+output:
+  type: null
+transform: |
+  SELECT level AS x, msg AS x FROM logs
+"#;
+        let err = validate_generated_config_read_only(invalid_yaml, output_path)
+            .expect_err("invalid generated config should fail validation");
+        assert!(
+            err.to_string()
+                .contains("generated config failed validation"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn effective_config_validation_matches_runtime_sql_planning_errors() {
+        let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+output:
+  type: null
+transform: |
+  SELECT level AS x, msg AS x FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines_inner(&config, None, |_name| {}, |_err| {});
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            runtime.is_err(),
+            "runtime validation should reject duplicate aliases"
+        );
+        assert!(
+            read_only.is_err(),
+            "effective-config validation should reject duplicate aliases"
+        );
+    }
+
+    #[test]
+    fn all_yaml_examples_parse_and_validate_read_only() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut yaml_files = Vec::new();
+
+        collect_yaml_files_recursive(&repo_root.join("examples"), &mut yaml_files)
+            .expect("should collect yaml files under examples/");
+        collect_yaml_files_recursive(&repo_root.join("bench/scenarios"), &mut yaml_files)
+            .expect("should collect yaml files under bench/scenarios/");
+        yaml_files.sort();
+
+        assert!(
+            !yaml_files.is_empty(),
+            "expected at least one yaml example in examples/ or bench/scenarios/"
+        );
+
+        let mut failures = Vec::new();
+        for path in yaml_files {
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(value) => value,
+                Err(err) => {
+                    failures.push(format!("{}: failed to read file: {err}", path.display()));
+                    continue;
+                }
+            };
+
+            // Keep example validation hermetic: inline secrets placeholders with dummy values.
+            let raw = raw.replace("${ELASTICSEARCH_API_KEY}", "example-api-key");
+
+            let config = match logfwd_config::Config::load_str(&raw) {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    failures.push(format!(
+                        "{}: failed to parse config yaml: {err}",
+                        path.display()
+                    ));
+                    continue;
+                }
+            };
+
+            if let Err(err) =
+                validate_pipelines_read_only(&config, path.parent(), |_name| {}, |_err| {})
+            {
+                failures.push(format!(
+                    "{}: failed read-only config validation: {err}",
+                    path.display()
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "yaml examples must parse and validate read-only:\n{}",
+            failures.join("\n")
+        );
     }
 }

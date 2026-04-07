@@ -5,7 +5,7 @@ Start with the symptom table, run the exact checks, and compare expected output 
 
 ## Before you start
 
-- Use a config that passes validation: `logfwd --config config.yaml --validate`.
+- Use a config that passes validation: `logfwd validate --config config.yaml`.
 - Enable diagnostics while debugging:
 
 ```yaml
@@ -28,7 +28,7 @@ kubectl -n collectors logs -f daemonset/logfwd
 | No logs arrive at destination | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].inputs'` | `lines_total` increasing | Fix file path/mount permissions |
 | Logs read, but nothing forwarded | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].transform'` | `lines_in > 0` and `lines_out > 0` | Transform filter dropping all rows |
 | Frequent OTLP send errors | Check runtime logs for `error sending` | No repeated connection/auth errors | Fix endpoint/protocol/connectivity |
-| Startup/config errors | `logfwd --config config.yaml --validate` | `configuration valid` (or no error output) | Fix required fields / YAML syntax |
+| Startup/config errors | `logfwd validate --config config.yaml` | `configuration valid` (or no error output) | Fix required fields / YAML syntax |
 | Throughput unexpectedly low | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].stage_seconds'` | `output` not dominating total | Network/collector bottleneck |
 
 ## Scenario 1: No logs arrive at destination
@@ -124,7 +124,7 @@ kubectl -n collectors exec "$POD" -- nslookup otel-collector
 ### Checks
 
 ```bash
-logfwd --config config.yaml --validate
+logfwd validate --config config.yaml
 ```
 
 ### Expected
@@ -149,10 +149,10 @@ transform: |
 
 ### Verify fix
 
-Validation passes, then `--dry-run` succeeds:
+Validation passes, then `dry-run` succeeds:
 
 ```bash
-logfwd --config config.yaml --dry-run
+logfwd dry-run --config config.yaml
 ```
 
 ## Scenario 5: Throughput drops or latency spikes

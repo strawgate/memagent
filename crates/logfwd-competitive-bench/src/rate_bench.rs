@@ -111,6 +111,7 @@ fn run_single_rate(
 
     // Spawn logfwd.
     let mut child = Command::new(logfwd_binary)
+        .arg("run")
         .arg("--config")
         .arg(&cfg_path)
         .stdout(std::process::Stdio::null())

@@ -27,7 +27,7 @@ server:
 ## Run it
 
 ```bash
-logfwd --config pipeline.yaml
+logfwd run --config pipeline.yaml
 ```
 
 ## Monitor it
@@ -46,10 +46,10 @@ curl http://localhost:9090/admin/v1/status | jq .
 ## Validate config without running
 
 ```bash
-logfwd --config pipeline.yaml --validate
+logfwd validate --config pipeline.yaml
 # config ok: 1 pipeline(s)
 
-logfwd --config pipeline.yaml --dry-run
+logfwd dry-run --config pipeline.yaml
 # logfwd v0.1.0
 #   pipeline default: 1 input(s) -> SELECT * FROM logs WHERE ... -> 1 output(s)
 #   ready: default

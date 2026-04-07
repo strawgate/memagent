@@ -43,7 +43,7 @@ docker run -d \
   -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
   -p 9090:9090 \
   logfwd:latest \
-  --config /etc/logfwd/config.yaml
+  run --config /etc/logfwd/config.yaml
 ```
 
 ### Environment variable substitution
@@ -62,7 +62,7 @@ docker run -d \
   -e OTEL_ENDPOINT=otel-collector:4317 \
   -v /var/log:/var/log:ro \
   -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  logfwd:latest --config /etc/logfwd/config.yaml
+  logfwd:latest run --config /etc/logfwd/config.yaml
 ```
 
 ---
@@ -156,6 +156,7 @@ spec:
           image: logfwd:latest
           imagePullPolicy: IfNotPresent
           args:
+            - run
             - --config
             - /etc/logfwd/config.yaml
           env:
@@ -368,17 +369,17 @@ being OOM-killed.
 
 ## Validating before deploy
 
-Use `--validate` to parse and validate the config without starting the pipeline:
+Use `validate` to parse and validate the config without starting the pipeline:
 
 ```bash
-logfwd --config config.yaml --validate
+logfwd validate --config config.yaml
 ```
 
-Use `--dry-run` to build all pipeline objects without starting them (catches errors
+Use `dry-run` to build all pipeline objects without starting them (catches errors
 such as SQL syntax issues):
 
 ```bash
-logfwd --config config.yaml --dry-run
+logfwd dry-run --config config.yaml
 ```
 
 Both commands exit 0 on success and print an error to stderr on failure.

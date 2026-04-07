@@ -90,7 +90,7 @@ _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
     #!/usr/bin/env bash
     set -euo pipefail
     LOGFWD=./target/release/logfwd
-    $LOGFWD --config {{config}} &
+    $LOGFWD run --config {{config}} &
     PID=$!
     sleep {{seconds}}
     STATS=$(curl -s {{diag}}/admin/v1/stats 2>/dev/null || echo '{}')
@@ -109,7 +109,7 @@ _bench-pair name rx_config tx_config seconds="10":
     #!/usr/bin/env bash
     set -euo pipefail
     LOGFWD=./target/release/logfwd
-    $LOGFWD --config {{rx_config}} &
+    $LOGFWD run --config {{rx_config}} &
     RX=$!;
 
     # Poll /ready until the diagnostics HTTP server is up (503 → 200).
@@ -134,7 +134,7 @@ _bench-pair name rx_config tx_config seconds="10":
     # Give run_async() time to bind receiver sockets after /ready returns.
     sleep 1
 
-    $LOGFWD --config {{tx_config}} &
+    $LOGFWD run --config {{tx_config}} &
     TX=$!; sleep {{seconds}}
     STATS=$(curl -s http://127.0.0.1:9091/admin/v1/stats 2>/dev/null || echo '{}')
     kill $TX $RX 2>/dev/null; wait $TX $RX 2>/dev/null || true
@@ -313,7 +313,7 @@ profile-otlp-local lines="500000" seconds="6":
     cp target/release/logfwd "${ROOT}/bin/logfwd-prof"
 
     echo "==> Generate test data ({{lines}} lines)"
-    "${ROOT}/bin/logfwd-prof" --generate-json "{{lines}}" "${ROOT}/logs.json"
+    "${ROOT}/bin/logfwd-prof" generate-json "{{lines}}" "${ROOT}/logs.json"
 
     printf '%s\n' \
       "input:" \
@@ -330,7 +330,7 @@ profile-otlp-local lines="500000" seconds="6":
       > "${ROOT}/config.yaml"
 
     echo "==> Start blackhole on ${PORT}"
-    "${ROOT}/bin/logfwd-prof" --blackhole "127.0.0.1:${PORT}" > "${ROOT}/blackhole.log" 2>&1 &
+    "${ROOT}/bin/logfwd-prof" blackhole "127.0.0.1:${PORT}" > "${ROOT}/blackhole.log" 2>&1 &
     BLACKHOLE_PID=$!
     cleanup() {
         kill -TERM "${BLACKHOLE_PID}" 2>/dev/null || true
@@ -339,7 +339,7 @@ profile-otlp-local lines="500000" seconds="6":
 
     echo "==> Run profiled pipeline for {{seconds}}s"
     pushd "${ROOT}" >/dev/null
-    "${ROOT}/bin/logfwd-prof" --config "${ROOT}/config.yaml" > pipeline.log 2>&1 &
+    "${ROOT}/bin/logfwd-prof" run --config "${ROOT}/config.yaml" > pipeline.log 2>&1 &
     PIPELINE_PID=$!
     sleep "{{seconds}}"
     kill -TERM "${PIPELINE_PID}"
