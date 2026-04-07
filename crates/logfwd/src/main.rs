@@ -14,6 +14,8 @@ use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::WithExportConfig;
 use tokio_util::sync::CancellationToken;
 
+mod config_templates;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_HASH: &str = env!("LOGFWD_GIT_HASH");
 const GIT_DIRTY: &str = env!("LOGFWD_GIT_DIRTY");
@@ -187,6 +189,7 @@ async fn main_inner() -> i32 {
         "--generate-json" => cmd_generate_json(&args),
         "--dump-config" => cmd_dump_config(&args),
         "--init" => cmd_init(),
+        "--wizard" => cmd_wizard(),
         "--completions" => cmd_completions(&args),
         other => {
             eprintln!("{}error{}: unknown command: {other}", red(), reset());
@@ -222,6 +225,7 @@ fn print_usage() {
     println!("  logfwd --generate-json <num_lines> <output_file>");
     println!("  logfwd --dump-config [config.yaml]");
     println!("  logfwd --init");
+    println!("  logfwd --wizard");
     println!("  logfwd --completions <shell>");
     println!();
     println!("{}OPTIONS:{}", bold(), reset());
@@ -232,6 +236,7 @@ fn print_usage() {
     println!("      --generate-json    Generate synthetic JSON log file");
     println!("      --dump-config      Print resolved config to stdout");
     println!("      --init             Generate starter config in current directory");
+    println!("      --wizard           Interactive config wizard");
     println!("      --completions      Print shell completions (bash, zsh, fish)");
     println!("  -h, --help             Show this help");
     println!("  -V, --version          Show version");
@@ -244,6 +249,7 @@ fn print_usage() {
     print_example("logfwd --generate-json 10000 test.json", "synthetic data");
     print_example("logfwd --dump-config config.yaml", "show resolved config");
     print_example("logfwd --init", "generate starter config");
+    print_example("logfwd --wizard", "interactive config generator");
     print_example("logfwd --completions bash", "output bash completions");
     println!();
     println!("{}ENVIRONMENT:{}", bold(), reset());
@@ -432,8 +438,17 @@ fn cmd_dump_config(args: &[String]) -> Result<(), CliError> {
     let config_yaml = std::fs::read_to_string(&config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
 
-    // Validate that the config parses before dumping.
-    logfwd_config::Config::load_str(&config_yaml).map_err(|e| CliError::Config(e.to_string()))?;
+    // Validate that the config parses and can build runtime pipelines before dumping.
+    // This keeps --dump-config consistent with --validate behavior.
+    let config = logfwd_config::Config::load_str(&config_yaml)
+        .map_err(|e| CliError::Config(e.to_string()))?;
+    let base_path = std::path::Path::new(&config_path).parent();
+    validate_pipelines_inner(
+        &config,
+        base_path,
+        |_name| {},
+        |err| eprintln!("  {}error{}: {err}", red(), reset()),
+    )?;
 
     eprintln!("{}# validated from {config_path}{}", dim(), reset());
     print!("{config_yaml}");
@@ -493,6 +508,106 @@ output:
     Ok(())
 }
 
+fn cmd_wizard() -> Result<(), CliError> {
+    use config_templates::{INPUT_TEMPLATES, OUTPUT_TEMPLATES, render_config};
+
+    println!("{}logfwd config wizard{}", bold(), reset());
+    println!("Pick what you want to collect and where to send it.");
+    println!();
+
+    let input_idx = prompt_select(
+        "What do you want to collect?",
+        &INPUT_TEMPLATES.iter().map(|t| t.label).collect::<Vec<_>>(),
+    )?;
+    let output_idx = prompt_select(
+        "Where do you want to send logs?",
+        &OUTPUT_TEMPLATES.iter().map(|t| t.label).collect::<Vec<_>>(),
+    )?;
+
+    let sql = prompt_text(
+        "Optional SQL transform (blank = SELECT * FROM logs)",
+        "SELECT * FROM logs",
+    )?;
+
+    let output_path = prompt_text("Output file path", "logfwd.generated.yaml")?;
+    let path = std::path::PathBuf::from(output_path.trim());
+    if path.exists() {
+        return Err(CliError::Config(format!(
+            "{} already exists — refusing to overwrite",
+            path.display()
+        )));
+    }
+
+    let input = &INPUT_TEMPLATES[input_idx];
+    let output = &OUTPUT_TEMPLATES[output_idx];
+    let sql = if sql.trim().is_empty() {
+        "SELECT * FROM logs"
+    } else {
+        sql.trim()
+    };
+    let cfg = render_config(input, output, sql);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(cfg.as_bytes()))
+        .map_err(|e| CliError::Config(format!("cannot write {}: {e}", path.display())))?;
+
+    eprintln!("{}created{} {}", green(), reset(), path.as_path().display(),);
+    eprintln!(
+        "{}next{}: run {}logfwd -c {} --validate{}",
+        dim(),
+        reset(),
+        bold(),
+        path.display(),
+        reset()
+    );
+    Ok(())
+}
+
+fn prompt_select(prompt: &str, options: &[&str]) -> Result<usize, CliError> {
+    let mut stdout = io::stdout();
+    let stdin = io::stdin();
+    loop {
+        println!("{prompt}");
+        for (i, option) in options.iter().enumerate() {
+            println!("  {}) {option}", i + 1);
+        }
+        print!("Enter choice [1-{}]: ", options.len());
+        stdout.flush()?;
+
+        let mut line = String::new();
+        stdin.read_line(&mut line)?;
+        let trimmed = line.trim();
+        if let Ok(v) = trimmed.parse::<usize>()
+            && (1..=options.len()).contains(&v)
+        {
+            println!();
+            return Ok(v - 1);
+        }
+        eprintln!(
+            "{}invalid choice{}: enter a number from 1 to {}",
+            yellow(),
+            reset(),
+            options.len()
+        );
+    }
+}
+
+fn prompt_text(prompt: &str, default: &str) -> Result<String, CliError> {
+    let mut stdout = io::stdout();
+    print!("{prompt} [{default}]: ");
+    stdout.flush()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        Ok(default.to_owned())
+    } else {
+        Ok(trimmed.to_owned())
+    }
+}
+
 fn cmd_completions(args: &[String]) -> Result<(), CliError> {
     let shell = args.get(2).map_or("", String::as_str);
     match shell {
@@ -519,7 +634,7 @@ _logfwd() {
     local cur prev commands
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="--config -c --blackhole --generate-json --dump-config --init --completions --help -h --version -V"
+    commands="--config -c --blackhole --generate-json --dump-config --init --wizard --completions --help -h --version -V"
 
     case "$prev" in
         --config|-c|--dump-config)
@@ -563,6 +678,7 @@ _logfwd() {
         '--generate-json[Generate synthetic JSON log file]:lines: :output file:_files'
         '--dump-config[Print resolved config]:config file:_files -g "*.y(a|)ml"'
         '--init[Generate starter config]'
+        '--wizard[Interactive config wizard]'
         '--completions[Print shell completions]:shell:(bash zsh fish)'
         '--help[Show help]'
         '-h[Show help]'
@@ -599,6 +715,7 @@ complete -c logfwd -l blackhole -d 'OTLP blackhole receiver'
 complete -c logfwd -l generate-json -d 'Generate synthetic JSON log file'
 complete -c logfwd -l dump-config -d 'Print resolved config' -rF
 complete -c logfwd -l init -d 'Generate starter config'
+complete -c logfwd -l wizard -d 'Interactive config wizard'
 complete -c logfwd -l completions -d 'Print shell completions' -xa 'bash zsh fish'
 complete -c logfwd -l help -s h -d 'Show help'
 complete -c logfwd -l version -s V -d 'Show version'
@@ -675,6 +792,7 @@ fn suggest_flag(input: &str) -> Option<&'static str> {
         "--generate-json",
         "--dump-config",
         "--init",
+        "--wizard",
         "--completions",
         "--help",
         "-h",
@@ -722,11 +840,16 @@ fn edit_distance(a: &str, b: &str) -> usize {
 // ---------------------------------------------------------------------------
 
 /// Validate config by building all pipelines. Used by --validate and --dry-run.
-fn validate_pipelines(
+fn validate_pipelines_inner<FReady, FError>(
     config: &logfwd_config::Config,
-    dry_run: bool,
     base_path: Option<&std::path::Path>,
-) -> Result<(), CliError> {
+    mut on_ready: FReady,
+    mut on_error: FError,
+) -> Result<(), CliError>
+where
+    FReady: FnMut(&str),
+    FError: FnMut(String),
+{
     use logfwd::pipeline::Pipeline;
 
     // Build a no-op meter for validation (no OTel export needed).
@@ -741,19 +864,14 @@ fn validate_pipelines(
                 // errors (duplicate aliases, bad window specs) that only
                 // surface on the first real batch at runtime.
                 if let Err(e) = pipeline.validate_sql_plan() {
-                    eprintln!(
-                        "  {}error{}: pipeline '{name}' SQL plan: {e}",
-                        red(),
-                        reset()
-                    );
+                    on_error(format!("pipeline '{name}' SQL plan: {e}"));
                     errors += 1;
                     continue;
                 }
-                // Success output goes to stdout so scripts can capture it.
-                println!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
+                on_ready(name);
             }
             Err(e) => {
-                eprintln!("  {}error{}: pipeline '{name}': {e}", red(), reset());
+                on_error(format!("pipeline '{name}': {e}"));
                 errors += 1;
             }
         }
@@ -764,6 +882,26 @@ fn validate_pipelines(
             "{errors} error(s) during validation"
         )));
     }
+
+    Ok(())
+}
+
+fn validate_pipelines(
+    config: &logfwd_config::Config,
+    dry_run: bool,
+    base_path: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+    validate_pipelines_inner(
+        config,
+        base_path,
+        |name| {
+            // Success output goes to stdout so scripts can capture it.
+            println!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
+        },
+        |err| {
+            eprintln!("  {}error{}: {err}", red(), reset());
+        },
+    )?;
 
     let label = if dry_run { "dry run ok" } else { "config ok" };
     // Success summary goes to stdout so scripts can parse it reliably.
@@ -1539,6 +1677,7 @@ mod cli_tests {
     #[test]
     fn suggest_flag_includes_new_commands() {
         assert_eq!(suggest_flag("--ini"), Some("--init"));
+        assert_eq!(suggest_flag("--wizar"), Some("--wizard"));
         assert_eq!(suggest_flag("--completion"), Some("--completions"));
         assert_eq!(suggest_flag("--dump-confi"), Some("--dump-config"));
     }
@@ -1547,5 +1686,35 @@ mod cli_tests {
     fn json_logs_are_used_only_when_stderr_is_not_a_tty() {
         assert!(!use_json_logs_for_stderr(true));
         assert!(use_json_logs_for_stderr(false));
+    }
+
+    #[test]
+    fn wizard_template_renders_with_sql() {
+        let input = &config_templates::INPUT_TEMPLATES[0];
+        let output = &config_templates::OUTPUT_TEMPLATES[0];
+        let cfg = config_templates::render_config(
+            input,
+            output,
+            "SELECT * FROM logs WHERE level='ERROR'",
+        );
+        assert!(cfg.contains("input:"));
+        assert!(cfg.contains("output:"));
+        assert!(cfg.contains("transform: |"));
+        assert!(cfg.contains("WHERE level='ERROR'"));
+    }
+
+    #[test]
+    fn validate_pipelines_inner_rejects_otlp_raw() {
+        let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+  format: raw
+output:
+  type: null
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let result = validate_pipelines_inner(&config, None, |_name| {}, |_err| {});
+        assert!(matches!(result, Err(CliError::Config(_))));
     }
 }
