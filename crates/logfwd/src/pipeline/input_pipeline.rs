@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -53,6 +54,16 @@ pub(crate) struct IoChunk {
     pub input_index: usize,
 }
 
+pub(crate) enum IoWorkItem {
+    Bytes(IoChunk),
+    Batch {
+        batch: RecordBatch,
+        checkpoints: Vec<(SourceId, ByteOffset)>,
+        queued_at: tokio::time::Instant,
+        input_index: usize,
+    },
+}
+
 /// Run the I/O worker loop for one input.
 ///
 /// Polls the input source, accumulates bytes to `batch_target_bytes`,
@@ -61,7 +72,7 @@ pub(crate) struct IoChunk {
 #[allow(clippy::too_many_arguments)]
 fn io_worker_loop(
     mut input: InputState,
-    tx: mpsc::Sender<IoChunk>,
+    tx: mpsc::Sender<IoWorkItem>,
     metrics: Arc<PipelineMetrics>,
     shutdown: CancellationToken,
     batch_target_bytes: usize,
@@ -106,6 +117,48 @@ fn io_worker_loop(
                     InputEvent::Data { bytes, .. } => {
                         input.buf.extend_from_slice(&bytes);
                     }
+                    InputEvent::Batch { batch, .. } => {
+                        if !input.buf.is_empty() {
+                            let data = input.buf.split().freeze();
+                            let checkpoints = input.source.checkpoint_data();
+                            let chunk = IoWorkItem::Bytes(IoChunk {
+                                bytes: data,
+                                checkpoints,
+                                queued_at: tokio::time::Instant::now(),
+                                input_index,
+                            });
+                            match tx.try_send(chunk) {
+                                Ok(()) => {}
+                                Err(mpsc::error::TrySendError::Full(chunk)) => {
+                                    tracing::warn!(input = input.source.name(), "input.backpressure");
+                                    metrics.inc_backpressure_stall();
+                                    if tx.blocking_send(chunk).is_err() {
+                                        return;
+                                    }
+                                }
+                                Err(mpsc::error::TrySendError::Closed(_)) => return,
+                            }
+                            buffered_since = None;
+                        }
+
+                        let item = IoWorkItem::Batch {
+                            batch,
+                            checkpoints: input.source.checkpoint_data(),
+                            queued_at: tokio::time::Instant::now(),
+                            input_index,
+                        };
+                        match tx.try_send(item) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Full(item)) => {
+                                tracing::warn!(input = input.source.name(), "input.backpressure");
+                                metrics.inc_backpressure_stall();
+                                if tx.blocking_send(item).is_err() {
+                                    return;
+                                }
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => return,
+                        }
+                    }
                     InputEvent::Rotated { .. } => {
                         input.stats.inc_rotations();
                         tracing::info!(input = input.source.name(), "input.file_rotated");
@@ -135,12 +188,12 @@ fn io_worker_loop(
 
             let data = input.buf.split().freeze();
             let checkpoints = input.source.checkpoint_data();
-            let chunk = IoChunk {
+            let chunk = IoWorkItem::Bytes(IoChunk {
                 bytes: data,
                 checkpoints,
                 queued_at: tokio::time::Instant::now(),
                 input_index,
-            };
+            });
 
             // Try non-blocking first; if full, log backpressure and block.
             // Shutdown awareness comes from the channel-close cascade: when
@@ -166,12 +219,12 @@ fn io_worker_loop(
     if !input.buf.is_empty() {
         let data = input.buf.split().freeze();
         let checkpoints = input.source.checkpoint_data();
-        let chunk = IoChunk {
+        let chunk = IoWorkItem::Bytes(IoChunk {
             bytes: data,
             checkpoints,
             queued_at: tokio::time::Instant::now(),
             input_index,
-        };
+        });
         if tx.blocking_send(chunk).is_err() {
             tracing::warn!(
                 input = input.source.name(),
@@ -201,7 +254,7 @@ fn io_worker_loop(
 /// reused for all batches.
 #[cfg(not(feature = "turmoil"))]
 fn cpu_worker_loop(
-    mut rx: mpsc::Receiver<IoChunk>,
+    mut rx: mpsc::Receiver<IoWorkItem>,
     tx: mpsc::Sender<super::ChannelMsg>,
     mut transform: InputTransform,
     metrics: Arc<PipelineMetrics>,
@@ -221,36 +274,45 @@ fn cpu_worker_loop(
         }
     };
 
-    while let Some(chunk) = rx.blocking_recv() {
-        let t0 = Instant::now();
-
-        // Scan bytes → RecordBatch (synchronous).
-        let batch = match transform.scanner.scan(chunk.bytes) {
-            Ok(b) => b,
-            Err(e) => {
-                metrics.inc_scan_error();
-                metrics.inc_parse_error();
-                metrics.inc_dropped_batch();
-                tracing::warn!(
-                    input = transform.input_name.as_str(),
-                    error = %e,
-                    "cpu_worker: scan error (batch dropped)"
-                );
-                // Checkpoints dropped — at-least-once: data will be re-read
-                // on restart. This matches flush_batch_from's old behavior
-                // where Queued tickets were simply dropped on scan error.
-                continue;
+    while let Some(item) = rx.blocking_recv() {
+        let (batch, checkpoints, queued_at, input_index, scan_ns) = match item {
+            IoWorkItem::Bytes(chunk) => {
+                let t0 = Instant::now();
+                let batch = match transform.scanner.scan(chunk.bytes) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        metrics.inc_scan_error();
+                        metrics.inc_parse_error();
+                        metrics.inc_dropped_batch();
+                        tracing::warn!(
+                            input = transform.input_name.as_str(),
+                            error = %e,
+                            "cpu_worker: scan error (batch dropped)"
+                        );
+                        continue;
+                    }
+                };
+                (
+                    batch,
+                    chunk.checkpoints,
+                    chunk.queued_at,
+                    chunk.input_index,
+                    t0.elapsed().as_nanos() as u64,
+                )
             }
+            IoWorkItem::Batch {
+                batch,
+                checkpoints,
+                queued_at,
+                input_index,
+            } => (batch, checkpoints, queued_at, input_index, 0),
         };
-
-        let scan_ns = t0.elapsed().as_nanos() as u64;
 
         let num_rows = batch.num_rows();
         if num_rows > 0 {
             metrics.transform_in.inc_lines(num_rows as u64);
         }
 
-        // SQL transform (async internally, run on our local runtime).
         let t1 = Instant::now();
         let result = match rt.block_on(transform.transform.execute(batch)) {
             Ok(r) => r,
@@ -262,25 +324,18 @@ fn cpu_worker_loop(
                     error = %e,
                     "cpu_worker: transform error (batch dropped)"
                 );
-                // Checkpoints dropped — at-least-once: data will be re-read
-                // on restart. This matches flush_batch_from's old behavior
-                // where Sending tickets were rejected on transform error.
                 continue;
             }
         };
 
         let transform_ns = t1.elapsed().as_nanos() as u64;
-
-        // Note: transform_out is NOT tracked here — the pipeline's
-        // submit_scanned_batch increments it after the processor chain.
-
-        let checkpoint_map: HashMap<SourceId, ByteOffset> = chunk.checkpoints.into_iter().collect();
+        let checkpoint_map: HashMap<SourceId, ByteOffset> = checkpoints.into_iter().collect();
 
         let msg = super::ChannelMsg {
             batch: result,
             checkpoints: checkpoint_map,
-            queued_at: Some(chunk.queued_at),
-            input_index: chunk.input_index,
+            queued_at: Some(queued_at),
+            input_index,
             scan_ns,
             transform_ns,
         };
@@ -343,7 +398,7 @@ impl InputPipelineManager {
 
         for (idx, (input, transform)) in inputs.into_iter().zip(transforms.into_iter()).enumerate()
         {
-            let (io_tx, io_rx) = mpsc::channel::<IoChunk>(IO_CPU_CHANNEL_CAPACITY);
+            let (io_tx, io_rx) = mpsc::channel::<IoWorkItem>(IO_CPU_CHANNEL_CAPACITY);
 
             // Spawn I/O worker.
             let shutdown_io = shutdown.clone();

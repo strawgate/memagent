@@ -15,6 +15,7 @@ logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-otap-proto = { version = "0.1.0", path = "../logfwd-otap-proto" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 arrow = { workspace = true }
+bytes = "1"
 crossbeam-channel = "0.5"
 globset = { workspace = true }
 libc = "0.2"

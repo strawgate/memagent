@@ -931,7 +931,6 @@ impl Pipeline {
             self.metrics.finish_active_batch(batch_id);
             return;
         }
-
         // Run through processor chain.
         let metadata = BatchMetadata {
             resource_attrs: Arc::clone(&self.resource_attrs),
@@ -1191,6 +1190,37 @@ async fn async_input_poll_loop(
                     InputEvent::Data { bytes, .. } => {
                         input.buf.extend_from_slice(&bytes);
                     }
+                    InputEvent::Batch { batch, .. } => {
+                        if !input.buf.is_empty() {
+                            if let Some(msg) = scan_and_transform_for_send(
+                                &mut input,
+                                &mut transform,
+                                &metrics,
+                                input_index,
+                            )
+                            .await
+                            {
+                                if tx.send(msg).await.is_err() {
+                                    return;
+                                }
+                            }
+                            buffered_since = None;
+                        }
+
+                        if let Some(msg) = transform_direct_batch_for_send(
+                            &mut input,
+                            &mut transform,
+                            &metrics,
+                            input_index,
+                            batch,
+                        )
+                        .await
+                        {
+                            if tx.send(msg).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
                     InputEvent::Rotated { .. } => {
                         input.stats.inc_rotations();
                     }
@@ -1295,6 +1325,49 @@ async fn scan_and_transform_for_send(
         queued_at: Some(queued_at),
         input_index,
         scan_ns,
+        transform_ns,
+    })
+}
+
+#[cfg(feature = "turmoil")]
+async fn transform_direct_batch_for_send(
+    input: &mut InputState,
+    transform: &mut InputTransform,
+    metrics: &PipelineMetrics,
+    input_index: usize,
+    batch: RecordBatch,
+) -> Option<ChannelMsg> {
+    let checkpoints: HashMap<SourceId, ByteOffset> =
+        input.source.checkpoint_data().into_iter().collect();
+    let queued_at = tokio::time::Instant::now();
+
+    let num_rows = batch.num_rows();
+    if num_rows > 0 {
+        metrics.transform_in.inc_lines(num_rows as u64);
+    }
+
+    let t0 = tokio::time::Instant::now();
+    let result = match transform.transform.execute(batch).await {
+        Ok(r) => r,
+        Err(e) => {
+            metrics.inc_transform_error();
+            metrics.inc_dropped_batch();
+            tracing::warn!(
+                input = transform.input_name.as_str(),
+                error = %e,
+                "transform error"
+            );
+            return None;
+        }
+    };
+    let transform_ns = t0.elapsed().as_nanos() as u64;
+
+    Some(ChannelMsg {
+        batch: result,
+        checkpoints,
+        queued_at: Some(queued_at),
+        input_index,
+        scan_ns: 0,
         transform_ns,
     })
 }
@@ -1443,7 +1516,7 @@ fn build_input_state(
                 .ok_or_else(|| format!("input '{name}': otlp input requires 'listen'"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Otlp, &format)?;
-            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new(name, addr)
+            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new_structured(name, addr)
                 .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }

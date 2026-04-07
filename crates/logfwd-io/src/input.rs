@@ -1,6 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
+use arrow::record_batch::RecordBatch;
 use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 
@@ -15,6 +16,11 @@ pub enum InputEvent {
     /// which tailed file). `None` for push sources that don't track identity.
     Data {
         bytes: Vec<u8>,
+        source_id: Option<SourceId>,
+    },
+    /// New structured rows produced directly by the source.
+    Batch {
+        batch: RecordBatch,
         source_id: Option<SourceId>,
     },
     /// The underlying file was rotated (new inode).

@@ -13,7 +13,12 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+use arrow::record_batch::RecordBatch;
 use base64::Engine as _;
+use bytes::Bytes;
+use logfwd_arrow::{Scanner, StreamingBuilder};
+use logfwd_core::scan_config::ScanConfig;
+use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::AnyValue;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use prost::Message;
@@ -32,7 +37,7 @@ const CHANNEL_BOUND: usize = 4096;
 /// OTLP receiver that listens for log exports via HTTP.
 pub struct OtlpReceiverInput {
     name: String,
-    rx: Option<mpsc::Receiver<Vec<u8>>>,
+    rx: Option<mpsc::Receiver<ReceiverPayload>>,
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
     server: Arc<tiny_http::Server>,
@@ -44,15 +49,47 @@ pub struct OtlpReceiverInput {
     health: Arc<AtomicU8>,
 }
 
+#[derive(Clone, Copy)]
+enum ReceiverMode {
+    JsonLines,
+    StructuredBatch,
+}
+
+enum ReceiverPayload {
+    JsonLines(Vec<u8>),
+    Batch(RecordBatch),
+}
+
+struct ResolvedStringField {
+    idx: usize,
+    bytes: Vec<u8>,
+}
+
 impl OtlpReceiverInput {
     /// Bind an HTTP server on `addr` (e.g. "0.0.0.0:4318").
     /// Spawns a background thread to handle requests.
     pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
-        Self::new_with_capacity(name, addr, CHANNEL_BOUND)
+        Self::new_with_capacity_and_mode(name, addr, CHANNEL_BOUND, ReceiverMode::JsonLines)
+    }
+
+    /// Like [`Self::new`], but emits structured batches directly instead of
+    /// JSON lines.
+    pub fn new_structured(name: impl Into<String>, addr: &str) -> io::Result<Self> {
+        Self::new_with_capacity_and_mode(name, addr, CHANNEL_BOUND, ReceiverMode::StructuredBatch)
     }
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
+    #[cfg(test)]
     fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
+        Self::new_with_capacity_and_mode(name, addr, capacity, ReceiverMode::JsonLines)
+    }
+
+    fn new_with_capacity_and_mode(
+        name: impl Into<String>,
+        addr: &str,
+        capacity: usize,
+        mode: ReceiverMode,
+    ) -> io::Result<Self> {
         let server = Arc::new(
             tiny_http::Server::http(addr)
                 .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?,
@@ -215,15 +252,15 @@ impl OtlpReceiverInput {
                         .to_ascii_lowercase()
                         .contains("application/json");
 
-                    // Decode and convert to JSON lines.
-                    let json_lines = if is_json {
-                        decode_otlp_logs_json(&body)
+                    // Decode and convert to the selected downstream shape.
+                    let payload = if is_json {
+                        decode_otlp_logs_with_mode_json(&body, mode)
                     } else {
-                        decode_otlp_logs(&body)
+                        decode_otlp_logs_with_mode(&body, mode)
                     };
 
-                    let json_lines = match json_lines {
-                        Ok(lines) => lines,
+                    let payload = match payload {
+                        Ok(payload) => payload,
                         Err(msg) => {
                             let _ = request.respond(
                                 tiny_http::Response::from_string(msg.to_string())
@@ -233,10 +270,10 @@ impl OtlpReceiverInput {
                         }
                     };
 
-                    let send_result = if json_lines.is_empty() {
+                    let send_result = if payload.is_empty() {
                         Ok(())
                     } else {
-                        tx.try_send(json_lines)
+                        tx.try_send(payload)
                     };
 
                     match send_result {
@@ -318,20 +355,28 @@ impl InputSource for OtlpReceiverInput {
             return Ok(vec![]);
         };
         let mut all = Vec::new();
+        let mut batches = Vec::new();
 
-        // Drain all available decoded batches.
+        // Drain all available decoded payloads.
         while let Ok(data) = rx.try_recv() {
-            all.extend_from_slice(&data);
+            match data {
+                ReceiverPayload::JsonLines(data) => all.extend_from_slice(&data),
+                ReceiverPayload::Batch(batch) => batches.push(batch),
+            }
         }
 
-        if all.is_empty() {
-            Ok(vec![])
-        } else {
-            Ok(vec![InputEvent::Data {
+        let mut events = Vec::with_capacity((!all.is_empty()) as usize + batches.len());
+        if !all.is_empty() {
+            events.push(InputEvent::Data {
                 bytes: all,
                 source_id: None,
-            }])
+            });
         }
+        events.extend(batches.into_iter().map(|batch| InputEvent::Batch {
+            batch,
+            source_id: None,
+        }));
+        Ok(events)
     }
 
     fn name(&self) -> &str {
@@ -349,6 +394,15 @@ impl InputSource for OtlpReceiverInput {
             ComponentHealth::Failed
         } else {
             stored
+        }
+    }
+}
+
+impl ReceiverPayload {
+    fn is_empty(&self) -> bool {
+        match self {
+            ReceiverPayload::JsonLines(lines) => lines.is_empty(),
+            ReceiverPayload::Batch(batch) => batch.num_rows() == 0,
         }
     }
 }
@@ -480,6 +534,18 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
     Ok(out)
 }
 
+fn decode_otlp_logs_with_mode_json(
+    body: &[u8],
+    mode: ReceiverMode,
+) -> Result<ReceiverPayload, InputError> {
+    match mode {
+        ReceiverMode::JsonLines => decode_otlp_logs_json(body).map(ReceiverPayload::JsonLines),
+        ReceiverMode::StructuredBatch => {
+            decode_otlp_logs_json_to_batch(body).map(ReceiverPayload::Batch)
+        }
+    }
+}
+
 /// Extract a scalar OTLP JSON AnyValue as an owned string.
 /// Returns `Ok(None)` when the value is not a supported scalar string representation.
 fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, InputError> {
@@ -557,8 +623,6 @@ fn write_json_any_value_field_from_json(
 /// JSON. Each LogRecord becomes one JSON line with fields that the scanner
 /// can extract into Arrow columns.
 fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, InputError> {
-    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-
     if body.is_empty() {
         return Ok(Vec::new());
     }
@@ -569,9 +633,42 @@ fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, InputError> {
     Ok(convert_request_to_json_lines(&request))
 }
 
+fn decode_otlp_logs_with_mode(body: &[u8], mode: ReceiverMode) -> Result<ReceiverPayload, InputError> {
+    match mode {
+        ReceiverMode::JsonLines => decode_otlp_logs(body).map(ReceiverPayload::JsonLines),
+        ReceiverMode::StructuredBatch => decode_otlp_logs_to_batch(body).map(ReceiverPayload::Batch),
+    }
+}
+
+fn decode_otlp_logs_json_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
+    let json_lines = decode_otlp_logs_json(body)?;
+    if json_lines.is_empty() {
+        return Ok(RecordBatch::new_empty(Arc::new(
+            arrow::datatypes::Schema::empty(),
+        )));
+    }
+    let mut scanner = Scanner::new(ScanConfig::default());
+    scanner
+        .scan(Bytes::from(json_lines))
+        .map_err(|e| InputError::Receiver(format!("structured OTLP JSON scan error: {e}")))
+}
+
+fn decode_otlp_logs_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
+    if body.is_empty() {
+        return Ok(RecordBatch::new_empty(Arc::new(
+            arrow::datatypes::Schema::empty(),
+        )));
+    }
+
+    let request = ExportLogsServiceRequest::decode(body)
+        .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
+
+    convert_request_to_batch(&request)
+}
+
 /// Shared conversion: ExportLogsServiceRequest -> newline-delimited JSON bytes.
 fn convert_request_to_json_lines(
-    request: &opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest,
+    request: &ExportLogsServiceRequest,
 ) -> Vec<u8> {
     let mut out = Vec::new();
 
@@ -657,6 +754,164 @@ fn convert_request_to_json_lines(
     }
 
     out
+}
+
+fn convert_request_to_batch(request: &ExportLogsServiceRequest) -> Result<RecordBatch, InputError> {
+    let mut builder = StreamingBuilder::new(false);
+    builder.begin_batch(Bytes::new());
+
+    let timestamp_idx = builder.resolve_field(field_names::TIMESTAMP.as_bytes());
+    let severity_idx = builder.resolve_field(field_names::SEVERITY.as_bytes());
+    let body_idx = builder.resolve_field(field_names::BODY.as_bytes());
+    let trace_id_idx = builder.resolve_field(field_names::TRACE_ID.as_bytes());
+    let span_id_idx = builder.resolve_field(field_names::SPAN_ID.as_bytes());
+    let mut hex_buf = Vec::with_capacity(64);
+
+    for resource_logs in &request.resource_logs {
+        let mut resource_attrs = Vec::new();
+        if let Some(ref resource) = resource_logs.resource {
+            for attr in &resource.attributes {
+                if let Some(ref value) = attr.value {
+                    if let Some(field) =
+                        resolve_stringified_field(&mut builder, &attr.key, value, &mut hex_buf)
+                    {
+                        resource_attrs.push(field);
+                    }
+                }
+            }
+        }
+
+        for scope_logs in &resource_logs.scope_logs {
+            for record in &scope_logs.log_records {
+                builder.begin_row();
+
+                if record.time_unix_nano > 0
+                    && let Ok(ts) = i64::try_from(record.time_unix_nano)
+                {
+                    builder.append_i64_value_by_idx(timestamp_idx, ts);
+                }
+
+                if !record.severity_text.is_empty() {
+                    builder.append_decoded_str_by_idx(severity_idx, record.severity_text.as_bytes());
+                }
+
+                if let Some(ref body_val) = record.body {
+                    append_any_value_as_string(&mut builder, body_idx, body_val, &mut hex_buf);
+                }
+
+                for attr in &record.attributes {
+                    if let Some(ref value) = attr.value {
+                        append_attribute_value(&mut builder, &attr.key, value, &mut hex_buf);
+                    }
+                }
+
+                for field in &resource_attrs {
+                    builder.append_decoded_str_by_idx(field.idx, &field.bytes);
+                }
+
+                if !record.trace_id.is_empty() {
+                    append_hex_field(&mut builder, trace_id_idx, &record.trace_id, &mut hex_buf);
+                }
+                if !record.span_id.is_empty() {
+                    append_hex_field(&mut builder, span_id_idx, &record.span_id, &mut hex_buf);
+                }
+
+                builder.end_row();
+            }
+        }
+    }
+
+    builder
+        .finish_batch_detached()
+        .map_err(|e| InputError::Receiver(format!("structured OTLP batch build error: {e}")))
+}
+
+fn append_attribute_value(
+    builder: &mut StreamingBuilder,
+    key: &str,
+    value: &AnyValue,
+    hex_buf: &mut Vec<u8>,
+) {
+    let idx = builder.resolve_field(key.as_bytes());
+    match &value.value {
+        Some(Value::IntValue(v)) => builder.append_i64_value_by_idx(idx, *v),
+        Some(Value::DoubleValue(v)) => builder.append_f64_value_by_idx(idx, *v),
+        Some(Value::BoolValue(v)) => builder.append_decoded_str_by_idx(
+            idx,
+            if *v { b"true" } else { b"false" },
+        ),
+        Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
+        Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
+        _ => {}
+    }
+}
+
+fn resolve_stringified_field(
+    builder: &mut StreamingBuilder,
+    key: &str,
+    value: &AnyValue,
+    hex_buf: &mut Vec<u8>,
+) -> Option<ResolvedStringField> {
+    let idx = builder.resolve_field(key.as_bytes());
+    let bytes = any_value_to_string_bytes(value, hex_buf)?;
+    Some(ResolvedStringField { idx, bytes })
+}
+
+fn append_any_value_as_string(
+    builder: &mut StreamingBuilder,
+    idx: usize,
+    value: &AnyValue,
+    hex_buf: &mut Vec<u8>,
+) {
+    match &value.value {
+        Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
+        Some(Value::IntValue(v)) => {
+            let value = v.to_string();
+            builder.append_decoded_str_by_idx(idx, value.as_bytes());
+        }
+        Some(Value::DoubleValue(v)) => {
+            let value = v.to_string();
+            builder.append_decoded_str_by_idx(idx, value.as_bytes());
+        }
+        Some(Value::BoolValue(v)) => builder.append_decoded_str_by_idx(
+            idx,
+            if *v { b"true" } else { b"false" },
+        ),
+        Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
+        _ => {}
+    }
+}
+
+fn any_value_to_string_bytes(value: &AnyValue, hex_buf: &mut Vec<u8>) -> Option<Vec<u8>> {
+    match &value.value {
+        Some(Value::StringValue(v)) => Some(v.as_bytes().to_vec()),
+        Some(Value::IntValue(v)) => Some(v.to_string().into_bytes()),
+        Some(Value::DoubleValue(v)) => Some(v.to_string().into_bytes()),
+        Some(Value::BoolValue(v)) => Some(if *v {
+            b"true".to_vec()
+        } else {
+            b"false".to_vec()
+        }),
+        Some(Value::BytesValue(v)) => {
+            hex_buf.clear();
+            hex_buf.reserve(v.len() * 2);
+            write_hex_to_buf(hex_buf, v);
+            Some(hex_buf.clone())
+        }
+        _ => None,
+    }
+}
+
+fn append_hex_field(
+    builder: &mut StreamingBuilder,
+    idx: usize,
+    value: &[u8],
+    hex_buf: &mut Vec<u8>,
+) {
+    hex_buf.clear();
+    hex_buf.reserve(value.len() * 2);
+    write_hex_to_buf(hex_buf, value);
+    builder.append_decoded_str_by_idx(idx, hex_buf);
 }
 
 fn any_value_to_string(v: &AnyValue) -> Option<String> {
@@ -989,6 +1244,10 @@ mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::{Array, Int64Array, StringArray, StringViewArray};
+    use bytes::Bytes;
+    use logfwd_arrow::Scanner;
+    use logfwd_core::scan_config::ScanConfig;
     use opentelemetry_proto::tonic::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, KeyValue, any_value::Value},
@@ -1046,6 +1305,64 @@ mod tests {
             }],
         };
         request.encode_to_vec()
+    }
+
+    #[test]
+    fn structured_batch_matches_legacy_scanned_batch() {
+        let body = make_test_request();
+        let json_lines = decode_otlp_logs(&body).expect("legacy decode succeeds");
+        let structured = decode_otlp_logs_to_batch(&body).expect("structured decode succeeds");
+
+        let mut scanner = Scanner::new(ScanConfig::default());
+        let legacy = scanner
+            .scan(Bytes::from(json_lines))
+            .expect("legacy JSON lines scan");
+
+        assert_eq!(legacy.num_columns(), structured.num_columns());
+        for idx in 0..legacy.num_columns() {
+            assert_eq!(legacy.schema().field(idx).name(), structured.schema().field(idx).name());
+            assert_eq!(
+                column_values(legacy.column(idx).as_ref()),
+                column_values(structured.column(idx).as_ref())
+            );
+        }
+    }
+
+    fn column_values(array: &dyn Array) -> Vec<String> {
+        if let Some(array) = array.as_any().downcast_ref::<Int64Array>() {
+            return (0..array.len())
+                .map(|idx| {
+                    if array.is_null(idx) {
+                        "NULL".to_string()
+                    } else {
+                        array.value(idx).to_string()
+                    }
+                })
+                .collect();
+        }
+        if let Some(array) = array.as_any().downcast_ref::<StringArray>() {
+            return (0..array.len())
+                .map(|idx| {
+                    if array.is_null(idx) {
+                        "NULL".to_string()
+                    } else {
+                        array.value(idx).to_string()
+                    }
+                })
+                .collect();
+        }
+        if let Some(array) = array.as_any().downcast_ref::<StringViewArray>() {
+            return (0..array.len())
+                .map(|idx| {
+                    if array.is_null(idx) {
+                        "NULL".to_string()
+                    } else {
+                        array.value(idx).to_string()
+                    }
+                })
+                .collect();
+        }
+        panic!("unsupported test array type: {:?}", array.data_type());
     }
 
     #[test]

@@ -358,6 +358,27 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    pub fn append_i64_value_by_idx(&mut self, idx: usize, value: i64) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_i64_value_by_idx called outside of a row"
+        );
+        if check_dup_bits(&mut self.written_bits, idx) {
+            return;
+        }
+        let fc = &mut self.fields[idx];
+        if idx >= 64 {
+            if fc.last_row == self.row_count {
+                return;
+            }
+            fc.last_row = self.row_count;
+        }
+        fc.has_int = true;
+        fc.int_values.push((self.row_count, value));
+    }
+
+    #[inline(always)]
     pub fn append_float_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
             self.state,
@@ -378,6 +399,27 @@ impl StreamingBuilder {
             fc.has_float = true;
             fc.float_values.push((self.row_count, v));
         }
+    }
+
+    #[inline(always)]
+    pub fn append_f64_value_by_idx(&mut self, idx: usize, value: f64) {
+        debug_assert_eq!(
+            self.state,
+            BuilderState::InRow,
+            "append_f64_value_by_idx called outside of a row"
+        );
+        if check_dup_bits(&mut self.written_bits, idx) {
+            return;
+        }
+        let fc = &mut self.fields[idx];
+        if idx >= 64 {
+            if fc.last_row == self.row_count {
+                return;
+            }
+            fc.last_row = self.row_count;
+        }
+        fc.has_float = true;
+        fc.float_values.push((self.row_count, value));
     }
 
     #[inline(always)]

@@ -222,6 +222,9 @@ impl InputSource for FramedInput {
                         });
                     }
                 }
+                InputEvent::Batch { .. } => {
+                    result_events.push(event);
+                }
                 // Rotation/truncation: clear framing state + forward event.
                 //
                 // When source_id is known, clear only the affected source's
