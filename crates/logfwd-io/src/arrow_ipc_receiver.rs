@@ -202,10 +202,12 @@ impl ArrowIpcReceiver {
 
                     // Send all batches to the pipeline.
                     let mut send_error: Option<u16> = None;
+                    let mut sent_rows = false;
                     for batch in batches {
                         if batch.num_rows() == 0 {
                             continue;
                         }
+                        sent_rows = true;
                         match tx.try_send(batch) {
                             Ok(()) => {}
                             Err(mpsc::TrySendError::Full(_)) => {
@@ -244,8 +246,10 @@ impl ArrowIpcReceiver {
                         }
                         Some(_) => unreachable!(),
                         None => {
-                            health_clone
-                                .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
+                            if sent_rows {
+                                health_clone
+                                    .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
+                            }
                             let _ = request.respond(
                                 tiny_http::Response::from_string("").with_status_code(200),
                             );
@@ -549,6 +553,38 @@ mod tests {
     fn decode_ipc_stream_empty_body() {
         let batches = decode_ipc_stream(b"").expect("empty body should succeed");
         assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn empty_request_does_not_clear_failed_health() {
+        let mut receiver = ArrowIpcReceiver::new_with_capacity("test-empty", "127.0.0.1:0", 16)
+            .expect("bind should succeed");
+        let addr = receiver.local_addr();
+
+        // Drop the consumer side so the receiver reports pipeline disconnection.
+        receiver.rx.take();
+
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_batch(&batch);
+        let url = format!("http://{addr}/v1/arrow");
+
+        let result = ureq::post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .send(&ipc_bytes);
+        let status = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(status, 503);
+        assert_eq!(receiver.health(), ComponentHealth::Failed);
+
+        let response = ureq::post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .send(b"" as &[u8])
+            .expect("empty request should still succeed");
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(receiver.health(), ComponentHealth::Failed);
     }
 
     #[test]
