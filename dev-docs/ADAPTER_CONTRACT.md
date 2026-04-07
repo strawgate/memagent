@@ -70,7 +70,7 @@ scanner-ready JSON lines.
 - Unsupported paths return `404`.
 - Wrong methods return `405`.
 - Bodies over the configured hard cap are rejected with `413`.
-- Supported encodings are `identity` and `zstd`.
+- Supported encodings are `identity`, `zstd`, and `gzip`.
 - Malformed JSON, malformed protobuf, or malformed OTLP JSON field encodings
   are rejected with `400`.
 - Backpressure returns `429`.
@@ -78,8 +78,9 @@ scanner-ready JSON lines.
 
 ### Diagnostics accounting rules
 
-- Input diagnostics must charge OTLP request bytes from the accepted payload
-  size at the receiver boundary, not from downstream Arrow memory estimates.
+- Input diagnostics must charge OTLP request bytes from the accepted request
+  body size at the receiver boundary as received on the wire, not from
+  downstream Arrow memory estimates or post-decompression payload size.
 - Legacy OTLP JSON-lines ingress and structured OTLP batch ingress must report
   the same `lines_total` and comparable `bytes_total` for the same accepted
   request body.

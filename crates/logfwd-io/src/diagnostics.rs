@@ -1475,8 +1475,8 @@ mod tests {
         inp.inc_rotations();
 
         pm.transform_in.inc_lines(1000);
-        // transform_out.inc_lines is no longer called in the pipeline hot path;
-        // lines_out is derived from output-sink stats instead.
+        // The status endpoint derives lines_out from output-sink stats, so the
+        // fixture only needs output lines populated here.
 
         let out = pm.add_output("collector", "otlp");
         out.inc_lines(900);

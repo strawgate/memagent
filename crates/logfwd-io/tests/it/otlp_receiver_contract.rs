@@ -103,6 +103,29 @@ fn poll_until_events(input: &mut dyn InputSource, timeout: Duration) -> Vec<Inpu
     panic!("timed out waiting for OTLP receiver events");
 }
 
+fn assert_accounted_bytes_for_payload(
+    body: &[u8],
+    content_type: &str,
+    content_encoding: Option<&str>,
+) {
+    for structured in [false, true] {
+        let stats = Arc::new(ComponentStats::new());
+        let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats), structured);
+
+        let status = send_status(&url, body, content_type, content_encoding);
+        assert_eq!(status, 200, "request should succeed");
+
+        let events = poll_until_events(&mut input, Duration::from_secs(2));
+        assert!(!events.is_empty(), "receiver should emit at least one event");
+        assert_eq!(
+            stats.bytes(),
+            body.len() as u64,
+            "receiver should charge the accepted request-body size at the input boundary"
+        );
+        assert_eq!(stats.lines(), 1, "one OTLP request should yield one row");
+    }
+}
+
 fn semantic_request() -> ExportLogsServiceRequest {
     ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
@@ -354,6 +377,37 @@ fn otlp_receiver_legacy_and_structured_rejections_increment_parse_errors() {
             "invalid protobuf should increment parse errors"
         );
     }
+}
+
+#[test]
+fn otlp_receiver_legacy_and_structured_account_gzip_body_bytes() {
+    let request = semantic_request();
+    let protobuf_body = request.encode_to_vec();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    use std::io::Write as _;
+    encoder
+        .write_all(&protobuf_body)
+        .expect("gzip write should succeed");
+    let gzip_body = encoder.finish().expect("gzip finish should succeed");
+
+    assert_accounted_bytes_for_payload(
+        &gzip_body,
+        "application/x-protobuf",
+        Some("gzip"),
+    );
+}
+
+#[test]
+fn otlp_receiver_legacy_and_structured_account_zstd_body_bytes() {
+    let request = semantic_request();
+    let protobuf_body = request.encode_to_vec();
+    let zstd_body = zstd::bulk::compress(&protobuf_body, 1).expect("zstd compress");
+
+    assert_accounted_bytes_for_payload(
+        &zstd_body,
+        "application/x-protobuf",
+        Some("zstd"),
+    );
 }
 
 #[test]

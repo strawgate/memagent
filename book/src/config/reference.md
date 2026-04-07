@@ -500,7 +500,8 @@ When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitori
 
 For input diagnostics, `bytes_total` reflects source payload bytes accepted at
 the input boundary. For structured receivers such as OTLP, this is the
-accepted request-body size, not the in-memory Arrow batch footprint.
+accepted request-body size as received on the wire, not the in-memory Arrow
+batch footprint or the post-decompression payload size.
 
 ---
 

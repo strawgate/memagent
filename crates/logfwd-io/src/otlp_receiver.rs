@@ -273,6 +273,8 @@ impl OtlpReceiverInput {
                         .find(|h| h.field.equiv("Content-Encoding"))
                         .map(|h| h.value.as_str().to_lowercase());
 
+                    let accounted_bytes = body.len() as u64;
+
                     let body = match content_encoding.as_deref() {
                         Some("zstd") => match decompress_zstd(&body) {
                             Ok(body) => body,
@@ -353,9 +355,9 @@ impl OtlpReceiverInput {
 
                     // Decode and convert to the selected downstream shape.
                     let payload = if is_json {
-                        decode_otlp_logs_with_mode_json(&body, mode)
+                        decode_otlp_logs_with_mode_json(&body, mode, accounted_bytes)
                     } else {
-                        decode_otlp_logs_with_mode(&body, mode)
+                        decode_otlp_logs_with_mode(&body, mode, accounted_bytes)
                     };
 
                     let payload = match payload {
@@ -684,8 +686,8 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
 fn decode_otlp_logs_with_mode_json(
     body: &[u8],
     mode: ReceiverMode,
+    accounted_bytes: u64,
 ) -> Result<ReceiverPayload, InputError> {
-    let accounted_bytes = body.len() as u64;
     match mode {
         ReceiverMode::JsonLines => {
             decode_otlp_logs_json(body).map(|lines| ReceiverPayload::JsonLines {
@@ -792,8 +794,8 @@ fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, InputError> {
 fn decode_otlp_logs_with_mode(
     body: &[u8],
     mode: ReceiverMode,
+    accounted_bytes: u64,
 ) -> Result<ReceiverPayload, InputError> {
-    let accounted_bytes = body.len() as u64;
     match mode {
         ReceiverMode::JsonLines => decode_otlp_logs(body).map(|lines| ReceiverPayload::JsonLines {
             lines,

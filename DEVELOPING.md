@@ -170,6 +170,14 @@ Profiling showed `get_or_create_field` dominating — SipHash + probe per field 
 
 Arrow's `get_array_memory_size()` counts the backing buffer for every column sharing it. If 5 string columns point into the same buffer, reported memory is 5x actual. The `StreamingBuilder` produces shared-buffer columns; memory reports overcount significantly.
 
+### Source-byte accounting must happen before payload normalization
+
+If an input mutates payloads before framing or scanning, diagnostics must still
+charge bytes from the original source payload, not the normalized buffer. Two
+easy ways to get this wrong are synthetic newline insertion and compressed
+request decoding. Capture source bytes at the receiver boundary first, then
+carry them explicitly through `InputEvent::Data` or `InputEvent::Batch`.
+
 ### Arrow IPC compression is just a flag
 
 Compressed Arrow IPC is `StreamWriter` with `IpcWriteOptions::try_with_compression(Some(CompressionType::ZSTD))`. Any `RecordBatch` can be compressed. No special builder needed.
