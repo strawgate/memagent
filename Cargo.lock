@@ -2556,9 +2556,8 @@ dependencies = [
 name = "logfwd-otap-proto"
 version = "0.1.0"
 dependencies = [
+ "logfwd-proto-build",
  "prost",
- "prost-build",
- "protoc-bin-vendored",
 ]
 
 [[package]]
@@ -2594,6 +2593,14 @@ dependencies = [
  "tracing",
  "ureq",
  "zstd",
+]
+
+[[package]]
+name = "logfwd-proto-build"
+version = "0.1.0"
+dependencies = [
+ "prost-build",
+ "protoc-bin-vendored",
 ]
 
 [[package]]

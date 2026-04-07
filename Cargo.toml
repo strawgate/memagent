@@ -7,6 +7,7 @@ members = [
     "crates/logfwd-arrow",
     "crates/logfwd-transform",
     "crates/logfwd-io",
+    "crates/logfwd-proto-build",
     "crates/logfwd-otap-proto",
     "crates/logfwd-output",
     "crates/logfwd",

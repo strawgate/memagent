@@ -29,7 +29,9 @@ pub use loki::{LokiSink, LokiSinkFactory};
 pub use null::{NullSink, NullSinkFactory};
 pub use otap_sink::{
     ArrowPayloadType, BatchStatus, DecodedPayload, OtapSinkFactory, StatusCode,
-    decode_batch_arrow_records, decode_batch_status, encode_batch_arrow_records,
+    decode_batch_arrow_records, decode_batch_arrow_records_generated_fast, decode_batch_status,
+    decode_batch_status_generated_fast, encode_batch_arrow_records,
+    encode_batch_arrow_records_generated_fast,
 };
 pub use otlp_sink::{OtlpProtocol, OtlpSink, OtlpSinkFactory};
 pub use sink::{
