@@ -153,7 +153,7 @@ impl GeneratorInput {
         self.counter
     }
 
-    fn generate_batch(&mut self) {
+    fn generate_batch(&mut self) -> io::Result<()> {
         self.buf.clear();
         let n = self.config.batch_size;
         for _ in 0..n {
@@ -161,15 +161,19 @@ impl GeneratorInput {
                 self.done = true;
                 break;
             }
-            self.write_event();
+            self.write_event()?;
             self.buf.push(b'\n');
             self.counter += 1;
         }
+        Ok(())
     }
 
-    fn write_event(&mut self) {
+    fn write_event(&mut self) -> io::Result<()> {
         match self.config.profile {
-            GeneratorProfile::Logs => self.write_logs_event(),
+            GeneratorProfile::Logs => {
+                self.write_logs_event();
+                Ok(())
+            }
             GeneratorProfile::Record => self.write_record_event(),
         }
     }
@@ -231,7 +235,7 @@ impl GeneratorInput {
         }
     }
 
-    fn write_record_event(&mut self) {
+    fn write_record_event(&mut self) -> io::Result<()> {
         self.buf.push(b'{');
         let mut first = true;
         for encoded_field in &self.record_fields.attributes {
@@ -242,7 +246,12 @@ impl GeneratorInput {
             self.buf.extend_from_slice(encoded_field);
         }
         if let Some(sequence) = &self.record_fields.sequence {
-            let value = sequence.start.saturating_add(self.counter);
+            let value = sequence.start.checked_add(self.counter).ok_or_else(|| {
+                io::Error::other(format!(
+                    "generator sequence '{}' overflowed u64",
+                    sequence.field
+                ))
+            })?;
             write_json_u64_field(&mut self.buf, &sequence.field, value, &mut first);
         }
         if let Some(field) = &self.record_fields.event_created_unix_nano_field {
@@ -252,6 +261,7 @@ impl GeneratorInput {
             write_json_u128_field(&mut self.buf, field, now.as_nanos(), &mut first);
         }
         self.buf.push(b'}');
+        Ok(())
     }
 }
 
@@ -275,7 +285,7 @@ impl InputSource for GeneratorInput {
         }
 
         self.last_batch = std::time::Instant::now();
-        self.generate_batch();
+        self.generate_batch()?;
 
         if self.buf.is_empty() {
             return Ok(vec![]);
@@ -709,6 +719,32 @@ mod tests {
             .collect();
         assert_eq!(rows[0]["seq"], 10);
         assert_eq!(rows[1]["seq"], 11);
+    }
+
+    #[test]
+    fn record_profile_errors_on_sequence_overflow() {
+        let mut input = GeneratorInput::new(
+            "bench-input",
+            GeneratorConfig {
+                batch_size: 2,
+                total_events: 2,
+                profile: GeneratorProfile::Record,
+                sequence: Some(GeneratorGeneratedField {
+                    field: "seq".to_string(),
+                    start: u64::MAX,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let err = match input.poll() {
+            Ok(_) => panic!("expected sequence overflow error"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("overflowed u64"),
+            "expected sequence overflow error: {err}"
+        );
     }
 
     #[test]

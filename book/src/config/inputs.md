@@ -22,7 +22,6 @@ data source is required.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `listen` | string | No | (unlimited) | Backward-compatible shorthand for target events per second. Prefer `generator.events_per_sec` for new configs. |
 | `generator.events_per_sec` | integer | No | `0` | Target events per second. `0` means unlimited. |
 | `generator.batch_size` | integer | No | `1000` | Events emitted per poll/batch. |
 | `generator.total_events` | integer | No | `0` | Total events to emit before stopping. `0` means infinite. |

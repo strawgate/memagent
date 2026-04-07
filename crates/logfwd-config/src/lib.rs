@@ -840,6 +840,11 @@ impl Config {
                         }
                     }
                     InputType::Generator => {
+                        if input.listen.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'listen' is not supported for generator inputs; use generator.events_per_sec"
+                            )));
+                        }
                         if input.path.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'path' is not supported for generator inputs"
@@ -855,26 +860,14 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for generator inputs"
                             )));
                         }
-                        if input.listen.is_some()
-                            && input
-                                .generator
-                                .as_ref()
-                                .is_some_and(|cfg| cfg.events_per_sec.is_some())
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': configure generator rate with either 'listen' or 'generator.events_per_sec', not both"
-                            )));
-                        }
                         if input.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': generator.batch_size must be at least 1"
                             )));
                         }
                         if let Some(generator) = &input.generator {
-                            let is_record_profile = matches!(
-                                generator.profile,
-                                Some(GeneratorProfileConfig::Record)
-                            );
+                            let is_record_profile =
+                                matches!(generator.profile, Some(GeneratorProfileConfig::Record));
                             if generator.attributes.keys().any(|key| key.trim().is_empty()) {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': generator.attributes keys must not be empty"
@@ -2833,26 +2826,6 @@ pipelines:
     }
 
     #[test]
-    fn generator_input_accepts_listen_as_rate_limit() {
-        // `listen` is reused as events/sec for generators (pipeline.rs reads
-        // cfg.listen at runtime). The validation guard must not reject it.
-        let yaml = r#"
-pipelines:
-  test:
-    inputs:
-      - type: generator
-        listen: "1000"
-    outputs:
-      - type: null
-"#;
-        let cfg = Config::load_str(yaml).expect("generator with listen should be valid");
-        assert_eq!(
-            cfg.pipelines["test"].inputs[0].listen.as_deref(),
-            Some("1000")
-        );
-    }
-
-    #[test]
     fn generator_input_accepts_explicit_generator_block() {
         let yaml = r#"
 pipelines:
@@ -2918,22 +2891,21 @@ pipelines:
     }
 
     #[test]
-    fn generator_input_rejects_duplicate_rate_settings() {
+    fn generator_input_rejects_listen() {
         let yaml = r#"
 pipelines:
   test:
     inputs:
       - type: generator
         listen: "1000"
-        generator:
-          events_per_sec: 2000
     outputs:
       - type: null
 "#;
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
-            err.to_string().contains("generator.events_per_sec"),
-            "expected duplicate generator rate rejection: {err}"
+            err.to_string()
+                .contains("'listen' is not supported for generator inputs"),
+            "expected generator listen rejection: {err}"
         );
     }
 

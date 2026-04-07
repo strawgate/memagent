@@ -1523,21 +1523,8 @@ fn build_input_state(
                 GeneratorGeneratedField, GeneratorInput, GeneratorProfile,
             };
             let generator_cfg = cfg.generator.as_ref();
-            let events_per_sec = match (
-                cfg.listen.as_deref(),
-                generator_cfg.and_then(|c| c.events_per_sec),
-            ) {
-                (Some(s), None) => s.parse().map_err(|_| {
-                    format!(
-                        "input '{name}': generator 'listen' must be a valid integer (events/sec), got '{s}'"
-                    )
-                })?,
-                (None, Some(v)) => v,
-                (None, None) => 0,
-                (Some(_), Some(_)) => unreachable!("validated in config"),
-            };
             let config = GeneratorConfig {
-                events_per_sec,
+                events_per_sec: generator_cfg.and_then(|c| c.events_per_sec).unwrap_or(0),
                 batch_size: generator_cfg.and_then(|c| c.batch_size).unwrap_or(1000),
                 total_events: generator_cfg.and_then(|c| c.total_events).unwrap_or(0),
                 complexity: match generator_cfg.and_then(|c| c.complexity.clone()) {
