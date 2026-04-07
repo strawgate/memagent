@@ -100,10 +100,15 @@ pub trait Sink: Send {
     /// Gracefully shut down the sink, flushing and releasing resources.
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>>;
 
-    /// Signal that a new batch is starting.
+    /// Signal that a new logical batch is starting.
     ///
-    /// Sinks that track partial retry state (like Fanout) can use this to reset
-    /// their state before the worker pool retry loop begins.
+    /// **Calling contract:** The driver (e.g., `OutputWorkerPool`) MUST call
+    /// `begin_batch()` before the first `send_batch()` of each new logical
+    /// batch. Without this call, `AsyncFanoutSink` will skip all children
+    /// because their states are still terminal from the previous batch.
+    ///
+    /// Simple sinks can ignore this (the default is a no-op). Stateful sinks
+    /// like `AsyncFanoutSink` use it to reset per-child delivery tracking.
     fn begin_batch(&mut self) {}
 }
 
@@ -193,7 +198,7 @@ impl Sink for AsyncFanoutSink {
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             let mut any_pending = false;
-            let mut any_io_error = false;
+            let mut last_io_error: Option<io::Error> = None;
             let mut max_retry: Option<Duration> = None;
 
             for (i, sink) in self.sinks.iter_mut().enumerate() {
@@ -214,24 +219,23 @@ impl Sink for AsyncFanoutSink {
                             max_retry = Some(d);
                         }
                     }
-                    SendResult::IoError(_) => {
+                    SendResult::IoError(e) => {
                         any_pending = true;
-                        any_io_error = true;
+                        last_io_error = Some(e);
                     }
                 }
             }
 
             if any_pending {
                 // At least one child still needs retrying.
-                // We must return a retryable error to the worker pool so it keeps driving
-                // the retry loop. Returning a terminal error like Rejected here would
-                // silently drop the batch for the pending children.
+                // Return a retryable result so the worker pool keeps driving retries.
                 match max_retry {
                     Some(d) => SendResult::RetryAfter(d),
                     None => {
-                        // We must have seen an IoError if there are pending items but no RetryAfter.
-                        debug_assert!(any_io_error);
-                        SendResult::IoError(io::Error::other("fanout child transient error"))
+                        // No RetryAfter seen — must be IoError. Preserve the original.
+                        SendResult::IoError(last_io_error.unwrap_or_else(|| {
+                            io::Error::other("fanout: pending children with no error (bug)")
+                        }))
                     }
                 }
             } else {
