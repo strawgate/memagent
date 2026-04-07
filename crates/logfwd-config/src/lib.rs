@@ -141,11 +141,11 @@ impl<'de> Deserialize<'de> for OutputType {
                     "elasticsearch" => Ok(OutputType::Elasticsearch),
                     "loki" => Ok(OutputType::Loki),
                     "stdout" => Ok(OutputType::Stdout),
-                    "file" | "file_out" => Ok(OutputType::File),
+                    "file" => Ok(OutputType::File),
                     "parquet" => Ok(OutputType::Parquet),
                     "null" => Ok(OutputType::Null),
-                    "tcp" | "tcp_out" => Ok(OutputType::Tcp),
-                    "udp" | "udp_out" => Ok(OutputType::Udp),
+                    "tcp" => Ok(OutputType::Tcp),
+                    "udp" => Ok(OutputType::Udp),
                     "arrow_ipc" => Ok(OutputType::ArrowIpc),
                     other => Err(E::unknown_variant(
                         other,
@@ -1830,6 +1830,25 @@ output:
             assert!(
                 msg.contains("not yet implemented"),
                 "expected 'not yet implemented' for {otype}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_output_aliases_are_rejected() {
+        for alias in ["file_out", "tcp_out", "udp_out"] {
+            let extra = match alias {
+                "file_out" => "path: /tmp/out.ndjson",
+                "tcp_out" | "udp_out" => "endpoint: 127.0.0.1:5140",
+                _ => unreachable!(),
+            };
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {alias}\n  {extra}\n"
+            );
+            let err = Config::load_str(&yaml).expect_err("legacy alias should fail");
+            assert!(
+                err.to_string().contains("unknown variant"),
+                "expected unknown variant error for {alias}: {err}"
             );
         }
     }

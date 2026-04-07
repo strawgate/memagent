@@ -270,7 +270,7 @@ Push to Grafana Loki.
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Loki push URL. |
 
-### `file` output *(`file_out` alias supported)*
+### `file` output
 
 Write records to a file.
 
@@ -305,7 +305,7 @@ Write records to Parquet files.
 | `stdout` | Implemented | Print to stdout (JSON, console, or text). |
 | `elasticsearch` | Implemented | Elasticsearch Bulk API with retry and request-mode controls. |
 | `loki` | Implemented | Grafana Loki push API with label grouping. |
-| `file` | Implemented | Write NDJSON or text to a local file (`file_out` alias supported). |
+| `file` | Implemented | Write NDJSON or text to a local file. |
 | `null` | Implemented | Drop records intentionally for tests and benchmark baselines. |
 | `tcp` | Implemented | Send records to a TCP endpoint. |
 | `udp` | Implemented | Send records to a UDP endpoint. |
