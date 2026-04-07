@@ -453,12 +453,6 @@ fn cmd_wizard() -> Result<(), CliError> {
 
     let output_path = prompt_text("Output file path", "logfwd.generated.yaml")?;
     let path = std::path::PathBuf::from(output_path.trim());
-    if path.exists() {
-        return Err(CliError::Config(format!(
-            "{} already exists — refusing to overwrite",
-            path.display()
-        )));
-    }
 
     let input = &INPUT_TEMPLATES[input_idx];
     let output = &OUTPUT_TEMPLATES[output_idx];
@@ -473,7 +467,16 @@ fn cmd_wizard() -> Result<(), CliError> {
         .create_new(true)
         .open(&path)
         .and_then(|mut f| f.write_all(cfg.as_bytes()))
-        .map_err(|e| CliError::Config(format!("cannot write {}: {e}", path.display())))?;
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                CliError::Config(format!(
+                    "{} already exists — refusing to overwrite",
+                    path.display()
+                ))
+            } else {
+                CliError::Config(format!("cannot write {}: {e}", path.display()))
+            }
+        })?;
 
     eprintln!("{}created{} {}", green(), reset(), path.as_path().display(),);
     eprintln!(
