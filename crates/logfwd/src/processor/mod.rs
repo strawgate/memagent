@@ -3,6 +3,8 @@ use logfwd_output::BatchMetadata;
 use smallvec::SmallVec;
 use std::fmt::Debug;
 
+pub mod tail_sampling;
+
 /// Error types for processor operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -124,9 +126,10 @@ pub fn cascading_flush(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
+    use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
+    use std::time::Duration;
 
     fn test_meta() -> BatchMetadata {
         BatchMetadata {
@@ -356,5 +359,76 @@ mod tests {
         })];
         let result = run_chain(&mut procs, test_batch(5), &test_meta());
         assert!(matches!(result, Err(ProcessorError::Fatal(_))));
+    }
+
+    #[test]
+    fn run_chain_tail_sampling_heartbeat_emits_rows() {
+        let mut procs: Vec<Box<dyn Processor>> = vec![Box::new(
+            tail_sampling::TailSamplingProcessor::try_new(
+                "SELECT * FROM logs",
+                "trace_id",
+                Duration::from_nanos(10),
+            )
+            .expect("tail-sampling processor"),
+        )];
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("x", DataType::Int32, false),
+        ]));
+        let input = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec![Some("trace-a")])),
+                Arc::new(Int32Array::from(vec![7])),
+            ],
+        )
+        .expect("record batch");
+
+        let mut meta = test_meta();
+        meta.observed_time_ns = 100;
+        let out = run_chain(&mut procs, input, &meta).expect("buffering path");
+        assert!(
+            out.is_empty(),
+            "trace should remain buffered before timeout"
+        );
+
+        meta.observed_time_ns = 120;
+        let heartbeat = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        let out = run_chain(&mut procs, heartbeat, &meta).expect("timeout heartbeat");
+        assert_eq!(out.len(), 1, "heartbeat should emit timed-out trace");
+        assert_eq!(out[0].num_rows(), 1);
+    }
+
+    #[test]
+    fn cascading_flush_with_tail_sampling_emits_buffered_rows() {
+        let mut procs: Vec<Box<dyn Processor>> = vec![Box::new(
+            tail_sampling::TailSamplingProcessor::try_new(
+                "SELECT * FROM logs",
+                "trace_id",
+                Duration::from_secs(60),
+            )
+            .expect("tail-sampling processor"),
+        )];
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("x", DataType::Int32, false),
+        ]));
+        let input = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec![Some("trace-b")])),
+                Arc::new(Int32Array::from(vec![42])),
+            ],
+        )
+        .expect("record batch");
+
+        let out = run_chain(&mut procs, input, &test_meta()).expect("buffering path");
+        assert!(out.is_empty());
+
+        let flushed = cascading_flush(&mut procs, &test_meta());
+        assert_eq!(flushed.len(), 1);
+        assert_eq!(flushed[0].num_rows(), 1);
     }
 }
