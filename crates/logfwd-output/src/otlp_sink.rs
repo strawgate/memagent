@@ -4,7 +4,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow::array::{Array, AsArray, PrimitiveArray};
+use arrow::array::{
+    Array, AsArray, LargeStringArray, PrimitiveArray, StringArray, StringViewArray,
+};
 use arrow::datatypes::{DataType, Float64Type, Int64Type};
 use arrow::record_batch::RecordBatch;
 
@@ -557,8 +559,36 @@ impl super::sink::SinkFactory for OtlpSinkFactory {
 }
 
 /// Pre-downcast array variant for an attribute column.
+#[derive(Clone, Copy)]
+enum OtlpStrCol<'a> {
+    Utf8(&'a StringArray),
+    Utf8View(&'a StringViewArray),
+    LargeUtf8(&'a LargeStringArray),
+}
+
+impl OtlpStrCol<'_> {
+    #[inline(always)]
+    fn is_null(&self, row: usize) -> bool {
+        match self {
+            Self::Utf8(arr) => arr.is_null(row),
+            Self::Utf8View(arr) => arr.is_null(row),
+            Self::LargeUtf8(arr) => arr.is_null(row),
+        }
+    }
+
+    #[inline(always)]
+    fn value(&self, row: usize) -> &str {
+        match self {
+            Self::Utf8(arr) => arr.value(row),
+            Self::Utf8View(arr) => arr.value(row),
+            Self::LargeUtf8(arr) => arr.value(row),
+        }
+    }
+}
+
 enum AttrArray<'a> {
-    Str(&'a dyn Array),
+    Str(OtlpStrCol<'a>),
+    OtherStr(&'a dyn Array),
     Int(&'a PrimitiveArray<Int64Type>),
     Float(&'a PrimitiveArray<Float64Type>),
     Bool(&'a arrow::array::BooleanArray),
@@ -570,33 +600,42 @@ enum AttrArray<'a> {
 /// re-scanning the schema and re-downcasting arrays on every row.
 struct BatchColumns<'a> {
     /// Downcast array for the timestamp column (e.g. "2024-01-15T10:30:00Z").
-    timestamp_col: Option<(usize, &'a dyn Array)>,
+    timestamp_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the level/severity column (e.g. "ERROR").
-    level_col: Option<(usize, &'a dyn Array)>,
+    level_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the primary message/body column.
-    body_col: Option<(usize, &'a dyn Array)>,
+    body_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the `_raw` column, used as a per-row body
     /// fallback when `body_col` is null for that row.
-    raw_col: Option<(usize, &'a dyn Array)>,
+    raw_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the `trace_id` column (32 hex chars → 16-byte OTLP field 9).
-    trace_id_col: Option<(usize, &'a dyn Array)>,
+    trace_id_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the `span_id` column (16 hex chars → 8-byte OTLP field 10).
-    span_id_col: Option<(usize, &'a dyn Array)>,
+    span_id_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the `flags` / `trace_flags` column (uint32, OTLP field 8).
     flags_col: Option<(usize, &'a PrimitiveArray<Int64Type>)>,
     /// Non-special attribute columns: (field_name, pre-downcast array).
     attribute_cols: Vec<(String, AttrArray<'a>)>,
 }
 
+fn resolve_otlp_str_col(col: &dyn Array) -> Option<OtlpStrCol<'_>> {
+    match col.data_type() {
+        DataType::Utf8 => Some(OtlpStrCol::Utf8(col.as_string::<i32>())),
+        DataType::Utf8View => Some(OtlpStrCol::Utf8View(col.as_string_view())),
+        DataType::LargeUtf8 => Some(OtlpStrCol::LargeUtf8(col.as_string::<i64>())),
+        _ => None,
+    }
+}
+
 /// Scan the batch schema once and resolve column roles and downcast arrays.
 fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
     let schema = batch.schema();
-    let mut timestamp_col: Option<(usize, &dyn Array)> = None;
-    let mut level_col: Option<(usize, &dyn Array)> = None;
-    let mut body_col: Option<(usize, &dyn Array)> = None;
-    let mut raw_col: Option<(usize, &dyn Array)> = None;
-    let mut trace_id_col: Option<(usize, &dyn Array)> = None;
-    let mut span_id_col: Option<(usize, &dyn Array)> = None;
+    let mut timestamp_col: Option<(usize, OtlpStrCol<'_>)> = None;
+    let mut level_col: Option<(usize, OtlpStrCol<'_>)> = None;
+    let mut body_col: Option<(usize, OtlpStrCol<'_>)> = None;
+    let mut raw_col: Option<(usize, OtlpStrCol<'_>)> = None;
+    let mut trace_id_col: Option<(usize, OtlpStrCol<'_>)> = None;
+    let mut span_id_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut flags_col: Option<(usize, &PrimitiveArray<Int64Type>)> = None;
     // Indices of columns to exclude from attributes.
     let mut excluded: Vec<usize> = Vec::with_capacity(4);
@@ -612,9 +651,9 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
             ) =>
             {
                 if timestamp_col.is_none()
-                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
                 {
-                    timestamp_col = Some((idx, batch.column(idx).as_ref()));
+                    timestamp_col = Some((idx, arr));
                     excluded.push(idx);
                 }
             }
@@ -625,9 +664,9 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
             ) =>
             {
                 if level_col.is_none()
-                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
                 {
-                    level_col = Some((idx, batch.column(idx).as_ref()));
+                    level_col = Some((idx, arr));
                     excluded.push(idx);
                 }
             }
@@ -638,9 +677,9 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
             ) =>
             {
                 if body_col.is_none()
-                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
                 {
-                    body_col = Some((idx, batch.column(idx).as_ref()));
+                    body_col = Some((idx, arr));
                     excluded.push(idx);
                 }
             }
@@ -648,22 +687,23 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                 // Always excluded from attributes; used as per-row body fallback.
                 excluded.push(idx);
                 if raw_col.is_none() {
-                    raw_col = Some((idx, batch.column(idx).as_ref()));
+                    raw_col =
+                        resolve_otlp_str_col(batch.column(idx).as_ref()).map(|arr| (idx, arr));
                 }
             }
             field_names::TRACE_ID => {
                 if trace_id_col.is_none()
-                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
                 {
-                    trace_id_col = Some((idx, batch.column(idx).as_ref()));
+                    trace_id_col = Some((idx, arr));
                     excluded.push(idx);
                 }
             }
             field_names::SPAN_ID => {
                 if span_id_col.is_none()
-                    && matches!(field.data_type(), DataType::Utf8 | DataType::Utf8View)
+                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
                 {
-                    span_id_col = Some((idx, batch.column(idx).as_ref()));
+                    span_id_col = Some((idx, arr));
                     excluded.push(idx);
                 }
             }
@@ -701,7 +741,10 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
             // Conflict structs (Struct { int, str, float, bool }) are already normalized
             // to flat Utf8 by `encode_batch` before this function is called.
             DataType::Struct(_) => continue,
-            _ => AttrArray::Str(batch.column(idx).as_ref()),
+            _ => resolve_otlp_str_col(batch.column(idx).as_ref()).map_or_else(
+                || AttrArray::OtherStr(batch.column(idx).as_ref()),
+                AttrArray::Str,
+            ),
         };
         attribute_cols.push((field_name.to_string(), attr));
     }
@@ -727,47 +770,32 @@ fn encode_row_as_log_record(
 ) {
     // --- Read per-row values from pre-resolved columns ---
 
-    let timestamp_ns: u64 = columns
-        .timestamp_col
-        .and_then(|(_, arr)| {
-            if arr.is_null(row) {
-                None
-            } else {
-                parse_timestamp_nanos(str_value(arr, row).as_bytes())
-            }
-        })
-        .unwrap_or(0);
+    let timestamp_ns: u64 = if let Some((_, arr)) = columns.timestamp_col.as_ref() {
+        if arr.is_null(row) {
+            0
+        } else {
+            parse_timestamp_nanos(arr.value(row).as_bytes()).unwrap_or(0)
+        }
+    } else {
+        0
+    };
 
-    let (severity_num, severity_text): (Severity, &[u8]) = columns
-        .level_col
-        .and_then(|(_, arr)| {
+    let (severity_num, severity_text): (Severity, &[u8]) =
+        if let Some((_, arr)) = columns.level_col.as_ref() {
             if arr.is_null(row) {
-                None
+                (Severity::Unspecified, b"")
             } else {
-                Some(parse_severity(str_value(arr, row).as_bytes()))
+                parse_severity(arr.value(row).as_bytes())
             }
-        })
-        .unwrap_or((Severity::Unspecified, b""));
+        } else {
+            (Severity::Unspecified, b"")
+        };
 
-    let body: &str = columns
-        .body_col
-        .and_then(|(_, arr)| {
-            if arr.is_null(row) {
-                None
-            } else {
-                Some(str_value(arr, row))
-            }
-        })
-        .or_else(|| {
-            columns.raw_col.and_then(|(_, arr)| {
-                if arr.is_null(row) {
-                    None
-                } else {
-                    Some(str_value(arr, row))
-                }
-            })
-        })
-        .unwrap_or("");
+    let body: &str = match (columns.body_col.as_ref(), columns.raw_col.as_ref()) {
+        (Some((_, body)), _) if !body.is_null(row) => body.value(row),
+        (_, Some((_, raw))) if !raw.is_null(row) => raw.value(row),
+        _ => "",
+    };
     let body_bytes = body.as_bytes();
 
     // --- Write protobuf fields ---
@@ -834,6 +862,16 @@ fn encode_row_as_log_record(
                         buf,
                         otlp::LOG_RECORD_ATTRIBUTES,
                         field_name.as_bytes(),
+                        arr.value(row).as_bytes(),
+                    );
+                }
+            }
+            AttrArray::OtherStr(arr) => {
+                if !arr.is_null(row) {
+                    encode_key_value_string(
+                        buf,
+                        otlp::LOG_RECORD_ATTRIBUTES,
+                        field_name.as_bytes(),
                         str_value(*arr, row).as_bytes(),
                     );
                 }
@@ -856,7 +894,7 @@ fn encode_row_as_log_record(
     // LogRecord.trace_id (bytes, 16 bytes) — hex-decoded from 32-char string column
     if let Some((_, arr)) = columns.trace_id_col {
         if !arr.is_null(row) {
-            let hex = str_value(arr, row);
+            let hex = arr.value(row);
             let mut decoded = [0u8; 16];
             if hex_decode(hex.as_bytes(), &mut decoded) {
                 encode_bytes_field(buf, otlp::LOG_RECORD_TRACE_ID, &decoded);
@@ -867,7 +905,7 @@ fn encode_row_as_log_record(
     // LogRecord.span_id (bytes, 8 bytes) — hex-decoded from 16-char string column
     if let Some((_, arr)) = columns.span_id_col {
         if !arr.is_null(row) {
-            let hex = str_value(arr, row);
+            let hex = arr.value(row);
             let mut decoded = [0u8; 8];
             if hex_decode(hex.as_bytes(), &mut decoded) {
                 encode_bytes_field(buf, otlp::LOG_RECORD_SPAN_ID, &decoded);
@@ -1653,6 +1691,73 @@ mod tests {
         assert!(lr.span_id.is_empty(), "no span_id column means empty");
     }
 
+    #[test]
+    fn raw_column_falls_back_when_message_is_null_for_row() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("_raw", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("message-body"), None])),
+                Arc::new(StringArray::from(vec![
+                    Some("raw-first"),
+                    Some("raw-fallback"),
+                ])),
+            ],
+        )
+        .expect("valid batch");
+
+        let metadata = make_metadata();
+
+        let mut handwritten = make_sink();
+        handwritten.encode_batch(&batch, &metadata);
+        let handwritten_request =
+            ExportLogsServiceRequest::decode(handwritten.encoder_buf.as_slice())
+                .expect("prost must decode handwritten output");
+
+        let mut generated = make_sink();
+        generated.encode_batch_generated_fast(&batch, &metadata);
+        let generated_request = ExportLogsServiceRequest::decode(generated.encoder_buf.as_slice())
+            .expect("prost must decode generated-fast output");
+
+        let handwritten_bodies: Vec<&str> = handwritten_request.resource_logs[0].scope_logs[0]
+            .log_records
+            .iter()
+            .map(|lr| {
+                lr.body
+                    .as_ref()
+                    .and_then(|v| match &v.value {
+                        Some(Value::StringValue(s)) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("")
+            })
+            .collect();
+        let generated_bodies: Vec<&str> = generated_request.resource_logs[0].scope_logs[0]
+            .log_records
+            .iter()
+            .map(|lr| {
+                lr.body
+                    .as_ref()
+                    .and_then(|v| match &v.value {
+                        Some(Value::StringValue(s)) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("")
+            })
+            .collect();
+
+        assert_eq!(handwritten_bodies, vec!["message-body", "raw-fallback"]);
+        assert_eq!(generated_bodies, vec!["message-body", "raw-fallback"]);
+    }
+
     /// Roundtrip with multiple rows to verify repeated LogRecord encoding.
     #[test]
     fn roundtrip_multiple_rows() {
@@ -1752,6 +1857,130 @@ mod tests {
             generated.encoded_payload(),
             handwritten.encoded_payload(),
             "generated-fast OTLP payload drifted from handwritten encoder",
+        );
+    }
+
+    #[test]
+    fn generated_fast_otlp_matches_handwritten_encoder_with_string_views() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::Utf8View, true),
+            Field::new("level", DataType::Utf8View, true),
+            Field::new("message", DataType::Utf8View, true),
+            Field::new("trace_id", DataType::Utf8View, true),
+            Field::new("span_id", DataType::Utf8View, true),
+            Field::new("flags", DataType::Int64, true),
+            Field::new("host", DataType::Utf8View, true),
+            Field::new("count", DataType::Int64, true),
+            Field::new("latency", DataType::Float64, true),
+            Field::new("active", DataType::Boolean, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringViewArray::from(vec![
+                    Some("2024-01-15T10:30:00Z"),
+                    Some("2024-01-15T10:30:01Z"),
+                ])),
+                Arc::new(StringViewArray::from(vec![Some("INFO"), Some("ERROR")])),
+                Arc::new(StringViewArray::from(vec![Some("first"), Some("second")])),
+                Arc::new(StringViewArray::from(vec![
+                    Some("0102030405060708090a0b0c0d0e0f10"),
+                    Some("1112131415161718191a1b1c1d1e1f20"),
+                ])),
+                Arc::new(StringViewArray::from(vec![
+                    Some("0102030405060708"),
+                    Some("1112131415161718"),
+                ])),
+                Arc::new(Int64Array::from(vec![Some(1), Some(255)])),
+                Arc::new(StringViewArray::from(vec![Some("web-01"), Some("web-02")])),
+                Arc::new(Int64Array::from(vec![Some(42), Some(7)])),
+                Arc::new(arrow::array::Float64Array::from(vec![Some(1.5), Some(2.5)])),
+                Arc::new(arrow::array::BooleanArray::from(vec![
+                    Some(true),
+                    Some(false),
+                ])),
+            ],
+        )
+        .expect("valid batch");
+
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![("service.name".to_string(), "otlp-test".to_string())]),
+            observed_time_ns: 1_700_000_000_000_000_000,
+        };
+
+        let mut handwritten = make_sink();
+        handwritten.encode_batch(&batch, &metadata);
+
+        let mut generated = make_sink();
+        generated.encode_batch_generated_fast(&batch, &metadata);
+
+        assert_eq!(
+            generated.encoded_payload(),
+            handwritten.encoded_payload(),
+            "generated-fast OTLP payload drifted from handwritten encoder on Utf8View inputs",
+        );
+    }
+
+    #[test]
+    fn generated_fast_otlp_matches_handwritten_encoder_with_large_strings() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::LargeUtf8, true),
+            Field::new("level", DataType::LargeUtf8, true),
+            Field::new("message", DataType::LargeUtf8, true),
+            Field::new("trace_id", DataType::LargeUtf8, true),
+            Field::new("span_id", DataType::LargeUtf8, true),
+            Field::new("flags", DataType::Int64, true),
+            Field::new("host", DataType::LargeUtf8, true),
+            Field::new("count", DataType::Int64, true),
+            Field::new("latency", DataType::Float64, true),
+            Field::new("active", DataType::Boolean, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(LargeStringArray::from(vec![
+                    Some("2024-01-15T10:30:00Z"),
+                    Some("2024-01-15T10:30:01Z"),
+                ])),
+                Arc::new(LargeStringArray::from(vec![Some("INFO"), Some("ERROR")])),
+                Arc::new(LargeStringArray::from(vec![Some("first"), Some("second")])),
+                Arc::new(LargeStringArray::from(vec![
+                    Some("0102030405060708090a0b0c0d0e0f10"),
+                    Some("1112131415161718191a1b1c1d1e1f20"),
+                ])),
+                Arc::new(LargeStringArray::from(vec![
+                    Some("0102030405060708"),
+                    Some("1112131415161718"),
+                ])),
+                Arc::new(Int64Array::from(vec![Some(1), Some(255)])),
+                Arc::new(LargeStringArray::from(vec![Some("web-01"), Some("web-02")])),
+                Arc::new(Int64Array::from(vec![Some(42), Some(7)])),
+                Arc::new(arrow::array::Float64Array::from(vec![Some(1.5), Some(2.5)])),
+                Arc::new(arrow::array::BooleanArray::from(vec![
+                    Some(true),
+                    Some(false),
+                ])),
+            ],
+        )
+        .expect("valid batch");
+
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![("service.name".to_string(), "otlp-test".to_string())]),
+            observed_time_ns: 1_700_000_000_000_000_000,
+        };
+
+        let mut handwritten = make_sink();
+        handwritten.encode_batch(&batch, &metadata);
+
+        let mut generated = make_sink();
+        generated.encode_batch_generated_fast(&batch, &metadata);
+
+        assert_eq!(
+            generated.encoded_payload(),
+            handwritten.encoded_payload(),
+            "generated-fast OTLP payload drifted from handwritten encoder on LargeUtf8 inputs",
         );
     }
 }

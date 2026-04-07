@@ -41,47 +41,32 @@ pub(super) fn encode_row_as_log_record_fast_v1(
     metadata: &BatchMetadata,
     buf: &mut Vec<u8>,
 ) {{
-    let timestamp_ns: u64 = columns
-        .timestamp_col
-        .and_then(|(_, arr)| {{
-            if arr.is_null(row) {{
-                None
-            }} else {{
-                parse_timestamp_nanos(str_value(arr, row).as_bytes())
-            }}
-        }})
-        .unwrap_or(0);
+    let timestamp_ns: u64 = if let Some((_, arr)) = columns.timestamp_col.as_ref() {{
+        if arr.is_null(row) {{
+            0
+        }} else {{
+            parse_timestamp_nanos(arr.value(row).as_bytes()).unwrap_or(0)
+        }}
+    }} else {{
+        0
+    }};
 
-    let (severity_num, severity_text): (Severity, &[u8]) = columns
-        .level_col
-        .and_then(|(_, arr)| {{
+    let (severity_num, severity_text): (Severity, &[u8]) =
+        if let Some((_, arr)) = columns.level_col.as_ref() {{
             if arr.is_null(row) {{
-                None
+                (Severity::Unspecified, b"")
             }} else {{
-                Some(parse_severity(str_value(arr, row).as_bytes()))
+                parse_severity(arr.value(row).as_bytes())
             }}
-        }})
-        .unwrap_or((Severity::Unspecified, b""));
+        }} else {{
+            (Severity::Unspecified, b"")
+        }};
 
-    let body: &str = columns
-        .body_col
-        .and_then(|(_, arr)| {{
-            if arr.is_null(row) {{
-                None
-            }} else {{
-                Some(str_value(arr, row))
-            }}
-        }})
-        .or_else(|| {{
-            columns.raw_col.and_then(|(_, arr)| {{
-                if arr.is_null(row) {{
-                    None
-                }} else {{
-                    Some(str_value(arr, row))
-                }}
-            }})
-        }})
-        .unwrap_or("");
+    let body: &str = match (columns.body_col.as_ref(), columns.raw_col.as_ref()) {{
+        (Some((_, body)), _) if !body.is_null(row) => body.value(row),
+        (_, Some((_, raw))) if !raw.is_null(row) => raw.value(row),
+        _ => "",
+    }};
     let body_bytes = body.as_bytes();
 
     if timestamp_ns > 0 {{
@@ -141,6 +126,16 @@ pub(super) fn encode_row_as_log_record_fast_v1(
                         buf,
                         otlp::LOG_RECORD_ATTRIBUTES,
                         field_name.as_bytes(),
+                        arr.value(row).as_bytes(),
+                    );
+                }}
+            }}
+            AttrArray::OtherStr(arr) => {{
+                if !arr.is_null(row) {{
+                    encode_key_value_string(
+                        buf,
+                        otlp::LOG_RECORD_ATTRIBUTES,
+                        field_name.as_bytes(),
                         str_value(*arr, row).as_bytes(),
                     );
                 }}
@@ -157,9 +152,9 @@ pub(super) fn encode_row_as_log_record_fast_v1(
         }}
     }}
 
-    if let Some((_, arr)) = columns.trace_id_col {{
+    if let Some((_, arr)) = columns.trace_id_col.as_ref() {{
         if !arr.is_null(row) {{
-            let hex = str_value(arr, row);
+            let hex = arr.value(row);
             let mut decoded = [0u8; 16];
             if hex_decode(hex.as_bytes(), &mut decoded) {{
                 encode_bytes_field(buf, otlp::LOG_RECORD_TRACE_ID, &decoded);
@@ -167,9 +162,9 @@ pub(super) fn encode_row_as_log_record_fast_v1(
         }}
     }}
 
-    if let Some((_, arr)) = columns.span_id_col {{
+    if let Some((_, arr)) = columns.span_id_col.as_ref() {{
         if !arr.is_null(row) {{
-            let hex = str_value(arr, row);
+            let hex = arr.value(row);
             let mut decoded = [0u8; 8];
             if hex_decode(hex.as_bytes(), &mut decoded) {{
                 encode_bytes_field(buf, otlp::LOG_RECORD_SPAN_ID, &decoded);

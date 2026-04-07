@@ -43,6 +43,7 @@ enum ConflictValueSource {
     Bool,
 }
 
+#[allow(clippy::fn_params_excessive_bools)] // Pure presence flags, not a config API
 fn pick_conflict_value_source(
     int_present: bool,
     float_present: bool,
@@ -224,7 +225,7 @@ pub fn merge_to_utf8(
             bool_arr.is_some_and(|a| !a.is_null(i)),
         ) {
             Some(ConflictValueSource::Int) => {
-                builder.append_value(int_arr.expect("int presence was checked above").value(i))
+                builder.append_value(int_arr.expect("int presence was checked above").value(i));
             }
             Some(ConflictValueSource::Float) => builder.append_value(
                 float_arr
@@ -232,10 +233,10 @@ pub fn merge_to_utf8(
                     .value(i),
             ),
             Some(ConflictValueSource::Str) => {
-                builder.append_value(str_arr.expect("str presence was checked above").value(i))
+                builder.append_value(str_arr.expect("str presence was checked above").value(i));
             }
             Some(ConflictValueSource::Bool) => {
-                builder.append_value(bool_arr.expect("bool presence was checked above").value(i))
+                builder.append_value(bool_arr.expect("bool presence was checked above").value(i));
             }
             None => builder.append_null(),
         }

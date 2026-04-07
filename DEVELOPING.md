@@ -20,15 +20,20 @@ crates/
 ## Build, test, lint, bench, fuzz
 
 ```bash
-just test                    # All tests
-just lint                    # fmt + clippy + toml + deny + typos
-just bench-framed-input -- --lines 200000 --iterations 5
-cargo test -p logfwd-core    # Core crate only (fastest iteration)
-
-RUSTFLAGS="-C target-cpu=native" cargo bench --bench scanner -p logfwd-core
-
-cd crates/logfwd-core && cargo +nightly fuzz run scanner -- -max_total_time=300
+just ci                      # lint + test (fast — skips datafusion)
+just ci-all                  # full workspace including datafusion
+just test                    # tests (default-members only, ~30s)
+just test-all                # tests (full workspace, ~3min)
+just lint                    # fmt + clippy + toml
+just lint-all                # full: fmt + clippy + toml + deny + kani-boundary
+cargo test -p logfwd-core    # single crate (fastest iteration)
+just fuzz scanner 300        # fuzz a target for 300s (nightly)
 ```
+
+> **Why two tiers?** The workspace `default-members` excludes `logfwd-transform`
+> (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip
+> them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just
+> targets when you need the full build. CI always uses `--workspace`.
 
 ## Compile caching with sccache
 

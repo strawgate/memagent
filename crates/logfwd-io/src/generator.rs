@@ -165,7 +165,7 @@ impl GeneratorInput {
         self.counter
     }
 
-    fn generate_batch(&mut self) -> io::Result<()> {
+    fn generate_batch(&mut self) {
         self.buf.clear();
         let n = self.config.batch_size;
         let batch_created_unix_nano = self
@@ -178,32 +178,26 @@ impl GeneratorInput {
                     .unwrap_or_default()
                     .as_nanos()
             });
-        let mut batch_offset = 0u128;
-        for _ in 0..n {
+        for batch_offset in 0_u128..n as u128 {
             if self.config.total_events > 0 && self.counter >= self.config.total_events {
                 self.done = true;
                 break;
             }
             let event_created_unix_nano = batch_created_unix_nano.map(|base| base + batch_offset);
             let len_before = self.buf.len();
-            self.write_event(event_created_unix_nano)?;
+            self.write_event(event_created_unix_nano);
             if self.done {
                 self.buf.truncate(len_before);
                 break;
             }
             self.buf.push(b'\n');
             self.counter += 1;
-            batch_offset += 1;
         }
-        Ok(())
     }
 
-    fn write_event(&mut self, event_created_unix_nano: Option<u128>) -> io::Result<()> {
+    fn write_event(&mut self, event_created_unix_nano: Option<u128>) {
         match self.config.profile {
-            GeneratorProfile::Logs => {
-                self.write_logs_event();
-                Ok(())
-            }
+            GeneratorProfile::Logs => self.write_logs_event(),
             GeneratorProfile::Record => self.write_record_event(event_created_unix_nano),
         }
     }
@@ -265,7 +259,7 @@ impl GeneratorInput {
         }
     }
 
-    fn write_record_event(&mut self, event_created_unix_nano: Option<u128>) -> io::Result<()> {
+    fn write_record_event(&mut self, event_created_unix_nano: Option<u128>) {
         self.buf.push(b'{');
         let mut first = true;
         for encoded_field in &self.record_fields.attributes {
@@ -278,7 +272,7 @@ impl GeneratorInput {
         if let Some(sequence) = &self.record_fields.sequence {
             let Some(value) = sequence.start.checked_add(self.counter) else {
                 self.done = true;
-                return Ok(());
+                return;
             };
             write_json_u64_field(&mut self.buf, &sequence.field, value, &mut first);
         }
@@ -289,7 +283,6 @@ impl GeneratorInput {
             write_json_u128_field(&mut self.buf, field, event_created_unix_nano, &mut first);
         }
         self.buf.push(b'}');
-        Ok(())
     }
 }
 
@@ -313,7 +306,7 @@ impl InputSource for GeneratorInput {
         }
 
         self.last_batch = std::time::Instant::now();
-        self.generate_batch()?;
+        self.generate_batch();
 
         if self.buf.is_empty() {
             return Ok(vec![]);
@@ -371,10 +364,10 @@ fn write_json_escaped_string_contents(out: &mut Vec<u8>, value: &str) {
     for ch in value.chars() {
         match ch {
             '"' => out.extend_from_slice(br#"\""#),
-            '\\' => out.extend_from_slice(br#"\\"#),
-            '\n' => out.extend_from_slice(br#"\n"#),
-            '\r' => out.extend_from_slice(br#"\r"#),
-            '\t' => out.extend_from_slice(br#"\t"#),
+            '\\' => out.extend_from_slice(br"\\"),
+            '\n' => out.extend_from_slice(br"\n"),
+            '\r' => out.extend_from_slice(br"\r"),
+            '\t' => out.extend_from_slice(br"\t"),
             c if c <= '\u{1F}' => {
                 let _ = write!(out, "\\u{:04x}", c as u32);
             }
