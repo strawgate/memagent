@@ -174,7 +174,10 @@ impl OutputHealthTracker {
     }
 
     fn insert_worker(&self, worker_id: usize, initial: ComponentHealth) -> ComponentHealth {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .expect("output health tracker mutex poisoned during worker insertion");
         if !matches!(
             state.idle_health,
             ComponentHealth::Stopping | ComponentHealth::Stopped
@@ -189,12 +192,19 @@ impl OutputHealthTracker {
     }
 
     fn apply_worker_event(&self, worker_id: usize, event: OutputHealthEvent) -> ComponentHealth {
-        let mut state = self.state.lock().unwrap();
-        let current = state
-            .worker_slots
-            .get(&worker_id)
-            .copied()
-            .unwrap_or(ComponentHealth::Healthy);
+        let mut state = self
+            .state
+            .lock()
+            .expect("output health tracker mutex poisoned during worker event");
+        let Some(current) = state.worker_slots.get(&worker_id).copied() else {
+            let aggregate = Self::aggregate(&state);
+            tracing::warn!(
+                worker_id,
+                ?event,
+                "worker_pool: ignoring output health event for unknown worker slot"
+            );
+            return aggregate;
+        };
         let next = reduce_output_health(current, event);
         state.worker_slots.insert(worker_id, next);
         let aggregate = Self::aggregate(&state);
@@ -204,7 +214,10 @@ impl OutputHealthTracker {
     }
 
     fn remove_worker(&self, worker_id: usize) -> ComponentHealth {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .expect("output health tracker mutex poisoned during worker removal");
         state.worker_slots.remove(&worker_id);
         let aggregate = Self::aggregate(&state);
         drop(state);
@@ -213,11 +226,19 @@ impl OutputHealthTracker {
     }
 
     fn has_active_workers(&self) -> bool {
-        !self.state.lock().unwrap().worker_slots.is_empty()
+        !self
+            .state
+            .lock()
+            .expect("output health tracker mutex poisoned during worker liveness check")
+            .worker_slots
+            .is_empty()
     }
 
     fn set_pool_health(&self, health: ComponentHealth) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .expect("output health tracker mutex poisoned during pool health update");
         state.idle_health = health;
         let aggregate = Self::aggregate(&state);
         drop(state);
@@ -228,7 +249,7 @@ impl OutputHealthTracker {
     fn slot_health(&self, worker_id: usize) -> Option<ComponentHealth> {
         self.state
             .lock()
-            .unwrap()
+            .expect("output health tracker mutex poisoned during test slot lookup")
             .worker_slots
             .get(&worker_id)
             .copied()
@@ -1655,6 +1676,22 @@ mod tests {
 
         tracker.set_pool_health(ComponentHealth::Stopped);
         assert_eq!(out_stats.health(), ComponentHealth::Stopped);
+    }
+
+    #[test]
+    fn output_health_tracker_ignores_unknown_worker_events() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("pipe", "", &meter);
+        let out_stats = pm.add_output("output_0", "http");
+        let tracker = OutputHealthTracker::new(vec![Arc::clone(&out_stats)]);
+
+        tracker.insert_worker(1, ComponentHealth::Healthy);
+        let aggregate = tracker.apply_worker_event(999, OutputHealthEvent::FatalFailure);
+
+        assert_eq!(aggregate, ComponentHealth::Healthy);
+        assert_eq!(out_stats.health(), ComponentHealth::Healthy);
+        assert_eq!(tracker.slot_health(1), Some(ComponentHealth::Healthy));
+        assert_eq!(tracker.slot_health(999), None);
     }
 
     #[tokio::test]

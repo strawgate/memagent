@@ -252,9 +252,11 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-types/diagnostics/health.rs` | `ComponentHealth` lattice (`combine`, readiness, storage repr) | Kani exhaustive (4 proofs) + unit tests |
 | `logfwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (8 proofs: ColVariant field preservation, variant_dt, is_conflict_struct, json/str priority contracts) |
 | `logfwd-output/sink.rs` | SendResult outcome variants for the async Sink trait | Kani (4 proofs: Ok/RetryAfter/Rejected variant invariants, mutual exclusion) |
+| `logfwd-output/sink/health.rs` | Output health reducer + fanout roll-up semantics | Kani (5 proofs: retrying terminal preservation, shutdown completion, startup recovery, fanout commutativity, fatal-failure drain preservation) + unit tests |
 | `logfwd-io/otlp_receiver.rs` | OTLP proto→JSON transcoding helpers (from_utf8_unchecked safety) | Kani (4 proofs: write_i64 ASCII-only, write_f64 ASCII-only, hex encoding, JSON escaping) |
 | `logfwd-io/format.rs` | CRI metadata injection, Auto-mode fallthrough to passthrough | Kani (4 proofs: inject_cri_metadata output structure, JSON vs plain-text path dispatch) |
 | `logfwd-io/tail.rs` | File tailer EOF emission state machine (eof_emitted flag) | Kani (4 proofs: at-most-once emission per streak, data-reset invariant, two-poll sequence, reset-cycle) |
+| `logfwd/worker_pool.rs` | MRU dispatch decision + output-health slot aggregation | Kani (3 dispatch proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
 | `logfwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `logfwd-arrow/streaming_builder.rs` | StructArray conflict column assembly (StringView) | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `scanner_conformance.rs` (accumulation) | BytesMut accumulation → Bytes → Scanner equivalence | proptest (3 tests × 256 cases: random split, single chunk, per-line split; full value comparison) |

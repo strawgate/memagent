@@ -60,7 +60,10 @@ pub const fn reduce_output_health(
             }
             _ => ComponentHealth::Degraded,
         },
-        OutputHealthEvent::FatalFailure => ComponentHealth::Failed,
+        OutputHealthEvent::FatalFailure => match current {
+            ComponentHealth::Stopping | ComponentHealth::Stopped => current,
+            _ => ComponentHealth::Failed,
+        },
         OutputHealthEvent::ShutdownRequested => match current {
             ComponentHealth::Stopped | ComponentHealth::Failed => current,
             _ => ComponentHealth::Stopping,
@@ -205,6 +208,10 @@ mod tests {
             reduce_output_health(ComponentHealth::Degraded, OutputHealthEvent::FatalFailure),
             ComponentHealth::Failed
         );
+        assert_eq!(
+            reduce_output_health(ComponentHealth::Stopping, OutputHealthEvent::FatalFailure),
+            ComponentHealth::Stopping
+        );
     }
 }
 
@@ -214,6 +221,7 @@ mod verification {
     use logfwd_types::diagnostics::ComponentHealth;
 
     #[kani::proof]
+    #[kani::unwind(3)]
     fn verify_retrying_degrades_only_non_terminal_outputs() {
         let current = ComponentHealth::from_repr(kani::any());
         let out = reduce_output_health(current, OutputHealthEvent::Retrying);
@@ -224,9 +232,19 @@ mod verification {
             }
             _ => assert_eq!(out, ComponentHealth::Degraded),
         }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Healthy),
+            "healthy_retrying"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Stopped),
+            "stopped_retrying"
+        );
     }
 
     #[kani::proof]
+    #[kani::unwind(3)]
     fn verify_shutdown_completed_preserves_failed_outputs() {
         let current = ComponentHealth::from_repr(kani::any());
         let out = reduce_output_health(current, OutputHealthEvent::ShutdownCompleted);
@@ -236,9 +254,19 @@ mod verification {
         } else {
             assert_eq!(out, ComponentHealth::Stopped);
         }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Failed),
+            "failed_shutdown_completed"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Healthy),
+            "healthy_shutdown_completed"
+        );
     }
 
     #[kani::proof]
+    #[kani::unwind(3)]
     fn verify_startup_succeeded_preserves_retrying_degradation() {
         let current = ComponentHealth::from_repr(kani::any());
         let out = reduce_output_health(current, OutputHealthEvent::StartupSucceeded);
@@ -250,15 +278,55 @@ mod verification {
             }
             _ => assert_eq!(out, ComponentHealth::Healthy),
         }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Degraded),
+            "degraded_startup_succeeded"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Starting),
+            "starting_startup_succeeded"
+        );
     }
 
     #[kani::proof]
+    #[kani::unwind(3)]
     fn verify_fanout_health_is_commutative_for_two_children() {
         let a = ComponentHealth::from_repr(kani::any());
         let b = ComponentHealth::from_repr(kani::any());
         assert_eq!(
             aggregate_fanout_health([a, b]),
             aggregate_fanout_health([b, a])
+        );
+
+        kani::cover!(
+            a == ComponentHealth::Healthy && b == ComponentHealth::Degraded,
+            "healthy_degraded_pair"
+        );
+        kani::cover!(
+            a == ComponentHealth::Stopping && b == ComponentHealth::Healthy,
+            "stopping_healthy_pair"
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn verify_fatal_failure_preserves_drain_phase() {
+        let current = ComponentHealth::from_repr(kani::any());
+        let out = reduce_output_health(current, OutputHealthEvent::FatalFailure);
+
+        match current {
+            ComponentHealth::Stopping | ComponentHealth::Stopped => assert_eq!(out, current),
+            _ => assert_eq!(out, ComponentHealth::Failed),
+        }
+
+        kani::cover!(
+            matches!(current, ComponentHealth::Stopping),
+            "stopping_fatal_failure"
+        );
+        kani::cover!(
+            matches!(current, ComponentHealth::Healthy),
+            "healthy_fatal_failure"
         );
     }
 }
