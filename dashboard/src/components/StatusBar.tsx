@@ -4,12 +4,21 @@ interface Props {
   connected: boolean;
   componentHealth: string;
   ready: "ready" | "not_ready";
+  statusReason: string;
   totalErrors: number;
   version: string;
   uptime: number;
 }
 
-export function StatusBar({ connected, componentHealth, ready, totalErrors, version, uptime }: Props) {
+export function StatusBar({
+  connected,
+  componentHealth,
+  ready,
+  statusReason,
+  totalErrors,
+  version,
+  uptime,
+}: Props) {
   const pillClass = connected
     ? ready !== "ready" || componentHealth === "failed" || componentHealth === "stopped"
       ? "pill pill-off"
@@ -34,7 +43,7 @@ export function StatusBar({ connected, componentHealth, ready, totalErrors, vers
   return (
     <div class="bar">
       <h1>logfwd</h1>
-      <div class={pillClass}>
+      <div class={pillClass} title={statusReason || undefined}>
         <span class="dot" />
         <span>{pillText}</span>
       </div>

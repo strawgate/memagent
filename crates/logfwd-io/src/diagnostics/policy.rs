@@ -29,6 +29,38 @@ pub(super) fn aggregate_component_health(pipelines: &[Arc<PipelineMetrics>]) -> 
         .fold(ComponentHealth::Healthy, ComponentHealth::combine)
 }
 
+/// Human-readable machine-stable reason for an aggregated component state.
+pub(super) const fn health_reason(health: ComponentHealth) -> &'static str {
+    match health {
+        ComponentHealth::Healthy => "all_components_healthy",
+        ComponentHealth::Degraded => "components_degraded_but_operational",
+        ComponentHealth::Starting => "components_starting",
+        ComponentHealth::Stopping => "components_stopping",
+        ComponentHealth::Stopped => "components_stopped",
+        ComponentHealth::Failed => "components_failed",
+    }
+}
+
+/// Whether the given health state blocks readiness.
+pub(super) const fn readiness_impact(health: ComponentHealth) -> &'static str {
+    match health {
+        ComponentHealth::Healthy => "ready",
+        ComponentHealth::Degraded => "non_blocking",
+        ComponentHealth::Starting
+        | ComponentHealth::Stopping
+        | ComponentHealth::Stopped
+        | ComponentHealth::Failed => "gating",
+    }
+}
+
+/// Machine-stable reason for the top-level readiness snapshot.
+pub(super) fn ready_reason(pipelines: &[Arc<PipelineMetrics>]) -> &'static str {
+    if pipelines.is_empty() {
+        return "no_pipelines_registered";
+    }
+    health_reason(aggregate_component_health(pipelines))
+}
+
 /// Return the health view exposed for the transform section in `/admin/v1/status`.
 pub(super) fn transform_health(pipeline: &PipelineMetrics) -> ComponentHealth {
     pipeline
@@ -97,5 +129,17 @@ mod tests {
         pm.transform_out.set_health(ComponentHealth::Stopping);
 
         assert_eq!(transform_health(&pm), ComponentHealth::Stopping);
+    }
+
+    #[test]
+    fn ready_reason_tracks_empty_and_degraded_states() {
+        assert_eq!(ready_reason(&[]), "no_pipelines_registered");
+
+        let pm = pipeline_with_io();
+        pm.outputs[0].2.set_health(ComponentHealth::Degraded);
+        assert_eq!(
+            ready_reason(&[Arc::new(pm)]),
+            "components_degraded_but_operational"
+        );
     }
 }

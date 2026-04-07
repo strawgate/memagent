@@ -391,8 +391,9 @@ export function App() {
 
   const version = status?.system?.version ?? "?";
   const uptime = stats?.uptime_sec ?? status?.system?.uptime_seconds ?? 0;
-  const componentHealth = status?.component_health ?? "failed";
+  const componentHealth = status?.component_health.status ?? "failed";
   const ready = status?.ready.status ?? "not_ready";
+  const statusReason = status?.ready.reason ?? status?.component_health.reason ?? "";
 
   // Stable references — series composition never changes, only data mutated in place.
   const pipelineSeries = useMemo(
@@ -413,6 +414,7 @@ export function App() {
         connected={connected}
         componentHealth={componentHealth}
         ready={ready}
+        statusReason={statusReason}
         totalErrors={totalErrors}
         version={version}
         uptime={uptime}

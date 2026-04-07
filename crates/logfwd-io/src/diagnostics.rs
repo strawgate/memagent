@@ -925,6 +925,10 @@ impl DiagnosticsServer {
 
     fn status_body(&self) -> String {
         let uptime = self.start_time.elapsed().as_secs();
+        let observed_at_unix_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
         let mut pipelines_json = Vec::new();
 
         for pm in &self.pipelines {
@@ -1061,11 +1065,20 @@ impl DiagnosticsServer {
             "not_ready"
         };
         let component_health = policy::aggregate_component_health(&self.pipelines);
+        let ready_reason = policy::ready_reason(&self.pipelines);
+        let component_reason = policy::health_reason(component_health);
+        let readiness_impact = policy::readiness_impact(component_health);
 
         format!(
-            r#"{{"live":{{"status":"live"}},"ready":{{"status":"{}"}},"component_health":"{}","pipelines":[{}],"system":{{"uptime_seconds":{},"version":"{}"{}}}}}"#,
+            r#"{{"live":{{"status":"live","reason":"process_running","observed_at_unix_ns":"{}"}},"ready":{{"status":"{}","reason":"{}","observed_at_unix_ns":"{}"}},"component_health":{{"status":"{}","reason":"{}","readiness_impact":"{}","observed_at_unix_ns":"{}"}},"pipelines":[{}],"system":{{"uptime_seconds":{},"version":"{}"{}}}}}"#,
+            observed_at_unix_ns,
             ready,
+            ready_reason,
+            observed_at_unix_ns,
             component_health.as_str(),
+            component_reason,
+            readiness_impact,
+            observed_at_unix_ns,
             pipelines_json.join(","),
             uptime,
             VERSION,
@@ -1451,12 +1464,23 @@ mod tests {
         let (status, body) = http_get(port, "/admin/v1/status");
         assert_eq!(status, 200);
         assert!(
-            body.contains(r#""component_health":"healthy""#),
+            body.contains(
+                r#""component_health":{"status":"healthy","reason":"all_components_healthy","readiness_impact":"ready","observed_at_unix_ns":""#
+            ),
             "body: {}",
             body
         );
         assert!(
-            body.contains(r#""ready":{"status":"ready"}"#),
+            body.contains(
+                r#""ready":{"status":"ready","reason":"all_components_healthy","observed_at_unix_ns":""#
+            ),
+            "body: {}",
+            body
+        );
+        assert!(
+            body.contains(
+                r#""live":{"status":"live","reason":"process_running","observed_at_unix_ns":""#
+            ),
             "body: {}",
             body
         );

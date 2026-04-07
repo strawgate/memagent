@@ -53,14 +53,25 @@ export type HealthState =
   | "stopped"
   | "failed";
 
+export interface StatusSnapshot {
+  status: string;
+  reason: string;
+  observed_at_unix_ns: string;
+}
+
+export interface ComponentHealthSnapshot extends StatusSnapshot {
+  status: HealthState;
+  readiness_impact: "ready" | "non_blocking" | "gating";
+}
+
 export interface StatusResponse {
-  live: {
+  live: StatusSnapshot & {
     status: "live";
   };
-  ready: {
+  ready: StatusSnapshot & {
     status: "ready" | "not_ready";
   };
-  component_health: HealthState;
+  component_health: ComponentHealthSnapshot;
   pipelines: PipelineData[];
   system: {
     uptime_seconds: number;
