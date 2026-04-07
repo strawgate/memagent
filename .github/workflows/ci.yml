@@ -366,6 +366,61 @@ jobs:
         run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC ${{ matrix.tla_file }} -config ${{ matrix.config }} -workers auto
 
   # -------------------------------------------------------------------------
+  # Coverage — workspace code coverage via llvm-cov
+  # -------------------------------------------------------------------------
+  coverage:
+    name: Code Coverage
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Generate workspace coverage
+        run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --profile ci
+
+      - name: Generate HTML report
+        run: cargo llvm-cov report --html --output-dir htmlcov
+
+      - name: Generate Coverage Summary
+        run: cargo llvm-cov report --summary-only > coverage-summary.txt
+
+      - name: Write to Job Summary
+        run: |
+          {
+            echo "## Code Coverage Summary"
+            echo '```text'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: code-coverage-html
+          path: htmlcov/
+
+      - name: Upload LCOV artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: code-coverage-lcov
+          path: lcov.info
+
+  # -------------------------------------------------------------------------
   # Conclusion — single required status check for branch protection.
   # Pattern from rust-analyzer and cargo: set ONE required check
   # ("conclusion") instead of maintaining a list of individual job names.
