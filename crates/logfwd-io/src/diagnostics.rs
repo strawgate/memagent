@@ -1123,10 +1123,11 @@ impl DiagnosticsServer {
             let transform_health = policy::transform_health(pm);
 
             // Compute bottleneck classification.
-            // Ratios are relative to uptime_s so they represent "per wall-second"
-            // accumulated stage time across all workers. queue_wait > 0.5 × uptime
-            // means workers are spending more than half their time blocked waiting
-            // to dispatch, a clear sign the output sink is the ceiling.
+            // Ratios are cumulative worker-seconds divided by wall-clock uptime, so
+            // they can exceed 1.0 when multiple workers run in parallel (e.g. 4
+            // workers each spending 100% of wall-time → ratio = 4.0). We express
+            // the result in "worker-seconds per wall-second" to avoid the misleading
+            // "% of uptime" framing.
             let uptime_s_nonzero = uptime_s.max(1e-9);
             let queue_wait_ratio = queue_wait_s / uptime_s_nonzero;
             let transform_ratio = transform_s / uptime_s_nonzero;
@@ -1137,7 +1138,7 @@ impl DiagnosticsServer {
                 (
                     "output",
                     format!(
-                        "workers spending {:.0}% of uptime in output queue",
+                        "workers spending {:.0}% of wall-time in output queue",
                         queue_wait_ratio * 100.0
                     ),
                 )
@@ -1153,14 +1154,17 @@ impl DiagnosticsServer {
                 (
                     "transform",
                     format!(
-                        "transform consuming {:.0}% of uptime",
+                        "transform consuming {:.0}% of wall-time across workers",
                         transform_ratio * 100.0
                     ),
                 )
             } else if scan_ratio > 0.3 {
                 (
                     "scan",
-                    format!("scan consuming {:.0}% of uptime", scan_ratio * 100.0),
+                    format!(
+                        "scan consuming {:.0}% of wall-time across workers",
+                        scan_ratio * 100.0
+                    ),
                 )
             } else {
                 ("none", "running well within capacity".to_string())

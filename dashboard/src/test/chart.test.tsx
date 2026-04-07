@@ -93,8 +93,9 @@ describe("Chart", () => {
   });
 
   afterEach(() => {
-    // Cleanup component while RAF stubs are still alive, then restore timers
+    // Cleanup component while RAF stubs are still alive, then restore globals
     cleanup();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
