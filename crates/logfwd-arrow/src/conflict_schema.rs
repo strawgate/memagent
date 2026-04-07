@@ -20,7 +20,7 @@
 //!
 //! The flat column is computed as:
 //! ```text
-//! COALESCE(CAST(int AS Utf8), CAST(float AS Utf8), str)
+//! COALESCE(CAST(int AS Utf8), CAST(float AS Utf8), str, CAST(bool AS Utf8))
 //! ```
 //! so it is non-null whenever any typed child is non-null.
 //!
@@ -35,6 +35,61 @@ use arrow::array::{Array, StringBuilder, StructArray};
 use arrow::datatypes::{DataType, Field, Fields, Schema};
 use arrow::record_batch::RecordBatch;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConflictValueSource {
+    Int,
+    Float,
+    Str,
+    Bool,
+}
+
+fn pick_conflict_value_source(
+    int_present: bool,
+    float_present: bool,
+    str_present: bool,
+    bool_present: bool,
+) -> Option<ConflictValueSource> {
+    if int_present {
+        Some(ConflictValueSource::Int)
+    } else if float_present {
+        Some(ConflictValueSource::Float)
+    } else if str_present {
+        Some(ConflictValueSource::Str)
+    } else if bool_present {
+        Some(ConflictValueSource::Bool)
+    } else {
+        None
+    }
+}
+
+fn conflict_child_kind(name: &str) -> Option<ConflictValueSource> {
+    let bytes = name.as_bytes();
+    match bytes.len() {
+        3 if bytes[0] == b'i' && bytes[1] == b'n' && bytes[2] == b't' => {
+            Some(ConflictValueSource::Int)
+        }
+        3 if bytes[0] == b's' && bytes[1] == b't' && bytes[2] == b'r' => {
+            Some(ConflictValueSource::Str)
+        }
+        4 if bytes[0] == b'b' && bytes[1] == b'o' && bytes[2] == b'o' && bytes[3] == b'l' => {
+            Some(ConflictValueSource::Bool)
+        }
+        5 if bytes[0] == b'f'
+            && bytes[1] == b'l'
+            && bytes[2] == b'o'
+            && bytes[3] == b'a'
+            && bytes[4] == b't' =>
+        {
+            Some(ConflictValueSource::Float)
+        }
+        _ => None,
+    }
+}
+
+fn is_conflict_child_name(name: &str) -> bool {
+    conflict_child_kind(name).is_some()
+}
+
 /// Returns `true` iff every child field name is one of the conflict-type names.
 ///
 /// An empty struct is never a conflict struct.
@@ -42,7 +97,7 @@ fn is_conflict_struct(fields: &Fields) -> bool {
     !fields.is_empty()
         && fields
             .iter()
-            .all(|f| matches!(f.name().as_str(), "int" | "float" | "str" | "bool"))
+            .all(|field| is_conflict_child_name(field.name().as_str()))
 }
 
 /// Replace every conflict struct column with a flat `Utf8` column of the same name.
@@ -162,17 +217,104 @@ pub fn merge_to_utf8(
 
     let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 8);
     for i in 0..num_rows {
-        let val = int_arr
-            .and_then(|a| (!a.is_null(i)).then(|| a.value(i)))
-            .or_else(|| float_arr.and_then(|a| (!a.is_null(i)).then(|| a.value(i))))
-            .or_else(|| str_arr.and_then(|a| (!a.is_null(i)).then(|| a.value(i))))
-            .or_else(|| bool_arr.and_then(|a| (!a.is_null(i)).then(|| a.value(i))));
-        match val {
-            Some(v) => builder.append_value(v),
+        match pick_conflict_value_source(
+            int_arr.is_some_and(|a| !a.is_null(i)),
+            float_arr.is_some_and(|a| !a.is_null(i)),
+            str_arr.is_some_and(|a| !a.is_null(i)),
+            bool_arr.is_some_and(|a| !a.is_null(i)),
+        ) {
+            Some(ConflictValueSource::Int) => {
+                builder.append_value(int_arr.expect("int presence was checked above").value(i))
+            }
+            Some(ConflictValueSource::Float) => builder.append_value(
+                float_arr
+                    .expect("float presence was checked above")
+                    .value(i),
+            ),
+            Some(ConflictValueSource::Str) => {
+                builder.append_value(str_arr.expect("str presence was checked above").value(i))
+            }
+            Some(ConflictValueSource::Bool) => {
+                builder.append_value(bool_arr.expect("bool presence was checked above").value(i))
+            }
             None => builder.append_null(),
         }
     }
     Arc::new(builder.finish())
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn conflict_kind_for_tag(tag: u8) -> Option<ConflictValueSource> {
+        match tag {
+            0 => Some(ConflictValueSource::Int),
+            1 => Some(ConflictValueSource::Float),
+            2 => Some(ConflictValueSource::Str),
+            3 => Some(ConflictValueSource::Bool),
+            _ => None,
+        }
+    }
+
+    #[kani::proof]
+    fn verify_is_conflict_child_name_policy() {
+        let tag: u8 = kani::any_where(|&tag| tag <= 4);
+        assert_eq!(
+            is_conflict_child_name(match tag {
+                0 => "int",
+                1 => "float",
+                2 => "str",
+                3 => "bool",
+                _ => "other",
+            }),
+            conflict_kind_for_tag(tag).is_some()
+        );
+        kani::cover!(tag <= 3, "allowed conflict child names are accepted");
+        kani::cover!(tag == 4, "unknown child names are rejected");
+    }
+
+    #[kani::proof]
+    fn verify_pick_conflict_value_source_precedence() {
+        let int_present: bool = kani::any();
+        let float_present: bool = kani::any();
+        let str_present: bool = kani::any();
+        let bool_present: bool = kani::any();
+
+        let expected = if int_present {
+            Some(ConflictValueSource::Int)
+        } else if float_present {
+            Some(ConflictValueSource::Float)
+        } else if str_present {
+            Some(ConflictValueSource::Str)
+        } else if bool_present {
+            Some(ConflictValueSource::Bool)
+        } else {
+            None
+        };
+
+        assert_eq!(
+            pick_conflict_value_source(int_present, float_present, str_present, bool_present),
+            expected
+        );
+        kani::cover!(int_present, "int wins when present");
+        kani::cover!(
+            !int_present && float_present,
+            "float wins when int is absent"
+        );
+        kani::cover!(
+            !int_present && !float_present && str_present,
+            "str wins next"
+        );
+        kani::cover!(
+            !int_present && !float_present && !str_present && bool_present,
+            "bool wins when it is the only populated child"
+        );
+        kani::cover!(
+            !int_present && !float_present && !str_present && !bool_present,
+            "all-null rows stay null"
+        );
+    }
 }
 
 #[cfg(test)]

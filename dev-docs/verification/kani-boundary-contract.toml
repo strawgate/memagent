@@ -7,6 +7,12 @@ reason = "Pure StructArray conflict-column assembly invariants are already Kani-
 issue = 1314
 
 [[seams]]
+path = "crates/logfwd-arrow/src/conflict_schema.rs"
+status = "recommended"
+reason = "Conflict-struct detection and row-level precedence selection are bounded pure seams; full Arrow batch normalization remains too dynamic for required Kani."
+issue = 1485
+
+[[seams]]
 path = "crates/logfwd-types/src/pipeline/batch.rs"
 status = "required"
 reason = "Typestate batch transitions are a core local proof seam outside logfwd-core."
