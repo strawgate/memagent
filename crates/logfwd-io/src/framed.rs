@@ -374,6 +374,24 @@ mod tests {
             )
         }
 
+        /// Like `from_chunks`, but tags every event with `Some(sid)` so that
+        /// `FramedInput::checkpoint_data()` can actually find the per-source
+        /// state under `Some(SourceId)` instead of falling back to the raw
+        /// offset.  Use this whenever a test needs to assert `checkpoint_data`.
+        fn from_chunks_with_source(chunks: Vec<&[u8]>, sid: SourceId) -> Self {
+            Self::new(
+                chunks
+                    .into_iter()
+                    .map(|c| {
+                        vec![InputEvent::Data {
+                            bytes: c.to_vec(),
+                            source_id: Some(sid),
+                        }]
+                    })
+                    .collect(),
+            )
+        }
+
         fn with_offsets(mut self, offsets: Vec<(SourceId, ByteOffset)>) -> Self {
             self.offsets = offsets;
             self
@@ -557,6 +575,97 @@ mod tests {
         assert!(
             !data2.is_empty(),
             "preserved overflow remainder must be emitted when a newline arrives"
+        );
+    }
+
+    /// `checkpoint_data()` must account for overflow remainder when the source
+    /// has a real `SourceId`.  With `source_id: None` the lookup in
+    /// `self.sources.get(&Some(sid))` silently falls back to the raw offset,
+    /// making the assertion trivially true regardless of correctness.  This
+    /// test uses `from_chunks_with_source` so the per-source state is actually
+    /// keyed under `Some(SourceId(1))` and the checkpoint path is exercised.
+    #[test]
+    fn checkpoint_data_accounts_for_overflow_remainder() {
+        let stats = make_stats();
+        let sid = SourceId(1);
+        // The inner source claims it has read `big.len()` bytes.  We set the
+        // reported offset to exactly that many bytes so the checkpoint must
+        // subtract the remainder to be correct.
+        let big_len = MAX_REMAINDER_BYTES + 1;
+        let big = vec![b'x'; big_len];
+        // Reported offset equals the number of bytes the inner source has
+        // "read" so far: big_len bytes with no newline.
+        let reported_offset = big_len as u64;
+        let source = MockSource::from_chunks_with_source(vec![&big, b"\n"], sid)
+            .with_offsets(vec![(sid, ByteOffset(reported_offset))]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            Arc::clone(&stats),
+        );
+
+        // First poll: no newline — overflow triggers parse_error and remainder
+        // is capped to MAX_REMAINDER_BYTES.
+        let _ = framed.poll().unwrap();
+
+        // The per-source state must be reachable under Some(sid).
+        let state = framed.sources.get(&Some(sid)).unwrap();
+        assert_eq!(state.remainder.len(), MAX_REMAINDER_BYTES);
+
+        // checkpoint_data() must subtract the remainder length from the raw
+        // offset, not return the raw offset unchanged.
+        let cp = framed.checkpoint_data();
+        assert_eq!(cp.len(), 1, "expected exactly one checkpoint entry");
+        let (cp_sid, cp_offset) = cp[0];
+        assert_eq!(cp_sid, sid);
+        // The checkpointable offset must be strictly less than the reported
+        // offset because there is an undelivered remainder buffered.
+        assert!(
+            cp_offset.0 < reported_offset,
+            "checkpoint offset ({}) must be less than raw offset ({}) when remainder is buffered",
+            cp_offset.0,
+            reported_offset
+        );
+    }
+
+    /// `checkpoint_data()` must account for the overflow tail remainder when
+    /// a newline precedes the overflow.  Uses `from_chunks_with_source` so the
+    /// assertion exercises the real `self.sources.get(&Some(sid))` path.
+    #[test]
+    fn checkpoint_data_accounts_for_overflow_tail_remainder() {
+        let stats = make_stats();
+        let sid = SourceId(1);
+        let mut chunk = b"ok\n".to_vec();
+        chunk.extend(vec![b'x'; MAX_REMAINDER_BYTES + 1]);
+        let chunk_len = chunk.len() as u64;
+        let source = MockSource::from_chunks_with_source(vec![&chunk, b"\n"], sid)
+            .with_offsets(vec![(sid, ByteOffset(chunk_len))]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            Arc::clone(&stats),
+        );
+
+        // First poll: "ok\n" is emitted and the overflow tail becomes the
+        // remainder (capped to MAX_REMAINDER_BYTES).
+        let events = framed.poll().unwrap();
+        assert_eq!(collect_data(events), b"ok\n");
+
+        // Per-source state is keyed under Some(sid).
+        let state = framed.sources.get(&Some(sid)).unwrap();
+        assert_eq!(state.remainder.len(), MAX_REMAINDER_BYTES);
+
+        // The checkpoint must be behind the raw offset because the remainder
+        // has not yet been delivered as a complete line.
+        let cp = framed.checkpoint_data();
+        assert_eq!(cp.len(), 1);
+        let (cp_sid, cp_offset) = cp[0];
+        assert_eq!(cp_sid, sid);
+        assert!(
+            cp_offset.0 < chunk_len,
+            "checkpoint offset ({}) must be less than raw offset ({}) when overflow tail is buffered",
+            cp_offset.0,
+            chunk_len
         );
     }
 
