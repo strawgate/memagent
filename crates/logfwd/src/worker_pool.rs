@@ -180,7 +180,7 @@ impl OutputHealthTracker {
             .expect("output health tracker mutex poisoned during worker insertion");
         if !matches!(
             state.idle_health,
-            ComponentHealth::Stopping | ComponentHealth::Stopped
+            ComponentHealth::Stopping | ComponentHealth::Stopped | ComponentHealth::Failed
         ) {
             state.idle_health = ComponentHealth::Healthy;
         }
@@ -1676,6 +1676,21 @@ mod tests {
 
         tracker.set_pool_health(ComponentHealth::Stopped);
         assert_eq!(out_stats.health(), ComponentHealth::Stopped);
+    }
+
+    #[test]
+    fn output_health_tracker_keeps_failed_pool_phase_on_new_worker() {
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("pipe", "", &meter);
+        let out_stats = pm.add_output("output_0", "http");
+        let tracker = OutputHealthTracker::new(vec![Arc::clone(&out_stats)]);
+
+        tracker.set_pool_health(ComponentHealth::Failed);
+        assert_eq!(out_stats.health(), ComponentHealth::Failed);
+
+        tracker.insert_worker(1, ComponentHealth::Starting);
+        assert_eq!(out_stats.health(), ComponentHealth::Failed);
+        assert_eq!(tracker.slot_health(1), Some(ComponentHealth::Starting));
     }
 
     #[test]
