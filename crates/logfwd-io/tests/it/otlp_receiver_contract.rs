@@ -116,14 +116,7 @@ fn assert_accounted_bytes_for_payload(
         assert_eq!(status, 200, "request should succeed");
 
         let events = poll_until_events(&mut input, Duration::from_secs(2));
-<<<<<<< HEAD
-        assert!(
-            !events.is_empty(),
-            "receiver should emit at least one event"
-        );
-=======
         assert!(!events.is_empty(), "receiver should emit at least one event");
->>>>>>> 62af0afb (fix(stats): charge OTLP compressed request bytes correctly)
         assert_eq!(
             stats.bytes(),
             body.len() as u64,
