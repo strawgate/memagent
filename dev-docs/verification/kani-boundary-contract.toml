@@ -109,6 +109,12 @@ reason = "Worker dispatch helpers already expose bounded local proof seams."
 issue = 1314
 
 [[seams]]
+path = "crates/logfwd/src/pipeline/checkpoint_policy.rs"
+status = "required"
+reason = "The typed delivery outcome -> checkpoint disposition compatibility mapping is a local pure seam."
+issue = 1314
+
+[[seams]]
 path = "crates/logfwd/src/worker_pool/health.rs"
 status = "required"
 reason = "Pool-level health insertion and aggregation policy is isolated here and should remain Kani-covered."

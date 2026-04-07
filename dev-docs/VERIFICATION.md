@@ -267,8 +267,9 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-io/receiver_health.rs` | Standalone receiver health reducer (`noop`, backpressure, fatal, shutdown) | Kani exhaustive (6 proofs) + unit tests + proptest sequence checks |
 | `logfwd-io/format.rs` | CRI metadata injection, Auto-mode fallthrough to passthrough | Kani (4 proofs: inject_cri_metadata output structure, JSON vs plain-text path dispatch) |
 | `logfwd-io/tail.rs` | File tailer EOF emission state machine (eof_emitted flag) | Kani (4 proofs: at-most-once emission per streak, data-reset invariant, two-poll sequence, reset-cycle) |
+| `logfwd/pipeline/checkpoint_policy.rs` | Typed delivery outcome -> checkpoint disposition mapping (`Ack`, `Reject`, `Hold`) | Kani exhaustive (3 proofs) + unit tests |
 | `logfwd/worker_pool/health.rs` | Pool idle-phase insertion + worker-slot aggregation policy | Kani exhaustive (3 proofs) + unit tests + proptest aggregation checks |
-| `logfwd/worker_pool.rs` | MRU dispatch decision + runtime worker-pool integration | Kani (3 dispatch proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
+| `logfwd/worker_pool.rs` | MRU dispatch decision + typed delivery outcome helpers | Kani (8 dispatch/outcome proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
 | `logfwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `logfwd-arrow/streaming_builder.rs` | StructArray conflict column assembly (StringView) | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `logfwd-arrow/conflict_schema.rs` | Conflict-struct detection + row-level precedence selection | Kani recommended (2 proofs) + unit tests |

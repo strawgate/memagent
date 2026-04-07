@@ -112,9 +112,20 @@ pub enum DeliveryOutcome {
 }
 
 impl DeliveryOutcome {
-    /// Returns `true` if this outcome represents successful delivery to the sink.
+    /// Returns `true` when the batch reached the sink successfully.
+    ///
+    /// This is the compatibility gate used by the pipeline metrics path and
+    /// checkpoint policy while the typed delivery contract is rolled out.
     pub const fn is_delivered(&self) -> bool {
         matches!(self, Self::Delivered)
+    }
+
+    /// Returns `true` when the sink rejected the data permanently.
+    ///
+    /// This is the only worker outcome that should currently advance the
+    /// checkpoint without successful delivery.
+    pub const fn is_permanent_reject(&self) -> bool {
+        matches!(self, Self::Rejected { .. })
     }
 }
 
@@ -403,9 +414,9 @@ impl OutputWorkerPool {
     /// 3. If at `max_workers` and all full, async-wait on the front worker.
     ///    This yields the tokio task until a worker drains its queue.
     ///
-    /// # Panics
-    ///
-    /// Panics if the pool has already been drained (cancel token fired).
+    /// Submits after drain are rejected immediately: the pool logs a warning
+    /// and emits an [`AckItem`] with [`DeliveryOutcome::PoolClosed`] unless the
+    /// ack channel is already closed too.
     pub async fn submit(&mut self, item: WorkItem) {
         if self.cancel.is_cancelled() {
             // Pool has been drained — reject the item immediately rather than
@@ -1163,6 +1174,50 @@ mod kani_proofs {
         kani::cover!(max_workers > 1, "multi-worker capacity exercised");
         let outcome = dispatch_step(&[], max_workers);
         assert_eq!(outcome, DispatchOutcome::SpawnNew);
+    }
+
+    // -----------------------------------------------------------------------
+    // Proof 7: is_delivered matches the enum variant exactly.
+    // -----------------------------------------------------------------------
+    #[kani::proof]
+    fn verify_delivery_outcome_is_delivered_contract() {
+        let rejected = DeliveryOutcome::Rejected {
+            reason: "bad request".to_owned(),
+        };
+        assert!(DeliveryOutcome::Delivered.is_delivered());
+        for outcome in [
+            rejected,
+            DeliveryOutcome::RetryExhausted,
+            DeliveryOutcome::TimedOut,
+            DeliveryOutcome::PoolClosed,
+            DeliveryOutcome::WorkerChannelClosed,
+            DeliveryOutcome::NoWorkersAvailable,
+            DeliveryOutcome::InternalFailure,
+        ] {
+            assert!(!outcome.is_delivered());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Proof 8: only explicit Rejected outcomes count as permanent rejects.
+    // -----------------------------------------------------------------------
+    #[kani::proof]
+    fn verify_delivery_outcome_is_permanent_reject_contract() {
+        let rejected = DeliveryOutcome::Rejected {
+            reason: "bad request".to_owned(),
+        };
+        assert!(rejected.is_permanent_reject());
+        for outcome in [
+            DeliveryOutcome::Delivered,
+            DeliveryOutcome::RetryExhausted,
+            DeliveryOutcome::TimedOut,
+            DeliveryOutcome::PoolClosed,
+            DeliveryOutcome::WorkerChannelClosed,
+            DeliveryOutcome::NoWorkersAvailable,
+            DeliveryOutcome::InternalFailure,
+        ] {
+            assert!(!outcome.is_permanent_reject());
+        }
     }
 }
 

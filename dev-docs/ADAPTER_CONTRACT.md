@@ -187,6 +187,14 @@ The file path is:
 - Duplicate delivery is acceptable when required for at-least-once recovery.
 - Copytruncate is explicitly documented as a race window, not treated as an
   exactly-once path.
+- Successful delivery advances checkpoints.
+- Explicit permanent sink rejection may also advance checkpoints; this is the
+  deliberate escape hatch for malformed or otherwise non-retriable data.
+- Retry exhaustion, dispatch failure, timeout, and other control-plane failures
+  must not advance checkpoints past undelivered data.
+- The current worker/pipeline seam does not yet retain enough batch payload
+  state to requeue held batches in-process, so non-advancing failures are
+  replayed on restart if shutdown force-stops with unresolved tickets.
 
 ## Diagnostics And Control-Plane Contract
 

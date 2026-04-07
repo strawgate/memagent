@@ -19,6 +19,10 @@
  *   - Scanner, transform, or output sink details
  *   - Checkpoint arithmetic (proven by Kani on CheckpointTracker)
  *   - The PipelineMachine lifecycle (modeled in PipelineMachine.tla)
+ *   - The exact distinction between explicit permanent reject and held
+ *     retry/control-plane failures at the worker/checkpoint seam. The
+ *     current runtime may force-stop with unresolved held batches so they
+ *     replay on restart.
  *
  * For TLC configuration, see MCShutdownProtocol.tla.
  *)
