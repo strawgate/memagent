@@ -1,6 +1,6 @@
 # Configuration Reference
 
-logfwd is configured with a YAML file passed via `run --config <config.yaml>`.
+logfwd commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
 
 ## Overview
 

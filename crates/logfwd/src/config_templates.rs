@@ -86,6 +86,8 @@ pub(crate) const OUTPUT_TEMPLATES: &[OutputTemplate] = &[
     },
 ];
 
+// Intentionally kept for upcoming wizard mode that starts from opinionated
+// use-case presets before selecting input/output details.
 #[allow(dead_code)]
 pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
     UseCaseTemplate {

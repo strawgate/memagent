@@ -960,7 +960,12 @@ fn validate_input_format_read_only(
         InputType::Generator | InputType::Otlp => matches!(format, Format::Json),
         InputType::Udp | InputType::Tcp => matches!(format, Format::Json | Format::Raw),
         InputType::ArrowIpc => false,
-        _ => false,
+        _ => {
+            return Err(format!(
+                "input '{name}': type {:?} is not yet supported in read-only validation",
+                input_type
+            ));
+        }
     };
 
     if supported {
@@ -971,6 +976,23 @@ fn validate_input_format_read_only(
         "input '{name}': format {:?} is not supported for {:?} inputs",
         format, input_type
     ))
+}
+
+#[cfg(test)]
+fn collect_yaml_files_recursive(
+    dir: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_yaml_files_recursive(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "yaml") {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn validate_pipelines(
@@ -1906,6 +1928,63 @@ transform: |
         assert!(
             read_only.is_err(),
             "effective-config validation should reject duplicate aliases"
+        );
+    }
+
+    #[test]
+    fn all_yaml_examples_parse_and_validate_read_only() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut yaml_files = Vec::new();
+
+        collect_yaml_files_recursive(&repo_root.join("examples"), &mut yaml_files)
+            .expect("should collect yaml files under examples/");
+        collect_yaml_files_recursive(&repo_root.join("bench/scenarios"), &mut yaml_files)
+            .expect("should collect yaml files under bench/scenarios/");
+        yaml_files.sort();
+
+        assert!(
+            !yaml_files.is_empty(),
+            "expected at least one yaml example in examples/ or bench/scenarios/"
+        );
+
+        let mut failures = Vec::new();
+        for path in yaml_files {
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(value) => value,
+                Err(err) => {
+                    failures.push(format!("{}: failed to read file: {err}", path.display()));
+                    continue;
+                }
+            };
+
+            // Keep example validation hermetic: inline secrets placeholders with dummy values.
+            let raw = raw.replace("${ELASTICSEARCH_API_KEY}", "example-api-key");
+
+            let config = match logfwd_config::Config::load_str(&raw) {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    failures.push(format!(
+                        "{}: failed to parse config yaml: {err}",
+                        path.display()
+                    ));
+                    continue;
+                }
+            };
+
+            if let Err(err) =
+                validate_pipelines_read_only(&config, path.parent(), |_name| {}, |_err| {})
+            {
+                failures.push(format!(
+                    "{}: failed read-only config validation: {err}",
+                    path.display()
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "yaml examples must parse and validate read-only:\n{}",
+            failures.join("\n")
         );
     }
 }
