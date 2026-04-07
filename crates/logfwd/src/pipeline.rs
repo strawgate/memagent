@@ -1170,6 +1170,7 @@ async fn async_input_poll_loop(
         let events = match input.source.poll() {
             Ok(e) => e,
             Err(e) => {
+                input.stats.inc_errors();
                 input.stats.set_health(reduce_component_health(
                     input.stats.health(),
                     HealthTransitionEvent::PollFailed,
@@ -1521,9 +1522,17 @@ fn build_input_state(
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Otlp, &format)?;
             let source = if otlp_structured_ingress {
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_structured(name, addr)
+                logfwd_io::otlp_receiver::OtlpReceiverInput::new_structured_with_stats(
+                    name,
+                    addr,
+                    Arc::clone(&stats),
+                )
             } else {
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new(name, addr)
+                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats(
+                    name,
+                    addr,
+                    Arc::clone(&stats),
+                )
             }
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)

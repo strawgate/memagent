@@ -77,7 +77,10 @@ fn poll_until_data(
 
     while Instant::now() < deadline {
         for event in input.poll().expect("poll file input") {
-            if let InputEvent::Data { bytes, source_id } = event {
+            if let InputEvent::Data {
+                bytes, source_id, ..
+            } = event
+            {
                 collected.push((source_id, bytes));
             }
         }

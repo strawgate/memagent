@@ -151,10 +151,14 @@ impl InputSource for UdpInput {
         );
 
         match total {
-            Some(bytes) => Ok(vec![InputEvent::Data {
-                bytes,
-                source_id: None,
-            }]),
+            Some(bytes) => {
+                let accounted_bytes = bytes.len() as u64;
+                Ok(vec![InputEvent::Data {
+                    bytes,
+                    source_id: None,
+                    accounted_bytes,
+                }])
+            }
             None => Ok(Vec::new()),
         }
     }

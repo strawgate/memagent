@@ -1420,7 +1420,12 @@ fn print_shutdown_stats(
         .sum();
     let total_bytes_in: u64 = metrics
         .iter()
-        .map(|m| m.transform_in.bytes_total.load(Relaxed))
+        .map(|m| {
+            m.inputs
+                .iter()
+                .map(|(_, _, stats)| stats.bytes_total.load(Relaxed))
+                .sum::<u64>()
+        })
         .sum();
     let total_batches: u64 = metrics.iter().map(|m| m.batches_total.load(Relaxed)).sum();
     let total_errors: u64 = metrics

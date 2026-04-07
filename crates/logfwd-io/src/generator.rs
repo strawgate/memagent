@@ -315,9 +315,11 @@ impl InputSource for GeneratorInput {
         // Swap buffers to preserve capacity (avoid realloc every batch).
         let mut out = Vec::with_capacity(self.config.batch_size * 512);
         std::mem::swap(&mut self.buf, &mut out);
+        let accounted_bytes = out.len() as u64;
         Ok(vec![InputEvent::Data {
             bytes: out,
             source_id: None,
+            accounted_bytes,
         }])
     }
 

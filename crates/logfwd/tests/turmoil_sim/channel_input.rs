@@ -31,10 +31,12 @@ impl InputSource for ChannelInputSource {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
         match self.chunks.pop_front() {
             Some(data) => {
+                let accounted_bytes = data.len() as u64;
                 self.offset += data.len() as u64;
                 Ok(vec![InputEvent::Data {
                     bytes: data,
                     source_id: Some(self.source_id),
+                    accounted_bytes,
                 }])
             }
             None => Ok(vec![]),
