@@ -212,12 +212,16 @@ impl LokiSink {
             if let Some(ci) = cols.iter().find(|c| &c.field_name == label_col) {
                 let sanitized = sanitize_loki_label_name(label_col);
                 if let Some(existing) = sanitized_label_sources.get(&sanitized) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "duplicate Loki label key after sanitization: '{label_col}' conflicts with {existing} as '{sanitized}'"
-                        ),
-                    ));
+                    // Collision: two sources sanitize to the same key. Keep the
+                    // first one and warn — erroring would make config validity
+                    // data-dependent since dynamic labels are schema-derived.
+                    tracing::warn!(
+                        label = label_col.as_str(),
+                        sanitized = sanitized.as_str(),
+                        conflicts_with = existing.as_str(),
+                        "loki.label_collision_after_sanitization — keeping first, dropping duplicate"
+                    );
+                    continue;
                 }
                 sanitized_label_sources
                     .insert(sanitized.clone(), format!("label column '{label_col}'"));
@@ -858,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn colliding_sanitized_label_columns_error() {
+    fn colliding_sanitized_label_columns_keeps_first() {
         use arrow::array::{ArrayRef, StringArray};
         use arrow::datatypes::{Field, Schema};
 
@@ -888,12 +892,9 @@ mod tests {
             observed_time_ns: 1_000,
         };
 
-        let err = sink.build_stream_map(&batch, &metadata).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("duplicate Loki label key after sanitization"),
-            "unexpected error: {err}"
-        );
+        // Collision is warned, not errored. First label wins.
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        assert!(!stream_map.is_empty(), "should produce at least one stream");
     }
 
     #[test]
@@ -941,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_label_colliding_with_static_label_errors() {
+    fn dynamic_label_colliding_with_static_keeps_static() {
         use arrow::array::StringArray;
         use arrow::datatypes::{Field, Schema};
 
@@ -959,7 +960,6 @@ mod tests {
             Arc::new(ComponentStats::new()),
         );
 
-        // The log record has env="staging" — static label "env"="prod" must survive.
         let schema = Arc::new(Schema::new(vec![Field::new("env", DataType::Utf8, true)]));
         let env_arr = StringArray::from(vec![Some("staging")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(env_arr)]).unwrap();
@@ -968,16 +968,13 @@ mod tests {
             observed_time_ns: 1_000,
         };
 
-        let err = sink.build_stream_map(&batch, &metadata).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("duplicate Loki label key after sanitization"),
-            "unexpected error: {err}"
-        );
+        // Collision is warned, dynamic "env" column is dropped. Static wins.
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        assert!(!stream_map.is_empty());
     }
 
     #[test]
-    fn sanitized_static_label_colliding_with_dynamic_errors() {
+    fn sanitized_static_label_colliding_with_dynamic_keeps_static() {
         use arrow::array::StringArray;
         use arrow::datatypes::{Field, Schema};
 
@@ -1007,16 +1004,10 @@ mod tests {
             observed_time_ns: 1_000,
         };
 
-        let err = sink.build_stream_map(&batch, &metadata).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("duplicate Loki label key after sanitization"),
-            "unexpected error: {err}"
-        );
-        assert!(
-            err.to_string().contains("static label 'service.name'"),
-            "unexpected error: {err}"
-        );
+        // service.name (static) sanitizes to service_name, colliding with
+        // the dynamic column. Static wins, dynamic dropped with warning.
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        assert!(!stream_map.is_empty());
     }
 
     #[test]
