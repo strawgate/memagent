@@ -21,14 +21,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use std::time::Instant;
 
-use bytes::BytesMut;
 #[cfg(any(test, feature = "turmoil"))]
 use bytes::Bytes;
-
-
+use bytes::BytesMut;
 
 use opentelemetry::metrics::Meter;
-
 
 use crate::processor::Processor;
 use crate::worker_pool::{AckItem, OutputWorkerPool, WorkItem};
@@ -1204,9 +1201,9 @@ async fn async_input_poll_loop(
         let should_send =
             input.buf.len() >= batch_target_bytes || (!input.buf.is_empty() && timeout_elapsed);
         if should_send {
-            if let Some(msg) = scan_and_transform_for_send(
-                &mut input, &mut transform, &metrics, input_index,
-            ).await {
+            if let Some(msg) =
+                scan_and_transform_for_send(&mut input, &mut transform, &metrics, input_index).await
+            {
                 if tx.send(msg).await.is_err() {
                     break;
                 }
@@ -1217,9 +1214,9 @@ async fn async_input_poll_loop(
 
     // Drain remaining buffered data.
     if !input.buf.is_empty() {
-        if let Some(msg) = scan_and_transform_for_send(
-            &mut input, &mut transform, &metrics, input_index,
-        ).await {
+        if let Some(msg) =
+            scan_and_transform_for_send(&mut input, &mut transform, &metrics, input_index).await
+        {
             if let Err(e) = tx.send(msg).await {
                 tracing::warn!(
                     input = input.source.name(),

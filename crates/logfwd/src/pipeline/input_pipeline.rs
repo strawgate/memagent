@@ -657,10 +657,7 @@ output:
             "pipeline should survive transform errors: {result:?}"
         );
 
-        let errors = pipeline
-            .metrics
-            .transform_errors
-            .load(Ordering::Relaxed);
+        let errors = pipeline.metrics.transform_errors.load(Ordering::Relaxed);
         assert!(
             errors > 0,
             "CPU worker should report transform errors, got {errors}"
