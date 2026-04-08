@@ -45,8 +45,8 @@ Recommendation:
 References:
 
 - `book/src/development/building.md:19`
-- `justfile:57`
-- `justfile:60`
+- `justfile:58`
+- `justfile:61`
 
 Recommendation:
 
