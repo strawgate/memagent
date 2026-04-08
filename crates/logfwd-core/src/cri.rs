@@ -184,7 +184,8 @@ impl CriReassembler {
 /// Returns `(lines_ok, parse_errors)` where `parse_errors` is the number of
 /// non-empty lines that could not be parsed as valid CRI format **plus** the
 /// number of lines that were truncated due to `max_line_size`.
-pub fn process_cri_chunk<F>(
+#[allow(dead_code)] // used by tests; will be called from pipeline code once per-stream integration lands
+pub(crate) fn process_cri_chunk<F>(
     chunk: &[u8],
     reassembler: &mut CriReassembler,
     mut emit: F,
@@ -240,7 +241,8 @@ where
 /// Returns `(lines_ok, parse_errors)` where `parse_errors` is the number of
 /// non-empty lines that could not be parsed as valid CRI format **plus** the
 /// number of lines that were truncated due to `max_line_size`.
-pub fn process_cri_to_buf(
+#[allow(dead_code)] // used by tests; will be called from pipeline code once per-stream integration lands
+pub(crate) fn process_cri_to_buf(
     chunk: &[u8],
     reassembler: &mut CriReassembler,
     json_prefix: Option<&[u8]>,
@@ -314,6 +316,7 @@ pub fn json_escape_bytes(src: &[u8], dst: &mut Vec<u8>) {
 /// plain text and is written as `{"_raw":"<json-escaped msg>"}` so that no
 /// content is silently lost when the downstream scanner processes the line.
 #[inline]
+#[allow(dead_code)] // called by process_cri_to_buf
 fn write_json_line(msg: &[u8], json_prefix: Option<&[u8]>, out: &mut Vec<u8>) {
     if msg.first() == Some(&b'{') {
         if let Some(prefix) = json_prefix {
