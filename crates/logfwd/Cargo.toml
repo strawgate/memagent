@@ -9,9 +9,11 @@ publish = false
 doctest = false
 
 [features]
+default = ["datafusion"]
 dhat-heap = ["dhat"]
 cpu-profiling = ["pprof"]
 turmoil = ["dep:turmoil"]
+datafusion = ["dep:logfwd-transform"]
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
@@ -23,7 +25,7 @@ logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
-logfwd-transform = { version = "0.1.0", path = "../logfwd-transform" }
+logfwd-transform = { version = "0.1.0", path = "../logfwd-transform", optional = true }
 logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 dhat = { version = "0.3", optional = true }
 pprof = { version = "0.15", features = ["flamegraph"], optional = true }

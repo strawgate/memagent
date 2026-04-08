@@ -26,6 +26,8 @@ just test                    # tests (default-members only, ~30s)
 just test-all                # tests (full workspace, ~3min)
 just lint                    # fmt + clippy + toml
 just lint-all                # full: fmt + clippy + toml + deny + kani-boundary
+just build                   # release logfwd binary (includes DataFusion SQL)
+just build-dev-lite          # dev-only fast binary (no DataFusion SQL)
 cargo test -p logfwd-core    # single crate (fastest iteration)
 just fuzz scanner 300        # fuzz a target for 300s (nightly)
 ```
@@ -34,6 +36,20 @@ just fuzz scanner 300        # fuzz a target for 300s (nightly)
 > (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip
 > them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just
 > targets when you need the full build. CI always uses `--workspace`.
+
+## DataFusion in Dev vs Release
+
+`logfwd` now has a feature-gated SQL engine:
+
+- **Release/full package (default):** includes DataFusion.
+  - `cargo build --release -p logfwd`
+  - `just build`
+- **Dev-lite (opt-in):** skips DataFusion for faster local iteration.
+  - `cargo build --release -p logfwd --no-default-features`
+  - `just build-dev-lite`
+
+Use the dev-lite build only when you're intentionally working on non-SQL paths.
+If your config uses `transform:` SQL or `enrichment:`, run the full/default build.
 
 ## Compile caching with sccache
 
