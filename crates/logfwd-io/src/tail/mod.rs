@@ -935,21 +935,27 @@ mod tests {
         assert!(trunc_pos < data_pos, "Truncated must precede Data");
     }
 
-    /// Regression test for #1693: when drain_file encounters TruncatedThenData,
-    /// the Data event must carry the *new* source_id (post-truncation fingerprint),
-    /// not the stale pre-truncation source_id passed as argument.
+    /// Regression / integration test for #1693: when a file is truncated and then
+    /// deleted, the next `poll()` must emit a `Truncated` event with the old
+    /// source_id followed by a `Data` event with a *new* source_id (the
+    /// post-truncation fingerprint).
+    ///
+    /// This exercises the truncation-detection path through `poll()` →
+    /// `read_all` (which detects the truncation) rather than calling
+    /// `drain_file` directly.  A focused unit test for `drain_file` itself
+    /// lives in `reader.rs`.
     ///
     /// Using the old source_id would associate post-truncation bytes with the
     /// previous file identity, causing duplicate ingestion after restart.
     #[test]
-    fn test_drain_file_truncated_then_data_uses_new_source_id() {
+    fn test_poll_truncated_then_data_uses_new_source_id() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("drain_trunc_src.log");
 
         // Write initial content large enough to establish a non-zero fingerprint.
         {
             let mut f = File::create(&log_path).unwrap();
-            // Write > fingerprint_bytes (default 256) so the fingerprint is stable.
+            // Write > fingerprint_bytes (default 1024) so the fingerprint is stable.
             writeln!(f, "{}", "A".repeat(300)).unwrap();
         }
 
@@ -1016,6 +1022,10 @@ mod tests {
             ..
         } = data_event
         {
+            assert!(
+                data_source_id.is_some(),
+                "Data event after truncation must have a source_id (not None)"
+            );
             assert_ne!(
                 *data_source_id,
                 Some(old_source_id),
