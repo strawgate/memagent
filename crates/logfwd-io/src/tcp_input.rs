@@ -287,11 +287,30 @@ impl InputSource for TcpInput {
                         client.last_data = now;
                         got_data = true;
 
-                        client.pending.extend_from_slice(chunk);
+                        // Snapshot totals before this read so we can compute the
+                        // net increase in buffered memory after parsing.
                         let out = client_data[i].get_or_insert_with(Vec::new);
-                        let before = out.len();
+                        let out_before = out.len();
+                        let pending_before = client.pending.len(); // before extend
+
+                        client.pending.extend_from_slice(chunk);
                         extract_complete_records(client, out);
-                        total_buffered += out.len().saturating_sub(before);
+
+                        // Net new bytes held in memory for this client after this
+                        // read.  We account for both the parsed output (out) and the
+                        // unparsed remainder (client.pending) so that a client with a
+                        // long in-flight partial record counts against the global
+                        // budget.  Without this, a client can accumulate up to
+                        // MAX_LINE_LENGTH unparsed bytes without tripping the
+                        // backpressure threshold, undermining OOM protection (fix for
+                        // accounting gap in #576).
+                        //
+                        // extract_complete_records only moves bytes from pending→out
+                        // (never discards them), so the sum out+pending can only grow
+                        // by the n bytes we just appended; the result is always ≥ 0.
+                        let total_after = out.len() + client.pending.len();
+                        let total_before = out_before + pending_before;
+                        total_buffered += total_after.saturating_sub(total_before);
 
                         // We must store bytes we have already read from the
                         // socket (discarding them would be data loss), so the
@@ -571,44 +590,53 @@ mod tests {
 
         // Spawn the writer in a background thread because write_all of >1MB
         // will block until the reader drains the kernel buffer.
-        let writer = std::thread::spawn(move || {
+        // We send the oversized record AND the follow-up "ok\n" on the SAME
+        // connection so the test actually verifies that the connection remains
+        // usable after an oversized record is discarded, not just that a brand
+        // new connection works (fix for Bug 2 / test correctness).
+        let writer = std::thread::spawn(move || -> StdTcpStream {
             let mut client = StdTcpStream::connect(addr).unwrap();
             let big = vec![b'A'; MAX_LINE_LENGTH + 1];
-            // Ignore errors — the server may reset the connection once
-            // the limit is exceeded, causing a broken-pipe on our side.
+            // Ignore errors — the server may apply backpressure before we
+            // finish sending >1MB; we just need the server to see enough to
+            // trigger the oversized-discard path.
             let _ = client.write_all(&big);
+            // Follow-up newline terminates the oversized record so the parser
+            // can discard it and resume normal framing on this connection.
+            let _ = client.write_all(b"\n");
+            // Now send a well-sized record on the same connection.
+            client.write_all(b"ok\n").unwrap();
+            client.flush().unwrap();
+            client
         });
 
-        // Poll until the writer finishes (connection accepted and data read) or
-        // deadline. The accept and disconnect may happen in the same poll() call
-        // when the data arrives faster than the poll loop iterates, so we track
-        // total connections_accepted() rather than the transient client_count().
+        // Poll until the "ok" record is observed or deadline expires.
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut has_ok = false;
         while Instant::now() < deadline {
-            let _ = input.poll().unwrap();
-            if input.connections_accepted() > 0 && input.client_count() == 0 {
+            let events = input.poll().unwrap();
+            if events.iter().any(|e| match e {
+                InputEvent::Data { bytes, .. } => bytes.windows(3).any(|w| w == b"ok\n"),
+                _ => false,
+            }) {
+                has_ok = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        let _ = writer.join();
+        // Keep the client alive until after polling so the connection is not
+        // torn down before we observe the "ok" record.
+        let _client = writer.join().unwrap();
 
         assert!(
             input.connections_accepted() > 0,
             "server must have accepted the connection"
         );
-        // Oversized record is discarded; the connection remains usable.
-        let mut client = StdTcpStream::connect(addr).unwrap();
-        client.write_all(b"ok\n").unwrap();
-        client.flush().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        let events = input.poll().unwrap();
-        let has_ok = events.into_iter().any(|e| match e {
-            InputEvent::Data { bytes, .. } => bytes == b"ok\n",
-            _ => false,
-        });
-        assert!(has_ok, "connection should continue after oversized discard");
+        assert!(
+            has_ok,
+            "same connection should remain usable after oversized discard"
+        );
     }
 
     #[test]
@@ -624,17 +652,29 @@ mod tests {
             let mut line = vec![b'A'; MAX_LINE_LENGTH];
             line.push(b'\n');
             let _ = client.write_all(&line);
+            client.flush().unwrap();
         });
 
         let _ = writer.join();
-        std::thread::sleep(Duration::from_millis(50));
-        let events = input.poll().unwrap();
-        let got_boundary = events.into_iter().any(|e| match e {
-            InputEvent::Data { bytes, .. } => {
-                bytes.len() == (MAX_LINE_LENGTH + 1) && bytes.ends_with(b"\n")
+
+        // Use a deadline/polling loop rather than a fixed sleep so the test is
+        // not flaky on slow CI runners.  Poll until the expected Data event is
+        // observed or a generous timeout elapses.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got_boundary = false;
+        while Instant::now() < deadline {
+            let events = input.poll().unwrap();
+            if events.into_iter().any(|e| match e {
+                InputEvent::Data { bytes, .. } => {
+                    bytes.len() == (MAX_LINE_LENGTH + 1) && bytes.ends_with(b"\n")
+                }
+                _ => false,
+            }) {
+                got_boundary = true;
+                break;
             }
-            _ => false,
-        });
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(got_boundary, "boundary-sized line should be forwarded");
     }
 
