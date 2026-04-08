@@ -101,6 +101,18 @@ fn is_conflict_struct(fields: &Fields) -> bool {
             .all(|field| is_conflict_child_name(field.name().as_str()))
 }
 
+/// Returns `true` if `schema` contains at least one conflict-struct column (i.e. a
+/// `Struct` whose child field names are all in `{"int", "float", "str", "bool"}`).
+///
+/// Use this as a cheap pre-check before calling [`normalize_conflict_columns`] to avoid
+/// an unnecessary `RecordBatch::clone()` when the batch has no conflict columns.
+pub fn has_conflict_struct_columns(schema: &Schema) -> bool {
+    schema
+        .fields()
+        .iter()
+        .any(|f| matches!(f.data_type(), DataType::Struct(cf) if is_conflict_struct(cf)))
+}
+
 /// Replace every conflict struct column with a flat `Utf8` column of the same name.
 ///
 /// A struct column is a conflict struct iff all its child field names are in

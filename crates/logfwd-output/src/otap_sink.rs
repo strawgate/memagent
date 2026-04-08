@@ -55,7 +55,7 @@ use logfwd_otap_proto::otap::{
 };
 use prost::Message;
 
-use logfwd_arrow::conflict_schema::normalize_conflict_columns;
+use logfwd_arrow::conflict_schema::{has_conflict_struct_columns, normalize_conflict_columns};
 use logfwd_arrow::star_schema::flat_to_star;
 use logfwd_types::diagnostics::ComponentStats;
 
@@ -305,16 +305,12 @@ impl OtapSink {
         }
 
         // Normalize conflict struct columns (e.g. `status: Struct { int, str }`)
-        // to flat Utf8 before the star schema pivot. Without this, struct columns
-        // are silently dropped (str_value_at returns "" for Struct types).
-        // The same normalization is done in the OTLP sink (otlp_sink.rs:146).
+        // to flat Utf8 before the star schema pivot. Without this, struct-valued
+        // attributes can still produce star-schema rows, but their rendered value
+        // is empty because str_value_at returns "" for Struct types.
+        // The OTLP sink applies the same normalization before encoding.
         let normalized;
-        let batch = if batch
-            .schema()
-            .fields()
-            .iter()
-            .any(|f| matches!(f.data_type(), arrow::datatypes::DataType::Struct(_)))
-        {
+        let batch = if has_conflict_struct_columns(batch.schema().as_ref()) {
             normalized = normalize_conflict_columns(batch.clone());
             &normalized
         } else {
@@ -1031,11 +1027,12 @@ mod tests {
     }
 
     /// Regression test for #1656: conflict struct columns must be normalized
-    /// (not silently dropped) before the flat→star pivot in encode_batch.
+    /// before the flat→star pivot in encode_batch.
     ///
     /// Without the fix, a `status` column of type `Struct { int: Int64, str: Utf8 }`
-    /// would produce no LOG_ATTRS rows because `str_value_at` returns "" for
-    /// Struct data types. With the fix, it is coalesced to a Utf8 column first.
+    /// would still emit LOG_ATTRS rows for non-null values, but the attribute string
+    /// value would not be populated correctly because `str_value_at` returns "" for
+    /// Struct data types. With the fix, the column is coalesced to a Utf8 column first.
     #[test]
     fn conflict_struct_column_is_normalized_not_dropped() {
         use arrow::array::{Array, ArrayRef, Int64Array, StructArray};
@@ -1076,7 +1073,7 @@ mod tests {
         let stats = Arc::new(ComponentStats::new());
         let mut sink = OtapSink::new("test".to_string(), config, client, counter, stats);
 
-        // Must not error (before the fix, it would silently drop the struct column).
+        // Must not error (before the fix, struct column values would be rendered as empty strings).
         let batch_id = sink
             .encode_batch(&batch)
             .expect("encode_batch should succeed");
@@ -1087,7 +1084,11 @@ mod tests {
             decode_batch_arrow_records(&sink.proto_buf).expect("decode_batch_arrow_records");
         assert_eq!(payloads.len(), 4);
 
-        let log_attrs_ipc = &payloads[1].2;
+        let log_attrs_ipc = payloads
+            .iter()
+            .find(|(_, ptype, _)| *ptype == ArrowPayloadType::LogAttrs as u32)
+            .map(|(_, _, ipc)| ipc)
+            .expect("LOG_ATTRS payload must be present");
         let log_attrs_batches = deserialize_ipc(log_attrs_ipc).expect("deserialize log_attrs IPC");
         let log_attrs = log_attrs_batches
             .into_iter()
