@@ -997,22 +997,33 @@ impl Config {
                 .map(std::path::PathBuf::from)
                 .collect();
 
-            for output in &pipe.outputs {
-                if output.output_type != OutputType::File {
+            let normalized_file_inputs: Vec<(std::path::PathBuf, std::path::PathBuf)> =
+                file_input_paths
+                    .into_iter()
+                    .map(|p| {
+                        let norm = normalize_path_for_compare(&p);
+                        (p, norm)
+                    })
+                    .collect();
+
+            for (j, output) in pipe.outputs.iter().enumerate() {
+                let out_label = output
+                    .name
+                    .as_deref()
+                    .map_or_else(|| format!("#{j}"), String::from);
+
+                if !matches!(output.output_type, OutputType::File | OutputType::Parquet) {
                     continue;
                 }
                 let Some(out_path) = output.path.as_deref() else {
                     continue;
                 };
                 let out_pb = std::path::PathBuf::from(out_path);
-                for in_pb in &file_input_paths {
-                    // Use canonical paths when both exist; otherwise fall back
-                    // to raw path comparison to catch the mistake before runtime.
-                    let out_canon = out_pb.canonicalize().unwrap_or_else(|_| out_pb.clone());
-                    let in_canon = in_pb.canonicalize().unwrap_or_else(|_| in_pb.clone());
-                    if out_canon == in_canon {
+                let out_norm = normalize_path_for_compare(&out_pb);
+                for (in_pb, in_norm) in &normalized_file_inputs {
+                    if out_norm == *in_norm {
                         return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}': file output path '{}' is the same as file input path '{}' — \
+                            "pipeline '{name}' output '{out_label}': output path '{}' is the same as file input path '{}' — \
                             this creates an unbounded feedback loop",
                             out_path,
                             in_pb.display(),
@@ -1080,6 +1091,46 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Compare paths for config-level equivalence:
+/// - prefer canonical paths when they exist;
+/// - otherwise fall back to lexical normalisation so relative aliases
+///   like `./a.log` and `logs/../a.log` are treated as the same path.
+fn normalize_path_for_compare(path: &Path) -> std::path::PathBuf {
+    path.canonicalize()
+        .unwrap_or_else(|_| normalize_path_lexically(path))
+}
+
+fn normalize_path_lexically(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let mut tail = out.components();
+                match tail.next_back() {
+                    Some(Component::Normal(_)) => {
+                        out.pop();
+                    }
+                    Some(Component::CurDir) => {}
+                    Some(Component::ParentDir) | None => out.push(component.as_os_str()),
+                    Some(Component::RootDir) | Some(Component::Prefix(_)) => {}
+                }
+            }
+            Component::Normal(_) | Component::RootDir | Component::Prefix(_) => {
+                out.push(component.as_os_str())
+            }
+        }
+    }
+
+    if out.as_os_str().is_empty() {
+        std::path::PathBuf::from(".")
+    } else {
+        out
+    }
 }
 
 /// Expand `${VAR}` references in `text` using the process environment.
@@ -2782,5 +2833,31 @@ pipelines:
         format: json
 "#;
         Config::load_str(yaml).expect("different input/output paths should be allowed");
+    }
+
+    /// Relative aliases that normalize to the same path must be rejected.
+    #[test]
+    fn file_output_same_as_input_rejected_after_lexical_normalization() {
+        let yaml = r#"
+pipelines:
+  looping:
+    inputs:
+      - type: file
+        path: ./tmp/logs/../app.log
+    outputs:
+      - type: file
+        path: tmp/./app.log
+        format: json
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("feedback loop") || msg.contains("same as file input"),
+            "expected normalized-path feedback-loop rejection, got: {msg}"
+        );
+        assert!(
+            msg.contains("output"),
+            "error should include output label context: {msg}"
+        );
     }
 }
