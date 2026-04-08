@@ -25,6 +25,7 @@ use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_output::{BatchMetadata, Compression};
+use logfwd_types::diagnostics::ComponentHealth;
 use pprof::ProfilerGuardBuilder;
 
 const DEFAULT_LINES: usize = 200_000;
@@ -145,42 +146,61 @@ struct Cli {
 
 impl Cli {
     fn parse() -> Self {
-        let mut lines = DEFAULT_LINES;
-        let mut iterations = DEFAULT_ITERATIONS;
-        let mut alloc_only = false;
-        let mut flamegraph = None;
-        let mut args = std::env::args().skip(1);
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--lines" => {
-                    lines = args
-                        .next()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(DEFAULT_LINES);
-                }
-                "--iterations" => {
-                    iterations = args
-                        .next()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(DEFAULT_ITERATIONS);
-                }
-                "--alloc-only" => alloc_only = true,
-                "--flamegraph" => {
-                    flamegraph = args.next().map(PathBuf::from);
-                }
-                "--help" | "-h" => {
-                    print_help();
-                    std::process::exit(0);
-                }
-                _ => {}
+        Self::parse_from(std::env::args().skip(1).collect::<Vec<_>>())
+    }
+
+    fn parse_from(args: Vec<String>) -> Self {
+        for arg in &args {
+            if matches!(arg.as_str(), "--help" | "-h") {
+                print_help();
+                std::process::exit(0);
             }
         }
+
+        let lines = parse_positive_usize_flag(&args, "--lines", DEFAULT_LINES);
+        let iterations = parse_positive_usize_flag(&args, "--iterations", DEFAULT_ITERATIONS);
+        let alloc_only = args.iter().any(|arg| arg == "--alloc-only");
+        let flamegraph = parse_path_flag(&args, "--flamegraph");
         Self {
             lines,
             iterations,
             alloc_only,
             flamegraph,
         }
+    }
+}
+
+fn parse_positive_usize_flag(args: &[String], flag: &str, default: usize) -> usize {
+    match args.iter().rposition(|arg| arg == flag) {
+        Some(idx) => match args.get(idx + 1) {
+            Some(value) => match value.parse::<usize>() {
+                Ok(parsed) if parsed > 0 => parsed,
+                _ => {
+                    eprintln!(
+                        "warning: {flag} expects a positive integer; using default {default}"
+                    );
+                    default
+                }
+            },
+            None => {
+                eprintln!("warning: {flag} expects a value; using default {default}");
+                default
+            }
+        },
+        None => default,
+    }
+}
+
+fn parse_path_flag(args: &[String], flag: &str) -> Option<PathBuf> {
+    match args.iter().rposition(|arg| arg == flag) {
+        Some(idx) => match args.get(idx + 1) {
+            Some(value) if !value.starts_with('-') => Some(PathBuf::from(value)),
+            _ => {
+                eprintln!("warning: {flag} expects a value; ignoring");
+                None
+            }
+        },
+        None => None,
     }
 }
 
@@ -307,6 +327,7 @@ impl MockSource {
                 vec![InputEvent::Data {
                     bytes: chunk.clone(),
                     source_id: None,
+                    accounted_bytes: chunk.len() as u64,
                 }]
             })
             .collect();
@@ -322,6 +343,12 @@ impl InputSource for MockSource {
 
     fn name(&self) -> &'static str {
         "mock"
+    }
+
+    fn health(&self) -> ComponentHealth {
+        // Benchmark input is deterministic in-process test scaffolding with no
+        // separate bind/startup/failure lifecycle.
+        ComponentHealth::Healthy
     }
 }
 
@@ -665,6 +692,9 @@ fn format_throughput(lines: usize, bytes: usize, ns: u64) -> String {
 }
 
 fn format_lines_per_sec(lines: usize, ns: u64) -> String {
+    if ns == 0 {
+        return "0K l/s".to_string();
+    }
     let rate = lines as f64 / (ns as f64 / 1_000_000_000.0);
     if rate >= 1_000_000.0 {
         format!("{:.2}M l/s", rate / 1_000_000.0)
@@ -674,6 +704,9 @@ fn format_lines_per_sec(lines: usize, ns: u64) -> String {
 }
 
 fn format_bytes_per_sec(bytes: usize, ns: u64) -> String {
+    if ns == 0 {
+        return "0MiB/s".to_string();
+    }
     let rate = bytes as f64 / (ns as f64 / 1_000_000_000.0);
     if rate >= 1_073_741_824.0 {
         format!("{:.2}GiB/s", rate / 1_073_741_824.0)
@@ -723,5 +756,41 @@ mod tests {
             owned_input_fast_path(data.clone())
         );
         assert_eq!(data.len(), passthrough_json_round_trip(&data));
+    }
+
+    #[test]
+    fn cli_zero_values_fall_back_to_defaults() {
+        let cli = Cli::parse_from(vec![
+            "--lines".to_string(),
+            "0".to_string(),
+            "--iterations".to_string(),
+            "0".to_string(),
+        ]);
+        assert_eq!(cli.lines, DEFAULT_LINES);
+        assert_eq!(cli.iterations, DEFAULT_ITERATIONS);
+    }
+
+    #[test]
+    fn cli_missing_values_fall_back_to_defaults() {
+        let cli = Cli::parse_from(vec!["--lines".to_string(), "--iterations".to_string()]);
+        assert_eq!(cli.lines, DEFAULT_LINES);
+        assert_eq!(cli.iterations, DEFAULT_ITERATIONS);
+    }
+
+    #[test]
+    fn cli_missing_value_does_not_swallow_next_flag() {
+        let cli = Cli::parse_from(vec![
+            "--lines".to_string(),
+            "--iterations".to_string(),
+            "5".to_string(),
+        ]);
+        assert_eq!(cli.lines, DEFAULT_LINES);
+        assert_eq!(cli.iterations, 5);
+    }
+
+    #[test]
+    fn format_rates_handle_zero_duration() {
+        assert_eq!(format_lines_per_sec(10, 0), "0K l/s");
+        assert_eq!(format_bytes_per_sec(1024, 0), "0MiB/s");
     }
 }

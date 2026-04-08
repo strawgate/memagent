@@ -9,7 +9,7 @@
 //! - Throughput (lines/sec, MB/sec)
 //! - Whether anything leaks or grows unboundedly
 //!
-//! Run with: cargo run -p logfwd-bench --release --bin memory-profile [duration_secs]
+//! Run with: `cargo run -p logfwd-bench --release --bin memory-profile [duration_secs]`
 //!   Default duration: 300 seconds (5 minutes)
 //!
 //! Options:
@@ -57,13 +57,12 @@ fn rss_bytes() -> usize {
     }
     #[cfg(target_os = "macos")]
     {
-        use std::mem;
+        use std::mem::{self, size_of};
         // SAFETY: `zeroed()` is valid for `mach_task_basic_info_data_t`
         // (all-zero is a valid bit pattern for this plain-data struct).
         let mut info: libc::mach_task_basic_info_data_t = unsafe { mem::zeroed() };
-        let mut count = (mem::size_of::<libc::mach_task_basic_info_data_t>()
-            / mem::size_of::<libc::natural_t>())
-            as libc::mach_msg_type_number_t;
+        let mut count = (size_of::<libc::mach_task_basic_info_data_t>()
+            / size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
         // SAFETY: `mach_task_self_` is always a valid task port. `info` is a
         // mutable reference to a zeroed struct of the correct type and `count`
         // holds the matching element count. `task_info` only writes into `info`.
@@ -71,8 +70,8 @@ fn rss_bytes() -> usize {
             libc::task_info(
                 libc::mach_task_self_,
                 libc::MACH_TASK_BASIC_INFO,
-                &mut info as *mut _ as libc::task_info_t,
-                &mut count,
+                std::ptr::addr_of_mut!(info) as libc::task_info_t,
+                std::ptr::addr_of_mut!(count),
             )
         };
         if kr == libc::KERN_SUCCESS {
@@ -128,19 +127,10 @@ fn main() {
     } else if args.iter().any(|a| a == "--medium") {
         120
     } else {
-        args.iter()
-            .position(|a| a == "--duration")
-            .and_then(|i| args.get(i + 1))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(300)
+        parse_positive_u64_flag(&args, "--duration", 300)
     };
 
-    let batch_lines: usize = args
-        .iter()
-        .position(|a| a == "--batch")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10_000);
+    let batch_lines = parse_positive_usize_flag(&args, "--batch", 10_000);
 
     let use_wide = args.iter().any(|a| a == "--wide");
     let use_mixed = args.iter().any(|a| a == "--mixed");
@@ -311,6 +301,43 @@ fn main() {
     });
 }
 
+fn parse_positive_u64_flag(args: &[String], flag: &str, default: u64) -> u64 {
+    parse_positive_flag(args, flag, default, |raw| raw.parse::<u64>().ok())
+}
+
+fn parse_positive_usize_flag(args: &[String], flag: &str, default: usize) -> usize {
+    parse_positive_flag(args, flag, default, |raw| raw.parse::<usize>().ok())
+}
+
+fn parse_positive_flag<T>(
+    args: &[String],
+    flag: &str,
+    default: T,
+    parse: impl Fn(&str) -> Option<T>,
+) -> T
+where
+    T: PartialEq + From<u8> + Copy + std::fmt::Display,
+{
+    match args.iter().rposition(|arg| arg == flag) {
+        Some(idx) => match args.get(idx + 1) {
+            Some(raw) => match parse(raw) {
+                Some(value) if value != T::from(0) => value,
+                _ => {
+                    eprintln!(
+                        "warning: {flag} expects a positive integer; using default {default}"
+                    );
+                    default
+                }
+            },
+            None => {
+                eprintln!("warning: {flag} expects a value; using default {default}");
+                default
+            }
+        },
+        None => default,
+    }
+}
+
 struct ProfileRun<'a> {
     samples: &'a [Sample],
     total_elapsed: Duration,
@@ -341,18 +368,34 @@ fn render_report(run: &ProfileRun<'_>) -> String {
     let mut out = String::new();
 
     // --- Throughput ---
-    let lines_per_sec = total_rows as f64 / elapsed_secs;
-    let mb_per_sec = total_input_bytes as f64 / 1_048_576.0 / elapsed_secs;
-    let batches_per_sec = total_batches as f64 / elapsed_secs;
+    let lines_per_sec = if elapsed_secs > 0.0 {
+        total_rows as f64 / elapsed_secs
+    } else {
+        0.0
+    };
+    let mb_per_sec = if elapsed_secs > 0.0 {
+        total_input_bytes as f64 / 1_048_576.0 / elapsed_secs
+    } else {
+        0.0
+    };
+    let batches_per_sec = if elapsed_secs > 0.0 {
+        total_batches as f64 / elapsed_secs
+    } else {
+        0.0
+    };
 
     // --- RSS analysis ---
     let rss_values: Vec<f64> = samples.iter().map(|s| s.rss_mb).collect();
-    let (peak_rss, min_rss) = rss_values
-        .iter()
-        .copied()
-        .fold((f64::NEG_INFINITY, f64::INFINITY), |(peak, min), v| {
-            (peak.max(v), min.min(v))
-        });
+    let (peak_rss, min_rss) = if rss_values.is_empty() {
+        (0.0, 0.0)
+    } else {
+        rss_values
+            .iter()
+            .copied()
+            .fold((f64::NEG_INFINITY, f64::INFINITY), |(peak, min), v| {
+                (peak.max(v), min.min(v))
+            })
+    };
 
     // Steady-state: average of last half of samples
     let steady_start = samples.len() / 2;
@@ -396,8 +439,16 @@ fn render_report(run: &ProfileRun<'_>) -> String {
         .map(|s| s.total_deallocated_bytes)
         .sum();
 
-    let alloc_rate_mb_per_sec = total_allocated as f64 / 1_048_576.0 / elapsed_secs;
-    let alloc_rate_per_sec = total_allocs as f64 / elapsed_secs;
+    let alloc_rate_mb_per_sec = if elapsed_secs > 0.0 {
+        total_allocated as f64 / 1_048_576.0 / elapsed_secs
+    } else {
+        0.0
+    };
+    let alloc_rate_per_sec = if elapsed_secs > 0.0 {
+        total_allocs as f64 / elapsed_secs
+    } else {
+        0.0
+    };
     let bytes_per_row = if total_rows > 0 {
         total_allocated as f64 / total_rows as f64
     } else {
@@ -697,5 +748,57 @@ mod tests {
         assert!(report.contains("### Verdict"));
         assert!(report.contains("| Schema | narrow (5 fields) |"));
         assert!(report.contains("| RSS per batch (10000 rows) |"));
+    }
+
+    #[test]
+    fn parse_positive_flags_fall_back_for_zero_and_invalid_values() {
+        let args = vec![
+            "memory-profile".to_string(),
+            "--duration".to_string(),
+            "0".to_string(),
+            "--batch".to_string(),
+            "nope".to_string(),
+        ];
+
+        assert_eq!(parse_positive_u64_flag(&args, "--duration", 300), 300);
+        assert_eq!(parse_positive_usize_flag(&args, "--batch", 10_000), 10_000);
+    }
+
+    #[test]
+    fn parse_positive_flags_use_last_occurrence() {
+        let args = vec![
+            "memory-profile".to_string(),
+            "--duration".to_string(),
+            "0".to_string(),
+            "--duration".to_string(),
+            "60".to_string(),
+        ];
+
+        assert_eq!(parse_positive_u64_flag(&args, "--duration", 300), 60);
+    }
+
+    #[test]
+    fn parse_positive_flags_fall_back_for_missing_values() {
+        let args = vec!["memory-profile".to_string(), "--duration".to_string()];
+
+        assert_eq!(parse_positive_u64_flag(&args, "--duration", 300), 300);
+    }
+
+    #[test]
+    fn render_report_handles_empty_samples() {
+        let run = ProfileRun {
+            samples: &[],
+            total_elapsed: Duration::from_secs(0),
+            total_rows: 0,
+            total_batches: 0,
+            total_input_bytes: 0,
+            batch_lines: 10_000,
+            schema_name: "narrow (5 fields)",
+            sql: "SELECT * FROM logs",
+        };
+
+        let report = render_report(&run);
+        assert!(report.contains("## Sustained Memory Profile Results"));
+        assert!(report.contains("| Peak RSS | 0.0 MB |"));
     }
 }

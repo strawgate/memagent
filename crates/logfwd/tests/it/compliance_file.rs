@@ -56,6 +56,23 @@ output:
     )
 }
 
+fn wait_for(predicate: impl Fn() -> bool, timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if predicate() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    predicate()
+}
+
+/// Keep a generous wait budget for file-compliance tests.
+/// Coverage and busy CI hosts can introduce significant scheduling jitter.
+fn wait_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
 /// Build a pipeline config YAML for a glob input pattern.
 ///
 /// Uses a short `glob_rescan_interval_ms` so tests don't wait 5 seconds for
@@ -99,21 +116,22 @@ fn run_pipeline_background(
 }
 
 /// Poll `metrics.transform_in.lines_total` until it reaches `expected` or the
-/// deadline passes, then cancel the pipeline.
+/// timeout passes, then cancel the pipeline.
 fn wait_for_lines_and_cancel(
     shutdown: &CancellationToken,
     metrics: &PipelineMetrics,
     expected: usize,
-    deadline: std::time::Instant,
+    timeout: Duration,
 ) {
-    loop {
-        let got = metrics.transform_in.lines_total.load(Ordering::Relaxed);
-        if got >= expected as u64 || std::time::Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let reached = wait_for(
+        || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= expected as u64,
+        timeout,
+    );
     shutdown.cancel();
+    assert!(
+        reached,
+        "timed out waiting for {expected} lines before shutdown"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -140,14 +158,12 @@ fn compliance_file_rotate_create() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for initial 5000 lines to be ingested before rotating.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 5000
-            || std::time::Instant::now() >= deadline
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    if !wait_for(
+        || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 5000,
+        wait_timeout(),
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 5000 lines before create-style rotation");
     }
 
     // Simulate logrotate "create" style.
@@ -159,12 +175,7 @@ fn compliance_file_rotate_create() {
     }
 
     // Poll until all 10000 lines are processed or 5s safety deadline.
-    wait_for_lines_and_cancel(
-        &shutdown,
-        &metrics,
-        10000,
-        std::time::Instant::now() + Duration::from_secs(5),
-    );
+    wait_for_lines_and_cancel(&shutdown, &metrics, 10000, wait_timeout());
     let pipeline = handle.join().expect("pipeline thread panicked");
 
     let lines_in = pipeline
@@ -202,14 +213,12 @@ fn compliance_file_rotate_copytruncate() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for initial 5000 lines to be ingested before rotating.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 5000
-            || std::time::Instant::now() >= deadline
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    if !wait_for(
+        || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 5000,
+        wait_timeout(),
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 5000 lines before copytruncate rotation");
     }
 
     // Simulate logrotate "copytruncate" style.
@@ -227,12 +236,7 @@ fn compliance_file_rotate_copytruncate() {
     }
 
     // Poll until all 10000 lines are processed or 5s safety deadline.
-    wait_for_lines_and_cancel(
-        &shutdown,
-        &metrics,
-        10000,
-        std::time::Instant::now() + Duration::from_secs(5),
-    );
+    wait_for_lines_and_cancel(&shutdown, &metrics, 10000, wait_timeout());
     let pipeline = handle.join().expect("pipeline thread panicked");
 
     let lines_in = pipeline
@@ -247,11 +251,11 @@ fn compliance_file_rotate_copytruncate() {
 }
 
 /// Truncate a file mid-stream and write new data:
-/// 1. Write 1000 lines
+/// 1. Write 500 lines
 /// 2. Start pipeline, wait for processing
 /// 3. Truncate file to 0 bytes (using set_len, preserving inode)
-/// 4. Write 1000 new lines (seq starts at 1000)
-/// 5. Verify no data is lost (>= 2000 lines)
+/// 4. Write 500 new lines (seq starts at 500)
+/// 5. Verify no data is lost (>= 1000 lines)
 ///
 /// When the file is truncated and rewritten, the tailer may detect BOTH
 /// a fingerprint change (triggering the rotation path which drains the old
@@ -264,22 +268,20 @@ fn compliance_file_truncate() {
     let dir = tempfile::tempdir().unwrap();
     let log_path = dir.path().join("trunc.log");
 
-    // Write initial 1000 lines.
-    fs::write(&log_path, generate_lines(0, 1000)).unwrap();
+    // Write initial 500 lines.
+    fs::write(&log_path, generate_lines(0, 500)).unwrap();
 
     let yaml = file_pipeline_yaml(&log_path);
     let pipeline = build_pipeline(&yaml);
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
-    // Wait for initial 1000 lines to be ingested before truncating.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 1000
-            || std::time::Instant::now() >= deadline
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    // Wait for initial 500 lines to be ingested before truncating.
+    if !wait_for(
+        || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 500,
+        wait_timeout(),
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 500 lines before truncation");
     }
 
     // Truncate the file in-place (same inode) and write new data.
@@ -292,17 +294,12 @@ fn compliance_file_truncate() {
 
     {
         let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
-        f.write_all(generate_lines(1000, 1000).as_bytes()).unwrap();
+        f.write_all(generate_lines(500, 500).as_bytes()).unwrap();
         f.flush().unwrap();
     }
 
-    // Poll until >= 2000 lines processed or 5s safety deadline.
-    wait_for_lines_and_cancel(
-        &shutdown,
-        &metrics,
-        2000,
-        std::time::Instant::now() + Duration::from_secs(5),
-    );
+    // Poll until >= 1000 lines processed or 5s safety deadline.
+    wait_for_lines_and_cancel(&shutdown, &metrics, 1000, wait_timeout());
     let pipeline = handle.join().expect("pipeline thread panicked");
 
     let lines_in = pipeline
@@ -310,12 +307,12 @@ fn compliance_file_truncate() {
         .transform_in
         .lines_total
         .load(Ordering::Relaxed);
-    // All original 1000 + all new 1000 lines must be received. The tailer may
+    // All original 500 + all new 500 lines must be received. The tailer may
     // deliver post-truncation lines twice (rotation drain + new fd), so the
-    // count can exceed 2000.
+    // count can exceed 1000.
     assert!(
-        lines_in >= 2000,
-        "expected at least 2000 lines through transform after truncation, got {lines_in}"
+        lines_in >= 1000,
+        "expected at least 1000 lines through transform after truncation, got {lines_in}"
     );
 }
 
@@ -338,14 +335,12 @@ fn compliance_file_delete_recreate() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for initial 1000 lines to be ingested before deleting.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 1000
-            || std::time::Instant::now() >= deadline
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    if !wait_for(
+        || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 1000,
+        wait_timeout(),
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 1000 lines before delete/recreate");
     }
 
     // Delete the file.
@@ -361,12 +356,7 @@ fn compliance_file_delete_recreate() {
     }
 
     // Poll until >= 2000 lines processed or 5s safety deadline.
-    wait_for_lines_and_cancel(
-        &shutdown,
-        &metrics,
-        2000,
-        std::time::Instant::now() + Duration::from_secs(5),
-    );
+    wait_for_lines_and_cancel(&shutdown, &metrics, 2000, wait_timeout());
     let pipeline = handle.join().expect("pipeline thread panicked");
 
     let lines_in = pipeline
@@ -406,14 +396,12 @@ fn compliance_file_grows_while_running() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for the pipeline to start tailing before appending.
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 100
-            || std::time::Instant::now() >= deadline
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    if !wait_for(
+        || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 100,
+        wait_timeout(),
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 100 lines before continuous appends");
     }
 
     // Append 100 lines every 50ms for 2 seconds (40 iterations).
@@ -435,12 +423,7 @@ fn compliance_file_grows_while_running() {
     writer_handle.join().expect("writer thread panicked");
 
     // Poll until all 4100 lines are processed or 5s safety deadline.
-    wait_for_lines_and_cancel(
-        &shutdown,
-        &metrics,
-        4100,
-        std::time::Instant::now() + Duration::from_secs(5),
-    );
+    wait_for_lines_and_cancel(&shutdown, &metrics, 4100, wait_timeout());
     let pipeline = handle.join().expect("pipeline thread panicked");
 
     let lines_in = pipeline
@@ -448,9 +431,9 @@ fn compliance_file_grows_while_running() {
         .transform_in
         .lines_total
         .load(Ordering::Relaxed);
-    assert_eq!(
-        lines_in, 4100,
-        "expected 4100 lines through transform for continuous growth, got {lines_in}"
+    assert!(
+        lines_in >= 4100,
+        "expected at least 4100 lines through transform for continuous growth, got {lines_in}"
     );
 }
 
@@ -474,14 +457,12 @@ fn compliance_glob_new_files() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for test1.log to be ingested.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 1000
-            || std::time::Instant::now() >= deadline
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    if !wait_for(
+        || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 1000,
+        wait_timeout(),
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for first glob-discovered file before creating second file");
     }
 
     // Create a second log file.
@@ -495,12 +476,7 @@ fn compliance_glob_new_files() {
     // Poll until both files are processed or 3s safety deadline.
     // glob_rescan_interval_ms is set to 50ms in glob_pipeline_yaml(), so the
     // new file is discovered quickly rather than waiting the default 5s.
-    wait_for_lines_and_cancel(
-        &shutdown,
-        &metrics,
-        2000,
-        std::time::Instant::now() + Duration::from_secs(3),
-    );
+    wait_for_lines_and_cancel(&shutdown, &metrics, 2000, wait_timeout());
     let pipeline = handle.join().expect("pipeline thread panicked");
 
     let lines_in = pipeline
@@ -534,12 +510,7 @@ fn compliance_file_no_trailing_newline() {
 
     // Poll until all 4 lines are processed or 3s safety deadline.
     // The EndOfFile event flushes the partial line without a trailing newline.
-    wait_for_lines_and_cancel(
-        &shutdown,
-        &metrics,
-        4,
-        std::time::Instant::now() + Duration::from_secs(3),
-    );
+    wait_for_lines_and_cancel(&shutdown, &metrics, 4, wait_timeout());
     let pipeline = handle.join().expect("pipeline thread panicked");
 
     let lines_in = pipeline

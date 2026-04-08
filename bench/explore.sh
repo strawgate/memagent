@@ -12,7 +12,7 @@ echo "dataset,lines,query,time_ms,lines_per_sec,mb_per_sec" > "$RESULTS"
 
 generate_simple_json() {
     local n=$1 out=$2
-    "$LOGFWD" --generate-json "$n" "$out" 2>/dev/null
+    "$LOGFWD" generate-json "$n" "$out" 2>/dev/null
 }
 
 generate_wide_json() {
@@ -141,7 +141,7 @@ output:
 YAML
 
     local start_ms=$(python3 -c "import time; print(int(time.time()*1000))")
-    "$LOGFWD" --config "$config" > /dev/null 2>/dev/null || true
+    "$LOGFWD" run --config "$config" > /dev/null 2>/dev/null || true
     local end_ms=$(python3 -c "import time; print(int(time.time()*1000))")
     local elapsed=$((end_ms - start_ms))
 

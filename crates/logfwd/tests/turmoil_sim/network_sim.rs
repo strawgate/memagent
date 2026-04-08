@@ -29,15 +29,15 @@ fn generate_json_lines(n: usize) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Test: retry exhaustion drops batch and pipeline does not hang.
+/// Test: retry exhaustion holds checkpoint progress and pipeline does not hang.
 ///
 /// Invariant probed: worker pool retry exhaustion (MAX_RETRIES=3, so 4 total
-/// attempts). When all attempts fail, the batch is rejected, the pipeline
-/// increments dropped_batch, and shutdown completes (no deadlock).
+/// attempts). When all attempts fail, the batch must not advance checkpoints,
+/// and shutdown completes via the force-stop/replay path (no deadlock).
 ///
 /// Script: all calls return IoError(ConnectionRefused).
 #[test]
-fn retry_exhaustion_drops_batch_and_advances() {
+fn retry_exhaustion_holds_checkpoint_and_completes_shutdown() {
     let mut sim = super::build_sim(120, 1);
 
     let mut script = Vec::new();

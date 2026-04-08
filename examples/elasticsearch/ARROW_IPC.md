@@ -56,7 +56,7 @@ output:
 
 Run logfwd:
 ```bash
-cargo run -p logfwd -- --config config.yaml
+cargo run -p logfwd -- run --config config.yaml
 ```
 
 ## Querying with Arrow IPC

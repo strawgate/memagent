@@ -44,6 +44,6 @@ just bench-pipelines
 
 On Linux, use `taskset` to pin to specific cores:
 ```bash
-taskset -c 0 logfwd --config receiver.yaml &
-taskset -c 1 logfwd --config sender.yaml &
+taskset -c 0 logfwd run --config receiver.yaml &
+taskset -c 1 logfwd run --config sender.yaml &
 ```

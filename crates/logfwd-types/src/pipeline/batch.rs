@@ -53,8 +53,8 @@ pub struct Sending;
 /// BatchTicket<Sending, C> →  reject()      →  AckReceipt<C>          (permanent failure)
 /// ```
 ///
-/// Dropping a `BatchTicket<Queued>` is safe — the pipeline does not track
-/// Queued tickets. Only `BatchTicket<Sending>` must not be dropped:
+/// Dropping a `BatchTicket<Queued, C>` is safe — the pipeline does not track
+/// queued tickets. Only `BatchTicket<Sending, C>` must not be dropped:
 /// `PipelineMachine::begin_send` is `#[must_use]` to enforce this.
 pub struct BatchTicket<S, C> {
     id: BatchId,
@@ -104,8 +104,8 @@ impl<C> AckReceipt<C> {
     }
     /// The checkpoint value for this batch.
     ///
-    /// Informational for the caller — [`PipelineMachine::apply_ack`] commits
-    /// the checkpoint recorded at [`PipelineMachine::create_batch`] time,
+    /// Informational for the caller — `PipelineMachine::apply_ack` commits
+    /// the checkpoint recorded at `PipelineMachine::create_batch` time,
     /// not this value.
     pub fn checkpoint(&self) -> &C {
         &self.checkpoint

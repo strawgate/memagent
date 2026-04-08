@@ -26,6 +26,8 @@ When scan, transform, batching, or output semantics change:
 When invariants, safety properties, or core algorithms change:
 
 - Proof requirements and status in `dev-docs/VERIFICATION.md`.
+- Non-core seam classification in `dev-docs/verification/kani-boundary-contract.toml`.
+- Boundary validation script if rules changed: `scripts/verify_kani_boundary_contract.py`.
 - Any Kani harnesses/proptest cases covering changed behavior.
 - TLA+ specs if protocol-level behavior changed.
 

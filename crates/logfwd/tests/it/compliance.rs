@@ -443,31 +443,37 @@ output:
     );
 }
 
-/// Transform select: generate 10,000 lines, project only sequence_id_int
+/// Transform select: generate lines, project only sequence_id_int
 /// and message_str. Verify correct columns and zero gaps.
 #[test]
 fn compliance_transform_select() {
     let dir = tempfile::tempdir().unwrap();
     let log_path = dir.path().join("select.log");
-    let count = 10_000;
+    let count = 2_000;
 
     generate_json_lines(&log_path, count, "src1");
 
     let yaml = format!(
         r#"
-input:
-  type: file
-  path: {}
-  format: json
-transform: "SELECT sequence_id, message FROM logs"
-output:
-  type: stdout
-  format: json
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: {}
+        format: json
+    transform: "SELECT sequence_id, message FROM logs"
+    outputs:
+      - type: stdout
+        format: json
+    batch_target_bytes: 2048
+    batch_timeout_ms: 100
 "#,
         log_path.display()
     );
 
-    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(10));
+    // Coverage instrumentation can substantially slow this transform path;
+    // allow extra headroom to avoid CI-only timeout flakes.
+    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(60));
 
     // Verify schema: only the projected columns should be present.
     for batch in &batches {

@@ -258,31 +258,18 @@ async fn coerce_json_string_on_integer_field() {
 // =========================================================================
 
 #[tokio::test]
-async fn null_raw_row_causes_scanner_mismatch() {
-    // KNOWN LIMITATION: when _raw contains NULL rows, the scanner produces
-    // fewer output rows than input rows because it emits a newline for the
-    // NULL row but the scanner interprets the empty line differently.
-    // This results in a "scanner row count mismatch" error.
-    //
-    // Until the UDF is patched to handle NULL _raw rows (by masking them
-    // before scanning), queries with NULL _raw will error.
+async fn null_raw_row_returns_null() {
     let batch =
         make_raw_batch_nullable(&[Some(r#"{"status": 200}"#), None, Some(r#"{"status": 500}"#)]);
-    let ctx = make_ctx(batch);
-
-    let result = ctx
-        .sql("SELECT json(_raw, 'status') AS s FROM logs")
-        .await
-        .unwrap()
-        .collect()
-        .await;
-
-    // Document the current behaviour: this errors due to row count mismatch.
-    let err = result.expect_err("NULL _raw rows must cause a scanner row-count mismatch error");
-    assert!(
-        err.to_string().contains("scanner row count mismatch"),
-        "expected 'scanner row count mismatch' in error, got: {err}"
-    );
+    let result = query1("SELECT json(_raw, 'status') AS s FROM logs", batch).await;
+    let col = result
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(col.value(0), "200");
+    assert!(col.is_null(1), "NULL _raw should yield NULL output");
+    assert_eq!(col.value(2), "500");
 }
 
 #[tokio::test]
@@ -804,23 +791,18 @@ async fn mixed_valid_invalid_rows_no_nulls() {
 }
 
 #[tokio::test]
-async fn mixed_valid_invalid_null_rows_errors() {
-    // Including NULL _raw rows in the batch triggers a scanner row-count
-    // mismatch (see null_raw_row_causes_scanner_mismatch test).
+async fn mixed_valid_invalid_null_rows_return_nulls() {
     let batch =
         make_raw_batch_nullable(&[Some(r#"{"status": 200}"#), None, Some(r#"{"status": 404}"#)]);
-    let ctx = make_ctx(batch);
-    let result = ctx
-        .sql("SELECT json_int(_raw, 'status') AS s FROM logs")
-        .await
-        .unwrap()
-        .collect()
-        .await;
-    let err = result.expect_err("NULL _raw rows must cause a scanner row-count mismatch error");
-    assert!(
-        err.to_string().contains("scanner row count mismatch"),
-        "expected 'scanner row count mismatch' in error, got: {err}"
-    );
+    let result = query1("SELECT json_int(_raw, 'status') AS s FROM logs", batch).await;
+    let col = result
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(col.value(0), 200);
+    assert!(col.is_null(1), "NULL _raw should yield NULL output");
+    assert_eq!(col.value(2), 404);
 }
 
 #[tokio::test]

@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 aya-ebpf = "0.1"
-aya-log-ebpf = "0.1"
 pipe-capture-common = { path = "../pipe-capture-common" }
 
 [[bin]]

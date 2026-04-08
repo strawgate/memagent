@@ -4,21 +4,21 @@ Enable the diagnostics server in your config:
 
 ```yaml
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
 ```
 
 ## Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Liveness probe (uptime, version) |
+| `GET /live` | Liveness probe (process/control-plane only) |
 | `GET /ready` | Readiness probe (200 once initialized) |
-| `GET /api/pipelines` | Detailed JSON with per-stage metrics |
-| `GET /api/stats` | Flattened JSON for polling/benchmarks |
-| `GET /api/config` | View active YAML configuration |
-| `GET /api/logs` | View recent log lines from stderr |
-| `GET /api/history` | Time-series data for dashboard charts |
-| `GET /api/traces` | Detailed latency spans for recent batches |
+| `GET /admin/v1/status` | Canonical rich status JSON (live, ready, component health, per-pipeline detail) |
+| `GET /admin/v1/stats` | Flattened JSON for polling/benchmarks |
+| `GET /admin/v1/config` | View active YAML configuration (disabled by default; enable with `LOGFWD_UNSAFE_EXPOSE_CONFIG=1`) |
+| `GET /admin/v1/logs` | View recent log lines from stderr |
+| `GET /admin/v1/history` | Time-series data for dashboard charts |
+| `GET /admin/v1/traces` | Detailed latency spans for recent batches |
 | `GET /` | HTML dashboard |
 
 ## Key metrics
@@ -35,6 +35,6 @@ server:
 
 ```yaml
 server:
-  metrics_endpoint: http://otel-collector:4318
+  metrics_endpoint: https://otel-collector:4318
   metrics_interval_secs: 60
 ```

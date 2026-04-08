@@ -212,7 +212,7 @@ mod tests {
             write_len: 0,
             captured_len: 0,
             stream: 0,
-            _pad: [0; 3],
+            pad: [0; 3],
             data: [0; MAX_CAPTURE_BYTES],
         };
         // Should be constructable with known layout.

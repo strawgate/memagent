@@ -1,0 +1,27 @@
+{
+  "schema": "otap-fast-v1",
+  "package": "otap",
+  "messages": {
+    "BatchArrowRecords": {
+      "fields": [
+        { "name": "batch_id", "number": 1, "kind": "int64" },
+        { "name": "arrow_payloads", "number": 2, "kind": "message", "message": "ArrowPayload", "repeated": true },
+        { "name": "headers", "number": 3, "kind": "bytes" }
+      ]
+    },
+    "ArrowPayload": {
+      "fields": [
+        { "name": "schema_id", "number": 1, "kind": "string" },
+        { "name": "type", "number": 2, "kind": "enum", "enum": "ArrowPayloadType" },
+        { "name": "record", "number": 3, "kind": "bytes" }
+      ]
+    },
+    "BatchStatus": {
+      "fields": [
+        { "name": "batch_id", "number": 1, "kind": "int64" },
+        { "name": "status_code", "number": 2, "kind": "enum", "enum": "StatusCode" },
+        { "name": "status_message", "number": 3, "kind": "string" }
+      ]
+    }
+  }
+}

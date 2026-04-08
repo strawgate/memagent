@@ -36,6 +36,9 @@ wait_for() {
         sleep "$delay"
         delay=$(( delay < 5 ? delay + 1 : 5 ))
     done
+    if "$@" 2>/dev/null; then
+        return 0
+    fi
     echo "FAIL: timed out waiting for: $desc (${timeout}s)"
     return 1
 }
@@ -101,8 +104,24 @@ k delete pod -n "$NAMESPACE" log-generator --ignore-not-found 2>/dev/null
 k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/log-generator.yaml"
 
 # Wait for the generator pod to be Running instead of hardcoded sleep.
-wait_for "log-generator pod running" 30 \
-    k get pod -n "$NAMESPACE" log-generator -o jsonpath='{.status.phase}' | grep -q Running || true
+export -f k
+if ! wait_for "log-generator pod running" 30 \
+    bash -c "phase=\$(k get pod -n \"$NAMESPACE\" log-generator -o jsonpath='{.status.phase}' 2>/dev/null); [ \"\$phase\" = \"Running\" ]"; then
+    GENERATOR_PHASE="$(k get pod -n "$NAMESPACE" log-generator -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    echo ""
+    echo "FAIL: log-generator phase is '$GENERATOR_PHASE' (expected Running)"
+    k describe pod -n "$NAMESPACE" log-generator 2>&1 || true
+    k logs -n "$NAMESPACE" log-generator --tail=40 2>&1 || true
+    exit 1
+fi
+GENERATOR_PHASE="$(k get pod -n "$NAMESPACE" log-generator -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+if [ "$GENERATOR_PHASE" != "Running" ]; then
+    echo ""
+    echo "FAIL: log-generator phase is '$GENERATOR_PHASE' (expected Running)"
+    k describe pod -n "$NAMESPACE" log-generator 2>&1 || true
+    k logs -n "$NAMESPACE" log-generator --tail=40 2>&1 || true
+    exit 1
+fi
 # Brief extra pause for CRI log path to stabilize after container start.
 sleep 3
 
