@@ -1750,4 +1750,97 @@ mod tests {
             "Timestamp(Nanosecond) column must be encoded as LogRecord.time_unix_nano"
         );
     }
+
+    #[test]
+    fn timestamp_second_column_is_recognised() {
+        use arrow::array::TimestampSecondArray;
+        use arrow::datatypes::TimeUnit;
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        const EXPECTED_NS: u64 = 1_705_314_600_000_000_000;
+        const INPUT_S: i64 = 1_705_314_600; // EXPECTED_NS / 1_000_000_000
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Second, None),
+            true,
+        )]));
+        let ts_arr = TimestampSecondArray::from(vec![INPUT_S]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(ts_arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode Timestamp(Second) batch");
+
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            lr.time_unix_nano, EXPECTED_NS,
+            "Timestamp(Second) column must be scaled to nanoseconds in LogRecord.time_unix_nano"
+        );
+    }
+
+    #[test]
+    fn timestamp_millisecond_column_is_recognised() {
+        use arrow::array::TimestampMillisecondArray;
+        use arrow::datatypes::TimeUnit;
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        const EXPECTED_NS: u64 = 1_705_314_600_000_000_000;
+        const INPUT_MS: i64 = 1_705_314_600_000; // EXPECTED_NS / 1_000_000
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        )]));
+        let ts_arr = TimestampMillisecondArray::from(vec![INPUT_MS]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(ts_arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode Timestamp(Millisecond) batch");
+
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            lr.time_unix_nano, EXPECTED_NS,
+            "Timestamp(Millisecond) column must be scaled to nanoseconds in LogRecord.time_unix_nano"
+        );
+    }
+
+    #[test]
+    fn timestamp_microsecond_column_is_recognised() {
+        use arrow::array::TimestampMicrosecondArray;
+        use arrow::datatypes::TimeUnit;
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        const EXPECTED_NS: u64 = 1_705_314_600_000_000_000;
+        const INPUT_US: i64 = 1_705_314_600_000_000; // EXPECTED_NS / 1_000
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        )]));
+        let ts_arr = TimestampMicrosecondArray::from(vec![INPUT_US]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(ts_arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode Timestamp(Microsecond) batch");
+
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            lr.time_unix_nano, EXPECTED_NS,
+            "Timestamp(Microsecond) column must be scaled to nanoseconds in LogRecord.time_unix_nano"
+        );
+    }
 }
