@@ -935,6 +935,95 @@ mod tests {
         assert!(trunc_pos < data_pos, "Truncated must precede Data");
     }
 
+    /// Regression test for #1693: when drain_file encounters TruncatedThenData,
+    /// the Data event must carry the *new* source_id (post-truncation fingerprint),
+    /// not the stale pre-truncation source_id passed as argument.
+    ///
+    /// Using the old source_id would associate post-truncation bytes with the
+    /// previous file identity, causing duplicate ingestion after restart.
+    #[test]
+    fn test_drain_file_truncated_then_data_uses_new_source_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("drain_trunc_src.log");
+
+        // Write initial content large enough to establish a non-zero fingerprint.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            // Write > fingerprint_bytes (default 256) so the fingerprint is stable.
+            writeln!(f, "{}", "A".repeat(300)).unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        // First poll — consume the initial data so offset > 0.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+        assert!(
+            events.iter().any(|e| matches!(e, TailEvent::Data { .. })),
+            "expected initial data from first poll"
+        );
+
+        // Capture the source_id established after the first read.
+        let old_source_id = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { source_id, .. } => *source_id,
+                _ => None,
+            })
+            .last()
+            .expect("should have a source_id from initial data");
+
+        // Truncate-and-rewrite the file (copytruncate simulation): new content is
+        // SHORTER than the old content so `current_size < tailed.offset` is true.
+        // Also differs in content so the fingerprint changes.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "new short line").unwrap();
+        }
+
+        // Delete the file so drain_file is triggered via the deleted-file path.
+        fs::remove_file(&log_path).unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+
+        let truncated_event = events
+            .iter()
+            .find(|e| matches!(e, TailEvent::Truncated { .. }))
+            .expect("should have a Truncated event");
+        let data_event = events
+            .iter()
+            .find(|e| matches!(e, TailEvent::Data { .. }))
+            .expect("should have a Data event");
+
+        // The Truncated event must carry the OLD source_id (what downstream expects).
+        if let TailEvent::Truncated { source_id, .. } = truncated_event {
+            assert_eq!(
+                *source_id,
+                Some(old_source_id),
+                "Truncated event must use the pre-truncation source_id"
+            );
+        }
+
+        // The Data event must carry the NEW source_id (post-truncation fingerprint).
+        if let TailEvent::Data {
+            source_id: data_source_id,
+            ..
+        } = data_event
+        {
+            assert_ne!(
+                *data_source_id,
+                Some(old_source_id),
+                "Data event after truncation must use a NEW source_id, not the stale pre-truncation id"
+            );
+        }
+    }
+
     /// Regression test: glob-discovered file deletions must shrink watch_paths
     /// so the list does not grow unboundedly with file churn. (#810)
     #[test]
