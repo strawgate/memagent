@@ -474,6 +474,19 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             collect_column_refs(timestamp, cols);
             collect_column_refs(time_zone, cols);
         }
+        SqlExpr::Ceil { expr, .. } | SqlExpr::Floor { expr, .. } => {
+            collect_column_refs(expr, cols);
+        }
+        SqlExpr::Position { expr, r#in } => {
+            collect_column_refs(expr, cols);
+            collect_column_refs(r#in, cols);
+        }
+        SqlExpr::InSubquery { expr, .. } | SqlExpr::InUnnest { expr, .. } => {
+            collect_column_refs(expr, cols);
+        }
+        SqlExpr::Convert { expr, .. } | SqlExpr::Collate { expr, .. } => {
+            collect_column_refs(expr, cols);
+        }
         // Literals, wildcards, etc. — no column refs.
         _ => {}
     }
@@ -2139,6 +2152,43 @@ mod tests {
         assert!(
             a.referenced_columns.contains("path"),
             "col SIMILAR TO must add 'path' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `CEIL(col)` in WHERE must add `col` to referenced_columns.
+    ///
+    /// Before the fix, `SqlExpr::Ceil { expr, .. }` fell to `_ => {}`.
+    #[test]
+    fn test_ceil_col_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT message FROM logs WHERE CEIL(duration) > 100").unwrap();
+        assert!(
+            a.referenced_columns.contains("duration"),
+            "CEIL(duration) must add 'duration' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `FLOOR(col)` in WHERE must add `col` to referenced_columns.
+    #[test]
+    fn test_floor_col_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT message FROM logs WHERE FLOOR(duration) < 50").unwrap();
+        assert!(
+            a.referenced_columns.contains("duration"),
+            "FLOOR(duration) must add 'duration' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `POSITION(x IN col)` in WHERE must add `col` to referenced_columns.
+    #[test]
+    fn test_position_col_adds_to_referenced_columns() {
+        let a =
+            QueryAnalyzer::new("SELECT message FROM logs WHERE POSITION('error' IN message) > 0")
+                .unwrap();
+        assert!(
+            a.referenced_columns.contains("message"),
+            "POSITION(... IN message) must add 'message' to referenced_columns, got {:?}",
             a.referenced_columns
         );
     }
