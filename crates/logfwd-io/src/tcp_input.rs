@@ -82,62 +82,89 @@ fn parse_octet_prefix(buf: &[u8]) -> Option<(usize, usize)> {
     Some((len, i + 1))
 }
 
+fn advance_pending(client: &mut Client, consumed: usize) {
+    if consumed == 0 {
+        return;
+    }
+    let remaining = client.pending.len().saturating_sub(consumed);
+    client.pending.copy_within(consumed.., 0);
+    client.pending.truncate(remaining);
+}
+
 fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
+    let mut consumed = 0usize;
+
     loop {
+        let pending = &client.pending[consumed..];
+        if pending.is_empty() {
+            break;
+        }
+
         if client.discard_octet_bytes > 0 {
-            let drop_n = client.discard_octet_bytes.min(client.pending.len());
-            client.pending.drain(..drop_n);
+            let drop_n = client.discard_octet_bytes.min(pending.len());
+            consumed += drop_n;
             client.discard_octet_bytes -= drop_n;
             if client.discard_octet_bytes > 0 {
-                return;
+                break;
             }
             continue;
         }
 
         if client.discard_until_newline {
-            if let Some(pos) = memchr::memchr(b'\n', &client.pending) {
-                client.pending.drain(..=pos);
+            if let Some(pos) = memchr::memchr(b'\n', pending) {
+                consumed += pos + 1;
                 client.discard_until_newline = false;
                 continue;
             }
-            if client.pending.len() > MAX_LINE_LENGTH {
-                let start = client.pending.len() - MAX_LINE_LENGTH;
-                client.pending.drain(..start);
+            if pending.len() > MAX_LINE_LENGTH {
+                consumed += pending.len() - MAX_LINE_LENGTH;
             }
-            return;
+            break;
         }
 
-        if let Some((len, prefix_len)) = parse_octet_prefix(&client.pending) {
-            if len > MAX_LINE_LENGTH {
-                client.discard_octet_bytes = len;
-                client.pending.drain(..prefix_len);
+        if let Some((len, prefix_len)) = parse_octet_prefix(pending)
+            && let Some(needed) = prefix_len.checked_add(len)
+        {
+            // Only commit to octet-counting when a complete, plausibly bounded
+            // frame is available. This avoids legacy lines like "200 OK\n"
+            // stalling behind an ambiguous "<digits><space>" prefix.
+            let octet_frame_ready = pending.len() >= needed;
+            let octet_boundary_is_plausible = octet_frame_ready
+                && (pending.len() == needed
+                    || matches!(pending.get(needed), Some(b'\n'))
+                    || parse_octet_prefix(&pending[needed..]).is_some());
+
+            if octet_frame_ready && octet_boundary_is_plausible {
+                if len > MAX_LINE_LENGTH {
+                    client.discard_octet_bytes = len;
+                    consumed += prefix_len;
+                    continue;
+                }
+                out.extend_from_slice(&pending[prefix_len..needed]);
+                out.push(b'\n');
+                consumed += needed;
                 continue;
             }
-            let needed = prefix_len + len;
-            if client.pending.len() < needed {
-                return;
-            }
-            out.extend_from_slice(&client.pending[prefix_len..needed]);
-            out.push(b'\n');
-            client.pending.drain(..needed);
-            continue;
         }
 
-        if let Some(pos) = memchr::memchr(b'\n', &client.pending) {
+        if let Some(pos) = memchr::memchr(b'\n', pending) {
             if pos > MAX_LINE_LENGTH {
                 client.discard_until_newline = true;
                 continue;
             }
-            let mut line = client.pending.drain(..=pos).collect::<Vec<u8>>();
-            out.append(&mut line);
+            out.extend_from_slice(&pending[..=pos]);
+            consumed += pos + 1;
             continue;
         }
 
-        if client.pending.len() > MAX_LINE_LENGTH {
+        if pending.len() > MAX_LINE_LENGTH {
             client.discard_until_newline = true;
+            continue;
         }
-        return;
+        break;
     }
+
+    advance_pending(client, consumed);
 }
 
 /// TCP input that accepts connections and reads newline-delimited data.
@@ -305,9 +332,9 @@ impl InputSource for TcpInput {
                         // backpressure threshold, undermining OOM protection (fix for
                         // accounting gap in #576).
                         //
-                        // extract_complete_records only moves bytes from pending→out
-                        // (never discards them), so the sum out+pending can only grow
-                        // by the n bytes we just appended; the result is always ≥ 0.
+                        // extract_complete_records may also discard oversized data, so
+                        // this delta can be negative; saturating_sub keeps accounting
+                        // monotonic and bounded.
                         let total_after = out.len() + client.pending.len();
                         let total_before = out_before + pending_before;
                         total_buffered += total_after.saturating_sub(total_before);
@@ -655,8 +682,6 @@ mod tests {
             client.flush().unwrap();
         });
 
-        let _ = writer.join();
-
         // Use a deadline/polling loop rather than a fixed sleep so the test is
         // not flaky on slow CI runners.  Poll until the expected Data event is
         // observed or a generous timeout elapses.
@@ -675,6 +700,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+        let _ = writer.join();
         assert!(got_boundary, "boundary-sized line should be forwarded");
     }
 
@@ -697,6 +723,31 @@ mod tests {
             .flatten()
             .collect::<Vec<u8>>();
         assert_eq!(joined, b"hello\nworld\n");
+    }
+
+    #[test]
+    fn tcp_legacy_line_starting_with_digits_space_is_not_stalled_as_octet() {
+        let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+        let mut client = StdTcpStream::connect(addr).unwrap();
+        client.write_all(b"200 OK\n").unwrap();
+        client.flush().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = Vec::new();
+        while Instant::now() < deadline {
+            for event in input.poll().unwrap() {
+                if let InputEvent::Data { bytes, .. } = event {
+                    got.extend_from_slice(&bytes);
+                }
+            }
+            if !got.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(got, b"200 OK\n");
     }
 
     #[test]
