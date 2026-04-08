@@ -9,10 +9,12 @@ use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
+use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 use socket2::SockRef;
 
 use crate::input::{InputEvent, InputSource};
+use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
 
 /// Maximum number of concurrent TCP client connections.
 const MAX_CLIENTS: usize = 1024;
@@ -25,8 +27,10 @@ const READ_BUF_SIZE: usize = 64 * 1024;
 /// Default disconnect timeout for idle clients (no data received).
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Maximum bytes a client may send without a newline before we disconnect them.
-/// Prevents a misbehaving sender from consuming unbounded memory.
+/// Maximum frame/line payload length accepted from TCP senders.
+///
+/// Applies to both RFC 6587 octet-counted frames and newline-delimited lines.
+/// Oversized records are discarded (not forwarded) to prevent memory abuse.
 const MAX_LINE_LENGTH: usize = 1024 * 1024; // 1 MiB
 
 /// Maximum total bytes buffered across all client `client_data` vecs within a
@@ -54,8 +58,113 @@ struct Client {
     stream: TcpStream,
     source_id: SourceId,
     last_data: Instant,
-    /// Bytes received since the last newline. Reset to 0 on every `\n`.
-    bytes_since_newline: usize,
+    /// Unparsed bytes for this connection.
+    pending: Vec<u8>,
+    /// Remaining bytes to drop from an oversized octet-counted frame.
+    discard_octet_bytes: usize,
+    /// Whether we are dropping newline-delimited bytes until a newline appears.
+    discard_until_newline: bool,
+}
+
+fn parse_octet_prefix(buf: &[u8]) -> Option<(usize, usize)> {
+    if buf.is_empty() || !buf[0].is_ascii_digit() {
+        return None;
+    }
+    let mut i = 0usize;
+    let mut len = 0usize;
+    while i < buf.len() && buf[i].is_ascii_digit() {
+        len = len.checked_mul(10)?.checked_add((buf[i] - b'0') as usize)?;
+        i += 1;
+    }
+    if i == 0 || i >= buf.len() || buf[i] != b' ' {
+        return None;
+    }
+    Some((len, i + 1))
+}
+
+fn advance_pending(client: &mut Client, consumed: usize) {
+    if consumed == 0 {
+        return;
+    }
+    let remaining = client.pending.len().saturating_sub(consumed);
+    client.pending.copy_within(consumed.., 0);
+    client.pending.truncate(remaining);
+}
+
+fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
+    let mut consumed = 0usize;
+
+    loop {
+        let pending = &client.pending[consumed..];
+        if pending.is_empty() {
+            break;
+        }
+
+        if client.discard_octet_bytes > 0 {
+            let drop_n = client.discard_octet_bytes.min(pending.len());
+            consumed += drop_n;
+            client.discard_octet_bytes -= drop_n;
+            if client.discard_octet_bytes > 0 {
+                break;
+            }
+            continue;
+        }
+
+        if client.discard_until_newline {
+            if let Some(pos) = memchr::memchr(b'\n', pending) {
+                consumed += pos + 1;
+                client.discard_until_newline = false;
+                continue;
+            }
+            if pending.len() > MAX_LINE_LENGTH {
+                consumed += pending.len() - MAX_LINE_LENGTH;
+            }
+            break;
+        }
+
+        if let Some((len, prefix_len)) = parse_octet_prefix(pending)
+            && let Some(needed) = prefix_len.checked_add(len)
+        {
+            // Only commit to octet-counting when a complete, plausibly bounded
+            // frame is available. This avoids legacy lines like "200 OK\n"
+            // stalling behind an ambiguous "<digits><space>" prefix.
+            let octet_frame_ready = pending.len() >= needed;
+            let octet_boundary_is_plausible = octet_frame_ready
+                && (pending.len() == needed
+                    || matches!(pending.get(needed), Some(b'\n'))
+                    || parse_octet_prefix(&pending[needed..]).is_some());
+
+            if octet_frame_ready && octet_boundary_is_plausible {
+                if len > MAX_LINE_LENGTH {
+                    client.discard_octet_bytes = len;
+                    consumed += prefix_len;
+                    continue;
+                }
+                out.extend_from_slice(&pending[prefix_len..needed]);
+                out.push(b'\n');
+                consumed += needed;
+                continue;
+            }
+        }
+
+        if let Some(pos) = memchr::memchr(b'\n', pending) {
+            if pos > MAX_LINE_LENGTH {
+                client.discard_until_newline = true;
+                continue;
+            }
+            out.extend_from_slice(&pending[..=pos]);
+            consumed += pos + 1;
+            continue;
+        }
+
+        if pending.len() > MAX_LINE_LENGTH {
+            client.discard_until_newline = true;
+            continue;
+        }
+        break;
+    }
+
+    advance_pending(client, consumed);
 }
 
 /// TCP input that accepts connections and reads newline-delimited data.
@@ -72,6 +181,8 @@ pub struct TcpInput {
     connections_accepted: u64,
     /// Monotonic counter for generating per-connection `SourceId` values.
     next_connection_seq: u64,
+    /// Coarse control-plane health derived from the most recent poll cycle.
+    health: ComponentHealth,
 }
 
 impl TcpInput {
@@ -96,6 +207,7 @@ impl TcpInput {
             idle_timeout,
             connections_accepted: 0,
             next_connection_seq: 0,
+            health: ComponentHealth::Healthy,
         })
     }
 
@@ -120,13 +232,18 @@ impl TcpInput {
 
 impl InputSource for TcpInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        let mut under_pressure = false;
+
         // Accept new connections up to the limit.
         loop {
             if self.clients.len() >= MAX_CLIENTS {
                 // Drain (and drop) any pending connections beyond the limit so
                 // the kernel accept queue does not fill up and stall.
                 match self.listener.accept() {
-                    Ok((_stream, _addr)) => continue, // dropped immediately
+                    Ok((_stream, _addr)) => {
+                        under_pressure = true;
+                        continue; // dropped immediately
+                    }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(_) => break, // transient accept error, not fatal
                 }
@@ -151,7 +268,9 @@ impl InputSource for TcpInput {
                         stream,
                         source_id: sid,
                         last_data: Instant::now(),
-                        bytes_since_newline: 0,
+                        pending: Vec::new(),
+                        discard_octet_bytes: 0,
+                        discard_until_newline: false,
                     });
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -195,31 +314,30 @@ impl InputSource for TcpInput {
                         client.last_data = now;
                         got_data = true;
 
-                        // Track bytes since last newline for max-line-length.
-                        // Check BEFORE resetting at newline to catch lines that
-                        // were already over the limit when the newline arrives.
-                        if let Some(first_nl) = memchr::memchr(b'\n', chunk) {
-                            // Line length = accumulated + bytes up to first \n.
-                            let line_len = client.bytes_since_newline + first_nl;
-                            if line_len >= MAX_LINE_LENGTH {
-                                alive[i] = false;
-                                break;
-                            }
-                            // Reset to bytes after the LAST newline in this chunk.
-                            if let Some(last_nl) = memchr::memrchr(b'\n', chunk) {
-                                client.bytes_since_newline = n - last_nl - 1;
-                            }
-                        } else {
-                            client.bytes_since_newline += n;
-                            if client.bytes_since_newline >= MAX_LINE_LENGTH {
-                                alive[i] = false;
-                                break;
-                            }
-                        }
-                        client_data[i]
-                            .get_or_insert_with(Vec::new)
-                            .extend_from_slice(chunk);
-                        total_buffered += n;
+                        // Snapshot totals before this read so we can compute the
+                        // net increase in buffered memory after parsing.
+                        let out = client_data[i].get_or_insert_with(Vec::new);
+                        let out_before = out.len();
+                        let pending_before = client.pending.len(); // before extend
+
+                        client.pending.extend_from_slice(chunk);
+                        extract_complete_records(client, out);
+
+                        // Net new bytes held in memory for this client after this
+                        // read.  We account for both the parsed output (out) and the
+                        // unparsed remainder (client.pending) so that a client with a
+                        // long in-flight partial record counts against the global
+                        // budget.  Without this, a client can accumulate up to
+                        // MAX_LINE_LENGTH unparsed bytes without tripping the
+                        // backpressure threshold, undermining OOM protection (fix for
+                        // accounting gap in #576).
+                        //
+                        // extract_complete_records may also discard oversized data, so
+                        // this delta can be negative; saturating_sub keeps accounting
+                        // monotonic and bounded.
+                        let total_after = out.len() + client.pending.len();
+                        let total_before = out_before + pending_before;
+                        total_buffered += total_after.saturating_sub(total_before);
 
                         // We must store bytes we have already read from the
                         // socket (discarding them would be data loss), so the
@@ -227,6 +345,7 @@ impl InputSource for TcpInput {
                         // The maximum overage is one READ_BUF_SIZE chunk
                         // (64 KiB), which is negligible relative to 256 MiB.
                         if total_buffered >= MAX_TOTAL_BUFFERED_BYTES {
+                            under_pressure = true;
                             break;
                         }
                     }
@@ -257,9 +376,11 @@ impl InputSource for TcpInput {
         for (i, data) in client_data.into_iter().enumerate() {
             if let Some(bytes) = data {
                 if !bytes.is_empty() {
+                    let accounted_bytes = bytes.len() as u64;
                     events.push(InputEvent::Data {
                         bytes,
                         source_id: Some(self.clients[i].source_id),
+                        accounted_bytes,
                     });
                 }
             }
@@ -271,8 +392,32 @@ impl InputSource for TcpInput {
         // remainder in FramedInput.  Emitting EndOfFile (after any Data for
         // the same source) signals FramedInput to flush that remainder so the
         // last unterminated record is not silently dropped — fixes #804/#580.
+        //
+        // Additionally, any bytes still held in client.pending were never
+        // passed to FramedInput as a Data event (extract_complete_records only
+        // emits complete newline-terminated records or octet-counted frames).
+        // On a clean close those bytes are a valid partial line that would
+        // otherwise be silently dropped.  Flush them now — with a synthetic
+        // newline so FramedInput treats them as a complete record rather than
+        // parking them in its own remainder — before the EndOfFile so that the
+        // subsequent EndOfFile can still flush any *prior* remainder already
+        // held by FramedInput.  Skip the flush if the client was mid-discard
+        // (oversized frame/line): those bytes are intentionally garbage.
         for (i, &is_alive) in alive.iter().enumerate() {
             if !is_alive {
+                let client = &mut self.clients[i];
+                let has_pending = !client.pending.is_empty();
+                let mid_discard = client.discard_octet_bytes > 0 || client.discard_until_newline;
+                if has_pending && !mid_discard {
+                    let mut tail = std::mem::take(&mut client.pending);
+                    tail.push(b'\n');
+                    let accounted_bytes = tail.len() as u64;
+                    events.push(InputEvent::Data {
+                        bytes: tail,
+                        source_id: Some(client.source_id),
+                        accounted_bytes,
+                    });
+                }
                 events.push(InputEvent::EndOfFile {
                     source_id: Some(self.clients[i].source_id),
                 });
@@ -288,11 +433,24 @@ impl InputSource for TcpInput {
             keep
         });
 
+        self.health = reduce_polling_input_health(
+            self.health,
+            if under_pressure {
+                PollingInputHealthEvent::BackpressureObserved
+            } else {
+                PollingInputHealthEvent::PollHealthy
+            },
+        );
+
         Ok(events)
     }
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn health(&self) -> ComponentHealth {
+        self.health
     }
 }
 
@@ -319,7 +477,10 @@ mod tests {
 
         // Should have accepted the connection and read data.
         assert_eq!(events.len(), 1);
-        if let InputEvent::Data { bytes, source_id } = &events[0] {
+        if let InputEvent::Data {
+            bytes, source_id, ..
+        } = &events[0]
+        {
             let text = String::from_utf8_lossy(bytes);
             assert!(text.contains("hello"), "got: {text}");
             assert!(text.contains("world"), "got: {text}");
@@ -361,6 +522,16 @@ mod tests {
         assert!(input.clients.is_empty());
     }
 
+    #[test]
+    fn tcp_health_recovers_after_clean_poll() {
+        let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+        input.health = ComponentHealth::Degraded;
+
+        let events = input.poll().unwrap();
+        assert!(events.is_empty());
+        assert_eq!(input.health(), ComponentHealth::Healthy);
+    }
+
     /// A TCP client that sends a partial line (no trailing newline) and then
     /// disconnects must cause an EndOfFile event so that FramedInput can flush
     /// the partial remainder — fixes #804 / #580.
@@ -380,26 +551,19 @@ mod tests {
 
         let events = input.poll().unwrap();
 
-        let has_data = events
-            .iter()
-            .any(|e| matches!(e, InputEvent::Data { bytes, .. } if !bytes.is_empty()));
         let has_eof = events
             .iter()
             .any(|e| matches!(e, InputEvent::EndOfFile { source_id } if source_id.is_some()));
 
-        assert!(has_data, "should have received the partial line bytes");
         assert!(
             has_eof,
             "should emit EndOfFile on disconnect so FramedInput can flush the partial line"
         );
 
-        // EndOfFile source_id must match the Data source_id.
-        let data_sid = events.iter().find_map(|e| {
-            if let InputEvent::Data { source_id, .. } = e {
-                *source_id
-            } else {
-                None
-            }
+        // EndOfFile source_id must match any source id observed in this poll.
+        let data_sid = events.iter().find_map(|e| match e {
+            InputEvent::Data { source_id, .. } => *source_id,
+            _ => None,
         });
         let eof_sid = events.iter().find_map(|e| {
             if let InputEvent::EndOfFile { source_id } = e {
@@ -408,10 +572,15 @@ mod tests {
                 None
             }
         });
-        assert_eq!(
-            data_sid, eof_sid,
-            "Data and EndOfFile must carry the same SourceId"
-        );
+        if let Some(data_sid) = data_sid {
+            assert_eq!(
+                Some(data_sid),
+                eof_sid,
+                "Data and EndOfFile must carry the same SourceId"
+            );
+        } else {
+            assert!(eof_sid.is_some(), "EndOfFile should carry SourceId");
+        }
     }
 
     #[test]
@@ -448,44 +617,59 @@ mod tests {
 
         // Spawn the writer in a background thread because write_all of >1MB
         // will block until the reader drains the kernel buffer.
-        let writer = std::thread::spawn(move || {
+        // We send the oversized record AND the follow-up "ok\n" on the SAME
+        // connection so the test actually verifies that the connection remains
+        // usable after an oversized record is discarded, not just that a brand
+        // new connection works (fix for Bug 2 / test correctness).
+        let writer = std::thread::spawn(move || -> StdTcpStream {
             let mut client = StdTcpStream::connect(addr).unwrap();
             let big = vec![b'A'; MAX_LINE_LENGTH + 1];
-            // Ignore errors — the server may reset the connection once
-            // the limit is exceeded, causing a broken-pipe on our side.
+            // Ignore errors — the server may apply backpressure before we
+            // finish sending >1MB; we just need the server to see enough to
+            // trigger the oversized-discard path.
             let _ = client.write_all(&big);
+            // Follow-up newline terminates the oversized record so the parser
+            // can discard it and resume normal framing on this connection.
+            let _ = client.write_all(b"\n");
+            // Now send a well-sized record on the same connection.
+            client.write_all(b"ok\n").unwrap();
+            client.flush().unwrap();
+            client
         });
 
-        // Poll until the writer finishes (connection accepted and data read) or
-        // deadline. The accept and disconnect may happen in the same poll() call
-        // when the data arrives faster than the poll loop iterates, so we track
-        // total connections_accepted() rather than the transient client_count().
+        // Poll until the "ok" record is observed or deadline expires.
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut has_ok = false;
         while Instant::now() < deadline {
-            let _ = input.poll().unwrap();
-            if input.connections_accepted() > 0 && input.client_count() == 0 {
+            let events = input.poll().unwrap();
+            if events.iter().any(|e| match e {
+                InputEvent::Data { bytes, .. } => bytes.windows(3).any(|w| w == b"ok\n"),
+                _ => false,
+            }) {
+                has_ok = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        let _ = writer.join();
+        // Keep the client alive until after polling so the connection is not
+        // torn down before we observe the "ok" record.
+        let _client = writer.join().unwrap();
 
         assert!(
             input.connections_accepted() > 0,
             "server must have accepted the connection"
         );
-        assert_eq!(
-            input.client_count(),
-            0,
-            "client exceeding max_line_length should be disconnected"
+        assert!(
+            has_ok,
+            "same connection should remain usable after oversized discard"
         );
     }
 
     #[test]
     fn tcp_max_line_length_exact_boundary() {
         // A line of exactly MAX_LINE_LENGTH bytes (content only, excluding \n)
-        // must be rejected — the check is `>=`, so the boundary is exclusive.
+        // is accepted; only records strictly larger are dropped.
         let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
         let addr = input.local_addr().unwrap();
 
@@ -495,28 +679,75 @@ mod tests {
             let mut line = vec![b'A'; MAX_LINE_LENGTH];
             line.push(b'\n');
             let _ = client.write_all(&line);
+            client.flush().unwrap();
         });
 
+        // Use a deadline/polling loop rather than a fixed sleep so the test is
+        // not flaky on slow CI runners.  Poll until the expected Data event is
+        // observed or a generous timeout elapses.
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got_boundary = false;
         while Instant::now() < deadline {
-            let _ = input.poll().unwrap();
-            if input.connections_accepted() > 0 && input.client_count() == 0 {
+            let events = input.poll().unwrap();
+            if events.into_iter().any(|e| match e {
+                InputEvent::Data { bytes, .. } => {
+                    bytes.len() == (MAX_LINE_LENGTH + 1) && bytes.ends_with(b"\n")
+                }
+                _ => false,
+            }) {
+                got_boundary = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = writer.join();
+        assert!(got_boundary, "boundary-sized line should be forwarded");
+    }
+
+    #[test]
+    fn tcp_octet_counted_frame_with_embedded_newline_is_single_record() {
+        let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+        let mut client = StdTcpStream::connect(addr).unwrap();
+        client.write_all(b"11 hello\nworld").unwrap();
+        client.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+        let joined = events
+            .into_iter()
+            .filter_map(|e| match e {
+                InputEvent::Data { bytes, .. } => Some(bytes),
+                _ => None,
+            })
+            .flatten()
+            .collect::<Vec<u8>>();
+        assert_eq!(joined, b"hello\nworld\n");
+    }
+
+    #[test]
+    fn tcp_legacy_line_starting_with_digits_space_is_not_stalled_as_octet() {
+        let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+        let mut client = StdTcpStream::connect(addr).unwrap();
+        client.write_all(b"200 OK\n").unwrap();
+        client.flush().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = Vec::new();
+        while Instant::now() < deadline {
+            for event in input.poll().unwrap() {
+                if let InputEvent::Data { bytes, .. } = event {
+                    got.extend_from_slice(&bytes);
+                }
+            }
+            if !got.is_empty() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        let _ = writer.join();
-
-        assert!(
-            input.connections_accepted() > 0,
-            "server must have accepted the connection"
-        );
-        assert_eq!(
-            input.client_count(),
-            0,
-            "client sending a line of exactly MAX_LINE_LENGTH bytes should be disconnected"
-        );
+        assert_eq!(got, b"200 OK\n");
     }
 
     #[test]
@@ -542,6 +773,59 @@ mod tests {
             input.client_count(),
             0,
             "all storm connections should be cleaned up (no fd leak)"
+        );
+    }
+
+    /// Pending bytes held in `client.pending` (an unterminated line with no
+    /// trailing newline) must be emitted as a `Data` event — with a synthetic
+    /// trailing newline — before the `EndOfFile` event when the connection
+    /// closes.  Previously those bytes were silently dropped (data loss bug).
+    #[test]
+    fn pending_bytes_flushed_as_data_event_on_close() {
+        let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+
+        {
+            let mut client = StdTcpStream::connect(addr).unwrap();
+            // Write a partial line with NO trailing newline so it ends up
+            // in client.pending without being emitted by extract_complete_records.
+            client.write_all(b"no-newline-tail").unwrap();
+            client.flush().unwrap();
+        } // client drops -> clean EOF
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+
+        // There must be a Data event whose bytes contain "no-newline-tail".
+        let data_bytes: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                InputEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        assert!(
+            !data_bytes.is_empty(),
+            "pending tail bytes must be emitted as a Data event on close (data loss fix)"
+        );
+        assert!(
+            data_bytes
+                .windows(b"no-newline-tail".len())
+                .any(|w| w == b"no-newline-tail"),
+            "emitted Data must contain the pending tail bytes; got: {:?}",
+            String::from_utf8_lossy(&data_bytes),
+        );
+
+        // The flushed tail must be followed by EndOfFile for the same source.
+        let has_eof = events
+            .iter()
+            .any(|e| matches!(e, InputEvent::EndOfFile { source_id } if source_id.is_some()));
+        assert!(
+            has_eof,
+            "EndOfFile must still be emitted after the pending Data"
         );
     }
 

@@ -32,6 +32,7 @@ spec:
           image: ghcr.io/strawgate/logfwd:latest
           imagePullPolicy: IfNotPresent
           args:
+            - "run"
             - "--config"
             - "/etc/logfwd/pipeline.yaml"
           securityContext:
@@ -49,7 +50,7 @@ spec:
               value: "http://otel-collector.monitoring.svc.cluster.local:4318"
           livenessProbe:
             httpGet:
-              path: /health
+              path: /live
               port: diagnostics
             initialDelaySeconds: 5
             periodSeconds: 15
@@ -65,7 +66,7 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /health
+              path: /live
               port: diagnostics
             initialDelaySeconds: 2
             periodSeconds: 5

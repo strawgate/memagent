@@ -151,11 +151,14 @@ BeginSend(s, b) ==
 \* apply_ack (ack OR reject): batch leaves in_flight, checkpoint may advance.
 \*
 \* Reject note: RejectBatch has the same state transition as AckBatch.
+\* This is intentionally reserved for explicit permanent rejects only.
 \* Permanently-undeliverable data must not block checkpoint progress
 \* (would stall drain indefinitely). At-least-once is weakened to
-\* at-most-once only for rejected batches. This matches Filebeat's behavior
-\* (advance past malformed records) and differs from Fluent Bit (which drops
-\* the route but re-tries via a separate backlog).
+\* at-most-once only for rejected batches.
+\*
+\* Retry/control-plane failures are a different category and must not be
+\* modeled as RejectBatch. The current Rust rollout keeps those batches
+\* unresolved so checkpoints do not advance past undelivered data.
 \*
 \* For metrics/observability, the Rust receipt.delivered flag distinguishes
 \* ack from reject. That distinction is not modeled here (orthogonal to

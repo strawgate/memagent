@@ -11,6 +11,9 @@ just bench
 # Run the dedicated FramedInput profiling report (stage timings + RSS + optional flamegraph)
 just bench-framed-input -- --lines 200000 --iterations 5 --flamegraph /tmp/framed-input.svg
 
+# Run the CloudTrail realism profile (nested structure + cardinality + compression)
+cargo run -p logfwd-bench --release --bin cloudtrail_profile -- --lines 20000
+
 # Run the allocation-only FramedInput report (dhat-backed, slower)
 just bench-framed-input-alloc -- --lines 200000
 
@@ -59,6 +62,7 @@ just bench-report
 |------|--------|-------------|
 | `main.rs` | `logfwd-bench` | Reads Criterion JSON, emits markdown tables |
 | `e2e_profile.rs` | *(lib)* | Per-stage timing breakdown (scan → transform → encode → compress) |
+| `bin/cloudtrail_profile.rs` | `cloudtrail_profile` | CloudTrail-like generator profile (NDJSON vs direct RecordBatch generation, cardinality, compression) |
 | `es_throughput.rs` | `es-throughput` | Elasticsearch output throughput with worker scaling |
 | `bin/framed_input_profile.rs` | `framed_input_profile` | FramedInput stage timings, RSS, optional flamegraph, optional dhat allocation report |
 | `explore.rs` | *(lib)* | Multi-dimensional exploratory benchmark (CSV output) |
@@ -70,12 +74,20 @@ just bench-report
 All generators live in `src/generators.rs` and use seeded `fastrand::Rng` for
 deterministic, reproducible output.
 
+Several profiles now share the reusable cardinality helper layer in
+`src/cardinality.rs`, which introduces hierarchical identity reuse,
+hot/warm/cold phase skew, and renewal windows for more realistic benchmark
+payloads without hard-coding a single scenario.
+
 | Generator | Description | Typical size |
 |-----------|-------------|-------------|
 | `gen_cri_k8s(count, seed)` | CRI-formatted K8s logs with P/F mix | ~350 bytes/line |
-| `gen_production_mixed(count, seed)` | Non-uniform JSON (70% short, 20% medium, 10% long) | ~250 bytes/line avg |
+| `gen_production_mixed(count, seed)` | Non-uniform JSON with shared cardinality helper (70% short, 20% medium, 10% long) | ~250 bytes/line avg |
 | `gen_narrow(count, seed)` | Simple 5-field JSON | ~130 bytes/line |
-| `gen_wide(count, seed)` | Verbose 20+ field JSON | ~650 bytes/line |
+| `gen_wide(count, seed)` | Verbose 20+ field JSON with hierarchical identity reuse | ~650 bytes/line |
+| `gen_envoy_access(count, seed)` | Envoy-like access logs with route/service/status/user-agent/IP correlation | ~500 bytes/line avg |
+| `gen_cloudtrail_audit(count, seed)` | CloudTrail-like nested audit logs with optional substructures and high-cardinality principals | ~1.1 KB/line avg |
+| `gen_cloudtrail_batch(count, seed)` | Direct Arrow `RecordBatch` materializer for the same CloudTrail workload model | 34 core columns |
 | `make_metadata()` | Standard `BatchMetadata` with K8s resource attrs | — |
 
 ## Shared Bench Helpers (`src/lib.rs`)

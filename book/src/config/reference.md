@@ -1,6 +1,6 @@
 # Configuration Reference
 
-logfwd is configured with a YAML file passed via `--config <config.yaml>`.
+logfwd commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
 
 ## Overview
 
@@ -9,8 +9,12 @@ logfwd supports two layout styles:
 - **Simple** — single pipeline with top-level `input`, `transform`, and `output` keys.
 - **Advanced** — multiple named pipelines under a `pipelines` map.
 
-Environment variables are expanded using `${VAR}` syntax anywhere in the file. If a
-variable is not set the placeholder is left as-is.
+Environment variables are expanded using `${VAR}` syntax anywhere in the file.
+If a variable is not set, config loading fails fast with a validation error.
+
+This page is the canonical source for config support and status. Other docs may
+show examples or task-oriented guidance, but support-status claims for inputs,
+outputs, and config-only surfaces should link back here.
 
 ---
 
@@ -26,11 +30,11 @@ transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
-  endpoint: otel-collector:4317
+  endpoint: https://otel-collector:4318/v1/logs
   compression: zstd
 
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
   log_level: info
 ```
 
@@ -47,7 +51,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
-        endpoint: otel-collector:4317
+        endpoint: https://otel-collector:4318/v1/logs
 
   debug:
     inputs:
@@ -59,7 +63,7 @@ pipelines:
         format: json
 
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
 ```
 
 The two layouts cannot be mixed: specifying both `input`/`output` at the top level and
@@ -95,13 +99,32 @@ input:
   format: cri
 ```
 
-### `udp` input *(not yet implemented)*
+### `generator` input
+
+Emit synthetic records for benchmarks, demos, and pipeline tests.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `generator` | object | No | Generator settings. If omitted, runtime defaults are used, including `batch_size: 1000` and `events_per_sec: 0`. See [Input Types](inputs.md#generator) for the detailed nested fields. |
+
+```yaml
+input:
+  type: generator
+  generator:
+    events_per_sec: 50000
+    batch_size: 4096
+```
+
+### `udp` input
 
 Listen for log lines on a UDP socket.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:514`. |
+
+`udp` treats each datagram as one or more newline-delimited records. TLS is
+not supported for UDP inputs (DTLS is not implemented).
 
 ```yaml
 input:
@@ -110,13 +133,21 @@ input:
   format: json
 ```
 
-### `tcp` input *(not yet implemented)*
+### `tcp` input
 
 Accept log lines on a TCP socket.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:5140`. |
+| `tls.cert_file` | string | No | PEM server certificate chain (must be paired with `tls.key_file`). |
+| `tls.key_file` | string | No | PEM private key (must be paired with `tls.cert_file`). |
+| `tls.require_client_auth` | bool | No | Require mTLS client cert verification. |
+| `tls.client_ca_file` | string | Cond. | Required when `tls.require_client_auth: true`. |
+
+TCP framing uses RFC 6587 octet-counting when a valid `<len><space>` prefix is
+present, and falls back to legacy newline framing otherwise. Oversized frames
+(`> 1 MiB`) are discarded.
 
 ```yaml
 input:
@@ -125,11 +156,50 @@ input:
   format: json
 ```
 
-### `otlp` input *(not yet implemented)*
+### `otlp` input
 
 Receive OTLP log records from another agent or SDK.
 
-No extra fields required; the listen address will be configurable in a future release.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:4318`. |
+
+```yaml
+input:
+  type: otlp
+  listen: 0.0.0.0:4318
+```
+
+### `http` input
+
+Receive newline-delimited payloads over HTTP `POST`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:8081`. |
+| `http.path` | string | No | Route path. Must start with `/`. Defaults to `/`. |
+| `http.strict_path` | boolean | No | When `true` (default), require exact path match. |
+| `http.method` | string | No | Accepted method. Defaults to `POST`. |
+| `http.max_request_body_size` | integer | No | Maximum request body size in bytes. Defaults to 20 MiB. |
+| `http.response_code` | integer | No | Success code. One of `200`, `201`, `202`, `204` (default `200`). |
+
+```yaml
+input:
+  type: http
+  listen: 0.0.0.0:8081
+  format: json
+  http:
+    path: /ingest
+    strict_path: true
+    method: POST
+    max_request_body_size: 20971520
+    response_code: 200
+```
+
+### `arrow_ipc` input *(not yet supported)*
+
+Reserved for future Arrow IPC ingest. Config parsing recognizes the type, but
+config validation currently rejects it.
 
 ---
 
@@ -138,9 +208,12 @@ No extra fields required; the listen address will be configurable in a future re
 | Value | Status | Description |
 |-------|--------|-------------|
 | `file` | Implemented | Tail files matching a glob pattern. |
-| `udp` | Planned | Receive log lines over UDP. |
-| `tcp` | Planned | Accept log lines over TCP. |
-| `otlp` | Planned | Receive OTLP logs. |
+| `generator` | Implemented | Emit synthetic JSON-like records from an in-process source. |
+| `udp` | Implemented | Receive log lines over UDP. |
+| `tcp` | Implemented | Accept log lines over TCP. |
+| `otlp` | Implemented | Receive OTLP logs over a bound listen address. |
+| `http` | Implemented | Receive newline-delimited payloads via HTTP `POST`. |
+| `arrow_ipc` | Not yet supported | Reserved for future Arrow IPC ingest. |
 
 ---
 
@@ -170,37 +243,46 @@ Each pipeline requires at least one output.
 | `type` | string | Yes | Output type. See [Output types](#output-types). |
 | `name` | string | No | Friendly name shown in diagnostics. |
 
+For URL-based outputs (`otlp`, `elasticsearch`, `loki`, `arrow_ipc`, and `http`),
+endpoints must be valid `http://` or `https://` URLs. Embedded credentials
+(`https://user:pass@host/...`) are rejected; use `output.auth` instead. For
+transport safety, non-loopback endpoints must use `https://`. Plain `http://`
+is only accepted for loopback targets (`localhost`, `127.0.0.1`, `[::1]`) for
+local development.
+
 ### `otlp` output
 
 Send log records as OTLP protobuf to an OpenTelemetry collector.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `endpoint` | string | Yes | — | Collector address, e.g. `otel-collector:4317` (gRPC) or `http://otel-collector:4318` (HTTP). |
+| `endpoint` | string | Yes | — | Full collector URL, e.g. `https://otel-collector:4317` (gRPC) or `https://otel-collector:4318/v1/logs` (HTTP). |
 | `protocol` | string | No | `http` | `http` or `grpc`. |
-| `compression` | string | No | none | `zstd` to compress the request body. |
+| `compression` | string | No | none | `zstd`, `gzip`, or `none` for the request body. |
 
 ```yaml
 output:
   type: otlp
-  endpoint: otel-collector:4317
+  endpoint: https://otel-collector:4317
   protocol: grpc
   compression: zstd
 ```
 
-### `http` output
+### `http` output *(not yet supported)*
 
-POST log records as newline-delimited JSON to an HTTP endpoint.
+Reserved for newline-delimited JSON over HTTP POST. Config parsing recognizes
+the type, but config validation currently rejects it until runtime support
+lands.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `endpoint` | string | Yes | Full URL, e.g. `http://ingest.example.com/logs`. |
-| `compression` | string | No | Reserved for future use. HTTP output is not yet implemented. |
+| `endpoint` | string | Yes | Full URL, e.g. `https://ingest.example.com/logs`. |
+| `compression` | string | No | Reserved for future use. |
 
 ```yaml
 output:
   type: http
-  endpoint: http://ingest.example.com/logs
+  endpoint: https://ingest.example.com/logs
 ```
 
 ### `stdout` output
@@ -209,7 +291,7 @@ Print records to standard output for local debugging.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `format` | string | No | `json` | `json` (newline-delimited JSON) or `console` (coloured text). |
+| `format` | string | No | `console` | `json` (newline-delimited JSON), `console` (coloured text), or `text` (raw text). |
 
 ```yaml
 output:
@@ -217,23 +299,23 @@ output:
   format: console
 ```
 
-### `elasticsearch` output *(stub)*
+### `elasticsearch` output
 
-Ship to Elasticsearch via the bulk API. Not yet functional.
+Ship to Elasticsearch via the Bulk API.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Elasticsearch base URL. |
 
-### `loki` output *(stub)*
+### `loki` output
 
-Push to Grafana Loki. Not yet functional.
+Push to Grafana Loki.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Loki push URL. |
 
-### `file` output *(partial; `file_out` alias supported)*
+### `file` output
 
 Write records to a file.
 
@@ -249,9 +331,9 @@ output:
   format: json
 ```
 
-### `parquet` output *(stub)*
+### `parquet` output *(not yet supported)*
 
-Write records to Parquet files. Not yet functional.
+Write records to Parquet files.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -264,12 +346,16 @@ Write records to Parquet files. Not yet functional.
 | Value | Status | Description |
 |-------|--------|-------------|
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
-| `http` | Planned | JSON lines over HTTP POST (not yet implemented). |
-| `stdout` | Implemented | Print to stdout (JSON or coloured text). |
-| `elasticsearch` | Stub | Elasticsearch bulk API. |
-| `loki` | Stub | Grafana Loki push API. |
-| `file` | Partial | Write to a file (`file_out` alias supported). |
-| `parquet` | Stub | Write Parquet files. |
+| `http` | Not yet supported | Reserved for newline-delimited JSON over HTTP POST. |
+| `stdout` | Implemented | Print to stdout (JSON, console, or text). |
+| `elasticsearch` | Implemented | Elasticsearch Bulk API with retry and request-mode controls. |
+| `loki` | Implemented | Grafana Loki push API with label grouping. |
+| `file` | Implemented | Write NDJSON or text to a local file. |
+| `null` | Implemented | Drop records intentionally for tests and benchmark baselines. |
+| `tcp` | Implemented | Send records to a TCP endpoint. |
+| `udp` | Implemented | Send records to a UDP endpoint. |
+| `arrow_ipc` | Implemented | Send Arrow IPC payloads to an HTTP endpoint. |
+| `parquet` | Not yet supported | Reserved for Parquet file output. |
 
 ---
 
@@ -322,9 +408,7 @@ Special columns added by the scanner / input format layer:
 | `_raw` | string | Original input line (only when `keep_raw: true`, or when a non-JSON CRI line is wrapped for scanner safety). |
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream` | string | CRI stream name (`stdout` / `stderr`). |
-
-File-backed source-path metadata is not yet exposed as a SQL column. Track that
-gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
+| `_source_path` | string | Canonical file path for file-backed rows (JSON and CRI file inputs). |
 
 ### Built-in UDFs
 
@@ -360,15 +444,11 @@ query. They are declared under the top-level `enrichment` key.
 
 ```yaml
 enrichment:
-  k8s:
-    type: k8s_path
-
-  host:
-    type: host_info
-
-  labels:
-    type: static
-    fields:
+  - type: k8s_path
+  - type: host_info
+  - type: static
+    table_name: labels
+    labels:
       environment: production
       region: us-east-1
 ```
@@ -378,10 +458,13 @@ enrichment:
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
 
-This enrichment table is ready to expose path-derived metadata, but file-backed
-inputs do not yet inject a source-path column into the `logs` table. The join
-shown in older docs is therefore not wired end to end today. Track that runtime
-gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
+Join file-backed logs on `_source_path`:
+
+```sql
+SELECT l.*, k.namespace, k.pod_name, k.container_name
+FROM logs l
+LEFT JOIN k8s k ON starts_with(l._source_path, k.log_path_prefix)
+```
 
 Columns exposed by `k8s`:
 
@@ -407,9 +490,9 @@ A table with one row containing user-defined label columns.
 
 ```yaml
 enrichment:
-  labels:
-    type: static
-    fields:
+  - type: static
+    table_name: labels
+    labels:
       environment: production
       cluster: us-east-1
       tier: backend
@@ -430,14 +513,14 @@ The optional `server` block controls the diagnostics server and observability se
 |-------|------|---------|-------------|
 | `diagnostics` | string | none | `host:port` to listen for HTTP diagnostics. See [Diagnostics API](#diagnostics-api). |
 | `log_level` | string | `info` | Log verbosity. One of `error`, `warn`, `info`, `debug`, `trace`. |
-| `metrics_endpoint` | string | none | OTLP endpoint for periodic metrics push, e.g. `http://otel-collector:4318`. |
+| `metrics_endpoint` | string | none | OTLP endpoint for periodic metrics push, e.g. `https://otel-collector:4318`. |
 | `metrics_interval_secs` | integer | `60` | Push interval for OTLP metrics in seconds. |
 
 ```yaml
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
   log_level: info
-  metrics_endpoint: http://otel-collector:4318
+  metrics_endpoint: https://otel-collector:4318
   metrics_interval_secs: 30
 ```
 
@@ -450,14 +533,27 @@ When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitori
 | Route | Method | Description |
 |-------|--------|-------------|
 | `/` | GET | Dashboard HTML (visual explorer for metrics and traces). |
-| `/health` | GET | Liveness probe. Returns 200 OK if the server is running. |
-| `/ready` | GET | Readiness probe. Returns 200 OK once pipelines are initialized. |
-| `/api/pipelines` | GET | Per-pipeline counters (lines, bytes, errors, batches, stage timing). |
-| `/api/stats` | GET | Aggregate process stats (uptime, RSS, CPU, aggregate line counts). |
-| `/api/config` | GET | Currently loaded YAML configuration and its file path. |
-| `/api/logs` | GET | Recent log lines from logfwd's own stderr (ring buffer). |
-| `/api/history` | GET | Time-series data (1-hour window) for dashboard charts. |
-| `/api/traces` | GET | Recent batch processing spans for detailed latency analysis. |
+| `/live` | GET | Liveness probe. Returns 200 OK if the process and control plane are running. |
+| `/ready` | GET | Readiness probe. Returns 200 OK when required components are initialized and in a ready health state; returns 503 while components are still starting, stopping, stopped, failed, or otherwise not ready. |
+| `/admin/v1/status` | GET | Canonical rich status payload with live/ready state, component health, and per-pipeline counters. |
+| `/admin/v1/stats` | GET | Aggregate process stats (uptime, RSS, CPU, aggregate line counts). |
+| `/admin/v1/config` | GET | Currently loaded YAML configuration and its file path (disabled by default; see note below). |
+| `/admin/v1/logs` | GET | Recent log lines from logfwd's own stderr (ring buffer). |
+| `/admin/v1/history` | GET | Time-series data (1-hour window) for dashboard charts. |
+| `/admin/v1/traces` | GET | Recent batch processing spans for detailed latency analysis. |
+
+For input diagnostics, `bytes_total` reflects source payload bytes accepted at
+the input boundary. For structured receivers such as OTLP, this is the
+accepted request-body size as received on the wire, not the in-memory Arrow
+batch footprint or the post-decompression payload size.
+
+Security note:
+
+- Bind diagnostics to loopback unless you intentionally need remote access (for
+  example: `127.0.0.1:9090`).
+- `GET /admin/v1/config` is disabled by default because configs may contain
+  secrets. To enable it for short-lived local debugging, set
+  `LOGFWD_UNSAFE_EXPOSE_CONFIG=1` (or `true`) before starting logfwd.
 
 ---
 
@@ -490,7 +586,7 @@ server:
   metrics_endpoint: ${METRICS_PUSH_URL}
 ```
 
-If the variable is not set, the placeholder is left as-is (no error).
+If the variable is not set, config loading fails fast with a validation error.
 
 ---
 
@@ -525,14 +621,14 @@ pipelines:
         format: console
 
 enrichment:
-  labels:
-    type: static
-    fields:
+  - type: static
+    table_name: labels
+    labels:
       environment: ${ENVIRONMENT}
       cluster: ${CLUSTER_NAME}
 
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
   log_level: info
   metrics_endpoint: ${OTEL_ENDPOINT}
   metrics_interval_secs: 60

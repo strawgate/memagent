@@ -187,17 +187,22 @@ impl ElasticsearchSink {
     /// - `InvalidData`: item-level document errors (mapper_parsing_exception, etc.) — permanent,
     ///   retrying the same document is futile, so these map to `Rejected` in the caller
     fn parse_bulk_response(body: &[u8]) -> io::Result<()> {
-        let v: serde_json::Value = serde_json::from_slice(body)
-            .map_err(|e| io::Error::other(format!("failed to parse ES bulk response: {e}")))?;
+        #[derive(serde::Deserialize)]
+        struct BulkHeader {
+            errors: bool,
+        }
 
-        let has_errors = v
-            .get("errors")
-            .and_then(serde_json::Value::as_bool)
-            .ok_or_else(|| io::Error::other("ES bulk response missing 'errors' boolean field"))?;
+        let header: BulkHeader = serde_json::from_slice(body).map_err(|e| {
+            io::Error::other(format!("failed to parse ES bulk response header: {e}"))
+        })?;
 
-        if !has_errors {
+        if !header.errors {
             return Ok(());
         }
+
+        // Only do full parse on the error path to avoid hot-path allocations.
+        let v: serde_json::Value = serde_json::from_slice(body)
+            .map_err(|e| io::Error::other(format!("failed to parse ES bulk response: {e}")))?;
 
         let items = v
             .get("items")
@@ -418,22 +423,8 @@ impl ElasticsearchSink {
 
         let status = response.status();
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            // Parse Retry-After header (seconds integer) or use default.
-            let retry_after = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5);
-            return Ok(super::sink::SendResult::RetryAfter(
-                std::time::Duration::from_secs(retry_after),
-            ));
-        }
-
+        // 413 is ES-specific: triggers reactive batch splitting.
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
-            // 413: payload exceeds server limit. Return a transient error so the
-            // caller can split the batch and retry smaller halves.
             let detail = response.text().await.unwrap_or_default();
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -441,14 +432,21 @@ impl ElasticsearchSink {
             ));
         }
 
-        if status.is_client_error() {
-            return Ok(super::sink::SendResult::Rejected(format!(
-                "ES rejected batch with HTTP {status}"
-            )));
-        }
-
         if !status.is_success() {
-            return Err(io::Error::other(format!("ES returned HTTP {status}")));
+            let retry_after = response.headers().get("Retry-After").cloned();
+            let detail = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            if let Some(send_result) = crate::http_classify::classify_http_status(
+                status.as_u16(),
+                retry_after.as_ref(),
+                &format!("ES: {detail}"),
+            ) {
+                return Ok(send_result);
+            }
+            // classify_http_status handles all non-2xx; unreachable in practice.
+            return Err(io::Error::other(format!("ES: HTTP {status}: {detail}")));
         }
 
         let body = response.bytes().await.map_err(io::Error::other)?;
@@ -577,18 +575,7 @@ impl ElasticsearchSink {
 
         let status = response.status();
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5);
-            return Ok(super::sink::SendResult::RetryAfter(
-                std::time::Duration::from_secs(retry_after),
-            ));
-        }
-
+        // 413 is ES-specific: triggers reactive batch splitting.
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             let detail = response.text().await.unwrap_or_default();
             return Err(io::Error::new(
@@ -599,14 +586,21 @@ impl ElasticsearchSink {
             ));
         }
 
-        if status.is_client_error() {
-            return Ok(super::sink::SendResult::Rejected(format!(
-                "ES rejected batch with HTTP {status}"
-            )));
-        }
-
         if !status.is_success() {
-            return Err(io::Error::other(format!("ES returned HTTP {status}")));
+            let retry_after = response.headers().get("Retry-After").cloned();
+            let detail = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            if let Some(send_result) = crate::http_classify::classify_http_status(
+                status.as_u16(),
+                retry_after.as_ref(),
+                &format!("ES: {detail}"),
+            ) {
+                return Ok(send_result);
+            }
+            // classify_http_status handles all non-2xx; unreachable in practice.
+            return Err(io::Error::other(format!("ES: HTTP {status}: {detail}")));
         }
 
         let body = response.bytes().await.map_err(io::Error::other)?;
@@ -909,6 +903,13 @@ fn format_unix_timestamp_utc(secs: u64) -> String {
     String::from_utf8(Vec::from(buf)).expect("timestamp bytes are valid UTF-8")
 }
 
+#[cfg(test)]
+fn write_ts_suffix_simple(secs: u64, frac: u64) -> Vec<u8> {
+    let secs = secs.min(253402300799); // 9999-12-31T23:59:59
+    let ts = format_unix_timestamp_utc(secs);
+    format!(",\"@timestamp\":\"{ts}.{frac:09}Z\"}}").into_bytes()
+}
+
 fn is_leap_year(y: u32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
@@ -918,13 +919,25 @@ mod tests {
     use super::*;
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
-    use std::sync::Arc;
+    use proptest::prelude::*;
+    use proptest::string::string_regex;
+    use std::sync::{Arc, OnceLock};
 
     fn zero_metadata() -> BatchMetadata {
         BatchMetadata {
             resource_attrs: Arc::new(vec![]),
             observed_time_ns: 0,
         }
+    }
+
+    fn shared_test_client() -> reqwest::Client {
+        static TEST_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+        TEST_CLIENT.get_or_init(reqwest::Client::new).clone()
+    }
+
+    fn unicode_string(max_len: usize) -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..=max_len)
+            .prop_map(|chars| chars.into_iter().collect())
     }
 
     fn make_test_sink(index: &str) -> ElasticsearchSink {
@@ -938,13 +951,141 @@ mod tests {
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
-        let client = reqwest::Client::new();
+        let client = shared_test_client();
         ElasticsearchSink::new(
             "test".to_string(),
             Arc::clone(&factory.config),
             client,
             Arc::new(ComponentStats::default()),
         )
+    }
+
+    fn serialize_batch_simple_for_test(
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+        index: &str,
+    ) -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        if batch.num_rows() == 0 {
+            return Ok(out);
+        }
+
+        let escaped_index = serde_json::to_string(index).map_err(io::Error::other)?;
+        let action_line = format!("{{\"index\":{{\"_index\":{escaped_index}}}}}\n");
+
+        let ts_nanos = metadata.observed_time_ns;
+        let ts_secs = ts_nanos / 1_000_000_000;
+        let ts_frac = ts_nanos % 1_000_000_000;
+        let ts_text = format!("{}.{ts_frac:09}Z", format_unix_timestamp_utc(ts_secs));
+
+        let cols = build_col_infos(batch);
+        let has_timestamp_col = cols.iter().any(|c| {
+            c.field_name == field_names::TIMESTAMP_AT
+                || c.field_name == field_names::TIMESTAMP_UNDERSCORE
+        });
+
+        for row in 0..batch.num_rows() {
+            out.extend_from_slice(action_line.as_bytes());
+
+            let doc_start = out.len();
+            write_row_json(batch, row, &cols, &mut out)?;
+            out.push(b'\n');
+
+            if !has_timestamp_col {
+                if !out.ends_with(b"}\n") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "serialize_batch_simple_for_test: JSON doc must end with }\\n",
+                    ));
+                }
+                let trim_to = out.len() - 2;
+                if trim_to == doc_start + 1 {
+                    out.truncate(doc_start);
+                    let suffix = format!("{{\"@timestamp\":\"{ts_text}\"}}");
+                    out.extend_from_slice(suffix.as_bytes());
+                } else {
+                    out.truncate(trim_to);
+                    let suffix = format!(",\"@timestamp\":\"{ts_text}\"}}");
+                    out.extend_from_slice(suffix.as_bytes());
+                }
+                out.push(b'\n');
+            }
+        }
+
+        Ok(out)
+    }
+
+    fn parse_json_lines(bytes: &[u8]) -> Vec<serde_json::Value> {
+        if bytes.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut lines = bytes.split(|b| *b == b'\n').peekable();
+        while let Some(line) = lines.next() {
+            if line.is_empty() {
+                assert!(
+                    lines.peek().is_none(),
+                    "ndjson must not contain interior blank lines"
+                );
+                continue;
+            }
+            out.push(serde_json::from_slice::<serde_json::Value>(line).expect("valid ndjson line"));
+        }
+        out
+    }
+
+    fn build_random_batch(
+        rows: &[(
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<f64>,
+            Option<bool>,
+        )],
+        include_timestamp: bool,
+    ) -> RecordBatch {
+        let mut fields = Vec::new();
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
+
+        if include_timestamp {
+            fields.push(Field::new(field_names::TIMESTAMP_AT, DataType::Utf8, true));
+            let ts: Vec<Option<String>> = (0..rows.len())
+                .map(|i| {
+                    if i % 3 == 0 {
+                        None
+                    } else {
+                        Some(format!("2026-04-08T12:00:{:02}.123456789Z", i % 60))
+                    }
+                })
+                .collect();
+            columns.push(Arc::new(StringArray::from(
+                ts.iter().map(|s| s.as_deref()).collect::<Vec<_>>(),
+            )));
+        }
+
+        fields.push(Field::new("level", DataType::Utf8, true));
+        fields.push(Field::new("message", DataType::Utf8, true));
+        fields.push(Field::new("status", DataType::Int64, true));
+        fields.push(Field::new("duration_ms", DataType::Float64, true));
+        fields.push(Field::new("active", DataType::Boolean, true));
+
+        let levels: Vec<Option<String>> = rows.iter().map(|r| r.0.clone()).collect();
+        let messages: Vec<Option<String>> = rows.iter().map(|r| r.1.clone()).collect();
+        let statuses: Vec<Option<i64>> = rows.iter().map(|r| r.2).collect();
+        let durations: Vec<Option<f64>> = rows.iter().map(|r| r.3).collect();
+        let active: Vec<Option<bool>> = rows.iter().map(|r| r.4).collect();
+
+        columns.push(Arc::new(StringArray::from(
+            levels.iter().map(|s| s.as_deref()).collect::<Vec<_>>(),
+        )));
+        columns.push(Arc::new(StringArray::from(
+            messages.iter().map(|s| s.as_deref()).collect::<Vec<_>>(),
+        )));
+        columns.push(Arc::new(Int64Array::from(statuses)));
+        columns.push(Arc::new(arrow::array::Float64Array::from(durations)));
+        columns.push(Arc::new(arrow::array::BooleanArray::from(active)));
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("valid random batch")
     }
 
     #[test]
@@ -984,6 +1125,42 @@ mod tests {
     fn parse_bulk_response_success() {
         let response = br#"{"took":5,"errors":false,"items":[{"index":{"_id":"1","status":201}}]}"#;
         ElasticsearchSink::parse_bulk_response(response).expect("should not error on success");
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_serialize_batch_fast_matches_simple(
+            rows in proptest::collection::vec(
+                (
+                    prop::option::of(unicode_string(8)),
+                    prop::option::of(unicode_string(32)),
+                    prop::option::of(any::<i64>()),
+                    prop::option::of((-1_000_000i64..1_000_000i64).prop_map(|n| n as f64 / 10.0)),
+                    prop::option::of(any::<bool>()),
+                ),
+                0..40
+            ),
+            include_timestamp in any::<bool>(),
+            index in string_regex("[A-Za-z0-9_.-]{1,16}").expect("regex"),
+            observed_time_ns in any::<u64>()
+        ) {
+            let batch = build_random_batch(&rows, include_timestamp);
+            let metadata = BatchMetadata {
+                resource_attrs: Arc::new(vec![]),
+                observed_time_ns,
+            };
+
+            let mut sink = make_test_sink(index.as_str());
+            sink.serialize_batch(&batch, &metadata).expect("fast serialize must succeed");
+            let simple = serialize_batch_simple_for_test(&batch, &metadata, index.as_str())
+                .expect("simple serialize must succeed");
+
+            prop_assert_eq!(
+                parse_json_lines(&sink.batch_buf),
+                parse_json_lines(&simple),
+                "serialize_batch fast path drifted from simple reference"
+            );
+        }
     }
 
     #[test]
@@ -1171,6 +1348,58 @@ mod tests {
         assert_eq!(ElasticsearchSink::extract_took(response), Some(123));
     }
 
+    proptest! {
+        #[test]
+        fn proptest_write_ts_suffix_fast_matches_simple(
+            secs in any::<u64>(),
+            frac in 0u64..1_000_000_000u64
+        ) {
+            let mut fast = [0u8; 47];
+            write_ts_suffix(&mut fast, secs, frac);
+            let simple = write_ts_suffix_simple(secs, frac);
+            prop_assert_eq!(fast.as_slice(), simple.as_slice());
+        }
+    }
+
+    /// Local microbenchmark for timestamp suffix writer.
+    ///
+    /// Run with:
+    /// `cargo test -p logfwd-output elasticsearch::tests::bench_write_ts_suffix_fast_vs_simple --release -- --ignored --nocapture`
+    #[test]
+    #[ignore = "microbenchmark"]
+    fn bench_write_ts_suffix_fast_vs_simple() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const N: usize = 300_000;
+        let inputs: Vec<(u64, u64)> = (0..N)
+            .map(|i| {
+                let secs = (i as u64).wrapping_mul(2654435761) % (253402300799 + 5000);
+                let frac = (i as u64).wrapping_mul(11400714819323198485u64) % 1_000_000_000;
+                (secs, frac)
+            })
+            .collect();
+
+        let t0 = Instant::now();
+        for &(secs, frac) in &inputs {
+            let mut out = [0u8; 47];
+            write_ts_suffix(&mut out, secs, frac);
+            black_box(out);
+        }
+        let fast = t0.elapsed();
+
+        let t0 = Instant::now();
+        for &(secs, frac) in &inputs {
+            let out = write_ts_suffix_simple(secs, frac);
+            black_box(out.len());
+        }
+        let simple = t0.elapsed();
+
+        eprintln!("ts suffix bench N={N}");
+        eprintln!("  fast={:?}", fast);
+        eprintln!("  simple={:?}", simple);
+    }
+
     #[test]
     fn test_parse_bulk_response_malformed_is_error() {
         // Bug #1094: malformed bodies treated as success
@@ -1178,6 +1407,77 @@ mod tests {
             .expect_err("missing errors field should be an error");
         ElasticsearchSink::parse_bulk_response(b"not json")
             .expect_err("malformed json should be an error");
+    }
+
+    /// Local microbenchmark for serialize_batch fast path vs simple baseline.
+    ///
+    /// Run with:
+    /// `cargo test -p logfwd-output elasticsearch::tests::bench_serialize_batch_fast_vs_simple --release -- --ignored --nocapture`
+    #[test]
+    #[ignore = "microbenchmark"]
+    fn bench_serialize_batch_fast_vs_simple() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let rows: Vec<(
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<f64>,
+            Option<bool>,
+        )> = (0..2_000)
+            .map(|i| {
+                (
+                    Some(match i % 4 {
+                        0 => "INFO".to_string(),
+                        1 => "WARN".to_string(),
+                        2 => "ERROR".to_string(),
+                        _ => "DEBUG".to_string(),
+                    }),
+                    Some(format!("request-{i}-payload")),
+                    Some(200 + (i % 7) as i64),
+                    Some((i % 1000) as f64 / 10.0),
+                    Some(i % 3 != 0),
+                )
+            })
+            .collect();
+        let batch = build_random_batch(&rows, false);
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_710_000_000_123_456_789,
+        };
+        let index = "bench-index";
+
+        let mut sink = make_test_sink(index);
+        sink.serialize_batch(&batch, &metadata).unwrap();
+        let simple_once = serialize_batch_simple_for_test(&batch, &metadata, index).unwrap();
+        assert_eq!(
+            parse_json_lines(&sink.batch_buf),
+            parse_json_lines(&simple_once),
+            "fast and simple serializers must remain semantically equivalent"
+        );
+
+        const ITERS: usize = 120;
+        let t0 = Instant::now();
+        for _ in 0..ITERS {
+            sink.serialize_batch(&batch, &metadata).unwrap();
+            black_box(sink.serialized_len());
+        }
+        let fast = t0.elapsed();
+
+        let t0 = Instant::now();
+        for _ in 0..ITERS {
+            let out = serialize_batch_simple_for_test(&batch, &metadata, index).unwrap();
+            black_box(out.len());
+        }
+        let simple = t0.elapsed();
+
+        eprintln!(
+            "serialize_batch bench rows={} iters={ITERS}",
+            batch.num_rows()
+        );
+        eprintln!("  fast={:?}", fast);
+        eprintln!("  simple={:?}", simple);
     }
 
     #[test]

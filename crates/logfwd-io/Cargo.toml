@@ -9,26 +9,35 @@ publish = false
 doctest = false
 
 [dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+base64 = { workspace = true }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
+logfwd-otap-proto = { version = "0.1.0", path = "../logfwd-otap-proto" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 arrow = { workspace = true }
+bytes = "1"
 crossbeam-channel = "0.5"
+flate2 = "1"
 globset = { workspace = true }
+http-body-util = "0.1"
 libc = "0.2"
 memchr = "2"
 notify = "8"
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-messages"] }
 prost = "0.14"
 serde = { workspace = true }
 serde_json = "1"
+serde_yaml_ng = "0.10"
 sonic-rs = { workspace = true }
 socket2 = { version = "0.6", features = ["all"] }
 tiny_http = "0.12"
+url = { workspace = true }
 zstd = "0.13"
 xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
 walkdir = { workspace = true }

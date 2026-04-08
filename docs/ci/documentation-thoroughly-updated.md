@@ -79,6 +79,12 @@ or "required", a description of what it controls, and a minimal YAML example
 showing the field in context. Omitting any of these makes the config reference
 incomplete for operators.
 
+Support-status claims for config surfaces should also be canonical here. If a PR
+changes whether an input type, output type, or config-only surface is supported,
+experimental, or rejected at runtime, update the status tables in
+`book/src/config/reference.md` and replace duplicate status claims elsewhere
+with links back to the canonical table instead of copying the matrix.
+
 
 ## Column Naming (in `book/src/config/reference.md`, "Column naming convention" section)
 

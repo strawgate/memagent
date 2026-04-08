@@ -6,9 +6,11 @@ use std::net::UdpSocket;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use logfwd_types::diagnostics::ComponentHealth;
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::input::{InputEvent, InputSource};
+use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
 
 /// Maximum UDP payload: 65535 (IP max) - 20 (IP header) - 8 (UDP header).
 const MAX_UDP_PAYLOAD: usize = 65507;
@@ -27,6 +29,8 @@ pub struct UdpInput {
     actual_recv_buf: usize,
     /// Counter for detected drops (ENOBUFS or similar errors).
     drops_detected: Arc<AtomicU64>,
+    /// Coarse control-plane health derived from the most recent poll cycle.
+    health: ComponentHealth,
 }
 
 impl UdpInput {
@@ -62,6 +66,7 @@ impl UdpInput {
             buf: vec![0u8; MAX_UDP_PAYLOAD],
             actual_recv_buf,
             drops_detected: Arc::new(AtomicU64::new(0)),
+            health: ComponentHealth::Healthy,
         })
     }
 
@@ -92,10 +97,13 @@ impl UdpInput {
 
 impl InputSource for UdpInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        let mut under_pressure = false;
+
         // Accumulate into a single byte buffer; avoid per-datagram Vec alloc.
         // We re-use `self.buf` for recv and build the output in a separate vec
         // only when data actually arrives.
         let mut total: Option<Vec<u8>> = None;
+        let mut source_bytes: u64 = 0;
 
         // Drain all available datagrams in one poll cycle.
         loop {
@@ -106,6 +114,7 @@ impl InputSource for UdpInput {
                     // just continue draining.
                 }
                 Ok(n) => {
+                    source_bytes = source_bytes.saturating_add(n as u64);
                     let data = &self.buf[..n];
                     let out = total.get_or_insert_with(|| Vec::with_capacity(4096));
                     out.extend_from_slice(data);
@@ -127,23 +136,41 @@ impl InputSource for UdpInput {
                         || e.raw_os_error() == Some(libc::ENOMEM) =>
                 {
                     self.drops_detected.fetch_add(1, Ordering::Relaxed);
+                    under_pressure = true;
                     break;
                 }
                 Err(e) => return Err(e),
             }
         }
 
+        self.health = reduce_polling_input_health(
+            self.health,
+            if under_pressure {
+                PollingInputHealthEvent::BackpressureObserved
+            } else {
+                PollingInputHealthEvent::PollHealthy
+            },
+        );
+
         match total {
-            Some(bytes) => Ok(vec![InputEvent::Data {
-                bytes,
-                source_id: None,
-            }]),
+            Some(bytes) => {
+                let accounted_bytes = source_bytes;
+                Ok(vec![InputEvent::Data {
+                    bytes,
+                    source_id: None,
+                    accounted_bytes,
+                }])
+            }
             None => Ok(Vec::new()),
         }
     }
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn health(&self) -> ComponentHealth {
+        self.health
     }
 }
 
@@ -188,6 +215,32 @@ mod tests {
         assert_eq!(events.len(), 1);
         if let InputEvent::Data { bytes, .. } = &events[0] {
             assert!(bytes.ends_with(b"\n"), "expected trailing newline");
+        }
+    }
+
+    #[test]
+    fn accounted_bytes_excludes_synthetic_trailing_newline() {
+        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+
+        let sender = StdSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(b"no newline", addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+        assert_eq!(events.len(), 1);
+        if let InputEvent::Data {
+            bytes,
+            accounted_bytes,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(*accounted_bytes, 10);
+            assert_eq!(bytes.len(), 11);
+            assert!(bytes.ends_with(b"\n"), "expected trailing newline");
+        } else {
+            panic!("expected InputEvent::Data variant");
         }
     }
 
@@ -334,5 +387,15 @@ mod tests {
     fn drops_detected_starts_at_zero() {
         let input = UdpInput::new("test", "127.0.0.1:0").unwrap();
         assert_eq!(input.drops_detected(), 0);
+    }
+
+    #[test]
+    fn udp_health_recovers_after_clean_poll() {
+        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        input.health = ComponentHealth::Degraded;
+
+        let events = input.poll().unwrap();
+        assert!(events.is_empty());
+        assert_eq!(input.health(), ComponentHealth::Healthy);
     }
 }

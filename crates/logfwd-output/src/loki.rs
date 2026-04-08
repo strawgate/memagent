@@ -58,6 +58,39 @@ type LokiEntry = (u64, String);
 /// Collect entries per stream label set.
 type StreamMap = HashMap<String, Vec<LokiEntry>>;
 
+fn sanitize_loki_label_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len().max(1));
+    for (idx, ch) in name.chars().enumerate() {
+        let valid = if idx == 0 {
+            ch.is_ascii_alphabetic() || ch == '_'
+        } else {
+            ch.is_ascii_alphanumeric() || ch == '_'
+        };
+        out.push(if valid { ch } else { '_' });
+    }
+    if out.is_empty() { "_".to_string() } else { out }
+}
+
+fn sanitize_static_labels(static_labels: &[(String, String)]) -> io::Result<Vec<(String, String)>> {
+    let mut sanitized = Vec::with_capacity(static_labels.len());
+    let mut sanitized_sources: HashMap<String, String> =
+        HashMap::with_capacity(static_labels.len());
+    for (key, value) in static_labels {
+        let sanitized_key = sanitize_loki_label_name(key);
+        if let Some(existing) = sanitized_sources.get(&sanitized_key) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "duplicate Loki static label key after sanitization: '{key}' conflicts with {existing} as '{sanitized_key}'"
+                ),
+            ));
+        }
+        sanitized_sources.insert(sanitized_key.clone(), format!("static label '{key}'"));
+        sanitized.push((sanitized_key, value.clone()));
+    }
+    Ok(sanitized)
+}
+
 /// Sort entries by timestamp and deduplicate by incrementing conflicting timestamps.
 ///
 /// Loki rejects any push where `entries[i].timestamp <= entries[i-1].timestamp`
@@ -161,16 +194,40 @@ impl LokiSink {
         });
 
         // Find label ColInfos for configured label columns.
-        let label_col_infos: Vec<(String, &super::ColInfo)> = self
+        // Static labels are sanitized before collision detection (#1459, #1470).
+        let static_labels = sanitize_static_labels(&self.config.static_labels)?;
+        let mut sanitized_label_sources: HashMap<String, String> = self
             .config
-            .label_columns
+            .static_labels
             .iter()
-            .filter_map(|label_col| {
-                cols.iter()
-                    .find(|c| &c.field_name == label_col)
-                    .map(|ci| (label_col.clone(), ci))
+            .map(|(key, _)| {
+                (
+                    sanitize_loki_label_name(key),
+                    format!("static label '{key}'"),
+                )
             })
             .collect();
+        let mut label_col_infos: Vec<(String, &super::ColInfo)> = Vec::new();
+        for label_col in &self.config.label_columns {
+            if let Some(ci) = cols.iter().find(|c| &c.field_name == label_col) {
+                let sanitized = sanitize_loki_label_name(label_col);
+                if let Some(existing) = sanitized_label_sources.get(&sanitized) {
+                    // Collision: two sources sanitize to the same key. Keep the
+                    // first one and warn — erroring would make config validity
+                    // data-dependent since dynamic labels are schema-derived.
+                    tracing::warn!(
+                        label = label_col.as_str(),
+                        sanitized = sanitized.as_str(),
+                        conflicts_with = existing.as_str(),
+                        "loki.label_collision_after_sanitization — keeping first, dropping duplicate"
+                    );
+                    continue;
+                }
+                sanitized_label_sources
+                    .insert(sanitized.clone(), format!("label column '{label_col}'"));
+                label_col_infos.push((sanitized, ci));
+            }
+        }
 
         let mut stream_map: StreamMap = HashMap::new();
 
@@ -178,22 +235,26 @@ impl LokiSink {
             // --- Timestamp ---
             let ts_ns = if let Some(ts_idx) = ts_col_idx {
                 let col = batch.column(ts_idx);
-                match col.data_type() {
-                    DataType::Int64 => {
-                        let val = col.as_primitive::<arrow::datatypes::Int64Type>().value(row);
-                        // Negative nanosecond timestamps are invalid for Loki (u64 wire
-                        // type). Fall back to observed time rather than sending epoch-zero
-                        // or wrapping to a far-future value. (#1084)
-                        if val >= 0 {
-                            val as u64
-                        } else {
-                            metadata.observed_time_ns
+                if col.is_null(row) {
+                    metadata.observed_time_ns
+                } else {
+                    match col.data_type() {
+                        DataType::Int64 => {
+                            let val = col.as_primitive::<arrow::datatypes::Int64Type>().value(row);
+                            // Negative nanosecond timestamps are invalid for Loki (u64 wire
+                            // type). Fall back to observed time rather than sending epoch-zero
+                            // or wrapping to a far-future value. (#1084)
+                            if val >= 0 {
+                                val as u64
+                            } else {
+                                metadata.observed_time_ns
+                            }
                         }
+                        DataType::UInt64 => col
+                            .as_primitive::<arrow::datatypes::UInt64Type>()
+                            .value(row),
+                        _ => metadata.observed_time_ns,
                     }
-                    DataType::UInt64 => col
-                        .as_primitive::<arrow::datatypes::UInt64Type>()
-                        .value(row),
-                    _ => metadata.observed_time_ns,
                 }
             } else {
                 metadata.observed_time_ns
@@ -202,10 +263,13 @@ impl LokiSink {
             // --- Labels ---
             // Use coalesce_as_str so that struct conflict columns (and plain Utf8
             // columns alike) always produce a string value for the label.
-            let mut labels: Vec<(String, String)> = self.config.static_labels.clone();
+            let mut labels = static_labels.clone();
             for (label_name, col_info) in &label_col_infos {
                 if let Some(val) = coalesce_as_str(batch, row, col_info) {
-                    labels.push((label_name.clone(), val));
+                    // Skip empty label values — Loki API rejects them with HTTP 400.
+                    if !val.is_empty() {
+                        labels.push((label_name.clone(), val));
+                    }
                 }
             }
             labels.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -241,10 +305,7 @@ impl LokiSink {
     /// Returns `(payload, retained_row_count)`. The retained count may be less than
     /// the original row count if overflow truncation occurred in any stream
     /// (see [`sort_and_dedup_timestamps`]).
-    fn serialize_loki_json(
-        stream_map: &mut StreamMap,
-        static_labels: &[(String, String)],
-    ) -> (String, u64) {
+    fn serialize_loki_json(stream_map: &mut StreamMap) -> (String, u64) {
         let mut streams_json = Vec::new();
         let mut retained: u64 = 0;
 
@@ -252,10 +313,11 @@ impl LokiSink {
             retained += sort_and_dedup_timestamps(entries) as u64;
 
             // Parse stream_key (JSON array of [key, value] pairs) back into label map.
-            let mut labels_map: HashMap<String, String> = static_labels.iter().cloned().collect();
+            // The stream key already includes sanitized static and dynamic labels.
+            let mut labels_map: HashMap<String, String> = HashMap::new();
             if let Ok(pairs) = serde_json::from_str::<Vec<[String; 2]>>(stream_key.as_str()) {
                 for [k, v] in pairs {
-                    labels_map.insert(k, v);
+                    labels_map.entry(k).or_insert(v);
                 }
             }
 
@@ -307,30 +369,21 @@ impl LokiSink {
 
         let status = response.status();
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5);
-            return Ok(super::sink::SendResult::RetryAfter(
-                std::time::Duration::from_secs(retry_after),
-            ));
-        }
-
-        if status.is_client_error() {
+        if !status.is_success() {
+            let retry_after = response.headers().get("Retry-After").cloned();
             let body = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable>".to_string());
-            return Ok(super::sink::SendResult::Rejected(format!(
-                "Loki rejected push with HTTP {status}: {body}"
-            )));
-        }
-
-        if !status.is_success() {
-            return Err(io::Error::other(format!("Loki returned HTTP {status}")));
+            if let Some(send_result) = crate::http_classify::classify_http_status(
+                status.as_u16(),
+                retry_after.as_ref(),
+                &format!("Loki push: {body}"),
+            ) {
+                return Ok(send_result);
+            }
+            // classify_http_status handles all non-2xx; unreachable in practice.
+            return Err(io::Error::other(format!("Loki: HTTP {status}: {body}")));
         }
 
         self.stats.inc_lines(row_count);
@@ -351,13 +404,12 @@ impl super::sink::Sink for LokiSink {
             }
             let mut stream_map = match self.build_stream_map(batch, metadata) {
                 Ok(m) => m,
-                Err(e) => return super::sink::SendResult::IoError(e),
+                Err(e) => return super::sink::SendResult::from_io_error(e),
             };
-            let (payload, retained_rows) =
-                Self::serialize_loki_json(&mut stream_map, &self.config.static_labels);
+            let (payload, retained_rows) = Self::serialize_loki_json(&mut stream_map);
             match self.do_send(payload, retained_rows).await {
                 Ok(r) => r,
-                Err(e) => super::sink::SendResult::IoError(e),
+                Err(e) => super::sink::SendResult::from_io_error(e),
             }
         })
     }
@@ -422,12 +474,14 @@ impl LokiSinkFactory {
 
         Ok(LokiSinkFactory {
             name,
-            config: Arc::new(LokiConfig {
-                endpoint: endpoint.trim_end_matches('/').to_string(),
-                tenant_id,
-                static_labels,
-                label_columns,
-                headers: parsed_headers,
+            config: Arc::new({
+                LokiConfig {
+                    endpoint: endpoint.trim_end_matches('/').to_string(),
+                    tenant_id,
+                    static_labels,
+                    label_columns,
+                    headers: parsed_headers,
+                }
             }),
             client: Arc::new(client),
             stats,
@@ -480,8 +534,8 @@ fn escape_json(s: &str) -> String {
 fn escape_json_raw(s: &str) -> String {
     let trimmed = s.trim();
     // Bug #1048: leading quote is not enough to guarantee valid JSON string.
-    // Verify it actually parses as a JSON string.
-    if trimmed.starts_with('"') && serde_json::from_str::<String>(trimmed).is_ok() {
+    // Verify it actually parses as complete valid JSON before passthrough.
+    if trimmed.starts_with('"') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
         // Already a valid JSON string.
         trimmed.to_string()
     } else {
@@ -683,6 +737,20 @@ mod tests {
             "malformed JSON starting with quote should be escaped and wrapped"
         );
         assert_eq!(escaped, "\"\\\"not valid json\"", "should be fully escaped");
+
+        let unterminated = "\"unterminated";
+        let escaped_unterminated = escape_json_raw(unterminated);
+        assert_eq!(
+            escaped_unterminated, "\"\\\"unterminated\"",
+            "unterminated string should be fully escaped"
+        );
+
+        let foo = "\"foo";
+        let escaped_foo = escape_json_raw(foo);
+        assert_eq!(
+            escaped_foo, "\"\\\"foo\"",
+            "foo without closing quote should be fully escaped"
+        );
     }
 
     #[test]
@@ -699,6 +767,134 @@ mod tests {
         let obj = "{\"key\": \"value\"}";
         let escaped = escape_json_raw(obj);
         assert_eq!(escaped, "\"{\\\"key\\\": \\\"value\\\"}\"");
+    }
+
+    #[test]
+    fn sanitize_loki_label_name_rewrites_invalid_chars() {
+        assert_eq!(sanitize_loki_label_name("service.name"), "service_name");
+        assert_eq!(
+            sanitize_loki_label_name("http.status_code"),
+            "http_status_code"
+        );
+        assert_eq!(
+            sanitize_loki_label_name("9invalid-prefix"),
+            "_invalid_prefix"
+        );
+        assert_eq!(sanitize_loki_label_name(""), "_");
+    }
+
+    #[test]
+    fn dynamic_label_columns_use_sanitized_loki_names() {
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec!["service.name".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service.name",
+            DataType::Utf8,
+            true,
+        )]));
+        let values = StringArray::from(vec![Some("checkout")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let key = stream_map.keys().next().unwrap();
+        let parsed: Vec<[String; 2]> = serde_json::from_str(key).unwrap();
+        assert_eq!(
+            parsed,
+            vec![["service_name".to_string(), "checkout".to_string()]]
+        );
+    }
+
+    #[test]
+    fn static_labels_are_sanitized_in_streams() {
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![("service.name".to_string(), "frontend".to_string())],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "message",
+            DataType::Utf8,
+            true,
+        )]));
+        let values = StringArray::from(vec![Some("ok")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        let mut stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let (payload, retained) = LokiSink::serialize_loki_json(&mut stream_map);
+        assert_eq!(retained, 1);
+        assert!(payload.contains("\"service_name\":\"frontend\""));
+        assert!(!payload.contains("\"service.name\":\"frontend\""));
+    }
+
+    #[test]
+    fn colliding_sanitized_label_columns_keeps_first() {
+        use arrow::array::{ArrayRef, StringArray};
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec!["service.name".to_string(), "service-name".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service.name", DataType::Utf8, true),
+            Field::new("service-name", DataType::Utf8, true),
+        ]));
+        let left: ArrayRef = Arc::new(StringArray::from(vec![Some("checkout")]));
+        let right: ArrayRef = Arc::new(StringArray::from(vec![Some("payments")]));
+        let batch = RecordBatch::try_new(schema, vec![left, right]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        // Collision is warned, not errored. First label wins.
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        assert!(!stream_map.is_empty(), "should produce at least one stream");
     }
 
     #[test]
@@ -737,11 +933,168 @@ mod tests {
         let mut entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
         entries.sort_by_key(|(ts, _)| *ts);
 
-        // After sorting, the positive (100) comes first, then observed_time_ns (12345).
+        // After sorting, the valid timestamp (100) comes first, then the fallback observed_time_ns (12345).
         assert_eq!(entries[0].0, 100, "Positive timestamp should be preserved");
         assert_eq!(
             entries[1].0, metadata.observed_time_ns,
             "Negative timestamp should fall back to observed_time_ns"
+        );
+    }
+
+    #[test]
+    fn dynamic_label_colliding_with_static_keeps_static() {
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![("env".to_string(), "prod".to_string())],
+            label_columns: vec!["env".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new("env", DataType::Utf8, true)]));
+        let env_arr = StringArray::from(vec![Some("staging")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(env_arr)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        // Collision is warned, dynamic "env" column is dropped. Static wins.
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        assert!(!stream_map.is_empty());
+    }
+
+    #[test]
+    fn sanitized_static_label_colliding_with_dynamic_keeps_static() {
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![("service.name".to_string(), "frontend".to_string())],
+            label_columns: vec!["service_name".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "service_name",
+            DataType::Utf8,
+            true,
+        )]));
+        let values = StringArray::from(vec![Some("checkout")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        // service.name (static) sanitizes to service_name, colliding with
+        // the dynamic column. Static wins, dynamic dropped with warning.
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        assert!(!stream_map.is_empty());
+    }
+
+    #[test]
+    fn empty_label_value_skipped() {
+        // Bug #1385: empty label values were forwarded to Loki, causing HTTP 400.
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec!["namespace".to_string()],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "namespace",
+            DataType::Utf8,
+            true,
+        )]));
+        let ns_arr = StringArray::from(vec![Some("")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(ns_arr)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_000,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        // There must be exactly one stream; its key must not include "namespace".
+        assert_eq!(stream_map.len(), 1);
+        let key = stream_map.keys().next().unwrap();
+        assert!(
+            !key.contains("namespace"),
+            "empty label value must be excluded from stream key; key: {key}"
+        );
+    }
+
+    #[test]
+    fn test_null_timestamp_handling() {
+        // Bug #1339: null timestamps should fall back to observed_time_ns
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Int64,
+            true,
+        )]));
+        // Array with one null and one valid timestamp
+        let ts_arr = Int64Array::from(vec![None, Some(100i64)]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(ts_arr)]).unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 12345,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let mut entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        entries.sort_by_key(|(ts, _)| *ts);
+
+        // Sorted by timestamp: the non-null row (100) comes before the
+        // null row's fallback value (observed_time_ns = 12345).
+        assert_eq!(entries[0].0, 100, "Valid timestamp should be preserved");
+        assert_eq!(
+            entries[1].0, metadata.observed_time_ns,
+            "Null timestamp should fall back to observed_time_ns"
         );
     }
 }

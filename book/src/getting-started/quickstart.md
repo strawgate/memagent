@@ -30,7 +30,7 @@ Generate synthetic JSON log lines and print them to your terminal.
 **Generate test data:**
 
 ```bash
-./logfwd --generate-json 10000 logs.json
+./logfwd generate-json 10000 logs.json
 ```
 
 This creates 10,000 JSON log lines with fields like `level`, `message`, `status`, `duration_ms`, and `service`.
@@ -52,7 +52,7 @@ output:
 **Run it:**
 
 ```bash
-./logfwd --config config.yaml
+./logfwd run --config config.yaml
 ```
 
 You'll see a startup banner followed by colored output for every log line:
@@ -86,7 +86,7 @@ Now add a SQL transform to keep only what matters. This is the core reason to us
 First, regenerate the test data — logfwd tracks file positions between runs so it doesn't reprocess data it has already seen:
 
 ```bash
-./logfwd --generate-json 10000 logs.json
+./logfwd generate-json 10000 logs.json
 ```
 
 **Update your config:**
@@ -111,7 +111,7 @@ output:
 **Run it:**
 
 ```bash
-./logfwd --config config.yaml
+./logfwd run --config config.yaml
 ```
 
 Now you see far fewer lines — only errors with slow durations:
@@ -152,14 +152,14 @@ In production, logfwd sends OTLP protobuf to an OpenTelemetry Collector, Grafana
 **Start the blackhole receiver:**
 
 ```bash
-./logfwd --blackhole &
+./logfwd blackhole &
 # logfwd blackhole starting on 127.0.0.1:4318
 ```
 
 **Regenerate test data and update your config to send OTLP:**
 
 ```bash
-./logfwd --generate-json 10000 logs.json
+./logfwd generate-json 10000 logs.json
 ```
 
 ```yaml
@@ -183,7 +183,7 @@ output:
 **Run it:**
 
 ```bash
-./logfwd --config config.yaml
+./logfwd run --config config.yaml
 ```
 
 logfwd parses the JSON, runs the SQL filter, encodes matching records as OTLP protobuf with zstd compression, and ships them over HTTP. The blackhole receiver accepts everything.
@@ -193,7 +193,7 @@ To ship to a real collector, replace the endpoint:
 ```yaml
 output:
   type: otlp
-  endpoint: http://otel-collector:4318/v1/logs   # your real collector
+  endpoint: https://otel-collector:4318/v1/logs   # your real collector
   compression: zstd
 ```
 
@@ -206,14 +206,14 @@ logfwd works out of the box with:
 
 ## Validate before deploying
 
-Before running in production, verify your config. `--validate` catches YAML errors; `--dry-run` goes further and compiles the SQL against the Arrow schema, catching column name typos and type mismatches before any data flows.
+Before running in production, verify your config. `validate` catches YAML errors; `dry-run` goes further and compiles the SQL against the Arrow schema, catching column name typos and type mismatches before any data flows.
 
 ```bash
-./logfwd --config config.yaml --validate
+./logfwd validate --config config.yaml
 #   ready: default
 # config ok: 1 pipeline(s)
 
-./logfwd --config config.yaml --dry-run
+./logfwd dry-run --config config.yaml
 #   ready: default
 # dry run ok: 1 pipeline(s)
 ```

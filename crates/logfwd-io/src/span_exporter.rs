@@ -1,9 +1,9 @@
 //! In-process ring-buffer span exporter for the diagnostics trace explorer.
 //!
 //! [`RingBufferExporter`] implements [`SpanExporter`] and stores the last
-//! [`MAX_SPANS`] completed spans in an `Arc<Mutex<VecDeque>>`. The
-//! [`SpanBuffer`] handle is shared with [`DiagnosticsServer`] which reads
-//! from it to serve `/api/traces`.
+//! `MAX_SPANS` completed spans in an `Arc<Mutex<VecDeque>>`. The
+//! [`SpanBuffer`] handle is shared with the diagnostics server, which reads
+//! from it to serve `/admin/v1/traces`.
 //!
 //! Spans are converted to [`TraceSpan`] (a lightweight, serde-serializable
 //! snapshot) on export so the raw SDK types don't escape this module.
@@ -16,7 +16,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
-const MAX_SPANS: usize = 4_000; // ~1000 batches × 4 spans each
+const MAX_SPANS: usize = 16_000; // ~8000 batches × 2 spans each
 
 // ---------------------------------------------------------------------------
 // Serializable span snapshot

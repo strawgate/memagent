@@ -20,7 +20,7 @@ export function LogViewer() {
 
     const poll = async () => {
       try {
-        const res = await fetch("/api/logs");
+        const res = await fetch("/admin/v1/logs");
         if (res.ok) {
           const data: LogsResponse = await res.json();
           setLogs(data.lines);

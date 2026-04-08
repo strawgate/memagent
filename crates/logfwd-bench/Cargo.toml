@@ -8,6 +8,9 @@ publish = false
 [features]
 dhat-heap = ["dep:dhat"]
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [dependencies]
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
@@ -26,19 +29,20 @@ logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 stats_alloc = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-pprof = { version = "0.14", features = ["flamegraph"] }
+pprof = { version = "0.15", features = ["flamegraph"] }
 tempfile = "3"
 dhat = { version = "0.3", optional = true }
+tiny_http = "0.12"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["server", "http1", "tokio"] }
+http-body-util = "0.1"
+flate2 = "1"
 
 # Research: library evaluation candidates
 axum = "0.8"
-tower-http = { version = "0.6", features = ["limit", "decompression-zstd", "decompression-gzip"] }
 async-compression = { version = "0.4", features = ["tokio", "zstd", "gzip"] }
 backon = { version = "1", features = ["tokio-sleep"] }
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
 zstd = "0.13"
-tiny_http = "0.12"
 prost = "0.14"
 opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-messages"] }
 globset = "0.4"
@@ -59,6 +63,10 @@ harness = false
 
 [[bench]]
 name = "output_encode"
+harness = false
+
+[[bench]]
+name = "otap_proto"
 harness = false
 
 [[bench]]

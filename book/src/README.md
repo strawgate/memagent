@@ -17,7 +17,7 @@ logfwd is a single static binary with no runtime dependencies. Point it at log f
 ## Configure
 
 - **[Configuration Reference](./config/reference.md)** — All YAML fields, input/output types, enrichment
-- **[Input Types](./config/inputs.md)** — File, TCP, UDP, OTLP receiver, generator
+- **[Input Types](./config/inputs.md)** — File, TCP, UDP, OTLP receiver, HTTP ingest, generator
 - **[Output Types](./config/outputs.md)** — OTLP, HTTP, Elasticsearch, Loki, stdout
 - **[SQL Transforms](./config/sql-transforms.md)** — Filter, reshape, extract — full DataFusion SQL
 

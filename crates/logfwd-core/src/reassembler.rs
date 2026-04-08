@@ -35,7 +35,7 @@ pub struct CriReassembler {
     pending: Vec<u8>,
     max_message_size: usize,
     /// Set to `true` when any chunk in the current P/F sequence was truncated
-    /// due to `max_message_size`. Reset in [`reset`].
+    /// due to `max_message_size`. Reset in `reset()`.
     truncated: bool,
 }
 
