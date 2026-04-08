@@ -8,7 +8,7 @@ use std::time::Duration;
 use arrow::array::{
     Array, AsArray, LargeStringArray, PrimitiveArray, StringArray, StringViewArray,
 };
-use arrow::datatypes::{DataType, Float64Type, Int64Type};
+use arrow::datatypes::{DataType, Float64Type, Int64Type, UInt64Type};
 use arrow::record_batch::RecordBatch;
 use flate2::Compression as GzipLevel;
 use flate2::write::GzEncoder;
@@ -707,7 +707,7 @@ impl AttrArray<'_> {
 struct BatchColumns<'a> {
     /// Downcast array for the timestamp column (e.g. "2024-01-15T10:30:00Z").
     timestamp_col: Option<(usize, OtlpStrCol<'a>)>,
-    /// Raw array for Int64 or Timestamp-typed timestamp columns (e.g. time_unix_nano from OTLP
+    /// Raw array for Int64/UInt64/Timestamp timestamp columns (e.g. time_unix_nano from OTLP
     /// receiver). Used when the column is not a string type so `timestamp_col` cannot be set.
     timestamp_num_col: Option<(usize, &'a dyn Array)>,
     /// Downcast array for the level/severity column (e.g. "ERROR").
@@ -768,7 +768,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                         excluded.push(idx);
                     } else if matches!(
                         field.data_type(),
-                        DataType::Int64 | DataType::Timestamp(_, _)
+                        DataType::Int64 | DataType::UInt64 | DataType::Timestamp(_, _)
                     ) {
                         timestamp_num_col = Some((idx, batch.column(idx).as_ref()));
                         excluded.push(idx);
@@ -913,6 +913,42 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
     }
 }
 
+fn numeric_timestamp_ns(arr: &dyn Array, row: usize) -> u64 {
+    if arr.is_null(row) {
+        return 0;
+    }
+
+    match arr.data_type() {
+        DataType::Int64 => u64::try_from(arr.as_primitive::<Int64Type>().value(row)).unwrap_or(0),
+        DataType::UInt64 => arr.as_primitive::<UInt64Type>().value(row),
+        DataType::Timestamp(unit, _) => {
+            use arrow::datatypes::{
+                TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+                TimestampNanosecondType, TimestampSecondType,
+            };
+            let raw_ns = match unit {
+                TimeUnit::Nanosecond => {
+                    Some(arr.as_primitive::<TimestampNanosecondType>().value(row))
+                }
+                TimeUnit::Microsecond => arr
+                    .as_primitive::<TimestampMicrosecondType>()
+                    .value(row)
+                    .checked_mul(1_000),
+                TimeUnit::Millisecond => arr
+                    .as_primitive::<TimestampMillisecondType>()
+                    .value(row)
+                    .checked_mul(1_000_000),
+                TimeUnit::Second => arr
+                    .as_primitive::<TimestampSecondType>()
+                    .value(row)
+                    .checked_mul(1_000_000_000),
+            };
+            raw_ns.and_then(|ns| u64::try_from(ns).ok()).unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
 /// Encode a single RecordBatch row as an OTLP LogRecord using pre-resolved columns.
 fn encode_row_as_log_record(
     columns: &BatchColumns<'_>,
@@ -923,40 +959,7 @@ fn encode_row_as_log_record(
     // --- Read per-row values from pre-resolved columns ---
 
     let timestamp_ns: u64 = if let Some((_, arr)) = columns.timestamp_num_col.as_ref() {
-        if arr.is_null(row) {
-            0
-        } else {
-            match arr.data_type() {
-                DataType::Int64 => {
-                    u64::try_from(arr.as_primitive::<Int64Type>().value(row)).unwrap_or(0)
-                }
-                DataType::Timestamp(unit, _) => {
-                    use arrow::datatypes::{
-                        TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
-                        TimestampNanosecondType, TimestampSecondType,
-                    };
-                    let raw_ns = match unit {
-                        TimeUnit::Nanosecond => {
-                            Some(arr.as_primitive::<TimestampNanosecondType>().value(row))
-                        }
-                        TimeUnit::Microsecond => arr
-                            .as_primitive::<TimestampMicrosecondType>()
-                            .value(row)
-                            .checked_mul(1_000),
-                        TimeUnit::Millisecond => arr
-                            .as_primitive::<TimestampMillisecondType>()
-                            .value(row)
-                            .checked_mul(1_000_000),
-                        TimeUnit::Second => arr
-                            .as_primitive::<TimestampSecondType>()
-                            .value(row)
-                            .checked_mul(1_000_000_000),
-                    };
-                    raw_ns.and_then(|ns| u64::try_from(ns).ok()).unwrap_or(0)
-                }
-                _ => 0,
-            }
-        }
+        numeric_timestamp_ns(*arr, row)
     } else if let Some((_, arr)) = columns.timestamp_col.as_ref() {
         if arr.is_null(row) {
             0
@@ -1378,6 +1381,48 @@ mod tests {
             resource_attrs: Arc::default(),
             observed_time_ns: 1_000_000_000,
         }
+    }
+
+    fn assert_timestamp_encoding_parity(
+        schema: Arc<Schema>,
+        columns: Vec<Arc<dyn Array>>,
+        expected_ns: u64,
+    ) {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        let batch = RecordBatch::try_new(schema, columns).expect("valid timestamp test batch");
+        let metadata = make_metadata();
+
+        let mut handwritten = make_sink();
+        handwritten.encode_batch(&batch, &metadata);
+        let handwritten_request =
+            ExportLogsServiceRequest::decode(handwritten.encoder_buf.as_slice())
+                .expect("prost must decode handwritten output");
+
+        let mut generated = make_sink();
+        generated.encode_batch_generated_fast(&batch, &metadata);
+        let generated_request = ExportLogsServiceRequest::decode(generated.encoder_buf.as_slice())
+            .expect("prost must decode generated-fast output");
+
+        let handwritten_ns =
+            handwritten_request.resource_logs[0].scope_logs[0].log_records[0].time_unix_nano;
+        let generated_ns =
+            generated_request.resource_logs[0].scope_logs[0].log_records[0].time_unix_nano;
+
+        assert_eq!(
+            handwritten_ns, expected_ns,
+            "handwritten path timestamp mismatch"
+        );
+        assert_eq!(
+            generated_ns, expected_ns,
+            "generated-fast path timestamp mismatch"
+        );
+        assert_eq!(
+            generated.encoded_payload(),
+            handwritten.encoded_payload(),
+            "generated-fast payload drifted from handwritten payload"
+        );
     }
 
     fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
@@ -2658,6 +2703,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn uint64_timestamp_column_is_recognised() {
+        use arrow::array::UInt64Array;
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        const EXPECTED_NS: u64 = 1_705_314_600_000_000_000;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::UInt64, true),
+            Field::new("body", DataType::Utf8, true),
+        ]));
+        let ts_arr = UInt64Array::from(vec![EXPECTED_NS]);
+        let body_arr = StringArray::from(vec!["hello"]);
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(ts_arr), Arc::new(body_arr)]).unwrap();
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode UInt64-timestamp batch");
+
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            lr.time_unix_nano, EXPECTED_NS,
+            "UInt64 time_unix_nano column must be encoded as LogRecord.time_unix_nano"
+        );
+    }
+
     /// A Timestamp(Nanosecond) Arrow column must also be recognised as the timestamp field.
     #[test]
     fn timestamp_nanosecond_column_is_recognised() {
@@ -2779,6 +2854,93 @@ mod tests {
         assert_eq!(
             lr.time_unix_nano, EXPECTED_NS,
             "Timestamp(Microsecond) column must be scaled to nanoseconds in LogRecord.time_unix_nano"
+        );
+    }
+
+    #[test]
+    fn generated_fast_timestamp_numeric_columns_match_handwritten() {
+        use arrow::array::{
+            TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+            TimestampSecondArray, UInt64Array,
+        };
+        use arrow::datatypes::TimeUnit;
+
+        const EXPECTED_NS: u64 = 1_705_314_600_000_000_000;
+
+        // Int64 nanos
+        assert_timestamp_encoding_parity(
+            Arc::new(Schema::new(vec![
+                Field::new("timestamp", DataType::Int64, true),
+                Field::new("body", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![EXPECTED_NS as i64])),
+                Arc::new(StringArray::from(vec!["hello"])),
+            ],
+            EXPECTED_NS,
+        );
+
+        // UInt64 nanos
+        assert_timestamp_encoding_parity(
+            Arc::new(Schema::new(vec![
+                Field::new("timestamp", DataType::UInt64, true),
+                Field::new("body", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt64Array::from(vec![EXPECTED_NS])),
+                Arc::new(StringArray::from(vec!["hello"])),
+            ],
+            EXPECTED_NS,
+        );
+
+        // Timestamp(Nanosecond)
+        assert_timestamp_encoding_parity(
+            Arc::new(Schema::new(vec![Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            )])),
+            vec![Arc::new(TimestampNanosecondArray::from(vec![
+                EXPECTED_NS as i64,
+            ]))],
+            EXPECTED_NS,
+        );
+
+        // Timestamp(Microsecond)
+        assert_timestamp_encoding_parity(
+            Arc::new(Schema::new(vec![Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            )])),
+            vec![Arc::new(TimestampMicrosecondArray::from(vec![
+                1_705_314_600_000_000i64,
+            ]))],
+            EXPECTED_NS,
+        );
+
+        // Timestamp(Millisecond)
+        assert_timestamp_encoding_parity(
+            Arc::new(Schema::new(vec![Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            )])),
+            vec![Arc::new(TimestampMillisecondArray::from(vec![
+                1_705_314_600_000i64,
+            ]))],
+            EXPECTED_NS,
+        );
+
+        // Timestamp(Second)
+        assert_timestamp_encoding_parity(
+            Arc::new(Schema::new(vec![Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Second, None),
+                true,
+            )])),
+            vec![Arc::new(TimestampSecondArray::from(vec![1_705_314_600i64]))],
+            EXPECTED_NS,
         );
     }
 }
