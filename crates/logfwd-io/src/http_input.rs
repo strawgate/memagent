@@ -2,7 +2,7 @@
 //!
 //! Listens for requests on a configurable route (default `/ingest`), accepts
 //! optionally compressed request bodies, and forwards newline-delimited bytes
-//! to the pipeline scanner path as [`InputEvent::Data`].
+//! to the pipeline scanner path as [`crate::input::InputEvent::Data`].
 
 use std::io;
 use std::io::Read as _;
