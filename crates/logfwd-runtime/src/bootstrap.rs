@@ -187,6 +187,10 @@ pub async fn run_pipelines(
     let diag_handle = if let Some(ref addr) = config.server.diagnostics {
         let mut server = logfwd_io::diagnostics::DiagnosticsServer::new(addr);
         server.set_config(options.config_path, options.config_yaml);
+        let expose_config = std::env::var("LOGFWD_UNSAFE_EXPOSE_CONFIG")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        server.set_config_endpoint_enabled(expose_config);
         server.set_trace_buffer(trace_buf);
         for p in &pipelines {
             server.add_pipeline(Arc::clone(p.metrics()));
