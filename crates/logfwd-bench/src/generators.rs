@@ -1077,8 +1077,7 @@ pub fn gen_envoy_access_with_profile(
         let _ = write!(
             buf,
             r#"{{"timestamp":"2024-01-15T10:30:{sec:02}.{nano:09}Z","method":"{method}","path":"{path}","protocol":"{protocol}","response_code":{response_code},"response_flags":"{response_flags}","response_code_details":"{response_code_details}","bytes_received":{bytes_received},"bytes_sent":{bytes_sent},"duration_ms":{duration_ms:.1},"upstream_service_time_ms":{},"user_agent":"{user_agent}","x_request_id":"{}","authority":"{authority}","route_name":"{route_name}","service":"{}","upstream_cluster":"{upstream_cluster}","upstream_host":"{}","downstream_remote_address":"{source_ip}","downstream_direct_remote_address":"{direct_ip}","x_forwarded_for":"{xff}","tls_version":"{tls_version}"}}"#,
-            upstream_service_time_ms
-                .map_or_else(|| "null".to_string(), |ms| format!("{ms:.1}")),
+            upstream_service_time_ms.map_or_else(|| "null".to_string(), |ms| format!("{ms:.1}")),
             {
                 let mut request_id = String::with_capacity(36);
                 append_uuid_like(&mut rng, &mut request_id);

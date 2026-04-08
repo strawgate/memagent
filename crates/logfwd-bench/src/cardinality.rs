@@ -453,8 +453,7 @@ pub mod cardinality_helpers {
                 0
             };
             let status_code = sample_status(rng, phase);
-            let error_count =
-                u32::from(status_code >= 500 || rng.u32(..10_000) < error_bias_bp);
+            let error_count = u32::from(status_code >= 500 || rng.u32(..10_000) < error_bias_bp);
 
             CardinalitySample {
                 phase,
@@ -476,5 +475,4 @@ pub mod cardinality_helpers {
             }
         }
     }
-
 }
