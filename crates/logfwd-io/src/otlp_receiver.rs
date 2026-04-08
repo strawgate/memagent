@@ -205,7 +205,7 @@ impl OtlpReceiverInput {
                 {
                     Ok(runtime) => runtime,
                     Err(_) => {
-                        record_error(&state_for_server.stats);
+                        record_error(state_for_server.stats.as_ref());
                         health_for_server
                             .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
                         return;
@@ -216,7 +216,7 @@ impl OtlpReceiverInput {
                     let listener = match tokio::net::TcpListener::from_std(std_listener) {
                         Ok(listener) => listener,
                         Err(_) => {
-                            record_error(&state_for_server.stats);
+                            record_error(state_for_server.stats.as_ref());
                             health_for_server
                                 .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
                             return;
@@ -232,7 +232,7 @@ impl OtlpReceiverInput {
                     });
 
                     if server.await.is_err() && is_running_for_server.load(Ordering::Relaxed) {
-                        record_error(&state.stats);
+                        record_error(state.stats.as_ref());
                         health_for_server
                             .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
                     }
@@ -256,13 +256,13 @@ impl OtlpReceiverInput {
     }
 }
 
-fn record_error(stats: &Option<Arc<ComponentStats>>) {
+fn record_error(stats: Option<&Arc<ComponentStats>>) {
     if let Some(stats) = stats {
         stats.inc_errors();
     }
 }
 
-fn record_parse_error(stats: &Option<Arc<ComponentStats>>) {
+fn record_parse_error(stats: Option<&Arc<ComponentStats>>) {
     if let Some(stats) = stats {
         stats.inc_parse_errors(1);
     }
@@ -274,14 +274,14 @@ async fn handle_otlp_request(
     body: Body,
 ) -> Response {
     if declared_content_length(&headers).is_some_and(|body_len| body_len > MAX_BODY_SIZE as u64) {
-        record_error(&state.stats);
+        record_error(state.stats.as_ref());
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }
 
     let content_encoding = match parse_content_encoding(&headers) {
         Ok(content_encoding) => content_encoding,
         Err(status) => {
-            record_error(&state.stats);
+            record_error(state.stats.as_ref());
             return (status, "invalid content-encoding header").into_response();
         }
     };
@@ -289,7 +289,7 @@ async fn handle_otlp_request(
     let mut body = match read_limited_body(body).await {
         Ok(body) => body,
         Err(status) => {
-            record_error(&state.stats);
+            record_error(state.stats.as_ref());
             let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
                 "payload too large"
             } else {
@@ -304,36 +304,36 @@ async fn handle_otlp_request(
         Some("zstd") => match decompress_zstd(&body) {
             Ok(body) => body,
             Err(InputError::Receiver(msg)) => {
-                record_error(&state.stats);
+                record_error(state.stats.as_ref());
                 return (StatusCode::BAD_REQUEST, msg).into_response();
             }
             Err(InputError::Io(e)) if e.kind() == io::ErrorKind::InvalidData => {
-                record_error(&state.stats);
+                record_error(state.stats.as_ref());
                 return (StatusCode::PAYLOAD_TOO_LARGE, e.to_string()).into_response();
             }
             Err(_) => {
-                record_error(&state.stats);
+                record_error(state.stats.as_ref());
                 return (StatusCode::BAD_REQUEST, "zstd decompression failed").into_response();
             }
         },
         Some("gzip") => match decompress_gzip(&body) {
             Ok(body) => body,
             Err(InputError::Receiver(msg)) => {
-                record_error(&state.stats);
+                record_error(state.stats.as_ref());
                 return (StatusCode::BAD_REQUEST, msg).into_response();
             }
             Err(InputError::Io(e)) if e.kind() == io::ErrorKind::InvalidData => {
-                record_error(&state.stats);
+                record_error(state.stats.as_ref());
                 return (StatusCode::PAYLOAD_TOO_LARGE, e.to_string()).into_response();
             }
             Err(_) => {
-                record_error(&state.stats);
+                record_error(state.stats.as_ref());
                 return (StatusCode::BAD_REQUEST, "gzip decompression failed").into_response();
             }
         },
         None | Some("identity") => body,
         Some(other) => {
-            record_error(&state.stats);
+            record_error(state.stats.as_ref());
             return (
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 format!("unsupported content-encoding: {other}"),
@@ -358,7 +358,7 @@ async fn handle_otlp_request(
     let payload = match payload {
         Ok(payload) => payload,
         Err(msg) => {
-            record_parse_error(&state.stats);
+            record_parse_error(state.stats.as_ref());
             return (StatusCode::BAD_REQUEST, msg.to_string()).into_response();
         }
     };
@@ -387,7 +387,7 @@ async fn handle_otlp_request(
                 .into_response()
         }
         Err(mpsc::TrySendError::Disconnected(_)) => {
-            record_error(&state.stats);
+            record_error(state.stats.as_ref());
             if state.is_running.load(Ordering::Relaxed) {
                 state
                     .health

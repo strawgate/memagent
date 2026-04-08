@@ -3,9 +3,9 @@ use std::thread::JoinHandle;
 
 use tokio::sync::oneshot;
 
-/// Owns a tiny_http server and its background worker thread.
+/// Owns an axum HTTP server and its background worker thread.
 ///
-/// Drop unblocks the server and joins the thread to prevent leaked listeners
+/// Drop signals shutdown and joins the thread to prevent leaked listeners
 /// and leaked thread ownership.
 pub(crate) struct BackgroundHttpTask {
     shutdown: Option<ShutdownHandle>,
