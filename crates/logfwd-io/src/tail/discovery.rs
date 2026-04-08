@@ -122,9 +122,7 @@ impl FileDiscovery {
                     had_error = true;
                 }
             } else if is_new {
-                let has_evicted = reader.evicted_offsets.contains_key(path);
-                let seek_end = !has_evicted && reader.config.start_from_end;
-                if let Err(e) = reader.open_file_at(path, seek_end) {
+                if let Err(e) = reader.open_file_at(path, reader.config.start_from_end) {
                     tracing::warn!(path = %path.display(), error = %e, "tail.open_new_file_failed");
                     had_error = true;
                 }
@@ -174,4 +172,114 @@ fn metadata_indicates_deleted(meta: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn metadata_indicates_deleted(_meta: &std::fs::Metadata) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::fs;
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    use logfwd_types::pipeline::SourceId;
+
+    use super::super::identity::FileIdentity;
+    use super::super::reader::{EvictedFile, FileReader};
+    use super::super::tailer::{TailConfig, TailEvent};
+    use super::*;
+
+    #[test]
+    fn detect_changes_respects_start_from_end_for_evicted_identity_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("replaced.log");
+        fs::write(&path, b"old replaced content\n").unwrap();
+
+        let mut reader = FileReader {
+            files: HashMap::new(),
+            read_buf: vec![0u8; 128],
+            evicted_offsets: HashMap::new(),
+            scratch_paths: Vec::new(),
+            config: TailConfig {
+                start_from_end: true,
+                poll_interval_ms: 10,
+                glob_rescan_interval_ms: 0,
+                ..Default::default()
+            },
+        };
+        reader.evicted_offsets.insert(
+            path.clone(),
+            EvictedFile {
+                identity: FileIdentity {
+                    device: 111,
+                    inode: 222,
+                    fingerprint: 333,
+                },
+                offset: 7,
+                path: path.clone(),
+                source_id: SourceId(123),
+            },
+        );
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })
+        .unwrap();
+
+        let discovery = FileDiscovery {
+            watcher,
+            watched_dirs: HashSet::new(),
+            glob_patterns: Vec::new(),
+            watch_paths: vec![path.clone()],
+            fs_events: rx,
+            last_glob_rescan: Instant::now() - Duration::from_secs(1),
+        };
+
+        let mut events = Vec::new();
+        let had_error = discovery.detect_changes(&mut reader, &mut events);
+        assert!(!had_error, "detect_changes should succeed");
+        let had_error = reader.read_all(&mut events);
+        assert!(!had_error, "read_all should succeed");
+
+        let initial_text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { path: p, bytes, .. } if p == &path => {
+                    Some(String::from_utf8_lossy(bytes).to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !initial_text.contains("old replaced content"),
+            "replaced file should open at EOF when start_from_end=true and evicted identity mismatches"
+        );
+
+        {
+            let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+            writeln!(f, "fresh content").unwrap();
+        }
+
+        let mut events = Vec::new();
+        let had_error = reader.read_all(&mut events);
+        assert!(!had_error, "read_all after append should succeed");
+
+        let appended_text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { path: p, bytes, .. } if p == &path => {
+                    Some(String::from_utf8_lossy(bytes).to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            appended_text.contains("fresh content"),
+            "newly appended content should be read after opening at EOF"
+        );
+        assert!(
+            !appended_text.contains("old replaced content"),
+            "historical content must remain skipped"
+        );
+    }
 }
