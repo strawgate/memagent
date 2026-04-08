@@ -1813,7 +1813,10 @@ output:
             ("null", ""),
             ("elasticsearch", "endpoint: http://x"),
             ("loki", "endpoint: http://x"),
+            ("arrow_ipc", "endpoint: http://x"),
             ("file", "path: /tmp/x.ndjson"),
+            ("tcp", "endpoint: 127.0.0.1:5140"),
+            ("udp", "endpoint: 127.0.0.1:5140"),
         ] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  {extra}\n"

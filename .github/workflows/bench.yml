@@ -519,7 +519,7 @@ jobs:
           BODY="$(cat <<HEREDOC
           ## Benchmark Results --- ${DATE}
 
-          **Commit:** \`${COMMIT}\` on \`master\`
+          **Commit:** \`${COMMIT}\` on \`main\`
           **Runner:** \`ubuntu-latest\` (matrix: agent x scenario)
           **Iterations:** ${{ env.ITERATIONS }} per cell
           **Dashboard:** https://strawgate.github.io/memagent/bench/

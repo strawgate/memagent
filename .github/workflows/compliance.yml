@@ -81,7 +81,7 @@ jobs:
           {
             echo "## Compliance Results — ${DATE}"
             echo ""
-            echo "**Commit:** \`${COMMIT}\` on \`master\`"
+            echo "**Commit:** \`${COMMIT}\` on \`main\`"
             echo "**Runner:** \`ubuntu-latest\`"
             echo "**Overall:** ${OVERALL}"
             echo ""
