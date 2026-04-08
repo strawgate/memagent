@@ -23,7 +23,8 @@
 //! URI, TIMESTAMP_ISO8601, DATE, TIME, LOGLEVEL, HOSTNAME, EMAILADDRESS.
 
 use std::any::Any;
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use arrow::array::{Array, ArrayRef, AsArray, StringBuilder, StructArray};
 use arrow::datatypes::{DataType, Field, Fields};
@@ -76,8 +77,12 @@ fn compile_grok(pattern: &str) -> Result<CompiledGrok, crate::TransformError> {
 #[derive(Debug)]
 pub struct GrokUdf {
     signature: Signature,
-    /// Compiled grok pattern cached after the first invocation (pattern is constant per SQL query).
-    compiled_grok: OnceLock<CompiledGrok>,
+    /// Per-pattern grok cache.  DataFusion shares the same `ScalarUDFImpl`
+    /// instance across all `grok(...)` expressions in a query, so a single-slot
+    /// `OnceLock` would cache the first pattern and silently apply it to all
+    /// calls with different patterns.  Keying by pattern string handles multiple
+    /// patterns correctly while still avoiding recompilation across batches.
+    grok_cache: Mutex<HashMap<String, Arc<CompiledGrok>>>,
 }
 
 impl Default for GrokUdf {
@@ -93,7 +98,7 @@ impl GrokUdf {
                 TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8]),
                 Volatility::Immutable,
             ),
-            compiled_grok: OnceLock::new(),
+            grok_cache: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -179,18 +184,22 @@ impl ScalarUDFImpl for GrokUdf {
             }
         };
 
-        // Get or compile the grok pattern (compiled once per UDF instance; pattern is constant per query).
-        let compiled = if let Some(c) = self.compiled_grok.get() {
-            c
-        } else {
-            let new_compiled = compile_grok(&pattern_str)
-                .map_err(|e| datafusion::error::DataFusionError::Execution(format!("grok: {e}")))?;
-            // OnceLock::set may fail if another thread won the race, which is fine —
-            // we just use whichever value was stored first.
-            let _ = self.compiled_grok.set(new_compiled);
-            self.compiled_grok
-                .get()
-                .expect("OnceLock must be initialized: we just called set or another thread did")
+        // Get or compile the grok pattern, keyed by pattern string.  Each
+        // distinct pattern gets its own cache entry so that multiple grok(...)
+        // calls with different patterns in the same SQL query each use the
+        // correct compiled pattern.
+        let compiled: Arc<CompiledGrok> = {
+            let mut cache = self.grok_cache.lock().unwrap();
+            if let Some(cached) = cache.get(&pattern_str) {
+                Arc::clone(cached)
+            } else {
+                let new_compiled = compile_grok(&pattern_str).map_err(|e| {
+                    datafusion::error::DataFusionError::Execution(format!("grok: {e}"))
+                })?;
+                let arc = Arc::new(new_compiled);
+                cache.insert(pattern_str, Arc::clone(&arc));
+                arc
+            }
         };
 
         match input {
