@@ -967,6 +967,24 @@ mod write_row_json_tests {
     }
 
     #[test]
+    fn timestamp_fallback_renders_non_empty_string() {
+        use arrow::array::TimestampNanosecondArray;
+        let batch = make_batch(vec![(
+            "ts",
+            Arc::new(TimestampNanosecondArray::from(vec![Some(1)])) as Arc<dyn Array>,
+        )]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        let ts = v["ts"]
+            .as_str()
+            .expect("timestamp fallback should serialize as a string");
+        assert!(
+            !ts.is_empty(),
+            "timestamp fallback must not collapse to empty string"
+        );
+    }
+
+    #[test]
     fn binary_serializes_as_hex_string() {
         use arrow::array::BinaryArray;
         let batch = make_batch(vec![(
