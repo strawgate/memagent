@@ -1,0 +1,1357 @@
+{
+  "id": "24121417338",
+  "date": "2026-04-08T07:56:03Z",
+  "commit": "d538bd1",
+  "benchmarks": {
+    "cri/parse_only/1000": {
+      "mean_ns": 34438.737865863295,
+      "throughput": {
+        "Bytes": 278161
+      }
+    },
+    "cri/parse_only/10000": {
+      "mean_ns": 344656.06383789727,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "cri/parse_reassemble/1000": {
+      "mean_ns": 57994.60807989148,
+      "throughput": {
+        "Bytes": 278161
+      }
+    },
+    "cri/parse_reassemble/10000": {
+      "mean_ns": 574979.9187150111,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "full_chain_json/composed/1000": {
+      "mean_ns": 2136053.003476881,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "full_chain_json/composed/10000": {
+      "mean_ns": 16525794.624003226,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "full_chain_json/composed/100000": {
+      "mean_ns": 190828727.65,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "full_chain_json/transform_only/1000": {
+      "mean_ns": 417312.8767852607,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "full_chain_json/transform_only/10000": {
+      "mean_ns": 418678.1165330136,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "full_chain_json/transform_only/100000": {
+      "mean_ns": 420063.156885942,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "full_chain_json/encode_only/1000": {
+      "mean_ns": 289854.0861616287,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "full_chain_json/encode_only/10000": {
+      "mean_ns": 2956764.6638821815,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "full_chain_json/encode_only/100000": {
+      "mean_ns": 37781634.58882025,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "full_chain_json/scan_only/1000": {
+      "mean_ns": 1363082.074677484,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "full_chain_json/scan_only/10000": {
+      "mean_ns": 12768444.914501607,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "full_chain_json/scan_only/100000": {
+      "mean_ns": 143874469.15,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "pipeline/passthrough/streaming": {
+      "mean_ns": 76102167.4,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/passthrough/scan_detached": {
+      "mean_ns": 70722279.7125,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/proj_filter/streaming": {
+      "mean_ns": 62440778.775,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/proj_filter/scan_detached": {
+      "mean_ns": 60487187.249999985,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/where_filter/streaming": {
+      "mean_ns": 65124282.2125,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/where_filter/scan_detached": {
+      "mean_ns": 63425882.3875,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "transform_overhead_batch_size_scaling/select_star/1000": {
+      "mean_ns": 427740.00258515996,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "transform_overhead_batch_size_scaling/select_star/10000": {
+      "mean_ns": 428808.7714560803,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_batch_size_scaling/select_star/100": {
+      "mean_ns": 426238.56255734793,
+      "throughput": {
+        "Elements": 100
+      }
+    },
+    "transform_overhead_batch_size_scaling/select_star/100000": {
+      "mean_ns": 430763.1618713486,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "transform_overhead_batch_size_scaling/group_by/1000": {
+      "mean_ns": 629793.5697350992,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "transform_overhead_batch_size_scaling/group_by/10000": {
+      "mean_ns": 760565.9939745932,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_batch_size_scaling/group_by/100": {
+      "mean_ns": 618762.9149103586,
+      "throughput": {
+        "Elements": 100
+      }
+    },
+    "transform_overhead_batch_size_scaling/group_by/100000": {
+      "mean_ns": 1753766.747968026,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "transform_overhead_batch_size_scaling/where_filter/1000": {
+      "mean_ns": 594968.0844006641,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "transform_overhead_batch_size_scaling/where_filter/10000": {
+      "mean_ns": 973934.7504413798,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_batch_size_scaling/where_filter/100": {
+      "mean_ns": 569052.0962930515,
+      "throughput": {
+        "Elements": 100
+      }
+    },
+    "transform_overhead_batch_size_scaling/where_filter/100000": {
+      "mean_ns": 3490748.075994694,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "transform_overhead_plan_cost/plan/like_filter": {
+      "mean_ns": 189611.5686597896
+    },
+    "transform_overhead_plan_cost/plan/select_star": {
+      "mean_ns": 178143.36414216476
+    },
+    "transform_overhead_plan_cost/plan/where_eq": {
+      "mean_ns": 192697.87773802553
+    },
+    "transform_overhead_plan_cost/plan/group_by_avg": {
+      "mean_ns": 103341.80525897669
+    },
+    "transform_overhead_plan_cost/plan/case_expr": {
+      "mean_ns": 222636.12252418458
+    },
+    "transform_overhead_plan_cost/plan/order_limit": {
+      "mean_ns": 195395.48849348165
+    },
+    "transform_overhead_plan_cost/plan/projection_3col": {
+      "mean_ns": 59299.08055349397
+    },
+    "transform_overhead_plan_cost/plan/where_compound": {
+      "mean_ns": 198019.34908031463
+    },
+    "transform_overhead_plan_cost/plan/group_by_count": {
+      "mean_ns": 109316.79956349531
+    },
+    "file_io_framing/newline_frame/cri_30k": {
+      "mean_ns": 3091012.602760805,
+      "throughput": {
+        "Bytes": 8111826
+      }
+    },
+    "file_io_framing/newline_frame/narrow_80k": {
+      "mean_ns": 3559218.8665469615,
+      "throughput": {
+        "Bytes": 8184652
+      }
+    },
+    "file_io_framing/newline_frame/mixed_40k": {
+      "mean_ns": 4980533.219529239,
+      "throughput": {
+        "Bytes": 13050972
+      }
+    },
+    "file_io_framing/read_only/cri_30k": {
+      "mean_ns": 279295.8782167096,
+      "throughput": {
+        "Bytes": 8111826
+      }
+    },
+    "file_io_framing/read_only/narrow_80k": {
+      "mean_ns": 307099.0744984368,
+      "throughput": {
+        "Bytes": 8184652
+      }
+    },
+    "file_io_framing/read_only/mixed_40k": {
+      "mean_ns": 493953.5422285055,
+      "throughput": {
+        "Bytes": 13050972
+      }
+    },
+    "file_io_framing/frame_only/cri_30k": {
+      "mean_ns": 2849828.8963722056,
+      "throughput": {
+        "Bytes": 8111826
+      }
+    },
+    "file_io_framing/frame_only/narrow_80k": {
+      "mean_ns": 3235898.9737644135,
+      "throughput": {
+        "Bytes": 8184652
+      }
+    },
+    "file_io_framing/frame_only/mixed_40k": {
+      "mean_ns": 4434741.779051143,
+      "throughput": {
+        "Bytes": 13050972
+      }
+    },
+    "batch_transform/scan_filter/1000": {
+      "mean_ns": 1982147.7226930796,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_transform/scan_filter/10000": {
+      "mean_ns": 13740032.45,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_transform/scan_filter/100": {
+      "mean_ns": 735833.9362297622,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_transform/scan_filter/500": {
+      "mean_ns": 1296426.0617803098,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_transform/scan_filter/5000": {
+      "mean_ns": 7147570.029827356,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_transform/scan_filter/50000": {
+      "mean_ns": 68841204.1,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "batch_transform/scan_passthrough/1000": {
+      "mean_ns": 1815068.6803096887,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_transform/scan_passthrough/10000": {
+      "mean_ns": 13175120.43,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_transform/scan_passthrough/100": {
+      "mean_ns": 596232.6127236922,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_transform/scan_passthrough/500": {
+      "mean_ns": 1145292.0537703747,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_transform/scan_passthrough/5000": {
+      "mean_ns": 6833904.079325353,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_transform/scan_passthrough/50000": {
+      "mean_ns": 66019274.7,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "full_chain_cri/composed/1000": {
+      "mean_ns": 1471491.185080497,
+      "throughput": {
+        "Bytes": 278161
+      }
+    },
+    "full_chain_cri/composed/10000": {
+      "mean_ns": 10028860.265128326,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "full_chain_cri/cri_parse_only/1000": {
+      "mean_ns": 55953.246667938874,
+      "throughput": {
+        "Bytes": 278161
+      }
+    },
+    "full_chain_cri/cri_parse_only/10000": {
+      "mean_ns": 560069.9995897643,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "batch_scan/scan/1000": {
+      "mean_ns": 1382587.436368277,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_scan/scan/10000": {
+      "mean_ns": 12850337.475,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_scan/scan/100": {
+      "mean_ns": 135075.6646780754,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_scan/scan/500": {
+      "mean_ns": 689754.1962821056,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_scan/scan/100000": {
+      "mean_ns": 148271284.28,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "batch_scan/scan/5000": {
+      "mean_ns": 6421137.795743886,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_scan/scan/50000": {
+      "mean_ns": 66733981.15,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "transform_overhead_execute_cost/execute/select_star": {
+      "mean_ns": 399957.19659132103
+    },
+    "transform_overhead_execute_cost/execute/where_eq": {
+      "mean_ns": 944618.7986811617
+    },
+    "transform_overhead_execute_cost/execute/order_limit": {
+      "mean_ns": 780412.9534259726
+    },
+    "transform_overhead_execute_cost/execute/projection_3col": {
+      "mean_ns": 167051.6080119977
+    },
+    "transform_overhead_execute_cost/execute/group_by_count": {
+      "mean_ns": 725769.841861264
+    },
+    "decompress/ipc_zstd_read/wide_20f_100k": {
+      "mean_ns": 15725951.9525,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "decompress/ipc_zstd_read/long_str_100k": {
+      "mean_ns": 92053245.51,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "decompress/ipc_zstd_read/simple_7f_100k": {
+      "mean_ns": 7827920.507142859,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "transform/select_star": {
+      "mean_ns": 422549.4562633835,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform/regexp_extract": {
+      "mean_ns": 3681636.7135991566,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform/projection_computed": {
+      "mean_ns": 215628.53709504887,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform/grok_parse": {
+      "mean_ns": 52323212.14,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform/where_filter": {
+      "mean_ns": 952993.98168436,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/1000": {
+      "mean_ns": 2142460.9280887847,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/10000": {
+      "mean_ns": 16397154.468571432,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/100": {
+      "mean_ns": 641293.1153278627,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/500": {
+      "mean_ns": 1318773.452055887,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/5000": {
+      "mean_ns": 8369742.956666667,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/50000": {
+      "mean_ns": 89850784.4,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "batch_pipeline/scan_transform_json/1000": {
+      "mean_ns": 3183306.4004306286,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_pipeline/scan_transform_json/10000": {
+      "mean_ns": 26743086.81,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_pipeline/scan_transform_json/100": {
+      "mean_ns": 742985.7636935167,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_pipeline/scan_transform_json/500": {
+      "mean_ns": 1835435.604363731,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_pipeline/scan_transform_json/5000": {
+      "mean_ns": 13517372.595,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_pipeline/scan_transform_json/50000": {
+      "mean_ns": 144041923.14,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "transform_overhead_context_reuse/steady_state/select_star": {
+      "mean_ns": 427027.4359178761
+    },
+    "transform_overhead_context_reuse/steady_state/where_eq": {
+      "mean_ns": 967887.4554809459
+    },
+    "transform_overhead_context_reuse/steady_state/regexp_extract": {
+      "mean_ns": 2028650.6036932147
+    },
+    "transform_overhead_context_reuse/cold_start/select_star": {
+      "mean_ns": 595106.6178058202
+    },
+    "transform_overhead_context_reuse/cold_start/where_eq": {
+      "mean_ns": 1144639.589102575
+    },
+    "transform_overhead_context_reuse/cold_start/regexp_extract": {
+      "mean_ns": 2368749.5361784236
+    },
+    "full_chain_grok/composed/1000": {
+      "mean_ns": 14849129.685131088,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "full_chain_grok/composed/10000": {
+      "mean_ns": 66335658.2,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform_overhead_context_creation/session_context_new": {
+      "mean_ns": 103355.31752157034
+    },
+    "ceiling_by_batch_size/lines/1000": {
+      "mean_ns": 1352128.8734830262,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "ceiling_by_batch_size/lines/10000": {
+      "mean_ns": 12832162.228349887,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "ceiling_by_batch_size/lines/100000": {
+      "mean_ns": 145585564.01666668,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "ceiling_by_batch_size/lines/5000": {
+      "mean_ns": 6387270.922860586,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "ceiling_by_batch_size/lines/50000": {
+      "mean_ns": 65324561.6111111,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "output/json_serialize": {
+      "mean_ns": 13185845.727982152,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "output/null_sink": {
+      "mean_ns": 0.31203651840651786,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "scan/streaming/wide_20f_100k": {
+      "mean_ns": 194549087.56666666,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "scan/streaming/narrow_3f_100k": {
+      "mean_ns": 22858213.2125,
+      "throughput": {
+        "Bytes": 4827780
+      }
+    },
+    "scan/streaming/simple_7f_10k": {
+      "mean_ns": 5700663.187188908,
+      "throughput": {
+        "Bytes": 1830840
+      }
+    },
+    "scan/streaming/simple_7f_500k": {
+      "mean_ns": 305439446.6666667,
+      "throughput": {
+        "Bytes": 91542000
+      }
+    },
+    "scan/streaming/long_str_100k": {
+      "mean_ns": 74935894.53333333,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "scan/streaming/simple_7f_100k": {
+      "mean_ns": 56389471.43333332,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "scan/streaming/int_heavy_100k": {
+      "mean_ns": 55998582.61666667,
+      "throughput": {
+        "Bytes": 10206350
+      }
+    },
+    "scan/scan_detached/wide_20f_100k": {
+      "mean_ns": 191393248.13333333,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "scan/scan_detached/narrow_3f_100k": {
+      "mean_ns": 22470980.829166666,
+      "throughput": {
+        "Bytes": 4827780
+      }
+    },
+    "scan/scan_detached/simple_7f_10k": {
+      "mean_ns": 5686456.227058144,
+      "throughput": {
+        "Bytes": 1830840
+      }
+    },
+    "scan/scan_detached/simple_7f_500k": {
+      "mean_ns": 301679355.1666667,
+      "throughput": {
+        "Bytes": 91542000
+      }
+    },
+    "scan/scan_detached/long_str_100k": {
+      "mean_ns": 80659823.53333332,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "scan/scan_detached/simple_7f_100k": {
+      "mean_ns": 58819058.85555556,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "scan/scan_detached/int_heavy_100k": {
+      "mean_ns": 55863847.06666667,
+      "throughput": {
+        "Bytes": 10206350
+      }
+    },
+    "elasticsearch/serialize_batch/1000": {
+      "mean_ns": 1359312.1387893327,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "elasticsearch/serialize_batch/10000": {
+      "mean_ns": 13407145.928079164,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "elasticsearch/serialize_batch/100000": {
+      "mean_ns": 143354014.6,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "transform_overhead_table_swap/deregister_register/1000": {
+      "mean_ns": 1399.5209763462815,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "transform_overhead_table_swap/deregister_register/10000": {
+      "mean_ns": 1356.2104804580292,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_table_swap/deregister_register/100000": {
+      "mean_ns": 1386.0670920609264,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "transform_overhead_table_swap/memtable_create/1000": {
+      "mean_ns": 154.04444483885152,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "transform_overhead_table_swap/memtable_create/10000": {
+      "mean_ns": 152.0906315361765,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_table_swap/memtable_create/100000": {
+      "mean_ns": 151.46493754500568,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "end_to_end/scan_grok_filter_capture": {
+      "mean_ns": 65665584.55,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "end_to_end/scan_filter_capture": {
+      "mean_ns": 13831876.828612724,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "end_to_end/scan_passthrough_capture": {
+      "mean_ns": 13259906.596301768,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform_overhead_query_complexity/05_where_in": {
+      "mean_ns": 1390651.592504357,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/02_projection": {
+      "mean_ns": 202401.70689348795,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/04_where_eq": {
+      "mean_ns": 976387.094171158,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/07_computed_col": {
+      "mean_ns": 1065002.7587044034,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/03_except": {
+      "mean_ns": 419613.51570404146,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/11_like": {
+      "mean_ns": 1677984.0396959216,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/10_order_limit": {
+      "mean_ns": 810034.7902428936,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/01_passthrough": {
+      "mean_ns": 425552.97938719764,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/12_regexp_extract": {
+      "mean_ns": 2040563.2462409746,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/06_where_compound": {
+      "mean_ns": 774602.5944132557,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/13_grok": {
+      "mean_ns": 52447904.129999995,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/09_group_by_agg": {
+      "mean_ns": 916305.4251366608,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/08_group_by": {
+      "mean_ns": 756082.6061248636,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "ceiling_by_schema/lines/wide_20f": {
+      "mean_ns": 142936388.91666666,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_schema/lines/mixed_var": {
+      "mean_ns": 66298424.72222223,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_schema/lines/narrow_5f": {
+      "mean_ns": 22666716.175,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_schema/bytes/wide_20f": {
+      "mean_ns": 144096938.66666666,
+      "throughput": {
+        "Bytes": 34699774
+      }
+    },
+    "ceiling_by_schema/bytes/mixed_var": {
+      "mean_ns": 67715814.3,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "ceiling_by_schema/bytes/narrow_5f": {
+      "mean_ns": 22482567.516666666,
+      "throughput": {
+        "Bytes": 5114322
+      }
+    },
+    "scanner/scan_all_fields/1000": {
+      "mean_ns": 1362501.0071173802,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "scanner/scan_all_fields/10000": {
+      "mean_ns": 12825865.795,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "scanner/scan_all_fields/100000": {
+      "mean_ns": 149336255.56,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "scanner/scan_3_fields/1000": {
+      "mean_ns": 567597.1584575515,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "scanner/scan_3_fields/10000": {
+      "mean_ns": 5608599.887777778,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "scanner/scan_3_fields/100000": {
+      "mean_ns": 60027303.26,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "ceiling_by_scan_config/lines/extract_all": {
+      "mean_ns": 65239429.76666666,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_scan_config/lines/no_raw": {
+      "mean_ns": 65679551.75555555,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_scan_config/lines/3_fields": {
+      "mean_ns": 27094403.571428575,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "compress/zstd_level1/1000": {
+      "mean_ns": 369515.4902540914,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "compress/zstd_level1/10000": {
+      "mean_ns": 3937515.2892307704,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "compress/zstd_level1/100000": {
+      "mean_ns": 39902988.885,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "output_encode/otlp_encode_generated_reuse/narrow_1000": {
+      "mean_ns": 633053.5719013307,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_reuse/narrow_10000": {
+      "mean_ns": 6427599.709248816,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_reuse/wide_1000": {
+      "mean_ns": 3834041.069789777,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_reuse/wide_10000": {
+      "mean_ns": 43041232.53485032,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/json_lines/narrow_1000": {
+      "mean_ns": 406810.1924156208,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/json_lines/narrow_10000": {
+      "mean_ns": 4091308.8127771905,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/json_lines/wide_1000": {
+      "mean_ns": 2272521.1235289513,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/json_lines/wide_10000": {
+      "mean_ns": 22471730.935216043,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/json_lines_zstd/narrow_1000": {
+      "mean_ns": 535150.1939882794,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/json_lines_zstd/narrow_10000": {
+      "mean_ns": 5464764.061073219,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/json_lines_zstd/wide_1000": {
+      "mean_ns": 2925885.804433027,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/json_lines_zstd/wide_10000": {
+      "mean_ns": 29284010.608410984,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_fast/narrow_1000": {
+      "mean_ns": 116534.39636348297,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_fast/narrow_10000": {
+      "mean_ns": 1165401.7445838456,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_fast/wide_1000": {
+      "mean_ns": 569953.0882715648,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_fast/wide_10000": {
+      "mean_ns": 5780716.252871623,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_manual/narrow_1000": {
+      "mean_ns": 116633.40483402573,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_manual/narrow_10000": {
+      "mean_ns": 1165458.6053094312,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_manual/wide_1000": {
+      "mean_ns": 569552.6234564718,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_manual/wide_10000": {
+      "mean_ns": 5844955.731713577,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_naive/narrow_1000": {
+      "mean_ns": 717588.1102883006,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_naive/narrow_10000": {
+      "mean_ns": 7114826.265554885,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_naive/wide_1000": {
+      "mean_ns": 4056543.0648750374,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_naive/wide_10000": {
+      "mean_ns": 65767515.7125,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/null_sink/narrow_1000": {
+      "mean_ns": 0.3198502837019116,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/null_sink/narrow_10000": {
+      "mean_ns": 0.3118326593287867,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/null_sink/wide_1000": {
+      "mean_ns": 0.3136421774214936,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/null_sink/wide_10000": {
+      "mean_ns": 0.3126693298484397,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "persist/streaming/wide_20f_100k": {
+      "mean_ns": 236709429.775,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "persist/streaming/narrow_3f_100k": {
+      "mean_ns": 33917523.16056426,
+      "throughput": {
+        "Bytes": 4827780
+      }
+    },
+    "persist/streaming/long_str_100k": {
+      "mean_ns": 105162326.55000001,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "persist/streaming/simple_7f_100k": {
+      "mean_ns": 73466731.575,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "persist/streaming/int_heavy_100k": {
+      "mean_ns": 80084622.15,
+      "throughput": {
+        "Bytes": 10206350
+      }
+    },
+    "persist/scan_detached/wide_20f_100k": {
+      "mean_ns": 213542176.275,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "persist/scan_detached/narrow_3f_100k": {
+      "mean_ns": 31380040.68210095,
+      "throughput": {
+        "Bytes": 4827780
+      }
+    },
+    "persist/scan_detached/long_str_100k": {
+      "mean_ns": 100171957.68333334,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "persist/scan_detached/simple_7f_100k": {
+      "mean_ns": 69157031.3125,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "persist/scan_detached/int_heavy_100k": {
+      "mean_ns": 79099904.2125,
+      "throughput": {
+        "Bytes": 10206350
+      }
+    },
+    "otap_proto/status_decode_generated": {
+      "mean_ns": 52.454063457720096,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/decode_generated_fast/large": {
+      "mean_ns": 8225.32612960741,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/decode_generated_fast/small": {
+      "mean_ns": 326.9973954134617,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/status_decode_generated_fast": {
+      "mean_ns": 43.65719716827133,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/decode_generated/large": {
+      "mean_ns": 40507.07930709975,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/decode_generated/small": {
+      "mean_ns": 594.2354980789283,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/encode_generated/large": {
+      "mean_ns": 14917.011159132424,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/encode_generated/small": {
+      "mean_ns": 337.2179932771228,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/decode_manual/large": {
+      "mean_ns": 7791.300747874421,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/decode_manual/small": {
+      "mean_ns": 350.3470878822836,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/status_decode_manual": {
+      "mean_ns": 36.33956975000065,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/encode_generated_fast/large": {
+      "mean_ns": 7123.59492640557,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/encode_generated_fast/small": {
+      "mean_ns": 118.67065219267836,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/encode_manual/large": {
+      "mean_ns": 12962.519389984323,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/encode_manual/small": {
+      "mean_ns": 197.0744844464429,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "file_io_cri/read_parse_reassemble/10k_lines": {
+      "mean_ns": 650815.3124210165,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "file_io_cri/read_parse_reassemble/100k_lines": {
+      "mean_ns": 7431331.338276081,
+      "throughput": {
+        "Bytes": 26891544
+      }
+    },
+    "file_io_cri/parse_only/10k_lines": {
+      "mean_ns": 346414.3139023767,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "file_io_cri/parse_only/100k_lines": {
+      "mean_ns": 3507200.120741973,
+      "throughput": {
+        "Bytes": 26891544
+      }
+    },
+    "sizes/noop": {
+      "mean_ns": 0.6227044822352863
+    },
+    "bottleneck_isolation/scan_only/50000": {
+      "mean_ns": 65241598.37777777,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "bottleneck_isolation/null_sink_only/50000": {
+      "mean_ns": 0.311210681521832,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "bottleneck_isolation/generator_only/50000": {
+      "mean_ns": 33816043.239999995,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_scan_mode/streaming/50000": {
+      "mean_ns": 69439791.12222221,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_scan_mode/scan_detached/50000": {
+      "mean_ns": 65296890.61111112,
+      "throughput": {
+        "Elements": 50000
+      }
+    }
+  }
+}
