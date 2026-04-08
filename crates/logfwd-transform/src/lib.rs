@@ -402,6 +402,41 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             collect_column_refs(expr, cols);
             collect_column_refs(pattern, cols);
         }
+        SqlExpr::Trim {
+            expr, trim_what, ..
+        } => {
+            collect_column_refs(expr, cols);
+            if let Some(tw) = trim_what {
+                collect_column_refs(tw, cols);
+            }
+        }
+        SqlExpr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
+            collect_column_refs(expr, cols);
+            if let Some(f) = substring_from {
+                collect_column_refs(f, cols);
+            }
+            if let Some(f) = substring_for {
+                collect_column_refs(f, cols);
+            }
+        }
+        SqlExpr::Overlay {
+            expr,
+            overlay_what,
+            overlay_from,
+            overlay_for,
+        } => {
+            collect_column_refs(expr, cols);
+            collect_column_refs(overlay_what, cols);
+            collect_column_refs(overlay_from, cols);
+            if let Some(f) = overlay_for {
+                collect_column_refs(f, cols);
+            }
+        }
         // Literals, wildcards, etc. — no column refs.
         _ => {}
     }
@@ -1903,5 +1938,44 @@ mod tests {
                 "keep_raw must be false for {sql:?} (no _raw reference)"
             );
         }
+    }
+
+    /// `collect_column_refs` must traverse `TRIM(col)` and add `col` to the
+    /// referenced column set so that `scan_config()` requests it from the
+    /// scanner.  Without this, the scanner never extracts the column, the batch
+    /// has no `col` column, and the SQL transform fails or silently returns NULL.
+    ///
+    /// Regression test: `SqlExpr::Trim { expr, .. }` was not handled in
+    /// `collect_column_refs` — it fell to the catch-all `_ => {}` arm.
+    #[test]
+    fn test_trim_col_in_select_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT TRIM(msg) AS msg FROM logs").unwrap();
+        assert!(
+            a.referenced_columns.contains("msg"),
+            "TRIM(msg) must add 'msg' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// Same as above but for WHERE clause.
+    #[test]
+    fn test_trim_col_in_where_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT level FROM logs WHERE TRIM(msg) = 'hello'").unwrap();
+        assert!(
+            a.referenced_columns.contains("msg"),
+            "TRIM(msg) in WHERE must add 'msg' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `SUBSTRING(col, ...)` must also register `col` in referenced_columns.
+    #[test]
+    fn test_substring_col_in_select_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT SUBSTRING(msg, 1, 4) AS prefix FROM logs").unwrap();
+        assert!(
+            a.referenced_columns.contains("msg"),
+            "SUBSTRING(msg, ...) must add 'msg' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
     }
 }
