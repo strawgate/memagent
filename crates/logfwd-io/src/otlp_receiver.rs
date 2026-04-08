@@ -375,6 +375,12 @@ impl OtlpReceiverInput {
                     };
 
                     let send_result = if payload.is_empty() {
+                        // Note: `accounted_bytes` for this request are silently
+                        // dropped because no `ReceiverPayload` is enqueued.
+                        // This is acceptable: empty payloads (zero log records
+                        // after decoding) carry negligible wire bytes and occur
+                        // rarely in practice. Inflating byte counters for empty
+                        // payloads would misrepresent actual data throughput.
                         Ok(())
                     } else {
                         tx.try_send(payload)
