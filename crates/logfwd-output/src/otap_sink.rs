@@ -55,6 +55,7 @@ use logfwd_otap_proto::otap::{
 };
 use prost::Message;
 
+use logfwd_arrow::conflict_schema::normalize_conflict_columns;
 use logfwd_arrow::star_schema::flat_to_star;
 use logfwd_types::diagnostics::ComponentStats;
 
@@ -302,6 +303,23 @@ impl OtapSink {
         if batch.num_rows() == 0 {
             return Ok(0);
         }
+
+        // Normalize conflict struct columns (e.g. `status: Struct { int, str }`)
+        // to flat Utf8 before the star schema pivot. Without this, struct columns
+        // are silently dropped (str_value_at returns "" for Struct types).
+        // The same normalization is done in the OTLP sink (otlp_sink.rs:146).
+        let normalized;
+        let batch = if batch
+            .schema()
+            .fields()
+            .iter()
+            .any(|f| matches!(f.data_type(), arrow::datatypes::DataType::Struct(_)))
+        {
+            normalized = normalize_conflict_columns(batch.clone());
+            &normalized
+        } else {
+            batch
+        };
 
         let star = flat_to_star(batch).map_err(|e| {
             io::Error::new(
@@ -1010,5 +1028,102 @@ mod tests {
             generated_status.status_code as u32
         );
         assert_eq!(fast_status.status_message, generated_status.status_message);
+    }
+
+    /// Regression test for #1656: conflict struct columns must be normalized
+    /// (not silently dropped) before the flat→star pivot in encode_batch.
+    ///
+    /// Without the fix, a `status` column of type `Struct { int: Int64, str: Utf8 }`
+    /// would produce no LOG_ATTRS rows because `str_value_at` returns "" for
+    /// Struct data types. With the fix, it is coalesced to a Utf8 column first.
+    #[test]
+    fn conflict_struct_column_is_normalized_not_dropped() {
+        use arrow::array::{Array, ArrayRef, Int64Array, StructArray};
+        use arrow::datatypes::Fields;
+
+        // Build a batch with a conflict struct column `status: Struct { int: Int64, str: Utf8 }`.
+        // Row 0: int=200 (int child non-null, str child null)
+        // Row 1: str="OK" (str child non-null, int child null)
+        let conflict_fields: Fields = Fields::from(vec![
+            Field::new("int", DataType::Int64, true),
+            Field::new("str", DataType::Utf8, true),
+        ]);
+        let int_child = Arc::new(Int64Array::from(vec![Some(200_i64), None])) as ArrayRef;
+        let str_child = Arc::new(StringArray::from(vec![None, Some("OK")])) as ArrayRef;
+        let conflict_col =
+            StructArray::new(conflict_fields.clone(), vec![int_child, str_child], None);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("status", DataType::Struct(conflict_fields), true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("req1"), Some("req2")])) as ArrayRef,
+                Arc::new(conflict_col) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        let config = Arc::new(OtapSinkConfig {
+            endpoint: "http://localhost:4317".to_string(),
+            compression: Compression::None,
+            headers: vec![],
+        });
+        let client = reqwest::Client::new();
+        let counter = Arc::new(AtomicI64::new(0));
+        let stats = Arc::new(ComponentStats::new());
+        let mut sink = OtapSink::new("test".to_string(), config, client, counter, stats);
+
+        // Must not error (before the fix, it would silently drop the struct column).
+        let batch_id = sink
+            .encode_batch(&batch)
+            .expect("encode_batch should succeed");
+        assert_eq!(batch_id, 1);
+
+        // Decode to verify the 'status' attribute appears in LOG_ATTRS.
+        let (_, payloads, _) =
+            decode_batch_arrow_records(&sink.proto_buf).expect("decode_batch_arrow_records");
+        assert_eq!(payloads.len(), 4);
+
+        let log_attrs_ipc = &payloads[1].2;
+        let log_attrs_batches = deserialize_ipc(log_attrs_ipc).expect("deserialize log_attrs IPC");
+        let log_attrs = log_attrs_batches
+            .into_iter()
+            .next()
+            .expect("log_attrs batch");
+
+        // The `status` column must appear as a LOG_ATTR key.
+        let key_arr = log_attrs.column_by_name("key").expect("key column");
+        let key_str = key_arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("key is StringArray");
+        let num_attrs = key_arr.len();
+        let keys: Vec<&str> = (0..num_attrs)
+            .filter(|&i| !key_arr.is_null(i))
+            .map(|i| key_str.value(i))
+            .collect();
+        assert!(
+            keys.contains(&"status"),
+            "expected 'status' in LOG_ATTRS keys, got: {keys:?}"
+        );
+
+        // Verify at least one coalesced value is present ("200" from int child or "OK" from str).
+        let str_arr = log_attrs.column_by_name("str").expect("str column");
+        let str_col = str_arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("str is StringArray");
+        let status_vals: Vec<&str> = (0..num_attrs)
+            .filter(|&i| !key_arr.is_null(i) && key_str.value(i) == "status")
+            .filter(|&i| !str_arr.is_null(i))
+            .map(|i| str_col.value(i))
+            .collect();
+        assert!(
+            status_vals.contains(&"200") || status_vals.contains(&"OK"),
+            "expected coalesced status values (200 or OK), got: {status_vals:?}"
+        );
     }
 }
