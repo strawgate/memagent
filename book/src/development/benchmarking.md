@@ -35,5 +35,10 @@ cargo run -p logfwd-bench --release --bin rss
 
 ## Nightly benchmarks
 
-Results are published to GitHub Pages automatically via the nightly benchmark
-workflow. View at: [strawgate.github.io/memagent/bench/](https://strawgate.github.io/memagent/bench/)
+Nightly benchmark automation now lives in
+[`strawgate/memagent-e2e`](https://github.com/strawgate/memagent-e2e):
+
+- Kubernetes EPS competitive suite:
+  [bench-kind-smoke workflow](https://github.com/strawgate/memagent-e2e/actions/workflows/bench-kind-smoke.yml)
+- Latest nightly benchmark report issue:
+  [open `report:bench-nightly-eps` issues](https://github.com/strawgate/memagent-e2e/issues?q=is%3Aopen+label%3Areport%3Abench-nightly-eps)
