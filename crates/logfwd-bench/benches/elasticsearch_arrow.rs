@@ -122,6 +122,9 @@ fn index_batch(
         logfwd_output::SendResult::IoError(error) => Err(std::io::Error::other(format!(
             "batch not accepted: io error: {error}"
         ))),
+        other => Err(std::io::Error::other(format!(
+            "batch not accepted: unexpected send result: {other:?}"
+        ))),
     }
 }
 

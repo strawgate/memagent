@@ -7,6 +7,9 @@
 use std::fmt::Write;
 use std::sync::Arc;
 
+use arrow::array::{ArrayRef, Float64Array, Int64Array, StringArray};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
 use logfwd_output::BatchMetadata;
 
 use crate::cardinality::cardinality_helpers::{CardinalityProfile, CardinalityState, SamplePhase};
@@ -620,6 +623,10 @@ fn pick_u16(rng: &mut fastrand::Rng, items: &[u16]) -> u16 {
     items[rng.usize(..items.len())]
 }
 
+fn round_tenths(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
 fn level_for_phase(phase: SamplePhase) -> &'static str {
     match phase {
         SamplePhase::Hot => "INFO",
@@ -946,6 +953,11 @@ pub fn gen_envoy_access(count: usize, seed: u64) -> Vec<u8> {
     gen_envoy_access_with_profile(count, seed, EnvoyAccessProfile::benchmark())
 }
 
+/// Generate synthetic Envoy access logs directly as a detached [`RecordBatch`].
+pub fn gen_envoy_access_batch(count: usize, seed: u64) -> RecordBatch {
+    gen_envoy_access_batch_with_profile(count, seed, EnvoyAccessProfile::benchmark())
+}
+
 /// Generate synthetic Envoy edge access logs using a tunable realism profile.
 pub fn gen_envoy_access_with_profile(
     count: usize,
@@ -1078,6 +1090,232 @@ pub fn gen_envoy_access_with_profile(
     }
 
     buf.into_bytes()
+}
+
+/// Generate synthetic Envoy access logs as a detached [`RecordBatch`] using a
+/// tunable realism profile.
+pub fn gen_envoy_access_batch_with_profile(
+    count: usize,
+    seed: u64,
+    profile: EnvoyAccessProfile,
+) -> RecordBatch {
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let mut burst_remaining = 0usize;
+    let mut current_scenario = ENVOY_SCENARIOS[0];
+    let mut current_source_bucket = 0usize;
+    let mut current_client_bucket = 0usize;
+
+    let mut timestamp = Vec::with_capacity(count);
+    let mut method = Vec::with_capacity(count);
+    let mut path = Vec::with_capacity(count);
+    let mut protocol = Vec::with_capacity(count);
+    let mut response_code = Vec::with_capacity(count);
+    let mut response_flags = Vec::with_capacity(count);
+    let mut response_code_details = Vec::with_capacity(count);
+    let mut bytes_received = Vec::with_capacity(count);
+    let mut bytes_sent = Vec::with_capacity(count);
+    let mut duration_ms = Vec::with_capacity(count);
+    let mut upstream_service_time_ms = Vec::with_capacity(count);
+    let mut user_agent = Vec::with_capacity(count);
+    let mut x_request_id = Vec::with_capacity(count);
+    let mut authority = Vec::with_capacity(count);
+    let mut route_name = Vec::with_capacity(count);
+    let mut service = Vec::with_capacity(count);
+    let mut upstream_cluster = Vec::with_capacity(count);
+    let mut upstream_host = Vec::with_capacity(count);
+    let mut downstream_remote_address = Vec::with_capacity(count);
+    let mut downstream_direct_remote_address = Vec::with_capacity(count);
+    let mut x_forwarded_for = Vec::with_capacity(count);
+    let mut tls_version = Vec::with_capacity(count);
+
+    for i in 0..count {
+        if burst_remaining == 0 {
+            current_scenario = weighted_choice_pick(&mut rng, ENVOY_SCENARIOS);
+            let burst_span = profile.burst_max.saturating_sub(profile.burst_min);
+            let burst_len = profile.burst_min + rng.usize(..=burst_span.max(1));
+            burst_remaining = burst_len.max(1);
+            current_source_bucket = rng.usize(..profile.source_ip_pool_size.max(1));
+            current_client_bucket = rng.usize(..profile.user_agent_pool_size.max(1));
+        }
+        burst_remaining -= 1;
+
+        let sec = i % 60;
+        let nano = rng.u32(..1_000_000_000);
+        let method_value = match current_scenario.kind {
+            EnvoyAccessKind::PublicRead => pick(&mut rng, &["GET", "GET", "GET", "HEAD"]),
+            EnvoyAccessKind::PublicWrite => pick(&mut rng, &["POST", "POST", "PUT", "PATCH"]),
+            EnvoyAccessKind::Auth => pick(&mut rng, &["POST", "POST", "POST", "DELETE"]),
+            EnvoyAccessKind::Search => pick(&mut rng, &["GET", "GET", "GET", "POST"]),
+            EnvoyAccessKind::StaticAssets => pick(&mut rng, &["GET", "GET", "HEAD"]),
+            EnvoyAccessKind::Metrics => pick(&mut rng, &["GET", "GET", "GET"]),
+            EnvoyAccessKind::Graphql => pick(&mut rng, &["POST", "POST", "GET"]),
+        };
+        let route_variant = rng.usize(..profile.cardinality_scale.max(1) * 4);
+        let route_name_value = format!("{}-v{}", current_scenario.route_prefix, route_variant);
+        let upstream_cluster_value =
+            format!("{}-v{}", current_scenario.cluster_prefix, route_variant);
+        let host_bucket =
+            (current_source_bucket + route_variant) % (16 * profile.cardinality_scale.max(1) + 16);
+        let source_ip = make_source_ip(current_source_bucket, i);
+        let direct_ip = make_direct_ip(host_bucket, i);
+        let response_code_value = weighted_pick(&mut rng, current_scenario.status_weights);
+        let response_flags_value =
+            pick_response_flag(&mut rng, current_scenario.flag_weights, response_code_value);
+        let response_code_details_value = pick_response_code_detail(
+            &mut rng,
+            current_scenario.response_code_details,
+            response_code_value,
+        );
+        let user_agent_value = make_user_agent(
+            &mut rng,
+            current_scenario.kind,
+            current_client_bucket,
+            profile.user_agent_pool_size.max(1),
+        );
+        let path_value = make_path(&mut rng, current_scenario.kind, route_variant);
+        let bytes_received_value = match current_scenario.kind {
+            EnvoyAccessKind::PublicRead
+            | EnvoyAccessKind::StaticAssets
+            | EnvoyAccessKind::Metrics => rng.u32(..512),
+            EnvoyAccessKind::Search => rng.u32(..1024),
+            EnvoyAccessKind::Auth => rng.u32(..256),
+            EnvoyAccessKind::PublicWrite | EnvoyAccessKind::Graphql => rng.u32(..2048),
+        };
+        let bytes_sent_value = match response_code_value {
+            200 | 201 | 204 | 304 => 200 + rng.u32(..16_000),
+            400 | 401 | 403 | 404 => 64 + rng.u32(..1_024),
+            409 | 422 | 429 => 32 + rng.u32(..512),
+            _ => 128 + rng.u32(..8_192),
+        };
+        let raw_duration_ms_value = match current_scenario.kind {
+            EnvoyAccessKind::Metrics => 3.0 + rng.f64() * 18.0,
+            EnvoyAccessKind::StaticAssets => 4.0 + rng.f64() * 24.0,
+            EnvoyAccessKind::Auth => 12.0 + rng.f64() * 75.0,
+            EnvoyAccessKind::PublicRead => 8.0 + rng.f64() * 90.0,
+            EnvoyAccessKind::Search => 15.0 + rng.f64() * 140.0,
+            EnvoyAccessKind::PublicWrite => 20.0 + rng.f64() * 180.0,
+            EnvoyAccessKind::Graphql => 25.0 + rng.f64() * 220.0,
+        };
+        let upstream_service_time_ms_value = if response_code_value >= 500 || rng.usize(..100) < 90
+        {
+            Some(round_tenths(
+                (raw_duration_ms_value * (0.35 + rng.f64() * 0.45)).max(1.0),
+            ))
+        } else {
+            None
+        };
+        let duration_ms_value = round_tenths(raw_duration_ms_value);
+        let xff_value =
+            make_x_forwarded_for(&mut rng, current_source_bucket, profile.xff_hops_max.max(1));
+        let is_tls = current_scenario.kind != EnvoyAccessKind::Metrics && rng.usize(..100) < 96;
+        let tls_version_value = if is_tls {
+            pick(&mut rng, &["TLSv1.3", "TLSv1.2"])
+        } else {
+            "-"
+        };
+        let protocol_value = if matches!(
+            current_scenario.kind,
+            EnvoyAccessKind::Metrics | EnvoyAccessKind::StaticAssets
+        ) && rng.usize(..100) < 25
+        {
+            "HTTP/1.1"
+        } else {
+            "HTTP/2"
+        };
+
+        let mut request_id = String::with_capacity(36);
+        append_uuid_like(&mut rng, &mut request_id);
+        let mut upstream_host_value = String::new();
+        let o1 = 10 + (current_source_bucket % 20) as u8;
+        let o2 = (route_variant % 250) as u8;
+        let o3 = ((i + current_client_bucket) % 250) as u8;
+        let o4 = 10 + ((route_variant + current_client_bucket) % 200) as u8;
+        let port = 8080 + ((route_variant + current_client_bucket) % 5) as u16;
+        append_ipv4(&mut upstream_host_value, o1, o2, o3, o4, port);
+
+        timestamp.push(format!("2024-01-15T10:30:{sec:02}.{nano:09}Z"));
+        method.push(method_value.to_string());
+        path.push(path_value);
+        protocol.push(protocol_value.to_string());
+        response_code.push(response_code_value);
+        response_flags.push(response_flags_value.to_string());
+        response_code_details.push(response_code_details_value.to_string());
+        bytes_received.push(bytes_received_value);
+        bytes_sent.push(bytes_sent_value);
+        duration_ms.push(duration_ms_value);
+        upstream_service_time_ms.push(upstream_service_time_ms_value);
+        user_agent.push(user_agent_value);
+        x_request_id.push(request_id);
+        authority.push(current_scenario.authority.to_string());
+        route_name.push(route_name_value);
+        service.push(current_scenario.service.to_string());
+        upstream_cluster.push(upstream_cluster_value);
+        upstream_host.push(upstream_host_value);
+        downstream_remote_address.push(source_ip);
+        downstream_direct_remote_address.push(direct_ip);
+        x_forwarded_for.push(xff_value);
+        tls_version.push(tls_version_value.to_string());
+    }
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("timestamp", DataType::Utf8, true),
+        Field::new("method", DataType::Utf8, true),
+        Field::new("path", DataType::Utf8, true),
+        Field::new("protocol", DataType::Utf8, true),
+        Field::new("response_code", DataType::Int64, true),
+        Field::new("response_flags", DataType::Utf8, true),
+        Field::new("response_code_details", DataType::Utf8, true),
+        Field::new("bytes_received", DataType::Int64, true),
+        Field::new("bytes_sent", DataType::Int64, true),
+        Field::new("duration_ms", DataType::Float64, true),
+        Field::new("upstream_service_time_ms", DataType::Float64, true),
+        Field::new("user_agent", DataType::Utf8, true),
+        Field::new("x_request_id", DataType::Utf8, true),
+        Field::new("authority", DataType::Utf8, true),
+        Field::new("route_name", DataType::Utf8, true),
+        Field::new("service", DataType::Utf8, true),
+        Field::new("upstream_cluster", DataType::Utf8, true),
+        Field::new("upstream_host", DataType::Utf8, true),
+        Field::new("downstream_remote_address", DataType::Utf8, true),
+        Field::new("downstream_direct_remote_address", DataType::Utf8, true),
+        Field::new("x_forwarded_for", DataType::Utf8, true),
+        Field::new("tls_version", DataType::Utf8, true),
+    ]));
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(timestamp)) as ArrayRef,
+        Arc::new(StringArray::from(method)) as ArrayRef,
+        Arc::new(StringArray::from(path)) as ArrayRef,
+        Arc::new(StringArray::from(protocol)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            response_code.into_iter().map(i64::from).collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(StringArray::from(response_flags)) as ArrayRef,
+        Arc::new(StringArray::from(response_code_details)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            bytes_received
+                .into_iter()
+                .map(i64::from)
+                .collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(Int64Array::from(
+            bytes_sent.into_iter().map(i64::from).collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(Float64Array::from(duration_ms)) as ArrayRef,
+        Arc::new(Float64Array::from(upstream_service_time_ms)) as ArrayRef,
+        Arc::new(StringArray::from(user_agent)) as ArrayRef,
+        Arc::new(StringArray::from(x_request_id)) as ArrayRef,
+        Arc::new(StringArray::from(authority)) as ArrayRef,
+        Arc::new(StringArray::from(route_name)) as ArrayRef,
+        Arc::new(StringArray::from(service)) as ArrayRef,
+        Arc::new(StringArray::from(upstream_cluster)) as ArrayRef,
+        Arc::new(StringArray::from(upstream_host)) as ArrayRef,
+        Arc::new(StringArray::from(downstream_remote_address)) as ArrayRef,
+        Arc::new(StringArray::from(downstream_direct_remote_address)) as ArrayRef,
+        Arc::new(StringArray::from(x_forwarded_for)) as ArrayRef,
+        Arc::new(StringArray::from(tls_version)) as ArrayRef,
+    ];
+    RecordBatch::try_new(schema, arrays)
+        .unwrap_or_else(|err| panic!("envoy batch generation failed for {count} rows: {err}"))
 }
 
 fn make_source_ip(bucket: usize, salt: usize) -> String {
@@ -1429,6 +1667,229 @@ pub fn gen_production_mixed(count: usize, seed: u64) -> Vec<u8> {
     buf.into_bytes()
 }
 
+/// Generate non-uniform production-like logs directly as a detached
+/// [`RecordBatch`].
+pub fn gen_production_mixed_batch(count: usize, seed: u64) -> RecordBatch {
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let mut cardinality = CardinalityState::new(CardinalityProfile::infra_like());
+
+    let mut timestamp = Vec::with_capacity(count);
+    let mut level = Vec::with_capacity(count);
+    let mut message = Vec::with_capacity(count);
+    let mut status = Vec::with_capacity(count);
+    let mut duration_ms = Vec::with_capacity(count);
+    let mut service = Vec::with_capacity(count);
+    let mut namespace = Vec::with_capacity(count);
+    let mut user = Vec::with_capacity(count);
+    let mut request_id = Vec::with_capacity(count);
+    let mut bytes_sent = Vec::with_capacity(count);
+    let mut cluster = Vec::with_capacity(count);
+    let mut node = Vec::with_capacity(count);
+    let mut pod = Vec::with_capacity(count);
+    let mut container = Vec::with_capacity(count);
+    let mut trace_id = Vec::with_capacity(count);
+    let mut span_id = Vec::with_capacity(count);
+    let mut session_id = Vec::with_capacity(count);
+    let mut user_agent = Vec::with_capacity(count);
+    let mut content_type = Vec::with_capacity(count);
+    let mut retry_count = Vec::with_capacity(count);
+    let mut error_count = Vec::with_capacity(count);
+    let mut exception_class = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let sample = cardinality.sample(&mut rng);
+        let phase = sample.phase;
+        let status_code = sample.status_code;
+        let cluster_value = sample.cluster.to_string();
+        let node_value = sample.node.to_string();
+        let pod_value = sample.pod.to_string();
+        let container_value = sample.container.to_string();
+        let trace_id_value = format!("{:032x}", sample.trace_id);
+        let span_id_value = format!("{:016x}", sample.span_id);
+        let session_id_value = sample.session_id;
+        let retry_count_value = sample.retry_count;
+        let error_count_value = sample.error_count;
+        let request_id_value = sample.request_id as u32;
+        let service_idx = sample.service_idx;
+        let namespace_idx = sample.namespace_idx;
+        let path_idx = sample.path_idx;
+        let user_idx = sample.user_idx;
+        let sec = i % 60;
+        let nano = rng.u32(..1_000_000_000);
+        let ts = format!("2024-01-15T10:30:{sec:02}.{nano:09}Z");
+        let variant = rng.u8(..10);
+        let level_value = level_for_phase(phase).to_string();
+        let service_value = pick_by_idx(SERVICES, service_idx).to_string();
+        let namespace_value = pick_by_idx(NAMESPACES, namespace_idx).to_string();
+        let path = pick_by_idx(PATHS, path_idx);
+        let user_value = user_label(user_idx);
+
+        timestamp.push(ts);
+        level.push(level_value.clone());
+        service.push(service_value.clone());
+
+        if variant < 7 {
+            let method = pick(&mut rng, METHODS);
+            let status_value = status_code;
+            let duration_value = round_tenths(
+                rng.f64()
+                    * match phase {
+                        SamplePhase::Hot => 250.0,
+                        SamplePhase::Warm => 750.0,
+                        SamplePhase::Cold => 2500.0,
+                    },
+            );
+            let include_namespace_user = phase != SamplePhase::Hot && rng.bool();
+            message.push(format!("{method} {path} HTTP/1.1"));
+            status.push(status_value);
+            duration_ms.push(duration_value);
+            namespace.push(include_namespace_user.then_some(namespace_value));
+            user.push(include_namespace_user.then_some(user_value));
+            request_id.push(
+                (rng.bool() || phase == SamplePhase::Cold)
+                    .then(|| format!("req-{request_id_value:08x}")),
+            );
+            bytes_sent.push(rng.bool().then(|| rng.u32(..65536)));
+            cluster.push(None);
+            node.push(None);
+            pod.push(None);
+            container.push(None);
+            trace_id.push(None);
+            span_id.push(None);
+            session_id.push(None);
+            user_agent.push(None);
+            content_type.push(None);
+            retry_count.push(None);
+            error_count.push(None);
+            exception_class.push(None);
+        } else if variant < 9 {
+            let method = pick(&mut rng, METHODS);
+            let status_value = status_code;
+            let duration_value = round_tenths(
+                rng.f64()
+                    * match phase {
+                        SamplePhase::Hot => 400.0,
+                        SamplePhase::Warm => 900.0,
+                        SamplePhase::Cold => 3000.0,
+                    },
+            );
+            message.push(format!("{method} {path} HTTP/1.1"));
+            status.push(status_value);
+            duration_ms.push(duration_value);
+            namespace.push(Some(namespace_value));
+            user.push(Some(user_value));
+            request_id.push(Some(format!("req-{request_id_value:08x}")));
+            bytes_sent.push(Some(rng.u32(..65536)));
+            cluster.push(Some(cluster_value));
+            node.push(Some(node_value));
+            pod.push(Some(pod_value));
+            container.push(Some(container_value));
+            trace_id.push(Some(trace_id_value));
+            span_id.push(Some(span_id_value));
+            session_id.push(Some(session_id_value));
+            user_agent.push(Some("Mozilla/5.0".to_string()));
+            content_type.push(Some("application/json".to_string()));
+            retry_count.push(None);
+            error_count.push(None);
+            exception_class.push(None);
+        } else {
+            message.push(STACK_TRACE.to_string());
+            status.push(status_code);
+            duration_ms.push(round_tenths(rng.f64() * 5000.0));
+            namespace.push(Some(namespace_value));
+            user.push(Some(user_value));
+            request_id.push(Some(format!("req-{request_id_value:08x}")));
+            bytes_sent.push(None);
+            cluster.push(Some(cluster_value));
+            node.push(Some(node_value));
+            pod.push(Some(pod_value));
+            container.push(Some(container_value));
+            trace_id.push(Some(trace_id_value));
+            span_id.push(Some(span_id_value));
+            session_id.push(Some(session_id_value));
+            user_agent.push(None);
+            content_type.push(None);
+            retry_count.push(Some(retry_count_value));
+            error_count.push(Some(error_count_value));
+            exception_class.push(Some("java.lang.NullPointerException".to_string()));
+        }
+    }
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("timestamp", DataType::Utf8, true),
+        Field::new("level", DataType::Utf8, true),
+        Field::new("message", DataType::Utf8, true),
+        Field::new("status", DataType::Int64, true),
+        Field::new("duration_ms", DataType::Float64, true),
+        Field::new("service", DataType::Utf8, true),
+        Field::new("namespace", DataType::Utf8, true),
+        Field::new("user", DataType::Utf8, true),
+        Field::new("request_id", DataType::Utf8, true),
+        Field::new("bytes_sent", DataType::Int64, true),
+        Field::new("cluster", DataType::Utf8, true),
+        Field::new("node", DataType::Utf8, true),
+        Field::new("pod", DataType::Utf8, true),
+        Field::new("container", DataType::Utf8, true),
+        Field::new("trace_id", DataType::Utf8, true),
+        Field::new("span_id", DataType::Utf8, true),
+        Field::new("session_id", DataType::Int64, true),
+        Field::new("user_agent", DataType::Utf8, true),
+        Field::new("content_type", DataType::Utf8, true),
+        Field::new("retry_count", DataType::Int64, true),
+        Field::new("error_count", DataType::Int64, true),
+        Field::new("exception_class", DataType::Utf8, true),
+    ]));
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(timestamp)) as ArrayRef,
+        Arc::new(StringArray::from(level)) as ArrayRef,
+        Arc::new(StringArray::from(message)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            status.into_iter().map(i64::from).collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(Float64Array::from(duration_ms)) as ArrayRef,
+        Arc::new(StringArray::from(service)) as ArrayRef,
+        Arc::new(StringArray::from(namespace)) as ArrayRef,
+        Arc::new(StringArray::from(user)) as ArrayRef,
+        Arc::new(StringArray::from(request_id)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            bytes_sent
+                .into_iter()
+                .map(|v| v.map(i64::from))
+                .collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(StringArray::from(cluster)) as ArrayRef,
+        Arc::new(StringArray::from(node)) as ArrayRef,
+        Arc::new(StringArray::from(pod)) as ArrayRef,
+        Arc::new(StringArray::from(container)) as ArrayRef,
+        Arc::new(StringArray::from(trace_id)) as ArrayRef,
+        Arc::new(StringArray::from(span_id)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            session_id
+                .into_iter()
+                .map(|v| v.map(|n| n as i64))
+                .collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(StringArray::from(user_agent)) as ArrayRef,
+        Arc::new(StringArray::from(content_type)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            retry_count
+                .into_iter()
+                .map(|v| v.map(i64::from))
+                .collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(Int64Array::from(
+            error_count
+                .into_iter()
+                .map(|v| v.map(i64::from))
+                .collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(StringArray::from(exception_class)) as ArrayRef,
+    ];
+    RecordBatch::try_new(schema, arrays).unwrap_or_else(|err| {
+        panic!("production mixed batch generation failed for {count} rows: {err}")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // gen_narrow — Simple narrow JSON lines (5 fields, ~120 bytes/line)
 // ---------------------------------------------------------------------------
@@ -1454,6 +1915,49 @@ pub fn gen_narrow(count: usize, seed: u64) -> Vec<u8> {
         buf.push('\n');
     }
     buf.into_bytes()
+}
+
+/// Generate narrow flat logs directly as a detached [`RecordBatch`].
+pub fn gen_narrow_batch(count: usize, seed: u64) -> RecordBatch {
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let mut level = Vec::with_capacity(count);
+    let mut message = Vec::with_capacity(count);
+    let mut path_col = Vec::with_capacity(count);
+    let mut status = Vec::with_capacity(count);
+    let mut duration_ms = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let level_value = pick(&mut rng, LEVELS).to_string();
+        let path = pick(&mut rng, PATHS).to_string();
+        let status_value = pick_u16(&mut rng, STATUS_CODES);
+        let duration_value = round_tenths(rng.f64() * 500.0);
+        let method = METHODS[i % METHODS.len()];
+
+        level.push(level_value);
+        message.push(format!("{method} {path}"));
+        path_col.push(path);
+        status.push(status_value);
+        duration_ms.push(duration_value);
+    }
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("level", DataType::Utf8, true),
+        Field::new("message", DataType::Utf8, true),
+        Field::new("path", DataType::Utf8, true),
+        Field::new("status", DataType::Int64, true),
+        Field::new("duration_ms", DataType::Float64, true),
+    ]));
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(level)) as ArrayRef,
+        Arc::new(StringArray::from(message)) as ArrayRef,
+        Arc::new(StringArray::from(path_col)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            status.into_iter().map(i64::from).collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(Float64Array::from(duration_ms)) as ArrayRef,
+    ];
+    RecordBatch::try_new(schema, arrays)
+        .unwrap_or_else(|err| panic!("narrow batch generation failed for {count} rows: {err}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1512,6 +2016,181 @@ pub fn gen_wide(count: usize, seed: u64) -> Vec<u8> {
     buf.into_bytes()
 }
 
+/// Generate wide flat logs directly as a detached [`RecordBatch`].
+pub fn gen_wide_batch(count: usize, seed: u64) -> RecordBatch {
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let mut cardinality = CardinalityState::new(CardinalityProfile::infra_like());
+
+    let mut timestamp = Vec::with_capacity(count);
+    let mut level = Vec::with_capacity(count);
+    let mut message = Vec::with_capacity(count);
+    let mut status = Vec::with_capacity(count);
+    let mut duration_ms = Vec::with_capacity(count);
+    let mut cluster = Vec::with_capacity(count);
+    let mut node = Vec::with_capacity(count);
+    let mut namespace = Vec::with_capacity(count);
+    let mut pod = Vec::with_capacity(count);
+    let mut container = Vec::with_capacity(count);
+    let mut service = Vec::with_capacity(count);
+    let mut trace_id = Vec::with_capacity(count);
+    let mut span_id = Vec::with_capacity(count);
+    let mut request_id = Vec::with_capacity(count);
+    let mut session_id = Vec::with_capacity(count);
+    let mut user = Vec::with_capacity(count);
+    let mut bytes_sent = Vec::with_capacity(count);
+    let mut bytes_received = Vec::with_capacity(count);
+    let mut user_agent = Vec::with_capacity(count);
+    let mut content_type = Vec::with_capacity(count);
+    let mut remote_addr = Vec::with_capacity(count);
+    let mut host = Vec::with_capacity(count);
+    let mut protocol = Vec::with_capacity(count);
+    let mut tls_version = Vec::with_capacity(count);
+    let mut upstream_latency_ms = Vec::with_capacity(count);
+    let mut retry_count = Vec::with_capacity(count);
+    let mut error_count = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let sample = cardinality.sample(&mut rng);
+        let phase = sample.phase;
+        let status_code = sample.status_code;
+        let cluster_value = sample.cluster.to_string();
+        let node_value = sample.node.to_string();
+        let pod_value = sample.pod.to_string();
+        let container_value = sample.container.to_string();
+        let trace_id_value = format!("{:032x}", sample.trace_id);
+        let span_id_value = format!("{:016x}", sample.span_id);
+        let request_id_value = format!("req-{:08x}", sample.request_id as u32);
+        let session_id_value = sample.session_id;
+        let retry_count_value = sample.retry_count;
+        let error_count_value = sample.error_count;
+        let service_idx = sample.service_idx;
+        let namespace_idx = sample.namespace_idx;
+        let path_idx = sample.path_idx;
+        let user_idx = sample.user_idx;
+        let sec = i % 60;
+        let nano = rng.u32(..1_000_000_000);
+        let level_value = level_for_phase(phase).to_string();
+        let path = pick_by_idx(PATHS, path_idx);
+        let method = pick(&mut rng, METHODS);
+        let status_value = status_code;
+        let duration_value = round_tenths(
+            rng.f64()
+                * match phase {
+                    SamplePhase::Hot => 300.0,
+                    SamplePhase::Warm => 900.0,
+                    SamplePhase::Cold => 3500.0,
+                },
+        );
+        let namespace_value = pick_by_idx(NAMESPACES, namespace_idx).to_string();
+        let service_value = pick_by_idx(SERVICES, service_idx).to_string();
+        let user_value = user_label(user_idx);
+
+        timestamp.push(format!("2024-01-15T10:30:{sec:02}.{nano:09}Z"));
+        level.push(level_value);
+        message.push(format!("{method} {path} HTTP/1.1"));
+        status.push(status_value);
+        duration_ms.push(duration_value);
+        cluster.push(cluster_value);
+        node.push(node_value);
+        namespace.push(namespace_value);
+        pod.push(pod_value);
+        container.push(container_value);
+        service.push(service_value);
+        trace_id.push(trace_id_value);
+        span_id.push(span_id_value);
+        request_id.push(request_id_value);
+        session_id.push(session_id_value);
+        user.push(user_value);
+        bytes_sent.push(rng.u32(..65536));
+        bytes_received.push(rng.u32(..65536));
+        user_agent.push("Mozilla/5.0 (X11; Linux x86_64)".to_string());
+        content_type.push("application/json".to_string());
+        remote_addr.push(format!("10.{}.{}.{}", rng.u8(..), rng.u8(..), rng.u8(..)));
+        host.push("api.example.com".to_string());
+        protocol.push("HTTP/1.1".to_string());
+        tls_version.push("TLSv1.3".to_string());
+        upstream_latency_ms.push(round_tenths(rng.f64() * 200.0));
+        retry_count.push(retry_count_value);
+        error_count.push(error_count_value);
+    }
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("timestamp", DataType::Utf8, true),
+        Field::new("level", DataType::Utf8, true),
+        Field::new("message", DataType::Utf8, true),
+        Field::new("status", DataType::Int64, true),
+        Field::new("duration_ms", DataType::Float64, true),
+        Field::new("cluster", DataType::Utf8, true),
+        Field::new("node", DataType::Utf8, true),
+        Field::new("namespace", DataType::Utf8, true),
+        Field::new("pod", DataType::Utf8, true),
+        Field::new("container", DataType::Utf8, true),
+        Field::new("service", DataType::Utf8, true),
+        Field::new("trace_id", DataType::Utf8, true),
+        Field::new("span_id", DataType::Utf8, true),
+        Field::new("request_id", DataType::Utf8, true),
+        Field::new("session_id", DataType::Int64, true),
+        Field::new("user", DataType::Utf8, true),
+        Field::new("bytes_sent", DataType::Int64, true),
+        Field::new("bytes_received", DataType::Int64, true),
+        Field::new("user_agent", DataType::Utf8, true),
+        Field::new("content_type", DataType::Utf8, true),
+        Field::new("remote_addr", DataType::Utf8, true),
+        Field::new("host", DataType::Utf8, true),
+        Field::new("protocol", DataType::Utf8, true),
+        Field::new("tls_version", DataType::Utf8, true),
+        Field::new("upstream_latency_ms", DataType::Float64, true),
+        Field::new("retry_count", DataType::Int64, true),
+        Field::new("error_count", DataType::Int64, true),
+    ]));
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(timestamp)) as ArrayRef,
+        Arc::new(StringArray::from(level)) as ArrayRef,
+        Arc::new(StringArray::from(message)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            status.into_iter().map(i64::from).collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(Float64Array::from(duration_ms)) as ArrayRef,
+        Arc::new(StringArray::from(cluster)) as ArrayRef,
+        Arc::new(StringArray::from(node)) as ArrayRef,
+        Arc::new(StringArray::from(namespace)) as ArrayRef,
+        Arc::new(StringArray::from(pod)) as ArrayRef,
+        Arc::new(StringArray::from(container)) as ArrayRef,
+        Arc::new(StringArray::from(service)) as ArrayRef,
+        Arc::new(StringArray::from(trace_id)) as ArrayRef,
+        Arc::new(StringArray::from(span_id)) as ArrayRef,
+        Arc::new(StringArray::from(request_id)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            session_id.into_iter().map(|n| n as i64).collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(StringArray::from(user)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            bytes_sent.into_iter().map(i64::from).collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(Int64Array::from(
+            bytes_received
+                .into_iter()
+                .map(i64::from)
+                .collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(StringArray::from(user_agent)) as ArrayRef,
+        Arc::new(StringArray::from(content_type)) as ArrayRef,
+        Arc::new(StringArray::from(remote_addr)) as ArrayRef,
+        Arc::new(StringArray::from(host)) as ArrayRef,
+        Arc::new(StringArray::from(protocol)) as ArrayRef,
+        Arc::new(StringArray::from(tls_version)) as ArrayRef,
+        Arc::new(Float64Array::from(upstream_latency_ms)) as ArrayRef,
+        Arc::new(Int64Array::from(
+            retry_count.into_iter().map(i64::from).collect::<Vec<_>>(),
+        )) as ArrayRef,
+        Arc::new(Int64Array::from(
+            error_count.into_iter().map(i64::from).collect::<Vec<_>>(),
+        )) as ArrayRef,
+    ];
+    RecordBatch::try_new(schema, arrays)
+        .unwrap_or_else(|err| panic!("wide batch generation failed for {count} rows: {err}"))
+}
+
 // ---------------------------------------------------------------------------
 // Metadata helper
 // ---------------------------------------------------------------------------
@@ -1535,7 +2214,82 @@ pub fn make_metadata() -> BatchMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use arrow::record_batch::RecordBatch;
+    use arrow::util::display::array_value_to_string;
+    use bytes::Bytes;
+    use logfwd_arrow::Scanner;
+    use logfwd_core::scan_config::ScanConfig;
+    use std::collections::{HashMap, HashSet};
+
+    fn scan_json(data: Vec<u8>) -> RecordBatch {
+        Scanner::new(ScanConfig::default())
+            .scan_detached(Bytes::from(data))
+            .expect("scan must succeed")
+    }
+
+    fn assert_batch_matches_scanned_json(expected: &RecordBatch, actual: &RecordBatch) {
+        assert_eq!(expected.num_rows(), actual.num_rows(), "row count mismatch");
+        assert_eq!(
+            expected.num_columns(),
+            actual.num_columns(),
+            "column count mismatch"
+        );
+
+        let expected_schema = expected.schema();
+        let actual_schema = actual.schema();
+        let expected_fields = expected_schema.fields();
+        let actual_fields = actual_schema.fields();
+        let expected_by_name: HashMap<&str, usize> = expected_fields
+            .iter()
+            .enumerate()
+            .map(|(idx, field)| (field.name().as_str(), idx))
+            .collect();
+        let actual_by_name: HashMap<&str, usize> = actual_fields
+            .iter()
+            .enumerate()
+            .map(|(idx, field)| (field.name().as_str(), idx))
+            .collect();
+
+        for (name, expected_idx) in &expected_by_name {
+            let actual_idx = actual_by_name
+                .get(name)
+                .unwrap_or_else(|| panic!("missing column {name} in direct batch"));
+            let expected_field = &expected_fields[*expected_idx];
+            let actual_field = &actual_fields[*actual_idx];
+            assert_eq!(
+                expected_field.data_type(),
+                actual_field.data_type(),
+                "column type mismatch for {}",
+                expected_field.name()
+            );
+            assert_eq!(
+                expected_field.is_nullable(),
+                actual_field.is_nullable(),
+                "nullability mismatch for {}",
+                expected_field.name()
+            );
+        }
+
+        for (name, expected_idx) in &expected_by_name {
+            let actual_idx = actual_by_name[name];
+            let expected_col = expected.column(*expected_idx);
+            let actual_col = actual.column(actual_idx);
+            for row_idx in 0..expected.num_rows() {
+                let expected_value = array_value_to_string(expected_col.as_ref(), row_idx)
+                    .unwrap_or_else(|err| {
+                        panic!("display expected row {row_idx} column {name}: {err}")
+                    });
+                let actual_value = array_value_to_string(actual_col.as_ref(), row_idx)
+                    .unwrap_or_else(|err| {
+                        panic!("display actual row {row_idx} column {name}: {err}")
+                    });
+                assert_eq!(
+                    expected_value, actual_value,
+                    "value mismatch at row {row_idx}, column {name}",
+                );
+            }
+        }
+    }
 
     #[test]
     fn cri_k8s_deterministic() {
@@ -1729,6 +2483,35 @@ mod tests {
             "expected service diversity, got {}",
             services.len()
         );
+    }
+
+    #[test]
+    fn narrow_batch_matches_scanned_json() {
+        let scanned = scan_json(gen_narrow(256, 42));
+        let direct = gen_narrow_batch(256, 42);
+        assert_batch_matches_scanned_json(&scanned, &direct);
+    }
+
+    #[test]
+    fn wide_batch_matches_scanned_json() {
+        let scanned = scan_json(gen_wide(256, 42));
+        let direct = gen_wide_batch(256, 42);
+        assert_batch_matches_scanned_json(&scanned, &direct);
+    }
+
+    #[test]
+    fn production_mixed_batch_matches_scanned_json() {
+        let scanned = scan_json(gen_production_mixed(256, 42));
+        let direct = gen_production_mixed_batch(256, 42);
+        assert_batch_matches_scanned_json(&scanned, &direct);
+    }
+
+    #[test]
+    fn envoy_access_batch_matches_scanned_json() {
+        let profile = EnvoyAccessProfile::benchmark();
+        let scanned = scan_json(gen_envoy_access_with_profile(256, 42, profile));
+        let direct = gen_envoy_access_batch_with_profile(256, 42, profile);
+        assert_batch_matches_scanned_json(&scanned, &direct);
     }
 
     #[test]

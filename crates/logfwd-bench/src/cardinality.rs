@@ -413,7 +413,7 @@ pub mod cardinality_helpers {
                 ),
                 session_pool: LeasePool::new(
                     (0..(32 * scale))
-                        .map(|i| 0x9e3779b97f4a7c15u64.wrapping_mul((i as u64) + 1))
+                        .map(|i| 1_000_000_000_000_000_000u64 + (i as u64 * 97_531))
                         .collect(),
                     session_tenure,
                 ),

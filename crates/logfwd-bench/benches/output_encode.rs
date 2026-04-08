@@ -15,10 +15,8 @@
 use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use logfwd_arrow::scanner::Scanner;
 use logfwd_bench::{NullSink, generators, make_otlp_sink};
 use logfwd_core::otlp::{Severity, hex_decode, parse_severity, parse_timestamp_nanos};
-use logfwd_core::scan_config::ScanConfig;
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_output::{BatchMetadata, Compression};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
@@ -30,13 +28,6 @@ use prost::Message;
 
 const SCOPE_NAME: &str = "logfwd";
 const SCOPE_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-fn scan_to_batch(data: &[u8]) -> RecordBatch {
-    let mut scanner = Scanner::new(ScanConfig::default());
-    scanner
-        .scan_detached(bytes::Bytes::copy_from_slice(data))
-        .expect("bench: scan should not fail")
-}
 
 #[derive(Clone)]
 struct GeneratedRowRefs<'a> {
@@ -387,38 +378,37 @@ fn bench_output_encode(c: &mut Criterion) {
     let meta = generators::make_metadata();
 
     #[allow(clippy::type_complexity)]
-    let variants: Vec<(&str, Vec<(usize, Vec<u8>)>)> = vec![
+    let variants: Vec<(&str, Vec<(usize, RecordBatch)>)> = vec![
         (
             "narrow",
             vec![
-                (1_000, generators::gen_narrow(1_000, 42)),
-                (10_000, generators::gen_narrow(10_000, 42)),
+                (1_000, generators::gen_narrow_batch(1_000, 42)),
+                (10_000, generators::gen_narrow_batch(10_000, 42)),
             ],
         ),
         (
             "wide",
             vec![
-                (1_000, generators::gen_wide(1_000, 42)),
-                (10_000, generators::gen_wide(10_000, 42)),
+                (1_000, generators::gen_wide_batch(1_000, 42)),
+                (10_000, generators::gen_wide_batch(10_000, 42)),
             ],
         ),
     ];
 
     for (schema_name, sizes) in &variants {
-        for (n, data) in sizes {
-            let batch = scan_to_batch(data);
+        for (n, batch) in sizes {
             let label = format!("{schema_name}/{n}");
 
-            group.throughput(Throughput::Bytes(data.len() as u64));
+            group.throughput(Throughput::Elements(*n as u64));
 
-            group.bench_with_input(BenchmarkId::new("null_sink", &label), &batch, |b, batch| {
+            group.bench_with_input(BenchmarkId::new("null_sink", &label), batch, |b, batch| {
                 let mut sink = NullSink;
                 b.iter(|| sink.send_batch(batch, &meta).unwrap());
             });
 
             group.bench_with_input(
                 BenchmarkId::new("otlp_encode_manual", &label),
-                &batch,
+                batch,
                 |b, batch| {
                     let mut sink = make_otlp_sink(Compression::None);
                     b.iter(|| {
@@ -429,7 +419,7 @@ fn bench_output_encode(c: &mut Criterion) {
 
             group.bench_with_input(
                 BenchmarkId::new("otlp_encode_generated_naive", &label),
-                &batch,
+                batch,
                 |b, batch| {
                     b.iter(|| {
                         let request = build_generated_request_naive(batch, &meta);
@@ -444,7 +434,7 @@ fn bench_output_encode(c: &mut Criterion) {
 
             group.bench_with_input(
                 BenchmarkId::new("otlp_encode_generated_reuse", &label),
-                &batch,
+                batch,
                 |b, batch| {
                     let mut request = ExportLogsServiceRequest::default();
                     let mut encoded = Vec::with_capacity(batch.num_rows() * 128);
@@ -457,7 +447,7 @@ fn bench_output_encode(c: &mut Criterion) {
 
             group.bench_with_input(
                 BenchmarkId::new("otlp_encode_generated_fast", &label),
-                &batch,
+                batch,
                 |b, batch| {
                     let mut sink = make_otlp_sink(Compression::None);
                     b.iter(|| {
@@ -468,7 +458,7 @@ fn bench_output_encode(c: &mut Criterion) {
 
             group.bench_with_input(
                 BenchmarkId::new("json_lines_zstd", &label),
-                &batch,
+                batch,
                 |b, batch| {
                     let cols = logfwd_output::build_col_infos(batch);
                     let mut json_buf = Vec::with_capacity(*n * 300);
@@ -489,23 +479,19 @@ fn bench_output_encode(c: &mut Criterion) {
                 },
             );
 
-            group.bench_with_input(
-                BenchmarkId::new("json_lines", &label),
-                &batch,
-                |b, batch| {
-                    let cols = logfwd_output::build_col_infos(batch);
-                    let mut buf = Vec::with_capacity(*n * 300);
-                    b.iter(|| {
-                        buf.clear();
-                        for row in 0..batch.num_rows() {
-                            logfwd_output::write_row_json(batch, row, &cols, &mut buf)
-                                .expect("JSON serialization should not fail");
-                            buf.push(b'\n');
-                        }
-                        std::hint::black_box(&buf);
-                    });
-                },
-            );
+            group.bench_with_input(BenchmarkId::new("json_lines", &label), batch, |b, batch| {
+                let cols = logfwd_output::build_col_infos(batch);
+                let mut buf = Vec::with_capacity(*n * 300);
+                b.iter(|| {
+                    buf.clear();
+                    for row in 0..batch.num_rows() {
+                        logfwd_output::write_row_json(batch, row, &cols, &mut buf)
+                            .expect("JSON serialization should not fail");
+                        buf.push(b'\n');
+                    }
+                    std::hint::black_box(&buf);
+                });
+            });
         }
     }
 
