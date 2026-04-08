@@ -95,6 +95,8 @@ pub trait ScanBuilder {
     fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
     /// Append a float value (as raw ASCII) at the given column index.
     fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
+    /// Append a boolean value at the given column index.
+    fn append_bool_by_idx(&mut self, idx: usize, value: bool);
     /// Record a null value at the given column index.
     fn append_null_by_idx(&mut self, idx: usize);
     /// Store the raw unparsed line (only called when `keep_raw` is set).
@@ -199,35 +201,31 @@ fn scan_line<B: ScanBuilder>(
                 }
             }
             b't' | b'f' => {
-                let s = pos;
-                while pos < end
-                    && buf[pos] != b','
-                    && buf[pos] != b'}'
-                    && buf[pos] != b' '
-                    && buf[pos] != b'\t'
-                    && buf[pos] != b'\r'
-                {
-                    pos += 1;
-                }
-                if wanted {
-                    let idx = builder.resolve_field(key);
-                    builder.append_str_by_idx(idx, &buf[s..pos]);
+                if matches_json_literal(buf, pos, end, b"true") {
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        builder.append_bool_by_idx(idx, true);
+                    }
+                    pos += 4;
+                } else if matches_json_literal(buf, pos, end, b"false") {
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        builder.append_bool_by_idx(idx, false);
+                    }
+                    pos += 5;
+                } else {
+                    pos = skip_bare_value(buf, pos, end);
                 }
             }
             b'n' => {
-                // Scan past the null/identifier token to the next delimiter.
-                while pos < end
-                    && buf[pos] != b','
-                    && buf[pos] != b'}'
-                    && buf[pos] != b' '
-                    && buf[pos] != b'\t'
-                    && buf[pos] != b'\r'
-                {
-                    pos += 1;
-                }
-                if wanted {
-                    let idx = builder.resolve_field(key);
-                    builder.append_null_by_idx(idx);
+                if matches_json_literal(buf, pos, end, b"null") {
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        builder.append_null_by_idx(idx);
+                    }
+                    pos += 4;
+                } else {
+                    pos = skip_bare_value(buf, pos, end);
                 }
             }
             _ => {
@@ -278,6 +276,33 @@ fn skip_ws(buf: &[u8], mut pos: usize, end: usize) -> usize {
         }
     }
     pos
+}
+
+#[inline(always)]
+fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
+    while pos < end && !is_json_delimiter(buf[pos]) {
+        pos += 1;
+    }
+    pos
+}
+
+#[inline(always)]
+fn matches_json_literal(buf: &[u8], pos: usize, end: usize, literal: &[u8]) -> bool {
+    let literal_end = match pos.checked_add(literal.len()) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    if literal_end > end || &buf[pos..literal_end] != literal {
+        return false;
+    }
+
+    literal_end == end || is_json_delimiter(buf[literal_end])
+}
+
+#[inline(always)]
+fn is_json_delimiter(c: u8) -> bool {
+    c == b',' || c == b'}' || c == b']' || c == b' ' || c == b'\t' || c == b'\r' || c == b'\n'
 }
 
 #[cfg(kani)]

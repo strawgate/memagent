@@ -67,11 +67,6 @@ enum ReceiverPayload {
     },
 }
 
-struct ResolvedStringField {
-    idx: usize,
-    bytes: Vec<u8>,
-}
-
 impl OtlpReceiverInput {
     /// Bind an HTTP server on `addr` (e.g. "0.0.0.0:4318").
     /// Spawns a background thread to handle requests.
@@ -929,11 +924,7 @@ fn convert_request_to_batch(request: &ExportLogsServiceRequest) -> Result<Record
         if let Some(ref resource) = resource_logs.resource {
             for attr in &resource.attributes {
                 if let Some(ref value) = attr.value {
-                    if let Some(field) =
-                        resolve_stringified_field(&mut builder, &attr.key, value, &mut hex_buf)
-                    {
-                        resource_attrs.push(field);
-                    }
+                    resource_attrs.push((&attr.key, value));
                 }
             }
         }
@@ -963,8 +954,8 @@ fn convert_request_to_batch(request: &ExportLogsServiceRequest) -> Result<Record
                     }
                 }
 
-                for field in &resource_attrs {
-                    builder.append_decoded_str_by_idx(field.idx, &field.bytes);
+                for (key, value) in &resource_attrs {
+                    append_attribute_value(&mut builder, key, value, &mut hex_buf);
                 }
 
                 if !record.trace_id.is_empty() {
@@ -994,24 +985,11 @@ fn append_attribute_value(
     match &value.value {
         Some(Value::IntValue(v)) => builder.append_i64_value_by_idx(idx, *v),
         Some(Value::DoubleValue(v)) => builder.append_f64_value_by_idx(idx, *v),
-        Some(Value::BoolValue(v)) => {
-            builder.append_decoded_str_by_idx(idx, if *v { b"true" } else { b"false" });
-        }
+        Some(Value::BoolValue(v)) => builder.append_bool_by_idx(idx, *v),
         Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
         _ => {}
     }
-}
-
-fn resolve_stringified_field(
-    builder: &mut StreamingBuilder,
-    key: &str,
-    value: &AnyValue,
-    hex_buf: &mut Vec<u8>,
-) -> Option<ResolvedStringField> {
-    let idx = builder.resolve_field(key.as_bytes());
-    let bytes = any_value_to_string_bytes(value, hex_buf)?;
-    Some(ResolvedStringField { idx, bytes })
 }
 
 fn append_any_value_as_string(
@@ -1035,26 +1013,6 @@ fn append_any_value_as_string(
         }
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
         _ => {}
-    }
-}
-
-fn any_value_to_string_bytes(value: &AnyValue, hex_buf: &mut Vec<u8>) -> Option<Vec<u8>> {
-    match &value.value {
-        Some(Value::StringValue(v)) => Some(v.as_bytes().to_vec()),
-        Some(Value::IntValue(v)) => Some(v.to_string().into_bytes()),
-        Some(Value::DoubleValue(v)) => Some(v.to_string().into_bytes()),
-        Some(Value::BoolValue(v)) => Some(if *v {
-            b"true".to_vec()
-        } else {
-            b"false".to_vec()
-        }),
-        Some(Value::BytesValue(v)) => {
-            hex_buf.clear();
-            hex_buf.reserve(v.len() * 2);
-            write_hex_to_buf(hex_buf, v);
-            Some(hex_buf.clone())
-        }
-        _ => None,
     }
 }
 
@@ -1430,7 +1388,8 @@ mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, Int64Array, StringArray, StringViewArray};
+    use arrow::array::{Array, BooleanArray, Int64Array, StringArray, StringViewArray};
+    use arrow::datatypes::DataType;
     use bytes::Bytes;
     use logfwd_arrow::Scanner;
     use logfwd_core::scan_config::ScanConfig;
@@ -1551,7 +1510,106 @@ mod tests {
                 })
                 .collect();
         }
+        if let Some(array) = array.as_any().downcast_ref::<BooleanArray>() {
+            return (0..array.len())
+                .map(|idx| {
+                    if array.is_null(idx) {
+                        "NULL".to_string()
+                    } else {
+                        array.value(idx).to_string()
+                    }
+                })
+                .collect();
+        }
         panic!("unsupported test array type: {:?}", array.data_type());
+    }
+
+    #[test]
+    fn structured_batch_preserves_boolean_type_and_dotted_attributes() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("checkout-api".into())),
+                        }),
+                    }],
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "sampled".into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::BoolValue(true)),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let batch = convert_request_to_batch(&request).expect("structured decode succeeds");
+
+        let sampled = batch
+            .column_by_name("sampled")
+            .expect("sampled column must exist");
+        assert_eq!(sampled.data_type(), &DataType::Boolean);
+        let sampled = sampled
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("sampled must be BooleanArray");
+        assert!(sampled.value(0), "sampled=true must be preserved as bool");
+
+        let service_name = batch
+            .column_by_name("service.name")
+            .expect("dotted attribute must keep original column name");
+        let service_name = service_name
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("service.name should remain a flat string column");
+        assert_eq!(service_name.value(0), "checkout-api");
+        assert!(
+            batch.column_by_name("service_name").is_none(),
+            "dotted attributes must not require sanitized internal-name coupling"
+        );
+    }
+
+    #[test]
+    fn structured_batch_preserves_resource_boolean_type() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "resource.sampled".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::BoolValue(true)),
+                        }),
+                    }],
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord::default()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let batch = convert_request_to_batch(&request).expect("structured decode succeeds");
+        let sampled = batch
+            .column_by_name("resource.sampled")
+            .expect("resource.sampled must exist");
+        assert_eq!(sampled.data_type(), &DataType::Boolean);
+        let sampled = sampled
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("resource.sampled must be BooleanArray");
+        assert!(sampled.value(0), "resource bool attribute must stay typed");
     }
 
     #[test]
