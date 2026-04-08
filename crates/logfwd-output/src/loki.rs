@@ -189,9 +189,19 @@ impl LokiSink {
 
         // Find timestamp column index (prefer `_timestamp`, fall back to `@timestamp`).
         // Timestamp columns are always flat Int64/UInt64 — no struct conflict expected.
-        let ts_col_idx = schema.fields().iter().position(|f| {
-            f.name() == field_names::TIMESTAMP_UNDERSCORE || f.name() == field_names::TIMESTAMP_AT
-        });
+        // NOTE: must not use a single `position(|| || )` — that returns the first schema
+        // match, which may be `@timestamp` when both fields are present. Look up each
+        // preferred name separately so `_timestamp` always wins.
+        let ts_col_idx = schema
+            .fields()
+            .iter()
+            .position(|f| f.name() == field_names::TIMESTAMP_UNDERSCORE)
+            .or_else(|| {
+                schema
+                    .fields()
+                    .iter()
+                    .position(|f| f.name() == field_names::TIMESTAMP_AT)
+            });
 
         // Find label ColInfos for configured label columns.
         // Static labels are sanitized before collision detection (#1459, #1470).
@@ -938,6 +948,60 @@ mod tests {
         assert_eq!(
             entries[1].0, metadata.observed_time_ns,
             "Negative timestamp should fall back to observed_time_ns"
+        );
+    }
+
+    // Regression test for issue #1661: when both @timestamp and _timestamp are present,
+    // _timestamp must be preferred regardless of schema column order.
+    #[test]
+    fn underscore_timestamp_preferred_over_at_timestamp_regardless_of_schema_order() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        // Schema: @timestamp (index 0) BEFORE _timestamp (index 1).
+        // The old `position(|f| underscore || at)` would incorrectly pick @timestamp
+        // because it appears first in schema order.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(field_names::TIMESTAMP_AT, DataType::Int64, true),
+            Field::new(field_names::TIMESTAMP_UNDERSCORE, DataType::Int64, true),
+        ]));
+        let at_ts = 100i64; // @timestamp = 100 ns
+        let under_ts = 9999i64; // _timestamp = 9999 ns — this must win
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![at_ts])),
+                Arc::new(Int64Array::from(vec![under_ts])),
+            ],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1, "expected exactly one log entry");
+        assert_eq!(
+            entries[0].0, under_ts as u64,
+            "_timestamp ({under_ts}) must be preferred over @timestamp ({at_ts}), \
+             even when @timestamp appears first in the schema; got {}",
+            entries[0].0
         );
     }
 
