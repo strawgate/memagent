@@ -162,6 +162,9 @@ jobs:
       - name: Source file length guardrail
         run: python3 scripts/check_max_source_lines.py
 
+      - name: No raw payload injection guardrail
+        run: python3 scripts/check_no_raw_payload_injection.py
+
       # --- Expensive steps below — only reached if fast checks pass ---
 
       - uses: Swatinem/rust-cache@v2
