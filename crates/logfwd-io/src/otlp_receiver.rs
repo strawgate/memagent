@@ -11,18 +11,25 @@ use std::io;
 use std::io::Read as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
 use base64::Engine as _;
 use bytes::Bytes;
 use flate2::read::GzDecoder;
+use http_body_util::BodyExt as _;
 use logfwd_arrow::{Scanner, StreamingBuilder};
 use logfwd_core::scan_config::ScanConfig;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::AnyValue;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use prost::Message;
+use tokio::sync::oneshot;
 
 use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
@@ -71,6 +78,14 @@ enum ReceiverPayload {
         /// (possibly compressed), not the decoded/decompressed size.
         accounted_bytes: u64,
     },
+}
+
+struct OtlpServerState {
+    tx: mpsc::SyncSender<ReceiverPayload>,
+    is_running: Arc<AtomicBool>,
+    health: Arc<AtomicU8>,
+    mode: ReceiverMode,
+    stats: Option<Arc<ComponentStats>>,
 }
 
 impl OtlpReceiverInput {
@@ -159,272 +174,69 @@ impl OtlpReceiverInput {
         mode: ReceiverMode,
         stats: Option<Arc<ComponentStats>>,
     ) -> io::Result<Self> {
-        let server = Arc::new(
-            tiny_http::Server::http(addr)
-                .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?,
-        );
-
-        let bound_addr = match server.server_addr() {
-            tiny_http::ListenAddr::IP(a) => a,
-            tiny_http::ListenAddr::Unix(_) => {
-                return Err(io::Error::other("OTLP receiver: unexpected listen addr"));
-            }
-        };
+        let std_listener = std::net::TcpListener::bind(addr)
+            .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
+        let bound_addr = std_listener.local_addr()?;
+        std_listener.set_nonblocking(true).map_err(|e| {
+            io::Error::other(format!("OTLP receiver set_nonblocking {bound_addr}: {e}"))
+        })?;
 
         let (tx, rx) = mpsc::sync_channel(capacity);
-
-        let server_clone = Arc::clone(&server);
         let is_running = Arc::new(AtomicBool::new(true));
-        let is_running_clone = Arc::clone(&is_running);
         let health = Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr()));
-        let health_clone = Arc::clone(&health);
-        let stats_clone = stats;
+        let state = Arc::new(OtlpServerState {
+            tx,
+            is_running: Arc::clone(&is_running),
+            health: Arc::clone(&health),
+            mode,
+            stats,
+        });
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let state_for_server = Arc::clone(&state);
+        let is_running_for_server = Arc::clone(&is_running);
+        let health_for_server = Arc::clone(&health);
 
         let handle = std::thread::Builder::new()
             .name("otlp-receiver".into())
             .spawn(move || {
-                let record_error = |stats: &Option<Arc<ComponentStats>>| {
-                    if let Some(stats) = stats {
-                        stats.inc_errors();
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(_) => {
+                        record_error(&state_for_server.stats);
+                        health_for_server
+                            .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                        return;
                     }
                 };
-                let record_parse_error = |stats: &Option<Arc<ComponentStats>>| {
-                    if let Some(stats) = stats {
-                        stats.inc_parse_errors(1);
-                    }
-                };
-                while is_running_clone.load(Ordering::Relaxed) {
-                    let mut request = match server_clone.recv_timeout(Duration::from_millis(100)) {
-                        Ok(Some(req)) => req,
-                        Ok(None) => continue, // timeout — check is_running and retry
+
+                runtime.block_on(async move {
+                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                        Ok(listener) => listener,
                         Err(_) => {
-                            record_error(&stats_clone);
-                            health_clone
+                            record_error(&state_for_server.stats);
+                            health_for_server
                                 .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
-                            break;
+                            return;
                         }
                     };
 
-                    let url = request.url().to_string();
+                    let app = axum::Router::new()
+                        .route("/v1/logs", post(handle_otlp_request))
+                        .with_state(state_for_server);
 
-                    // Only accept the exact OTLP endpoint path (with optional query string).
-                    // Reject unrecognised paths with 404; wrong method with 405.
-                    let path = url.split('?').next().unwrap_or(&url);
-                    if path != "/v1/logs" {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("not found").with_status_code(404),
-                        );
-                        continue;
+                    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.await;
+                    });
+
+                    if server.await.is_err() && is_running_for_server.load(Ordering::Relaxed) {
+                        record_error(&state.stats);
+                        health_for_server
+                            .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
                     }
-                    if request.method() != &tiny_http::Method::Post {
-                        // RFC 7231 §6.5.5: wrong method → 405 with Allow header.
-                        let allow_header = "Allow: POST"
-                            .parse::<tiny_http::Header>()
-                            .expect("static header is valid");
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("method not allowed")
-                                .with_status_code(405)
-                                .with_header(allow_header),
-                        );
-                        continue;
-                    }
-
-                    // Reject bodies that declare a size over the limit.
-                    if request.body_length().unwrap_or(0) > MAX_BODY_SIZE {
-                        record_error(&stats_clone);
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("payload too large")
-                                .with_status_code(413),
-                        );
-                        continue;
-                    }
-
-                    // Read body with a hard cap.
-                    let mut body =
-                        Vec::with_capacity(request.body_length().unwrap_or(0).min(MAX_BODY_SIZE));
-                    match request
-                        .as_reader()
-                        .take(MAX_BODY_SIZE as u64 + 1)
-                        .read_to_end(&mut body)
-                    {
-                        Ok(n) if n > MAX_BODY_SIZE => {
-                            record_error(&stats_clone);
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("payload too large")
-                                    .with_status_code(413),
-                            );
-                            continue;
-                        }
-                        Err(_) => {
-                            record_error(&stats_clone);
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("read error")
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                        Ok(_) => {}
-                    }
-
-                    // Decompress if Content-Encoding is set.
-                    let content_encoding = request
-                        .headers()
-                        .iter()
-                        .find(|h| h.field.equiv("Content-Encoding"))
-                        .map(|h| h.value.as_str().to_lowercase());
-
-                    // Capture accounting at the receiver boundary *before*
-                    // payload normalization. Diagnostics must report wire bytes.
-                    let wire_body_bytes = body.len() as u64;
-
-                    let body = match content_encoding.as_deref() {
-                        Some("zstd") => match decompress_zstd(&body) {
-                            Ok(body) => body,
-                            Err(InputError::Receiver(msg)) => {
-                                record_error(&stats_clone);
-                                let _ = request.respond(
-                                    tiny_http::Response::from_string(msg).with_status_code(400),
-                                );
-                                continue;
-                            }
-                            Err(InputError::Io(e)) if e.kind() == io::ErrorKind::InvalidData => {
-                                record_error(&stats_clone);
-                                let _ = request.respond(
-                                    tiny_http::Response::from_string(e.to_string())
-                                        .with_status_code(413),
-                                );
-                                continue;
-                            }
-                            Err(_) => {
-                                record_error(&stats_clone);
-                                let _ = request.respond(
-                                    tiny_http::Response::from_string("zstd decompression failed")
-                                        .with_status_code(400),
-                                );
-                                continue;
-                            }
-                        },
-                        Some("gzip") => match decompress_gzip(&body) {
-                            Ok(body) => body,
-                            Err(InputError::Receiver(msg)) => {
-                                record_error(&stats_clone);
-                                let _ = request.respond(
-                                    tiny_http::Response::from_string(msg).with_status_code(400),
-                                );
-                                continue;
-                            }
-                            Err(InputError::Io(e)) if e.kind() == io::ErrorKind::InvalidData => {
-                                record_error(&stats_clone);
-                                let _ = request.respond(
-                                    tiny_http::Response::from_string(e.to_string())
-                                        .with_status_code(413),
-                                );
-                                continue;
-                            }
-                            Err(_) => {
-                                record_error(&stats_clone);
-                                let _ = request.respond(
-                                    tiny_http::Response::from_string("gzip decompression failed")
-                                        .with_status_code(400),
-                                );
-                                continue;
-                            }
-                        },
-                        None | Some("identity") => body,
-                        Some(other) => {
-                            record_error(&stats_clone);
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(format!(
-                                    "unsupported content-encoding: {other}"
-                                ))
-                                .with_status_code(415),
-                            );
-                            continue;
-                        }
-                    };
-
-                    // Determine content type — accept protobuf and JSON.
-                    let content_type = request
-                        .headers()
-                        .iter()
-                        .find(|h| h.field.equiv("Content-Type"))
-                        .map_or("application/x-protobuf", |h| h.value.as_str());
-
-                    // Content-Type matching is case-insensitive per RFC 7231.
-                    let is_json = content_type
-                        .to_ascii_lowercase()
-                        .contains("application/json");
-
-                    // Decode and convert to the selected downstream shape.
-                    let payload = if is_json {
-                        decode_otlp_logs_with_mode_json(&body, mode, wire_body_bytes)
-                    } else {
-                        decode_otlp_logs_with_mode(&body, mode, wire_body_bytes)
-                    };
-
-                    let payload = match payload {
-                        Ok(payload) => payload,
-                        Err(msg) => {
-                            record_parse_error(&stats_clone);
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(msg.to_string())
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                    };
-
-                    let send_result = if payload.is_empty() {
-                        // Note: `accounted_bytes` for this request are silently
-                        // dropped because no `ReceiverPayload` is enqueued.
-                        // This is acceptable: empty payloads (zero log records
-                        // after decoding) carry negligible wire bytes and occur
-                        // rarely in practice. Inflating byte counters for empty
-                        // payloads would misrepresent actual data throughput.
-                        Ok(())
-                    } else {
-                        tx.try_send(payload)
-                    };
-
-                    match send_result {
-                        Ok(()) => {
-                            health_clone
-                                .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
-                            // Return standard OTLP success response with Content-Type header.
-                            let response = tiny_http::Response::from_string("{}")
-                                .with_header(
-                                    "Content-Type: application/json"
-                                        .parse::<tiny_http::Header>()
-                                        .expect("static Content-Type header is valid"),
-                                )
-                                .with_status_code(200);
-                            let _ = request.respond(response);
-                        }
-                        Err(mpsc::TrySendError::Full(_)) => {
-                            health_clone
-                                .store(ComponentHealth::Degraded.as_repr(), Ordering::Relaxed);
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "too many requests: pipeline backpressure",
-                                )
-                                .with_status_code(429),
-                            );
-                        }
-                        Err(mpsc::TrySendError::Disconnected(_)) => {
-                            record_error(&stats_clone);
-                            if is_running_clone.load(Ordering::Relaxed) {
-                                health_clone
-                                    .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
-                            }
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "service unavailable: pipeline disconnected",
-                                )
-                                .with_status_code(503),
-                            );
-                        }
-                    }
-                }
+                });
             })
             .map_err(io::Error::other)?;
 
@@ -432,7 +244,7 @@ impl OtlpReceiverInput {
             name: name.into(),
             rx: Some(rx),
             addr: bound_addr,
-            background_task: BackgroundHttpTask::new(server, handle),
+            background_task: BackgroundHttpTask::new_axum(shutdown_tx, handle),
             is_running,
             health,
         })
@@ -442,6 +254,183 @@ impl OtlpReceiverInput {
     pub fn local_addr(&self) -> std::net::SocketAddr {
         self.addr
     }
+}
+
+fn record_error(stats: &Option<Arc<ComponentStats>>) {
+    if let Some(stats) = stats {
+        stats.inc_errors();
+    }
+}
+
+fn record_parse_error(stats: &Option<Arc<ComponentStats>>) {
+    if let Some(stats) = stats {
+        stats.inc_parse_errors(1);
+    }
+}
+
+async fn handle_otlp_request(
+    State(state): State<Arc<OtlpServerState>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if declared_content_length(&headers).is_some_and(|body_len| body_len > MAX_BODY_SIZE as u64) {
+        record_error(&state.stats);
+        return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
+    }
+
+    let content_encoding = match parse_content_encoding(&headers) {
+        Ok(content_encoding) => content_encoding,
+        Err(status) => {
+            record_error(&state.stats);
+            return (status, "invalid content-encoding header").into_response();
+        }
+    };
+
+    let mut body = match read_limited_body(body).await {
+        Ok(body) => body,
+        Err(status) => {
+            record_error(&state.stats);
+            let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                "payload too large"
+            } else {
+                "read error"
+            };
+            return (status, message).into_response();
+        }
+    };
+
+    let accounted_bytes = body.len() as u64;
+    body = match content_encoding.as_deref() {
+        Some("zstd") => match decompress_zstd(&body) {
+            Ok(body) => body,
+            Err(InputError::Receiver(msg)) => {
+                record_error(&state.stats);
+                return (StatusCode::BAD_REQUEST, msg).into_response();
+            }
+            Err(InputError::Io(e)) if e.kind() == io::ErrorKind::InvalidData => {
+                record_error(&state.stats);
+                return (StatusCode::PAYLOAD_TOO_LARGE, e.to_string()).into_response();
+            }
+            Err(_) => {
+                record_error(&state.stats);
+                return (StatusCode::BAD_REQUEST, "zstd decompression failed").into_response();
+            }
+        },
+        Some("gzip") => match decompress_gzip(&body) {
+            Ok(body) => body,
+            Err(InputError::Receiver(msg)) => {
+                record_error(&state.stats);
+                return (StatusCode::BAD_REQUEST, msg).into_response();
+            }
+            Err(InputError::Io(e)) if e.kind() == io::ErrorKind::InvalidData => {
+                record_error(&state.stats);
+                return (StatusCode::PAYLOAD_TOO_LARGE, e.to_string()).into_response();
+            }
+            Err(_) => {
+                record_error(&state.stats);
+                return (StatusCode::BAD_REQUEST, "gzip decompression failed").into_response();
+            }
+        },
+        None | Some("identity") => body,
+        Some(other) => {
+            record_error(&state.stats);
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                format!("unsupported content-encoding: {other}"),
+            )
+                .into_response();
+        }
+    };
+
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/x-protobuf");
+    let is_json = content_type
+        .to_ascii_lowercase()
+        .contains("application/json");
+
+    let payload = if is_json {
+        decode_otlp_logs_with_mode_json(&body, state.mode, accounted_bytes)
+    } else {
+        decode_otlp_logs_with_mode(&body, state.mode, accounted_bytes)
+    };
+    let payload = match payload {
+        Ok(payload) => payload,
+        Err(msg) => {
+            record_parse_error(&state.stats);
+            return (StatusCode::BAD_REQUEST, msg.to_string()).into_response();
+        }
+    };
+
+    let send_result = if payload.is_empty() {
+        Ok(())
+    } else {
+        state.tx.try_send(payload)
+    };
+
+    match send_result {
+        Ok(()) => {
+            state
+                .health
+                .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
+            (StatusCode::OK, [(CONTENT_TYPE, "application/json")], "{}").into_response()
+        }
+        Err(mpsc::TrySendError::Full(_)) => {
+            state
+                .health
+                .store(ComponentHealth::Degraded.as_repr(), Ordering::Relaxed);
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many requests: pipeline backpressure",
+            )
+                .into_response()
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+            record_error(&state.stats);
+            if state.is_running.load(Ordering::Relaxed) {
+                state
+                    .health
+                    .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+            }
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service unavailable: pipeline disconnected",
+            )
+                .into_response()
+        }
+    }
+}
+
+fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
+    let Some(value) = headers.get(CONTENT_ENCODING) else {
+        return Ok(None);
+    };
+    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Some(parsed.to_ascii_lowercase()))
+}
+
+async fn read_limited_body(body: Body) -> Result<Vec<u8>, StatusCode> {
+    let mut body = body;
+    let mut out = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
+        let Ok(chunk) = frame.into_data() else {
+            continue;
+        };
+        if out.len().saturating_add(chunk.len()) > MAX_BODY_SIZE {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 impl Drop for OtlpReceiverInput {
@@ -3124,7 +3113,7 @@ mod tests {
             "Application/JSON should be decoded as JSON and return 200"
         );
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(50));
         let data = receiver.poll().unwrap();
         assert!(
             !data.is_empty(),
@@ -3189,7 +3178,7 @@ mod tests {
 
         // Wait a tiny bit for the OS to actually release the port if needed,
         // though join() in Drop should make it synchronous.
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10));
 
         // Try to bind to the exact same port again. If the previous receiver
         // thread didn't shut down properly and leaked the server, this will fail
@@ -3224,12 +3213,11 @@ mod tests {
             .expect("should bind successfully");
         // Ensure the real worker exits before replacing the ownership task in-test.
         receiver.is_running.store(false, Ordering::Relaxed);
-        receiver.background_task = BackgroundHttpTask::new(
-            Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("bind synthetic test server")),
-            std::thread::spawn(|| {}),
-        );
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel();
+        receiver.background_task =
+            BackgroundHttpTask::new_axum(shutdown_tx, std::thread::spawn(|| {}));
         receiver.is_running.store(true, Ordering::Relaxed);
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10));
 
         assert_eq!(receiver.health(), ComponentHealth::Failed);
     }

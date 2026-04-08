@@ -20,7 +20,15 @@ use std::sync::{
 
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use http_body_util::BodyExt as _;
 use logfwd_types::diagnostics::ComponentHealth;
+use tokio::sync::oneshot;
 
 use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
@@ -46,6 +54,13 @@ pub struct ArrowIpcReceiver {
     health: Arc<AtomicU8>,
 }
 
+#[derive(Clone)]
+struct ArrowIpcServerState {
+    tx: mpsc::SyncSender<RecordBatch>,
+    shutdown: Arc<AtomicBool>,
+    health: Arc<AtomicU8>,
+}
+
 impl ArrowIpcReceiver {
     /// Bind an HTTP server on `addr` (e.g. "0.0.0.0:4319").
     /// Spawns a background thread to handle requests.
@@ -59,224 +74,66 @@ impl ArrowIpcReceiver {
         addr: &str,
         capacity: usize,
     ) -> io::Result<Self> {
-        let server = Arc::new(
-            tiny_http::Server::http(addr)
-                .map_err(|e| io::Error::other(format!("Arrow IPC receiver bind {addr}: {e}")))?,
-        );
-
-        let bound_addr = match server.server_addr() {
-            tiny_http::ListenAddr::IP(a) => a,
-            tiny_http::ListenAddr::Unix(_) => {
-                return Err(io::Error::other(
-                    "Arrow IPC receiver: unexpected listen addr",
-                ));
-            }
-        };
+        let std_listener = std::net::TcpListener::bind(addr)
+            .map_err(|e| io::Error::other(format!("Arrow IPC receiver bind {addr}: {e}")))?;
+        let bound_addr = std_listener.local_addr()?;
+        std_listener.set_nonblocking(true).map_err(|e| {
+            io::Error::other(format!(
+                "Arrow IPC receiver set_nonblocking {bound_addr}: {e}"
+            ))
+        })?;
 
         let (tx, rx) = mpsc::sync_channel(capacity);
         let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_clone = Arc::clone(&shutdown);
         let health = Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr()));
-        let health_clone = Arc::clone(&health);
+        let state = Arc::new(ArrowIpcServerState {
+            tx,
+            shutdown: Arc::clone(&shutdown),
+            health: Arc::clone(&health),
+        });
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let shutdown_for_server = Arc::clone(&shutdown);
+        let health_for_server = Arc::clone(&health);
+        let state_for_server = Arc::clone(&state);
 
-        let server_clone = Arc::clone(&server);
         let handle = std::thread::Builder::new()
             .name("arrow-ipc-receiver".into())
             .spawn(move || {
-                while !shutdown_clone.load(Ordering::Relaxed) {
-                    let store_event = |health: &AtomicU8, event| {
-                        let current = ComponentHealth::from_repr(health.load(Ordering::Relaxed));
-                        health.store(
-                            reduce_receiver_health(current, event).as_repr(),
-                            Ordering::Relaxed,
-                        );
-                    };
-                    let mut request = match server_clone.try_recv() {
-                        Ok(Some(req)) => req,
-                        Ok(None) => {
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                            continue;
-                        }
-                        // Exit the worker thread on accept-side I/O failure instead of
-                        // spinning forever and silently dropping all future requests.
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(_) => {
+                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
+                        return;
+                    }
+                };
+
+                runtime.block_on(async move {
+                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                        Ok(listener) => listener,
                         Err(_) => {
-                            store_event(&health_clone, ReceiverHealthEvent::FatalFailure);
-                            break;
+                            store_health_event(
+                                &health_for_server,
+                                ReceiverHealthEvent::FatalFailure,
+                            );
+                            return;
                         }
                     };
 
-                    let url = request.url().to_string();
+                    let app = axum::Router::new()
+                        .route("/v1/arrow", post(handle_arrow_ipc_request))
+                        .with_state(state_for_server);
 
-                    // Only accept the Arrow IPC endpoint path.
-                    let path = url.split('?').next().unwrap_or(&url);
-                    if path != "/v1/arrow" {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("not found").with_status_code(404),
-                        );
-                        continue;
+                    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.await;
+                    });
+
+                    if server.await.is_err() && !shutdown_for_server.load(Ordering::Relaxed) {
+                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
                     }
-                    if request.method() != &tiny_http::Method::Post {
-                        let allow_header = "Allow: POST"
-                            .parse::<tiny_http::Header>()
-                            .expect("static header is valid");
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("method not allowed")
-                                .with_status_code(405)
-                                .with_header(allow_header),
-                        );
-                        continue;
-                    }
-
-                    // Reject oversized bodies.
-                    if request.body_length().unwrap_or(0) > MAX_BODY_SIZE {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("payload too large")
-                                .with_status_code(413),
-                        );
-                        continue;
-                    }
-
-                    // Read body with a hard cap.
-                    let mut body =
-                        Vec::with_capacity(request.body_length().unwrap_or(0).min(MAX_BODY_SIZE));
-                    match request
-                        .as_reader()
-                        .take(MAX_BODY_SIZE as u64 + 1)
-                        .read_to_end(&mut body)
-                    {
-                        Ok(n) if n > MAX_BODY_SIZE => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("payload too large")
-                                    .with_status_code(413),
-                            );
-                            continue;
-                        }
-                        Err(_) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("read error")
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                        Ok(_) => {}
-                    }
-
-                    // Check for zstd compression via Content-Encoding or Content-Type.
-                    let content_encoding = request
-                        .headers()
-                        .iter()
-                        .find(|h| h.field.equiv("Content-Encoding"))
-                        .map(|h| h.value.as_str().to_lowercase());
-
-                    let content_type = request
-                        .headers()
-                        .iter()
-                        .find(|h| h.field.equiv("Content-Type"))
-                        .map(|h| h.value.as_str().to_lowercase());
-
-                    let is_zstd = content_encoding.as_deref() == Some("zstd")
-                        || content_type.as_deref()
-                            == Some("application/vnd.apache.arrow.stream+zstd");
-
-                    // Decompress if needed.
-                    let body = if is_zstd {
-                        match decompress_zstd(&body) {
-                            Ok(d) => d,
-                            Err(msg) => {
-                                let _ = request.respond(
-                                    tiny_http::Response::from_string(msg.to_string())
-                                        .with_status_code(400),
-                                );
-                                continue;
-                            }
-                        }
-                    } else {
-                        body
-                    };
-
-                    // Deserialize Arrow IPC stream.
-                    let batches = match decode_ipc_stream(&body) {
-                        Ok(b) => b,
-                        Err(msg) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(msg.to_string())
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                    };
-
-                    // Send all batches to the pipeline.
-                    //
-                    // Delivery contract for one HTTP request:
-                    // - If every non-empty batch is accepted: return 200.
-                    // - If backpressure starts after some earlier batches were accepted:
-                    //   return 429 (not 200), so clients retry the entire request.
-                    //
-                    // This intentionally trades possible duplicates (already-accepted
-                    // prefix batches can be resent by the client retry) for no silent
-                    // loss of the unsent suffix.
-                    let mut send_error: Option<u16> = None;
-                    let mut sent_rows = false;
-                    for batch in batches {
-                        if batch.num_rows() == 0 {
-                            continue;
-                        }
-                        sent_rows = true;
-                        match tx.try_send(batch) {
-                            Ok(()) => {}
-                            Err(mpsc::TrySendError::Full(_)) => {
-                                // Always return 429 regardless of how many batches
-                                // were already sent; a partial send must never be
-                                // acknowledged as success. Clients should retry the
-                                // whole request and downstream must tolerate duplicates.
-                                send_error = Some(429);
-                                break;
-                            }
-                            Err(mpsc::TrySendError::Disconnected(_)) => {
-                                send_error = Some(503);
-                                break;
-                            }
-                        }
-                    }
-
-                    match send_error {
-                        Some(429) => {
-                            store_event(&health_clone, ReceiverHealthEvent::Backpressure);
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "too many requests: pipeline backpressure; request may have been partially accepted and must be retried (duplicates possible)",
-                                )
-                                .with_status_code(429),
-                            );
-                        }
-                        Some(503) => {
-                            if !shutdown_clone.load(Ordering::Relaxed) {
-                                store_event(&health_clone, ReceiverHealthEvent::FatalFailure);
-                            }
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "service unavailable: pipeline disconnected",
-                                )
-                                .with_status_code(503),
-                            );
-                        }
-                        Some(_) => unreachable!(),
-                        None => {
-                            store_event(
-                                &health_clone,
-                                if sent_rows {
-                                    ReceiverHealthEvent::DeliveryAccepted
-                                } else {
-                                    ReceiverHealthEvent::DeliveryNoop
-                                },
-                            );
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("").with_status_code(200),
-                            );
-                        }
-                    }
-                }
+                });
             })
             .map_err(io::Error::other)?;
 
@@ -284,7 +141,7 @@ impl ArrowIpcReceiver {
             name: name.into(),
             rx: Some(rx),
             addr: bound_addr,
-            background_task: BackgroundHttpTask::new(server, handle),
+            background_task: BackgroundHttpTask::new_axum(shutdown_tx, handle),
             shutdown,
             health,
         })
@@ -378,6 +235,164 @@ fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, InputError> {
     reader
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| InputError::Receiver(format!("failed to read Arrow IPC batch: {e}")))
+}
+
+fn store_health_event(health: &AtomicU8, event: ReceiverHealthEvent) {
+    let current = ComponentHealth::from_repr(health.load(Ordering::Relaxed));
+    health.store(
+        reduce_receiver_health(current, event).as_repr(),
+        Ordering::Relaxed,
+    );
+}
+
+async fn handle_arrow_ipc_request(
+    State(state): State<Arc<ArrowIpcServerState>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if declared_content_length(&headers).is_some_and(|body_len| body_len > MAX_BODY_SIZE as u64) {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
+    }
+
+    let content_encoding = match parse_content_encoding(&headers) {
+        Ok(content_encoding) => content_encoding,
+        Err(status) => return (status, "invalid content-encoding header").into_response(),
+    };
+    let content_type = match parse_content_type(&headers) {
+        Ok(content_type) => content_type,
+        Err(status) => return (status, "invalid content-type header").into_response(),
+    };
+
+    let body = match read_limited_body(body).await {
+        Ok(body) => body,
+        Err(status) => {
+            let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                "payload too large"
+            } else {
+                "read error"
+            };
+            return (status, message).into_response();
+        }
+    };
+
+    let is_zstd = content_encoding.as_deref() == Some("zstd")
+        || content_type.as_deref() == Some("application/vnd.apache.arrow.stream+zstd");
+
+    let body = if is_zstd {
+        match decompress_zstd(&body) {
+            Ok(body) => body,
+            Err(InputError::Receiver(msg)) => {
+                return (StatusCode::BAD_REQUEST, msg).into_response();
+            }
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "zstd decompression failed: invalid header",
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        body
+    };
+
+    let batches = match decode_ipc_stream(&body) {
+        Ok(batches) => batches,
+        Err(InputError::Receiver(msg)) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid Arrow IPC stream").into_response(),
+    };
+
+    let mut send_error: Option<StatusCode> = None;
+    let mut sent_rows = false;
+    for batch in batches {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        sent_rows = true;
+        match state.tx.try_send(batch) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(_)) => {
+                send_error = Some(StatusCode::TOO_MANY_REQUESTS);
+                break;
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                send_error = Some(StatusCode::SERVICE_UNAVAILABLE);
+                break;
+            }
+        }
+    }
+
+    match send_error {
+        Some(StatusCode::TOO_MANY_REQUESTS) => {
+            store_health_event(&state.health, ReceiverHealthEvent::Backpressure);
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many requests: pipeline backpressure",
+            )
+                .into_response()
+        }
+        Some(StatusCode::SERVICE_UNAVAILABLE) => {
+            if !state.shutdown.load(Ordering::Relaxed) {
+                store_health_event(&state.health, ReceiverHealthEvent::FatalFailure);
+            }
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service unavailable: pipeline disconnected",
+            )
+                .into_response()
+        }
+        Some(_) => unreachable!(),
+        None => {
+            store_health_event(
+                &state.health,
+                if sent_rows {
+                    ReceiverHealthEvent::DeliveryAccepted
+                } else {
+                    ReceiverHealthEvent::DeliveryNoop
+                },
+            );
+            StatusCode::OK.into_response()
+        }
+    }
+}
+
+fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
+    let Some(value) = headers.get(CONTENT_ENCODING) else {
+        return Ok(None);
+    };
+    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Some(parsed.to_ascii_lowercase()))
+}
+
+fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
+    let Some(value) = headers.get(CONTENT_TYPE) else {
+        return Ok(None);
+    };
+    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Some(parsed.to_ascii_lowercase()))
+}
+
+async fn read_limited_body(body: Body) -> Result<Vec<u8>, StatusCode> {
+    let mut body = body;
+    let mut out = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
+        let Ok(chunk) = frame.into_data() else {
+            continue;
+        };
+        if out.len().saturating_add(chunk.len()) > MAX_BODY_SIZE {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 impl Drop for ArrowIpcReceiver {
