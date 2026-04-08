@@ -841,7 +841,7 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                 .metadata()
                 .get("logfwd.resource_key")
                 .cloned()
-                .unwrap_or_else(|| field_name.strip_prefix("_resource_").unwrap().to_string());
+                .unwrap_or_else(|| field_name.trim_start_matches("_resource_").to_string());
             let resource_attr = match field.data_type() {
                 DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
                 DataType::Float64 => {
