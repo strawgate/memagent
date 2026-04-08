@@ -218,11 +218,17 @@ impl GeneratorInput {
             _ => 200,
         };
 
-        // Vary timestamps: cycle through hours/minutes/seconds for diversity.
-        let hour = i % 24;
-        let min = (i / 24) % 60;
-        let sec = (i / 1440) % 60;
-        let msec = i % 1000;
+        // Monotonically increasing timestamps: each event is 1 ms apart starting
+        // from 2024-01-15T00:00:00.000Z. Using modular decomposition ensures the
+        // timestamp always increases and never goes backward.
+        let total_ms = i as u64;
+        let msec = total_ms % 1000;
+        let total_sec = total_ms / 1000;
+        let sec = total_sec % 60;
+        let total_min = total_sec / 60;
+        let min = total_min % 60;
+        let total_hour = total_min / 60;
+        let hour = total_hour % 24;
 
         match self.config.complexity {
             GeneratorComplexity::Simple => {
@@ -530,12 +536,12 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_vary_across_events() {
+    fn timestamps_are_monotonically_increasing() {
         let mut input = GeneratorInput::new(
             "test",
             GeneratorConfig {
-                batch_size: 50,
-                total_events: 50,
+                batch_size: 2000,
+                total_events: 2000,
                 ..Default::default()
             },
         );
@@ -543,16 +549,24 @@ mod tests {
         let events = input.poll().unwrap();
         if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
-            let lines: Vec<&str> = text.trim().lines().collect();
-            let ts0 = lines[0]
-                .find("\"timestamp\":")
-                .map(|p| &lines[0][p..p + 50]);
-            let ts1 = lines[1]
-                .find("\"timestamp\":")
-                .map(|p| &lines[1][p..p + 50]);
-            // Adjacent lines should have different timestamps because the
-            // hour component changes with (i % 24).
-            assert_ne!(ts0, ts1, "timestamps should vary between events");
+            let lines: Vec<&str> = text.trim().split('\n').collect();
+
+            let extract_ts = |line: &str| -> Option<String> {
+                let start = line.find("\"timestamp\":\"").map(|p| p + 13)?;
+                let end = line[start..].find('"').map(|p| p + start)?;
+                Some(line[start..end].to_string())
+            };
+
+            let mut prev = extract_ts(lines[0]).expect("first line has timestamp");
+            for (i, line) in lines.iter().enumerate().skip(1) {
+                let ts =
+                    extract_ts(line).unwrap_or_else(|| panic!("line {i} has no timestamp: {line}"));
+                assert!(
+                    ts >= prev,
+                    "timestamp went backward at line {i}: {prev} > {ts}"
+                );
+                prev = ts;
+            }
         }
     }
 
