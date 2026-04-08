@@ -1141,7 +1141,7 @@ fn write_grpc_frame(buf: &mut Vec<u8>, payload: &[u8], compressed: bool) -> io::
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -1321,7 +1321,7 @@ mod tests {
             OtlpProtocol::Http,
             Compression::None,
             vec![],
-            reqwest::Client::new(),
+            shared_test_client(),
             Arc::new(ComponentStats::new()),
         )
         .unwrap()
@@ -1338,24 +1338,34 @@ mod tests {
         haystack.windows(needle.len()).any(|w| w == needle)
     }
 
+    fn shared_test_client() -> reqwest::Client {
+        static TEST_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+        TEST_CLIENT.get_or_init(reqwest::Client::new).clone()
+    }
+
+    fn unicode_string(max_len: usize) -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..=max_len)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
     proptest! {
         #[test]
         fn proptest_generated_fast_matches_handwritten_random_utf8_rows(
             rows in proptest::collection::vec(
                 (
-                    prop::option::of(string_regex("[A-Za-z0-9_ :T.-]{0,30}").expect("valid regex")),
-                    prop::option::of(string_regex("[A-Za-z]{0,8}").expect("valid regex")),
-                    prop::option::of(string_regex("[A-Za-z0-9_ .:/-]{0,40}").expect("valid regex")),
+                    prop::option::of(unicode_string(30)),
+                    prop::option::of(unicode_string(8)),
+                    prop::option::of(unicode_string(40)),
                     prop::option::of(prop_oneof![
                         string_regex("[0-9a-f]{32}").expect("valid regex"),
-                        string_regex("[A-Za-z0-9]{0,40}").expect("valid regex"),
+                        unicode_string(40),
                     ]),
                     prop::option::of(prop_oneof![
                         string_regex("[0-9a-f]{16}").expect("valid regex"),
-                        string_regex("[A-Za-z0-9]{0,24}").expect("valid regex"),
+                        unicode_string(24),
                     ]),
                     prop::option::of(any::<i64>()),
-                    prop::option::of(string_regex("[A-Za-z0-9_.-]{0,20}").expect("valid regex")),
+                    prop::option::of(unicode_string(20)),
                     prop::option::of(any::<i64>()),
                     prop::option::of((-1_000_000i64..1_000_000i64).prop_map(|n| n as f64 / 10.0)),
                     prop::option::of(any::<bool>()),

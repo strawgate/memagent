@@ -1424,7 +1424,6 @@ mod tests {
         resource::v1::Resource,
     };
     use proptest::prelude::*;
-    use proptest::string::string_regex;
     use prost::Message;
 
     fn make_test_request() -> Vec<u8> {
@@ -1478,12 +1477,33 @@ mod tests {
         request.encode_to_vec()
     }
 
+    fn unicode_string(max_len: usize) -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..=max_len)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    fn non_empty_unicode_string(max_len: usize) -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 1..=max_len)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    fn any_value_to_string_simple(v: &AnyValue) -> Option<String> {
+        match &v.value {
+            Some(Value::StringValue(s)) => Some(s.clone()),
+            Some(Value::IntValue(i)) => Some(i.to_string()),
+            Some(Value::DoubleValue(d)) => Some(d.to_string()),
+            Some(Value::BoolValue(b)) => Some(b.to_string()),
+            Some(Value::BytesValue(b)) => Some(hex::encode(b)),
+            _ => None,
+        }
+    }
+
     fn any_value_to_json_simple(value: &AnyValue) -> Option<serde_json::Value> {
         match &value.value {
             Some(Value::IntValue(v)) => Some(serde_json::Value::from(*v)),
             Some(Value::DoubleValue(v)) => {
                 let mut buf = Vec::new();
-                write_f64_to_buf(&mut buf, *v);
+                write_f64_to_buf_simple(&mut buf, *v);
                 serde_json::from_slice(&buf).ok()
             }
             Some(Value::BoolValue(v)) => Some(serde_json::Value::from(*v)),
@@ -1501,7 +1521,7 @@ mod tests {
             if let Some(resource) = &resource_logs.resource {
                 for attr in &resource.attributes {
                     if let Some(value) = &attr.value
-                        && let Some(stringified) = any_value_to_string(value)
+                        && let Some(stringified) = any_value_to_string_simple(value)
                     {
                         resource_attrs.push((attr.key.clone(), stringified));
                     }
@@ -1527,7 +1547,7 @@ mod tests {
                     }
 
                     if let Some(body) = &record.body
-                        && let Some(body_str) = any_value_to_string(body)
+                        && let Some(body_str) = any_value_to_string_simple(body)
                     {
                         obj.insert(
                             field_names::BODY.to_string(),
@@ -1574,7 +1594,8 @@ mod tests {
         if bytes.is_empty() {
             return Vec::new();
         }
-        String::from_utf8_lossy(bytes)
+        std::str::from_utf8(bytes)
+            .expect("json lines must be valid UTF-8")
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid json line"))
             .collect()
@@ -1582,11 +1603,9 @@ mod tests {
 
     fn any_value_strategy() -> impl Strategy<Value = AnyValue> {
         prop_oneof![
-            string_regex("[A-Za-z0-9 _./:-]{0,20}")
-                .expect("regex")
-                .prop_map(|s| AnyValue {
-                    value: Some(Value::StringValue(s)),
-                }),
+            unicode_string(20).prop_map(|s| AnyValue {
+                value: Some(Value::StringValue(s)),
+            }),
             any::<i64>().prop_map(|v| AnyValue {
                 value: Some(Value::IntValue(v)),
             }),
@@ -1611,7 +1630,7 @@ mod tests {
 
     fn key_value_strategy() -> impl Strategy<Value = KeyValue> {
         (
-            string_regex("[A-Za-z0-9_.-]{1,16}").expect("regex"),
+            non_empty_unicode_string(16),
             prop::option::of(any_value_strategy()),
         )
             .prop_map(|(key, value)| KeyValue { key, value })
@@ -1620,7 +1639,7 @@ mod tests {
     fn log_record_strategy() -> impl Strategy<Value = LogRecord> {
         (
             any::<u64>(),
-            string_regex("[A-Za-z]{0,8}").expect("regex"),
+            unicode_string(8),
             prop::option::of(any_value_strategy()),
             proptest::collection::vec(key_value_strategy(), 0..6),
             proptest::collection::vec(any::<u8>(), 0..20),

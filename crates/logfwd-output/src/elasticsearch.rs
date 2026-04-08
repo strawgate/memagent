@@ -921,13 +921,23 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use proptest::prelude::*;
     use proptest::string::string_regex;
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
     fn zero_metadata() -> BatchMetadata {
         BatchMetadata {
             resource_attrs: Arc::new(vec![]),
             observed_time_ns: 0,
         }
+    }
+
+    fn shared_test_client() -> reqwest::Client {
+        static TEST_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+        TEST_CLIENT.get_or_init(reqwest::Client::new).clone()
+    }
+
+    fn unicode_string(max_len: usize) -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..=max_len)
+            .prop_map(|chars| chars.into_iter().collect())
     }
 
     fn make_test_sink(index: &str) -> ElasticsearchSink {
@@ -941,7 +951,7 @@ mod tests {
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
-        let client = reqwest::Client::new();
+        let client = shared_test_client();
         ElasticsearchSink::new(
             "test".to_string(),
             Arc::clone(&factory.config),
@@ -1009,9 +1019,12 @@ mod tests {
         if bytes.is_empty() {
             return Vec::new();
         }
-        String::from_utf8_lossy(bytes)
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid ndjson line"))
+        bytes
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                serde_json::from_slice::<serde_json::Value>(line).expect("valid ndjson line")
+            })
             .collect()
     }
 
@@ -1113,8 +1126,8 @@ mod tests {
         fn proptest_serialize_batch_fast_matches_simple(
             rows in proptest::collection::vec(
                 (
-                    prop::option::of(string_regex("[A-Za-z]{0,8}").expect("regex")),
-                    prop::option::of(string_regex("[A-Za-z0-9 _./:-]{0,32}").expect("regex")),
+                    prop::option::of(unicode_string(8)),
+                    prop::option::of(unicode_string(32)),
                     prop::option::of(any::<i64>()),
                     prop::option::of((-1_000_000i64..1_000_000i64).prop_map(|n| n as f64 / 10.0)),
                     prop::option::of(any::<bool>()),
