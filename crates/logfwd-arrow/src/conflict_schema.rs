@@ -20,7 +20,7 @@
 //!
 //! The flat column is computed as:
 //! ```text
-//! COALESCE(CAST(int AS Utf8), CAST(float AS Utf8), IF(bool, 'true', 'false'), str)
+//! COALESCE(CAST(int AS Utf8), CAST(float AS Utf8), CASE WHEN bool IS TRUE THEN 'true' WHEN bool IS FALSE THEN 'false' ELSE NULL END, str)
 //! ```
 //! so it is non-null whenever any typed child is non-null.
 //!

@@ -558,6 +558,30 @@ mod tests {
         assert_eq!(col.value(1), "OK", "str row must be returned as-is");
     }
 
+    /// UDF-level regression: mixed bool/string rows for the same key must
+    /// coalesce with bool values preserved as "true"/"false" before string fallback.
+    #[tokio::test]
+    async fn test_json_str_on_bool_string_conflict_batch_coalesces() {
+        let batch = make_raw_batch(vec![
+            r#"{"active": true}"#,
+            r#"{"active": false}"#,
+            r#"{"active": "fallback"}"#,
+        ]);
+        let result = query("SELECT json(_raw, 'active') as active FROM logs", batch).await;
+        let col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "true", "bool true must stringify to 'true'");
+        assert_eq!(
+            col.value(1),
+            "false",
+            "bool false must stringify to 'false'"
+        );
+        assert_eq!(col.value(2), "fallback", "string row must remain unchanged");
+    }
+
     /// `json_float` on a field that is a quoted string must return NULL.
     #[tokio::test]
     async fn test_json_float_on_quoted_string_is_null() {

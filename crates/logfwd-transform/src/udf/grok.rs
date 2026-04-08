@@ -173,14 +173,10 @@ impl ScalarUDFImpl for GrokUdf {
                 let s = s.to_string();
                 s.trim_matches('"').trim_matches('\'').to_string()
             }
-            ColumnarValue::Array(arr) => {
-                let str_arr = arr.as_string::<i32>();
-                if str_arr.len() == 0 || str_arr.is_null(0) {
-                    return Ok(ColumnarValue::Scalar(
-                        datafusion::common::ScalarValue::Utf8(None),
-                    ));
-                }
-                str_arr.value(0).to_string()
+            ColumnarValue::Array(_) => {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    "grok() pattern argument must be a scalar string literal".to_string(),
+                ));
             }
         };
 
@@ -189,7 +185,11 @@ impl ScalarUDFImpl for GrokUdf {
         // calls with different patterns in the same SQL query each use the
         // correct compiled pattern.
         let compiled: Arc<CompiledGrok> = {
-            let mut cache = self.grok_cache.lock().unwrap();
+            let mut cache = self.grok_cache.lock().map_err(|_| {
+                datafusion::error::DataFusionError::Execution(
+                    "grok() internal cache lock poisoned".to_string(),
+                )
+            })?;
             if let Some(cached) = cache.get(&pattern_str) {
                 Arc::clone(cached)
             } else {
@@ -313,6 +313,14 @@ mod tests {
     use datafusion::prelude::*;
 
     async fn run_sql(batch: RecordBatch, sql: &str) -> RecordBatch {
+        let batches = run_sql_result(batch, sql).await.unwrap();
+        batches.into_iter().next().unwrap()
+    }
+
+    async fn run_sql_result(
+        batch: RecordBatch,
+        sql: &str,
+    ) -> datafusion::error::Result<Vec<RecordBatch>> {
         let ctx = SessionContext::new();
         ctx.register_udf(ScalarUDF::from(GrokUdf::new()));
         // Also register int() for composition tests
@@ -320,9 +328,8 @@ mod tests {
         let table =
             datafusion::datasource::MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         ctx.register_table("logs", Arc::new(table)).unwrap();
-        let df = ctx.sql(sql).await.unwrap();
-        let batches = df.collect().await.unwrap();
-        batches.into_iter().next().unwrap()
+        let df = ctx.sql(sql).await?;
+        df.collect().await
     }
 
     fn make_access_log_batch() -> RecordBatch {
@@ -485,5 +492,32 @@ mod tests {
                 method.value(row)
             );
         }
+    }
+
+    #[test]
+    fn test_grok_rejects_array_pattern_argument() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("pattern", DataType::Utf8, true),
+        ]));
+        let message: ArrayRef = Arc::new(StringArray::from(vec![Some("GET /ok 200 1ms")]));
+        let pattern: ArrayRef = Arc::new(StringArray::from(vec![Some("%{WORD:method}")]));
+        let batch = RecordBatch::try_new(schema, vec![message, pattern]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(run_sql_result(
+                batch,
+                "SELECT grok(message, pattern) AS parsed FROM logs",
+            ))
+            .expect_err("array pattern argument must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pattern argument must be a scalar string literal"),
+            "unexpected error: {msg}"
+        );
     }
 }

@@ -93,14 +93,10 @@ impl ScalarUDFImpl for RegexpExtractUdf {
                 let s = s.to_string();
                 s.trim_matches('"').trim_matches('\'').to_string()
             }
-            ColumnarValue::Array(arr) => {
-                let str_arr = arr.as_string::<i32>();
-                if str_arr.len() == 0 || str_arr.is_null(0) {
-                    return Ok(ColumnarValue::Scalar(
-                        datafusion::common::ScalarValue::Utf8(None),
-                    ));
-                }
-                str_arr.value(0).to_string()
+            ColumnarValue::Array(_) => {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    "regexp_extract() pattern argument must be a scalar string literal".to_string(),
+                ));
             }
         };
 
@@ -109,7 +105,11 @@ impl ScalarUDFImpl for RegexpExtractUdf {
         // calls with different patterns in the same SQL query each use the
         // correct compiled regex.
         let re: Arc<Regex> = {
-            let mut cache = self.regex_cache.lock().unwrap();
+            let mut cache = self.regex_cache.lock().map_err(|_| {
+                datafusion::error::DataFusionError::Execution(
+                    "regexp_extract() internal cache lock poisoned".to_string(),
+                )
+            })?;
             if let Some(cached) = cache.get(&pattern_str) {
                 Arc::clone(cached)
             } else {
@@ -206,15 +206,22 @@ mod tests {
 
     /// Helper to run a SQL query with regexp_extract registered.
     async fn run_sql(batch: RecordBatch, sql: &str) -> RecordBatch {
+        let batches = run_sql_result(batch, sql).await.unwrap();
+        batches.into_iter().next().unwrap()
+    }
+
+    async fn run_sql_result(
+        batch: RecordBatch,
+        sql: &str,
+    ) -> datafusion::error::Result<Vec<RecordBatch>> {
         let ctx = SessionContext::new();
         ctx.register_udf(ScalarUDF::from(RegexpExtractUdf::new()));
         ctx.register_udf(ScalarUDF::from(crate::IntCastUdf::new()));
         let table =
             datafusion::datasource::MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         ctx.register_table("logs", Arc::new(table)).unwrap();
-        let df = ctx.sql(sql).await.unwrap();
-        let batches = df.collect().await.unwrap();
-        batches.into_iter().next().unwrap()
+        let df = ctx.sql(sql).await?;
+        df.collect().await
     }
 
     fn make_batch() -> RecordBatch {
@@ -408,6 +415,33 @@ mod tests {
             user.value(1),
             "bob",
             "user_name row 1 must match user= pattern"
+        );
+    }
+
+    #[test]
+    fn test_regexp_extract_rejects_array_pattern_argument() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("msg", DataType::Utf8, true),
+            Field::new("pattern", DataType::Utf8, true),
+        ]));
+        let msg: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("status=200")]));
+        let pattern: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("status=(\\d+)")]));
+        let batch = RecordBatch::try_new(schema, vec![msg, pattern]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(run_sql_result(
+                batch,
+                "SELECT regexp_extract(msg, pattern, 1) AS status FROM logs",
+            ))
+            .expect_err("array pattern argument must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pattern argument must be a scalar string literal"),
+            "unexpected error: {msg}"
         );
     }
 }

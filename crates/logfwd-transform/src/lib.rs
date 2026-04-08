@@ -502,8 +502,14 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             collect_column_refs(expr, cols);
             collect_column_refs(r#in, cols);
         }
-        SqlExpr::InSubquery { expr, .. } | SqlExpr::InUnnest { expr, .. } => {
+        SqlExpr::InSubquery { expr, .. } => {
             collect_column_refs(expr, cols);
+        }
+        SqlExpr::InUnnest {
+            expr, array_expr, ..
+        } => {
+            collect_column_refs(expr, cols);
+            collect_column_refs(array_expr, cols);
         }
         SqlExpr::Convert { expr, .. } | SqlExpr::Collate { expr, .. } => {
             collect_column_refs(expr, cols);
@@ -2212,6 +2218,39 @@ mod tests {
             "POSITION(... IN message) must add 'message' to referenced_columns, got {:?}",
             a.referenced_columns
         );
+    }
+
+    /// `x IN UNNEST(arr_col)` must collect both `x` and `arr_col`.
+    #[test]
+    fn test_in_unnest_collects_array_expr_column() {
+        let a = QueryAnalyzer::new("SELECT level FROM logs WHERE level IN UNNEST(levels)").unwrap();
+        assert!(
+            a.referenced_columns.contains("level"),
+            "InUnnest lhs must add 'level' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+        assert!(
+            a.referenced_columns.contains("levels"),
+            "InUnnest array_expr must add 'levels' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `OVERLAY(str PLACING repl FROM start FOR len)` must collect all argument
+    /// expressions used by the OVERLAY AST node.
+    #[test]
+    fn test_overlay_collects_all_argument_columns() {
+        let a = QueryAnalyzer::new(
+            "SELECT OVERLAY(message PLACING replacement FROM start_pos FOR count_len) AS msg FROM logs",
+        )
+        .unwrap();
+        for col in ["message", "replacement", "start_pos", "count_len"] {
+            assert!(
+                a.referenced_columns.contains(col),
+                "OVERLAY argument {col:?} must be in referenced_columns, got {:?}",
+                a.referenced_columns
+            );
+        }
     }
 
     /// Columns that appear only in GROUP BY must be added to referenced_columns.
