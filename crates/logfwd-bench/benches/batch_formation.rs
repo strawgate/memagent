@@ -28,7 +28,7 @@ fn bench_batch_scan(c: &mut Criterion) {
     for &n in batch_sizes {
         let data = generators::gen_production_mixed(n, 42);
 
-        group.throughput(Throughput::Elements(n as u64));
+        group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_with_input(BenchmarkId::new("scan", n), &data, |b, data| {
             let data_bytes = bytes::Bytes::from(data.clone());
             let mut scanner = Scanner::new(ScanConfig::default());
@@ -59,7 +59,7 @@ fn bench_batch_transform(c: &mut Criterion) {
     for &n in batch_sizes {
         let data = generators::gen_production_mixed(n, 42);
 
-        group.throughput(Throughput::Elements(n as u64));
+        group.throughput(Throughput::Bytes(data.len() as u64));
 
         // Scan + SELECT * (passthrough)
         group.bench_with_input(BenchmarkId::new("scan_passthrough", n), &data, |b, data| {
@@ -110,7 +110,7 @@ fn bench_batch_pipeline(c: &mut Criterion) {
     for &n in batch_sizes {
         let data = generators::gen_production_mixed(n, 42);
 
-        group.throughput(Throughput::Elements(n as u64));
+        group.throughput(Throughput::Bytes(data.len() as u64));
 
         // Full pipeline: scan → SELECT * → OTLP encode
         group.bench_with_input(
@@ -152,7 +152,7 @@ fn bench_batch_pipeline(c: &mut Criterion) {
                             .expect("JSON serialization should not fail");
                         buf.push(b'\n');
                     }
-                    std::hint::black_box(buf.len());
+                    std::hint::black_box(&buf);
                 });
             },
         );

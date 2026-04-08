@@ -152,6 +152,12 @@ impl ScalarUDFImpl for GrokUdf {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DfResult<ColumnarValue> {
+        if args.args.len() != 2 {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "grok() expects exactly two arguments".to_string(),
+            ));
+        }
+
         let input = &args.args[0];
         let pattern = &args.args[1];
 

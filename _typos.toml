@@ -7,6 +7,12 @@ leve = "leve"
 pn = "pn"
 # Intentional "ue" string slice in streaming_builder tests (tail of "value").
 ue = "ue"
+# CLI fuzzy-match test strings (intentional typos for Levenshtein matching).
+confg = "confg"
+conifg = "conifg"
+versin = "versin"
+validat = "validat"
+chck = "chck"
 
 [files]
 extend-exclude = [

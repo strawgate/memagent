@@ -78,6 +78,78 @@ just kani         # Run Kani proofs (requires: cargo install --locked kani-verif
 cargo test -p logfwd-core  # Fast single-crate iteration
 ```
 
+## Issues and Labels
+
+### Filing issues
+
+- **One problem per issue.** Don't combine unrelated bugs or features.
+- **Title format:** `type(scope): description` — e.g., `bug(tail): glob pattern fails for bare *.log`
+- **Body:** describe current behavior, expected behavior, and reproduction steps. For features, describe the user-visible outcome.
+- **Link related issues.** Reference parent metas, duplicates, and blocking issues.
+
+### Label taxonomy
+
+Every issue should have exactly one **type label** and one **priority label**. Add **component labels** when applicable.
+
+#### Type labels
+
+| Label | When to use |
+|-------|-------------|
+| `bug` | Broken behavior — something that worked and doesn't, or violates documented behavior |
+| `enhancement` | New feature or improvement to existing functionality |
+| `performance` | Performance optimization (throughput, latency, memory, CPU) |
+| `architecture` | Systemic design change that eliminates classes of bugs |
+| `research` / `research-needed` | Needs investigation before implementation can start |
+| `documentation` | Docs-only change (user guide, dev docs, API docs) |
+| `work-unit` | Scheduling ticket for one agent run — bundles low-discretion tasks |
+
+#### Priority labels
+
+| Label | Criteria | Response |
+|-------|----------|----------|
+| `P0` | Data loss, crash, security vulnerability | Fix immediately |
+| `P1` | Significant user-visible bug, major UX breakage | Fix this week |
+| `P2` | Minor bug, missing validation, metric inaccuracy | Fix when convenient |
+| `P3` | Polish, refactor, research, tooling, minor UX | Backlog |
+
+#### Component labels
+
+Use `component:` prefixed labels to identify the affected subsystem. The full list:
+
+- **Inputs:** `component:input/file`, `component:input/tcp`, `component:input/udp`, `component:input/otlp`, `component:input/generator`, `component:input/common`
+- **Processing:** `component:processor/framing`, `component:processor/scanner`, `component:processor/transform-sql`, `component:processor/checkpoint`, `component:processor/enrichment`
+- **Outputs:** `component:output/http`, `component:output/otlp`, `component:output/elasticsearch`, `component:output/loki`, `component:output/stdout`, `component:output/file`, `component:output/common`
+- **Infrastructure:** `component:pipeline`, `component:config`, `component:diagnostics`
+
+#### Special labels
+
+| Label | Purpose |
+|-------|---------|
+| `production` | Required for production readiness — blocks GA |
+| `copilot` | Assigned to GitHub Copilot for automated fix |
+| `ci:full` | PR label: run all CI jobs (Kani, TLA+, Miri, macOS, etc.) |
+| `DO NOT MERGE` | PR label: prototype or blocked, must not be merged |
+| `benchmark` | Nightly benchmark results (automated) |
+
+### Issue triage
+
+When triaging issues:
+
+1. **Apply labels** — every issue needs type + priority + component(s)
+2. **Check for duplicates** — search existing issues by title keywords and component
+3. **Link to parent metas** — if the issue is part of a larger initiative, reference the tracking issue
+4. **Close resolved issues** — when a PR fixes an issue, verify the fix in the codebase before closing. Reference the fixing PR in the close comment.
+5. **Close stale issues** — if the described component was rewritten, the bug no longer exists, or the feature was superseded, close with an explanation
+
+### Work-unit issues
+
+Work-unit issues (`work-unit` label) are scheduling tickets that bundle small, low-discretion tasks for a single agent run. Rules:
+
+- Each work-unit should be completable in one agent session
+- List concrete, verifiable tasks (not vague goals)
+- Reference specific files and functions where changes are needed
+- Don't create duplicate work-units — check existing ones first
+
 ## Getting Help
 
 - File an issue at https://github.com/strawgate/memagent/issues

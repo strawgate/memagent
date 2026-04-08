@@ -1,10 +1,13 @@
+[profile.default]
+# Cap test concurrency. Tokio runtime threads are separately limited via
+# TOKIO_WORKER_THREADS in the justfile, so total CPU is bounded.
+# Default local knob: JOBS=8 just test
+test-threads = 2
+
 [profile.ci]
 # Only print failing tests inline; suppress the wall of passing test names.
 status-level = "fail"
 final-status-level = "fail"
 failure-output = "immediate"
-# Cap parallelism so multiple worktrees don't saturate the machine.
-# Each test also spawns a multi-thread tokio runtime, so actual thread count
-# is test-threads × num_cpus. 4 threads keeps a worktree from monopolising
-# the CPU while still running tests concurrently.
-test-threads = 4
+# Keep CI aligned with the same 2-vCPU local default.
+test-threads = 2

@@ -32,6 +32,13 @@
 //! }
 //! enum StatusCode { OK = 0; UNAVAILABLE = 1; INVALID_ARGUMENT = 2; }
 //! ```
+//!
+//! **Wire-format note:** The old hand-rolled encoder used `BATCH_STATUS_OK = 1`,
+//! which mapped to `UNAVAILABLE` in the proto enum. The prost-based encoder
+//! correctly uses `OK = 0`. This is a wire-format fix but a breaking change
+//! for mixed deployments where old senders talk to new receivers (or vice versa).
+//! Old receivers that checked `status_code == 1` for success will misinterpret
+//! the corrected `0` value.
 
 use std::future::Future;
 use std::io;
@@ -41,14 +48,23 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
+use logfwd_otap_proto::otap::{
+    ArrowPayload as ProtoArrowPayload, ArrowPayloadType as ProtoArrowPayloadType,
+    BatchArrowRecords as ProtoBatchArrowRecords, BatchStatus as ProtoBatchStatus,
+    StatusCode as ProtoStatusCode,
+};
+use prost::Message;
 
 use logfwd_arrow::star_schema::flat_to_star;
-use logfwd_core::otlp::{self, encode_bytes_field, encode_tag, encode_varint, encode_varint_field};
 use logfwd_types::diagnostics::ComponentStats;
 
 use super::arrow_ipc_sink::serialize_ipc;
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{BatchMetadata, Compression};
+
+mod generated_fast {
+    include!("generated/otap_fast_v1.rs");
+}
 
 /// Content-Type for protobuf-encoded OTAP messages.
 const CONTENT_TYPE_PROTOBUF: &str = "application/x-protobuf";
@@ -94,12 +110,22 @@ pub enum StatusCode {
 }
 
 impl StatusCode {
-    fn from_u64(v: u64) -> Self {
-        match v {
-            0 => StatusCode::Ok,
-            1 => StatusCode::Unavailable,
-            2 => StatusCode::InvalidArgument,
-            _ => StatusCode::InvalidArgument,
+    fn from_proto(status: ProtoStatusCode) -> Self {
+        match status {
+            ProtoStatusCode::Ok => Self::Ok,
+            ProtoStatusCode::Unavailable => Self::Unavailable,
+            ProtoStatusCode::InvalidArgument => Self::InvalidArgument,
+        }
+    }
+}
+
+impl ArrowPayloadType {
+    fn to_proto(self) -> ProtoArrowPayloadType {
+        match self {
+            Self::Logs => ProtoArrowPayloadType::Logs,
+            Self::LogAttrs => ProtoArrowPayloadType::LogAttrs,
+            Self::ResourceAttrs => ProtoArrowPayloadType::ResourceAttrs,
+            Self::ScopeAttrs => ProtoArrowPayloadType::ScopeAttrs,
         }
     }
 }
@@ -122,48 +148,11 @@ pub struct BatchStatus {
     pub status_message: String,
 }
 
-// ---------------------------------------------------------------------------
-// Protobuf encoding
-// ---------------------------------------------------------------------------
-
-/// Encode an `ArrowPayload` message into `buf`.
-///
-/// ```text
-/// message ArrowPayload {
-///   string           schema_id = 1;  // length-delimited
-///   ArrowPayloadType type      = 2;  // varint
-///   bytes            record    = 3;  // length-delimited
-/// }
-/// ```
-fn encode_arrow_payload(
-    buf: &mut Vec<u8>,
-    schema_id: &str,
-    ptype: ArrowPayloadType,
-    ipc_bytes: &[u8],
-) {
-    // field 1: schema_id (string = length-delimited, wire type 2)
-    if !schema_id.is_empty() {
-        encode_bytes_field(buf, 1, schema_id.as_bytes());
-    }
-
-    // field 2: type (enum = varint, wire type 0)
-    // Only encode if non-zero (protobuf default for enums is 0).
-    let type_val = ptype as u64;
-    if type_val != 0 {
-        encode_varint_field(buf, 2, type_val);
-    }
-
-    // field 3: record (bytes = length-delimited, wire type 2)
-    if !ipc_bytes.is_empty() {
-        encode_bytes_field(buf, 3, ipc_bytes);
-    }
-}
-
 /// Encode a `BatchArrowRecords` message.
 ///
 /// ```text
 /// message BatchArrowRecords {
-///   int64            batch_id       = 1;  // varint (zigzag for signed)
+///   int64            batch_id       = 1;  // standard varint (not zigzag; that's sint64)
 ///   repeated ArrowPayload arrow_payloads = 2;  // length-delimited
 ///   bytes            headers        = 3;  // length-delimited
 /// }
@@ -174,46 +163,32 @@ pub fn encode_batch_arrow_records(
     payloads: &[(String, ArrowPayloadType, Vec<u8>)],
     headers: &[u8],
 ) {
-    // field 1: batch_id (int64 = varint, wire type 0)
-    // protobuf int64 uses standard varint (not zigzag for `int64` type).
-    // Negative values use 10-byte two's complement encoding.
-    if batch_id != 0 {
-        encode_varint_field(buf, 1, batch_id as u64);
-    }
-
-    // field 2: repeated ArrowPayload (each as length-delimited submessage)
-    for (schema_id, ptype, ipc_bytes) in payloads {
-        // Encode the submessage into a temporary buffer to get its length.
-        let mut sub = Vec::with_capacity(ipc_bytes.len() + 64);
-        encode_arrow_payload(&mut sub, schema_id, *ptype, ipc_bytes);
-
-        // Write tag + length + submessage bytes.
-        encode_tag(buf, 2, 2); // field 2, wire type 2 (length-delimited)
-        encode_varint(buf, sub.len() as u64);
-        buf.extend_from_slice(&sub);
-    }
-
-    // field 3: headers (bytes = length-delimited, wire type 2)
-    if !headers.is_empty() {
-        encode_bytes_field(buf, 3, headers);
-    }
+    let message = ProtoBatchArrowRecords {
+        batch_id,
+        arrow_payloads: payloads
+            .iter()
+            // Clone is required because the proto struct takes ownership but we
+            // borrow the slice. Changing the signature to consume a Vec would
+            // avoid the clone but would break the public API and all callers.
+            .map(|(schema_id, payload_type, record)| ProtoArrowPayload {
+                schema_id: schema_id.clone(),
+                r#type: payload_type.to_proto() as i32,
+                record: record.clone(),
+            })
+            .collect(),
+        headers: headers.to_vec(),
+    };
+    message.encode(buf).expect("vec-backed encode cannot fail");
 }
 
-// ---------------------------------------------------------------------------
-// Protobuf decoding — thin wrappers around logfwd_core::otlp
-// ---------------------------------------------------------------------------
-
-fn decode_varint(data: &[u8], pos: usize) -> io::Result<(u64, usize)> {
-    otlp::decode_varint(data, pos).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-}
-
-fn decode_tag(data: &[u8], pos: usize) -> io::Result<(u32, u8, usize)> {
-    otlp::decode_tag(data, pos).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-}
-
-fn skip_field(data: &[u8], wire_type: u8, pos: usize) -> io::Result<usize> {
-    otlp::skip_field(data, wire_type, pos)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+/// Benchmark/reference path: encode OTAP with the checked-in fast generator.
+pub fn encode_batch_arrow_records_generated_fast(
+    buf: &mut Vec<u8>,
+    batch_id: i64,
+    payloads: &[(String, ArrowPayloadType, Vec<u8>)],
+    headers: &[u8],
+) {
+    generated_fast::encode_batch_arrow_records_generated_fast(buf, batch_id, payloads, headers);
 }
 
 /// Decode a `BatchStatus` response from protobuf bytes.
@@ -226,53 +201,30 @@ fn skip_field(data: &[u8], wire_type: u8, pos: usize) -> io::Result<usize> {
 /// }
 /// ```
 pub fn decode_batch_status(data: &[u8]) -> io::Result<BatchStatus> {
-    let mut batch_id: i64 = 0;
-    let mut status_code = StatusCode::Ok;
-    let mut status_message = String::new();
-
-    let mut pos = 0;
-    while pos < data.len() {
-        let (field_number, wire_type, new_pos) = decode_tag(data, pos)?;
-        pos = new_pos;
-
-        match (field_number, wire_type) {
-            (1, 0) => {
-                // batch_id: int64 varint
-                let (val, new_pos) = decode_varint(data, pos)?;
-                batch_id = val as i64;
-                pos = new_pos;
-            }
-            (2, 0) => {
-                // status_code: enum varint
-                let (val, new_pos) = decode_varint(data, pos)?;
-                status_code = StatusCode::from_u64(val);
-                pos = new_pos;
-            }
-            (3, 2) => {
-                // status_message: string (length-delimited)
-                let (len, new_pos) = decode_varint(data, pos)?;
-                let end = new_pos + len as usize;
-                if end > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "truncated status_message",
-                    ));
-                }
-                status_message = String::from_utf8_lossy(&data[new_pos..end]).into_owned();
-                pos = end;
-            }
-            _ => {
-                // Unknown field — skip it for forward compatibility.
-                pos = skip_field(data, wire_type, pos)?;
-            }
-        }
+    if data.is_empty() {
+        return Ok(BatchStatus {
+            batch_id: 0,
+            status_code: StatusCode::Ok,
+            status_message: String::new(),
+        });
     }
+    let decoded = ProtoBatchStatus::decode(data)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let status_code = StatusCode::from_proto(
+        // Defensive: unknown status codes are treated as errors, not success.
+        ProtoStatusCode::try_from(decoded.status_code).unwrap_or(ProtoStatusCode::InvalidArgument),
+    );
 
     Ok(BatchStatus {
-        batch_id,
+        batch_id: decoded.batch_id,
         status_code,
-        status_message,
+        status_message: decoded.status_message,
     })
+}
+
+/// Benchmark/reference path: decode OTAP `BatchStatus` with the checked-in fast generator.
+pub fn decode_batch_status_generated_fast(data: &[u8]) -> io::Result<BatchStatus> {
+    generated_fast::decode_batch_status_generated_fast(data)
 }
 
 /// Decode a `BatchArrowRecords` from protobuf bytes.
@@ -280,110 +232,21 @@ pub fn decode_batch_status(data: &[u8]) -> io::Result<BatchStatus> {
 /// Returns the batch_id and a list of (schema_id, payload_type, ipc_bytes)
 /// for each `ArrowPayload` in the message.
 pub fn decode_batch_arrow_records(data: &[u8]) -> io::Result<(i64, Vec<DecodedPayload>, Vec<u8>)> {
-    let mut batch_id: i64 = 0;
-    let mut payloads: Vec<DecodedPayload> = Vec::new();
-    let mut headers: Vec<u8> = Vec::new();
-
-    let mut pos = 0;
-    while pos < data.len() {
-        let (field_number, wire_type, new_pos) = decode_tag(data, pos)?;
-        pos = new_pos;
-
-        match (field_number, wire_type) {
-            (1, 0) => {
-                // batch_id
-                let (val, new_pos) = decode_varint(data, pos)?;
-                batch_id = val as i64;
-                pos = new_pos;
-            }
-            (2, 2) => {
-                // ArrowPayload submessage
-                let (len, new_pos) = decode_varint(data, pos)?;
-                let end = new_pos + len as usize;
-                if end > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "truncated ArrowPayload",
-                    ));
-                }
-                let payload = decode_arrow_payload(&data[new_pos..end])?;
-                payloads.push(payload);
-                pos = end;
-            }
-            (3, 2) => {
-                // headers
-                let (len, new_pos) = decode_varint(data, pos)?;
-                let end = new_pos + len as usize;
-                if end > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "truncated headers",
-                    ));
-                }
-                headers = data[new_pos..end].to_vec();
-                pos = end;
-            }
-            _ => {
-                pos = skip_field(data, wire_type, pos)?;
-            }
-        }
-    }
-
-    Ok((batch_id, payloads, headers))
+    let decoded = ProtoBatchArrowRecords::decode(data)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let payloads = decoded
+        .arrow_payloads
+        .into_iter()
+        .map(|payload| (payload.schema_id, payload.r#type as u32, payload.record))
+        .collect();
+    Ok((decoded.batch_id, payloads, decoded.headers))
 }
 
-/// Decode a single `ArrowPayload` submessage.
-/// Returns (schema_id, payload_type_value, ipc_bytes).
-fn decode_arrow_payload(data: &[u8]) -> io::Result<DecodedPayload> {
-    let mut schema_id = String::new();
-    let mut payload_type: u32 = 0;
-    let mut record: Vec<u8> = Vec::new();
-
-    let mut pos = 0;
-    while pos < data.len() {
-        let (field_number, wire_type, new_pos) = decode_tag(data, pos)?;
-        pos = new_pos;
-
-        match (field_number, wire_type) {
-            (1, 2) => {
-                // schema_id: string
-                let (len, new_pos) = decode_varint(data, pos)?;
-                let end = new_pos + len as usize;
-                if end > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "truncated schema_id",
-                    ));
-                }
-                schema_id = String::from_utf8_lossy(&data[new_pos..end]).into_owned();
-                pos = end;
-            }
-            (2, 0) => {
-                // type: enum varint
-                let (val, new_pos) = decode_varint(data, pos)?;
-                payload_type = val as u32;
-                pos = new_pos;
-            }
-            (3, 2) => {
-                // record: bytes
-                let (len, new_pos) = decode_varint(data, pos)?;
-                let end = new_pos + len as usize;
-                if end > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "truncated record",
-                    ));
-                }
-                record = data[new_pos..end].to_vec();
-                pos = end;
-            }
-            _ => {
-                pos = skip_field(data, wire_type, pos)?;
-            }
-        }
-    }
-
-    Ok((schema_id, payload_type, record))
+/// Benchmark/reference path: decode `BatchArrowRecords` with the checked-in fast generator.
+pub fn decode_batch_arrow_records_generated_fast(
+    data: &[u8],
+) -> io::Result<(i64, Vec<DecodedPayload>, Vec<u8>)> {
+    generated_fast::decode_batch_arrow_records_generated_fast(data)
 }
 
 // ---------------------------------------------------------------------------
@@ -684,6 +547,7 @@ mod tests {
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use logfwd_arrow::star_schema::{flat_to_star, star_to_flat};
+    use logfwd_core::otlp::encode_varint_field;
 
     use super::super::arrow_ipc_sink::deserialize_ipc;
 
@@ -805,14 +669,52 @@ mod tests {
     }
 
     #[test]
+    fn generated_fast_batch_arrow_records_matches_generated_prost() {
+        let payloads = vec![
+            (
+                "logs".to_string(),
+                ArrowPayloadType::Logs,
+                b"fake-ipc-logs".to_vec(),
+            ),
+            (
+                "log_attrs".to_string(),
+                ArrowPayloadType::LogAttrs,
+                b"fake-ipc-attrs".to_vec(),
+            ),
+            (
+                "resource_attrs".to_string(),
+                ArrowPayloadType::ResourceAttrs,
+                b"fake-ipc-resource".to_vec(),
+            ),
+            (
+                "scope_attrs".to_string(),
+                ArrowPayloadType::ScopeAttrs,
+                b"fake-ipc-scope".to_vec(),
+            ),
+        ];
+
+        let mut generated = Vec::new();
+        encode_batch_arrow_records(&mut generated, 42, &payloads, b"custom-headers");
+
+        let mut fast = Vec::new();
+        encode_batch_arrow_records_generated_fast(&mut fast, 42, &payloads, b"custom-headers");
+
+        assert_eq!(
+            fast, generated,
+            "generated-fast OTAP encoding drifted from prost path"
+        );
+    }
+
+    #[test]
     fn encode_decode_batch_status_roundtrip() {
-        // Encode a BatchStatus manually.
         let mut buf = Vec::new();
-        // field 1: batch_id = 42
-        encode_varint_field(&mut buf, 1, 42);
-        // field 2: status_code = OK (0) — omit since default
-        // field 3: status_message = "success"
-        encode_bytes_field(&mut buf, 3, b"success");
+        ProtoBatchStatus {
+            batch_id: 42,
+            status_code: ProtoStatusCode::Ok as i32,
+            status_message: "success".to_string(),
+        }
+        .encode(&mut buf)
+        .expect("vec-backed encode cannot fail");
 
         let status = decode_batch_status(&buf).expect("decode should succeed");
         assert_eq!(status.batch_id, 42);
@@ -823,9 +725,13 @@ mod tests {
     #[test]
     fn decode_batch_status_unavailable() {
         let mut buf = Vec::new();
-        encode_varint_field(&mut buf, 1, 99);
-        encode_varint_field(&mut buf, 2, StatusCode::Unavailable as u64);
-        encode_bytes_field(&mut buf, 3, b"server overloaded");
+        ProtoBatchStatus {
+            batch_id: 99,
+            status_code: ProtoStatusCode::Unavailable as i32,
+            status_message: "server overloaded".to_string(),
+        }
+        .encode(&mut buf)
+        .expect("vec-backed encode cannot fail");
 
         let status = decode_batch_status(&buf).expect("decode should succeed");
         assert_eq!(status.batch_id, 99);
@@ -836,9 +742,13 @@ mod tests {
     #[test]
     fn decode_batch_status_invalid_argument() {
         let mut buf = Vec::new();
-        encode_varint_field(&mut buf, 1, 5);
-        encode_varint_field(&mut buf, 2, StatusCode::InvalidArgument as u64);
-        encode_bytes_field(&mut buf, 3, b"bad schema");
+        ProtoBatchStatus {
+            batch_id: 5,
+            status_code: ProtoStatusCode::InvalidArgument as i32,
+            status_message: "bad schema".to_string(),
+        }
+        .encode(&mut buf)
+        .expect("vec-backed encode cannot fail");
 
         let status = decode_batch_status(&buf).expect("decode should succeed");
         assert_eq!(status.batch_id, 5);
@@ -1048,16 +958,57 @@ mod tests {
 
     #[test]
     fn decode_batch_status_skips_unknown_fields() {
-        // Encode a status with an extra unknown field (field 99, varint).
         let mut buf = Vec::new();
-        encode_varint_field(&mut buf, 1, 10); // batch_id
-        encode_varint_field(&mut buf, 99, 12345); // unknown field
-        encode_varint_field(&mut buf, 2, StatusCode::Ok as u64);
-        encode_bytes_field(&mut buf, 3, b"ok");
+        ProtoBatchStatus {
+            batch_id: 10,
+            status_code: ProtoStatusCode::Ok as i32,
+            status_message: "ok".to_string(),
+        }
+        .encode(&mut buf)
+        .expect("vec-backed encode cannot fail");
+        encode_varint_field(&mut buf, 99, 12345);
 
         let status = decode_batch_status(&buf).expect("should skip unknown fields");
         assert_eq!(status.batch_id, 10);
         assert_eq!(status.status_code, StatusCode::Ok);
         assert_eq!(status.status_message, "ok");
+    }
+
+    #[test]
+    fn generated_fast_decoders_match_generated_prost() {
+        let payloads = vec![
+            ("logs".to_string(), ArrowPayloadType::Logs, b"data".to_vec()),
+            (
+                "resource_attrs".to_string(),
+                ArrowPayloadType::ResourceAttrs,
+                b"resource".to_vec(),
+            ),
+        ];
+
+        let mut buf = Vec::new();
+        encode_batch_arrow_records(&mut buf, 11, &payloads, b"headers");
+
+        let generated = decode_batch_arrow_records(&buf).expect("generated decode");
+        let fast = decode_batch_arrow_records_generated_fast(&buf).expect("generated fast decode");
+        assert_eq!(fast, generated, "generated-fast OTAP batch decode drifted");
+
+        let mut status_buf = Vec::new();
+        ProtoBatchStatus {
+            batch_id: 99,
+            status_code: ProtoStatusCode::Unavailable as i32,
+            status_message: "busy".to_string(),
+        }
+        .encode(&mut status_buf)
+        .expect("vec-backed encode cannot fail");
+
+        let generated_status = decode_batch_status(&status_buf).expect("generated status decode");
+        let fast_status =
+            decode_batch_status_generated_fast(&status_buf).expect("generated fast status decode");
+        assert_eq!(fast_status.batch_id, generated_status.batch_id);
+        assert_eq!(
+            fast_status.status_code as u32,
+            generated_status.status_code as u32
+        );
+        assert_eq!(fast_status.status_message, generated_status.status_message);
     }
 }

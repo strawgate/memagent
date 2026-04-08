@@ -1,5 +1,8 @@
 # Output Types
 
+Support status lives in the [Configuration Reference](reference.md#output-types).
+This page focuses on usage notes and examples.
+
 ## OTLP
 
 Send logs as OpenTelemetry protobuf over HTTP or gRPC.
@@ -9,12 +12,16 @@ output:
   type: otlp
   endpoint: https://collector:4318
   protocol: http       # http | grpc
-  compression: zstd    # zstd | none (gzip not yet supported)
+  compression: zstd    # zstd | gzip | none
   auth:
     bearer_token: "${OTEL_TOKEN}"
 ```
 
 ## HTTP (JSON Lines)
+
+> Not yet supported. `type: http` remains in the configuration reference so the
+> reserved surface is explicit, but config validation currently rejects it
+> until runtime sink support lands.
 
 POST newline-delimited JSON to any HTTP endpoint.
 
@@ -75,6 +82,11 @@ output:
   type: loki
   endpoint: http://loki:3100
 ```
+
+When `label_columns` or `static_labels` are used, logfwd sanitizes label keys
+into Loki-compatible names. Configurations are rejected if two source columns,
+two `static_labels` entries, or a source column and a `static_labels` entry
+would collapse to the same sanitized Loki label key.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|

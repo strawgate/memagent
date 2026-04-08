@@ -19,8 +19,8 @@ docker run -d \
   -v /var/log:/var/log:ro \
   -v ./config.yaml:/etc/logfwd/config.yaml:ro \
   -p 9090:9090 \
-  ghcr.io/strawgate/memagent:latest \
-  --config /etc/logfwd/config.yaml
+  ghcr.io/strawgate/logfwd:latest \
+  run --config /etc/logfwd/config.yaml
 ```
 
 ## Validate container health
@@ -31,8 +31,8 @@ docker ps --filter name=logfwd
 docker logs --tail=100 logfwd
 
 # Diagnostics
-curl -s http://localhost:9090/health | jq .
-curl -s http://localhost:9090/api/pipelines | jq .
+curl -s http://localhost:9090/live | jq .
+curl -s http://localhost:9090/admin/v1/status | jq .
 ```
 
 You should see increasing `inputs[*].lines_total` and `outputs[*].lines_total` when logs are present.
@@ -51,8 +51,8 @@ docker run -d \
   -v /var/log:/var/log:ro \
   -v ./config.last-known-good.yaml:/etc/logfwd/config.yaml:ro \
   -p 9090:9090 \
-  ghcr.io/strawgate/memagent:<known-good-tag> \
-  --config /etc/logfwd/config.yaml
+  ghcr.io/strawgate/logfwd:<known-good-tag> \
+  run --config /etc/logfwd/config.yaml
 ```
 
 Then validate with the same diagnostics commands above.

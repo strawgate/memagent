@@ -129,21 +129,25 @@ justified — but they must be clean, complete, and documented.
 
 ## CI Status — Non-Negotiable Gate
 
-All CI jobs must be green before merge: fast-checks (`cargo fmt --check`, `taplo check`,
-`typos`, `actionlint`), lint (`cargo clippy -D warnings`, `cargo deny check`, `rustsec audit`),
-test (ubuntu-latest + macos-latest), build (release profile, aarch64 cross-compile),
-kani (all proofs within 30-minute timeout). A PR with any red CI job is not mergeable.
-If CI is red, identify the specific failing job from the CI output and ask the author
-to fix it. Do not suggest merging with a failing CI job on the grounds that "it's
-probably flaky" — investigate first. macOS CI disables sccache (known reliability
-issue); Linux CI uses sccache. If a test passes on Linux but fails on macOS, it is
-likely a target-specific SIMD path, a filesystem case-sensitivity issue, or a
-timing-dependent test.
+The required merge gate is the `CI conclusion` job, which currently depends on
+`Verification guardrail`, `lint`, `test-linux`, and `build-check`. A PR with a
+red required check is not mergeable.
+
+Some other jobs, including the Linux-only `Code Coverage` job, the conditional
+`Test (macOS)` job, and heavier verification jobs such as Kani or TLC, may be
+conditional based on paths, labels, or event type. Do not assume they always
+ran; first confirm whether they were expected to run in the current CI context.
+
+If CI is red, identify the specific failing job from the CI output and ask the
+author to fix it. Do not suggest merging with a failing required job because
+"it's probably flaky" — investigate first. If a test passes on
+Linux but fails on macOS, it is likely a target-specific SIMD path, a
+filesystem case-sensitivity issue, or a timing-dependent test.
 
 
 ## Commit Hygiene and PR Hygiene
 
-No merge commits on the feature branch — the branch must rebase onto master.
+No merge commits on the feature branch — the branch must rebase onto main.
 Commit messages follow: `type(optional-scope): concise description`. One concern
 per commit. The squash commit message (the PR title) must accurately describe
 the behavior change and include the issue number. If the PR title and the actual

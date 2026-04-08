@@ -1,0 +1,292 @@
+use std::collections::{HashMap, HashSet};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use logfwd_types::diagnostics::ComponentHealth;
+use logfwd_types::pipeline::SourceId;
+
+use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
+
+use super::discovery::FileDiscovery;
+use super::glob::expand_glob_patterns;
+use super::identity::ByteOffset;
+use super::reader::FileReader;
+
+/// Events emitted by the tailer.
+#[non_exhaustive]
+pub enum TailEvent {
+    Data {
+        path: PathBuf,
+        bytes: Vec<u8>,
+        source_id: Option<SourceId>,
+    },
+    Rotated {
+        path: PathBuf,
+        source_id: Option<SourceId>,
+    },
+    Truncated {
+        path: PathBuf,
+        source_id: Option<SourceId>,
+    },
+    EndOfFile {
+        path: PathBuf,
+        source_id: Option<SourceId>,
+    },
+}
+
+/// Configuration for the file tailer.
+#[derive(Clone, Debug)]
+pub struct TailConfig {
+    pub poll_interval_ms: u64,
+    pub read_buf_size: usize,
+    pub fingerprint_bytes: usize,
+    pub start_from_end: bool,
+    pub glob_rescan_interval_ms: u64,
+    pub max_open_files: usize,
+    pub per_file_read_budget_bytes: usize,
+}
+
+impl Default for TailConfig {
+    fn default() -> Self {
+        TailConfig {
+            poll_interval_ms: 250,
+            read_buf_size: 256 * 1024,
+            fingerprint_bytes: 1024,
+            start_from_end: true,
+            glob_rescan_interval_ms: 5000,
+            max_open_files: 1024,
+            per_file_read_budget_bytes: 256 * 1024,
+        }
+    }
+}
+
+/// The file tailer. Watches one or more file paths and yields data as it appears.
+pub struct FileTailer {
+    pub(super) discovery: FileDiscovery,
+    pub(super) reader: FileReader,
+    config: TailConfig,
+    last_poll: Instant,
+    pub(super) consecutive_error_polls: u32,
+    pub(super) error_backoff_until: Option<Instant>,
+    health: ComponentHealth,
+}
+
+fn watch_parent_for(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    if parent.as_os_str().is_empty() {
+        Some(PathBuf::from("."))
+    } else {
+        Some(parent.to_path_buf())
+    }
+}
+
+impl FileTailer {
+    pub fn new(paths: &[PathBuf], config: TailConfig) -> io::Result<Self> {
+        let (tx, rx) = crossbeam_channel::unbounded();
+
+        let mut watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })
+        .map_err(io::Error::other)?;
+
+        let mut watched_dirs = HashSet::new();
+        for path in paths {
+            if let Some(parent) = watch_parent_for(path)
+                && watched_dirs.insert(parent.clone())
+            {
+                use notify::Watcher;
+                watcher
+                    .watch(&parent, notify::RecursiveMode::NonRecursive)
+                    .map_err(io::Error::other)?;
+            }
+        }
+
+        let mut tailer = FileTailer {
+            discovery: FileDiscovery {
+                watcher,
+                watched_dirs,
+                glob_patterns: Vec::new(),
+                watch_paths: paths.to_vec(),
+                fs_events: rx,
+                last_glob_rescan: Instant::now(),
+            },
+            reader: FileReader {
+                files: HashMap::new(),
+                read_buf: vec![0u8; config.read_buf_size],
+                evicted_offsets: HashMap::new(),
+                scratch_paths: Vec::new(),
+                config: config.clone(),
+            },
+            config,
+            last_poll: Instant::now(),
+            consecutive_error_polls: 0,
+            error_backoff_until: None,
+            health: ComponentHealth::Healthy,
+        };
+
+        for path in paths {
+            if path.exists() {
+                if let Err(e) = tailer
+                    .reader
+                    .open_file_at(path, tailer.config.start_from_end)
+                {
+                    tracing::warn!(path = %path.display(), error = %e, "tail.open_failed");
+                }
+            } else {
+                tracing::warn!(path = %path.display(), "tail.file_not_found — pipeline will wait until file appears");
+            }
+        }
+
+        Ok(tailer)
+    }
+
+    pub fn new_with_globs(patterns: &[&str], config: TailConfig) -> io::Result<Self> {
+        let initial_paths: Vec<PathBuf> = expand_glob_patterns(patterns);
+
+        if initial_paths.is_empty() {
+            for pattern in patterns {
+                tracing::warn!(
+                    pattern,
+                    "tail.glob_no_matches — pipeline will wait until matching files appear"
+                );
+            }
+        }
+
+        let mut tailer = Self::new(&initial_paths, config)?;
+        tailer.discovery.glob_patterns = patterns.iter().map(ToString::to_string).collect();
+        Ok(tailer)
+    }
+
+    #[cfg(test)]
+    pub(super) const MAX_READ_PER_POLL: usize = FileReader::MAX_READ_PER_POLL;
+
+    pub fn poll(&mut self) -> io::Result<Vec<TailEvent>> {
+        let mut events = Vec::new();
+        let (something_changed, mut had_error) = self.discovery.drain_events();
+
+        if let Some(until) = self.error_backoff_until
+            && Instant::now() < until
+        {
+            if had_error {
+                self.update_error_backoff(true);
+            }
+            return Ok(events);
+        }
+
+        let poll_interval = Duration::from_millis(self.config.poll_interval_ms);
+        let glob_rescan_due = self.config.glob_rescan_interval_ms > 0
+            && self.discovery.last_glob_rescan.elapsed()
+                >= Duration::from_millis(self.config.glob_rescan_interval_ms);
+        let should_poll =
+            something_changed || self.last_poll.elapsed() >= poll_interval || glob_rescan_due;
+
+        if !should_poll {
+            if had_error {
+                self.update_error_backoff(true);
+            }
+            return Ok(events);
+        }
+        self.last_poll = Instant::now();
+
+        if glob_rescan_due {
+            had_error |= self.discovery.rescan_globs(&mut self.reader);
+            self.discovery.last_glob_rescan = Instant::now();
+        }
+
+        had_error |= self.discovery.detect_changes(&mut self.reader, &mut events);
+        had_error |= self.reader.read_all(&mut events);
+        had_error |= self
+            .discovery
+            .cleanup_deleted(&mut self.reader, &mut events);
+
+        self.reader.evict_lru(self.config.max_open_files);
+        self.update_error_backoff(had_error);
+
+        Ok(events)
+    }
+
+    pub fn health(&self) -> ComponentHealth {
+        self.health
+    }
+
+    fn update_error_backoff(&mut self, had_error: bool) {
+        const INITIAL_BACKOFF_MS: u64 = 100;
+        const MAX_BACKOFF_MS: u64 = 5000;
+
+        if had_error {
+            self.consecutive_error_polls = self.consecutive_error_polls.saturating_add(1);
+            let exponent = self.consecutive_error_polls.saturating_sub(1).min(6);
+            let multiplier = 1u64 << exponent;
+            let backoff_ms = INITIAL_BACKOFF_MS
+                .saturating_mul(multiplier)
+                .min(MAX_BACKOFF_MS);
+            self.error_backoff_until = Some(Instant::now() + Duration::from_millis(backoff_ms));
+            tracing::warn!(
+                consecutive_error_polls = self.consecutive_error_polls,
+                backoff_ms,
+                "tail.poll_backoff_after_error"
+            );
+            self.health = reduce_polling_input_health(
+                self.health,
+                PollingInputHealthEvent::ErrorBackoffObserved,
+            );
+        } else {
+            self.consecutive_error_polls = 0;
+            self.error_backoff_until = None;
+            self.health =
+                reduce_polling_input_health(self.health, PollingInputHealthEvent::PollHealthy);
+        }
+    }
+
+    pub fn get_offset(&self, path: &Path) -> Option<u64> {
+        self.reader.get_offset(path)
+    }
+
+    pub fn set_offset(&mut self, path: &Path, offset: u64) -> io::Result<()> {
+        self.reader.set_offset(path, offset)
+    }
+
+    pub fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) -> io::Result<()> {
+        self.reader.set_offset_by_source(source_id, offset)
+    }
+
+    pub fn num_files(&self) -> usize {
+        self.reader.num_files()
+    }
+
+    pub fn source_id_for_path(&self, path: &Path) -> Option<SourceId> {
+        self.reader.source_id_for_path(path)
+    }
+
+    pub fn file_offsets(&self) -> Vec<(SourceId, ByteOffset)> {
+        self.reader.file_offsets()
+    }
+
+    pub fn file_paths(&self) -> Vec<(SourceId, PathBuf)> {
+        self.reader.file_paths()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::watch_parent_for;
+
+    #[test]
+    fn watch_parent_for_relative_file_uses_current_dir() {
+        assert_eq!(
+            watch_parent_for(Path::new("app.log")).as_deref(),
+            Some(Path::new("."))
+        );
+    }
+
+    #[test]
+    fn watch_parent_for_nested_path_uses_parent() {
+        assert_eq!(
+            watch_parent_for(Path::new("logs/app.log")).as_deref(),
+            Some(Path::new("logs"))
+        );
+    }
+}

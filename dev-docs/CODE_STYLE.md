@@ -84,7 +84,7 @@ The hot path is: reader → framer → scanner → builders → OTLP encoder →
 
 - **Commit messages:** `type: concise description` — `fix:`, `feat:`, `refactor:`, `docs:`, `bench:`, `test:`
 - **One concern per commit.** Don't mix fixes with features.
-- **No merge commits on feature branches.** Rebase onto master.
+- **No merge commits on feature branches.** Rebase onto main.
 - **PR titles:** same format as commit messages, under 70 chars.
 
 ## Module Organization

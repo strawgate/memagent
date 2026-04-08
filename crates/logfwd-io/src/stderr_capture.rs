@@ -7,7 +7,7 @@
 //! 4. A reader thread tees pipe data to the original fd + 1 MiB ring buffer
 //!
 //! The buffer evicts the oldest lines when full, keeping the most recent ~1 MiB
-//! of log output available for `/api/logs`.
+//! of log output available for `/admin/v1/logs`.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
