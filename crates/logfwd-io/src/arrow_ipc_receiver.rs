@@ -464,8 +464,11 @@ mod tests {
     }
 
     fn serialize_batches(batches: &[RecordBatch]) -> Vec<u8> {
+        let first = batches
+            .first()
+            .expect("serialize_batches: batches must not be empty");
         let mut buf = Vec::new();
-        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &batches[0].schema())
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &first.schema())
             .expect("writer init");
         for batch in batches {
             writer.write(batch).expect("write batch");
