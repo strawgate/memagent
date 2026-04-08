@@ -1182,16 +1182,17 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
         let rid = format!("{:016x}", (i as u64).wrapping_mul(0x517cc1b727220a95));
         let status = [200, 201, 400, 404, 500, 503][i % 6];
 
+        // Compute a monotonically increasing timestamp: base is 2024-01-15T10:00:00Z,
+        // with each line advancing by 1 ms. Carry ms→s→min so timestamps never wrap.
+        let total_ms = i as u64;
+        let ms = total_ms % 1000;
+        let sec = (total_ms / 1_000) % 60;
+        let min = (total_ms / 60_000) % 60;
+
         write!(
             writer,
-            r#"{{"timestamp":"2024-01-15T10:30:00.{:03}Z","level":"{}","message":"request handled GET {}/{}","duration_ms":{},"request_id":"{}","service":"myapp","status":{}}}"#,
-            i % 1000,
-            level,
-            path,
-            id,
-            dur,
-            rid,
-            status,
+            r#"{{"timestamp":"2024-01-15T10:{min:02}:{sec:02}.{ms:03}Z","level":"{}","message":"request handled GET {}/{}","duration_ms":{},"request_id":"{}","service":"myapp","status":{}}}"#,
+            level, path, id, dur, rid, status,
         )?;
         writer.write_all(b"\n")?;
     }
@@ -1553,6 +1554,43 @@ transform: |
             failures.is_empty(),
             "yaml examples must parse and validate read-only:\n{}",
             failures.join("\n")
+        );
+    }
+}
+
+#[cfg(test)]
+mod generate_json_tests {
+    use super::*;
+
+    /// generate_json_log_file must produce monotonically increasing timestamps
+    /// for files larger than 1000 lines.  Before the fix, line 1000 had the
+    /// same millisecond component as line 0 (both .000Z), making the timestamp
+    /// go backward between lines 999 and 1000.
+    #[test]
+    fn generate_json_timestamps_are_monotonic_across_1000_line_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("logs.json");
+        generate_json_log_file(1002, path.to_str().unwrap()).expect("generate");
+
+        let content = std::fs::read_to_string(&path).expect("read");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1002);
+
+        let ts_at = |idx: usize| -> String {
+            let obj: serde_json::Value = serde_json::from_str(lines[idx]).expect("parse json");
+            obj["timestamp"]
+                .as_str()
+                .expect("timestamp field")
+                .to_owned()
+        };
+
+        let ts_999 = ts_at(999);
+        let ts_1000 = ts_at(1000);
+
+        assert!(
+            ts_1000 > ts_999,
+            "timestamp at line 1000 ({ts_1000:?}) must be greater than at line 999 ({ts_999:?}); \
+             timestamps must not wrap at the 1000-line boundary"
         );
     }
 }

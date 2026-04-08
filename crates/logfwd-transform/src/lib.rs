@@ -116,11 +116,20 @@ impl QueryAnalyzer {
     /// there are no `__int`/`__str`/`__float` suffixed names in SQL.
     /// `strip_type_suffix` is a no-op and is kept only for call-site symmetry.
     pub fn scan_config(&self) -> ScanConfig {
+        // Enable keep_raw only when the query explicitly references the `_raw`
+        // column.  For `SELECT *` we deliberately do NOT force keep_raw: the
+        // pipeline already enables it for `format: raw` inputs (where every
+        // line must be captured), and for `format: json` / `format: cri`
+        // inputs the raw bytes are redundant — forcing keep_raw on `SELECT *`
+        // doubles memory use (documented at ~65 % overhead) without any
+        // user opt-in.
+        let keep_raw = self.referenced_columns.contains("_raw");
+
         if self.uses_select_star {
             ScanConfig {
                 wanted_fields: vec![],
                 extract_all: true,
-                keep_raw: true,
+                keep_raw,
                 validate_utf8: false,
             }
         } else {
@@ -130,8 +139,7 @@ impl QueryAnalyzer {
             // When it is referenced in the SQL (e.g. `json(_raw, 'key')`), the
             // scanner must include it in the output batch.  Strip it from the
             // `wanted_fields` list (it is not a JSON key) and enable `keep_raw`
-            // instead (#1627).
-            let keep_raw = self.referenced_columns.contains("_raw");
+            // instead (#1627).  `keep_raw` is already computed above.
             let mut seen = HashSet::new();
             let wanted: Vec<FieldSpec> = self
                 .referenced_columns
@@ -1840,5 +1848,60 @@ mod tests {
             !without_cfg.keep_raw,
             "keep_raw must remain false when query does not reference _raw"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // scan_config() / keep_raw tests — issue #1597
+    // -----------------------------------------------------------------------
+
+    /// `SELECT *` on a JSON-format input must NOT force keep_raw.
+    #[test]
+    fn scan_config_select_star_does_not_force_keep_raw() {
+        let analyzer = QueryAnalyzer::new("SELECT * FROM logs").unwrap();
+        let cfg = analyzer.scan_config();
+        assert!(
+            !cfg.keep_raw,
+            "SELECT * must not force keep_raw; the pipeline handles it for format:raw inputs"
+        );
+    }
+
+    /// Explicitly selecting `_raw` must enable keep_raw.
+    #[test]
+    fn scan_config_explicit_raw_reference_enables_keep_raw() {
+        let analyzer = QueryAnalyzer::new("SELECT level, _raw FROM logs").unwrap();
+        let cfg = analyzer.scan_config();
+        assert!(
+            cfg.keep_raw,
+            "explicit _raw reference in SELECT list must enable keep_raw"
+        );
+    }
+
+    /// `SELECT *` with an explicit `_raw` reference (e.g. `SELECT *, _raw`)
+    /// must still enable keep_raw because the user asked for it.
+    #[test]
+    fn scan_config_select_star_with_explicit_raw_enables_keep_raw() {
+        let analyzer = QueryAnalyzer::new("SELECT * FROM logs WHERE _raw LIKE '%error%'").unwrap();
+        let cfg = analyzer.scan_config();
+        assert!(
+            cfg.keep_raw,
+            "WHERE clause referencing _raw must enable keep_raw"
+        );
+    }
+
+    /// Queries that do not mention `_raw` at all must leave keep_raw false.
+    #[test]
+    fn scan_config_no_raw_reference_keep_raw_is_false() {
+        for sql in &[
+            "SELECT level, msg FROM logs",
+            "SELECT * FROM logs WHERE level = 'ERROR'",
+            "SELECT * EXCEPT (stack_trace) FROM logs",
+        ] {
+            let analyzer = QueryAnalyzer::new(sql).unwrap();
+            let cfg = analyzer.scan_config();
+            assert!(
+                !cfg.keep_raw,
+                "keep_raw must be false for {sql:?} (no _raw reference)"
+            );
+        }
     }
 }
