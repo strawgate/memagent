@@ -5,9 +5,13 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
   pull_request_review:
     types: [submitted, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+  schedule:
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -42,6 +46,16 @@ jobs:
                   .filter((n) => Number.isInteger(n));
               }
               return [];
+            }
+
+            async function listOpenPullNumbers() {
+              const pulls = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                state: "open",
+                per_page: 100,
+              });
+              return pulls.map((pr) => pr.number);
             }
 
             async function ensureLabelExists() {
@@ -206,7 +220,11 @@ jobs:
               }
             }
 
-            const prNumbers = [...new Set(extractPullNumbers(context.payload))];
+            let prNumbers = [...new Set(extractPullNumbers(context.payload))];
+            if (prNumbers.length === 0) {
+              // Some events (schedule/manual) do not target a single PR; reconcile all open PRs.
+              prNumbers = [...new Set(await listOpenPullNumbers())];
+            }
             if (prNumbers.length === 0) {
               console.log("No PR associated with this event; skipping.");
               return;
