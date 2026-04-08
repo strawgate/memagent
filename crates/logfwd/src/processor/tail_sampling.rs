@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -170,6 +170,9 @@ impl TailSamplingProcessor {
 
         let mut grouped = Vec::with_capacity(grouped_ordered.len());
         for (_, group, rows) in grouped_ordered {
+            // Intentionally materialize per-group sub-batches at partition time.
+            // This keeps timeout drains/flushes simple and avoids holding
+            // row-index indirection across mutable trace windows.
             grouped.push((group, take_rows(&batch, rows)?));
         }
 
@@ -267,20 +270,34 @@ impl TailSamplingProcessor {
         keys: Vec<(String, u64)>,
         out: &mut SmallVec<[RecordBatch; 1]>,
     ) -> Result<(), ProcessorError> {
+        let mut decided: Vec<(String, TraceState, Option<RecordBatch>)> = Vec::new();
+
         for (key, _) in keys {
             let Some(state) = self.traces.remove(&key) else {
                 continue;
             };
 
             match self.run_decision_for_state(&state) {
-                Ok(Some(decided)) => out.push(decided),
-                Ok(None) => {}
+                Ok(batch) => decided.push((key, state, batch)),
                 Err(e) => {
+                    // Keep timeout drain transactional: on transient decision
+                    // failure, restore all previously removed groups so retry
+                    // can reevaluate the exact same buffered state.
                     self.traces.insert(key, state);
+                    for (restore_key, restore_state, _) in decided {
+                        self.traces.insert(restore_key, restore_state);
+                    }
                     return Err(e);
                 }
             }
         }
+
+        for (_, _, maybe_batch) in decided {
+            if let Some(batch) = maybe_batch {
+                out.push(batch);
+            }
+        }
+
         Ok(())
     }
 }
@@ -455,6 +472,21 @@ mod tests {
             vec![
                 Arc::new(StringArray::from(trace_id)),
                 Arc::new(Int64Array::from(val)),
+            ],
+        )
+        .expect("test batch")
+    }
+
+    fn batch_with_utf8_val(trace_id: Vec<Option<&str>>, val: Vec<Option<&str>>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("val", DataType::Utf8, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(trace_id)),
+                Arc::new(StringArray::from(val)),
             ],
         )
         .expect("test batch")
@@ -665,5 +697,41 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .expect("int64 column");
         assert_eq!(val_col.value(0), 1);
+    }
+
+    #[test]
+    fn timed_out_drain_is_transactional_on_decision_error() {
+        let mut p = TailSamplingProcessor::try_new(
+            "SELECT * FROM logs",
+            "trace_id",
+            Duration::from_nanos(10),
+        )
+        .expect("processor");
+
+        p.process(batch(vec![Some("a"), Some("b")], vec![1, 2]), &meta(100))
+            .expect("seed groups");
+        p.process(
+            batch_with_utf8_val(vec![Some("b")], vec![Some("schema-drift")]),
+            &meta(101),
+        )
+        .expect("append drifted schema to b");
+
+        let err = p
+            .process(
+                RecordBatch::new_empty(Arc::new(Schema::empty())),
+                &meta(200),
+            )
+            .expect_err("mixed-schema timed-out group should error transiently");
+        assert!(
+            matches!(err, ProcessorError::Transient(_)),
+            "expected transient error"
+        );
+
+        // No drained group should be lost when one timed-out decision fails.
+        assert_eq!(p.traces.len(), 2);
+        let a = p.traces.get("a").expect("group a still buffered");
+        let b = p.traces.get("b").expect("group b still buffered");
+        assert_eq!(a.batches.len(), 1);
+        assert_eq!(b.batches.len(), 2);
     }
 }
