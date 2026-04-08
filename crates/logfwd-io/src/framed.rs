@@ -40,6 +40,10 @@ struct SourceState {
     /// Kani-proven checkpoint offset tracker. Tracks the relationship
     /// between file read position and the last complete newline boundary.
     tracker: CheckpointTracker,
+    /// True when remainder bytes are known to start mid-line due to overflow
+    /// truncation. The first completed line formed from this remainder must be
+    /// discarded to avoid emitting a garbled fragment (#1030).
+    overflow_tainted: bool,
 }
 
 /// Wraps a raw [`InputSource`] with newline framing and format processing.
@@ -113,8 +117,10 @@ impl InputSource for FramedInput {
                             remainder: Vec::new(),
                             format: template.new_instance(),
                             tracker: CheckpointTracker::new(0),
+                            overflow_tainted: false,
                         })
                     };
+                    let tainted_on_entry = state.overflow_tainted;
 
                     // Prepend remainder from last poll for this source,
                     // reusing the Vec's capacity.
@@ -175,6 +181,7 @@ impl InputSource for FramedInput {
                                     // pending and the checkpoint must not advance past it.
                                     let start = tail.len() - MAX_REMAINDER_BYTES;
                                     state.remainder = tail.split_off(start);
+                                    state.overflow_tainted = true;
                                 } else {
                                     let state = self.sources.get_mut(&key).expect("just inserted");
                                     state.remainder = tail;
@@ -200,6 +207,7 @@ impl InputSource for FramedInput {
                                 state.format.reset();
                                 let start = chunk.len() - MAX_REMAINDER_BYTES;
                                 state.remainder = chunk.split_off(start);
+                                state.overflow_tainted = true;
                                 // Do NOT call apply_remainder_consumed() — data is preserved.
                             } else {
                                 let state = self.sources.get_mut(&key).expect("just inserted");
@@ -212,7 +220,21 @@ impl InputSource for FramedInput {
                     // Process complete lines through per-source format handler.
                     self.out_buf.clear();
                     let state = self.sources.get_mut(&key).expect("just inserted");
-                    state.format.process_lines(&chunk, &mut self.out_buf);
+                    let mut process_start = 0usize;
+                    if tainted_on_entry {
+                        // Overflow truncation preserves a suffix of a long line.
+                        // Once a newline arrives, that first "line" is a
+                        // synthetic mid-line fragment and must be dropped.
+                        if let Some(first_newline) = memchr::memchr(b'\n', &chunk) {
+                            process_start = first_newline + 1;
+                            state.overflow_tainted = false;
+                        }
+                    }
+                    if process_start < chunk.len() {
+                        state
+                            .format
+                            .process_lines(&chunk[process_start..], &mut self.out_buf);
+                    }
                     if inject_source_path {
                         if let Some(source_path) =
                             source_path_for(key, &mut source_path_by_id, self.inner.as_ref())
@@ -231,7 +253,7 @@ impl InputSource for FramedInput {
                         }
                     }
 
-                    let line_count = memchr::memchr_iter(b'\n', &chunk).count();
+                    let line_count = memchr::memchr_iter(b'\n', &chunk[process_start..]).count();
                     self.stats.inc_lines(line_count as u64);
 
                     if !self.out_buf.is_empty() {
@@ -297,11 +319,22 @@ impl InputSource for FramedInput {
                             if !state.remainder.is_empty() {
                                 let mut remainder = std::mem::take(&mut state.remainder);
                                 remainder.push(b'\n');
+                                let mut process_start = 0usize;
+                                if state.overflow_tainted {
+                                    process_start =
+                                        memchr::memchr(b'\n', &remainder).map_or(0, |i| i + 1);
+                                    state.overflow_tainted = false;
+                                }
 
                                 self.out_buf.clear();
                                 let state =
                                     self.sources.get_mut(&key).expect("just checked existence");
-                                state.format.process_lines(&remainder, &mut self.out_buf);
+                                if process_start < remainder.len() {
+                                    state.format.process_lines(
+                                        &remainder[process_start..],
+                                        &mut self.out_buf,
+                                    );
+                                }
                                 if inject_source_path {
                                     if let Some(source_path) = source_path_for(
                                         key,
@@ -670,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn remainder_capped_at_max() {
+    fn remainder_capped_at_max_and_tainted_line_is_dropped() {
         let stats = make_stats();
         // Send > 2 MiB without a newline.
         let big = vec![b'x'; MAX_REMAINDER_BYTES + 1];
@@ -698,17 +731,17 @@ mod tests {
             "overflow remainder must be capped to MAX_REMAINDER_BYTES, not dropped"
         );
 
-        // Second poll: a newline terminates the preserved data.
+        // Second poll: newline completes only the tainted fragment; it must be dropped.
         let events2 = framed.poll().unwrap();
         let data2 = collect_data(events2);
         assert!(
-            !data2.is_empty(),
-            "preserved overflow remainder must be emitted when a newline arrives"
+            data2.is_empty(),
+            "tainted overflow remainder must be discarded when the first newline arrives"
         );
     }
 
     #[test]
-    fn tail_after_newline_is_capped_at_max() {
+    fn tail_after_newline_is_capped_at_max_and_tainted_line_is_dropped() {
         let stats = make_stats();
         let mut chunk = b"ok\n".to_vec();
         chunk.extend(vec![b'x'; MAX_REMAINDER_BYTES + 1]);
@@ -737,14 +770,77 @@ mod tests {
             "overflow tail must be truncated to MAX_REMAINDER_BYTES, not dropped"
         );
 
-        // Second poll: a newline terminates the preserved remainder — the line
-        // is emitted (proves data was preserved, not silently dropped).
+        // Second poll: newline terminates only tainted overflow bytes; that
+        // line must be discarded.
         let events2 = framed.poll().unwrap();
         let data2 = collect_data(events2);
         assert!(
-            !data2.is_empty(),
-            "preserved overflow remainder must be emitted when a newline arrives"
+            data2.is_empty(),
+            "tainted overflow remainder must be discarded when the first newline arrives"
         );
+    }
+
+    /// Regression for #1030: after remainder overflow, the first completed
+    /// line is a truncated mid-line fragment and must be discarded.
+    #[test]
+    fn overflow_fragment_is_discarded_when_newline_arrives() {
+        let stats = make_stats();
+        let big = vec![b'x'; MAX_REMAINDER_BYTES + 1];
+        let source = MockSource::from_chunks(vec![&big, b"\nreal-line\n"]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            Arc::clone(&stats),
+        );
+
+        // First poll: overflow, nothing emitted.
+        let events1 = framed.poll().unwrap();
+        assert!(collect_data(events1).is_empty());
+
+        // Second poll: truncated overflow fragment must be dropped, while the
+        // next complete real line is preserved.
+        let events2 = framed.poll().unwrap();
+        assert_eq!(collect_data(events2), b"real-line\n");
+    }
+
+    #[test]
+    fn checkpoint_advances_after_tainted_fragment_is_discarded() {
+        let stats = make_stats();
+        let sid = SourceId(9);
+        let big = vec![b'x'; MAX_REMAINDER_BYTES + 1];
+        let first = big.len() as u64;
+        let second_bytes = b"\nreal-line\n";
+        let total = first + second_bytes.len() as u64;
+        let source = MockSource::new(vec![
+            vec![InputEvent::Data {
+                bytes: big,
+                source_id: Some(sid),
+                accounted_bytes: 0,
+            }],
+            vec![InputEvent::Data {
+                bytes: second_bytes.to_vec(),
+                source_id: Some(sid),
+                accounted_bytes: 0,
+            }],
+        ])
+        .with_offsets(vec![(sid, ByteOffset(total))]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            Arc::clone(&stats),
+        );
+
+        let _ = framed.poll().unwrap();
+        let cp1 = framed.checkpoint_data();
+        assert!(
+            cp1[0].1.0 < total,
+            "checkpoint must stay behind raw offset while overflow remainder is buffered"
+        );
+
+        let events2 = framed.poll().unwrap();
+        assert_eq!(collect_data(events2), b"real-line\n");
+        let cp2 = framed.checkpoint_data();
+        assert_eq!(cp2[0].1, ByteOffset(total));
     }
 
     /// `checkpoint_data()` must account for overflow remainder when the source

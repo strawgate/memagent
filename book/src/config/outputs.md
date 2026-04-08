@@ -19,9 +19,9 @@ output:
 
 ## HTTP (JSON Lines)
 
-> Not yet supported. `type: http` is still documented in the configuration
-> reference so support status is explicit, but runtime sink construction
-> currently rejects it.
+> Not yet supported. `type: http` remains in the configuration reference so the
+> reserved surface is explicit, but config validation currently rejects it
+> until runtime sink support lands.
 
 POST newline-delimited JSON to any HTTP endpoint.
 

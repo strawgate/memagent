@@ -216,7 +216,6 @@ enum Commands {
         output_file: String,
     },
     /// Validate and print effective runnable config.
-    #[command(alias = "dump-config")]
     EffectiveConfig {
         #[arg(
             short = 'c',
@@ -250,16 +249,6 @@ fn main() {
 
 #[tokio::main]
 async fn main_inner() -> i32 {
-    // Emit a deprecation notice before clap parses so the alias still works
-    // transparently while guiding scripts to the new subcommand name.
-    if env::args().any(|a| a == "dump-config") {
-        eprintln!(
-            "{}warning{}: `dump-config` is deprecated — use `effective-config` instead",
-            yellow(),
-            reset()
-        );
-    }
-
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
@@ -808,7 +797,7 @@ where
 }
 
 fn validate_transform_probe_read_only(
-    transform: &mut logfwd_transform::SqlTransform,
+    transform: &mut logfwd::transform::SqlTransform,
 ) -> Result<(), String> {
     use arrow::array::{ArrayRef, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -846,8 +835,11 @@ fn validate_pipeline_read_only(
     config: &logfwd_config::PipelineConfig,
     base_path: Option<&std::path::Path>,
 ) -> Result<(), String> {
-    use logfwd_config::{EnrichmentConfig, Format, GeoDatabaseFormat, InputType};
-    use logfwd_transform::SqlTransform;
+    use logfwd::transform::SqlTransform;
+    #[cfg(feature = "datafusion")]
+    use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
+    use logfwd_config::{Format, InputType};
+    #[cfg(feature = "datafusion")]
     use std::path::PathBuf;
 
     if config.workers == Some(0) {
@@ -856,91 +848,112 @@ fn validate_pipeline_read_only(
     if config.batch_target_bytes == Some(0) {
         return Err("batch_target_bytes must be > 0".to_owned());
     }
+    #[cfg(not(feature = "datafusion"))]
+    let _ = base_path;
 
-    let mut enrichment_tables: Vec<Arc<dyn logfwd_transform::enrichment::EnrichmentTable>> =
-        Vec::new();
-    let mut geo_database: Option<Arc<dyn logfwd_transform::enrichment::GeoDatabase>> = None;
+    #[cfg(feature = "datafusion")]
+    let (enrichment_tables, geo_database) = {
+        let mut enrichment_tables: Vec<Arc<dyn logfwd::transform::enrichment::EnrichmentTable>> =
+            Vec::new();
+        let mut geo_database: Option<Arc<dyn logfwd::transform::enrichment::GeoDatabase>> = None;
 
-    for enrichment in &config.enrichment {
-        match enrichment {
-            EnrichmentConfig::GeoDatabase(geo_cfg) => {
-                let mut path = PathBuf::from(&geo_cfg.path);
-                if path.is_relative()
-                    && let Some(base) = base_path
-                {
-                    path = base.join(path);
-                }
-                let db: Arc<dyn logfwd_transform::enrichment::GeoDatabase> = match geo_cfg.format {
-                    GeoDatabaseFormat::Mmdb => {
-                        let mmdb = logfwd_transform::udf::geo_lookup::MmdbDatabase::open(&path)
-                            .map_err(|e| {
-                                format!("failed to open geo database '{}': {e}", path.display())
-                            })?;
-                        Arc::new(mmdb)
+        for enrichment in &config.enrichment {
+            match enrichment {
+                EnrichmentConfig::GeoDatabase(geo_cfg) => {
+                    let mut path = PathBuf::from(&geo_cfg.path);
+                    if path.is_relative()
+                        && let Some(base) = base_path
+                    {
+                        path = base.join(path);
                     }
-                    _ => {
-                        return Err(format!(
-                            "unsupported geo database format: {:?}",
-                            geo_cfg.format
-                        ));
+                    let db: Arc<dyn logfwd::transform::enrichment::GeoDatabase> =
+                        match geo_cfg.format {
+                            GeoDatabaseFormat::Mmdb => {
+                                let mmdb =
+                                    logfwd::transform::udf::geo_lookup::MmdbDatabase::open(&path)
+                                        .map_err(|e| {
+                                        format!(
+                                            "failed to open geo database '{}': {e}",
+                                            path.display()
+                                        )
+                                    })?;
+                                Arc::new(mmdb)
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "unsupported geo database format: {:?}",
+                                    geo_cfg.format
+                                ));
+                            }
+                        };
+                    geo_database = Some(db);
+                }
+                EnrichmentConfig::Static(cfg) => {
+                    let labels: Vec<(String, String)> = cfg
+                        .labels
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    let table = Arc::new(
+                        logfwd::transform::enrichment::StaticTable::new(&cfg.table_name, &labels)
+                            .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?,
+                    );
+                    enrichment_tables.push(table);
+                }
+                EnrichmentConfig::HostInfo(_) => {
+                    enrichment_tables
+                        .push(Arc::new(logfwd::transform::enrichment::HostInfoTable::new()));
+                }
+                EnrichmentConfig::K8sPath(cfg) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::K8sPathTable::new(&cfg.table_name),
+                    ));
+                }
+                EnrichmentConfig::Csv(cfg) => {
+                    let mut path = PathBuf::from(&cfg.path);
+                    if path.is_relative()
+                        && let Some(base) = base_path
+                    {
+                        path = base.join(path);
                     }
-                };
-                geo_database = Some(db);
-            }
-            EnrichmentConfig::Static(cfg) => {
-                let labels: Vec<(String, String)> = cfg
-                    .labels
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                let table = Arc::new(
-                    logfwd_transform::enrichment::StaticTable::new(&cfg.table_name, &labels)
-                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?,
-                );
-                enrichment_tables.push(table);
-            }
-            EnrichmentConfig::HostInfo(_) => {
-                enrichment_tables
-                    .push(Arc::new(logfwd_transform::enrichment::HostInfoTable::new()));
-            }
-            EnrichmentConfig::K8sPath(cfg) => {
-                enrichment_tables.push(Arc::new(logfwd_transform::enrichment::K8sPathTable::new(
-                    &cfg.table_name,
-                )));
-            }
-            EnrichmentConfig::Csv(cfg) => {
-                let mut path = PathBuf::from(&cfg.path);
-                if path.is_relative()
-                    && let Some(base) = base_path
-                {
-                    path = base.join(path);
+                    let table = Arc::new(logfwd::transform::enrichment::CsvFileTable::new(
+                        &cfg.table_name,
+                        &path,
+                    ));
+                    table
+                        .reload()
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                    enrichment_tables.push(table);
                 }
-                let table = Arc::new(logfwd_transform::enrichment::CsvFileTable::new(
-                    &cfg.table_name,
-                    &path,
-                ));
-                table
-                    .reload()
-                    .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
-                enrichment_tables.push(table);
-            }
-            EnrichmentConfig::Jsonl(cfg) => {
-                let mut path = PathBuf::from(&cfg.path);
-                if path.is_relative()
-                    && let Some(base) = base_path
-                {
-                    path = base.join(path);
+                EnrichmentConfig::Jsonl(cfg) => {
+                    let mut path = PathBuf::from(&cfg.path);
+                    if path.is_relative()
+                        && let Some(base) = base_path
+                    {
+                        path = base.join(path);
+                    }
+                    let table = Arc::new(logfwd::transform::enrichment::JsonLinesFileTable::new(
+                        &cfg.table_name,
+                        &path,
+                    ));
+                    table
+                        .reload()
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                    enrichment_tables.push(table);
                 }
-                let table = Arc::new(logfwd_transform::enrichment::JsonLinesFileTable::new(
-                    &cfg.table_name,
-                    &path,
-                ));
-                table
-                    .reload()
-                    .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
-                enrichment_tables.push(table);
             }
         }
+
+        (enrichment_tables, geo_database)
+    };
+
+    #[cfg(not(feature = "datafusion"))]
+    if !config.enrichment.is_empty() {
+        return Err(
+            "pipeline enrichment requires DataFusion. Build default/full logfwd \
+             (or add `--features datafusion`)"
+                .to_owned(),
+        );
     }
 
     let pipeline_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
@@ -960,13 +973,16 @@ fn validate_pipeline_read_only(
 
         let input_sql = input_cfg.sql.as_deref().unwrap_or(pipeline_sql);
         let mut transform = SqlTransform::new(input_sql).map_err(|e| e.to_string())?;
-        if let Some(ref db) = geo_database {
-            transform.set_geo_database(Arc::clone(db));
-        }
-        for table in &enrichment_tables {
-            transform
-                .add_enrichment_table(Arc::clone(table))
-                .map_err(|e| format!("input '{}': enrichment error: {e}", input_name))?;
+        #[cfg(feature = "datafusion")]
+        {
+            if let Some(ref db) = geo_database {
+                transform.set_geo_database(Arc::clone(db));
+            }
+            for table in &enrichment_tables {
+                transform
+                    .add_enrichment_table(Arc::clone(table))
+                    .map_err(|e| format!("input '{}': enrichment error: {e}", input_name))?;
+            }
         }
         validate_transform_probe_read_only(&mut transform)
             .map_err(|e| format!("input '{}': {e}", input_name))?;
@@ -1778,6 +1794,13 @@ mod cli_tests {
             Commands::EffectiveConfig { config } => assert!(config.is_none()),
             other => panic!("expected effective-config command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn clap_rejects_removed_dump_config_alias() {
+        let err = Cli::try_parse_from(["logfwd", "dump-config"])
+            .expect_err("parser should reject removed dump-config alias");
+        assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
     }
 
     #[test]

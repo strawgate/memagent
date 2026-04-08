@@ -725,6 +725,7 @@ async fn worker_task(
                             span,
                         } = item;
                         let queue_wait_ns = submitted_at.elapsed().as_nanos() as u64;
+                        span.record("queue_wait_ns", queue_wait_ns);
                         // Record which worker picked up this batch for the live dashboard.
                         let now_ns = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -747,6 +748,7 @@ async fn worker_task(
                         .instrument(output_span.clone())
                         .await;
                         output_span.record("retries", retries);
+                        output_span.record("send_ns", send_latency_ns);
                         let output_ns = submitted_at.elapsed().as_nanos() as u64 - queue_wait_ns;
                         // Remove from active_batches immediately — don't wait for the pipeline's
                         // ack select loop, which can be starved by flush_batch.await blocking.

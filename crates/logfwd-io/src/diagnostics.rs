@@ -8,6 +8,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Meter};
 
+use crate::background_http_task::BackgroundHttpTask;
+
 // Re-export ComponentStats from logfwd-types so existing `logfwd_io::diagnostics::ComponentStats`
 // paths keep working.
 pub use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
@@ -401,21 +403,16 @@ pub struct MemoryStats {
 pub struct ServerHandle {
     running: Arc<AtomicBool>,
     sampler_handle: Option<JoinHandle<()>>,
-    http_server: Arc<tiny_http::Server>,
-    http_handle: Option<JoinHandle<()>>,
+    _http_task: BackgroundHttpTask,
 }
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
         // Signal the sampler loop to exit.
         self.running.store(false, Ordering::Relaxed);
-        // Unblock the HTTP thread's `incoming_requests()` iterator.
-        self.http_server.unblock();
-        // Join both threads (ignore panics — we're in Drop).
+        // Join sampler thread; HTTP thread is unblocked and joined by
+        // `BackgroundHttpTask` during field drop.
         if let Some(h) = self.sampler_handle.take() {
-            let _ = h.join();
-        }
-        if let Some(h) = self.http_handle.take() {
             let _ = h.join();
         }
     }
@@ -553,8 +550,7 @@ impl DiagnosticsServer {
             ServerHandle {
                 running,
                 sampler_handle: Some(sampler_handle),
-                http_server,
-                http_handle: Some(http_handle),
+                _http_task: BackgroundHttpTask::new(Arc::clone(&http_server), http_handle),
             },
             bound_addr,
         ))
@@ -871,6 +867,22 @@ impl DiagnosticsServer {
                             _ => {}
                         }
                     }
+                }
+
+                // Fallback: read scan/transform timing from root span attributes
+                // (batch span carries these directly when child spans are absent)
+                let root_attr_u64 = |key: &str| -> u64 {
+                    root.attrs
+                        .iter()
+                        .find(|kv| kv[0] == key)
+                        .and_then(|kv| kv[1].parse().ok())
+                        .unwrap_or(0)
+                };
+                if scan_ns == 0 {
+                    scan_ns = root_attr_u64("scan_ns");
+                }
+                if transform_ns == 0 {
+                    transform_ns = root_attr_u64("transform_ns");
                 }
 
                 // Extract well-known attributes from root span.
@@ -1566,6 +1578,23 @@ mod tests {
         let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
 
         (status, body)
+    }
+
+    #[test]
+    fn diagnostics_server_handle_drop_releases_port() {
+        let server = DiagnosticsServer::new("127.0.0.1:0");
+        let (handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        drop(handle);
+        thread::sleep(std::time::Duration::from_millis(50));
+
+        let rebound_addr = format!("127.0.0.1:{port}");
+        let result = tiny_http::Server::http(&rebound_addr);
+        assert!(
+            result.is_ok(),
+            "failed to rebind diagnostics port {port} after drop"
+        );
     }
 
     #[test]

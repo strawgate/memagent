@@ -16,7 +16,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
-const MAX_SPANS: usize = 4_000; // ~1000 batches × 4 spans each
+const MAX_SPANS: usize = 16_000; // ~8000 batches × 2 spans each
 
 // ---------------------------------------------------------------------------
 // Serializable span snapshot

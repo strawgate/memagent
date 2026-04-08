@@ -64,7 +64,7 @@ fn wait_for(predicate: impl Fn() -> bool, timeout: Duration) -> bool {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    false
+    predicate()
 }
 
 /// Build a pipeline config YAML for a glob input pattern.
@@ -117,11 +117,15 @@ fn wait_for_lines_and_cancel(
     expected: usize,
     timeout: Duration,
 ) {
-    wait_for(
+    let reached = wait_for(
         || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= expected as u64,
         timeout,
     );
     shutdown.cancel();
+    assert!(
+        reached,
+        "timed out waiting for {expected} lines before shutdown"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -148,10 +152,13 @@ fn compliance_file_rotate_create() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for initial 5000 lines to be ingested before rotating.
-    wait_for(
+    if !wait_for(
         || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 5000,
         Duration::from_secs(5),
-    );
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 5000 lines before create-style rotation");
+    }
 
     // Simulate logrotate "create" style.
     fs::rename(&log_path, &rotated_path).unwrap();
@@ -200,10 +207,13 @@ fn compliance_file_rotate_copytruncate() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for initial 5000 lines to be ingested before rotating.
-    wait_for(
+    if !wait_for(
         || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 5000,
         Duration::from_secs(5),
-    );
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 5000 lines before copytruncate rotation");
+    }
 
     // Simulate logrotate "copytruncate" style.
     fs::copy(&log_path, &backup_path).unwrap();
@@ -260,10 +270,13 @@ fn compliance_file_truncate() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for initial 1000 lines to be ingested before truncating.
-    wait_for(
+    if !wait_for(
         || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 1000,
         Duration::from_secs(5),
-    );
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 1000 lines before truncation");
+    }
 
     // Truncate the file in-place (same inode) and write new data.
     {
@@ -316,10 +329,13 @@ fn compliance_file_delete_recreate() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for initial 1000 lines to be ingested before deleting.
-    wait_for(
+    if !wait_for(
         || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 1000,
         Duration::from_secs(5),
-    );
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 1000 lines before delete/recreate");
+    }
 
     // Delete the file.
     fs::remove_file(&log_path).unwrap();
@@ -374,10 +390,13 @@ fn compliance_file_grows_while_running() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for the pipeline to start tailing before appending.
-    wait_for(
+    if !wait_for(
         || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 100,
         Duration::from_secs(3),
-    );
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for initial 100 lines before continuous appends");
+    }
 
     // Append 100 lines every 50ms for 2 seconds (40 iterations).
     let log_path_clone = log_path.clone();
@@ -432,10 +451,13 @@ fn compliance_glob_new_files() {
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
     // Wait for test1.log to be ingested.
-    wait_for(
+    if !wait_for(
         || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 1000,
         Duration::from_secs(5),
-    );
+    ) {
+        shutdown.cancel();
+        panic!("timed out waiting for first glob-discovered file before creating second file");
+    }
 
     // Create a second log file.
     let log2_path = dir.path().join("test2.log");

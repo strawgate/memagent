@@ -41,7 +41,7 @@ function fmtMs(ms: number): string {
   return `${ms.toFixed(0)}ms`;
 }
 
-function computeStats(traces: TraceRecord[]) {
+export function computeStats(traces: TraceRecord[]) {
   // Only use completed (non-in-progress) traces for timing stats
   const done = traces.filter((t) => !t.in_progress);
   if (done.length < 2) return null;

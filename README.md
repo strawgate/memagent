@@ -119,6 +119,9 @@ docker run --rm -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
 
 # From source (requires Rust 1.85+)
 cargo build --release -p logfwd
+
+# Dev-only faster local build (no DataFusion SQL support)
+cargo build --release -p logfwd --no-default-features
 ```
 
 See [Installation](book/src/getting-started/installation.md) for all platforms and options.
@@ -196,8 +199,9 @@ README and task-oriented guides intentionally avoid duplicating status claims.
 
 ```
 logfwd run --config <file>               Run the pipeline
-logfwd validate --config <file>          Validate config syntax
-logfwd dry-run --config <file>           Build pipeline, check SQL, don't start
+logfwd validate --config <file>          Validate config and environment-dependent pipeline requirements
+logfwd dry-run --config <file>           Build and validate the pipeline without starting the runtime
+logfwd init                              Generate a starter config from built-in templates
 logfwd blackhole [bind_addr]             Start OTLP blackhole receiver for testing
 logfwd generate-json <n> <file>          Generate synthetic JSON log data
 logfwd effective-config [--config file]  Validate and print effective runnable config

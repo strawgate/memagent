@@ -9,9 +9,6 @@ defines what `Scanner` expects and produces. This document defines what the
 OTLP, file, diagnostics, and pipeline adapters must preserve before data
 reaches the scanner and after data leaves the `RecordBatch` pipeline.
 
-If you were looking for the older `IO_CONTRACTS.md` name, that file now points
-here.
-
 ## Scope
 
 In-scope:
@@ -173,14 +170,17 @@ The file path is:
 
 ### Lifecycle rules
 
-- Rotate, truncate, delete/recreate, and terminal EOF are explicit events.
+- Rotate, truncate, delete/recreate, and EOF/stall notifications are explicit events.
 - `Truncated` must be emitted before post-truncate data so framing state can be
   cleared safely.
 - Every `InputSource` implementation must define its control-plane `health()`
   semantics explicitly; input lifecycle truth must not rely on a trait-level
   default.
-- Only terminal EOF may flush a trailing partial line; transient “no new bytes
-  right now” states must not flush buffered partial lines.
+- The current tailer emits `EndOfFile` once per no-data streak so downstream
+  framing can flush a trailing partial line for that source without waiting for
+  permanent file closure.
+- Fresh data resets that no-data streak, allowing a later `EndOfFile` signal to
+  flush a new trailing remainder if reads stall again.
 - Tailer watcher/file I/O error bursts that trigger poll backoff should surface
   as `degraded` control-plane health, and a later clean poll should recover the
   file input to `healthy`.
@@ -286,7 +286,7 @@ This section maps the I/O contracts to the expected enforcement style.
 | Performance goals | disciplined benchmark validation |
 
 This table is normative for planning,
-not a claim that every item is already complete on `master`.
+not a claim that every item is already complete on `main`.
 
 ## Update Rules
 

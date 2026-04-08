@@ -25,6 +25,7 @@ use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use prost::Message;
 
 use crate::InputError;
+use crate::background_http_task::BackgroundHttpTask;
 use crate::diagnostics::ComponentStats;
 use crate::input::{InputEvent, InputSource};
 use logfwd_types::diagnostics::ComponentHealth;
@@ -42,9 +43,7 @@ pub struct OtlpReceiverInput {
     rx: Option<mpsc::Receiver<ReceiverPayload>>,
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
-    server: Arc<tiny_http::Server>,
-    /// Keep the server thread handle alive.
-    handle: Option<std::thread::JoinHandle<()>>,
+    background_task: BackgroundHttpTask,
     /// Shutdown mechanism for the background thread.
     is_running: Arc<AtomicBool>,
     /// Source-owned health snapshot for readiness and diagnostics.
@@ -424,8 +423,7 @@ impl OtlpReceiverInput {
             name: name.into(),
             rx: Some(rx),
             addr: bound_addr,
-            server,
-            handle: Some(handle),
+            background_task: BackgroundHttpTask::new(server, handle),
             is_running,
             health,
         })
@@ -443,10 +441,6 @@ impl Drop for OtlpReceiverInput {
             .store(ComponentHealth::Stopping.as_repr(), Ordering::Relaxed);
         self.is_running.store(false, Ordering::Relaxed);
         self.rx.take();
-        self.server.unblock();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
         self.health
             .store(ComponentHealth::Stopped.as_repr(), Ordering::Relaxed);
     }
@@ -504,12 +498,7 @@ impl InputSource for OtlpReceiverInput {
 
     fn health(&self) -> ComponentHealth {
         let stored = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
-        if self
-            .handle
-            .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished)
-            && self.is_running.load(Ordering::Relaxed)
-        {
+        if self.background_task.is_finished() && self.is_running.load(Ordering::Relaxed) {
             ComponentHealth::Failed
         } else {
             stored
@@ -2558,7 +2547,13 @@ mod tests {
     fn receiver_health_reports_failed_when_server_thread_exits() {
         let mut receiver = OtlpReceiverInput::new("test-health-failed", "127.0.0.1:0")
             .expect("should bind successfully");
-        receiver.handle = Some(std::thread::spawn(|| {}));
+        // Ensure the real worker exits before replacing the ownership task in-test.
+        receiver.is_running.store(false, Ordering::Relaxed);
+        receiver.background_task = BackgroundHttpTask::new(
+            Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("bind synthetic test server")),
+            std::thread::spawn(|| {}),
+        );
+        receiver.is_running.store(true, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
 
         assert_eq!(receiver.health(), ComponentHealth::Failed);

@@ -23,6 +23,7 @@ use arrow::record_batch::RecordBatch;
 use logfwd_types::diagnostics::ComponentHealth;
 
 use crate::InputError;
+use crate::background_http_task::BackgroundHttpTask;
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
 
 /// Maximum request body size: 10 MB.
@@ -40,11 +41,9 @@ pub struct ArrowIpcReceiver {
     rx: Option<mpsc::Receiver<RecordBatch>>,
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
-    server: Arc<tiny_http::Server>,
+    background_task: BackgroundHttpTask,
     shutdown: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
-    /// Keep the server thread handle alive.
-    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ArrowIpcReceiver {
@@ -272,10 +271,9 @@ impl ArrowIpcReceiver {
             name: name.into(),
             rx: Some(rx),
             addr: bound_addr,
-            server,
+            background_task: BackgroundHttpTask::new(server, handle),
             shutdown,
             health,
-            handle: Some(handle),
         })
     }
 
@@ -328,12 +326,7 @@ impl ArrowIpcReceiver {
     /// Coarse runtime health for readiness and diagnostics integration.
     pub fn health(&self) -> ComponentHealth {
         let stored = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
-        if self
-            .handle
-            .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished)
-            && !self.shutdown.load(Ordering::Relaxed)
-        {
+        if self.background_task.is_finished() && !self.shutdown.load(Ordering::Relaxed) {
             ComponentHealth::Failed
         } else {
             stored
@@ -383,10 +376,6 @@ impl Drop for ArrowIpcReceiver {
         );
         self.shutdown.store(true, Ordering::Relaxed);
         self.rx.take();
-        self.server.unblock();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
         let current = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
         self.health.store(
             reduce_receiver_health(current, ReceiverHealthEvent::ShutdownCompleted).as_repr(),

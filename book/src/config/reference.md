@@ -30,7 +30,7 @@ transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
-  endpoint: otel-collector:4317
+  endpoint: http://otel-collector:4318/v1/logs
   compression: zstd
 
 server:
@@ -51,7 +51,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
-        endpoint: otel-collector:4317
+        endpoint: http://otel-collector:4318/v1/logs
 
   debug:
     inputs:
@@ -211,21 +211,23 @@ Send log records as OTLP protobuf to an OpenTelemetry collector.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `endpoint` | string | Yes | — | Collector address, e.g. `otel-collector:4317` (gRPC) or `http://otel-collector:4318` (HTTP). |
+| `endpoint` | string | Yes | — | Full collector URL, e.g. `http://otel-collector:4317` (gRPC) or `http://otel-collector:4318/v1/logs` (HTTP). |
 | `protocol` | string | No | `http` | `http` or `grpc`. |
 | `compression` | string | No | none | `zstd`, `gzip`, or `none` for the request body. |
 
 ```yaml
 output:
   type: otlp
-  endpoint: otel-collector:4317
+  endpoint: http://otel-collector:4317
   protocol: grpc
   compression: zstd
 ```
 
 ### `http` output *(not yet supported)*
 
-POST log records as newline-delimited JSON to an HTTP endpoint.
+Reserved for newline-delimited JSON over HTTP POST. Config parsing recognizes
+the type, but config validation currently rejects it until runtime support
+lands.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -244,7 +246,7 @@ Print records to standard output for local debugging.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `format` | string | No | `json` | `json` (newline-delimited JSON) or `console` (coloured text). |
+| `format` | string | No | `console` | `json` (newline-delimited JSON), `console` (coloured text), or `text` (raw text). |
 
 ```yaml
 output:
@@ -268,7 +270,7 @@ Push to Grafana Loki.
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Loki push URL. |
 
-### `file` output *(`file_out` alias supported)*
+### `file` output
 
 Write records to a file.
 
@@ -300,10 +302,10 @@ Write records to Parquet files.
 |-------|--------|-------------|
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
 | `http` | Not yet supported | Reserved for newline-delimited JSON over HTTP POST. |
-| `stdout` | Implemented | Print to stdout (JSON or coloured text). |
+| `stdout` | Implemented | Print to stdout (JSON, console, or text). |
 | `elasticsearch` | Implemented | Elasticsearch Bulk API with retry and request-mode controls. |
 | `loki` | Implemented | Grafana Loki push API with label grouping. |
-| `file` | Implemented | Write NDJSON or text to a local file (`file_out` alias supported). |
+| `file` | Implemented | Write NDJSON or text to a local file. |
 | `null` | Implemented | Drop records intentionally for tests and benchmark baselines. |
 | `tcp` | Implemented | Send records to a TCP endpoint. |
 | `udp` | Implemented | Send records to a UDP endpoint. |
@@ -397,15 +399,11 @@ query. They are declared under the top-level `enrichment` key.
 
 ```yaml
 enrichment:
-  k8s:
-    type: k8s_path
-
-  host:
-    type: host_info
-
-  labels:
-    type: static
-    fields:
+  - type: k8s_path
+  - type: host_info
+  - type: static
+    table_name: labels
+    labels:
       environment: production
       region: us-east-1
 ```
@@ -447,9 +445,9 @@ A table with one row containing user-defined label columns.
 
 ```yaml
 enrichment:
-  labels:
-    type: static
-    fields:
+  - type: static
+    table_name: labels
+    labels:
       environment: production
       cluster: us-east-1
       tier: backend
@@ -570,9 +568,9 @@ pipelines:
         format: console
 
 enrichment:
-  labels:
-    type: static
-    fields:
+  - type: static
+    table_name: labels
+    labels:
       environment: ${ENVIRONMENT}
       cluster: ${CLUSTER_NAME}
 

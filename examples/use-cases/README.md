@@ -12,6 +12,13 @@ This folder contains 20 starter configurations for common collection targets (Re
 logfwd validate --config logfwd.yaml
 ```
 
+If you want to inspect expansion and normalization before editing host-specific
+paths, run:
+
+```bash
+logfwd effective-config --config logfwd.yaml
+```
+
 ## Included examples
 
 1. `apache-to-elasticsearch.yaml`

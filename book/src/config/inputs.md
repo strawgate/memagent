@@ -86,4 +86,5 @@ Receive OTLP log records from another agent or SDK.
 ```yaml
 input:
   type: otlp
+  listen: 0.0.0.0:4318
 ```

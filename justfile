@@ -86,9 +86,14 @@ test-extended:
     cargo nextest run --profile ci --run-ignored ignored-only
     cargo test -p logfwd --features turmoil --test turmoil_sim
 
-# Build release binary
+# Build release binary (full package, includes DataFusion SQL)
 build:
-    cargo build --release
+    cargo build --release -p logfwd
+
+# Build a fast local dev binary without DataFusion SQL.
+# Useful for tighter compile/edit loops; this is NOT the release artifact.
+build-dev-lite:
+    cargo build --release -p logfwd --no-default-features
 
 # ---------------------------------------------------------------------------
 # End-to-end pipeline benchmarks (bench/scenarios/*.yaml)

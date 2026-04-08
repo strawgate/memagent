@@ -406,6 +406,7 @@ impl OtlpSink {
             }
         }
 
+        let compressed_len = payload.len();
         match req.body(payload.to_vec()).send().await {
             Ok(response) => {
                 let status = response.status();
@@ -456,6 +457,9 @@ impl OtlpSink {
                     }
                     self.stats.inc_lines(batch_rows);
                     self.stats.inc_bytes(self.encoder_buf.len() as u64);
+                    let span = tracing::Span::current();
+                    span.record("req_bytes", self.encoder_buf.len() as u64);
+                    span.record("cmp_bytes", compressed_len as u64);
                     return Ok(super::sink::SendResult::Ok);
                 }
 

@@ -288,7 +288,52 @@ export function App() {
       api.stats(),
       api.traces(),
     ]);
-    if (tracesData) setTraces(tracesData.traces);
+    if (tracesData) {
+      setTraces((prev) => {
+        const incoming = tracesData.traces;
+        // Build next array keyed by trace_id, reusing previous objects when all
+        // render-affecting fields are unchanged to preserve referential stability.
+        const prevById = new Map(prev.map((t) => [t.trace_id, t]));
+        const next = incoming.map((t) => {
+          const p = prevById.get(t.trace_id);
+          if (
+            p &&
+            p.pipeline === t.pipeline &&
+            p.start_unix_ns === t.start_unix_ns &&
+            p.total_ns === t.total_ns &&
+            p.status === t.status &&
+            p.in_progress === t.in_progress &&
+            p.stage === t.stage &&
+            p.errors === t.errors &&
+            p.scan_ns === t.scan_ns &&
+            p.transform_ns === t.transform_ns &&
+            p.output_ns === t.output_ns &&
+            p.queue_wait_ns === t.queue_wait_ns &&
+            p.worker_id === t.worker_id &&
+            p.send_ns === t.send_ns &&
+            p.recv_ns === t.recv_ns &&
+            p.took_ms === t.took_ms &&
+            p.retries === t.retries &&
+            p.req_bytes === t.req_bytes &&
+            p.cmp_bytes === t.cmp_bytes &&
+            p.resp_bytes === t.resp_bytes &&
+            p.flush_reason === t.flush_reason &&
+            p.output_start_unix_ns === t.output_start_unix_ns &&
+            p.stage_start_unix_ns === t.stage_start_unix_ns &&
+            p.scan_rows === t.scan_rows &&
+            p.input_rows === t.input_rows &&
+            p.output_rows === t.output_rows &&
+            p.bytes_in === t.bytes_in
+          ) {
+            return p;
+          }
+          return t;
+        });
+        // Always return `next`: it preserves referential stability for unchanged
+        // objects (via prevById lookup) while also reflecting server-side reordering.
+        return next;
+      });
+    }
 
     if (statusData) {
       setConnected(true);
@@ -359,7 +404,7 @@ export function App() {
       // Batch latency: rolling average of total_ns from recent traces.
       // This gives true ms/batch rather than the cumulative-rate approximation.
       if (tracesData && tracesData.traces.length > 0) {
-        const done = tracesData.traces.filter((t) => !t.in_progress).slice(0, 50);
+        const done = tracesData.traces.filter((t) => !t.in_progress && Number(t.total_ns) > 0).slice(0, 50);
         if (done.length > 0) {
           const avgMs = done.reduce((s, t) => s + (Number(t.total_ns ?? "0") || 0), 0) / done.length / 1e6;
           series[6].ring.push(avgMs);
