@@ -66,6 +66,9 @@ mod passthrough {
             })
         }
 
+        // `async` is required to match the real `SqlTransform::execute` signature in
+        // `logfwd-transform`, which awaits DataFusion. All call sites use `.await`.
+        #[allow(clippy::unused_async)]
         pub async fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
             Ok(batch)
         }
