@@ -467,7 +467,9 @@ output:
         log_path.display()
     );
 
-    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(10));
+    // Coverage instrumentation can substantially slow this transform path;
+    // allow extra headroom to avoid CI-only timeout flakes.
+    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(30));
 
     // Verify schema: only the projected columns should be present.
     for batch in &batches {
