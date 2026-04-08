@@ -2,6 +2,7 @@
 //! to various formats: stdout JSON/text, JSON lines over HTTP, OTLP protobuf.
 
 mod arrow_ipc_sink;
+mod file_sink;
 mod json_lines;
 mod null;
 mod otap_sink;
@@ -20,6 +21,7 @@ mod loki;
 pub use arrow_ipc_sink::{ArrowIpcSinkFactory, deserialize_ipc, serialize_ipc};
 pub use elasticsearch::{ElasticsearchRequestMode, ElasticsearchSink, ElasticsearchSinkFactory};
 pub use error::OutputError;
+pub use file_sink::{FileSink, FileSinkFactory};
 pub use json_lines::JsonLinesSink;
 pub use loki::{LokiSink, LokiSinkFactory};
 pub use null::{NullSink, NullSinkFactory};
@@ -35,6 +37,8 @@ pub use stdout::StdoutSinkFactory;
 use stdout::*;
 pub use tcp_sink::{TcpSink, TcpSinkFactory};
 pub use udp_sink::{UdpSink, UdpSinkFactory};
+
+use std::path::{Path, PathBuf};
 
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -522,6 +526,7 @@ fn build_auth_headers(auth: Option<&AuthConfig>) -> Vec<(String, String)> {
 pub fn build_sink_factory(
     name: &str,
     cfg: &OutputConfig,
+    base_path: Option<&Path>,
     stats: Arc<ComponentStats>,
 ) -> Result<Arc<dyn SinkFactory>, OutputError> {
     use logfwd_config::OutputType;
@@ -666,6 +671,41 @@ pub fn build_sink_factory(
                 stats,
             )))
         }
+        OutputType::File => {
+            let path = cfg.path.as_ref().ok_or_else(|| {
+                OutputError::Construction(format!("output '{name}': file requires 'path'"))
+            })?;
+            if let Some(compression) = cfg.compression.as_deref() {
+                return Err(OutputError::Construction(format!(
+                    "output '{name}': file does not support '{compression}' compression"
+                )));
+            }
+            let mut resolved_path = PathBuf::from(path);
+            if resolved_path.is_relative()
+                && let Some(base) = base_path
+            {
+                resolved_path = base.join(resolved_path);
+            }
+            let fmt = match cfg.format.as_ref() {
+                Some(Format::Json) | None => StdoutFormat::Json,
+                Some(Format::Text) => StdoutFormat::Text,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': file format {other:?} is not supported (use json or text)"
+                    )));
+                }
+            };
+            let factory = FileSinkFactory::new(
+                name.to_string(),
+                resolved_path.to_string_lossy().into_owned(),
+                fmt,
+                stats,
+            )
+            .map_err(|e| {
+                OutputError::Construction(format!("output '{name}': file factory: {e}"))
+            })?;
+            Ok(Arc::new(factory))
+        }
         OutputType::Tcp => {
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': tcp requires 'endpoint'"))
@@ -695,7 +735,11 @@ mod tests {
     use arrow::datatypes::{Field, Schema};
     use logfwd_config::OutputType;
     use logfwd_types::diagnostics::ComponentStats;
+    use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TMP_ID: AtomicU64 = AtomicU64::new(0);
 
     fn make_test_batch() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
@@ -712,6 +756,16 @@ mod tests {
             resource_attrs: Arc::default(),
             observed_time_ns: 1_700_000_000_000_000_000,
         }
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let unique = NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "logfwd-output-tests-{name}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
     }
 
     #[test]
@@ -947,8 +1001,62 @@ mod tests {
             ..Default::default()
         };
         // StdoutSink uses the async pipeline — must use build_sink_factory.
-        let factory = build_sink_factory("test", &cfg, Arc::new(ComponentStats::new())).unwrap();
+        let factory =
+            build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
+    }
+
+    #[test]
+    fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
+        let base_dir = unique_temp_dir("base");
+        let cwd_dir = unique_temp_dir("cwd");
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let cfg = OutputConfig {
+            name: Some("capture".to_string()),
+            output_type: OutputType::File,
+            path: Some("capture.ndjson".to_string()),
+            format: Some(Format::Json),
+            ..Default::default()
+        };
+
+        std::env::set_current_dir(&cwd_dir).unwrap();
+        let factory = build_sink_factory(
+            "capture",
+            &cfg,
+            Some(&base_dir),
+            Arc::new(ComponentStats::new()),
+        )
+        .unwrap();
+        std::env::set_current_dir(&original_cwd).unwrap();
+
+        assert_eq!(factory.name(), "capture");
+        assert!(base_dir.join("capture.ndjson").exists());
+        assert!(!cwd_dir.join("capture.ndjson").exists());
+
+        let _ = std::fs::remove_file(base_dir.join("capture.ndjson"));
+        let _ = std::fs::remove_dir(&base_dir);
+        let _ = std::fs::remove_dir(&cwd_dir);
+    }
+
+    #[test]
+    fn test_build_sink_factory_file_rejects_compression() {
+        let cfg = OutputConfig {
+            name: Some("capture".to_string()),
+            output_type: OutputType::File,
+            path: Some("/tmp/capture.ndjson".to_string()),
+            compression: Some("zstd".to_string()),
+            ..Default::default()
+        };
+
+        let err = match build_sink_factory("capture", &cfg, None, Arc::new(ComponentStats::new())) {
+            Ok(_) => panic!("expected file compression to be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("does not support 'zstd' compression")
+        );
     }
 
     #[test]
@@ -961,7 +1069,7 @@ mod tests {
             compression: Some("gzip".to_string()),
             ..Default::default()
         };
-        let err = match build_sink_factory("otel", &cfg, Arc::new(ComponentStats::new())) {
+        let err = match build_sink_factory("otel", &cfg, None, Arc::new(ComponentStats::new())) {
             Ok(_) => panic!("expected gzip OTLP compression to be rejected"),
             Err(err) => err,
         };
@@ -977,7 +1085,7 @@ mod tests {
             compression: Some("zstd".to_string()),
             ..Default::default()
         };
-        let result = build_sink_factory("http-bad", &cfg, Arc::new(ComponentStats::new()));
+        let result = build_sink_factory("http-bad", &cfg, None, Arc::new(ComponentStats::new()));
         assert!(result.is_err(), "Http type should not be supported yet");
         let err = result.err().unwrap();
         assert!(
@@ -994,7 +1102,7 @@ mod tests {
             ..Default::default()
         };
         // OTLP now uses the async pipeline via build_sink_factory.
-        let result = build_sink_factory("bad", &cfg, Arc::new(ComponentStats::new()));
+        let result = build_sink_factory("bad", &cfg, None, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("endpoint"), "got: {err}");
@@ -1069,7 +1177,7 @@ mod tests {
         };
         // Verify the factory builds successfully with auth.
         let factory =
-            build_sink_factory("auth-sink", &cfg, Arc::new(ComponentStats::new())).unwrap();
+            build_sink_factory("auth-sink", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "auth-sink");
     }
 

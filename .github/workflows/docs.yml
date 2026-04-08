@@ -53,6 +53,8 @@ jobs:
             --no-progress
             --accept 200,429
             --max-retries 3
+            --exclude 'mailto:'
+            --exclude-loopback
             README.md book/src dev-docs docs
 
       - name: Validate required operational doc sections
