@@ -1,4 +1,4 @@
-import { buildLanes, computeStats, SCAN_LANE } from "../lib/stats";
+import { buildLanes, computeStats, SCAN_LANE } from "../components/TraceExplorer";
 import type { TraceRecord } from "../types";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
