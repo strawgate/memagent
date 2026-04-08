@@ -75,13 +75,25 @@ fn is_conflict_struct_fields(fields: &arrow::datatypes::Fields) -> bool {
 
 /// Reconstruct an NDJSON buffer from `raw_array`, run the scanner for
 /// `field_name`, and return the resulting [`RecordBatch`].
+///
+/// # NULL handling
+///
+/// NULL entries in `raw_array` are represented as empty JSON objects (`{}\n`)
+/// so the scanner always produces the same number of rows as `raw_array.len()`.
+/// The extracted field for those rows is NULL (absent from `{}`), which is
+/// the semantically correct result: `json(NULL, 'key')` → NULL.
 fn parse_raw(raw_array: &StringArray, field_name: &str) -> Result<RecordBatch, DataFusionError> {
     let mut buf = Vec::with_capacity(raw_array.len() * 128);
     for i in 0..raw_array.len() {
-        if !raw_array.is_null(i) {
+        if raw_array.is_null(i) {
+            // Emit an empty object so the scanner produces a row with a null
+            // field value rather than skipping the row entirely (which would
+            // cause a row-count mismatch and an error).
+            buf.extend_from_slice(b"{}\n");
+        } else {
             buf.extend_from_slice(raw_array.value(i).as_bytes());
+            buf.push(b'\n');
         }
-        buf.push(b'\n');
     }
 
     let config = ScanConfig {
