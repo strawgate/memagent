@@ -2271,4 +2271,24 @@ pipelines:
             "expected empty-path rejection for jsonl enrichment: {err}"
         );
     }
+
+    #[test]
+    fn geo_database_whitespace_path_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: geo_database\n        format: mmdb\n        path: \"   \"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "whitespace-only path must be rejected for geo_database: {err}"
+        );
+    }
+
+    #[test]
+    fn csv_enrichment_whitespace_path_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: \"   \"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "whitespace-only path must be rejected for csv enrichment: {err}"
+        );
+    }
 }
