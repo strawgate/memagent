@@ -276,6 +276,21 @@ impl SegmentFile {
                 return SegmentStatus::NotASegment(path.to_path_buf());
             }
         };
+        if header.flags & !SUPPORTED_FLAGS != 0 {
+            return SegmentStatus::Corrupt(
+                path.to_path_buf(),
+                format!("unsupported segment header flags {:#06x}", header.flags),
+            );
+        }
+        if header.flags & FLAG_ZSTD == 0 {
+            return SegmentStatus::Corrupt(
+                path.to_path_buf(),
+                format!(
+                    "segment header flags {:#06x} must include FLAG_ZSTD",
+                    header.flags
+                ),
+            );
+        }
 
         // Verify sizes are consistent.
         let expected_size = HEADER_SIZE as u64 + footer.data_size + FOOTER_SIZE as u64;
@@ -472,6 +487,15 @@ impl SegmentWriter {
                 format!("unsupported segment header flags {:#06x}", header.flags),
             ));
         }
+        if header.flags & FLAG_ZSTD == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "segment header flags {:#06x} must include FLAG_ZSTD",
+                    header.flags
+                ),
+            ));
+        }
 
         let filename = segment_filename(header.segment_id);
         let path = dir.join(filename);
@@ -510,8 +534,13 @@ impl SegmentWriter {
         }
 
         self.ipc_buf.clear();
+        let compression = if self.header.flags & FLAG_ZSTD != 0 {
+            Some(CompressionType::ZSTD)
+        } else {
+            None
+        };
         let opts = IpcWriteOptions::default()
-            .try_with_compression(Some(CompressionType::ZSTD))
+            .try_with_compression(compression)
             .map_err(|e| io::Error::other(e.to_string()))?;
         let mut ipc_writer =
             StreamWriter::try_new_with_options(&mut self.ipc_buf, &batch.schema(), opts)
@@ -738,6 +767,10 @@ pub struct RecoveryPlan {
 ///
 /// Incomplete segments at the tail are expected (crash during write) and
 /// are deleted. Corrupt segments are logged and deleted.
+///
+/// Unsupported versions, unreadable files, and SQL-hash mismatches are treated
+/// as hard errors. Recovery aborts with a cleanup message so operators do not
+/// silently skip incompatible checkpoint data.
 pub fn recover_segments(
     segment_dir: &Path,
     expected_sql_hash: Option<u64>,
@@ -1267,6 +1300,24 @@ mod tests {
     }
 
     #[test]
+    fn create_rejects_missing_required_zstd_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: 0,
+            segment_id: 1,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+
+        let err = SegmentWriter::create(dir.path(), header)
+            .err()
+            .expect("create must require FLAG_ZSTD");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("must include FLAG_ZSTD"));
+    }
+
+    #[test]
     fn unsupported_version_is_not_treated_as_non_segment() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("seg-0000000001.lchk");
@@ -1280,13 +1331,59 @@ mod tests {
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&make_batch(1)).unwrap();
         let seg = writer.finish().unwrap();
-        let mut bytes = fs::read(seg.path).unwrap();
+        let mut bytes = fs::read(&seg.path).unwrap();
         bytes[4..6].copy_from_slice(&(SEGMENT_VERSION + 1).to_le_bytes());
         fs::write(&path, bytes).unwrap();
 
         assert!(matches!(
             SegmentFile::open(&path, None),
             SegmentStatus::UnsupportedVersion { version, .. } if version == SEGMENT_VERSION + 1
+        ));
+    }
+
+    #[test]
+    fn open_rejects_missing_required_zstd_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: FLAG_ZSTD,
+            segment_id: 1,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+        let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
+        writer.append(&make_batch(1)).unwrap();
+        let seg = writer.finish().unwrap();
+        let mut bytes = fs::read(&seg.path).unwrap();
+        bytes[6..8].copy_from_slice(&0u16.to_le_bytes());
+        fs::write(&seg.path, bytes).unwrap();
+
+        assert!(matches!(
+            SegmentFile::open(&seg.path, None),
+            SegmentStatus::Corrupt(_, msg) if msg.contains("must include FLAG_ZSTD")
+        ));
+    }
+
+    #[test]
+    fn open_rejects_unknown_header_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: FLAG_ZSTD,
+            segment_id: 1,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        };
+        let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
+        writer.append(&make_batch(1)).unwrap();
+        let seg = writer.finish().unwrap();
+        let mut bytes = fs::read(&seg.path).unwrap();
+        bytes[6..8].copy_from_slice(&(FLAG_ZSTD | 0x0040).to_le_bytes());
+        fs::write(&seg.path, bytes).unwrap();
+
+        assert!(matches!(
+            SegmentFile::open(&seg.path, None),
+            SegmentStatus::Corrupt(_, msg) if msg.contains("unsupported segment header flags")
         ));
     }
 
