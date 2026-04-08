@@ -1942,6 +1942,31 @@ output:
             .unwrap_or(0)
     }
 
+    /// Regression test for #1695: backpressure_stalls was missing from sample_metrics,
+    /// so /admin/v1/history never included it even though /admin/v1/stats did.
+    #[test]
+    fn sample_metrics_records_backpressure_stalls() {
+        let meter = opentelemetry::global::meter("test");
+        let pm = PipelineMetrics::new("p", "", &meter);
+        pm.inc_backpressure_stall();
+        pm.inc_backpressure_stall();
+        pm.inc_backpressure_stall();
+
+        let history = crate::metric_history::MetricHistory::new();
+        sample_metrics(&[Arc::new(pm)], &history, None);
+
+        let json = history.to_json();
+        assert!(
+            json.contains("\"backpressure_stalls\""),
+            "backpressure_stalls key missing from history JSON: {json}"
+        );
+        // The recorded value should reflect the 3 stalls.
+        assert!(
+            json.contains("3.0000") || json.contains(",3."),
+            "expected value 3 in history JSON: {json}"
+        );
+    }
+
     // Bug #728: diagnostics server should return 405 for non-GET methods.
     #[test]
     fn non_get_returns_405() {
