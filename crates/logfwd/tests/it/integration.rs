@@ -224,7 +224,7 @@ output:
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_http_output_is_valid_at_config_load() {
+fn test_http_output_is_rejected_at_config_load() {
     let yaml = r#"
 input:
   type: file
@@ -234,7 +234,12 @@ output:
   type: http
   endpoint: "http://127.0.0.1:9999/logs"
 "#;
-    Config::load_str(yaml).expect("http output should pass validation");
+    let err = Config::load_str(yaml).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not yet implemented"),
+        "http output must be rejected with 'not yet implemented', got: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------
