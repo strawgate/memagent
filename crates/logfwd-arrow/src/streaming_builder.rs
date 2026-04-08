@@ -704,20 +704,24 @@ impl StreamingBuilder {
             }
         }
 
-        if num_rows > 0 {
-            for (key, value) in &self.resource_attrs {
-                let col_name = Self::resource_col_name(key);
-                reserve_name(&col_name)?;
-                let mut builder = StringViewBuilder::new();
+        // Emit _resource_* columns unconditionally (even for empty batches) so
+        // that the schema is identical regardless of row count. Arrow pipelines
+        // that concatenate or compare batches require a consistent schema; omitting
+        // these columns for num_rows == 0 would cause schema mismatch errors.
+        for (key, value) in &self.resource_attrs {
+            let col_name = Self::resource_col_name(key);
+            reserve_name(&col_name)?;
+            let mut builder = StringViewBuilder::new();
+            if num_rows > 0 {
                 let block = builder.append_block(Buffer::from(value.as_bytes().to_vec()));
                 for _ in 0..num_rows {
                     builder
                         .try_append_view(block, 0, value.len() as u32)
                         .expect("resource attr constant view must be valid");
                 }
-                schema_fields.push(Field::new(col_name, DataType::Utf8View, true));
-                arrays.push(Arc::new(builder.finish()) as ArrayRef);
             }
+            schema_fields.push(Field::new(col_name, DataType::Utf8View, true));
+            arrays.push(Arc::new(builder.finish()) as ArrayRef);
         }
 
         let schema = Arc::new(Schema::new(schema_fields));
@@ -917,18 +921,20 @@ impl StreamingBuilder {
             }
         }
 
-        if num_rows > 0 {
-            for (key, value) in &self.resource_attrs {
-                let col_name = Self::resource_col_name(key);
-                reserve_name(&col_name)?;
-                let mut builder =
-                    arrow::array::StringBuilder::with_capacity(num_rows, num_rows * value.len());
-                for _ in 0..num_rows {
-                    builder.append_value(value);
-                }
-                schema_fields.push(Field::new(col_name, DataType::Utf8, true));
-                arrays.push(Arc::new(builder.finish()) as ArrayRef);
+        // Emit _resource_* columns unconditionally (even for empty batches) so
+        // that the schema is identical regardless of row count. Arrow pipelines
+        // that concatenate or compare batches require a consistent schema; omitting
+        // these columns for num_rows == 0 would cause schema mismatch errors.
+        for (key, value) in &self.resource_attrs {
+            let col_name = Self::resource_col_name(key);
+            reserve_name(&col_name)?;
+            let mut builder =
+                arrow::array::StringBuilder::with_capacity(num_rows, num_rows * value.len());
+            for _ in 0..num_rows {
+                builder.append_value(value);
             }
+            schema_fields.push(Field::new(col_name, DataType::Utf8, true));
+            arrays.push(Arc::new(builder.finish()) as ArrayRef);
         }
 
         let schema = Arc::new(Schema::new(schema_fields));

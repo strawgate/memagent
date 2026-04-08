@@ -66,6 +66,12 @@ pub struct OtlpSink {
     stats: Arc<ComponentStats>,
 }
 
+/// Per-row resource key: one `Option<String>` per `_resource_*` column in the batch.
+type ResourceKey = Vec<Option<String>>;
+
+/// Per-group state: the resource key and byte-range spans of encoded log records.
+type ResourceGroup = (ResourceKey, Vec<(usize, usize)>);
+
 impl OtlpSink {
     pub fn new(
         name: String,
@@ -176,12 +182,12 @@ impl OtlpSink {
 
         // Phase 1: encode all LogRecords and assign each row to a resource group.
         let mut records_buf: Vec<u8> = Vec::with_capacity(num_rows * 128);
-        let mut grouped_ranges: Vec<(Vec<Option<String>>, Vec<(usize, usize)>)> = Vec::new();
-        let mut group_index_by_key: std::collections::HashMap<Vec<Option<String>>, usize> =
+        let mut grouped_ranges: Vec<ResourceGroup> = Vec::new();
+        let mut group_index_by_key: std::collections::HashMap<ResourceKey, usize> =
             std::collections::HashMap::new();
 
         for row in 0..num_rows {
-            let key: Vec<Option<String>> = columns
+            let key: ResourceKey = columns
                 .resource_cols
                 .iter()
                 .map(|(_, attr)| attr_value_as_string(attr, row))
