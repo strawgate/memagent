@@ -2239,6 +2239,95 @@ mod tests {
         assert_eq!(col.value(0), "decoded value");
     }
 
+    #[test]
+    fn test_resource_columns_injected_with_metadata_in_finish_batch() {
+        let buf = bytes::Bytes::from_static(b"unused");
+        let mut b = StreamingBuilder::new(false);
+        b.set_resource_attributes(&[
+            ("service.name".to_string(), "checkout".to_string()),
+            ("k8s.namespace".to_string(), "prod".to_string()),
+        ]);
+        b.begin_batch(buf.clone());
+        let idx = b.resolve_field(b"message");
+        b.begin_row();
+        b.append_str_by_idx(idx, &buf[0..4]);
+        b.end_row();
+
+        let batch = b.finish_batch().expect("finish batch");
+        assert_eq!(batch.num_rows(), 1);
+
+        let service = batch
+            .column_by_name("_resource_service_name")
+            .expect("service resource column");
+        let service = service
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("Utf8View resource column");
+        assert_eq!(service.value(0), "checkout");
+
+        let namespace = batch
+            .column_by_name("_resource_k8s_namespace")
+            .expect("namespace resource column");
+        let namespace = namespace
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("Utf8View resource column");
+        assert_eq!(namespace.value(0), "prod");
+
+        let schema = batch.schema();
+        let service_field = schema
+            .field_with_name("_resource_service_name")
+            .expect("service field");
+        let namespace_field = schema
+            .field_with_name("_resource_k8s_namespace")
+            .expect("namespace field");
+        assert_eq!(
+            service_field
+                .metadata()
+                .get("logfwd.resource_key")
+                .map(String::as_str),
+            Some("service.name")
+        );
+        assert_eq!(
+            namespace_field
+                .metadata()
+                .get("logfwd.resource_key")
+                .map(String::as_str),
+            Some("k8s.namespace")
+        );
+    }
+
+    #[test]
+    fn test_resource_columns_exist_on_empty_batch_in_both_finish_paths() {
+        let attrs = vec![("service.name".to_string(), "checkout".to_string())];
+
+        let mut view_builder = StreamingBuilder::new(false);
+        view_builder.set_resource_attributes(attrs.as_slice());
+        view_builder.begin_batch(bytes::Bytes::from_static(b""));
+        let view_batch = view_builder.finish_batch().expect("finish view batch");
+        assert_eq!(view_batch.num_rows(), 0);
+        assert!(
+            view_batch
+                .column_by_name("_resource_service_name")
+                .is_some(),
+            "empty view batch should preserve _resource_* schema"
+        );
+
+        let mut detached_builder = StreamingBuilder::new(false);
+        detached_builder.set_resource_attributes(attrs.as_slice());
+        detached_builder.begin_batch(bytes::Bytes::from_static(b""));
+        let detached_batch = detached_builder
+            .finish_batch_detached()
+            .expect("finish detached batch");
+        assert_eq!(detached_batch.num_rows(), 0);
+        assert!(
+            detached_batch
+                .column_by_name("_resource_service_name")
+                .is_some(),
+            "empty detached batch should preserve _resource_* schema"
+        );
+    }
+
     /// Verify that finish_batch() and finish_batch_detached() produce the same
     /// data (same values, same nulls) just with different string types
     /// (Utf8View vs Utf8).

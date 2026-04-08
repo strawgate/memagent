@@ -10,7 +10,7 @@ Start with the symptom table, run the exact checks, and compare expected output 
 
 ```yaml
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
   log_level: info
 ```
 

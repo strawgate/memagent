@@ -111,7 +111,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Redis logs to OTLP",
         description: "Tails Redis JSON logs and sends to an OTLP collector.",
         input: "input:\n  type: file\n  path: /var/log/redis/redis*.json\n  format: json\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -119,7 +119,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "PostgreSQL logs to OTLP",
         description: "Parses PostgreSQL JSON logs and ships to OTLP.",
         input: "input:\n  type: file\n  path: /var/log/postgresql/*.json\n  format: json\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -127,7 +127,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "MySQL logs to OTLP",
         description: "Tails MySQL JSON logs and forwards to OTLP.",
         input: "input:\n  type: file\n  path: /var/log/mysql/*.json\n  format: json\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -135,7 +135,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "MongoDB logs to OTLP",
         description: "Parses MongoDB JSON logs and forwards to OTLP.",
         input: "input:\n  type: file\n  path: /var/log/mongodb/mongod*.json\n  format: json\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -143,7 +143,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Kafka logs to OTLP",
         description: "Tails Kafka broker logs and forwards to OTLP.",
         input: "input:\n  type: file\n  path: /var/log/kafka/*.log\n  format: raw\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -151,7 +151,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "RabbitMQ logs to OTLP",
         description: "Tails RabbitMQ logs and forwards to OTLP.",
         input: "input:\n  type: file\n  path: /var/log/rabbitmq/*.log\n  format: raw\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -159,7 +159,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Nginx access logs to Loki",
         description: "Ingests Nginx access logs and sends to Loki with labels.",
         input: "input:\n  type: file\n  path: /var/log/nginx/access.log\n  format: raw\n",
-        output: "output:\n  type: loki\n  endpoint: http://loki:3100\n  static_labels:\n    app: nginx\n    stream: access\n  label_columns:\n    - status\n",
+        output: "output:\n  type: loki\n  endpoint: https://loki:3100\n  static_labels:\n    app: nginx\n    stream: access\n  label_columns:\n    - status\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -167,7 +167,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Nginx error logs to OTLP",
         description: "Ingests Nginx error logs and forwards to OTLP.",
         input: "input:\n  type: file\n  path: /var/log/nginx/error.log\n  format: raw\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -175,7 +175,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Apache logs to Elasticsearch",
         description: "Ships Apache logs to Elasticsearch for search and dashboards.",
         input: "input:\n  type: file\n  path: /var/log/apache2/*.log\n  format: raw\n",
-        output: "output:\n  type: elasticsearch\n  endpoint: http://elasticsearch:9200\n  index: apache-logs-%Y.%m.%d\n",
+        output: "output:\n  type: elasticsearch\n  endpoint: https://elasticsearch:9200\n  index: apache-logs-%Y.%m.%d\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -183,7 +183,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "System logs (journal export) to OTLP",
         description: "Reads journal-exported files and forwards to OTLP.",
         input: "input:\n  type: file\n  path: /var/log/journal-export/*.log\n  format: raw\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -191,7 +191,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Linux auth.log to Loki",
         description: "Collects login/authentication events to Loki.",
         input: "input:\n  type: file\n  path: /var/log/auth.log\n  format: raw\n",
-        output: "output:\n  type: loki\n  endpoint: http://loki:3100\n  static_labels:\n    app: linux-auth\n",
+        output: "output:\n  type: loki\n  endpoint: https://loki:3100\n  static_labels:\n    app: linux-auth\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -199,7 +199,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Docker JSON logs to OTLP",
         description: "Tails Docker's json-file logs and forwards to OTLP.",
         input: "input:\n  type: file\n  path: /var/lib/docker/containers/*/*.log\n  format: json\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -207,7 +207,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Kubernetes container logs to OTLP",
         description: "Reads CRI logs from Kubernetes nodes and forwards to OTLP.",
         input: "input:\n  type: file\n  path: /var/log/containers/*.log\n  format: cri\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -215,7 +215,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Kubernetes container logs to Loki",
         description: "Reads CRI logs from Kubernetes nodes and ships to Loki.",
         input: "input:\n  type: file\n  path: /var/log/containers/*.log\n  format: cri\n",
-        output: "output:\n  type: loki\n  endpoint: http://loki:3100\n  static_labels:\n    cluster: prod\n",
+        output: "output:\n  type: loki\n  endpoint: https://loki:3100\n  static_labels:\n    cluster: prod\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -223,7 +223,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Network raw logs (UDP) to OTLP",
         description: "Receives newline-delimited raw logs over UDP and forwards to OTLP.",
         input: "input:\n  type: udp\n  listen: 0.0.0.0:5514\n  format: raw\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -231,7 +231,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Network raw logs (TCP) to Elasticsearch",
         description: "Receives newline-delimited raw logs over TCP and indexes them in Elasticsearch.",
         input: "input:\n  type: tcp\n  listen: 0.0.0.0:1514\n  format: raw\n",
-        output: "output:\n  type: elasticsearch\n  endpoint: http://elasticsearch:9200\n  index: syslog-%Y.%m.%d\n",
+        output: "output:\n  type: elasticsearch\n  endpoint: https://elasticsearch:9200\n  index: syslog-%Y.%m.%d\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -239,7 +239,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "OTLP in to Loki",
         description: "Receives OTLP logs and forwards to Loki.",
         input: "input:\n  type: otlp\n  listen: 0.0.0.0:4318\n",
-        output: "output:\n  type: loki\n  endpoint: http://loki:3100\n  static_labels:\n    source: otlp\n",
+        output: "output:\n  type: loki\n  endpoint: https://loki:3100\n  static_labels:\n    source: otlp\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -247,7 +247,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "OTLP in to Elasticsearch",
         description: "Receives OTLP logs and indexes in Elasticsearch.",
         input: "input:\n  type: otlp\n  listen: 0.0.0.0:4318\n",
-        output: "output:\n  type: elasticsearch\n  endpoint: http://elasticsearch:9200\n  index: otlp-logs-%Y.%m.%d\n",
+        output: "output:\n  type: elasticsearch\n  endpoint: https://elasticsearch:9200\n  index: otlp-logs-%Y.%m.%d\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -255,7 +255,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "App JSON logs (errors only) to OTLP",
         description: "Filters JSON app logs to warn/error before sending.",
         input: "input:\n  type: file\n  path: /srv/app/logs/*.json\n  format: json\n",
-        output: "output:\n  type: otlp\n  endpoint: http://otel-collector:4318/v1/logs\n",
+        output: "output:\n  type: otlp\n  endpoint: https://otel-collector:4318/v1/logs\n",
         transform: "SELECT * FROM logs WHERE level IN ('warn', 'error', 'WARN', 'ERROR')",
     },
     UseCaseTemplate {

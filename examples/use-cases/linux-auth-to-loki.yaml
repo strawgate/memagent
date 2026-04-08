@@ -12,7 +12,7 @@ transform: |
 
 output:
   type: loki
-  endpoint: http://loki:3100
+  endpoint: https://loki:3100
   static_labels:
     app: linux-auth
 

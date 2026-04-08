@@ -383,6 +383,41 @@ fn otlp_receiver_legacy_and_structured_rejections_increment_parse_errors() {
 }
 
 #[test]
+fn otlp_receiver_legacy_and_structured_transport_rejections_increment_errors() {
+    for structured in [false, true] {
+        let stats = Arc::new(ComponentStats::new());
+        let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats), structured);
+
+        let status = send_status(
+            &url,
+            b"{}",
+            "application/json",
+            Some("brotli-not-supported"),
+        );
+        assert_eq!(status, 415, "unsupported encoding must be rejected");
+
+        std::thread::sleep(Duration::from_millis(20));
+        let events = input.poll().expect("poll receiver after rejected request");
+        assert!(
+            events.is_empty(),
+            "transport rejection must not enqueue decoded data"
+        );
+        assert_eq!(stats.lines(), 0, "rejected request must not count lines");
+        assert_eq!(stats.bytes(), 0, "rejected request must not count bytes");
+        assert_eq!(
+            stats.errors(),
+            1,
+            "unsupported content-encoding should increment transport errors"
+        );
+        assert_eq!(
+            stats.parse_errors(),
+            0,
+            "transport rejection should not increment parse errors"
+        );
+    }
+}
+
+#[test]
 fn otlp_receiver_legacy_and_structured_account_gzip_body_bytes() {
     let request = semantic_request();
     let protobuf_body = request.encode_to_vec();

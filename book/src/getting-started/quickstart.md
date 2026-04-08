@@ -193,7 +193,7 @@ To ship to a real collector, replace the endpoint:
 ```yaml
 output:
   type: otlp
-  endpoint: http://otel-collector:4318/v1/logs   # your real collector
+  endpoint: https://otel-collector:4318/v1/logs   # your real collector
   compression: zstd
 ```
 

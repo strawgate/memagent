@@ -64,6 +64,7 @@ turmoil = "0.7"
 walkdir = "2"
 smallvec = { version = "1", features = ["union"] }
 thiserror = { version = "2", default-features = false }
+url = "2"
 anyhow = "1"
 
 [workspace.lints.clippy]

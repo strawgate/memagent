@@ -115,6 +115,23 @@ same emitted JSON-line semantics for the supported field set.
 This is stronger than “both requests return 200”. It means the receiver must
 not silently diverge by format path.
 
+## Arrow IPC Receiver Contract
+
+The Arrow IPC receiver accepts `POST /v1/arrow` and forwards decoded
+`RecordBatch`es directly into the pipeline channel.
+
+### Delivery rules
+
+- If every non-empty batch in the request is accepted, return `200`.
+- If the channel becomes full after some prefix of batches has already been
+  accepted, return `429` for the whole request (never `200`).
+- A `429` on this path means **partial acceptance is possible**: a prefix may
+  already be delivered, so client retries are required to avoid loss of the
+  unsent suffix and may duplicate already-accepted prefix batches.
+- Downstream processing for Arrow IPC ingress is therefore at-least-once under
+  backpressure unless request-level deduplication is introduced externally.
+- A disconnected pipeline channel returns `503`.
+
 ## OTLP Sink Contract
 
 The OTLP sink accepts a `RecordBatch` and emits a valid

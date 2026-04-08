@@ -11,7 +11,7 @@ transform: |
 
 output:
   type: elasticsearch
-  endpoint: http://elasticsearch:9200
+  endpoint: https://elasticsearch:9200
   index: otlp-logs-%Y.%m.%d
 
 # Optional: diagnostics

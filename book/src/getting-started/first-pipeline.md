@@ -21,7 +21,7 @@ output:
   compression: zstd
 
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
 ```
 
 ## Run it

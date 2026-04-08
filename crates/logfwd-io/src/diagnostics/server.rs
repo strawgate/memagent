@@ -54,6 +54,10 @@ pub struct DiagnosticsServer {
     /// Raw YAML config text for the /admin/v1/config endpoint.
     config_yaml: String,
     config_path: String,
+    /// Whether `/admin/v1/config` is allowed to return the loaded config body.
+    /// Disabled by default to avoid accidental secret exposure on diagnostics
+    /// listeners bound outside localhost.
+    config_endpoint_enabled: bool,
     /// Stderr capture for /admin/v1/logs; started when diagnostics starts.
     stderr: crate::stderr_capture::StderrCapture,
     /// Server-side metric history (1 hour, reducing precision).
@@ -71,6 +75,7 @@ impl DiagnosticsServer {
             memory_stats_fn: None,
             config_yaml: String::new(),
             config_path: String::new(),
+            config_endpoint_enabled: false,
             stderr: crate::stderr_capture::StderrCapture::new(),
             history: Arc::new(crate::metric_history::MetricHistory::new()),
             trace_buf: None,
@@ -86,6 +91,14 @@ impl DiagnosticsServer {
     pub fn set_config(&mut self, path: &str, yaml: &str) {
         self.config_path = path.to_string();
         self.config_yaml = yaml.to_string();
+    }
+
+    /// Enable or disable `/admin/v1/config`.
+    ///
+    /// This endpoint is disabled by default because configuration often
+    /// contains credentials (tokens, passwords, API keys).
+    pub fn set_config_endpoint_enabled(&mut self, enabled: bool) {
+        self.config_endpoint_enabled = enabled;
     }
 
     pub fn add_pipeline(&mut self, metrics: Arc<PipelineMetrics>) {
@@ -362,6 +375,18 @@ impl DiagnosticsServer {
     }
 
     fn serve_config(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.config_endpoint_enabled {
+            let header =
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                    .map_err(|()| io::Error::other("invalid HTTP header"))?;
+            let body = r#"{"error":"config_endpoint_disabled","message":"set LOGFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config"}"#;
+            let resp = tiny_http::Response::from_string(body)
+                .with_status_code(403)
+                .with_header(header);
+            request.respond(resp)?;
+            return Ok(());
+        }
+
         let body = format!(
             r#"{{"path":"{}","raw_yaml":"{}"}}"#,
             esc(&self.config_path),

@@ -142,7 +142,7 @@ transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
-  endpoint: http://otel-collector:4318/v1/logs
+  endpoint: https://otel-collector:4318/v1/logs
   compression: zstd
 ```
 
@@ -158,7 +158,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
-        endpoint: http://otel-collector:4318/v1/logs
+        endpoint: https://otel-collector:4318/v1/logs
 
   debug:
     inputs:
