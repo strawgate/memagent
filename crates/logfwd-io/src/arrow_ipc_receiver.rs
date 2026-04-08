@@ -584,7 +584,10 @@ mod tests {
     }
 
     #[test]
-    fn receiver_returns_200_after_partial_accept_to_avoid_duplicate_retry() {
+    fn receiver_returns_429_on_backpressure_to_force_retry() {
+        // When the channel fills up mid-request (partial accept), we return 429 so the
+        // client retries the full request. This avoids silent data loss from unretried
+        // remainder batches that were never accepted.
         let receiver = ArrowIpcReceiver::new_with_capacity("test-partial", "127.0.0.1:0", 1)
             .expect("bind should succeed");
         let addr = receiver.local_addr();
@@ -593,11 +596,18 @@ mod tests {
         let batches = vec![make_test_batch(), make_test_batch()];
         let ipc_bytes = serialize_batches(&batches);
 
-        let response = ureq::post(&url)
+        let result = ureq::post(&url)
             .header("Content-Type", "application/vnd.apache.arrow.stream")
-            .send(&ipc_bytes)
-            .expect("POST should return 200 when at least one batch was accepted");
-        assert_eq!(response.status().as_u16(), 200);
+            .send(&ipc_bytes);
+        let status = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(
+            status, 429,
+            "POST should return 429 when channel fills up to force client retry"
+        );
 
         let received = receiver.try_recv_all();
         assert_eq!(
@@ -605,7 +615,7 @@ mod tests {
             1,
             "exactly one batch should have been accepted before backpressure"
         );
-        assert_eq!(receiver.health(), ComponentHealth::Healthy);
+        assert_eq!(receiver.health(), ComponentHealth::Degraded);
     }
 
     #[test]
