@@ -1330,8 +1330,8 @@ mod tests {
         let err = ElasticsearchSink::parse_bulk_response(response)
             .expect_err("errors:true with no parseable error must return Err");
         assert!(
-            err.to_string().contains("no parseable error found"),
-            "error message should mention no parseable error: {err}"
+            err.to_string().contains("no error details found"),
+            "error message should mention no error details: {err}"
         );
     }
 
