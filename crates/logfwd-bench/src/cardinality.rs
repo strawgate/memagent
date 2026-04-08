@@ -210,24 +210,6 @@ pub mod cardinality_helpers {
         }
     }
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Phase {
-        Quiet,
-        Burst,
-    }
-
-    /// Alternating quiet/burst windows with separately configurable lengths.
-    ///
-    /// This is intentionally simple: it is good enough to model failure pockets,
-    /// retries, and session-like windows while remaining deterministic and cheap.
-    pub struct BurstCycle {
-        phase: Phase,
-        remaining: usize,
-        started: bool,
-        quiet_len: RangeInclusive<usize>,
-        burst_len: RangeInclusive<usize>,
-    }
-
     /// Phase bucket used by the benchmark generators.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum SamplePhase {
@@ -471,11 +453,8 @@ pub mod cardinality_helpers {
                 0
             };
             let status_code = sample_status(rng, phase);
-            let error_count = if status_code >= 500 || rng.u32(..10_000) < error_bias_bp {
-                1
-            } else {
-                0
-            };
+            let error_count =
+                u32::from(status_code >= 500 || rng.u32(..10_000) < error_bias_bp);
 
             CardinalitySample {
                 phase,
@@ -498,39 +477,4 @@ pub mod cardinality_helpers {
         }
     }
 
-    impl BurstCycle {
-        pub fn new(quiet_len: RangeInclusive<usize>, burst_len: RangeInclusive<usize>) -> Self {
-            Self {
-                phase: Phase::Quiet,
-                remaining: 0,
-                started: false,
-                quiet_len,
-                burst_len,
-            }
-        }
-
-        pub fn step(&mut self, rng: &mut fastrand::Rng) -> bool {
-            if !self.started {
-                self.started = true;
-                self.phase = Phase::Quiet;
-                self.remaining = sample_range(rng, &self.quiet_len).max(1);
-            } else if self.remaining == 0 {
-                self.phase = match self.phase {
-                    Phase::Quiet => Phase::Burst,
-                    Phase::Burst => Phase::Quiet,
-                };
-                self.remaining = sample_range(
-                    rng,
-                    match self.phase {
-                        Phase::Quiet => &self.quiet_len,
-                        Phase::Burst => &self.burst_len,
-                    },
-                )
-                .max(1);
-            }
-
-            self.remaining -= 1;
-            matches!(self.phase, Phase::Burst)
-        }
-    }
 }

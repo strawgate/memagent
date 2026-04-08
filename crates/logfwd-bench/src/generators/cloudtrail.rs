@@ -86,7 +86,6 @@ pub fn gen_cloudtrail_audit_with_profile(
             session_name,
             principal_id,
             user_arn,
-            region,
             profile.optional_field_density,
             service.kind,
         );
@@ -156,7 +155,7 @@ pub fn gen_cloudtrail_audit_with_profile(
         event.field_str("eventSource", service.event_source);
         event.field_str("eventName", action.event_name);
         event.field_str("awsRegion", region);
-        event.field_str("sourceIPAddress", &source_ip);
+        event.field_str("sourceIPAddress", source_ip);
         event.field_str("userAgent", &user_agent);
         event.field_str("eventID", &event_id);
         event.field_str("eventType", event_type);
@@ -178,7 +177,7 @@ pub fn gen_cloudtrail_audit_with_profile(
             event.field_raw("additionalEventData", &additional_event_data);
         }
         if let Some(shared_event_id) = shared_event_id {
-            event.field_str("sharedEventID", &shared_event_id);
+            event.field_str("sharedEventID", shared_event_id);
         }
         if let Some(vpc_endpoint_id) = vpc_endpoint_id {
             event.field_str("vpcEndpointId", &vpc_endpoint_id);
@@ -263,9 +262,9 @@ pub fn gen_cloudtrail_batch_with_profile(
         );
         let user_agent = cloudtrail_user_agent(&mut rng, service.kind, principal_slot);
         let request_parameters_present =
-            !(action.read_only && !chance(&mut rng, profile.optional_field_density / 2));
+            !action.read_only || chance(&mut rng, profile.optional_field_density / 2);
         let response_elements_present =
-            !(action.read_only && !chance(&mut rng, profile.optional_field_density / 2));
+            !action.read_only || chance(&mut rng, profile.optional_field_density / 2);
         let resources_present =
             action.data_event || chance(&mut rng, profile.optional_field_density / 2);
         let additional_event_data_present =
@@ -1030,6 +1029,7 @@ fn cloudtrail_event_type(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_user_identity_json(
     rng: &mut fastrand::Rng,
     identity_kind: CloudTrailIdentityKind,
@@ -1039,7 +1039,6 @@ fn build_user_identity_json(
     session_name: &str,
     principal_id: &str,
     arn: Option<&str>,
-    region: &str,
     optional_density: u8,
     service_kind: CloudTrailServiceKind,
 ) -> String {
@@ -1094,16 +1093,15 @@ fn build_user_identity_json(
     if matches!(
         service_kind,
         CloudTrailServiceKind::Sts | CloudTrailServiceKind::CloudTrail
-    ) {
-        out.field_str("invokedBy", "cloudtrail.amazonaws.com");
-    } else if matches!(identity_kind, CloudTrailIdentityKind::AwsService) {
+    ) || matches!(identity_kind, CloudTrailIdentityKind::AwsService)
+    {
         out.field_str("invokedBy", "cloudtrail.amazonaws.com");
     }
 
-    let _ = region;
     out.finish()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_session_context_json(
     rng: &mut fastrand::Rng,
     account_id: &str,
@@ -1189,6 +1187,7 @@ fn cloudtrail_source_ip_seeded(idx: usize) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_request_parameters_json(
     rng: &mut fastrand::Rng,
     service_kind: CloudTrailServiceKind,
@@ -1315,6 +1314,7 @@ fn build_request_parameters_json(
     Some(out.finish())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_response_elements_json(
     rng: &mut fastrand::Rng,
     service_kind: CloudTrailServiceKind,
@@ -1411,6 +1411,7 @@ fn build_response_elements_json(
     Some(out.finish())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_resources_json(
     rng: &mut fastrand::Rng,
     service_kind: CloudTrailServiceKind,
@@ -1457,6 +1458,7 @@ fn build_resources_json(
     Some(format!("[{}]", items.join(",")))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_resource_entry_json(
     rng: &mut fastrand::Rng,
     service_kind: CloudTrailServiceKind,
@@ -1493,6 +1495,7 @@ fn build_resource_entry_json(
     out.finish()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cloudtrail_resource_arn(
     service_kind: CloudTrailServiceKind,
     action: &CloudTrailActionSpec,

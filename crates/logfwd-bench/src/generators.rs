@@ -93,29 +93,46 @@ const CLOUDTRAIL_USER_AGENTS: &[&str] = &[
     "aws-internal/3 aws-sdk-java/1.12.650",
 ];
 
+/// Controls the relative weight of AWS service families in generated CloudTrail events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloudTrailServiceMix {
+    /// Even spread across IAM, S3, EC2, STS, KMS, Lambda, and RDS.
     Balanced,
+    /// Heavier IAM, STS, and KMS traffic typical of security-focused accounts.
     SecurityHeavy,
+    /// Heavier S3 and EC2 traffic typical of data-lake accounts.
     StorageHeavy,
+    /// Heavier EC2 and Lambda traffic typical of compute-intensive accounts.
     ComputeHeavy,
 }
 
+/// Controls the AWS region distribution in generated CloudTrail events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloudTrailRegionMix {
+    /// All events originate from `us-east-1`.
     GlobalOnly,
+    /// Events spread across three regions.
     Regional,
+    /// Events spread across six regions with realistic skew.
     MultiRegion,
 }
 
+/// Tunable parameters for CloudTrail audit log generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CloudTrailProfile {
+    /// Number of distinct AWS account IDs in the rotating pool.
     pub account_count: usize,
+    /// Rows to keep an account hot before rotating to the next.
     pub account_tenure: usize,
+    /// Number of distinct IAM principals in the rotating pool.
     pub principal_count: usize,
+    /// Rows to keep a principal hot before rotating.
     pub principal_tenure: usize,
+    /// Which AWS service families to emphasize.
     pub service_mix: CloudTrailServiceMix,
+    /// How many regions to spread events across.
     pub region_mix: CloudTrailRegionMix,
+    /// Probability (0-100) that optional nested sub-structures are emitted.
     pub optional_field_density: u8,
 }
 
@@ -685,7 +702,7 @@ fn weighted_pick<T: Copy>(rng: &mut fastrand::Rng, items: &[(T, usize)]) -> T {
 
 fn weighted_choice_pick<T: WeightedChoice + Copy>(rng: &mut fastrand::Rng, items: &[T]) -> T {
     debug_assert!(!items.is_empty());
-    let total: usize = items.iter().map(|item| item.weight()).sum();
+    let total: usize = items.iter().map(WeightedChoice::weight).sum();
     let mut roll = rng.usize(..total.max(1));
     for item in items {
         let weight = item.weight();
@@ -752,14 +769,20 @@ struct EnvoyAccessScenario {
     response_code_details: &'static [&'static str],
 }
 
+/// Tunable parameters for Envoy-like access log generation.
 #[derive(Clone, Copy, Debug)]
 pub struct EnvoyAccessProfile {
+    /// Number of distinct route/cluster variants per scenario.
     pub cardinality_scale: usize,
+    /// Minimum number of consecutive rows that share the same scenario.
     pub burst_min: usize,
+    /// Maximum number of consecutive rows that share the same scenario.
     pub burst_max: usize,
+    /// Number of distinct source IP addresses in the pool.
     pub source_ip_pool_size: usize,
+    /// Number of distinct user-agent strings in the pool.
     pub user_agent_pool_size: usize,
-    pub error_rate_bp: u32,
+    /// Maximum number of `x-forwarded-for` hops.
     pub xff_hops_max: usize,
 }
 
@@ -771,7 +794,6 @@ impl EnvoyAccessProfile {
             burst_max: 24,
             source_ip_pool_size: 32,
             user_agent_pool_size: 12,
-            error_rate_bp: 1_200,
             xff_hops_max: 3,
         }
     }
@@ -784,7 +806,6 @@ impl EnvoyAccessProfile {
             burst_max: 12 + scale * 4,
             source_ip_pool_size: 32 * scale,
             user_agent_pool_size: 12 + scale * 6,
-            error_rate_bp: (1_200 + scale as u32 * 150).min(4_500),
             xff_hops_max: 2 + scale.min(2),
         }
     }
@@ -934,16 +955,6 @@ const ENVOY_SCENARIOS: &[EnvoyAccessScenario] = &[
     },
 ];
 
-const ENVOY_SCENARIO_WEIGHTS: &[(EnvoyAccessScenario, usize)] = &[
-    (ENVOY_SCENARIOS[0], 28),
-    (ENVOY_SCENARIOS[1], 20),
-    (ENVOY_SCENARIOS[2], 14),
-    (ENVOY_SCENARIOS[3], 12),
-    (ENVOY_SCENARIOS[4], 18),
-    (ENVOY_SCENARIOS[5], 5),
-    (ENVOY_SCENARIOS[6], 7),
-];
-
 /// Generate synthetic Envoy edge access logs as flat JSON lines.
 ///
 /// The generator intentionally correlates route, service, cluster, status,
@@ -974,7 +985,7 @@ pub fn gen_envoy_access_with_profile(
 
     for i in 0..count {
         if burst_remaining == 0 {
-            current_scenario = weighted_pick(&mut rng, ENVOY_SCENARIO_WEIGHTS);
+            current_scenario = weighted_choice_pick(&mut rng, ENVOY_SCENARIOS);
             let burst_span = profile.burst_max.saturating_sub(profile.burst_min);
             let burst_len = profile.burst_min + rng.usize(..=burst_span.max(1));
             burst_remaining = burst_len.max(1);
@@ -1067,8 +1078,7 @@ pub fn gen_envoy_access_with_profile(
             buf,
             r#"{{"timestamp":"2024-01-15T10:30:{sec:02}.{nano:09}Z","method":"{method}","path":"{path}","protocol":"{protocol}","response_code":{response_code},"response_flags":"{response_flags}","response_code_details":"{response_code_details}","bytes_received":{bytes_received},"bytes_sent":{bytes_sent},"duration_ms":{duration_ms:.1},"upstream_service_time_ms":{},"user_agent":"{user_agent}","x_request_id":"{}","authority":"{authority}","route_name":"{route_name}","service":"{}","upstream_cluster":"{upstream_cluster}","upstream_host":"{}","downstream_remote_address":"{source_ip}","downstream_direct_remote_address":"{direct_ip}","x_forwarded_for":"{xff}","tls_version":"{tls_version}"}}"#,
             upstream_service_time_ms
-                .map(|ms| format!("{ms:.1}"))
-                .unwrap_or_else(|| "null".to_string()),
+                .map_or_else(|| "null".to_string(), |ms| format!("{ms:.1}")),
             {
                 let mut request_id = String::with_capacity(36);
                 append_uuid_like(&mut rng, &mut request_id);
@@ -1451,7 +1461,7 @@ fn make_user_agent(
             1 => format!("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_{}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.{} Safari/605.1.15", slot % 6, 1 + slot % 4),
             2 => format!("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.{:04}.0 Safari/537.36", 2000 + slot),
             3 => format!("Mozilla/5.0 (iPhone; CPU iPhone OS 17_{} like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.{} Mobile/15E148 Safari/604.1", slot % 5, 1 + slot % 3),
-            4 => format!("Mozilla/5.0 (Android 14; Mobile; rv:125.0) Gecko/125.0 Firefox/125.0"),
+            4 => "Mozilla/5.0 (Android 14; Mobile; rv:125.0) Gecko/125.0 Firefox/125.0".to_string(),
             _ => format!("curl/8.{}.{}", 2 + slot % 3, slot % 10),
         },
         EnvoyAccessKind::Auth | EnvoyAccessKind::Search => match slot % 5 {

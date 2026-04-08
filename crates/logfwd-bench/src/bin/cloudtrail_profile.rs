@@ -14,7 +14,7 @@ const DEFAULT_PRINCIPAL_COUNT: usize = 64;
 const DEFAULT_ACCOUNT_TENURE: usize = 48;
 const DEFAULT_PRINCIPAL_TENURE: usize = 12;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let profile = CloudTrailProfile::benchmark_default()
         .with_account_count(cli.account_count)
@@ -27,7 +27,7 @@ fn main() {
 
     if cli.mode != Mode::Both {
         run_single_mode(&cli, profile);
-        return;
+        return Ok(());
     }
 
     let gen_started = Instant::now();
@@ -43,7 +43,7 @@ fn main() {
     let parsing = parse_started.elapsed();
 
     let compress_started = Instant::now();
-    let compressed = zstd::bulk::compress(&data, 1).expect("zstd compression");
+    let compressed = zstd::bulk::compress(&data, 1)?;
     let compression = compress_started.elapsed();
 
     println!("# CloudTrail profile");
@@ -145,6 +145,8 @@ fn main() {
     print_top("eventName", summary.lines, &summary.actions);
     print_top("awsRegion", summary.lines, &summary.regions);
     print_top("recipientAccountId", summary.lines, &summary.accounts);
+
+    Ok(())
 }
 
 fn run_single_mode(cli: &Cli, profile: CloudTrailProfile) {

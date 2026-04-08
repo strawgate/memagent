@@ -12,7 +12,7 @@ just bench
 just bench-framed-input -- --lines 200000 --iterations 5 --flamegraph /tmp/framed-input.svg
 
 # Run the CloudTrail realism profile (nested structure + cardinality + compression)
-cargo run -p logfwd-bench --bin cloudtrail_profile -- --lines 20000
+cargo run -p logfwd-bench --release --bin cloudtrail_profile -- --lines 20000
 
 # Run the allocation-only FramedInput report (dhat-backed, slower)
 just bench-framed-input-alloc -- --lines 200000
