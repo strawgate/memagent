@@ -388,6 +388,34 @@ mod verification {
         kani::cover!(tag == 1, "rejected becomes ChildState::Rejected");
         kani::cover!(tag == 2, "retry keeps child pending and records max delay");
         kani::cover!(tag == 3, "io error keeps child pending and stores error");
+
+        // Exercise the `d > prev` branch: start with an existing max_retry and
+        // merge a second RetryAfter so the harness covers both the "new delay
+        // wins" and "existing delay wins" paths.
+        let prev_retry_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        let mut any_pending2 = true;
+        let mut last_io_error2 = None;
+        let mut max_retry2 = Some(Duration::from_millis(prev_retry_ms));
+        let new_retry_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        merge_child_send_result(
+            SendResult::RetryAfter(Duration::from_millis(new_retry_ms)),
+            &mut any_pending2,
+            &mut last_io_error2,
+            &mut max_retry2,
+        );
+        assert!(any_pending2);
+        assert_eq!(
+            max_retry2,
+            Some(Duration::from_millis(prev_retry_ms.max(new_retry_ms)))
+        );
+        kani::cover!(
+            new_retry_ms > prev_retry_ms,
+            "new RetryAfter delay replaces smaller existing delay"
+        );
+        kani::cover!(
+            new_retry_ms <= prev_retry_ms,
+            "existing delay is kept when new delay is not larger"
+        );
     }
 
     #[kani::proof]
