@@ -22,17 +22,17 @@ use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE};
+use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use http_body_util::BodyExt as _;
 use logfwd_types::diagnostics::ComponentHealth;
 use tokio::sync::oneshot;
 
 use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
+use crate::receiver_http::{declared_content_length, read_limited_body};
 
 /// Maximum request body size: 10 MB.
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -238,11 +238,15 @@ fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, InputError> {
 }
 
 fn store_health_event(health: &AtomicU8, event: ReceiverHealthEvent) {
-    let current = ComponentHealth::from_repr(health.load(Ordering::Relaxed));
-    health.store(
-        reduce_receiver_health(current, event).as_repr(),
-        Ordering::Relaxed,
-    );
+    let mut current = health.load(Ordering::Relaxed);
+    loop {
+        let current_health = ComponentHealth::from_repr(current);
+        let next = reduce_receiver_health(current_health, event).as_repr();
+        match health.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 async fn handle_arrow_ipc_request(
@@ -250,7 +254,8 @@ async fn handle_arrow_ipc_request(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    if declared_content_length(&headers).is_some_and(|body_len| body_len > MAX_BODY_SIZE as u64) {
+    let content_length = declared_content_length(&headers);
+    if content_length.is_some_and(|body_len| body_len > MAX_BODY_SIZE as u64) {
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }
 
@@ -263,7 +268,7 @@ async fn handle_arrow_ipc_request(
         Err(status) => return (status, "invalid content-type header").into_response(),
     };
 
-    let body = match read_limited_body(body).await {
+    let body = match read_limited_body(body, MAX_BODY_SIZE, content_length).await {
         Ok(body) => body,
         Err(status) => {
             let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
@@ -356,13 +361,6 @@ async fn handle_arrow_ipc_request(
     }
 }
 
-fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
-    headers
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-}
-
 fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
     let Some(value) = headers.get(CONTENT_ENCODING) else {
         return Ok(None);
@@ -377,22 +375,6 @@ fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, StatusCode>
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Some(parsed.to_ascii_lowercase()))
-}
-
-async fn read_limited_body(body: Body) -> Result<Vec<u8>, StatusCode> {
-    let mut body = body;
-    let mut out = Vec::new();
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
-        let Ok(chunk) = frame.into_data() else {
-            continue;
-        };
-        if out.len().saturating_add(chunk.len()) > MAX_BODY_SIZE {
-            return Err(StatusCode::PAYLOAD_TOO_LARGE);
-        }
-        out.extend_from_slice(&chunk);
-    }
-    Ok(out)
 }
 
 impl Drop for ArrowIpcReceiver {

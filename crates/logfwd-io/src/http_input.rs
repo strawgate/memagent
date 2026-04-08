@@ -11,17 +11,17 @@ use std::sync::{Arc, mpsc};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{ALLOW, CONTENT_ENCODING, CONTENT_LENGTH};
+use axum::http::header::{ALLOW, CONTENT_ENCODING};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use flate2::read::GzDecoder;
-use http_body_util::BodyExt as _;
 use logfwd_types::diagnostics::ComponentHealth;
 use tokio::sync::oneshot;
 
 use crate::InputError;
 use crate::input::{InputEvent, InputSource};
+use crate::receiver_http::{declared_content_length, read_limited_body};
 
 /// Default max request body size (10 MiB).
 const DEFAULT_MAX_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -324,9 +324,8 @@ async fn handle_request(
             .into_response();
     }
 
-    if declared_content_length(request.headers())
-        .is_some_and(|body_len| body_len > state.max_request_body_size as u64)
-    {
+    let content_length = declared_content_length(request.headers());
+    if content_length.is_some_and(|body_len| body_len > state.max_request_body_size as u64) {
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }
 
@@ -335,7 +334,13 @@ async fn handle_request(
         Err(status) => return (status, "invalid content-encoding header").into_response(),
     };
 
-    let mut body = match read_limited_body(request.into_body(), state.max_request_body_size).await {
+    let mut body = match read_limited_body(
+        request.into_body(),
+        state.max_request_body_size,
+        content_length,
+    )
+    .await
+    {
         Ok(body) => body,
         Err(status) => {
             let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
@@ -403,38 +408,12 @@ async fn handle_request(
     }
 }
 
-fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
-    headers
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-}
-
 fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
     let Some(value) = headers.get(CONTENT_ENCODING) else {
         return Ok(None);
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Some(parsed.to_ascii_lowercase()))
-}
-
-async fn read_limited_body(
-    body: Body,
-    max_request_body_size: usize,
-) -> Result<Vec<u8>, StatusCode> {
-    let mut body = body;
-    let mut out = Vec::new();
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
-        let Ok(chunk) = frame.into_data() else {
-            continue;
-        };
-        if out.len().saturating_add(chunk.len()) > max_request_body_size {
-            return Err(StatusCode::PAYLOAD_TOO_LARGE);
-        }
-        out.extend_from_slice(&chunk);
-    }
-    Ok(out)
 }
 
 fn normalize_options(mut options: HttpInputOptions) -> io::Result<HttpInputOptions> {

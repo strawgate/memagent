@@ -1,0 +1,39 @@
+use axum::body::Body;
+use axum::http::{HeaderMap, StatusCode, header::CONTENT_LENGTH};
+use http_body_util::BodyExt as _;
+
+pub(crate) fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+pub(crate) async fn read_limited_body(
+    body: Body,
+    max_body_size: usize,
+    content_length_hint: Option<u64>,
+) -> Result<Vec<u8>, StatusCode> {
+    if content_length_hint.is_some_and(|hint| hint > max_body_size as u64) {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    let mut body = body;
+    let mut out = Vec::with_capacity(
+        content_length_hint
+            .map(|hint| hint.min(max_body_size as u64) as usize)
+            .unwrap_or_default(),
+    );
+
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
+        let Ok(chunk) = frame.into_data() else {
+            continue;
+        };
+        if out.len().saturating_add(chunk.len()) > max_body_size {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
