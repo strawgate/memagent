@@ -2206,4 +2206,93 @@ pipelines:
             "expected loki-only message: {err}"
         );
     }
+
+    // Regression tests for issue #1667: empty paths for geo_database/csv/jsonl enrichment
+    // must be rejected at --validate time, not silently passed through to runtime.
+
+    #[test]
+    fn geo_database_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: geo_database
+        format: mmdb
+        path: ""
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "expected empty-path rejection for geo_database: {err}"
+        );
+    }
+
+    #[test]
+    fn csv_enrichment_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: csv
+        table_name: assets
+        path: ""
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "expected empty-path rejection for csv enrichment: {err}"
+        );
+    }
+
+    #[test]
+    fn jsonl_enrichment_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: jsonl
+        table_name: owners
+        path: "   "
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "expected empty-path rejection for jsonl enrichment: {err}"
+        );
+    }
+
+    #[test]
+    fn geo_database_whitespace_path_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: geo_database\n        format: mmdb\n        path: \"   \"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "whitespace-only path must be rejected for geo_database: {err}"
+        );
+    }
+
+    #[test]
+    fn csv_enrichment_whitespace_path_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: \"   \"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "whitespace-only path must be rejected for csv enrichment: {err}"
+        );
+    }
 }

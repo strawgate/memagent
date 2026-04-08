@@ -617,6 +617,11 @@ impl Config {
             for (j, enrichment) in pipe.enrichment.iter().enumerate() {
                 match enrichment {
                     EnrichmentConfig::GeoDatabase(geo_cfg) => {
+                        if geo_cfg.path.trim().is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: geo_database 'path' must not be empty"
+                            )));
+                        }
                         // Only check existence for absolute paths; relative paths
                         // are resolved against base_path in Pipeline::from_config.
                         let p = Path::new(&geo_cfg.path);
@@ -645,6 +650,11 @@ impl Config {
                                 "pipeline '{name}' enrichment #{j}: table_name must not be empty"
                             )));
                         }
+                        if cfg.path.trim().is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: csv 'path' must not be empty"
+                            )));
+                        }
                         let p = Path::new(&cfg.path);
                         if p.is_absolute() && !p.exists() {
                             return Err(ConfigError::Validation(format!(
@@ -657,6 +667,11 @@ impl Config {
                         if cfg.table_name.is_empty() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                            )));
+                        }
+                        if cfg.path.trim().is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: jsonl 'path' must not be empty"
                             )));
                         }
                         let p = Path::new(&cfg.path);
