@@ -68,6 +68,8 @@ input:
   format: json
 ```
 
+TLS is not supported for UDP inputs.
+
 ## TCP
 
 Accept log lines on a TCP socket.
@@ -77,6 +79,25 @@ input:
   type: tcp
   listen: 0.0.0.0:5140
   format: json
+```
+
+Framing behavior:
+
+- Prefer RFC 6587 octet counting (`<len><space><payload>`).
+- Fall back to newline-delimited records for legacy senders.
+- Records larger than 1 MiB are discarded.
+
+Optional TLS/mTLS config:
+
+```yaml
+input:
+  type: tcp
+  listen: 0.0.0.0:5140
+  tls:
+    cert_file: /etc/logfwd/tls/server.pem
+    key_file: /etc/logfwd/tls/server.key
+    require_client_auth: true
+    client_ca_file: /etc/logfwd/tls/clients-ca.pem
 ```
 
 ## OTLP

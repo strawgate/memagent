@@ -5,10 +5,14 @@
 
 use std::io::Write;
 use std::net::{TcpStream, UdpSocket};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use logfwd_io::{
+    diagnostics::ComponentStats,
+    format::FormatDecoder,
+    framed::FramedInput,
     input::{InputEvent, InputSource},
     otlp_receiver::OtlpReceiverInput,
     tcp_input::TcpInput,
@@ -277,6 +281,29 @@ fn tcp_large_message() {
         "64KB payload not fully received (got {} bytes)",
         data.len()
     );
+}
+
+#[test]
+fn tcp_rfc6587_octet_counting_prevents_newline_injection_split() {
+    let tcp = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let addr = tcp.local_addr().unwrap();
+    let stats = Arc::new(ComponentStats::new());
+    let mut input = FramedInput::new(
+        Box::new(tcp),
+        FormatDecoder::passthrough(Arc::clone(&stats)),
+        stats,
+    );
+
+    let payload = b"{\"msg\":\"hello\nFORGED\"}";
+    let mut wire = format!("{} ", payload.len()).into_bytes();
+    wire.extend_from_slice(payload);
+
+    let mut client = TcpStream::connect(addr).unwrap();
+    client.write_all(&wire).unwrap();
+    client.flush().unwrap();
+
+    let data = poll_until_data(&mut input, Duration::from_secs(5));
+    assert_eq!(data, [payload.as_slice(), b"\n"].concat());
 }
 
 #[test]

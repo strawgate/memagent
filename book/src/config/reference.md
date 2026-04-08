@@ -123,6 +123,9 @@ Listen for log lines on a UDP socket.
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:514`. |
 
+`udp` treats each datagram as one or more newline-delimited records. TLS is
+not supported for UDP inputs (DTLS is not implemented).
+
 ```yaml
 input:
   type: udp
@@ -137,6 +140,14 @@ Accept log lines on a TCP socket.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:5140`. |
+| `tls.cert_file` | string | No | PEM server certificate chain (must be paired with `tls.key_file`). |
+| `tls.key_file` | string | No | PEM private key (must be paired with `tls.cert_file`). |
+| `tls.require_client_auth` | bool | No | Require mTLS client cert verification. |
+| `tls.client_ca_file` | string | Cond. | Required when `tls.require_client_auth: true`. |
+
+TCP framing uses RFC 6587 octet-counting when a valid `<len><space>` prefix is
+present, and falls back to legacy newline framing otherwise. Oversized frames
+(`> 1 MiB`) are discarded.
 
 ```yaml
 input:
