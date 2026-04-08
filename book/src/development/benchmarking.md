@@ -40,5 +40,5 @@ Nightly benchmark automation now lives in
 
 - Kubernetes EPS competitive suite:
   [bench-kind-smoke workflow](https://github.com/strawgate/memagent-e2e/actions/workflows/bench-kind-smoke.yml)
-- Nightly benchmark report issues:
+- Open nightly benchmark report issues:
   [open `report:bench-nightly-eps` issues](https://github.com/strawgate/memagent-e2e/issues?q=is%3Aopen+label%3Areport%3Abench-nightly-eps)
