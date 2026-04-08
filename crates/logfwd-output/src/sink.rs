@@ -392,6 +392,7 @@ mod verification {
     }
 
     #[kani::proof]
+    #[kani::unwind(3)]
     fn verify_finalize_fanout_outcome_precedence() {
         let max_retry_ms: u64 = kani::any_where(|&v| v <= 30_000);
         let states = [ChildState::Ok, ChildState::Rejected("bad".to_string())];
