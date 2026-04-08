@@ -93,16 +93,20 @@ pub(super) fn get_page_size() -> Option<u64> {
 }
 
 fn getconf_u64(name: &str) -> Option<u64> {
-    let output = std::process::Command::new("getconf")
-        .arg(name)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    #[cfg(unix)]
+    {
+        let key = match name {
+            "CLK_TCK" => libc::_SC_CLK_TCK,
+            "PAGESIZE" => libc::_SC_PAGESIZE,
+            _ => return None,
+        };
+        // SAFETY: `sysconf` is thread-safe and we pass a valid key constant.
+        let value = unsafe { libc::sysconf(key) };
+        if value > 0 { Some(value as u64) } else { None }
     }
-    std::str::from_utf8(&output.stdout)
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+    #[cfg(not(unix))]
+    {
+        let _ = name;
+        None
+    }
 }

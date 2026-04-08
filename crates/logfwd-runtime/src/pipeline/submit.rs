@@ -40,7 +40,8 @@ impl Pipeline {
             ..
         } = msg;
         let batch_id = self.metrics.alloc_batch_id();
-        self.metrics.begin_active_batch(batch_id, now_nanos());
+        self.metrics
+            .begin_active_batch(batch_id, now_nanos(), scan_ns, transform_ns);
 
         // Record queue wait time.
         if let Some(qt) = queued_at {

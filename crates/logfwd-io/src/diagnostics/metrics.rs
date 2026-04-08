@@ -286,15 +286,15 @@ impl PipelineMetrics {
         self.next_batch_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub fn begin_active_batch(&self, id: u64, start_unix_ns: u64) {
+    pub fn begin_active_batch(&self, id: u64, start_unix_ns: u64, scan_ns: u64, transform_ns: u64) {
         if let Ok(mut m) = self.active_batches.lock() {
             m.insert(
                 id,
                 ActiveBatch {
                     start_unix_ns,
-                    scan_ns: 0,
-                    transform_ns: 0,
-                    stage: "scan",
+                    scan_ns,
+                    transform_ns,
+                    stage: "queued",
                     stage_start_unix_ns: start_unix_ns,
                     worker_id: -1,
                     output_start_unix_ns: 0,
@@ -307,6 +307,7 @@ impl PipelineMetrics {
     pub fn assign_worker_to_active_batch(&self, batch_id: u64, worker_id: usize, now_unix_ns: u64) {
         if let Ok(mut m) = self.active_batches.lock() {
             if let Some(b) = m.get_mut(&batch_id) {
+                b.stage = "output";
                 b.worker_id = worker_id as i64;
                 b.output_start_unix_ns = now_unix_ns;
                 b.stage_start_unix_ns = now_unix_ns;

@@ -1,9 +1,10 @@
 /// In-flight batch being processed right now.
+#[derive(Debug, Clone)]
 pub struct ActiveBatch {
     pub start_unix_ns: u64,
     pub scan_ns: u64,
     pub transform_ns: u64,
-    /// Current stage: "scan" | "transform" | "output"
+    /// Current stage: "queued" | "scan" | "transform" | "output"
     pub stage: &'static str,
     /// Unix ns when the current stage started (for frontend live duration)
     pub stage_start_unix_ns: u64,

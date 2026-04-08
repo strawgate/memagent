@@ -823,10 +823,16 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
     let parsed =
         Url::parse(endpoint).map_err(|_| format!("endpoint '{endpoint}' is not a valid URL"))?;
 
-    let rest = if let Some(rest) = endpoint.strip_prefix("http://") {
-        rest
-    } else if let Some(rest) = endpoint.strip_prefix("https://") {
-        rest
+    let rest = if endpoint
+        .get(..8)
+        .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+    {
+        &endpoint[8..]
+    } else if endpoint
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+    {
+        &endpoint[7..]
     } else {
         return Err(format!(
             "endpoint '{endpoint}' has no recognised scheme; expected 'http://' or 'https://'"
@@ -857,6 +863,7 @@ mod validate_endpoint_url_tests {
     fn endpoint_url_requires_http_or_https_with_host() {
         assert!(validate_endpoint_url("http://localhost:4317").is_ok());
         assert!(validate_endpoint_url("https://example.com/path").is_ok());
+        assert!(validate_endpoint_url("HTTP://EXAMPLE.COM").is_ok());
 
         for bad in [
             "http:///bulk",
