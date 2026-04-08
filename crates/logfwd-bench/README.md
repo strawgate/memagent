@@ -62,7 +62,7 @@ just bench-report
 |------|--------|-------------|
 | `main.rs` | `logfwd-bench` | Reads Criterion JSON, emits markdown tables |
 | `e2e_profile.rs` | *(lib)* | Per-stage timing breakdown (scan → transform → encode → compress) |
-| `bin/cloudtrail_profile.rs` | `cloudtrail_profile` | CloudTrail-like generator profile (nested structure, optional fields, cardinality, compression) |
+| `bin/cloudtrail_profile.rs` | `cloudtrail_profile` | CloudTrail-like generator profile (NDJSON vs direct RecordBatch generation, cardinality, compression) |
 | `es_throughput.rs` | `es-throughput` | Elasticsearch output throughput with worker scaling |
 | `bin/framed_input_profile.rs` | `framed_input_profile` | FramedInput stage timings, RSS, optional flamegraph, optional dhat allocation report |
 | `explore.rs` | *(lib)* | Multi-dimensional exploratory benchmark (CSV output) |
@@ -87,6 +87,7 @@ payloads without hard-coding a single scenario.
 | `gen_wide(count, seed)` | Verbose 20+ field JSON with hierarchical identity reuse | ~650 bytes/line |
 | `gen_envoy_access(count, seed)` | Envoy-like access logs with route/service/status/user-agent/IP correlation | ~500 bytes/line avg |
 | `gen_cloudtrail_audit(count, seed)` | CloudTrail-like nested audit logs with optional substructures and high-cardinality principals | ~1.1 KB/line avg |
+| `gen_cloudtrail_batch(count, seed)` | Direct Arrow `RecordBatch` materializer for the same CloudTrail workload model | 34 core columns |
 | `make_metadata()` | Standard `BatchMetadata` with K8s resource attrs | — |
 
 ## Shared Bench Helpers (`src/lib.rs`)

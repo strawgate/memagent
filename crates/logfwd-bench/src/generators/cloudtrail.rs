@@ -4,6 +4,12 @@
 //! of real AWS CloudTrail records closely enough that compression, hashing,
 //! and downstream parsing behave realistically in benchmarks.
 
+use std::sync::Arc;
+
+use arrow::array::{ArrayRef, BooleanBuilder, StringBuilder};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
+
 use super::{
     CLOUDTRAIL_EVENT_VERSION, CLOUDTRAIL_PUBLIC_IPS, CLOUDTRAIL_REGIONS_GLOBAL,
     CLOUDTRAIL_REGIONS_MULTI, CLOUDTRAIL_REGIONS_REGIONAL, CLOUDTRAIL_USER_AGENTS,
@@ -175,6 +181,403 @@ pub fn gen_cloudtrail_audit_with_profile(
     }
 
     buf.into_bytes()
+}
+
+/// Generate CloudTrail-like audit logs directly as a detached Arrow
+/// [`RecordBatch`].
+///
+/// This path uses the same deterministic workload model as
+/// [`gen_cloudtrail_audit_with_profile`], but skips top-level NDJSON
+/// materialization so downstream benchmarks can start at typed columns.
+pub fn gen_cloudtrail_batch(count: usize, seed: u64) -> RecordBatch {
+    gen_cloudtrail_batch_with_profile(count, seed, CloudTrailProfile::benchmark_default())
+}
+
+/// Generate CloudTrail-like audit logs as a detached Arrow [`RecordBatch`]
+/// using a tunable realism profile.
+pub fn gen_cloudtrail_batch_with_profile(
+    count: usize,
+    seed: u64,
+    profile: CloudTrailProfile,
+) -> RecordBatch {
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let state = CloudTrailState::new(profile);
+    let services = cloudtrail_services(profile.service_mix);
+    let mut builders = CloudTrailBatchBuilders::new(count);
+
+    for i in 0..count {
+        let service = weighted_choice_pick(&mut rng, services);
+        let action = pick_cloudtrail_action(&mut rng, service.actions);
+        let account_slot =
+            pick_tenure_slot(&mut rng, i, profile.account_tenure, state.accounts.len());
+        let principal_slot = pick_tenure_slot(
+            &mut rng,
+            i + account_slot,
+            profile.principal_tenure,
+            state.principals.len(),
+        );
+        let account_id = state.account_id(account_slot);
+        let principal_name = state.principal_name(principal_slot);
+        let role_name = state.role_name(principal_slot);
+        let session_name = state.session_name(principal_slot);
+        let region = pick_cloudtrail_region(&mut rng, profile.region_mix, service.kind);
+        let event_time = cloudtrail_event_time(i, &mut rng);
+        let event_id = cloudtrail_uuid_like(&mut rng);
+        let identity_kind = pick_cloudtrail_identity_kind(&mut rng, service.kind, action.read_only);
+        let principal_id = cloudtrail_principal_id(identity_kind, account_id, principal_slot);
+        let user_arn = if matches!(identity_kind, CloudTrailIdentityKind::AwsService) {
+            None
+        } else {
+            Some(cloudtrail_arn(
+                identity_kind,
+                account_id,
+                principal_name,
+                role_name,
+                session_name,
+            ))
+        };
+        let shared_event_id =
+            if action.data_event || chance(&mut rng, profile.optional_field_density / 3) {
+                Some(cloudtrail_uuid_like(&mut rng))
+            } else {
+                None
+            };
+        let source_ip =
+            cloudtrail_source_ip(&mut rng, service.kind, profile.optional_field_density);
+        let user_agent = cloudtrail_user_agent(&mut rng, service.kind, principal_slot);
+        let request_parameters_present =
+            !(action.read_only && !chance(&mut rng, profile.optional_field_density / 2));
+        let response_elements_present =
+            !(action.read_only && !chance(&mut rng, profile.optional_field_density / 2));
+        let resources_present =
+            action.data_event || chance(&mut rng, profile.optional_field_density / 2);
+        let additional_event_data_present =
+            action.data_event || chance(&mut rng, profile.optional_field_density / 2);
+        let error = cloudtrail_error_pair(&mut rng, action.read_only, action.data_event);
+        let event_type = cloudtrail_event_type(service.kind, identity_kind, action);
+        let event_category = if action.data_event {
+            "Data"
+        } else {
+            "Management"
+        };
+        let vpc_endpoint_id = if chance(&mut rng, profile.optional_field_density / 4)
+            && !matches!(service.kind, CloudTrailServiceKind::CloudTrail)
+        {
+            Some(format!("vpce-{:08x}", rng.u32(..)))
+        } else {
+            None
+        };
+        let additional_event_data_tls_version = if additional_event_data_present {
+            Some(pick(&mut rng, &["TLSv1.3", "TLSv1.2"]))
+        } else {
+            None
+        };
+        let tls_details_present = !matches!(service.kind, CloudTrailServiceKind::CloudTrail)
+            && chance(&mut rng, profile.optional_field_density / 3);
+        let tls_details_version = if tls_details_present {
+            Some(pick(&mut rng, &["TLSv1.3", "TLSv1.2"]))
+        } else {
+            None
+        };
+        let tls_details_cipher = if tls_details_present {
+            Some(pick(
+                &mut rng,
+                &["TLS_AES_128_GCM_SHA256", "ECDHE-RSA-AES128-GCM-SHA256"],
+            ))
+        } else {
+            None
+        };
+        let tls_details_host = if tls_details_present {
+            Some(pick(
+                &mut rng,
+                &[
+                    "console.aws.amazon.com",
+                    "api.aws.amazon.com",
+                    "s3.amazonaws.com",
+                ],
+            ))
+        } else {
+            None
+        };
+        let tls_details_client_principal = if tls_details_present {
+            Some(pick(&mut rng, &["console", "cli", "sdk"]))
+        } else {
+            None
+        };
+        let resource_arn = if resources_present {
+            Some(cloudtrail_resource_arn(
+                service.kind,
+                action,
+                account_id,
+                principal_name,
+                role_name,
+                session_name,
+                region,
+                i,
+                0,
+            ))
+        } else {
+            None
+        };
+        let resource_name = if resources_present && chance(&mut rng, 35) {
+            Some(cloudtrail_resource_name(
+                service.kind,
+                action,
+                principal_name,
+                i,
+                0,
+            ))
+        } else {
+            None
+        };
+        let invoked_by = if matches!(
+            service.kind,
+            CloudTrailServiceKind::Sts | CloudTrailServiceKind::CloudTrail
+        ) || matches!(identity_kind, CloudTrailIdentityKind::AwsService)
+        {
+            Some("cloudtrail.amazonaws.com")
+        } else {
+            None
+        };
+        let user_name = match identity_kind {
+            CloudTrailIdentityKind::IamUser
+            | CloudTrailIdentityKind::AssumedRole
+            | CloudTrailIdentityKind::FederatedUser => Some(principal_name),
+            CloudTrailIdentityKind::Root | CloudTrailIdentityKind::AwsService => None,
+        };
+
+        builders
+            .event_version
+            .append_value(CLOUDTRAIL_EVENT_VERSION);
+        builders.event_time.append_value(&event_time);
+        builders.event_source.append_value(service.event_source);
+        builders.event_name.append_value(action.event_name);
+        builders.aws_region.append_value(region);
+        builders.source_ip_address.append_value(&source_ip);
+        builders.user_agent.append_value(&user_agent);
+        builders.event_id.append_value(&event_id);
+        builders.event_type.append_value(event_type);
+        builders.recipient_account_id.append_value(account_id);
+        builders.read_only.append_value(action.read_only);
+        builders.management_event.append_value(!action.data_event);
+        builders.event_category.append_value(event_category);
+        builders
+            .user_identity_type
+            .append_value(cloudtrail_identity_type(identity_kind));
+        builders
+            .user_identity_principal_id
+            .append_value(&principal_id);
+        builders.user_identity_account_id.append_value(account_id);
+        append_optional_string(&mut builders.user_identity_arn, user_arn.as_deref());
+        append_optional_string(&mut builders.user_identity_user_name, user_name);
+        append_optional_string(&mut builders.user_identity_invoked_by, invoked_by);
+        builders
+            .request_parameters_present
+            .append_value(request_parameters_present);
+        builders
+            .response_elements_present
+            .append_value(response_elements_present);
+        append_optional_string(&mut builders.resource_arn, resource_arn.as_deref());
+        if resources_present {
+            builders.resource_type.append_value(action.resource_type);
+        } else {
+            builders.resource_type.append_null();
+        }
+        append_optional_string(&mut builders.resource_name, resource_name.as_deref());
+        builders
+            .additional_event_data_present
+            .append_value(additional_event_data_present);
+        append_optional_string(
+            &mut builders.additional_event_data_tls_version,
+            additional_event_data_tls_version,
+        );
+        append_optional_string(&mut builders.shared_event_id, shared_event_id.as_deref());
+        append_optional_string(&mut builders.vpc_endpoint_id, vpc_endpoint_id.as_deref());
+        append_optional_string(&mut builders.error_code, error.map(|(code, _)| code));
+        append_optional_string(
+            &mut builders.error_message,
+            error.map(|(_, message)| message),
+        );
+        append_optional_string(&mut builders.tls_details_version, tls_details_version);
+        append_optional_string(&mut builders.tls_details_cipher, tls_details_cipher);
+        append_optional_string(&mut builders.tls_details_host, tls_details_host);
+        append_optional_string(
+            &mut builders.tls_details_client_provided_principal,
+            tls_details_client_principal,
+        );
+    }
+
+    builders.finish(count)
+}
+
+fn append_optional_string(builder: &mut StringBuilder, value: Option<&str>) {
+    if let Some(value) = value {
+        builder.append_value(value);
+    } else {
+        builder.append_null();
+    }
+}
+
+struct CloudTrailBatchBuilders {
+    event_version: StringBuilder,
+    event_time: StringBuilder,
+    event_source: StringBuilder,
+    event_name: StringBuilder,
+    aws_region: StringBuilder,
+    source_ip_address: StringBuilder,
+    user_agent: StringBuilder,
+    event_id: StringBuilder,
+    event_type: StringBuilder,
+    recipient_account_id: StringBuilder,
+    read_only: BooleanBuilder,
+    management_event: BooleanBuilder,
+    event_category: StringBuilder,
+    user_identity_type: StringBuilder,
+    user_identity_principal_id: StringBuilder,
+    user_identity_account_id: StringBuilder,
+    user_identity_arn: StringBuilder,
+    user_identity_user_name: StringBuilder,
+    user_identity_invoked_by: StringBuilder,
+    request_parameters_present: BooleanBuilder,
+    response_elements_present: BooleanBuilder,
+    resource_arn: StringBuilder,
+    resource_type: StringBuilder,
+    resource_name: StringBuilder,
+    additional_event_data_present: BooleanBuilder,
+    additional_event_data_tls_version: StringBuilder,
+    shared_event_id: StringBuilder,
+    vpc_endpoint_id: StringBuilder,
+    error_code: StringBuilder,
+    error_message: StringBuilder,
+    tls_details_version: StringBuilder,
+    tls_details_cipher: StringBuilder,
+    tls_details_host: StringBuilder,
+    tls_details_client_provided_principal: StringBuilder,
+}
+
+impl CloudTrailBatchBuilders {
+    fn new(rows: usize) -> Self {
+        Self {
+            event_version: StringBuilder::with_capacity(rows, rows.saturating_mul(8)),
+            event_time: StringBuilder::with_capacity(rows, rows.saturating_mul(32)),
+            event_source: StringBuilder::with_capacity(rows, rows.saturating_mul(24)),
+            event_name: StringBuilder::with_capacity(rows, rows.saturating_mul(24)),
+            aws_region: StringBuilder::with_capacity(rows, rows.saturating_mul(16)),
+            source_ip_address: StringBuilder::with_capacity(rows, rows.saturating_mul(20)),
+            user_agent: StringBuilder::with_capacity(rows, rows.saturating_mul(48)),
+            event_id: StringBuilder::with_capacity(rows, rows.saturating_mul(36)),
+            event_type: StringBuilder::with_capacity(rows, rows.saturating_mul(20)),
+            recipient_account_id: StringBuilder::with_capacity(rows, rows.saturating_mul(12)),
+            read_only: BooleanBuilder::with_capacity(rows),
+            management_event: BooleanBuilder::with_capacity(rows),
+            event_category: StringBuilder::with_capacity(rows, rows.saturating_mul(12)),
+            user_identity_type: StringBuilder::with_capacity(rows, rows.saturating_mul(16)),
+            user_identity_principal_id: StringBuilder::with_capacity(rows, rows.saturating_mul(24)),
+            user_identity_account_id: StringBuilder::with_capacity(rows, rows.saturating_mul(12)),
+            user_identity_arn: StringBuilder::with_capacity(rows, rows.saturating_mul(72)),
+            user_identity_user_name: StringBuilder::with_capacity(rows, rows.saturating_mul(16)),
+            user_identity_invoked_by: StringBuilder::with_capacity(rows, rows.saturating_mul(28)),
+            request_parameters_present: BooleanBuilder::with_capacity(rows),
+            response_elements_present: BooleanBuilder::with_capacity(rows),
+            resource_arn: StringBuilder::with_capacity(rows, rows.saturating_mul(72)),
+            resource_type: StringBuilder::with_capacity(rows, rows.saturating_mul(24)),
+            resource_name: StringBuilder::with_capacity(rows, rows.saturating_mul(24)),
+            additional_event_data_present: BooleanBuilder::with_capacity(rows),
+            additional_event_data_tls_version: StringBuilder::with_capacity(
+                rows,
+                rows.saturating_mul(8),
+            ),
+            shared_event_id: StringBuilder::with_capacity(rows, rows.saturating_mul(36)),
+            vpc_endpoint_id: StringBuilder::with_capacity(rows, rows.saturating_mul(16)),
+            error_code: StringBuilder::with_capacity(rows, rows.saturating_mul(16)),
+            error_message: StringBuilder::with_capacity(rows, rows.saturating_mul(64)),
+            tls_details_version: StringBuilder::with_capacity(rows, rows.saturating_mul(8)),
+            tls_details_cipher: StringBuilder::with_capacity(rows, rows.saturating_mul(32)),
+            tls_details_host: StringBuilder::with_capacity(rows, rows.saturating_mul(32)),
+            tls_details_client_provided_principal: StringBuilder::with_capacity(
+                rows,
+                rows.saturating_mul(8),
+            ),
+        }
+    }
+
+    fn finish(mut self, rows: usize) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("eventVersion", DataType::Utf8, false),
+            Field::new("eventTime", DataType::Utf8, false),
+            Field::new("eventSource", DataType::Utf8, false),
+            Field::new("eventName", DataType::Utf8, false),
+            Field::new("awsRegion", DataType::Utf8, false),
+            Field::new("sourceIPAddress", DataType::Utf8, false),
+            Field::new("userAgent", DataType::Utf8, false),
+            Field::new("eventID", DataType::Utf8, false),
+            Field::new("eventType", DataType::Utf8, false),
+            Field::new("recipientAccountId", DataType::Utf8, false),
+            Field::new("readOnly", DataType::Boolean, false),
+            Field::new("managementEvent", DataType::Boolean, false),
+            Field::new("eventCategory", DataType::Utf8, false),
+            Field::new("userIdentity.type", DataType::Utf8, false),
+            Field::new("userIdentity.principalId", DataType::Utf8, false),
+            Field::new("userIdentity.accountId", DataType::Utf8, false),
+            Field::new("userIdentity.arn", DataType::Utf8, true),
+            Field::new("userIdentity.userName", DataType::Utf8, true),
+            Field::new("userIdentity.invokedBy", DataType::Utf8, true),
+            Field::new("requestParameters.present", DataType::Boolean, false),
+            Field::new("responseElements.present", DataType::Boolean, false),
+            Field::new("resources.0.ARN", DataType::Utf8, true),
+            Field::new("resources.0.type", DataType::Utf8, true),
+            Field::new("resources.0.resourceName", DataType::Utf8, true),
+            Field::new("additionalEventData.present", DataType::Boolean, false),
+            Field::new("additionalEventData.tlsVersion", DataType::Utf8, true),
+            Field::new("sharedEventID", DataType::Utf8, true),
+            Field::new("vpcEndpointId", DataType::Utf8, true),
+            Field::new("errorCode", DataType::Utf8, true),
+            Field::new("errorMessage", DataType::Utf8, true),
+            Field::new("tlsDetails.tlsVersion", DataType::Utf8, true),
+            Field::new("tlsDetails.cipherSuite", DataType::Utf8, true),
+            Field::new("tlsDetails.clientProvidedHostHeader", DataType::Utf8, true),
+            Field::new("tlsDetails.clientProvidedPrincipal", DataType::Utf8, true),
+        ]));
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(self.event_version.finish()) as ArrayRef,
+            Arc::new(self.event_time.finish()) as ArrayRef,
+            Arc::new(self.event_source.finish()) as ArrayRef,
+            Arc::new(self.event_name.finish()) as ArrayRef,
+            Arc::new(self.aws_region.finish()) as ArrayRef,
+            Arc::new(self.source_ip_address.finish()) as ArrayRef,
+            Arc::new(self.user_agent.finish()) as ArrayRef,
+            Arc::new(self.event_id.finish()) as ArrayRef,
+            Arc::new(self.event_type.finish()) as ArrayRef,
+            Arc::new(self.recipient_account_id.finish()) as ArrayRef,
+            Arc::new(self.read_only.finish()) as ArrayRef,
+            Arc::new(self.management_event.finish()) as ArrayRef,
+            Arc::new(self.event_category.finish()) as ArrayRef,
+            Arc::new(self.user_identity_type.finish()) as ArrayRef,
+            Arc::new(self.user_identity_principal_id.finish()) as ArrayRef,
+            Arc::new(self.user_identity_account_id.finish()) as ArrayRef,
+            Arc::new(self.user_identity_arn.finish()) as ArrayRef,
+            Arc::new(self.user_identity_user_name.finish()) as ArrayRef,
+            Arc::new(self.user_identity_invoked_by.finish()) as ArrayRef,
+            Arc::new(self.request_parameters_present.finish()) as ArrayRef,
+            Arc::new(self.response_elements_present.finish()) as ArrayRef,
+            Arc::new(self.resource_arn.finish()) as ArrayRef,
+            Arc::new(self.resource_type.finish()) as ArrayRef,
+            Arc::new(self.resource_name.finish()) as ArrayRef,
+            Arc::new(self.additional_event_data_present.finish()) as ArrayRef,
+            Arc::new(self.additional_event_data_tls_version.finish()) as ArrayRef,
+            Arc::new(self.shared_event_id.finish()) as ArrayRef,
+            Arc::new(self.vpc_endpoint_id.finish()) as ArrayRef,
+            Arc::new(self.error_code.finish()) as ArrayRef,
+            Arc::new(self.error_message.finish()) as ArrayRef,
+            Arc::new(self.tls_details_version.finish()) as ArrayRef,
+            Arc::new(self.tls_details_cipher.finish()) as ArrayRef,
+            Arc::new(self.tls_details_host.finish()) as ArrayRef,
+            Arc::new(self.tls_details_client_provided_principal.finish()) as ArrayRef,
+        ];
+        RecordBatch::try_new(schema, arrays).unwrap_or_else(|err| {
+            panic!("cloudtrail batch generation failed for {rows} rows: {err}")
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1176,6 +1579,7 @@ fn build_tls_details_json(
 mod tests {
     use std::collections::HashSet;
 
+    use arrow::array::{Array, BooleanArray, StringArray};
     use serde_json::Value;
 
     use super::*;
@@ -1266,5 +1670,98 @@ mod tests {
             security, storage,
             "changing service mix should change output"
         );
+    }
+
+    #[test]
+    fn cloudtrail_batch_deterministic() {
+        let a = gen_cloudtrail_batch_with_profile(
+            64,
+            42,
+            CloudTrailProfile::benchmark_default().with_service_mix(CloudTrailServiceMix::Balanced),
+        );
+        let b = gen_cloudtrail_batch_with_profile(
+            64,
+            42,
+            CloudTrailProfile::benchmark_default().with_service_mix(CloudTrailServiceMix::Balanced),
+        );
+
+        assert_eq!(a.schema(), b.schema());
+        assert_eq!(a.num_rows(), b.num_rows());
+        assert_eq!(a.num_columns(), b.num_columns());
+
+        for idx in 0..a.num_columns() {
+            let left = a.column(idx);
+            let right = b.column(idx);
+            assert_eq!(left.len(), right.len());
+            match left.data_type() {
+                DataType::Utf8 => {
+                    let left = left
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .expect("utf8 column");
+                    let right = right
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .expect("utf8 column");
+                    for row in 0..left.len() {
+                        assert_eq!(left.is_null(row), right.is_null(row));
+                        if !left.is_null(row) {
+                            assert_eq!(left.value(row), right.value(row));
+                        }
+                    }
+                }
+                DataType::Boolean => {
+                    let left = left
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .expect("bool column");
+                    let right = right
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .expect("bool column");
+                    for row in 0..left.len() {
+                        assert_eq!(left.value(row), right.value(row));
+                    }
+                }
+                other => panic!("unexpected cloudtrail batch column type: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cloudtrail_batch_has_expected_shape() {
+        let batch = gen_cloudtrail_batch_with_profile(
+            128,
+            9,
+            CloudTrailProfile::benchmark_default()
+                .with_optional_field_density(85)
+                .with_region_mix(CloudTrailRegionMix::MultiRegion),
+        );
+
+        assert_eq!(batch.num_rows(), 128);
+        assert_eq!(batch.num_columns(), 34);
+        assert!(batch.schema().field_with_name("userIdentity.type").is_ok());
+        assert!(
+            batch
+                .schema()
+                .field_with_name("tlsDetails.tlsVersion")
+                .is_ok()
+        );
+
+        let identity_type = batch
+            .column_by_name("userIdentity.type")
+            .expect("userIdentity column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8");
+        let request_parameters_present = batch
+            .column_by_name("requestParameters.present")
+            .expect("requestParameters.present column")
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("bool");
+
+        assert!(identity_type.iter().flatten().next().is_some());
+        assert!(request_parameters_present.values().iter().any(|v| v));
     }
 }

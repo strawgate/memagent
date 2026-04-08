@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
-use logfwd_bench::generators::cloudtrail::gen_cloudtrail_audit_with_profile;
+use logfwd_bench::generators::cloudtrail::{
+    gen_cloudtrail_audit_with_profile, gen_cloudtrail_batch_with_profile,
+};
 use logfwd_bench::generators::{CloudTrailProfile, CloudTrailRegionMix, CloudTrailServiceMix};
 use serde_json::Value;
 
@@ -26,6 +28,10 @@ fn main() {
     let gen_started = Instant::now();
     let data = gen_cloudtrail_audit_with_profile(cli.lines, cli.seed, profile);
     let generation = gen_started.elapsed();
+
+    let batch_started = Instant::now();
+    let batch = gen_cloudtrail_batch_with_profile(cli.lines, cli.seed, profile);
+    let batch_generation = batch_started.elapsed();
 
     let parse_started = Instant::now();
     let summary = summarize(&data);
@@ -56,6 +62,11 @@ fn main() {
         cli.lines as f64 / generation.as_secs_f64()
     );
     println!(
+        "- direct batch generation: {} ({:.1} rows/s)",
+        format_duration(batch_generation),
+        cli.lines as f64 / batch_generation.as_secs_f64()
+    );
+    println!(
         "- parse summary: {} ({:.1} rows/s)",
         format_duration(parsing),
         cli.lines as f64 / parsing.as_secs_f64()
@@ -67,6 +78,11 @@ fn main() {
         data.len() as f64 / compressed.len() as f64
     );
     println!("- compression: {}", format_duration(compression));
+    println!(
+        "- direct batch columns: {}  batch bytes: {}",
+        batch.num_columns(),
+        batch.get_array_memory_size()
+    );
     println!();
     println!("## Line lengths");
     println!(
