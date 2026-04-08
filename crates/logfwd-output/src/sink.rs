@@ -341,7 +341,6 @@ impl SinkFactory for AsyncFanoutFactory {
 #[cfg(kani)]
 mod verification {
     use super::*;
-    use std::time::Duration;
 
     #[kani::proof]
     fn verify_merge_child_send_result_tracks_pending_signals() {

@@ -51,6 +51,8 @@ jobs:
               - 'crates/logfwd-arrow/**'
               - 'crates/logfwd-io/**'
               - 'crates/logfwd-output/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - 'dev-docs/verification/kani-boundary-contract.toml'
               - 'scripts/verify_kani_boundary_contract.py'
               - '.github/workflows/ci.yml'
