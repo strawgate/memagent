@@ -158,12 +158,16 @@ impl Pipeline {
         let mut metrics = PipelineMetrics::new(name, pipeline_sql, meter);
 
         // Open checkpoint store scoped to this pipeline name.
-        // Only create the directory if LOGFWD_DATA_DIR is explicitly set
-        // (prevents tests from polluting the default data dir).
         let checkpoint_dir = default_data_dir().join(name);
-        let checkpoint_store = if checkpoint_dir.exists()
-            || std::env::var_os("LOGFWD_DATA_DIR").is_some()
-        {
+        // In tests, avoid creating a default data dir unless explicitly requested.
+        // In non-test builds, always try to open/create the checkpoint store so
+        // first-run persistence works without out-of-band directory creation.
+        let should_open_checkpoint_store = if cfg!(test) {
+            checkpoint_dir.exists() || std::env::var_os("LOGFWD_DATA_DIR").is_some()
+        } else {
+            true
+        };
+        let checkpoint_store = if should_open_checkpoint_store {
             match FileCheckpointStore::open(&checkpoint_dir) {
                 Ok(s) => Some(Box::new(s) as Box<dyn CheckpointStore>),
                 Err(e) => {

@@ -545,7 +545,7 @@ mod tests {
         let reason = "x".repeat(MAX_REJECTION_REASON_BYTES + 32);
         let bounded = bound_rejection_reason(reason);
         assert!(bounded.ends_with("..."));
-        assert!(bounded.len() <= MAX_REJECTION_REASON_BYTES + 3);
+        assert!(bounded.len() <= MAX_REJECTION_REASON_BYTES);
     }
 
     #[test]

@@ -109,6 +109,8 @@ pub(super) async fn async_input_poll_loop(
                         input.stats.inc_rotations();
                     }
                     InputEvent::Truncated { .. } => {
+                        // Treat truncation as a rotation-equivalent rewind signal
+                        // for existing dashboards that chart a single restart counter.
                         input.stats.inc_rotations();
                     }
                     InputEvent::EndOfFile { .. } => {}

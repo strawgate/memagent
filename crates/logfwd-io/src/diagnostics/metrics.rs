@@ -296,7 +296,7 @@ impl PipelineMetrics {
                     transform_ns,
                     stage: "queued",
                     stage_start_unix_ns: start_unix_ns,
-                    worker_id: -1,
+                    worker_id: None,
                     output_start_unix_ns: 0,
                 },
             );
@@ -308,7 +308,7 @@ impl PipelineMetrics {
         if let Ok(mut m) = self.active_batches.lock() {
             if let Some(b) = m.get_mut(&batch_id) {
                 b.stage = "output";
-                b.worker_id = worker_id as i64;
+                b.worker_id = Some(worker_id as u64);
                 b.output_start_unix_ns = now_unix_ns;
                 b.stage_start_unix_ns = now_unix_ns;
             }

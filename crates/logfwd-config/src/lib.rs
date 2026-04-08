@@ -33,6 +33,7 @@ pub use validate::validate_host_port;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn simple_config() {
@@ -141,6 +142,33 @@ output:
         // SAFETY: this test is not run concurrently with other tests that
         // depend on the same environment variable.
         unsafe { std::env::remove_var("LOGFWD_TEST_ENDPOINT") };
+    }
+
+    #[test]
+    fn load_reads_config_from_file() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time must be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "logfwd-config-load-{}-{unique}.yaml",
+            std::process::id()
+        ));
+        let yaml = r"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: stdout
+";
+        fs::write(&path, yaml).expect("write config");
+
+        let cfg = Config::load(&path).expect("Config::load should parse file");
+        assert_eq!(cfg.pipelines.len(), 1);
+        let pipe = &cfg.pipelines["default"];
+        assert_eq!(pipe.inputs[0].input_type, InputType::File);
+        assert_eq!(pipe.outputs[0].output_type, OutputType::Stdout);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -1251,7 +1279,7 @@ pipelines:
     fn enrichment_csv_config_accepted() {
         // Use a path that exists to pass validation.
         let tmp = std::env::temp_dir().join("logfwd_test_enrichment.csv");
-        std::fs::write(&tmp, "host,owner\nweb1,alice\n").expect("create temp csv");
+        fs::write(&tmp, "host,owner\nweb1,alice\n").expect("create temp csv");
         let yaml = format!(
             "pipelines:\n  app:\n    inputs:\n      - type: file\n        path: /tmp/x.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: {}\n",
             tmp.display()
@@ -1266,15 +1294,14 @@ pipelines:
             }
             other => panic!("expected Csv, got {other:?}"),
         }
-        let _ = std::fs::remove_file(&tmp);
+        let _ = fs::remove_file(&tmp);
     }
 
     #[test]
     fn enrichment_jsonl_config_accepted() {
         // Use a path that exists to pass validation.
         let tmp = std::env::temp_dir().join("logfwd_test_enrichment.jsonl");
-        std::fs::write(&tmp, "{\"ip\":\"1.2.3.4\",\"owner\":\"alice\"}\n")
-            .expect("create temp jsonl");
+        fs::write(&tmp, "{\"ip\":\"1.2.3.4\",\"owner\":\"alice\"}\n").expect("create temp jsonl");
         let yaml = format!(
             "pipelines:\n  app:\n    inputs:\n      - type: file\n        path: /tmp/x.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: jsonl\n        table_name: ip_owners\n        path: {}\n",
             tmp.display()
@@ -1289,7 +1316,7 @@ pipelines:
             }
             other => panic!("expected Jsonl, got {other:?}"),
         }
-        let _ = std::fs::remove_file(&tmp);
+        let _ = fs::remove_file(&tmp);
     }
 
     #[test]

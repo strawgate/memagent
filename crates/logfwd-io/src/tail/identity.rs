@@ -34,7 +34,16 @@ impl FileIdentity {
         h.update(&self.device.to_le_bytes());
         h.update(&self.inode.to_le_bytes());
         h.update(&self.fingerprint.to_le_bytes());
-        SourceId(h.digest())
+        source_id_from_digest(h.digest())
+    }
+}
+
+fn source_id_from_digest(digest: u64) -> SourceId {
+    // Reserve SourceId(0) as the empty-file sentinel.
+    if digest == 0 {
+        SourceId(1)
+    } else {
+        SourceId(digest)
     }
 }
 
@@ -73,4 +82,20 @@ pub(super) fn identify_open_file(
 pub(super) fn identify_file(path: &Path, fingerprint_bytes: usize) -> io::Result<FileIdentity> {
     let mut file = File::open(path)?;
     identify_open_file(&mut file, fingerprint_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_id_from_digest;
+    use logfwd_types::pipeline::SourceId;
+
+    #[test]
+    fn source_id_digest_zero_is_remapped() {
+        assert_eq!(source_id_from_digest(0), SourceId(1));
+    }
+
+    #[test]
+    fn source_id_digest_nonzero_is_preserved() {
+        assert_eq!(source_id_from_digest(42), SourceId(42));
+    }
 }

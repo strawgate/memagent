@@ -677,6 +677,9 @@ impl DiagnosticsServer {
                             out.push(',');
                         }
                         first = false;
+                        let worker_id_json = b
+                            .worker_id
+                            .map_or_else(|| "null".to_string(), |wid| wid.to_string());
                         let _ = write!(
                             out,
                             "{{\
@@ -714,7 +717,7 @@ impl DiagnosticsServer {
                             scan = b.scan_ns,
                             xfm = b.transform_ns,
                             out_st = b.output_start_unix_ns,
-                            wid = b.worker_id,
+                            wid = worker_id_json,
                             stage = b.stage,
                             ss = b.stage_start_unix_ns,
                         );

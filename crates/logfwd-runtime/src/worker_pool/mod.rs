@@ -39,6 +39,5 @@ mod pool;
 mod types;
 mod worker;
 
-pub use dispatch::{ChannelState, DispatchOutcome, dispatch_step};
 pub use pool::OutputWorkerPool;
 pub use types::{AckItem, DeliveryOutcome, WorkItem};

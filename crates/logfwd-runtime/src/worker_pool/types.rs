@@ -68,12 +68,13 @@ pub(super) fn bound_rejection_reason(mut reason: String) -> String {
     if reason.len() <= MAX_REJECTION_REASON_BYTES {
         return reason;
     }
-    let mut boundary = MAX_REJECTION_REASON_BYTES;
+    let suffix = "...";
+    let mut boundary = MAX_REJECTION_REASON_BYTES.saturating_sub(suffix.len());
     while boundary > 0 && !reason.is_char_boundary(boundary) {
         boundary -= 1;
     }
     reason.truncate(boundary);
-    reason.push_str("...");
+    reason.push_str(suffix);
     reason
 }
 

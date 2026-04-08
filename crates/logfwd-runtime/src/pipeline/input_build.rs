@@ -109,11 +109,15 @@ pub(super) fn build_input_state(
                 complexity: match generator_cfg.and_then(|c| c.complexity.clone()) {
                     Some(GeneratorComplexityConfig::Complex) => GeneratorComplexity::Complex,
                     Some(GeneratorComplexityConfig::Simple) | None => GeneratorComplexity::Simple,
+                    // Non-exhaustive config enum: future variants default to
+                    // Simple to preserve backward-compatible behavior.
                     Some(_) => GeneratorComplexity::Simple,
                 },
                 profile: match generator_cfg.and_then(|c| c.profile.clone()) {
                     Some(GeneratorProfileConfig::Record) => GeneratorProfile::Record,
                     Some(GeneratorProfileConfig::Logs) | None => GeneratorProfile::Logs,
+                    // Non-exhaustive config enum: future variants default to
+                    // Logs to preserve backward-compatible behavior.
                     Some(_) => GeneratorProfile::Logs,
                 },
                 attributes: generator_cfg
@@ -273,6 +277,11 @@ pub(super) fn build_input_state(
     })
 }
 
+/// Returns whether OTLP input should use structured ingress mode.
+///
+/// Structured ingress preserves typed OTLP fields but does not synthesize the
+/// scanner-owned `_raw` column. We therefore keep legacy JSON-lines scanner mode
+/// whenever `ScanConfig.keep_raw` is enabled.
 pub(super) fn otlp_uses_structured_ingress(
     scan_config: &logfwd_core::scan_config::ScanConfig,
 ) -> bool {
@@ -299,6 +308,68 @@ mod tests {
         assert!(
             err.contains("expected json or raw"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_and_otlp_require_json_format() {
+        for input_type in [InputType::Generator, InputType::Otlp] {
+            assert!(validate_input_format("in", input_type.clone(), &Format::Json).is_ok());
+            let err = validate_input_format("in", input_type, &Format::Raw)
+                .expect_err("non-json format must be rejected");
+            assert!(err.contains("expected json"), "unexpected error: {err}");
+        }
+    }
+
+    #[test]
+    fn build_input_state_rejects_udp_tcp_cri_and_auto_formats() {
+        use logfwd_io::diagnostics::PipelineMetrics;
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
+
+        for input_type in [InputType::Udp, InputType::Tcp] {
+            for format in [Format::Cri, Format::Auto] {
+                let cfg = InputConfig {
+                    name: Some("in".to_string()),
+                    input_type: input_type.clone(),
+                    path: None,
+                    listen: Some("127.0.0.1:0".to_string()),
+                    format: Some(format),
+                    max_open_files: None,
+                    glob_rescan_interval_ms: None,
+                    generator: None,
+                    http: None,
+                    sql: None,
+                    tls: None,
+                };
+                let stats = pm.add_input("in", "test");
+                let err = match build_input_state("in", &cfg, stats, true) {
+                    Ok(_) => panic!("CRI/auto must be rejected for UDP/TCP inputs"),
+                    Err(err) => err,
+                };
+                assert!(
+                    err.contains("not supported"),
+                    "unexpected error for {:?}/{:?}: {err}",
+                    input_type,
+                    cfg.format
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn otlp_structured_ingress_tracks_keep_raw_flag() {
+        let mut scan = logfwd_core::scan_config::ScanConfig::default();
+        scan.keep_raw = false;
+        assert!(
+            otlp_uses_structured_ingress(&scan),
+            "keep_raw=false should prefer structured OTLP ingress"
+        );
+        scan.keep_raw = true;
+        assert!(
+            !otlp_uses_structured_ingress(&scan),
+            "keep_raw=true should force legacy scanner ingress"
         );
     }
 }

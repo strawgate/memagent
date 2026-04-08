@@ -144,12 +144,23 @@ pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
 
                 json_variants.sort_by_key(|v| std::cmp::Reverse(json_priority(variant_dt(v))));
                 str_variants.sort_by_key(|v| std::cmp::Reverse(str_priority(variant_dt(v))));
-
-                infos.push(ColInfo {
-                    field_name: field.name().clone(),
-                    json_variants,
-                    str_variants,
-                });
+                let field_name = field.name().as_str();
+                if let Some(existing) = infos.iter_mut().find(|c| c.field_name == field_name) {
+                    existing.json_variants.extend(json_variants);
+                    existing.str_variants.extend(str_variants);
+                    existing
+                        .json_variants
+                        .sort_by_key(|v| std::cmp::Reverse(json_priority(variant_dt(v))));
+                    existing
+                        .str_variants
+                        .sort_by_key(|v| std::cmp::Reverse(str_priority(variant_dt(v))));
+                } else {
+                    infos.push(ColInfo {
+                        field_name: field_name.to_string(),
+                        json_variants,
+                        str_variants,
+                    });
+                }
             }
             dt => {
                 // Plain flat column — use the column name verbatim.

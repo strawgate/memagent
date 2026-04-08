@@ -1146,6 +1146,45 @@ mod write_row_json_tests {
         RecordBatch::try_new(Arc::new(Schema::new(vec![struct_field])), vec![struct_arr]).unwrap()
     }
 
+    fn make_duplicate_status_batch(struct_first: bool) -> RecordBatch {
+        use arrow::array::{ArrayRef, Int64Array, StringArray, StructArray};
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{Field, Fields, Schema};
+
+        let int_field = Arc::new(Field::new("int", DataType::Int64, true));
+        let str_field = Arc::new(Field::new("str", DataType::Utf8, true));
+        let int_arr: ArrayRef = Arc::new(Int64Array::from(vec![Some(200_i64)]));
+        let str_arr: ArrayRef = Arc::new(StringArray::from(vec![Some("OK")]));
+
+        let nulls = NullBuffer::new(arrow::buffer::BooleanBuffer::collect_bool(1, |i| {
+            !int_arr.is_null(i) || !str_arr.is_null(i)
+        }));
+        let struct_field = Field::new(
+            "status",
+            DataType::Struct(Fields::from(vec![
+                int_field.as_ref().clone(),
+                str_field.as_ref().clone(),
+            ])),
+            true,
+        );
+        let struct_arr: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![int_field, str_field]),
+            vec![int_arr, str_arr],
+            Some(nulls),
+        ));
+        let flat_field = Field::new("status", DataType::Utf8, true);
+        let flat_arr: ArrayRef = Arc::new(StringArray::from(vec![Some("flat-status")]));
+
+        let (fields, arrays) = if struct_first {
+            (vec![struct_field, flat_field], vec![struct_arr, flat_arr])
+        } else {
+            (vec![flat_field, struct_field], vec![flat_arr, struct_arr])
+        };
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
+            .expect("duplicate-name test batch must be valid")
+    }
+
     #[test]
     fn build_col_infos_struct_conflict_json_order() {
         // Struct with int+str → json_variants should have Int64 first.
@@ -1180,6 +1219,28 @@ mod write_row_json_tests {
                 }
             ),
             "str_variants[0] must be Utf8"
+        );
+    }
+
+    #[test]
+    fn build_col_infos_merges_duplicate_name_when_struct_precedes_flat() {
+        let batch = make_duplicate_status_batch(true);
+        let cols = build_col_infos(&batch);
+        assert_eq!(
+            cols.len(),
+            1,
+            "duplicate field name should merge into one ColInfo"
+        );
+    }
+
+    #[test]
+    fn build_col_infos_merges_duplicate_name_when_flat_precedes_struct() {
+        let batch = make_duplicate_status_batch(false);
+        let cols = build_col_infos(&batch);
+        assert_eq!(
+            cols.len(),
+            1,
+            "duplicate field name should merge into one ColInfo"
         );
     }
 

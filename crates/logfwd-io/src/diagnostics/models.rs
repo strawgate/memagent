@@ -8,8 +8,8 @@ pub struct ActiveBatch {
     pub stage: &'static str,
     /// Unix ns when the current stage started (for frontend live duration)
     pub stage_start_unix_ns: u64,
-    /// Worker id once assigned (-1 = not yet assigned / in queue)
-    pub worker_id: i64,
+    /// Worker id once assigned (`None` = not yet assigned / in queue).
+    pub worker_id: Option<u64>,
     /// Unix ns when the worker actually started processing (0 = not yet)
     pub output_start_unix_ns: u64,
 }

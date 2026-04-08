@@ -9,7 +9,7 @@
 /// Abstract channel state used in Kani models.
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ChannelState {
+pub(crate) enum ChannelState {
     /// Channel has space — `try_send` would succeed.
     HasSpace,
     /// Channel is full — `try_send` would return `Full`.
@@ -20,8 +20,8 @@ pub enum ChannelState {
 
 /// Outcome of one dispatch step over an array of workers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DispatchOutcome {
-    /// Item sent to worker at this index.
+pub(crate) enum DispatchOutcome {
+    /// Item sent to worker at this index in the original `states` snapshot.
     SentToIndex(usize),
     /// All workers full/closed but under limit — spawn a new worker.
     SpawnNew,
@@ -39,7 +39,7 @@ pub enum DispatchOutcome {
 ///   - Otherwise returns `WaitOnFront`.
 ///
 /// Preconditions: `max_workers >= 1`, `states.len() <= max_workers`.
-pub fn dispatch_step(states: &[ChannelState], max_workers: usize) -> DispatchOutcome {
+pub(crate) fn dispatch_step(states: &[ChannelState], max_workers: usize) -> DispatchOutcome {
     for (i, &state) in states.iter().enumerate() {
         match state {
             ChannelState::Closed => {} // prune; try next
@@ -251,6 +251,7 @@ mod kani_proofs {
     // Proof 7: is_delivered matches the enum variant exactly.
     // -----------------------------------------------------------------------
     #[kani::proof]
+    #[kani::unwind(8)]
     fn verify_delivery_outcome_is_delivered_contract() {
         let rejected = DeliveryOutcome::Rejected {
             reason: "bad request".to_owned(),
@@ -265,6 +266,10 @@ mod kani_proofs {
             DeliveryOutcome::NoWorkersAvailable,
             DeliveryOutcome::InternalFailure,
         ] {
+            kani::cover!(
+                matches!(&outcome, DeliveryOutcome::InternalFailure),
+                "internal failure outcome reached"
+            );
             assert!(!outcome.is_delivered());
         }
     }
@@ -273,6 +278,7 @@ mod kani_proofs {
     // Proof 8: only explicit Rejected outcomes count as permanent rejects.
     // -----------------------------------------------------------------------
     #[kani::proof]
+    #[kani::unwind(8)]
     fn verify_delivery_outcome_is_permanent_reject_contract() {
         let rejected = DeliveryOutcome::Rejected {
             reason: "bad request".to_owned(),
@@ -287,6 +293,10 @@ mod kani_proofs {
             DeliveryOutcome::NoWorkersAvailable,
             DeliveryOutcome::InternalFailure,
         ] {
+            kani::cover!(
+                matches!(&outcome, DeliveryOutcome::WorkerChannelClosed),
+                "worker channel closed outcome reached"
+            );
             assert!(!outcome.is_permanent_reject());
         }
     }
