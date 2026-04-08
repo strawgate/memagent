@@ -376,6 +376,7 @@ output:
         // Supported output types should parse and validate successfully.
         for (otype, extra) in [
             ("otlp", "endpoint: http://x:4317"),
+            ("http", "endpoint: http://x"),
             ("stdout", ""),
             ("null", ""),
             ("elasticsearch", "endpoint: http://x"),
@@ -392,7 +393,7 @@ output:
         }
 
         // Placeholder output types must be rejected at validation time.
-        for otype in ["http", "parquet"] {
+        for otype in ["parquet"] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
             );
@@ -429,7 +430,7 @@ output:
     }
 
     #[test]
-    fn http_output_rejected_at_validation_boundary() {
+    fn http_output_is_valid() {
         let yaml = r"
 input:
   type: file
@@ -438,11 +439,26 @@ output:
   type: http
   endpoint: http://localhost:9200
 ";
-        let err = Config::load_str(yaml).expect_err("http output should fail validation");
+        Config::load_str(yaml).expect("http output should pass validation");
+    }
+
+    #[test]
+    fn pipelines_form_rejects_top_level_transform() {
+        let yaml = r"
+transform: SELECT * FROM logs
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+";
+        let err = Config::load_str(yaml).expect_err("top-level transform must be rejected");
         assert!(
             err.to_string()
-                .contains("http output type is not yet implemented"),
-            "expected explicit unsupported message: {err}"
+                .contains("top-level `transform` cannot be used with `pipelines:`"),
+            "unexpected validation error: {err}"
         );
     }
 

@@ -49,8 +49,23 @@ impl FileReader {
         let mut file = File::open(path)?;
         let identity = identify_open_file(&mut file, self.config.fingerprint_bytes)?;
         let file_size = file.metadata()?.len();
+        let source_id = identity.source_id();
 
-        let offset = if let Some(evicted) = self.evicted_offsets.remove(path) {
+        let evicted = self.evicted_offsets.remove(path).or_else(|| {
+            // Rotation/rename-safe restore: if this file was evicted under a
+            // different path, match by source id for non-empty files.
+            if source_id == SourceId(0) {
+                return None;
+            }
+            let match_key = self
+                .evicted_offsets
+                .iter()
+                .find(|(_, e)| e.source_id == source_id)
+                .map(|(k, _)| k.clone())?;
+            self.evicted_offsets.remove(&match_key)
+        });
+
+        let offset = if let Some(evicted) = evicted {
             if evicted.identity == identity {
                 let safe_offset = if evicted.offset > file_size {
                     tracing::warn!(
@@ -64,6 +79,14 @@ impl FileReader {
                     evicted.offset
                 };
                 file.seek(SeekFrom::Start(safe_offset))?
+            } else if evicted.identity.fingerprint == 0
+                && evicted.offset == 0
+                && evicted.identity.device == identity.device
+                && evicted.identity.inode == identity.inode
+            {
+                // Empty-file sentinel case: fingerprint can legitimately change
+                // from 0 to non-zero when data is first appended.
+                0
             } else {
                 tracing::warn!(
                     path = %path.display(),
@@ -113,7 +136,6 @@ impl FileReader {
             tailed.file.seek(SeekFrom::Start(0))?;
             tailed.identity.fingerprint =
                 compute_fingerprint(&mut tailed.file, self.config.fingerprint_bytes)?;
-            tailed.file.seek(SeekFrom::Start(0))?;
         }
 
         if current_size <= tailed.offset {
@@ -176,8 +198,13 @@ impl FileReader {
         source_id: Option<SourceId>,
         events: &mut Vec<TailEvent>,
     ) -> bool {
+        let pre_read_source_id = source_id;
         match self.read_new_data(path) {
             Ok(ReadResult::Data(data)) => {
+                if let Some(tailed) = self.files.get_mut(path) {
+                    tailed.eof_emitted = false;
+                }
+                let source_id = self.source_id_for_path(path);
                 events.push(TailEvent::Data {
                     path: path.to_path_buf(),
                     bytes: data,
@@ -188,8 +215,12 @@ impl FileReader {
             Ok(ReadResult::TruncatedThenData(data)) => {
                 events.push(TailEvent::Truncated {
                     path: path.to_path_buf(),
-                    source_id,
+                    source_id: pre_read_source_id,
                 });
+                if let Some(tailed) = self.files.get_mut(path) {
+                    tailed.eof_emitted = false;
+                }
+                let source_id = self.source_id_for_path(path);
                 events.push(TailEvent::Data {
                     path: path.to_path_buf(),
                     bytes: data,
@@ -200,7 +231,7 @@ impl FileReader {
             Ok(ReadResult::Truncated) => {
                 events.push(TailEvent::Truncated {
                     path: path.to_path_buf(),
-                    source_id,
+                    source_id: pre_read_source_id,
                 });
                 false
             }
@@ -406,19 +437,25 @@ impl FileReader {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fs::{self, File, OpenOptions};
+    use std::io::Write;
     use std::path::PathBuf;
 
     use super::*;
 
+    fn test_reader() -> FileReader {
+        FileReader {
+            files: HashMap::new(),
+            read_buf: vec![0u8; 64],
+            evicted_offsets: HashMap::new(),
+            config: TailConfig::default(),
+        }
+    }
+
     #[test]
     fn set_offset_by_source_ignores_zero_source_id_for_evicted_entries() {
         let path = PathBuf::from("placeholder.log");
-        let mut reader = FileReader {
-            files: HashMap::new(),
-            read_buf: vec![0u8; 16],
-            evicted_offsets: HashMap::new(),
-            config: TailConfig::default(),
-        };
+        let mut reader = test_reader();
         reader.evicted_offsets.insert(
             path.clone(),
             EvictedFile {
@@ -443,5 +480,93 @@ mod tests {
             .expect("evicted entry should remain present")
             .offset;
         assert_eq!(updated, 7, "sentinel SourceId(0) must be a no-op");
+    }
+
+    #[test]
+    fn open_file_at_recovers_evicted_offset_across_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_path = dir.path().join("old.log");
+        fs::write(&old_path, b"abcdef").unwrap();
+
+        let mut reader = test_reader();
+        reader.open_file_at(&old_path, false).unwrap();
+        reader.set_offset(&old_path, 3).unwrap();
+        reader.evict_lru(0);
+
+        let new_path = dir.path().join("new.log");
+        fs::rename(&old_path, &new_path).unwrap();
+
+        reader.open_file_at(&new_path, true).unwrap();
+        assert_eq!(
+            reader.get_offset(&new_path),
+            Some(3),
+            "offset should be recovered by source id across rename"
+        );
+    }
+
+    #[test]
+    fn open_file_at_empty_evicted_entry_starts_from_zero_after_first_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.log");
+        File::create(&path).unwrap();
+
+        let mut reader = test_reader();
+        reader.open_file_at(&path, false).unwrap();
+        reader.evict_lru(0);
+
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(b"hello").unwrap();
+
+        reader.open_file_at(&path, true).unwrap();
+        assert_eq!(
+            reader.get_offset(&path),
+            Some(0),
+            "empty-file evicted sentinel should resume from byte 0"
+        );
+    }
+
+    #[test]
+    fn drain_file_uses_fresh_source_id_after_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncate.log");
+        fs::write(&path, b"aaaa").unwrap();
+
+        let mut reader = test_reader();
+        reader.open_file_at(&path, false).unwrap();
+        reader.set_offset(&path, 4).unwrap();
+        let pre_source = reader.source_id_for_path(&path);
+
+        let mut f = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"bb").unwrap();
+        drop(f);
+
+        let mut events = Vec::new();
+        let had_error = reader.drain_file(&path, pre_source, &mut events);
+        assert!(!had_error);
+        assert_eq!(events.len(), 2, "expected truncated + data events");
+
+        match &events[0] {
+            TailEvent::Truncated { source_id, .. } => {
+                assert_eq!(
+                    *source_id, pre_source,
+                    "truncated event keeps pre-read source id"
+                );
+            }
+            _ => panic!("unexpected first event kind"),
+        }
+        match &events[1] {
+            TailEvent::Data { source_id, .. } => {
+                assert_eq!(
+                    *source_id,
+                    reader.source_id_for_path(&path),
+                    "data event should use refreshed source id after truncation"
+                );
+            }
+            _ => panic!("unexpected second event kind"),
+        }
     }
 }

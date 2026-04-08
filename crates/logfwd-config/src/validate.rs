@@ -3,6 +3,7 @@ use crate::types::{
     GeneratorProfileConfig, InputType, OutputType,
 };
 use std::path::Path;
+use url::Url;
 
 impl Config {
     /// Validate the loaded configuration.
@@ -442,7 +443,7 @@ impl Config {
                     .map_or_else(|| format!("#{i}"), String::from);
 
                 // Reject placeholder output types that are not yet implemented.
-                if matches!(output.output_type, OutputType::Parquet | OutputType::Http) {
+                if matches!(output.output_type, OutputType::Parquet) {
                     return Err(ConfigError::Validation(format!(
                         "pipeline '{name}' output '{label}': {} output type is not yet implemented",
                         output.output_type,
@@ -451,6 +452,7 @@ impl Config {
 
                 match output.output_type {
                     OutputType::Otlp
+                    | OutputType::Http
                     | OutputType::Elasticsearch
                     | OutputType::Loki
                     | OutputType::ArrowIpc => {
@@ -530,14 +532,6 @@ impl Config {
                     }
                     OutputType::Parquet => {
                         // Parquet output not yet implemented
-                    }
-                    OutputType::Http => {
-                        // Defensive: Http is rejected above, but guard here so
-                        // any future refactor that reorders validation never
-                        // reaches sink construction via a silent fall-through.
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': http output type is not yet implemented",
-                        )));
                     }
                 }
 
@@ -825,22 +819,55 @@ mod validate_host_port_tests {
 }
 
 /// Validate that an endpoint URL has a recognised scheme and a non-empty host.
-///
-/// Accepts `http://` or `https://` followed by at least one character.
 fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
-    let rest = if let Some(r) = endpoint.strip_prefix("https://") {
-        r
-    } else if let Some(r) = endpoint.strip_prefix("http://") {
-        r
+    let parsed =
+        Url::parse(endpoint).map_err(|_| format!("endpoint '{endpoint}' is not a valid URL"))?;
+
+    let rest = if let Some(rest) = endpoint.strip_prefix("http://") {
+        rest
+    } else if let Some(rest) = endpoint.strip_prefix("https://") {
+        rest
     } else {
         return Err(format!(
             "endpoint '{endpoint}' has no recognised scheme; expected 'http://' or 'https://'"
         ));
     };
-    if rest.is_empty() {
+
+    // Reject malformed authority forms like `http:///bulk` or `https://?x=1`.
+    if rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#') {
         return Err(format!(
             "endpoint '{endpoint}' has no host after the scheme"
         ));
     }
+
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err(format!(
+            "endpoint '{endpoint}' has no host after the scheme"
+        ));
+    }
+
     Ok(())
+}
+
+#[cfg(test)]
+mod validate_endpoint_url_tests {
+    use super::validate_endpoint_url;
+
+    #[test]
+    fn endpoint_url_requires_http_or_https_with_host() {
+        assert!(validate_endpoint_url("http://localhost:4317").is_ok());
+        assert!(validate_endpoint_url("https://example.com/path").is_ok());
+
+        for bad in [
+            "http:///bulk",
+            "https://?x=1",
+            "http://   ",
+            "ftp://example.com",
+        ] {
+            assert!(
+                validate_endpoint_url(bad).is_err(),
+                "expected endpoint validation error for {bad}"
+            );
+        }
+    }
 }
