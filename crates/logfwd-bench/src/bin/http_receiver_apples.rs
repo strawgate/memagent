@@ -283,8 +283,7 @@ async fn main() {
                         && r.concurrency == concurrency
                         && r.framework == Framework::TinyHttp
                 })
-                .map(|r| r.req_per_sec)
-                .unwrap_or(0.0);
+                .map_or(0.0, |r| r.req_per_sec);
             if tiny <= 0.0 {
                 continue;
             }
@@ -296,8 +295,7 @@ async fn main() {
                         && r.concurrency == concurrency
                         && r.framework == Framework::Axum
                 })
-                .map(|r| r.req_per_sec / tiny)
-                .unwrap_or(0.0);
+                .map_or(0.0, |r| r.req_per_sec / tiny);
             let hyper = rows
                 .iter()
                 .find(|r| {
@@ -305,8 +303,7 @@ async fn main() {
                         && r.concurrency == concurrency
                         && r.framework == Framework::Hyper
                 })
-                .map(|r| r.req_per_sec / tiny)
-                .unwrap_or(0.0);
+                .map_or(0.0, |r| r.req_per_sec / tiny);
 
             println!(
                 "  {} @ c{}: axum={:.2}x, hyper={:.2}x",

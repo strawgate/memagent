@@ -196,7 +196,6 @@ fn run_case(
     let mut total_rows = 0usize;
 
     let scanned_batch = warm_up(
-        mode,
         concurrency,
         &poster,
         &url,
@@ -279,7 +278,6 @@ fn run_case(
 }
 
 fn warm_up(
-    mode: ReceiverMode,
     concurrency: usize,
     poster: &HttpPoster,
     url: &str,
@@ -291,16 +289,12 @@ fn warm_up(
     poster.post_many(url, request_body, concurrency);
     match poll_until_payload(input, expected_rows * concurrency, timeout) {
         ReceiverOutput::JsonLines(lines) => {
-            debug_assert!(matches!(mode, ReceiverMode::LegacyJsonLines));
             let mut scanner = Scanner::new(ScanConfig::default());
             scanner
                 .scan(Bytes::from(lines))
                 .expect("warmup receiver output must scan")
         }
-        ReceiverOutput::Batch(batch) => {
-            debug_assert!(matches!(mode, ReceiverMode::StructuredBatch));
-            batch
-        }
+        ReceiverOutput::Batch(batch) => batch,
     }
 }
 
@@ -430,12 +424,11 @@ fn read_concurrency_list() -> Vec<usize> {
             _ => invalid.push(token.to_string()),
         }
     }
-    if !invalid.is_empty() {
-        panic!(
-            "invalid OTLP_E2E_CONCURRENCY value(s): {} (expected comma-separated positive integers)",
-            invalid.join(", ")
-        );
-    }
+    assert!(
+        invalid.is_empty(),
+        "invalid OTLP_E2E_CONCURRENCY value(s): {} (expected comma-separated positive integers)",
+        invalid.join(", ")
+    );
     assert!(
         !values.is_empty(),
         "OTLP_E2E_CONCURRENCY must include at least one positive integer"
