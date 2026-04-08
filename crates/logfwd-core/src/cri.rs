@@ -58,6 +58,12 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
         (line.len(), line.len())
     };
 
+    let stream = &line[sp1 + 1..sp2];
+    // CRI stream must be stdout or stderr.
+    if stream != b"stdout" && stream != b"stderr" {
+        return None;
+    }
+
     let flags = &line[sp2 + 1..flags_end];
 
     // CRI spec: flags must be exactly "F" (full) or "P" (partial).
@@ -78,7 +84,7 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
 
     Some(CriLine {
         timestamp: &line[..sp1],
-        stream: &line[sp1 + 1..sp2],
+        stream,
         is_full,
         message,
     })
@@ -178,7 +184,8 @@ impl CriReassembler {
 /// Returns `(lines_ok, parse_errors)` where `parse_errors` is the number of
 /// non-empty lines that could not be parsed as valid CRI format **plus** the
 /// number of lines that were truncated due to `max_line_size`.
-pub fn process_cri_chunk<F>(
+#[allow(dead_code)] // used by tests; will be called from pipeline code once per-stream integration lands
+pub(crate) fn process_cri_chunk<F>(
     chunk: &[u8],
     reassembler: &mut CriReassembler,
     mut emit: F,
@@ -234,7 +241,8 @@ where
 /// Returns `(lines_ok, parse_errors)` where `parse_errors` is the number of
 /// non-empty lines that could not be parsed as valid CRI format **plus** the
 /// number of lines that were truncated due to `max_line_size`.
-pub fn process_cri_to_buf(
+#[allow(dead_code)] // used by tests; will be called from pipeline code once per-stream integration lands
+pub(crate) fn process_cri_to_buf(
     chunk: &[u8],
     reassembler: &mut CriReassembler,
     json_prefix: Option<&[u8]>,
@@ -308,6 +316,7 @@ pub fn json_escape_bytes(src: &[u8], dst: &mut Vec<u8>) {
 /// plain text and is written as `{"_raw":"<json-escaped msg>"}` so that no
 /// content is silently lost when the downstream scanner processes the line.
 #[inline]
+#[allow(dead_code)] // called by process_cri_to_buf
 fn write_json_line(msg: &[u8], json_prefix: Option<&[u8]>, out: &mut Vec<u8>) {
     if msg.first() == Some(&b'{') {
         if let Some(prefix) = json_prefix {
@@ -356,6 +365,8 @@ fn write_json_line(msg: &[u8], json_prefix: Option<&[u8]>, out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+    use proptest::prelude::*;
 
     #[test]
     fn test_parse_full_line() {
@@ -527,6 +538,25 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_stream_rejected() {
+        assert!(parse_cri_line(b"2024-01-15T10:30:00Z out F ok").is_none());
+        assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdxxx P part").is_none());
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_stream_token_validation(stream in "[a-z]{1,8}") {
+            let line = format!("2024-01-15T10:30:00Z {stream} F msg");
+            let parsed = parse_cri_line(line.as_bytes());
+            if stream == "stdout" || stream == "stderr" {
+                prop_assert!(parsed.is_some(), "valid stream token should parse");
+            } else {
+                prop_assert!(parsed.is_none(), "invalid stream token should be rejected");
+            }
+        }
+    }
+
+    #[test]
     fn test_invalid_flag_counted_as_parse_error() {
         let chunk = b"2024-01-15T10:30:00Z stdout X bad\n\
                        2024-01-15T10:30:00Z stdout F valid\n";
@@ -647,7 +677,12 @@ mod verification {
         let input: [u8; 32] = kani::any();
         if let Some(cri) = parse_cri_line(&input) {
             assert!(!cri.timestamp.is_empty(), "empty timestamp");
-            assert!(!cri.stream.is_empty(), "empty stream");
+            assert!(
+                cri.stream == b"stdout" || cri.stream == b"stderr",
+                "invalid stream"
+            );
+            kani::cover!(cri.stream == b"stdout", "stdout parse is reachable");
+            kani::cover!(cri.stream == b"stderr", "stderr parse is reachable");
 
             // Verify is_full matches the actual flag byte in the input.
             let ts_len = cri.timestamp.len();
@@ -662,6 +697,44 @@ mod verification {
                 assert!(flag_byte == b'P', "is_full=false but flag is not P");
             }
         }
+    }
+
+    /// Prove parse_cri_line rejects known invalid stream tokens.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    fn verify_parse_cri_line_rejects_known_invalid_streams() {
+        let out = b"2024-01-15T10:30:00Z out F ok";
+        assert!(
+            parse_cri_line(out).is_none(),
+            "invalid stream 'out' must be rejected"
+        );
+        kani::cover!(true, "invalid stream 'out' rejected");
+
+        let stdxxx = b"2024-01-15T10:30:00Z stdxxx P part";
+        assert!(
+            parse_cri_line(stdxxx).is_none(),
+            "invalid stream 'stdxxx' must be rejected"
+        );
+        kani::cover!(true, "invalid stream 'stdxxx' rejected");
+    }
+
+    /// Prove parse_cri_line accepts both valid stream tokens.
+    #[kani::proof]
+    #[kani::unwind(34)]
+    fn verify_parse_cri_line_accepts_valid_streams() {
+        let stdout = b"2024-01-15T10:30:00Z stdout F ok";
+        assert!(
+            parse_cri_line(stdout).is_some(),
+            "valid stream 'stdout' should parse"
+        );
+        kani::cover!(true, "valid stream 'stdout' accepted");
+
+        let stderr = b"2024-01-15T10:30:00Z stderr P part";
+        assert!(
+            parse_cri_line(stderr).is_some(),
+            "valid stream 'stderr' should parse"
+        );
+        kani::cover!(true, "valid stream 'stderr' accepted");
     }
 
     /// Prove parse_cri_line rejects invalid single-byte flags.

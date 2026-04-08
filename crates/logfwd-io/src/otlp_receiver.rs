@@ -3364,4 +3364,217 @@ mod tests {
             "observed time should not appear when event time is set: {text}"
         );
     }
+
+    // Regression tests for issue #1167: non-finite floats must emit null, not "NaN"/"inf".
+    #[test]
+    fn write_f64_nan_emits_null() {
+        let mut out = Vec::new();
+        write_f64_to_buf(&mut out, f64::NAN);
+        assert_eq!(&out, b"null", "NaN must serialize as JSON null");
+    }
+
+    #[test]
+    fn write_f64_infinity_emits_null() {
+        let mut out = Vec::new();
+        write_f64_to_buf(&mut out, f64::INFINITY);
+        assert_eq!(&out, b"null", "Infinity must serialize as JSON null");
+    }
+
+    #[test]
+    fn write_f64_neg_infinity_emits_null() {
+        let mut out = Vec::new();
+        write_f64_to_buf(&mut out, f64::NEG_INFINITY);
+        assert_eq!(&out, b"null", "-Infinity must serialize as JSON null");
+    }
+
+    #[test]
+    fn write_f64_finite_unchanged() {
+        let mut out = Vec::new();
+        write_f64_to_buf(&mut out, 3.14);
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.starts_with("3.14"),
+            "finite float should be formatted normally: {text}"
+        );
+    }
+
+    #[test]
+    fn write_json_string_field_escapes_key() {
+        let mut out = Vec::new();
+        write_json_string_field(&mut out, r#"k"ey"#, "value");
+        let text = String::from_utf8(out).unwrap();
+        // Must be valid JSON
+        let json_str = format!("{{{text}}}");
+        serde_json::from_str::<serde_json::Value>(&json_str)
+            .unwrap_or_else(|e| panic!("invalid JSON after key escaping: {e}\n{json_str}"));
+        assert!(
+            text.contains(r#"k\"ey"#),
+            "quote in key not escaped: {text}"
+        );
+    }
+
+    // Regression tests for #1665: BytesValue/ArrayValue/KvListValue attributes
+    // must not produce spurious commas (invalid JSON) in the binary OTLP path.
+
+    #[test]
+    fn bytes_value_attr_produces_valid_json() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+
+        let req = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        attributes: vec![
+                            // int attribute before bytes
+                            KeyValue {
+                                key: "count".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::IntValue(42)),
+                                }),
+                            },
+                            // bytes attribute — must not produce a spurious comma
+                            KeyValue {
+                                key: "trace_bytes".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::BytesValue(vec![0xde, 0xad, 0xbe, 0xef])),
+                                }),
+                            },
+                            // int attribute after bytes — must appear correctly
+                            KeyValue {
+                                key: "status".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::IntValue(200)),
+                                }),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let output = convert_request_to_json_lines(&req);
+        let text = String::from_utf8(output).expect("valid UTF-8");
+        let line = text.trim();
+        assert!(!line.is_empty(), "expected at least one output line");
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("bytes_value attribute produced invalid JSON: {e}\n{line}"));
+        // count and status must be present
+        assert_eq!(
+            v["count"], 42,
+            "int attribute before bytes must be preserved"
+        );
+        assert_eq!(
+            v["status"], 200,
+            "int attribute after bytes must be preserved"
+        );
+        // bytes value must be present as hex string
+        assert_eq!(
+            v["trace_bytes"], "deadbeef",
+            "bytes value must be hex-encoded"
+        );
+    }
+
+    #[test]
+    fn array_value_attr_skipped_no_spurious_comma() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{
+            AnyValue, ArrayValue, KeyValue, any_value::Value,
+        };
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+
+        let req = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        attributes: vec![
+                            KeyValue {
+                                key: "before".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::StringValue("a".to_string())),
+                                }),
+                            },
+                            // ArrayValue — must be silently skipped, not produce spurious comma
+                            KeyValue {
+                                key: "tags".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::ArrayValue(ArrayValue {
+                                        values: vec![AnyValue {
+                                            value: Some(Value::StringValue("x".to_string())),
+                                        }],
+                                    })),
+                                }),
+                            },
+                            KeyValue {
+                                key: "after".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::StringValue("b".to_string())),
+                                }),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let output = convert_request_to_json_lines(&req);
+        let text = String::from_utf8(output).expect("valid UTF-8");
+        let line = text.trim();
+        assert!(!line.is_empty(), "expected at least one output line");
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("array_value attribute produced invalid JSON: {e}\n{line}"));
+        assert_eq!(v["before"], "a", "attribute before array must be present");
+        assert_eq!(v["after"], "b", "attribute after array must be present");
+        assert!(
+            v.get("tags").is_none(),
+            "array attribute must be skipped entirely"
+        );
+    }
+
+    /// Regression test for issue #1691: convert_request_to_batch must also
+    /// fall back to observed_time_unix_nano when time_unix_nano is 0.
+    #[test]
+    fn batch_path_uses_observed_time_when_event_time_is_zero() {
+        const OBSERVED_NS: u64 = 1_705_314_600_000_000_000;
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 0,
+                        observed_time_unix_nano: OBSERVED_NS,
+                        severity_text: "INFO".into(),
+                        body: Some(AnyValue {
+                            value: Some(Value::StringValue("test".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let batch = convert_request_to_batch(&request).expect("batch build must succeed");
+        let ts_col = batch
+            .column_by_name(field_names::TIMESTAMP)
+            .expect("_timestamp column must exist");
+        let ts_arr = ts_col
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("_timestamp column must be Int64");
+        assert_eq!(ts_arr.len(), 1, "expected exactly one row");
+        assert_eq!(
+            ts_arr.value(0),
+            OBSERVED_NS as i64,
+            "batch path must use observed_time_unix_nano when time_unix_nano is 0"
+        );
+    }
 }

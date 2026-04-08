@@ -1111,7 +1111,7 @@ mod tests {
             "expected 'status' in LOG_ATTRS keys, got: {keys:?}"
         );
 
-        // Verify at least one coalesced value is present ("200" from int child or "OK" from str).
+        // Verify both coalesced values are present ("200" from int child and "OK" from str).
         let str_arr = log_attrs.column_by_name("str").expect("str column");
         let str_col = str_arr
             .as_any()
@@ -1123,8 +1123,8 @@ mod tests {
             .map(|i| str_col.value(i))
             .collect();
         assert!(
-            status_vals.contains(&"200") || status_vals.contains(&"OK"),
-            "expected coalesced status values (200 or OK), got: {status_vals:?}"
+            status_vals.contains(&"200") && status_vals.contains(&"OK"),
+            "expected both coalesced status values (200 and OK), got: {status_vals:?}"
         );
     }
 }

@@ -4,14 +4,12 @@
 //! deployments. This target exercises:
 //! - `parse_cri_line` — single-line parsing of untrusted container runtime output.
 //! - `CriReassembler` — partial line reassembly (P/F flag handling).
-//! - `process_cri_to_buf` — full chunk processing pipeline including JSON
-//!   prefix injection.
 //!
 //! Verifies that no combination of input bytes causes a panic.
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use logfwd_core::cri::{parse_cri_line, process_cri_to_buf, CriReassembler};
+use logfwd_core::cri::{parse_cri_line, CriReassembler, ReassembleResult};
 
 fuzz_target!(|data: &[u8]| {
     // --- Single-line parsing ---
@@ -23,37 +21,28 @@ fuzz_target!(|data: &[u8]| {
         let _msg = cri.message;
     }
 
-    // --- Chunk processing without JSON prefix ---
+    // --- Chunk processing via parse_cri_line + CriReassembler ---
     let mut reassembler = CriReassembler::new(1024 * 1024);
-    let mut out = Vec::new();
-    let (_count, _errors) = process_cri_to_buf(data, &mut reassembler, None, &mut out);
-
-    // --- Chunk processing with a JSON prefix ---
-    let mut reassembler2 = CriReassembler::new(1024 * 1024);
-    let mut out2 = Vec::new();
-    let prefix = b"\"k8s.pod\":\"fuzz\",";
-    let (_count2, _errors2) =
-        process_cri_to_buf(data, &mut reassembler2, Some(prefix), &mut out2);
-
-    // --- Full CRI → Scanner pipeline with validate_utf8 variants ---
-    // Pipe CRI output through the scanner with both validation modes.
-    // Covers the CRI→Scanner path for untrusted K8s container runtime output.
-    if !out.is_empty() {
-        use logfwd_arrow::scanner::Scanner;
-        use logfwd_core::scan_config::ScanConfig;
-
-        let out_bytes = bytes::Bytes::from(out);
-
-        let mut scanner = Scanner::new(ScanConfig {
-            validate_utf8: false,
-            ..ScanConfig::default()
-        });
-        let _ = scanner.scan_detached(out_bytes.clone());
-
-        let mut scanner_v = Scanner::new(ScanConfig {
-            validate_utf8: true,
-            ..ScanConfig::default()
-        });
-        let _ = scanner_v.scan_detached(out_bytes);
+    let mut count = 0usize;
+    for line in data.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(cri) = parse_cri_line(line) {
+            match reassembler.feed(&cri) {
+                ReassembleResult::Complete(msg) => {
+                    let _ = msg.len();
+                    count += 1;
+                    reassembler.reset();
+                }
+                ReassembleResult::Truncated(msg) => {
+                    let _ = msg.len();
+                    count += 1;
+                    reassembler.reset();
+                }
+                ReassembleResult::Pending => {}
+            }
+        }
     }
+    let _ = count;
 });
