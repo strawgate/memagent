@@ -4,7 +4,8 @@
 
 ```
 crates/
-  logfwd/              Binary crate. CLI, async pipeline orchestration.
+  logfwd/              Binary crate. CLI entrypoints and compatibility re-exports.
+  logfwd-runtime/      Runtime orchestration. Pipeline loop, worker pool, processors.
   logfwd-core/         Proven kernel. Scanner, parsers, pipeline state machine, OTLP encoding. no_std.
   logfwd-arrow/        Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
   logfwd-config/       YAML config parsing and validation.

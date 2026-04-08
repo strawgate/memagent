@@ -103,19 +103,19 @@ reason = "Output lifecycle reduction and fanout health aggregation are isolated 
 issue = 1439
 
 [[seams]]
-path = "crates/logfwd/src/worker_pool.rs"
+path = "crates/logfwd-runtime/src/worker_pool.rs"
 status = "required"
 reason = "Worker dispatch helpers already expose bounded local proof seams."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd/src/pipeline/checkpoint_policy.rs"
+path = "crates/logfwd-runtime/src/pipeline/checkpoint_policy.rs"
 status = "required"
 reason = "The typed delivery outcome -> checkpoint disposition compatibility mapping is a local pure seam."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd/src/worker_pool/health.rs"
+path = "crates/logfwd-runtime/src/worker_pool/health.rs"
 status = "required"
 reason = "Pool-level health insertion and aggregation policy is isolated here and should remain Kani-covered."
 issue = 1314
@@ -133,13 +133,13 @@ reason = "IO-heavy sink implementation; proof-worthy helpers should be extracted
 issue = 1313
 
 [[seams]]
-path = "crates/logfwd/src/pipeline.rs"
+path = "crates/logfwd-runtime/src/pipeline.rs"
 status = "exempt"
 reason = "Async orchestration shell remains mixed; local proof seams are being extracted incrementally."
 issue = 1449
 
 [[seams]]
-path = "crates/logfwd/src/pipeline/health.rs"
+path = "crates/logfwd-runtime/src/pipeline/health.rs"
 status = "required"
 reason = "Pipeline input-loop health transitions are an isolated local reducer with bounded Kani invariants."
 issue = 1440

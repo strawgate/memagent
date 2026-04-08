@@ -21,25 +21,39 @@
 //!  OS thread                 OS thread
 //! ```
 
+#[cfg(not(feature = "turmoil"))]
 use std::collections::HashMap;
+#[cfg(not(feature = "turmoil"))]
 use std::sync::Arc;
+#[cfg(not(feature = "turmoil"))]
 use std::time::{Duration, Instant};
 
+#[cfg(not(feature = "turmoil"))]
 use arrow::record_batch::RecordBatch;
+#[cfg(not(feature = "turmoil"))]
 use bytes::Bytes;
+#[cfg(not(feature = "turmoil"))]
 use tokio::sync::mpsc;
+#[cfg(not(feature = "turmoil"))]
 use tokio_util::sync::CancellationToken;
 
+#[cfg(not(feature = "turmoil"))]
 use logfwd_io::diagnostics::PipelineMetrics;
+#[cfg(not(feature = "turmoil"))]
 use logfwd_io::input::InputEvent;
+#[cfg(not(feature = "turmoil"))]
 use logfwd_types::pipeline::SourceId;
 
+#[cfg(not(feature = "turmoil"))]
 use logfwd_io::tail::ByteOffset;
 
+#[cfg(not(feature = "turmoil"))]
 use super::health::{HealthTransitionEvent, reduce_component_health};
+#[cfg(not(feature = "turmoil"))]
 use super::{InputState, InputTransform};
 
 /// Capacity of the bounded channel between I/O worker and CPU worker.
+#[cfg(not(feature = "turmoil"))]
 const IO_CPU_CHANNEL_CAPACITY: usize = 4;
 
 // ---------------------------------------------------------------------------
@@ -47,6 +61,7 @@ const IO_CPU_CHANNEL_CAPACITY: usize = 4;
 // ---------------------------------------------------------------------------
 
 /// Chunk of accumulated bytes sent from I/O worker to CPU worker.
+#[cfg(not(feature = "turmoil"))]
 pub(crate) struct IoChunk {
     pub bytes: Bytes,
     pub checkpoints: Vec<(SourceId, ByteOffset)>,
@@ -54,6 +69,7 @@ pub(crate) struct IoChunk {
     pub input_index: usize,
 }
 
+#[cfg(not(feature = "turmoil"))]
 pub(crate) enum IoWorkItem {
     Bytes(IoChunk),
     Batch {

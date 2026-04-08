@@ -12,8 +12,6 @@ use std::sync::Arc;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use opentelemetry::metrics::MeterProvider;
-use opentelemetry_otlp::WithExportConfig;
-use tokio_util::sync::CancellationToken;
 
 mod config_templates;
 
@@ -90,6 +88,15 @@ impl std::fmt::Display for CliError {
 impl From<io::Error> for CliError {
     fn from(value: io::Error) -> Self {
         Self::Runtime(value)
+    }
+}
+
+impl From<logfwd_runtime::bootstrap::RuntimeError> for CliError {
+    fn from(value: logfwd_runtime::bootstrap::RuntimeError) -> Self {
+        match value {
+            logfwd_runtime::bootstrap::RuntimeError::Config(msg) => Self::Config(msg),
+            logfwd_runtime::bootstrap::RuntimeError::Io(err) => Self::Runtime(err),
+        }
     }
 }
 
@@ -1103,563 +1110,40 @@ fn validate_pipelines(
     Ok(())
 }
 
-fn input_label(i: &logfwd_config::InputConfig) -> String {
-    use logfwd_config::InputType;
-    match i.input_type {
-        InputType::File => format!("file  {}", i.path.as_deref().unwrap_or("*")),
-        InputType::Tcp => format!("tcp   {}", i.listen.as_deref().unwrap_or(":514")),
-        InputType::Udp => format!("udp   {}", i.listen.as_deref().unwrap_or(":514")),
-        InputType::Otlp => format!("otlp  {}", i.listen.as_deref().unwrap_or(":4318")),
-        InputType::Generator => "generator".to_string(),
-        _ => "unknown".to_string(),
-    }
-}
-
-fn output_label(o: &logfwd_config::OutputConfig) -> String {
-    use logfwd_config::OutputType;
-    match o.output_type {
-        OutputType::Otlp => format!("otlp  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Http => format!("http  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Elasticsearch => {
-            format!("elasticsearch  {}", o.endpoint.as_deref().unwrap_or(""))
-        }
-        OutputType::Loki => format!("loki  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Tcp => format!("tcp   {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Udp => format!("udp   {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::File => format!("file  {}", o.path.as_deref().unwrap_or("")),
-        OutputType::Parquet => format!("parquet  {}", o.path.as_deref().unwrap_or("")),
-        OutputType::Stdout => "stdout".to_string(),
-        OutputType::Null => "null".to_string(),
-        _ => "unknown".to_string(),
-    }
-}
-
 async fn run_pipelines(
     config: logfwd_config::Config,
     base_path: Option<&std::path::Path>,
     config_path: &str,
     config_yaml: &str,
 ) -> Result<(), CliError> {
-    let startup_start = std::time::Instant::now();
-    use logfwd::pipeline::Pipeline;
-    use logfwd_io::diagnostics::DiagnosticsServer;
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-
-    // Acquire exclusive lock only when tailing files — OTLP-only and
-    // blackhole pipelines don't need filesystem locking (#737).
-    let has_file_inputs = config.pipelines.values().any(|pipe| {
-        pipe.inputs
-            .iter()
-            .any(|input| matches!(input.input_type, logfwd_config::InputType::File))
-    });
-    let _lock_guard = if has_file_inputs {
-        acquire_instance_lock(&config)?
-    } else {
-        None
-    };
-
-    let shutdown = CancellationToken::new();
-
-    #[cfg(unix)]
-    let (mut sigterm, mut sighup) = {
-        use tokio::signal::unix::{SignalKind, signal};
-        let sigterm = signal(SignalKind::terminate()).map_err(|err| {
-            CliError::Runtime(io::Error::other(format!(
-                "failed to register SIGTERM handler: {err}"
-            )))
-        })?;
-        let sighup = signal(SignalKind::hangup()).map_err(|err| {
-            CliError::Runtime(io::Error::other(format!(
-                "failed to register SIGHUP handler: {err}"
-            )))
-        })?;
-        (sigterm, sighup)
-    };
-
-    // Listen for SIGINT (Ctrl-C) and SIGTERM to trigger graceful shutdown.
-    #[cfg(feature = "dhat-heap")]
-    let profiler = dhat::Profiler::new_heap();
-
-    #[cfg(feature = "cpu-profiling")]
-    let pprof_guard = pprof::ProfilerGuardBuilder::default()
-        .frequency(999)
-        .blocklist(&["libc", "libgcc", "pthread", "vdso"])
-        .build()
-        .map_err(|e| {
-            CliError::Runtime(io::Error::other(format!(
-                "failed to initialize pprof profiler: {e}"
-            )))
-        })?;
-
-    let shutdown_for_signal = shutdown.clone();
-    tokio::spawn(async move {
-        #[cfg(feature = "dhat-heap")]
-        let _profiler_to_drop = profiler;
-
-        #[cfg(feature = "cpu-profiling")]
-        let _pprof_to_drop = pprof_guard;
-
-        #[cfg(unix)]
-        {
-            // Install a SIGHUP handler so logrotate / supervisors don't kill us.
-            // Config reload is not yet implemented; we ignore SIGHUP and log a warning.
-            loop {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => break,
-                    _ = sigterm.recv() => break,
-                    _ = sighup.recv() => {
-                        eprintln!(
-                            "{}logfwd{}: SIGHUP received — config reload not yet implemented, ignoring",
-                            yellow(), reset(),
-                        );
-                        // Continue the loop — SIGHUP does not trigger shutdown.
-                    }
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            tokio::signal::ctrl_c().await.ok();
-        }
-
-        #[cfg(feature = "cpu-profiling")]
-        {
-            if let Ok(report) = _pprof_to_drop.report().build() {
-                if let Ok(file) = std::fs::File::create("flamegraph.svg") {
-                    let _ = report.flamegraph(file);
-                }
-            }
-        }
-
-        #[cfg(feature = "dhat-heap")]
-        drop(_profiler_to_drop);
-
-        shutdown_for_signal.cancel();
-    });
-
-    let meter_provider = build_meter_provider(&config)?;
-    let meter = meter_provider.meter("logfwd");
-
-    // Set up the tracing subscriber with an OTel layer that routes spans
-    // to our in-process ring buffer (and optionally to an OTLP endpoint),
-    // plus a stderr fmt layer so tracing events are visible on the console.
-    let trace_buf = logfwd_io::span_exporter::SpanBuffer::new();
-    let tracer_provider = build_tracer_provider(trace_buf.clone(), &config)?;
-    let tracer = opentelemetry::trace::TracerProvider::tracer(&tracer_provider, "logfwd");
-    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-
-    let env_filter = tracing_subscriber::EnvFilter::try_from_env("LOGFWD_LOG")
-        .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let fmt_layer = if use_json_logs_for_stderr(io::stderr().is_terminal()) {
-        tracing_subscriber::fmt::layer()
-            .json()
-            .with_writer(io::stderr)
-            .with_target(true)
-            .boxed()
-    } else {
-        tracing_subscriber::fmt::layer()
-            .with_writer(io::stderr)
-            .with_target(true)
-            .boxed()
-    };
-    // Apply env_filter only to the fmt layer so it doesn't suppress OTel spans.
-    let _ = tracing_subscriber::registry()
-        .with(fmt_layer.with_filter(env_filter))
-        .with(otel_layer)
-        .try_init(); // ignore error if a subscriber is already installed (e.g. in tests)
-    opentelemetry::global::set_tracer_provider(tracer_provider.clone());
-
-    let mut pipelines = Vec::new();
-    for (name, pipe_cfg) in &config.pipelines {
-        match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
-            Ok(pipeline) => {
-                pipelines.push(pipeline);
-            }
-            Err(e) => {
-                return Err(CliError::Config(format!("pipeline '{name}': {e}")));
-            }
-        }
-    }
-
-    let diag_handle = if let Some(ref addr) = config.server.diagnostics {
-        let mut server = DiagnosticsServer::new(addr);
-        server.set_config(config_path, config_yaml);
-        server.set_trace_buffer(trace_buf);
-        for p in &pipelines {
-            server.add_pipeline(Arc::clone(p.metrics()));
-        }
-        #[cfg(unix)]
-        server.set_memory_stats_fn(jemalloc_stats);
-        let (handle, _) = server.start()?;
-        Some((handle, addr.clone()))
-    } else {
-        None
-    };
-
-    // Save metrics references for shutdown summary.
-    let pipeline_metrics: Vec<_> = pipelines.iter().map(|p| Arc::clone(p.metrics())).collect();
-
-    eprintln!("{}logfwd{} {}v{VERSION}{}", bold(), reset(), dim(), reset());
-
-    // Print startup summary after everything is ready.
-    for (name, pipe_cfg) in &config.pipelines {
-        eprintln!();
-        eprintln!("  {}✓{}  {}{name}{}", green(), reset(), bold(), reset());
-        for input in &pipe_cfg.inputs {
-            eprintln!("     {}in{}   {}", dim(), reset(), input_label(input));
-        }
-        if let Some(sql) = pipe_cfg.transform.as_deref() {
-            let sql = sql.trim();
-            let first_line = sql.lines().next().unwrap_or(sql);
-            let truncated = if first_line.chars().count() > 100 {
-                format!("{}…", first_line.chars().take(100).collect::<String>())
-            } else {
-                first_line.to_string()
-            };
-            eprintln!("     {}sql{}  {truncated}", dim(), reset());
-        }
-        for output in &pipe_cfg.outputs {
-            eprintln!("     {}out{}  {}", dim(), reset(), output_label(output));
-        }
-    }
-    if let Some((_, ref addr)) = diag_handle {
-        eprintln!();
-        eprintln!("  {}dashboard{}  http://{addr}", bold(), reset());
-    }
-    eprintln!();
-    let n = pipelines.len();
-    let startup_ms = startup_start.elapsed().as_millis();
-    eprintln!(
-        "{}ready{} · {n} pipeline{} {}(started in {startup_ms}ms){}",
-        green(),
-        reset(),
-        if n == 1 { "" } else { "s" },
-        dim(),
-        reset(),
-    );
-
-    let mut handles = Vec::new();
-    let main_pipeline = pipelines.pop();
-
-    for mut pipeline in pipelines {
-        let sd = shutdown.clone();
-        handles.push(tokio::spawn(async move { pipeline.run_async(&sd).await }));
-    }
-
-    if let Some(mut main_pipe) = main_pipeline {
-        let result = main_pipe.run_async(&shutdown).await;
-        // Always cancel + join siblings, even if main pipeline errored.
-        shutdown.cancel();
-        let mut had_sibling_error = false;
-        for h in handles {
-            match h.await {
-                Ok(Err(e)) => {
-                    eprintln!("pipeline error: {e}");
-                    had_sibling_error = true;
-                }
-                Err(e) => {
-                    eprintln!("pipeline task panicked: {e}");
-                    had_sibling_error = true;
-                }
-                Ok(Ok(())) => {}
-            }
-        }
-        result?;
-        if had_sibling_error {
-            return Err(CliError::Runtime(io::Error::other(
-                "one or more sibling pipelines failed",
-            )));
-        }
-    } else {
-        let mut had_error = false;
-        for h in handles {
-            match h.await {
-                Ok(Err(e)) => {
-                    eprintln!("pipeline error: {e}");
-                    had_error = true;
-                }
-                Err(e) => {
-                    eprintln!("pipeline task panicked: {e}");
-                    had_error = true;
-                }
-                Ok(Ok(())) => {}
-            }
-        }
-        if had_error {
-            return Err(CliError::Runtime(io::Error::other(
-                "one or more pipelines failed",
-            )));
-        }
-    }
-
-    // Print shutdown summary.
-    print_shutdown_stats(&pipeline_metrics, startup_start.elapsed());
-
-    if let Err(e) = meter_provider.shutdown() {
-        eprintln!(
-            "{}warning{}: meter provider shutdown: {e}",
-            yellow(),
-            reset()
-        );
-    }
-    if let Err(e) = tracer_provider.shutdown() {
-        eprintln!(
-            "{}warning{}: tracer provider shutdown: {e}",
-            yellow(),
-            reset()
-        );
-    }
-
-    Ok(())
+    logfwd_runtime::bootstrap::run_pipelines(
+        config,
+        base_path,
+        logfwd_runtime::bootstrap::RunOptions {
+            config_path,
+            config_yaml,
+            version: VERSION,
+            use_color: use_color(),
+            json_logs_for_stderr: use_json_logs_for_stderr(io::stderr().is_terminal()),
+        },
+    )
+    .await
+    .map_err(Into::into)
 }
 
-// ---------------------------------------------------------------------------
-// Shutdown summary
-// ---------------------------------------------------------------------------
-
-fn print_shutdown_stats(
-    metrics: &[Arc<logfwd_io::diagnostics::PipelineMetrics>],
-    uptime: std::time::Duration,
-) {
-    use std::sync::atomic::Ordering::Relaxed;
-
-    let total_lines_in: u64 = metrics
-        .iter()
-        .map(|m| m.transform_in.lines_total.load(Relaxed))
-        .sum();
-    let total_lines_out: u64 = metrics
-        .iter()
-        .map(|m| m.transform_out.lines_total.load(Relaxed))
-        .sum();
-    let total_bytes_in: u64 = metrics
-        .iter()
-        .map(|m| {
-            m.inputs
-                .iter()
-                .map(|(_, _, stats)| stats.bytes_total.load(Relaxed))
-                .sum::<u64>()
-        })
-        .sum();
-    let total_batches: u64 = metrics.iter().map(|m| m.batches_total.load(Relaxed)).sum();
-    let total_errors: u64 = metrics
-        .iter()
-        .map(|m| m.transform_errors.load(Relaxed))
-        .sum();
-    let total_dropped: u64 = metrics
-        .iter()
-        .map(|m| m.dropped_batches_total.load(Relaxed))
-        .sum();
-
-    eprintln!();
-    eprintln!(
-        "{}stopped{} · uptime {}",
-        dim(),
-        reset(),
-        format_duration(uptime),
-    );
-
-    if total_lines_in > 0 || total_batches > 0 {
-        eprintln!(
-            "  lines  {} in → {} out  ({} batches)",
-            format_count(total_lines_in),
-            format_count(total_lines_out),
-            format_count(total_batches),
-        );
-        if total_bytes_in > 0 {
-            eprintln!("  bytes  {} in", format_bytes(total_bytes_in));
-        }
-        if total_errors > 0 || total_dropped > 0 {
-            eprintln!(
-                "  {}errors{} {} transform, {} dropped batches",
-                yellow(),
-                reset(),
-                total_errors,
-                total_dropped,
-            );
-        }
-    }
-}
-
+#[cfg(test)]
 fn format_duration(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m {}s", secs / 60, secs % 60)
-    } else {
-        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
-    }
+    logfwd_runtime::bootstrap::format_duration(d)
 }
 
+#[cfg(test)]
 fn format_count(n: u64) -> String {
-    if n < 1_000 {
-        n.to_string()
-    } else if n < 1_000_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else if n < 1_000_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else {
-        format!("{:.1}B", n as f64 / 1_000_000_000.0)
-    }
+    logfwd_runtime::bootstrap::format_count(n)
 }
 
+#[cfg(test)]
 fn format_bytes(b: u64) -> String {
-    if b < 1024 {
-        format!("{b} B")
-    } else if b < 1024 * 1024 {
-        format!("{:.1} KB", b as f64 / 1024.0)
-    } else if b < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.1} GB", b as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Instance lock (#737)
-// ---------------------------------------------------------------------------
-
-/// Acquire an exclusive lock file to prevent multiple logfwd instances from
-/// processing the same data directory. Returns a guard that holds the lock
-/// for the lifetime of the caller.
-///
-/// On non-Unix platforms, logs a warning and returns a dummy guard.
-fn acquire_instance_lock(
-    config: &logfwd_config::Config,
-) -> Result<Option<std::fs::File>, CliError> {
-    let data_dir = config.storage.data_dir.as_ref().map_or_else(
-        logfwd_io::checkpoint::default_data_dir,
-        std::path::PathBuf::from,
-    );
-    std::fs::create_dir_all(&data_dir)?;
-    let lock_path = data_dir.join("logfwd.lock");
-    let lock_file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        // SAFETY: `lock_file` is an open `File`, so `as_raw_fd()` returns a valid
-        // file descriptor. `libc::flock` is safe to call on any valid fd — it only
-        // manipulates the kernel-level advisory lock, no memory mutation.
-        let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if ret != 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::WouldBlock || err.raw_os_error() == Some(libc::EAGAIN) {
-                return Err(CliError::Runtime(io::Error::other(format!(
-                    "another logfwd instance is already running (lock: {})",
-                    lock_path.display()
-                ))));
-            }
-            return Err(CliError::Runtime(err));
-        }
-        // Note: tracing subscriber not yet initialized at this point.
-    }
-
-    #[cfg(not(unix))]
-    eprintln!("warn: file-based instance locking not supported on this platform");
-
-    // Return the File so the lock is held until the caller drops it.
-    Ok(Some(lock_file))
-}
-
-// ---------------------------------------------------------------------------
-// OTel metrics
-// ---------------------------------------------------------------------------
-
-fn build_meter_provider(
-    config: &logfwd_config::Config,
-) -> io::Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
-    use opentelemetry_sdk::metrics::SdkMeterProvider;
-
-    if let Some(ref endpoint) = config.server.metrics_endpoint {
-        let interval_secs = config.server.metrics_interval_secs.unwrap_or(60);
-
-        let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
-            .with_http()
-            .with_endpoint(endpoint)
-            .build()
-            .map_err(|e| io::Error::other(format!("OTLP metric exporter: {e}")))?;
-
-        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(otlp_exporter)
-            .with_interval(std::time::Duration::from_secs(interval_secs))
-            .build();
-
-        eprintln!(
-            "  {}metrics push{}: {endpoint} (every {interval_secs}s)",
-            dim(),
-            reset(),
-        );
-
-        Ok(SdkMeterProvider::builder().with_reader(reader).build())
-    } else {
-        Ok(SdkMeterProvider::builder().build())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// OTel tracing + in-process span buffer
-// ---------------------------------------------------------------------------
-
-/// Build a `SdkTracerProvider` that writes completed spans into `buf`.
-/// If `config.server.traces_endpoint` is set, also pushes via OTLP.
-pub fn build_tracer_provider(
-    buf: logfwd_io::span_exporter::SpanBuffer,
-    config: &logfwd_config::Config,
-) -> io::Result<opentelemetry_sdk::trace::SdkTracerProvider> {
-    use logfwd_io::span_exporter::RingBufferExporter;
-    use opentelemetry_sdk::trace::{SdkTracerProvider, SimpleSpanProcessor};
-
-    let ring_processor = SimpleSpanProcessor::new(RingBufferExporter::new(buf));
-
-    let mut builder = SdkTracerProvider::builder().with_span_processor(ring_processor);
-
-    if let Some(ref endpoint) = config.server.traces_endpoint {
-        let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
-            .with_endpoint(endpoint)
-            .build()
-            .map_err(|e| io::Error::other(format!("OTLP trace exporter: {e}")))?;
-        builder = builder.with_span_processor(
-            opentelemetry_sdk::trace::BatchSpanProcessor::builder(otlp_exporter).build(),
-        );
-        eprintln!(
-            "  {}traces push{}: {}",
-            dim(),
-            reset(),
-            redact_url(endpoint)
-        );
-    }
-
-    Ok(builder.build())
-}
-
-/// Return a URL with credentials and query parameters stripped, for safe logging.
-/// Falls back to the original string if parsing fails.
-fn redact_url(url: &str) -> String {
-    // Find scheme end ("://")
-    let after_scheme = url.find("://").map_or(0, |i| i + 3);
-    let rest = &url[after_scheme..];
-    // Strip userinfo (anything before '@' in the authority)
-    let host_start = rest.find('@').map_or(0, |i| i + 1);
-    let authority_and_path = &rest[host_start..];
-    // Strip path/query/fragment — keep only host:port
-    let host_end = authority_and_path
-        .find(['/', '?', '#'])
-        .unwrap_or(authority_and_path.len());
-    let host = &authority_and_path[..host_end];
-    if host.is_empty() {
-        return url.to_string();
-    }
-    format!("{}://{}", &url[..after_scheme.saturating_sub(3)], host)
+    logfwd_runtime::bootstrap::format_bytes(b)
 }
 
 // ---------------------------------------------------------------------------
@@ -1725,33 +1209,6 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
         );
     }
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Allocator memory stats
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-/// Read jemalloc memory stats: resident, allocated, and active bytes.
-///
-/// Returns `None` if the stats are unavailable (e.g. the epoch refresh fails).
-/// This function is passed to [`DiagnosticsServer`] so the `/admin/v1/status`
-/// endpoint can expose live allocator metrics.
-fn jemalloc_stats() -> Option<logfwd_io::diagnostics::MemoryStats> {
-    use tikv_jemalloc_ctl::{epoch, stats};
-
-    // Refresh the epoch so subsequent reads reflect current allocator state.
-    epoch::mib().ok()?.advance().ok()?;
-
-    let resident = stats::resident::mib().ok()?.read().ok()?;
-    let allocated = stats::allocated::mib().ok()?.read().ok()?;
-    let active = stats::active::mib().ok()?.read().ok()?;
-
-    Some(logfwd_io::diagnostics::MemoryStats {
-        resident,
-        allocated,
-        active,
-    })
 }
 
 // ---------------------------------------------------------------------------

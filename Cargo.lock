@@ -2474,7 +2474,6 @@ name = "logfwd"
 version = "0.1.0"
 dependencies = [
  "arrow",
- "backon",
  "bytes",
  "clap",
  "clap_complete",
@@ -2486,28 +2485,22 @@ dependencies = [
  "logfwd-core",
  "logfwd-io",
  "logfwd-output",
+ "logfwd-runtime",
  "logfwd-test-utils",
  "logfwd-transform",
  "logfwd-types",
- "memchr",
  "opentelemetry",
- "opentelemetry-otlp",
  "opentelemetry_sdk",
- "pprof",
  "proptest",
  "serial_test",
- "smallvec",
  "stats_alloc",
  "tempfile",
- "thiserror",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tiny_http",
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
  "turmoil",
 ]
 
@@ -2694,6 +2687,44 @@ version = "0.1.0"
 dependencies = [
  "prost-build",
  "protoc-bin-vendored",
+]
+
+[[package]]
+name = "logfwd-runtime"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "backon",
+ "bytes",
+ "dhat",
+ "libc",
+ "logfwd-arrow",
+ "logfwd-config",
+ "logfwd-core",
+ "logfwd-io",
+ "logfwd-output",
+ "logfwd-test-utils",
+ "logfwd-transform",
+ "logfwd-types",
+ "memchr",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "pprof",
+ "proptest",
+ "serial_test",
+ "smallvec",
+ "stats_alloc",
+ "tempfile",
+ "thiserror",
+ "tikv-jemalloc-ctl",
+ "tiny_http",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "turmoil",
 ]
 
 [[package]]

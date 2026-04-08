@@ -30,8 +30,11 @@ logfwd-transform    RecordBatch → RecordBatch via DataFusion SQL.
 logfwd-output       Consumes RecordBatch, sends externally.
                     OTLP, Arrow IPC, Parquet, ClickHouse, JSON lines.
 
-logfwd              Async shell. CLI, config, pipeline orchestration,
-                    diagnostics, signal handling.
+logfwd-runtime      Async runtime shell. Pipeline orchestration,
+                    worker pool, processor chain, diagnostics wiring.
+
+logfwd              Binary shell. CLI, config loading, signal handling,
+                    startup/shutdown bootstrap, compatibility re-exports.
 ```
 
 ## Ecosystem interop

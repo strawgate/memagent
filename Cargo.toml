@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/logfwd-config",
+    "crates/logfwd-runtime",
     "crates/logfwd-types",
     "crates/logfwd-core",
     "crates/logfwd-arrow",

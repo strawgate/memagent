@@ -59,14 +59,22 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Deps: core + arrow + ureq/reqwest | Cargo.toml |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
-## logfwd (binary)
+## logfwd-runtime
 
 | Rule | Enforcement |
 |------|-------------|
-| Async orchestration only — no business logic | Code review |
-| Pipeline decisions go through core state machine | Architecture |
-| Deps: everything + tokio + bytes | Cargo.toml |
-| BytesMut/Bytes used for pipeline buffer accumulation | Architecture |
+| Owns async pipeline orchestration, worker pool, and processor chain | Architecture |
+| Domain logic stays in lower crates when a pure seam exists | Code review |
+| Feature forwarding must preserve `datafusion` and `turmoil` behavior for downstream `logfwd` users | Compilation |
+| Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
+
+## logfwd (binary / facade)
+
+| Rule | Enforcement |
+|------|-------------|
+| CLI/bootstrap only — no long-lived runtime orchestration | Code review |
+| Public re-exports must stay compatibility-only and not fork runtime behavior | Code review |
+| Pipeline decisions still go through core state machine via `logfwd-runtime` | Architecture |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
 ## Adding a new crate

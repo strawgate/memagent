@@ -1,4 +1,2 @@
-pub mod pipeline;
-pub mod processor;
+pub use logfwd_runtime::{pipeline, processor, worker_pool};
 pub mod transform;
-pub mod worker_pool;
