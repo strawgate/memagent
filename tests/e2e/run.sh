@@ -104,6 +104,7 @@ k delete pod -n "$NAMESPACE" log-generator --ignore-not-found 2>/dev/null
 k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/log-generator.yaml"
 
 # Wait for the generator pod to be Running instead of hardcoded sleep.
+export KUBE_CONTEXT
 export -f k
 if ! wait_for "log-generator pod running" 30 \
     bash -c "phase=\$(k get pod -n \"$NAMESPACE\" log-generator -o jsonpath='{.status.phase}' 2>/dev/null); [ \"\$phase\" = \"Running\" ]"; then

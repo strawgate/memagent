@@ -501,6 +501,19 @@ pipelines:
     }
 
     #[test]
+    fn file_output_empty_path_rejected() {
+        // Regression test for #1663: path: "" passed --validate but failed at startup.
+        let yaml =
+            "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: \"\"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("path' must not be empty") || msg.contains("path must not be empty"),
+            "expected 'path must not be empty' in error, got: {msg}"
+        );
+    }
+
+    #[test]
     fn file_output_rejects_console_format() {
         let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: /tmp/out.ndjson\n  format: console\n";
         let err = Config::load_str(yaml).unwrap_err();

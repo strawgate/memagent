@@ -491,11 +491,19 @@ impl Config {
                         }
                     }
                     OutputType::File => {
-                        if output.path.is_none() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': {} output requires 'path'",
-                                output.output_type,
-                            )));
+                        match &output.path {
+                            None => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': {} output requires 'path'",
+                                    output.output_type,
+                                )));
+                            }
+                            Some(p) if p.trim().is_empty() => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': file output 'path' must not be empty"
+                                )));
+                            }
+                            _ => {}
                         }
                         if let Some(fmt) = &output.format
                             && !matches!(fmt, Format::Json | Format::Text)
@@ -625,6 +633,11 @@ impl Config {
                         }
                     }
                     EnrichmentConfig::Static(cfg) => {
+                        if cfg.table_name.is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                            )));
+                        }
                         if cfg.labels.is_empty() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' enrichment #{j}: static enrichment requires at least one label"
@@ -632,6 +645,11 @@ impl Config {
                         }
                     }
                     EnrichmentConfig::Csv(cfg) => {
+                        if cfg.table_name.is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                            )));
+                        }
                         if cfg.path.trim().is_empty() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' enrichment #{j}: csv 'path' must not be empty"
@@ -646,6 +664,11 @@ impl Config {
                         }
                     }
                     EnrichmentConfig::Jsonl(cfg) => {
+                        if cfg.table_name.is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                            )));
+                        }
                         if cfg.path.trim().is_empty() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' enrichment #{j}: jsonl 'path' must not be empty"
@@ -659,7 +682,14 @@ impl Config {
                             )));
                         }
                     }
-                    EnrichmentConfig::HostInfo(_) | EnrichmentConfig::K8sPath(_) => {}
+                    EnrichmentConfig::K8sPath(cfg) => {
+                        if cfg.table_name.is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                            )));
+                        }
+                    }
+                    EnrichmentConfig::HostInfo(_) => {}
                 }
             }
         }
@@ -891,5 +921,84 @@ mod validate_endpoint_url_tests {
                 "expected endpoint validation error for {bad}"
             );
         }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Bug #1644: empty enrichment table_name rejected by --validate
+// -----------------------------------------------------------------------
+
+#[cfg(test)]
+mod validate_enrichment_table_name_tests {
+    use crate::types::Config;
+
+    #[test]
+    fn enrichment_static_empty_table_name_rejected() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: static
+        table_name: ''
+        labels:
+          key: val
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("table_name must not be empty"),
+            "expected 'table_name must not be empty' in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn enrichment_csv_empty_table_name_rejected() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: csv
+        table_name: ''
+        path: relative/path/assets.csv
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("table_name must not be empty"),
+            "expected 'table_name must not be empty' in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn enrichment_jsonl_empty_table_name_rejected() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: jsonl
+        table_name: ''
+        path: relative/path/ips.jsonl
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("table_name must not be empty"),
+            "expected 'table_name must not be empty' in error: {msg}"
+        );
     }
 }

@@ -59,9 +59,9 @@ pub fn validate_host_port(addr: &str) -> Result<(), String> {
         ));
     }
 
-    // Reject unmatched closing bracket outside of IPv6 brackets (e.g. "host]:80").
-    if !addr.starts_with('[') && host.contains(']') {
-        return Err(format!("'{addr}' has an unmatched ']' in the host"));
+    // Reject unmatched brackets outside of IPv6 brackets (e.g. "host]:80" or "foo[bar:80").
+    if !addr.starts_with('[') && (host.contains('[') || host.contains(']')) {
+        return Err(format!("'{addr}' has an unmatched bracket in the host"));
     }
 
     if !addr.starts_with('[') && host.contains(':') {
@@ -104,27 +104,27 @@ pub(crate) fn validate_log_level(level: &str) -> Result<(), String> {
 fn validate_endpoint_url(endpoint: &str) -> Result<url::Url, String> {
     let url = endpoint
         .parse::<url::Url>()
-        .map_err(|e| format!("endpoint '{endpoint}' is not a valid URL: {e}"))?;
+        .map_err(|e| format!("endpoint is not a valid URL: {e}"))?;
+
+    // Check credentials FIRST — before any error message interpolates the raw
+    // URL — so that passwords are never leaked into diagnostics (#1610).
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(
+            "endpoint must not include credentials in the URL; use output.auth instead".to_string(),
+        );
+    }
 
     match url.scheme() {
         "http" | "https" => {}
         other => {
             return Err(format!(
-                "endpoint '{endpoint}' has unsupported scheme '{other}'; expected 'http' or 'https'"
+                "endpoint has unsupported scheme '{other}'; expected 'http' or 'https'"
             ));
         }
     }
 
     if url.host_str().is_none() {
-        return Err(format!(
-            "endpoint '{endpoint}' has no host (expected e.g. https://collector:4318)"
-        ));
-    }
-
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(
-            "endpoint must not include credentials in the URL; use output.auth instead".to_string(),
-        );
+        return Err("endpoint has no host (expected e.g. https://collector:4318)".to_string());
     }
 
     Ok(url)
@@ -148,9 +148,10 @@ fn is_loopback_url(url: &url::Url) -> bool {
 pub fn validate_output_endpoint_url(endpoint: &str) -> Result<(), String> {
     let url = validate_endpoint_url(endpoint)?;
     if url.scheme() != "https" && !is_loopback_url(&url) {
-        return Err(format!(
-            "endpoint '{endpoint}' uses insecure HTTP; use 'https://' for non-loopback output endpoints"
-        ));
+        return Err(
+            "endpoint uses insecure HTTP; use 'https://' for non-loopback output endpoints"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -231,7 +232,17 @@ mod tests {
                 .contains("/")
         );
         // Unmatched closing bracket rejected (#1461)
-        assert!(validate_host_port("foo]:4317").unwrap_err().contains("]"));
+        assert!(
+            validate_host_port("foo]:4317")
+                .unwrap_err()
+                .contains("unmatched bracket")
+        );
+        // Unmatched opening bracket rejected
+        assert!(
+            validate_host_port("foo[bar:4317")
+                .unwrap_err()
+                .contains("unmatched bracket")
+        );
     }
 
     #[test]
@@ -240,5 +251,50 @@ mod tests {
         assert!(validate_bind_addr("localhost:4317").is_ok());
         assert!(validate_bind_addr("[::1]:4317").is_ok());
         assert!(validate_bind_addr("http://localhost:4317").is_err());
+    }
+
+    #[test]
+    fn endpoint_url_with_credentials_never_leaks_password() {
+        // Regression: a URL with unsupported scheme + credentials used to
+        // hit the scheme error first, interpolating the raw URL (including
+        // the password) into the message. The credential check must run
+        // before any message that contains the URL. (#1610)
+        let err = validate_endpoint_url("ftp://user:secret@host:443/path").unwrap_err();
+        assert!(
+            !err.contains("secret"),
+            "error message must not contain the password: {err}"
+        );
+        assert!(err.contains("credentials"));
+    }
+
+    #[test]
+    fn endpoint_url_rejects_credentials() {
+        assert!(
+            validate_endpoint_url("https://user:pass@host:443")
+                .unwrap_err()
+                .contains("credentials")
+        );
+        assert!(
+            validate_endpoint_url("http://user@host:443")
+                .unwrap_err()
+                .contains("credentials")
+        );
+    }
+
+    #[test]
+    fn endpoint_url_valid() {
+        assert!(validate_endpoint_url("https://collector:4318").is_ok());
+        assert!(validate_endpoint_url("http://localhost:4318").is_ok());
+    }
+
+    #[test]
+    fn output_endpoint_insecure_http_never_leaks_query_or_fragment() {
+        let err = validate_output_endpoint_url("http://collector:4318/path?token=secret#frag")
+            .unwrap_err();
+        assert!(
+            !err.contains("secret"),
+            "error message must not contain query/fragment secrets: {err}"
+        );
+        assert!(err.contains("insecure HTTP"));
     }
 }

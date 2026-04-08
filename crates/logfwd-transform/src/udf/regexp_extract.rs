@@ -157,6 +157,13 @@ impl ScalarUDFImpl for RegexpExtractUdf {
                 Ok(ColumnarValue::Array(Arc::new(builder.finish())))
             }
             ColumnarValue::Scalar(scalar) => {
+                // Propagate SQL NULL rather than matching against the literal
+                // string "NULL" that ScalarValue::Utf8(None).to_string() produces.
+                if scalar.is_null() {
+                    return Ok(ColumnarValue::Scalar(
+                        datafusion::common::ScalarValue::Utf8(None),
+                    ));
+                }
                 let val = scalar.to_string();
                 let val = val.trim_matches('"').trim_matches('\'');
                 match re.captures(val) {
@@ -300,5 +307,33 @@ mod tests {
             .unwrap();
         assert_eq!(dur.value(0), 15);
         assert_eq!(dur.value(1), 230);
+    }
+
+    /// Regression: regexp_extract(NULL literal, ...) must return NULL, not
+    /// match against the string "NULL" that ScalarValue::to_string() produces.
+    ///
+    /// Before the fix, `regexp_extract(NULL, '(.+)', 1)` returned "NULL" because
+    /// the scalar branch called `scalar.to_string()` without checking `is_null()`.
+    #[test]
+    fn test_null_literal_input_returns_null() {
+        let batch = make_batch();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // CAST(NULL AS VARCHAR) forces a scalar Utf8(None) through the UDF.
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT regexp_extract(CAST(NULL AS VARCHAR), '(.+)', 1) AS extracted FROM logs",
+        ));
+        let col = result.column_by_name("extracted").unwrap();
+        // Every row must be NULL — the pattern '(.+)' would match "NULL" if the
+        // bug were present.
+        for row in 0..result.num_rows() {
+            assert!(
+                col.is_null(row),
+                "row {row}: expected NULL but got a non-null value (bug: matched against \"NULL\")"
+            );
+        }
     }
 }
