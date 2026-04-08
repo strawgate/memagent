@@ -69,6 +69,7 @@ impl ScanBuilder for StreamingBuilder {
 pub struct Scanner {
     builder: StreamingBuilder,
     config: ScanConfig,
+    resource_attrs: Vec<(String, String)>,
 }
 
 impl Scanner {
@@ -77,14 +78,17 @@ impl Scanner {
         Scanner {
             builder: StreamingBuilder::new(config.keep_raw),
             config,
+            resource_attrs: Vec::new(),
         }
     }
 
     /// Create a scanner that injects constant `_resource_*` columns per row.
     pub fn with_resource_attrs(config: ScanConfig, resource_attrs: Vec<(String, String)>) -> Self {
-        let mut builder = StreamingBuilder::new(config.keep_raw);
-        builder.set_resource_attributes_owned(resource_attrs);
-        Scanner { builder, config }
+        Scanner {
+            builder: StreamingBuilder::new(config.keep_raw),
+            config,
+            resource_attrs,
+        }
     }
     /// Scan an NDJSON buffer into a zero-copy `RecordBatch`.
     ///
@@ -98,6 +102,8 @@ impl Scanner {
             })?;
         }
         self.builder.begin_batch(buf.clone());
+        self.builder
+            .set_resource_attributes(self.resource_attrs.as_slice());
         scan_streaming(&buf, &self.config, &mut self.builder);
         self.builder.finish_batch()
     }
@@ -117,6 +123,8 @@ impl Scanner {
             })?;
         }
         self.builder.begin_batch(buf.clone());
+        self.builder
+            .set_resource_attributes(self.resource_attrs.as_slice());
         scan_streaming(&buf, &self.config, &mut self.builder);
         self.builder.finish_batch_detached()
     }
