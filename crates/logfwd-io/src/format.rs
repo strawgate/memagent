@@ -42,20 +42,23 @@ fn new_stream_aggregators(max_message_size: usize) -> [CriReassembler; 2] {
     ]
 }
 
+const STDOUT_IDX: usize = 0;
+const STDERR_IDX: usize = 1;
+
 fn stream_aggregator<'a>(
     aggregators: &'a mut [CriReassembler; 2],
     stream: &[u8],
 ) -> &'a mut CriReassembler {
     if stream == b"stderr" {
-        &mut aggregators[1]
+        &mut aggregators[STDERR_IDX]
     } else {
-        &mut aggregators[0]
+        &mut aggregators[STDOUT_IDX]
     }
 }
 
 fn reset_stream_aggregators(aggregators: &mut [CriReassembler; 2]) {
-    aggregators[0].reset();
-    aggregators[1].reset();
+    aggregators[STDOUT_IDX].reset();
+    aggregators[STDERR_IDX].reset();
 }
 
 impl FormatDecoder {

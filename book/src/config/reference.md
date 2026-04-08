@@ -145,8 +145,8 @@ TCP framing uses RFC 6587 octet-counting when a valid `<len><space>` prefix is
 present, and falls back to legacy newline framing otherwise. Oversized frames
 (`> 1 MiB`) are discarded.
 
-TLS/mTLS is not currently supported for TCP inputs. Any `tls:` block under a
-`tcp` input is rejected at config validation time.
+TLS is not supported for TCP inputs (mTLS is not implemented); any `tls:`
+block under a `tcp` input is rejected at config validation time.
 
 ```yaml
 input:

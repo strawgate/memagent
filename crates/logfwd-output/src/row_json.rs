@@ -83,6 +83,8 @@ pub(crate) fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
 /// Write bytes as a lowercase hex JSON string prefixed with `0x`.
 fn write_json_hex_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
+    // Reserve for surrounding quotes + "0x" prefix + 2 hex chars per byte.
+    out.reserve(4 + bytes.len().saturating_mul(2));
     out.push(b'"');
     out.extend_from_slice(b"0x");
     for &b in bytes {

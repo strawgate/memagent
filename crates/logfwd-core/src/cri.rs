@@ -58,6 +58,12 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
         (line.len(), line.len())
     };
 
+    let stream = &line[sp1 + 1..sp2];
+    // CRI stream must be stdout or stderr.
+    if stream != b"stdout" && stream != b"stderr" {
+        return None;
+    }
+
     let flags = &line[sp2 + 1..flags_end];
 
     // CRI spec: flags must be exactly "F" (full) or "P" (partial).
@@ -78,7 +84,7 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
 
     Some(CriLine {
         timestamp: &line[..sp1],
-        stream: &line[sp1 + 1..sp2],
+        stream,
         is_full,
         message,
     })
@@ -527,6 +533,12 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_stream_rejected() {
+        assert!(parse_cri_line(b"2024-01-15T10:30:00Z out F ok").is_none());
+        assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdxxx P part").is_none());
+    }
+
+    #[test]
     fn test_invalid_flag_counted_as_parse_error() {
         let chunk = b"2024-01-15T10:30:00Z stdout X bad\n\
                        2024-01-15T10:30:00Z stdout F valid\n";
@@ -647,7 +659,10 @@ mod verification {
         let input: [u8; 32] = kani::any();
         if let Some(cri) = parse_cri_line(&input) {
             assert!(!cri.timestamp.is_empty(), "empty timestamp");
-            assert!(!cri.stream.is_empty(), "empty stream");
+            assert!(
+                cri.stream == b"stdout" || cri.stream == b"stderr",
+                "invalid stream"
+            );
 
             // Verify is_full matches the actual flag byte in the input.
             let ts_len = cri.timestamp.len();
