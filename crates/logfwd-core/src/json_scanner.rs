@@ -83,13 +83,21 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
         open_bracket.push(processed.open_bracket);
         close_bracket.push(processed.close_bracket);
 
-        // Extract line boundaries (consumed, not stored)
+        // Extract line boundaries (consumed, not stored).
+        // Strip a trailing \r so that Windows CRLF line endings do not leak
+        // into the _raw field or confuse the JSON parser.
         let mut nl = processed.newline;
         while nl != 0 {
             let bit_pos = nl.trailing_zeros() as usize;
             let abs_pos = offset + bit_pos;
-            if abs_pos > line_start || config.keep_raw {
-                line_ranges.push((line_start, abs_pos));
+            // Strip trailing \r (CRLF → LF normalisation).
+            let line_end = if abs_pos > line_start && buf[abs_pos - 1] == b'\r' {
+                abs_pos - 1
+            } else {
+                abs_pos
+            };
+            if line_end > line_start || config.keep_raw {
+                line_ranges.push((line_start, line_end));
             }
             line_start = abs_pos + 1;
             nl &= nl - 1;
@@ -97,7 +105,13 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
     }
 
     if line_start < len {
-        line_ranges.push((line_start, len));
+        // Strip trailing \r from the last (unterminated) line too.
+        let line_end = if len > line_start && buf[len - 1] == b'\r' {
+            len - 1
+        } else {
+            len
+        };
+        line_ranges.push((line_start, line_end));
     }
 
     let bitmasks = StoredBitmasks {
@@ -1101,6 +1115,90 @@ mod tests {
                 "valid deeply nested JSON should preserve sibling fields past MAX_TRACKED_DEPTH"
             );
         }
+    }
+
+    /// CRLF line endings must not leak \r into extracted field values or _raw.
+    ///
+    /// When the input uses Windows-style CRLF (\r\n) line endings, the scanner
+    /// must strip the \r before storing _raw and before passing the line to the
+    /// JSON parser. Without this fix, _raw contains a trailing \r character.
+    #[test]
+    fn crlf_stripped_from_raw_and_fields() {
+        // Two JSON lines with CRLF line endings.
+        let buf =
+            b"{\"level\":\"INFO\",\"msg\":\"hello\"}\r\n{\"level\":\"WARN\",\"msg\":\"world\"}\r\n";
+
+        // extract_all=true captures all fields without listing them explicitly.
+        let config = ScanConfig {
+            wanted_fields: alloc::vec![],
+            extract_all: true,
+            keep_raw: true,
+            validate_utf8: false,
+        };
+
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 2, "expected 2 rows");
+
+        // Field values must NOT contain \r.
+        for (i, row) in builder.rows.iter().enumerate() {
+            for (key, val) in row {
+                assert!(
+                    !val.contains('\r'),
+                    "row {i} field {key:?} contains \\r: {val:?}"
+                );
+            }
+        }
+
+        // _raw must NOT contain a trailing \r.
+        for (i, raw) in builder.raws.iter().enumerate() {
+            let raw = raw
+                .as_ref()
+                .unwrap_or_else(|| panic!("row {i} has no _raw"));
+            assert!(
+                !raw.ends_with('\r'),
+                "row {i} _raw has trailing \\r: {raw:?}"
+            );
+            assert!(!raw.contains('\r'), "row {i} _raw contains \\r: {raw:?}");
+        }
+
+        // Verify correct field values were extracted.
+        assert_eq!(
+            builder.rows[0]
+                .iter()
+                .find(|(k, _)| k == "level")
+                .map(|(_, v)| v.as_str()),
+            Some("INFO")
+        );
+        assert_eq!(
+            builder.rows[1]
+                .iter()
+                .find(|(k, _)| k == "level")
+                .map(|(_, v)| v.as_str()),
+            Some("WARN")
+        );
+    }
+
+    /// CRLF-only input (line with just \r\n) must be treated as an empty line.
+    #[test]
+    fn crlf_only_line_is_empty() {
+        let buf = b"\r\n{\"x\":\"1\"}\r\n";
+        let config = ScanConfig {
+            wanted_fields: alloc::vec![],
+            extract_all: true,
+            keep_raw: false,
+            validate_utf8: false,
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        // The non-empty line is parsed; the empty CRLF-only line is skipped.
+        assert_eq!(
+            builder.rows.len(),
+            1,
+            "expected only 1 row (empty line skipped)"
+        );
     }
 }
 
