@@ -240,7 +240,14 @@ impl ScalarUDFImpl for GrokUdf {
             }
             ColumnarValue::Scalar(scalar) => {
                 let val = scalar.to_string();
-                let val = val.trim_matches('"').trim_matches('\'');
+                // Treat SQL NULL input the same as no match: return a Struct
+                // with all-null fields. This avoids matching against "NULL" —
+                // the string that ScalarValue::Utf8(None).to_string() produces.
+                let val = if scalar.is_null() {
+                    None
+                } else {
+                    Some(val.trim_matches('"').trim_matches('\'').to_string())
+                };
 
                 let fields: Vec<Field> = compiled
                     .field_names
@@ -248,7 +255,10 @@ impl ScalarUDFImpl for GrokUdf {
                     .map(|name| Field::new(name, DataType::Utf8, true))
                     .collect();
 
-                let matches = compiled.pattern.match_against(val);
+                // NULL input → no match (all fields null), same as non-matching string.
+                let matches = val
+                    .as_deref()
+                    .and_then(|s| compiled.pattern.match_against(s));
                 let values: Vec<datafusion::common::ScalarValue> = compiled
                     .field_names
                     .iter()
@@ -426,5 +436,39 @@ mod tests {
             .unwrap();
         assert_eq!(ip.value(0), "192.168.1.100");
         assert_eq!(ip.value(1), "10.0.0.1");
+    }
+
+    /// Regression: grok(NULL literal, pattern) must return all-null struct fields,
+    /// not attempt to match against the string "NULL".
+    ///
+    /// Before the fix, `ScalarValue::Utf8(None).to_string()` returned "NULL" and
+    /// the pattern was applied to that string, producing spurious non-null captures
+    /// for patterns that happen to match the string "NULL".
+    #[test]
+    fn test_null_literal_input_returns_all_null_fields() {
+        let batch = make_access_log_batch();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // CAST(NULL AS VARCHAR) forces a scalar Utf8(None) through the grok UDF.
+        // %{GREEDYDATA:data} would match "NULL" if the bug were present.
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT get_field(grok(CAST(NULL AS VARCHAR), '%{WORD:method} %{URIPATH:path} %{NUMBER:status} %{NUMBER:duration}ms'), 'method') AS method FROM logs",
+        ));
+        let method = result
+            .column_by_name("method")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..result.num_rows() {
+            assert!(
+                method.is_null(row),
+                "row {row}: expected NULL but got '{}'  (bug: grok matched against \"NULL\")",
+                method.value(row)
+            );
+        }
     }
 }
