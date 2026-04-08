@@ -289,12 +289,25 @@ impl Sink for AsyncFanoutSink {
         })
     }
 
+    /// Flush all child sinks, attempting every one even if earlier sinks fail.
+    ///
+    /// Consistent with `send_batch()`, which always delivers to all sinks
+    /// regardless of failures. The first error encountered is returned after
+    /// all sinks have been flushed. Fixes #1648.
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
         Box::pin(async move {
+            let mut first_err: Option<io::Error> = None;
             for sink in &mut self.sinks {
-                sink.flush().await?;
+                if let Err(e) = sink.flush().await {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
             }
-            Ok(())
+            match first_err {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
         })
     }
 
@@ -306,12 +319,25 @@ impl Sink for AsyncFanoutSink {
         aggregate_fanout_health(self.sinks.iter().map(|sink| sink.health()))
     }
 
+    /// Shut down all child sinks, attempting every one even if earlier sinks fail.
+    ///
+    /// Consistent with `send_batch()`, which always delivers to all sinks
+    /// regardless of failures. The first error encountered is returned after
+    /// all sinks have been shut down. Fixes #1648.
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
         Box::pin(async move {
+            let mut first_err: Option<io::Error> = None;
             for sink in &mut self.sinks {
-                sink.shutdown().await?;
+                if let Err(e) = sink.shutdown().await {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
             }
-            Ok(())
+            match first_err {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
         })
     }
 }
@@ -741,6 +767,143 @@ mod tests {
         assert!(
             matches!(result, SendResult::Ok),
             "all-ok fanout must return Ok, got {result:?}"
+        );
+    }
+
+    /// Regression test for #1648: flush() must try all sinks even if earlier ones fail.
+    #[tokio::test]
+    async fn fanout_flush_calls_all_sinks_even_after_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FailFlushSink {
+            flushed: Arc<AtomicBool>,
+        }
+        impl Sink for FailFlushSink {
+            fn send_batch<'a>(
+                &'a mut self,
+                _batch: &'a RecordBatch,
+                _metadata: &'a BatchMetadata,
+            ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+                Box::pin(async { SendResult::Ok })
+            }
+            fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                self.flushed.store(true, Ordering::SeqCst);
+                Box::pin(async { Err(io::Error::other("flush error")) })
+            }
+            fn name(&self) -> &'static str {
+                "fail_flush"
+            }
+            fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let second_flushed = Arc::new(AtomicBool::new(false));
+        let second_flushed_clone = Arc::clone(&second_flushed);
+
+        struct RecordFlushSink {
+            flushed: Arc<AtomicBool>,
+        }
+        impl Sink for RecordFlushSink {
+            fn send_batch<'a>(
+                &'a mut self,
+                _batch: &'a RecordBatch,
+                _metadata: &'a BatchMetadata,
+            ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+                Box::pin(async { SendResult::Ok })
+            }
+            fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                self.flushed.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            }
+            fn name(&self) -> &'static str {
+                "record_flush"
+            }
+            fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let mut fanout = AsyncFanoutSink::new(vec![
+            Box::new(FailFlushSink {
+                flushed: Arc::new(AtomicBool::new(false)),
+            }),
+            Box::new(RecordFlushSink {
+                flushed: second_flushed_clone,
+            }),
+        ]);
+
+        let result = fanout.flush().await;
+        assert!(result.is_err(), "flush must propagate the error");
+        assert!(
+            second_flushed.load(Ordering::SeqCst),
+            "second sink must be flushed even though first sink failed"
+        );
+    }
+
+    /// Regression test for #1648: shutdown() must try all sinks even if earlier ones fail.
+    #[tokio::test]
+    async fn fanout_shutdown_calls_all_sinks_even_after_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FailShutdownSink;
+        impl Sink for FailShutdownSink {
+            fn send_batch<'a>(
+                &'a mut self,
+                _batch: &'a RecordBatch,
+                _metadata: &'a BatchMetadata,
+            ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+                Box::pin(async { SendResult::Ok })
+            }
+            fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn name(&self) -> &'static str {
+                "fail_shutdown"
+            }
+            fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Err(io::Error::other("shutdown error")) })
+            }
+        }
+
+        let second_shutdown = Arc::new(AtomicBool::new(false));
+        let second_shutdown_clone = Arc::clone(&second_shutdown);
+
+        struct RecordShutdownSink {
+            shutdown: Arc<AtomicBool>,
+        }
+        impl Sink for RecordShutdownSink {
+            fn send_batch<'a>(
+                &'a mut self,
+                _batch: &'a RecordBatch,
+                _metadata: &'a BatchMetadata,
+            ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+                Box::pin(async { SendResult::Ok })
+            }
+            fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn name(&self) -> &'static str {
+                "record_shutdown"
+            }
+            fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                self.shutdown.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let mut fanout = AsyncFanoutSink::new(vec![
+            Box::new(FailShutdownSink),
+            Box::new(RecordShutdownSink {
+                shutdown: second_shutdown_clone,
+            }),
+        ]);
+
+        let result = fanout.shutdown().await;
+        assert!(result.is_err(), "shutdown must propagate the error");
+        assert!(
+            second_shutdown.load(Ordering::SeqCst),
+            "second sink must be shut down even though first sink failed"
         );
     }
 
