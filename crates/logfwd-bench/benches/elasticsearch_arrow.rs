@@ -110,9 +110,11 @@ fn index_batch(
         observed_time_ns: 0,
     };
     let result = rt.block_on(sink.send_batch(batch, &metadata));
-    match result {
+    match &result {
         logfwd_output::SendResult::Ok => Ok(()),
-        logfwd_output::SendResult::IoError(err) => Err(err),
+        logfwd_output::SendResult::IoError(err) => {
+            Err(std::io::Error::new(err.kind(), err.to_string()))
+        }
         logfwd_output::SendResult::RetryAfter(delay) => Err(std::io::Error::other(format!(
             "batch not accepted yet; retry after {delay:?}"
         ))),
