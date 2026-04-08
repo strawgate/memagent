@@ -11,6 +11,10 @@ use smallvec::SmallVec;
 
 use super::{Processor, ProcessorError};
 
+/// Grouped partition result: a list of (group_key, sub-batch) pairs plus an
+/// optional passthrough batch for rows with a null group value.
+type PartitionResult = (Vec<(String, RecordBatch)>, Option<RecordBatch>);
+
 #[derive(Debug)]
 struct TraceState {
     batches: Vec<RecordBatch>,
@@ -36,7 +40,7 @@ impl std::fmt::Debug for TailSamplingProcessor {
             .field("group_by_field", &self.group_by_field)
             .field("timeout_ns", &self.timeout_ns)
             .field("traces_len", &self.traces.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -60,10 +64,7 @@ impl TailSamplingProcessor {
         })
     }
 
-    fn partition_by_group(
-        &self,
-        batch: RecordBatch,
-    ) -> Result<(Vec<(String, RecordBatch)>, Option<RecordBatch>), ProcessorError> {
+    fn partition_by_group(&self, batch: RecordBatch) -> Result<PartitionResult, ProcessorError> {
         let col_idx = batch.schema().index_of(&self.group_by_field).map_err(|_| {
             ProcessorError::Permanent(format!(
                 "tail-sampling group-by column '{}' not found",
