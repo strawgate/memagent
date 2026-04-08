@@ -193,20 +193,23 @@ impl OtlpSink {
         let mut grouped_ranges: Vec<ResourceGroup<'_>> = Vec::new();
         let mut group_index_by_key: std::collections::HashMap<ResourceKey<'_>, usize> =
             std::collections::HashMap::new();
+        let mut scratch_key: ResourceKey<'_> = Vec::with_capacity(columns.resource_cols.len());
 
         for row in 0..num_rows {
-            let mut key: ResourceKey<'_> = Vec::with_capacity(columns.resource_cols.len());
+            scratch_key.clear();
             for (_, attr) in &columns.resource_cols {
-                key.push(attr.value_ref(row));
+                scratch_key.push(attr.value_ref(row));
             }
-            let group_idx = if let Some(existing) = group_index_by_key.get(&key).copied() {
-                existing
-            } else {
-                let idx = grouped_ranges.len();
-                group_index_by_key.insert(key.clone(), idx);
-                grouped_ranges.push((key, Vec::new()));
-                idx
-            };
+            let group_idx =
+                if let Some(existing) = group_index_by_key.get(scratch_key.as_slice()).copied() {
+                    existing
+                } else {
+                    let idx = grouped_ranges.len();
+                    let key = scratch_key.clone();
+                    group_index_by_key.insert(key.clone(), idx);
+                    grouped_ranges.push((key, Vec::new()));
+                    idx
+                };
 
             let start = records_buf.len();
             encode_row(&columns, row, metadata, &mut records_buf);
