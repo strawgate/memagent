@@ -403,15 +403,19 @@ pub struct MemoryStats {
 pub struct ServerHandle {
     running: Arc<AtomicBool>,
     sampler_handle: Option<JoinHandle<()>>,
-    _http_task: BackgroundHttpTask,
+    http_task: Option<BackgroundHttpTask>,
 }
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
         // Signal the sampler loop to exit.
         self.running.store(false, Ordering::Relaxed);
-        // Join sampler thread; HTTP thread is unblocked and joined by
-        // `BackgroundHttpTask` during field drop.
+        // Stop/unblock HTTP serving first so shutdown does not wait on
+        // sampler wakeups before listeners close.
+        if let Some(task) = self.http_task.take() {
+            drop(task);
+        }
+        // Then join sampler thread.
         if let Some(h) = self.sampler_handle.take() {
             let _ = h.join();
         }
@@ -550,7 +554,10 @@ impl DiagnosticsServer {
             ServerHandle {
                 running,
                 sampler_handle: Some(sampler_handle),
-                _http_task: BackgroundHttpTask::new(Arc::clone(&http_server), http_handle),
+                http_task: Some(BackgroundHttpTask::new(
+                    Arc::clone(&http_server),
+                    http_handle,
+                )),
             },
             bound_addr,
         ))
@@ -1571,7 +1578,6 @@ mod tests {
         let port = addr.port();
 
         drop(handle);
-        thread::sleep(std::time::Duration::from_millis(50));
 
         let rebound_addr = format!("127.0.0.1:{port}");
         let result = tiny_http::Server::http(&rebound_addr);

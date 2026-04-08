@@ -2554,7 +2554,10 @@ mod tests {
             std::thread::spawn(|| {}),
         );
         receiver.is_running.store(true, Ordering::Relaxed);
-        std::thread::sleep(Duration::from_millis(10));
+        let deadline = std::time::Instant::now() + Duration::from_millis(100);
+        while !receiver.background_task.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
 
         assert_eq!(receiver.health(), ComponentHealth::Failed);
     }
