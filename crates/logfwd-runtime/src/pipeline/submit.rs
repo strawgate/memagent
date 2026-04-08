@@ -153,6 +153,11 @@ impl Pipeline {
             queue_wait_ns = tracing::field::Empty,
         );
 
+        // Track in-flight before yielding to pool submission so ack handling
+        // cannot observe a finished batch without a corresponding increment.
+        self.metrics
+            .inflight_batches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.pool
             .submit(crate::worker_pool::WorkItem {
                 num_rows: out_rows,
@@ -166,9 +171,6 @@ impl Pipeline {
                 span: batch_span,
             })
             .await;
-        self.metrics
-            .inflight_batches
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

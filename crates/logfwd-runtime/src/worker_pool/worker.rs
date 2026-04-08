@@ -104,12 +104,18 @@ pub(super) async fn worker_task(
                         };
                         if let Err(send_err) = ack_tx.send(ack) {
                             let lost_ack = send_err.0;
-                            tracing::warn!(
+                            output_health
+                                .apply_worker_event(id, OutputHealthEvent::FatalFailure);
+                            tracing::error!(
                                 worker_id = id,
+                                batch_id = lost_ack.batch_id,
+                                ticket_count = lost_ack.tickets.len(),
                                 num_rows = lost_ack.num_rows,
                                 "outcome" = ?lost_ack.outcome,
-                                "worker: ack channel closed, ack lost"
+                                "worker: ack channel closed; cancelling worker pool to avoid unresolved checkpoint state"
                             );
+                            cancel.cancel();
+                            break;
                         }
                     }
                 }
@@ -261,5 +267,108 @@ pub(super) async fn process_item(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use arrow::array::StringArray;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    use logfwd_io::diagnostics::PipelineMetrics;
+    use logfwd_output::BatchMetadata;
+    use logfwd_output::sink::{SendResult, Sink};
+
+    use crate::worker_pool::pool::OutputHealthTracker;
+
+    use super::super::pool::WorkerConfig;
+    use super::super::types::{WorkItem, WorkerMsg};
+    use super::worker_task;
+
+    struct OkSink;
+
+    impl Sink for OkSink {
+        fn send_batch<'a>(
+            &'a mut self,
+            _batch: &'a RecordBatch,
+            _metadata: &'a BatchMetadata,
+        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+            Box::pin(async { SendResult::Ok })
+        }
+
+        fn flush(&mut self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn name(&self) -> &str {
+            "ok-sink"
+        }
+
+        fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn make_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, true)]));
+        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["hello"]))]).unwrap()
+    }
+
+    fn make_metrics() -> Arc<PipelineMetrics> {
+        let meter = logfwd_test_utils::test_meter();
+        Arc::new(PipelineMetrics::new("test", "", &meter))
+    }
+
+    #[tokio::test]
+    async fn worker_cancels_pool_when_ack_channel_is_closed() {
+        let (tx, rx) = mpsc::channel(1);
+        let (ack_tx, ack_rx) = mpsc::unbounded_channel();
+        drop(ack_rx);
+
+        let cancel = CancellationToken::new();
+        let cfg = WorkerConfig {
+            idle_timeout: Duration::from_secs(5),
+            cancel: cancel.clone(),
+            max_retry_delay: Duration::from_millis(10),
+            metrics: make_metrics(),
+            output_health: Arc::new(OutputHealthTracker::new(vec![])),
+        };
+
+        let join = tokio::spawn(worker_task(0, Box::new(OkSink), rx, ack_tx, cfg));
+
+        tx.send(WorkerMsg::Work(WorkItem {
+            batch: make_batch(),
+            metadata: BatchMetadata {
+                resource_attrs: Arc::default(),
+                observed_time_ns: 0,
+            },
+            tickets: vec![],
+            num_rows: 1,
+            submitted_at: tokio::time::Instant::now(),
+            scan_ns: 0,
+            transform_ns: 0,
+            batch_id: 42,
+            span: tracing::Span::none(),
+        }))
+        .await
+        .expect("worker should accept work item");
+
+        tokio::time::timeout(Duration::from_secs(1), join)
+            .await
+            .expect("worker should exit promptly when ack channel is closed")
+            .expect("worker task should not panic");
+
+        assert!(
+            cancel.is_cancelled(),
+            "worker should cancel the pool when ack channel closes"
+        );
     }
 }

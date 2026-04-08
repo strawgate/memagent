@@ -600,9 +600,21 @@ impl Pipeline {
     ///
     /// Called from the `select!` loop when a pool worker finishes a batch.
     fn apply_pool_ack(&mut self, ack: AckItem) {
-        self.metrics
+        if self
+            .metrics
             .inflight_batches
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |value| value.checked_sub(1),
+            )
+            .is_err()
+        {
+            tracing::warn!(
+                batch_id = ack.batch_id,
+                "pipeline: received ack with zero inflight_batches counter"
+            );
+        }
         self.metrics.finish_active_batch(ack.batch_id);
         if ack.outcome.is_delivered() {
             self.metrics
@@ -2385,6 +2397,38 @@ output:
         let msg = rx.try_recv().unwrap();
         assert_eq!(msg.checkpoints.len(), 1);
         assert_eq!(msg.checkpoints[&SourceId(42)], ByteOffset(1000));
+    }
+
+    #[test]
+    fn test_apply_pool_ack_does_not_underflow_inflight_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("underflow.log");
+        std::fs::write(&log_path, "").unwrap();
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+
+        pipeline
+            .metrics
+            .inflight_batches
+            .store(0, Ordering::Relaxed);
+        pipeline.apply_pool_ack(AckItem {
+            tickets: vec![],
+            outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
+            num_rows: 0,
+            submitted_at: tokio::time::Instant::now(),
+            scan_ns: 0,
+            transform_ns: 0,
+            output_ns: 0,
+            queue_wait_ns: 0,
+            send_latency_ns: 0,
+            batch_id: 0,
+            output_name: "test".to_string(),
+        });
+
+        assert_eq!(
+            pipeline.metrics.inflight_batches.load(Ordering::Relaxed),
+            0,
+            "inflight counter must not underflow on stray ack"
+        );
     }
 
     #[test]
