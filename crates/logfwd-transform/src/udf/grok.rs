@@ -239,15 +239,18 @@ impl ScalarUDFImpl for GrokUdf {
                 Ok(ColumnarValue::Array(Arc::new(struct_array)))
             }
             ColumnarValue::Scalar(scalar) => {
-                let val = scalar.to_string();
                 // Treat SQL NULL input the same as no match: return a Struct
                 // with all-null fields. This avoids matching against "NULL" —
                 // the string that ScalarValue::Utf8(None).to_string() produces.
-                let val = if scalar.is_null() {
+                let raw = if scalar.is_null() {
                     None
                 } else {
-                    Some(val.trim_matches('"').trim_matches('\'').to_string())
+                    Some(scalar.to_string())
                 };
+                let matches = raw
+                    .as_deref()
+                    .map(|s| s.trim_matches('"').trim_matches('\''))
+                    .and_then(|s| compiled.pattern.match_against(s));
 
                 let fields: Vec<Field> = compiled
                     .field_names
@@ -256,9 +259,6 @@ impl ScalarUDFImpl for GrokUdf {
                     .collect();
 
                 // NULL input → no match (all fields null), same as non-matching string.
-                let matches = val
-                    .as_deref()
-                    .and_then(|s| compiled.pattern.match_against(s));
                 let values: Vec<datafusion::common::ScalarValue> = compiled
                     .field_names
                     .iter()
