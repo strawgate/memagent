@@ -26,13 +26,36 @@ pub enum FormatDecoder {
         stats: Arc<ComponentStats>,
     },
     Cri {
-        aggregator: CriReassembler,
+        aggregators: [CriReassembler; 2],
         stats: Arc<ComponentStats>,
     },
     Auto {
-        aggregator: CriReassembler,
+        aggregators: [CriReassembler; 2],
         stats: Arc<ComponentStats>,
     },
+}
+
+fn new_stream_aggregators(max_message_size: usize) -> [CriReassembler; 2] {
+    [
+        CriReassembler::new(max_message_size),
+        CriReassembler::new(max_message_size),
+    ]
+}
+
+fn stream_aggregator<'a>(
+    aggregators: &'a mut [CriReassembler; 2],
+    stream: &[u8],
+) -> &'a mut CriReassembler {
+    if stream == b"stderr" {
+        &mut aggregators[1]
+    } else {
+        &mut aggregators[0]
+    }
+}
+
+fn reset_stream_aggregators(aggregators: &mut [CriReassembler; 2]) {
+    aggregators[0].reset();
+    aggregators[1].reset();
 }
 
 impl FormatDecoder {
@@ -56,7 +79,7 @@ impl FormatDecoder {
     /// Create a CRI format processor with the given max message size.
     pub fn cri(max_message_size: usize, stats: Arc<ComponentStats>) -> Self {
         Self::Cri {
-            aggregator: CriReassembler::new(max_message_size),
+            aggregators: new_stream_aggregators(max_message_size),
             stats,
         }
     }
@@ -64,7 +87,7 @@ impl FormatDecoder {
     /// Create an Auto format processor (tries CRI, falls through to passthrough).
     pub fn auto(max_message_size: usize, stats: Arc<ComponentStats>) -> Self {
         Self::Auto {
-            aggregator: CriReassembler::new(max_message_size),
+            aggregators: new_stream_aggregators(max_message_size),
             stats,
         }
     }
@@ -81,12 +104,12 @@ impl FormatDecoder {
             Self::PassthroughJson { stats } => Self::PassthroughJson {
                 stats: Arc::clone(stats),
             },
-            Self::Cri { aggregator, stats } => Self::Cri {
-                aggregator: CriReassembler::new(aggregator.max_message_size()),
+            Self::Cri { aggregators, stats } => Self::Cri {
+                aggregators: new_stream_aggregators(aggregators[0].max_message_size()),
                 stats: Arc::clone(stats),
             },
-            Self::Auto { aggregator, stats } => Self::Auto {
-                aggregator: CriReassembler::new(aggregator.max_message_size()),
+            Self::Auto { aggregators, stats } => Self::Auto {
+                aggregators: new_stream_aggregators(aggregators[0].max_message_size()),
                 stats: Arc::clone(stats),
             },
         }
@@ -105,11 +128,11 @@ impl FormatDecoder {
                 count_json_parse_errors(chunk, stats);
                 out.extend_from_slice(chunk);
             }
-            Self::Cri { aggregator, stats } => {
-                extract_cri_messages(chunk, out, aggregator, stats, false);
+            Self::Cri { aggregators, stats } => {
+                extract_cri_messages(chunk, out, aggregators, stats, false);
             }
-            Self::Auto { aggregator, stats } => {
-                extract_cri_messages(chunk, out, aggregator, stats, true);
+            Self::Auto { aggregators, stats } => {
+                extract_cri_messages(chunk, out, aggregators, stats, true);
             }
         }
     }
@@ -118,8 +141,8 @@ impl FormatDecoder {
     pub fn reset(&mut self) {
         match self {
             Self::Passthrough { .. } | Self::PassthroughJson { .. } => {}
-            Self::Cri { aggregator, .. } | Self::Auto { aggregator, .. } => {
-                aggregator.reset();
+            Self::Cri { aggregators, .. } | Self::Auto { aggregators, .. } => {
+                reset_stream_aggregators(aggregators);
             }
         }
     }
@@ -168,7 +191,7 @@ fn count_json_parse_errors(chunk: &[u8], stats: &ComponentStats) {
 fn extract_cri_messages(
     input: &[u8],
     out: &mut Vec<u8>,
-    aggregator: &mut CriReassembler,
+    aggregators: &mut [CriReassembler; 2],
     stats: &ComponentStats,
     passthrough_on_fail: bool,
 ) {
@@ -177,6 +200,7 @@ fn extract_cri_messages(
         let eol = memchr::memchr(b'\n', &input[pos..]).map_or(input.len(), |o| pos + o);
         let line = &input[pos..eol];
         if let Some(cri) = parse_cri_line(line) {
+            let aggregator = stream_aggregator(aggregators, cri.stream);
             let max_message_size = aggregator.max_message_size();
             match aggregator.feed(cri.message, cri.is_full) {
                 AggregateResult::Complete(msg) => {
@@ -201,7 +225,7 @@ fn extract_cri_messages(
             }
         } else {
             // Break any pending CRI aggregation at parse/fallback boundaries.
-            aggregator.reset();
+            reset_stream_aggregators(aggregators);
             if !line.is_empty() && passthrough_on_fail {
                 out.extend_from_slice(line);
                 out.push(b'\n');
@@ -306,6 +330,32 @@ mod tests {
         assert_eq!(
             out,
             b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"hello world\"}\n"
+        );
+    }
+
+    #[test]
+    fn cri_interleaved_streams_do_not_cross_contaminate() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats));
+        let mut out = Vec::new();
+
+        proc.process_lines(b"2024-01-15T10:30:00Z stdout P out-\n", &mut out);
+        proc.process_lines(b"2024-01-15T10:30:01Z stderr F err\n", &mut out);
+        proc.process_lines(b"2024-01-15T10:30:02Z stdout F done\n", &mut out);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(
+            b"{\"_timestamp\":\"2024-01-15T10:30:01Z\",\"_stream\":\"stderr\",\"_raw\":\"err\"}\n",
+        );
+        expected.extend_from_slice(
+            b"{\"_timestamp\":\"2024-01-15T10:30:02Z\",\"_stream\":\"stdout\",\"_raw\":\"out-done\"}\n",
+        );
+        assert_eq!(out, expected);
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
         );
     }
 

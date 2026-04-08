@@ -962,9 +962,51 @@ mod write_row_json_tests {
             Arc::new(BooleanArray::from(vec![true])) as Arc<dyn Array>,
         )]);
         let json = render(&batch, 0);
-        // Boolean columns go through str_value fallback, which returns ""
-        // for non-Utf8 types. This is existing behavior — the point is no panic.
-        let _: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert_eq!(v["active"], true, "booleans should serialize as bool");
+    }
+
+    #[test]
+    fn binary_serializes_as_hex_string() {
+        use arrow::array::BinaryArray;
+        let batch = make_batch(vec![(
+            "bin",
+            Arc::new(BinaryArray::from(vec![Some(&b"\x00\x01ABC"[..])])) as Arc<dyn Array>,
+        )]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert_eq!(
+            v["bin"], "0x0001414243",
+            "Binary should serialize to deterministic hex string"
+        );
+    }
+
+    #[test]
+    fn large_binary_serializes_as_hex_string() {
+        use arrow::array::LargeBinaryArray;
+        let batch = make_batch(vec![(
+            "blob",
+            Arc::new(LargeBinaryArray::from(vec![Some(&b"\x10\xfe"[..])])) as Arc<dyn Array>,
+        )]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert_eq!(v["blob"], "0x10fe");
+    }
+
+    #[test]
+    fn fixed_size_binary_serializes_as_hex_string() {
+        use arrow::array::FixedSizeBinaryBuilder;
+
+        let mut builder = FixedSizeBinaryBuilder::new(3);
+        builder
+            .append_value(b"\xaa\xbb\xcc")
+            .expect("fixed-size value should match declared width");
+        let arr = Arc::new(builder.finish()) as Arc<dyn Array>;
+        let batch = make_batch(vec![("trace_id", arr)]);
+
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert_eq!(v["trace_id"], "0xaabbcc");
     }
 
     #[test]
