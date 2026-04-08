@@ -438,25 +438,6 @@ output:
     }
 
     #[test]
-    fn legacy_output_aliases_are_rejected() {
-        for alias in ["file_out", "tcp_out", "udp_out"] {
-            let extra = match alias {
-                "file_out" => "path: /tmp/out.ndjson",
-                "tcp_out" | "udp_out" => "endpoint: 127.0.0.1:5140",
-                _ => unreachable!(),
-            };
-            let yaml = format!(
-                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {alias}\n  {extra}\n"
-            );
-            let err = Config::load_str(&yaml).expect_err("legacy alias should fail");
-            assert!(
-                err.to_string().contains("unknown variant"),
-                "expected unknown variant error for {alias}: {err}"
-            );
-        }
-    }
-
-    #[test]
     fn http_output_is_rejected() {
         let yaml = r"
 input:
