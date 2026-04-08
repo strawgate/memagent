@@ -2,7 +2,8 @@
 # Install: cargo install just
 # Usage:  just --list
 
-# Default recipe: run all checks (same as CI)
+# Default recipe: run quick CI checks (default-members path).
+# Use `just ci-all` for full workspace CI checks (includes datafusion).
 
 # Limit all parallelism to 2 vCPU to avoid starving other processes.
 # This caps cargo compilation, test execution, rayon workers, and any Tokio

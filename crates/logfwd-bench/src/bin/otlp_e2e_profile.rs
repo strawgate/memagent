@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -55,14 +56,16 @@ impl HttpPoster {
         }
         self.rt.block_on(async {
             let payload = Bytes::copy_from_slice(body);
+            let url: Arc<str> = Arc::from(url);
+            let client = self.client.clone();
             let mut handles = Vec::with_capacity(concurrency);
             for _ in 0..concurrency {
-                let client = self.client.clone();
-                let url = url.to_string();
+                let client = client.clone();
+                let url = Arc::clone(&url);
                 let payload = payload.clone();
                 handles.push(tokio::spawn(async move {
                     client
-                        .post(url)
+                        .post(&*url)
                         .header("Content-Type", "application/x-protobuf")
                         .body(payload)
                         .send()
@@ -190,6 +193,7 @@ fn run_case(
     let poster = HttpPoster::new(concurrency);
     let metadata = generators::make_metadata();
     let mut totals = Totals::default();
+    let mut total_rows = 0usize;
 
     let scanned_batch = warm_up(
         mode,
@@ -220,6 +224,7 @@ fn run_case(
             }
             ReceiverOutput::Batch(batch) => batch,
         };
+        total_rows = total_rows.saturating_add(batch.num_rows());
 
         let t2 = Instant::now();
         let mut manual = make_otlp_sink(Compression::None);
@@ -233,6 +238,7 @@ fn run_case(
     }
 
     let sink_only = run_sink_only(&scanned_batch, &metadata, iterations);
+    let sink_total_rows = scanned_batch.num_rows().saturating_mul(iterations);
 
     println!(
         "{} [{} c={}]  rows={}  body={:.2} MiB",
@@ -244,8 +250,7 @@ fn run_case(
     );
     print_stage_block(
         "e2e manual",
-        case.rows * concurrency,
-        iterations,
+        total_rows,
         totals.receiver + totals.scan + totals.encode_manual,
         Some(&[
             ("receive+decode", totals.receiver),
@@ -255,8 +260,7 @@ fn run_case(
     );
     print_stage_block(
         "e2e generated-fast",
-        case.rows * concurrency,
-        iterations,
+        total_rows,
         totals.receiver + totals.scan + totals.encode_generated,
         Some(&[
             ("receive+decode", totals.receiver),
@@ -264,17 +268,10 @@ fn run_case(
             ("sink encode", totals.encode_generated),
         ]),
     );
-    print_stage_block(
-        "sink-only manual",
-        case.rows * concurrency,
-        iterations,
-        sink_only.0,
-        None,
-    );
+    print_stage_block("sink-only manual", sink_total_rows, sink_only.0, None);
     print_stage_block(
         "sink-only generated-fast",
-        case.rows * concurrency,
-        iterations,
+        sink_total_rows,
         sink_only.1,
         None,
     );
@@ -331,12 +328,20 @@ fn run_sink_only(
 
 fn print_stage_block(
     label: &str,
-    rows: usize,
-    iterations: usize,
+    total_rows: usize,
     total: Duration,
     stages: Option<&[(&str, Duration)]>,
 ) {
-    let total_rows = rows * iterations;
+    if total_rows == 0 {
+        println!(
+            "  {:<22} {:>10} EPS  {:>10} ns/row  {:>9.3} ms total",
+            label,
+            "n/a",
+            "n/a",
+            total.as_secs_f64() * 1_000.0
+        );
+        return;
+    }
     let secs = total.as_secs_f64();
     let eps = total_rows as f64 / secs;
     let ns_per_row = secs * 1e9 / total_rows as f64;

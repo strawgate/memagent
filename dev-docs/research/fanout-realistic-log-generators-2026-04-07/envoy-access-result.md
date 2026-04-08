@@ -1,11 +1,14 @@
 # Envoy Access Generator Result
 
-Verdict: SHIP
+> **Status:** Active
+> **Date:** 2026-04-08
+> **Context:** Evaluate whether an Envoy-shaped realistic generator should ship to improve benchmark fidelity.
 
 ## Recommendation
 
-Build a profile-driven Envoy access-log generator that emits a small number of
-traffic classes with correlated fields, then layer route popularity, client
+Build a profile-driven Envoy access-log generator that emits six traffic
+classes (`browse`, `api_read`, `api_write`, `ingest`, `health`,
+`failure_pocket`) with correlated fields, then layer route popularity, client
 tenure, size distributions, and retry pockets on top. This is a better fit for
 benchmarking than the current mostly-iid synthetic JSON because it preserves
 the regularities real proxies see without collapsing into perfectly repetitive

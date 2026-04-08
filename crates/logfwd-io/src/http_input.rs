@@ -1,6 +1,6 @@
 //! HTTP input source for newline-delimited payload ingestion.
 //!
-//! Listens for requests on a configurable route (default `/`), accepts
+//! Listens for requests on a configurable route (default `/ingest`), accepts
 //! optionally compressed request bodies, and forwards newline-delimited bytes
 //! to the pipeline scanner path as [`InputEvent::Data`].
 
@@ -539,9 +539,13 @@ fn read_decompressed_body(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::io::{Read as _, Write as _};
     use std::net::TcpStream;
+    use std::sync::mpsc as std_mpsc;
     use std::time::{Duration, Instant};
+
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -765,5 +769,157 @@ Connection: close\r\n\
         );
         let data = poll_until_data(&mut input, Duration::from_millis(100));
         assert!(data.is_empty(), "malformed requests must not enqueue data");
+    }
+
+    fn decode_observed_seq(bytes: &[u8]) -> BTreeSet<u64> {
+        let mut observed = BTreeSet::new();
+        for line in bytes.split(|&b| b == b'\n').filter(|line| !line.is_empty()) {
+            let value: serde_json::Value =
+                serde_json::from_slice(line).expect("observed payload line should be valid JSON");
+            let seq = value
+                .get("seq")
+                .and_then(serde_json::Value::as_u64)
+                .expect("observed payload line should include numeric seq");
+            assert!(observed.insert(seq), "duplicate seq observed: {seq}");
+        }
+        observed
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 16,
+            .. ProptestConfig::default()
+        })]
+        #[test]
+        fn http_post_poll_drop_interleavings(
+            delays_ms in prop::collection::vec(0u16..40, 1..10),
+            drop_after_ms in prop::option::of(0u16..40),
+        ) {
+            let options = HttpInputOptions {
+                path: "/ingest".to_string(),
+                ..HttpInputOptions::default()
+            };
+            let mut maybe_input = Some(
+                HttpInput::new_with_capacity("test", "127.0.0.1:0", 2, options)
+                    .expect("http input binds"),
+            );
+            let addr = maybe_input
+                .as_ref()
+                .expect("input should exist before optional drop")
+                .local_addr();
+            let url = format!("http://{addr}/ingest");
+
+            let (tx, rx) = std_mpsc::channel();
+            let mut handles = Vec::with_capacity(delays_ms.len());
+            for (idx, delay_ms) in delays_ms.iter().copied().enumerate() {
+                let tx = tx.clone();
+                let url = url.clone();
+                handles.push(std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(u64::from(delay_ms)));
+                    let body = format!("{{\"seq\":{idx}}}\n");
+                    let status = match ureq::post(&url).send(body.as_bytes()) {
+                        Ok(resp) => resp.status().as_u16(),
+                        Err(ureq::Error::StatusCode(code)) => code,
+                        Err(_) => 0,
+                    };
+                    tx.send((idx as u64, status)).expect("status send should succeed");
+                }));
+            }
+            drop(tx);
+
+            let start = Instant::now();
+            let deadline = start + Duration::from_secs(3);
+            let mut dropped = false;
+            let mut outcomes = Vec::new();
+            let mut observed_bytes = Vec::new();
+
+            while Instant::now() < deadline && outcomes.len() < delays_ms.len() {
+                while let Ok(outcome) = rx.try_recv() {
+                    outcomes.push(outcome);
+                }
+
+                if !dropped {
+                    if let Some(drop_ms) = drop_after_ms
+                        && start.elapsed() >= Duration::from_millis(u64::from(drop_ms))
+                    {
+                        drop(maybe_input.take());
+                        dropped = true;
+                    }
+                }
+
+                if let Some(input) = maybe_input.as_mut() {
+                    for event in input.poll().expect("poll should succeed") {
+                        if let InputEvent::Data { bytes, .. } = event {
+                            observed_bytes.extend_from_slice(&bytes);
+                        }
+                    }
+                }
+
+                std::thread::sleep(Duration::from_millis(5));
+            }
+
+            while let Ok(outcome) = rx.try_recv() {
+                outcomes.push(outcome);
+            }
+            for handle in handles {
+                handle.join().expect("POST worker should join");
+            }
+
+            if let Some(input) = maybe_input.as_mut() {
+                let drain_deadline = Instant::now() + Duration::from_millis(200);
+                while Instant::now() < drain_deadline {
+                    let mut drained_any = false;
+                    for event in input.poll().expect("poll should succeed") {
+                        if let InputEvent::Data { bytes, .. } = event {
+                            observed_bytes.extend_from_slice(&bytes);
+                            drained_any = true;
+                        }
+                    }
+                    if !drained_any {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
+
+            prop_assert_eq!(
+                outcomes.len(),
+                delays_ms.len(),
+                "all POST workers should report one terminal status"
+            );
+
+            let accepted: BTreeSet<u64> = outcomes
+                .iter()
+                .filter_map(|(seq, status)| {
+                    if matches!(*status, 200 | 201 | 202 | 204) {
+                        Some(*seq)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for (_, status) in &outcomes {
+                prop_assert!(
+                    matches!(*status, 200 | 201 | 202 | 204 | 429 | 503 | 0),
+                    "unexpected status code: {status}"
+                );
+                if !dropped {
+                    prop_assert_ne!(*status, 0, "transport errors are unexpected without drop");
+                }
+            }
+
+            let observed = decode_observed_seq(&observed_bytes);
+            prop_assert!(
+                observed.is_subset(&accepted),
+                "observed seqs must be subset of accepted seqs; observed={observed:?} accepted={accepted:?}"
+            );
+
+            if !dropped {
+                prop_assert_eq!(
+                    observed, accepted,
+                    "without drop, all accepted records should be drained"
+                );
+            }
+        }
     }
 }
