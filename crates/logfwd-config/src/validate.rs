@@ -491,11 +491,19 @@ impl Config {
                         }
                     }
                     OutputType::File => {
-                        if output.path.is_none() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': {} output requires 'path'",
-                                output.output_type,
-                            )));
+                        match &output.path {
+                            None => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': {} output requires 'path'",
+                                    output.output_type,
+                                )));
+                            }
+                            Some(p) if p.trim().is_empty() => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': file output 'path' must not be empty"
+                                )));
+                            }
+                            _ => {}
                         }
                         if let Some(fmt) = &output.format
                             && !matches!(fmt, Format::Json | Format::Text)
