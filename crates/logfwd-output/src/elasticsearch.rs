@@ -1215,7 +1215,7 @@ mod tests {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .expect("tokio runtime");
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<io::Result<Vec<u8>>>(16);
+            let (tx, mut rx) = mpsc::channel::<io::Result<Vec<u8>>>(16);
             let emitted = Arc::new(AtomicU64::new(0));
 
             rt.block_on(async {
