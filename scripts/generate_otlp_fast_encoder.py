@@ -30,7 +30,7 @@ def render(spec: dict) -> str:
 use arrow::array::Array;
 use super::{{AttrArray, BatchColumns, BatchMetadata, encode_fixed32, encode_key_value_bool,
     encode_key_value_double, encode_key_value_int, encode_key_value_string, encode_tag,
-    encode_varint, str_value}};
+    encode_varint, numeric_timestamp_ns, str_value}};
 use logfwd_core::otlp::{{self, Severity, bytes_field_size, encode_bytes_field, encode_fixed64,
     encode_varint_field, hex_decode, parse_severity, parse_timestamp_nanos}};
 
@@ -41,7 +41,9 @@ pub(super) fn encode_row_as_log_record_fast_v1(
     metadata: &BatchMetadata,
     buf: &mut Vec<u8>,
 ) {{
-    let timestamp_ns: u64 = if let Some((_, arr)) = columns.timestamp_col.as_ref() {{
+    let timestamp_ns: u64 = if let Some((_, arr)) = columns.timestamp_num_col.as_ref() {{
+        numeric_timestamp_ns(*arr, row)
+    }} else if let Some((_, arr)) = columns.timestamp_col.as_ref() {{
         if arr.is_null(row) {{
             0
         }} else {{
