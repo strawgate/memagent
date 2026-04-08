@@ -520,8 +520,11 @@ fn convert_request_to_json_lines(
                 // log record attributes
                 for attr in &record.attributes {
                     if let Some(ref value) = attr.value {
+                        let before = out.len();
                         write_json_any_value(&mut out, &attr.key, value);
-                        out.push(b',');
+                        if out.len() > before {
+                            out.push(b',');
+                        }
                     }
                 }
 
@@ -1284,5 +1287,81 @@ mod tests {
         let json_str = format!("{{{text}}}");
         serde_json::from_str::<serde_json::Value>(&json_str)
             .unwrap_or_else(|e| panic!("invalid JSON after key escaping: {e}\n{json_str}"));
+    }
+
+    // Regression test for issue #1665: BytesValue / ArrayValue / KvListValue attributes
+    // are skipped by write_json_any_value but the comma was still pushed, producing
+    // spurious double-commas like {"a":"1",,"c":"3"} when a skipped attr is not last.
+    #[test]
+    fn skipped_attribute_types_do_not_produce_double_commas() {
+        use opentelemetry_proto::tonic::common::v1::any_value::Value;
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_000_000_000,
+                        severity_text: "INFO".into(),
+                        body: Some(AnyValue {
+                            value: Some(Value::StringValue("test".into())),
+                        }),
+                        attributes: vec![
+                            // This one is emitted (StringValue)
+                            KeyValue {
+                                key: "before".into(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::StringValue("first".into())),
+                                }),
+                            },
+                            // BytesValue is skipped by write_json_any_value; was
+                            // still pushing a comma, producing a double-comma.
+                            KeyValue {
+                                key: "skipped_bytes".into(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::BytesValue(vec![0xde, 0xad])),
+                                }),
+                            },
+                            // This one is emitted (StringValue); was preceded by
+                            // the spurious comma from the BytesValue above.
+                            KeyValue {
+                                key: "after".into(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::StringValue("last".into())),
+                                }),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let body = request.encode_to_vec();
+        let json_bytes = decode_otlp_logs(&body).unwrap();
+        let text = String::from_utf8(json_bytes).unwrap();
+
+        // The output must be valid JSON — a double-comma would cause parse failure.
+        for line in text.lines() {
+            serde_json::from_str::<serde_json::Value>(line)
+                .unwrap_or_else(|e| panic!("invalid JSON (spurious double-comma?): {e}\n{line}"));
+        }
+
+        // The string attributes around the skipped BytesValue must still appear.
+        assert!(
+            text.contains("\"before\":\"first\""),
+            "missing 'before': {text}"
+        );
+        assert!(
+            text.contains("\"after\":\"last\""),
+            "missing 'after': {text}"
+        );
+
+        // The skipped BytesValue key must not appear in the output.
+        assert!(
+            !text.contains("skipped_bytes"),
+            "BytesValue key should be absent: {text}"
+        );
     }
 }
