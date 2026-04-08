@@ -66,8 +66,16 @@ pub struct OtlpSink {
     stats: Arc<ComponentStats>,
 }
 
-/// Per-row resource key: one optional borrowed string per `_resource_*` column.
-type ResourceKey<'a> = Vec<Option<&'a str>>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ResourceValueRef<'a> {
+    Str(&'a str),
+    Int(i64),
+    Float(u64),
+    Bool(bool),
+}
+
+/// Per-row resource key: one optional borrowed/scalar value per `_resource_*` column.
+type ResourceKey<'a> = Vec<Option<ResourceValueRef<'a>>>;
 
 /// Per-group state: the resource key and byte-range spans of encoded log records.
 type ResourceGroup<'a> = (ResourceKey<'a>, Vec<(usize, usize)>);
@@ -189,7 +197,7 @@ impl OtlpSink {
         for row in 0..num_rows {
             let mut key: ResourceKey<'_> = Vec::with_capacity(columns.resource_cols.len());
             for (_, attr) in &columns.resource_cols {
-                key.push((!attr.is_null(row)).then(|| attr.value(row)));
+                key.push(attr.value_ref(row));
             }
             let group_idx = if let Some(existing) = group_index_by_key.get(&key).copied() {
                 existing
@@ -234,12 +242,32 @@ impl OtlpSink {
             }
             for ((key_name, _), value) in columns.resource_cols.iter().zip(key.iter()) {
                 if let Some(v) = value {
-                    encode_key_value_string(
-                        &mut resource_msg,
-                        otlp::RESOURCE_ATTRIBUTES,
-                        key_name.as_bytes(),
-                        v.as_bytes(),
-                    );
+                    match v {
+                        ResourceValueRef::Str(v) => encode_key_value_string(
+                            &mut resource_msg,
+                            otlp::RESOURCE_ATTRIBUTES,
+                            key_name.as_bytes(),
+                            v.as_bytes(),
+                        ),
+                        ResourceValueRef::Int(v) => encode_key_value_int(
+                            &mut resource_msg,
+                            otlp::RESOURCE_ATTRIBUTES,
+                            key_name.as_bytes(),
+                            *v,
+                        ),
+                        ResourceValueRef::Float(v) => encode_key_value_double(
+                            &mut resource_msg,
+                            otlp::RESOURCE_ATTRIBUTES,
+                            key_name.as_bytes(),
+                            f64::from_bits(*v),
+                        ),
+                        ResourceValueRef::Bool(v) => encode_key_value_bool(
+                            &mut resource_msg,
+                            otlp::RESOURCE_ATTRIBUTES,
+                            key_name.as_bytes(),
+                            *v,
+                        ),
+                    }
                 }
             }
 
@@ -651,6 +679,23 @@ enum AttrArray<'a> {
     Bool(&'a arrow::array::BooleanArray),
 }
 
+impl AttrArray<'_> {
+    #[inline(always)]
+    fn value_ref(&self, row: usize) -> Option<ResourceValueRef<'_>> {
+        match self {
+            Self::Str(arr) => (!arr.is_null(row)).then(|| ResourceValueRef::Str(arr.value(row))),
+            Self::OtherStr(arr) => {
+                (!arr.is_null(row)).then(|| ResourceValueRef::Str(str_value(*arr, row)))
+            }
+            Self::Int(arr) => (!arr.is_null(row)).then(|| ResourceValueRef::Int(arr.value(row))),
+            Self::Float(arr) => {
+                (!arr.is_null(row)).then(|| ResourceValueRef::Float(arr.value(row).to_bits()))
+            }
+            Self::Bool(arr) => (!arr.is_null(row)).then(|| ResourceValueRef::Bool(arr.value(row))),
+        }
+    }
+}
+
 /// Pre-resolved column roles and downcast arrays for one RecordBatch.
 ///
 /// Built once in [`encode_batch`] before the per-row loop to avoid
@@ -674,7 +719,7 @@ struct BatchColumns<'a> {
     /// Non-special attribute columns: (field_name, pre-downcast array).
     attribute_cols: Vec<(String, AttrArray<'a>)>,
     /// `_resource_*` columns promoted to OTLP Resource attributes.
-    resource_cols: Vec<(String, OtlpStrCol<'a>)>,
+    resource_cols: Vec<(String, AttrArray<'a>)>,
 }
 
 fn resolve_otlp_str_col(col: &dyn Array) -> Option<OtlpStrCol<'_>> {
@@ -782,30 +827,41 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
     }
 
     let mut attribute_cols: Vec<(String, AttrArray<'_>)> = Vec::new();
-    let mut resource_cols: Vec<(String, OtlpStrCol<'_>)> = Vec::new();
+    let mut resource_cols: Vec<(String, AttrArray<'_>)> = Vec::new();
     for (idx, field) in schema.fields().iter().enumerate() {
         if excluded.contains(&idx) {
             continue;
         }
         let field_name = field.name().as_str();
         if field_name.starts_with("_resource_") {
-            if let Some(resource_attr) = resolve_otlp_str_col(batch.column(idx).as_ref()) {
-                // Prefer the original key stored in field metadata (reversible).
-                // Fall back to stripping the prefix for backwards-compatibility with
-                // batches that pre-date the metadata annotation.
-                let original_key = field
-                    .metadata()
-                    .get("logfwd.resource_key")
-                    .cloned()
-                    .unwrap_or_else(|| field_name.strip_prefix("_resource_").unwrap().to_string());
-                resource_cols.push((original_key, resource_attr));
-            } else {
-                tracing::warn!(
-                    column = field_name,
-                    data_type = ?field.data_type(),
-                    "dropping non-string _resource_ column; expected Utf8, Utf8View, or LargeUtf8"
-                );
-            }
+            // Prefer the original key stored in field metadata (reversible).
+            // Fall back to stripping the prefix for backwards-compatibility with
+            // batches that pre-date the metadata annotation.
+            let original_key = field
+                .metadata()
+                .get("logfwd.resource_key")
+                .cloned()
+                .unwrap_or_else(|| field_name.strip_prefix("_resource_").unwrap().to_string());
+            let resource_attr = match field.data_type() {
+                DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
+                DataType::Float64 => {
+                    AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>())
+                }
+                DataType::Boolean => AttrArray::Bool(batch.column(idx).as_boolean()),
+                DataType::Struct(_) => {
+                    tracing::warn!(
+                        column = field_name,
+                        data_type = ?field.data_type(),
+                        "dropping struct _resource_ column; OTLP Resource attributes only support scalar values"
+                    );
+                    continue;
+                }
+                _ => resolve_otlp_str_col(batch.column(idx).as_ref()).map_or_else(
+                    || AttrArray::OtherStr(batch.column(idx).as_ref()),
+                    AttrArray::Str,
+                ),
+            };
+            resource_cols.push((original_key, resource_attr));
             continue;
         }
         // Dispatch on the actual Arrow DataType, not the column name suffix.
@@ -2041,6 +2097,109 @@ mod tests {
                 .iter()
                 .all(|kv| kv.key != "_resource_service_name"),
             "resource columns must not be log record attrs"
+        );
+    }
+
+    #[test]
+    fn typed_resource_columns_group_rows_and_encode_typed_attrs() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::any_value::Value;
+        use prost::Message;
+
+        let shard_field = Field::new("_resource_service_shard", DataType::Int64, true)
+            .with_metadata(std::collections::HashMap::from([(
+                "logfwd.resource_key".to_string(),
+                "service.shard".to_string(),
+            )]));
+        let enabled_field = Field::new("_resource_service_enabled", DataType::Boolean, true)
+            .with_metadata(std::collections::HashMap::from([(
+                "logfwd.resource_key".to_string(),
+                "service.enabled".to_string(),
+            )]));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            shard_field,
+            enabled_field,
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![
+                    Some("a1"),
+                    Some("b1"),
+                    Some("a2"),
+                    Some("b2"),
+                ])),
+                Arc::new(Int64Array::from(vec![Some(1), Some(2), Some(1), Some(2)])),
+                Arc::new(arrow::array::BooleanArray::from(vec![
+                    Some(true),
+                    Some(false),
+                    Some(true),
+                    Some(false),
+                ])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request =
+            ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice()).expect("decode request");
+        assert_eq!(request.resource_logs.len(), 2, "two typed resource groups");
+
+        let first = &request.resource_logs[0];
+        let second = &request.resource_logs[1];
+
+        let first_bodies: Vec<&str> = first.scope_logs[0]
+            .log_records
+            .iter()
+            .map(|lr| {
+                lr.body
+                    .as_ref()
+                    .and_then(|v| match &v.value {
+                        Some(Value::StringValue(s)) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("")
+            })
+            .collect();
+        let second_bodies: Vec<&str> = second.scope_logs[0]
+            .log_records
+            .iter()
+            .map(|lr| {
+                lr.body
+                    .as_ref()
+                    .and_then(|v| match &v.value {
+                        Some(Value::StringValue(s)) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("")
+            })
+            .collect();
+        assert_eq!(first_bodies, vec!["a1", "a2"]);
+        assert_eq!(second_bodies, vec!["b1", "b2"]);
+
+        let first_attrs = &first.resource.as_ref().expect("resource").attributes;
+        assert!(
+            first_attrs.iter().any(|kv| {
+                kv.key == "service.shard"
+                    && matches!(
+                        kv.value.as_ref().and_then(|v| v.value.as_ref()),
+                        Some(Value::IntValue(1))
+                    )
+            }),
+            "int resource attrs must be preserved and grouped"
+        );
+        assert!(
+            first_attrs.iter().any(|kv| {
+                kv.key == "service.enabled"
+                    && matches!(
+                        kv.value.as_ref().and_then(|v| v.value.as_ref()),
+                        Some(Value::BoolValue(true))
+                    )
+            }),
+            "bool resource attrs must be preserved and grouped"
         );
     }
 
