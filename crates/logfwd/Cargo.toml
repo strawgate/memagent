@@ -11,8 +11,8 @@ doctest = false
 [features]
 default = ["datafusion"]
 dhat-heap = ["dhat", "logfwd-runtime/dhat-heap"]
-cpu-profiling = ["pprof", "logfwd-runtime/cpu-profiling"]
-turmoil = ["dep:turmoil", "logfwd-runtime/turmoil"]
+cpu-profiling = ["logfwd-runtime/cpu-profiling"]
+turmoil = ["logfwd-runtime/turmoil"]
 datafusion = ["dep:logfwd-transform", "logfwd-runtime/datafusion"]
 
 [dependencies]
@@ -20,7 +20,6 @@ clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }
 clap_complete_nushell = { workspace = true }
 logfwd-runtime = { version = "0.1.0", path = "../logfwd-runtime", default-features = false }
-backon = { workspace = true }
 bytes = { workspace = true }
 logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
@@ -29,22 +28,14 @@ logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-transform = { version = "0.1.0", path = "../logfwd-transform", optional = true }
 logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 dhat = { version = "0.3", optional = true }
-pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 libc = "0.2"
-memchr = "2"
-smallvec = { workspace = true }
-thiserror = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
-opentelemetry-otlp = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tracing-opentelemetry = { workspace = true }
 arrow = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 tokio-util = { version = "0.7" }
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
-turmoil = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 tikv-jemallocator = { version = "0.6", features = ["stats"] }

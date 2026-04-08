@@ -2474,7 +2474,6 @@ name = "logfwd"
 version = "0.1.0"
 dependencies = [
  "arrow",
- "backon",
  "bytes",
  "clap",
  "clap_complete",
@@ -2490,25 +2489,18 @@ dependencies = [
  "logfwd-test-utils",
  "logfwd-transform",
  "logfwd-types",
- "memchr",
  "opentelemetry",
- "opentelemetry-otlp",
  "opentelemetry_sdk",
- "pprof",
  "proptest",
  "serial_test",
- "smallvec",
  "stats_alloc",
  "tempfile",
- "thiserror",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tiny_http",
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
  "turmoil",
 ]
 

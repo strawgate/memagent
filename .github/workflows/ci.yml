@@ -59,7 +59,7 @@ jobs:
             tla:
               - 'tla/**'
               - 'crates/logfwd-core/src/pipeline/**'
-              - 'crates/logfwd/src/pipeline.rs'
+              - 'crates/logfwd-runtime/src/pipeline.rs'
 
   # -------------------------------------------------------------------------
   # Frontend checks — format, lint, typecheck in one job (single npm install)
