@@ -1097,6 +1097,52 @@ mod tests {
     }
 
     proptest! {
+        /// CRLF normalization invariant: scanning a JSON object with CRLF line endings
+        /// must yield the same field values as scanning the same object with LF endings,
+        /// and neither _raw nor any field value must contain a bare \r.
+        ///
+        /// The strategy pads the JSON to probe near 64-byte SIMD block edges.
+        #[test]
+        fn crlf_and_lf_produce_identical_rows(
+            val in "[a-z0-9]{1,20}",
+            padding in 0usize..90,
+        ) {
+            let spaces = " ".repeat(padding);
+            let lf_line = alloc::format!("{{\"k\":\"{val}\"}}\n");
+            let crlf_line = alloc::format!("{spaces}{{\"k\":\"{val}\"}}\r\n");
+            let lf_with_spaces = alloc::format!("{spaces}{{\"k\":\"{val}\"}}\n");
+
+            let config = ScanConfig::default();
+
+            let mut lf_builder = TestBuilder::new();
+            scan_streaming(lf_line.as_bytes(), &config, &mut lf_builder);
+
+            let mut crlf_builder = TestBuilder::new();
+            scan_streaming(crlf_line.as_bytes(), &config, &mut crlf_builder);
+
+            let mut lf_spaces_builder = TestBuilder::new();
+            scan_streaming(lf_with_spaces.as_bytes(), &config, &mut lf_spaces_builder);
+
+            // Both CRLF and LF variants should produce exactly one row.
+            prop_assert_eq!(lf_builder.rows.len(), 1, "LF: should produce one row");
+            prop_assert_eq!(crlf_builder.rows.len(), 1, "CRLF: should produce one row");
+            prop_assert_eq!(lf_spaces_builder.rows.len(), 1, "LF+spaces: should produce one row");
+
+            // Field values must be identical regardless of line-ending style.
+            prop_assert_eq!(
+                &lf_builder.rows[0], &crlf_builder.rows[0],
+                "CRLF and LF must produce identical field values"
+            );
+
+            // _raw (if captured) must not contain a bare \r.
+            for raw in crlf_builder.raws.iter().flatten() {
+                prop_assert!(
+                    !raw.contains('\r'),
+                    "raw value must not contain bare \\r after CRLF normalization: {raw:?}"
+                );
+            }
+        }
+
         #[test]
         fn deep_nesting_preserves_sibling_fields(extra_depth in 1usize..8, nested_first in any::<bool>()) {
             let nested = alternating_nested_value(extra_depth);
