@@ -627,6 +627,11 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
                     out.push(b',');
                 }
 
+                for (key, value) in &resource_attrs {
+                    write_json_string_field(&mut out, key, value);
+                    out.push(b',');
+                }
+
                 if let Some(attrs) = record.get("attributes").and_then(|v| v.as_array()) {
                     for kv in attrs {
                         if let (Some(key), Some(val)) =
@@ -636,11 +641,6 @@ fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
                             out.push(b',');
                         }
                     }
-                }
-
-                for (key, value) in &resource_attrs {
-                    write_json_string_field(&mut out, key, value);
-                    out.push(b',');
                 }
 
                 if let Some(tid) = record.get("traceId").and_then(|v| v.as_str()) {
@@ -864,6 +864,12 @@ fn convert_request_to_json_lines(request: &ExportLogsServiceRequest) -> Vec<u8> 
                     }
                 }
 
+                // resource attributes
+                for (key, value) in &resource_attrs {
+                    write_json_string_field(&mut out, key, value);
+                    out.push(b',');
+                }
+
                 // log record attributes
                 for attr in &record.attributes {
                     if let Some(ref value) = attr.value {
@@ -871,12 +877,6 @@ fn convert_request_to_json_lines(request: &ExportLogsServiceRequest) -> Vec<u8> 
                             out.push(b',');
                         }
                     }
-                }
-
-                // resource attributes
-                for (key, value) in &resource_attrs {
-                    write_json_string_field(&mut out, key, value);
-                    out.push(b',');
                 }
 
                 // trace context (write hex directly to avoid allocation)
@@ -1555,16 +1555,16 @@ mod tests {
                         );
                     }
 
+                    for (key, value) in &resource_attrs {
+                        obj.insert(key.clone(), serde_json::Value::String(value.clone()));
+                    }
+
                     for attr in &record.attributes {
                         if let Some(value) = &attr.value
                             && let Some(json_value) = any_value_to_json_simple(value)
                         {
                             obj.insert(attr.key.clone(), json_value);
                         }
-                    }
-
-                    for (key, value) in &resource_attrs {
-                        obj.insert(key.clone(), serde_json::Value::String(value.clone()));
                     }
 
                     if !record.trace_id.is_empty() {
@@ -1947,6 +1947,95 @@ mod tests {
             assert_eq!(lhs.get("status"), rhs.get("status"));
             assert_eq!(lhs.get("payload"), rhs.get("payload"));
         }
+    }
+
+    #[test]
+    fn record_attributes_override_resource_attributes_in_protobuf_paths() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("resource".into())),
+                        }),
+                    }],
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "service.name".into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("record".into())),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let json_lines = decode_otlp_logs(&request.encode_to_vec()).expect("protobuf decode");
+        let rows = parse_json_lines_values(&json_lines);
+        assert_eq!(rows.len(), 1, "expected one decoded row");
+        assert_eq!(
+            rows[0]
+                .get("service.name")
+                .and_then(serde_json::Value::as_str),
+            Some("record"),
+            "record attribute must override same-key resource attribute in JSON lines"
+        );
+
+        let batch = convert_request_to_batch(&request).expect("structured batch decode");
+        let service_name = batch
+            .column_by_name("service.name")
+            .expect("service.name column should exist");
+        let service_name = service_name
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("service.name must be a string column");
+        assert_eq!(
+            service_name.value(0),
+            "record",
+            "record attribute must override same-key resource attribute in structured batch"
+        );
+    }
+
+    #[test]
+    fn record_attributes_override_resource_attributes_in_json_input_path() {
+        let json_body = serde_json::json!({
+            "resourceLogs": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "resource"}
+                    }]
+                },
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "attributes": [{
+                            "key": "service.name",
+                            "value": {"stringValue": "record"}
+                        }]
+                    }]
+                }]
+            }]
+        });
+
+        let json_lines =
+            decode_otlp_logs_json(json_body.to_string().as_bytes()).expect("json decode");
+        let rows = parse_json_lines_values(&json_lines);
+        assert_eq!(rows.len(), 1, "expected one decoded row");
+        assert_eq!(
+            rows[0]
+                .get("service.name")
+                .and_then(serde_json::Value::as_str),
+            Some("record"),
+            "record attribute must override same-key resource attribute for OTLP JSON input"
+        );
     }
 
     #[test]
