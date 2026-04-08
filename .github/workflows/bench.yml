@@ -1,4 +1,4 @@
-name: Nightly Benchmarks
+name: Nightly Benchmarks (Host Lane)
 
 on:
   schedule:
@@ -496,6 +496,7 @@ jobs:
         run: |
           # Ensure benchmark label exists (gh issue create --label fails otherwise).
           gh label create benchmark --description "Nightly benchmark reports" --color "1D76DB" 2>/dev/null || true
+          gh label create benchmark-host --description "Host/non-Kubernetes benchmark reports" --color "0E8A16" 2>/dev/null || true
 
           DATE=$(date -u +%Y-%m-%d)
           COMMIT=$(git rev-parse --short HEAD)
@@ -515,14 +516,16 @@ jobs:
           See [development dashboard](https://strawgate.github.io/memagent/bench/development.html) for full results."
           fi
 
-          TITLE="Benchmark results ${DATE} (${COMMIT})"
+          TITLE="Host benchmark results ${DATE} (${COMMIT})"
           BODY="$(cat <<HEREDOC
-          ## Benchmark Results --- ${DATE}
+          ## Host Benchmark Results --- ${DATE}
 
           **Commit:** \`${COMMIT}\` on \`main\`
           **Runner:** \`ubuntu-latest\` (matrix: agent x scenario)
           **Iterations:** ${{ env.ITERATIONS }} per cell
           **Dashboard:** https://strawgate.github.io/memagent/bench/
+          **Kubernetes EPS lane:** [memagent-e2e bench suite](https://github.com/strawgate/memagent-e2e/actions/workflows/bench-kind-smoke.yml)
+          **Latest K8s benchmark report issue:** [open report:bench-nightly-eps issues](https://github.com/strawgate/memagent-e2e/issues?q=is%3Aopen+label%3Areport%3Abench-nightly-eps)
 
           ---
 
@@ -547,4 +550,5 @@ jobs:
           gh issue create \
             --title "$TITLE" \
             --body "$BODY" \
-            --label benchmark
+            --label benchmark \
+            --label benchmark-host
