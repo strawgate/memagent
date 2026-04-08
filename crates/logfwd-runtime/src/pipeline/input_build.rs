@@ -4,7 +4,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use logfwd_config::{
     Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorProfileConfig,
-    InputConfig, InputType,
+    HttpMethodConfig, InputConfig, InputType,
 };
 use logfwd_io::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
@@ -43,6 +43,14 @@ fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> 
             if !matches!(format, Format::Json) {
                 return Err(format!(
                     "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
+                    format, input_type
+                ));
+            }
+        }
+        InputType::Http => {
+            if !matches!(format, Format::Json | Format::Raw) {
+                return Err(format!(
+                    "input '{name}': format {:?} is not supported for {:?} inputs (expected json or raw)",
                     format, input_type
                 ));
             }
@@ -171,6 +179,45 @@ pub(super) fn build_input_state(
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
+        InputType::Http => {
+            let addr = cfg
+                .listen
+                .as_ref()
+                .ok_or_else(|| format!("input '{name}': http input requires 'listen'"))?;
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            validate_input_format(name, InputType::Http, &format)?;
+            let mut options = logfwd_io::http_input::HttpInputOptions::default();
+            if let Some(http) = &cfg.http {
+                if let Some(path) = &http.path {
+                    options.path = path.clone();
+                }
+                if let Some(strict_path) = http.strict_path {
+                    options.strict_path = strict_path;
+                }
+                if let Some(max_request_body_size) = http.max_request_body_size {
+                    options.max_request_body_size = max_request_body_size;
+                }
+                if let Some(response_code) = http.response_code {
+                    options.response_code = response_code;
+                }
+                if let Some(method) = &http.method {
+                    options.method = match method {
+                        HttpMethodConfig::Get => logfwd_io::http_input::HttpInputMethod::Get,
+                        HttpMethodConfig::Post => logfwd_io::http_input::HttpInputMethod::Post,
+                        HttpMethodConfig::Put => logfwd_io::http_input::HttpInputMethod::Put,
+                        HttpMethodConfig::Delete => logfwd_io::http_input::HttpInputMethod::Delete,
+                        HttpMethodConfig::Patch => logfwd_io::http_input::HttpInputMethod::Patch,
+                        HttpMethodConfig::Head => logfwd_io::http_input::HttpInputMethod::Head,
+                        HttpMethodConfig::Options => {
+                            logfwd_io::http_input::HttpInputMethod::Options
+                        }
+                    };
+                }
+            }
+            let source = logfwd_io::http_input::HttpInput::new_with_options(name, addr, options)
+                .map_err(|e| format!("input '{name}': failed to start HTTP input: {e}"))?;
+            (Box::new(source), format, 4 * 1024 * 1024)
+        }
         InputType::Udp => {
             let addr = cfg
                 .listen
@@ -229,4 +276,25 @@ pub(super) fn otlp_uses_structured_ingress(
     // synthesize scanner-owned `_raw`. Keep legacy JSON-lines -> scanner mode
     // whenever the SQL plan requires `_raw` semantics.
     !scan_config.keep_raw
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_input_accepts_json_and_raw_formats() {
+        assert!(validate_input_format("http", InputType::Http, &Format::Json).is_ok());
+        assert!(validate_input_format("http", InputType::Http, &Format::Raw).is_ok());
+    }
+
+    #[test]
+    fn http_input_rejects_non_json_raw_formats() {
+        let err = validate_input_format("http", InputType::Http, &Format::Cri)
+            .expect_err("http input must reject cri format");
+        assert!(
+            err.contains("expected json or raw"),
+            "unexpected error: {err}"
+        );
+    }
 }

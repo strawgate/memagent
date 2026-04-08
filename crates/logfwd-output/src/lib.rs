@@ -49,12 +49,14 @@ use stdout::*;
 pub use tcp_sink::{TcpSink, TcpSinkFactory};
 pub use udp_sink::{UdpSink, UdpSinkFactory};
 
-pub(crate) use conflict_columns::{ColInfo, ColVariant, build_col_infos, get_array, is_null};
+pub use conflict_columns::{ColInfo, ColVariant, build_col_infos};
+pub(crate) use conflict_columns::{get_array, is_null};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use conflict_columns::{is_conflict_struct, json_priority, str_priority};
 pub(crate) use metadata::build_auth_headers;
-pub(crate) use row_json::{coalesce_as_str, str_value, write_row_json};
+pub use row_json::write_row_json;
+pub(crate) use row_json::{coalesce_as_str, str_value};
 
 #[cfg(test)]
 use arrow::array::Array;

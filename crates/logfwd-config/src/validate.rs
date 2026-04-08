@@ -146,7 +146,7 @@ impl Config {
                             }
                         }
                     }
-                    InputType::Otlp => {
+                    InputType::Otlp | InputType::Http => {
                         if input.listen.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'listen' is required for {} inputs",
@@ -172,6 +172,11 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
                             )));
                         }
+                        if input.http.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
+                            )));
+                        }
                         if input.listen.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'listen' is not supported for file inputs"
@@ -187,6 +192,11 @@ impl Config {
                         if input.generator.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
+                            )));
+                        }
+                        if input.http.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
                             )));
                         }
                         if input.path.is_some() {
@@ -211,6 +221,11 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'tls' is not supported for otlp inputs"
                             )));
                         }
+                        if input.http.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
+                            )));
+                        }
                         if input.generator.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
@@ -232,6 +247,54 @@ impl Config {
                             )));
                         }
                     }
+                    InputType::Http => {
+                        if input.tls.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'tls' is not supported for http inputs"
+                            )));
+                        }
+                        if input.generator.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
+                            )));
+                        }
+                        if input.path.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'path' is not supported for http inputs; use http.path"
+                            )));
+                        }
+                        if input.max_open_files.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'max_open_files' is not supported for http inputs"
+                            )));
+                        }
+                        if input.glob_rescan_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for http inputs"
+                            )));
+                        }
+                        if let Some(http) = &input.http {
+                            if let Some(path) = &http.path
+                                && !path.starts_with('/')
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': http.path must start with '/'"
+                                )));
+                            }
+                            if http.max_request_body_size == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': http.max_request_body_size must be at least 1"
+                                )));
+                            }
+                            if let Some(code) = http.response_code
+                                && !matches!(code, 200 | 201 | 202 | 204)
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': http.response_code must be one of 200, 201, 202, 204"
+                                )));
+                            }
+                        }
+                    }
                     InputType::Generator => {
                         if input.tls.is_some() {
                             return Err(ConfigError::Validation(format!(
@@ -241,6 +304,11 @@ impl Config {
                         if input.listen.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'listen' is not supported for generator inputs; use generator.events_per_sec"
+                            )));
+                        }
+                        if input.http.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
                             )));
                         }
                         if input.path.is_some() {
@@ -333,6 +401,11 @@ impl Config {
                         if input.generator.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
+                            )));
+                        }
+                        if input.http.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
                             )));
                         }
                     }

@@ -33,6 +33,7 @@ pub enum InputType {
     Udp,
     Tcp,
     Otlp,
+    Http,
     Generator,
     ArrowIpc,
 }
@@ -44,6 +45,7 @@ impl fmt::Display for InputType {
             InputType::Udp => f.write_str("udp"),
             InputType::Tcp => f.write_str("tcp"),
             InputType::Otlp => f.write_str("otlp"),
+            InputType::Http => f.write_str("http"),
             InputType::Generator => f.write_str("generator"),
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
         }
@@ -179,6 +181,28 @@ pub struct GeneratorSequenceConfig {
     pub start: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum HttpMethodConfig {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Head,
+    Options,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HttpInputConfig {
+    pub path: Option<String>,
+    pub strict_path: Option<bool>,
+    pub method: Option<HttpMethodConfig>,
+    pub max_request_body_size: Option<usize>,
+    pub response_code: Option<u16>,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratorInputConfig {
@@ -216,6 +240,8 @@ pub struct InputConfig {
     pub glob_rescan_interval_ms: Option<u64>,
     #[serde(default)]
     pub generator: Option<GeneratorInputConfig>,
+    #[serde(default)]
+    pub http: Option<HttpInputConfig>,
     pub sql: Option<String>,
     #[serde(default)]
     pub tls: Option<TlsInputConfig>,
