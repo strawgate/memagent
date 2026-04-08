@@ -39,10 +39,17 @@ test:
 test-all:
     cargo nextest run --workspace --profile ci
 
-# Run Kani formal verification proofs (logfwd-core only)
+# Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:
+    just kani-required
+
+# Run the required Kani crate set enforced by CI guardrails.
+kani-required:
     RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
+    RUSTC_WRAPPER="" cargo kani -p logfwd-arrow -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
+    RUSTC_WRAPPER="" cargo kani -p logfwd-io -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
+    RUSTC_WRAPPER="" cargo kani -p logfwd-output -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
 
 # Validate the non-core Kani boundary contract.
 kani-boundary:
