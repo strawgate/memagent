@@ -242,17 +242,37 @@ fn reader_loop(read_fd: i32, orig_fd: i32, state: &CaptureState) {
     state.active.store(false, Ordering::Relaxed);
 }
 
-/// Strip ANSI escape sequences (colors, bold, etc).
+/// Strip ANSI escape sequences (colors, bold, OSC sequences, etc).
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            // Skip until we hit a letter (the terminator of the escape sequence).
-            for c2 in chars.by_ref() {
-                if c2.is_ascii_alphabetic() {
-                    break;
+            match chars.next() {
+                Some(']') => {
+                    // OSC sequence: terminated by BEL (\x07) or ST (\x1b\).
+                    for c2 in chars.by_ref() {
+                        if c2 == '\x07' {
+                            break;
+                        }
+                        if c2 == '\x1b' {
+                            // ST is \x1b\ — consume the trailing backslash.
+                            chars.next();
+                            break;
+                        }
+                    }
                 }
+                Some(c2) => {
+                    // CSI or other sequence: skip until alphabetic terminator.
+                    if !c2.is_ascii_alphabetic() {
+                        for c3 in chars.by_ref() {
+                            if c3.is_ascii_alphabetic() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                None => {}
             }
         } else {
             out.push(c);
@@ -311,6 +331,25 @@ mod tests {
         assert_eq!(strip_ansi("\x1b[31;1mRED\x1b[0m"), "RED");
         assert_eq!(strip_ansi("no escapes"), "no escapes");
         assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn test_strip_ansi_osc_bel_terminated() {
+        // Regression test for issue #1682: OSC sequences must be stripped to BEL,
+        // not stopped at the first alphabetic char inside the payload.
+        // Window-title set: \x1b]0;My Title\x07
+        assert_eq!(strip_ansi("\x1b]0;My Title\x07hello"), "hello");
+        // Terminal hyperlink (OSC 8): \x1b]8;;url\x07text\x1b]8;;\x07
+        assert_eq!(
+            strip_ansi("\x1b]8;;https://example.com\x07Click here\x1b]8;;\x07"),
+            "Click here"
+        );
+    }
+
+    #[test]
+    fn test_strip_ansi_osc_st_terminated() {
+        // OSC terminated by String Terminator \x1b\ instead of BEL.
+        assert_eq!(strip_ansi("\x1b]0;My Title\x1b\\hello"), "hello");
     }
 
     #[test]
