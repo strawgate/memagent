@@ -140,14 +140,13 @@ Accept log lines on a TCP socket.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:5140`. |
-| `tls.cert_file` | string | No | PEM server certificate chain (must be paired with `tls.key_file`). |
-| `tls.key_file` | string | No | PEM private key (must be paired with `tls.cert_file`). |
-| `tls.require_client_auth` | bool | No | Require mTLS client cert verification. |
-| `tls.client_ca_file` | string | Cond. | Required when `tls.require_client_auth: true`. |
 
 TCP framing uses RFC 6587 octet-counting when a valid `<len><space>` prefix is
 present, and falls back to legacy newline framing otherwise. Oversized frames
 (`> 1 MiB`) are discarded.
+
+TLS is not supported for TCP inputs (mTLS is not implemented); any `tls:`
+block under a `tcp` input is rejected at config validation time.
 
 ```yaml
 input:

@@ -1,6 +1,8 @@
 use std::io::{self, Write};
 
-use arrow::array::{Array, AsArray};
+use arrow::array::{
+    Array, AsArray, BinaryArray, FixedSizeBinaryArray, LargeBinaryArray, StructArray,
+};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use arrow::util::display::array_value_to_string;
@@ -76,6 +78,20 @@ pub(crate) fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
     }
     out.push(b'"');
     Ok(())
+}
+
+/// Write bytes as a lowercase hex JSON string prefixed with `0x`.
+fn write_json_hex_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    // Reserve for surrounding quotes + "0x" prefix + 2 hex chars per byte.
+    out.reserve(4 + bytes.len().saturating_mul(2));
+    out.push(b'"');
+    out.extend_from_slice(b"0x");
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize]);
+        out.push(HEX[(b & 0x0f) as usize]);
+    }
+    out.push(b'"');
 }
 
 /// Write a single Arrow value as JSON, dispatching on the actual Arrow DataType.
@@ -155,6 +171,63 @@ pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -
         DataType::Boolean => {
             let v = arr.as_boolean().value(row);
             out.extend_from_slice(if v { b"true" } else { b"false" });
+        }
+        DataType::Struct(schema_fields) => {
+            let Some(struct_arr) = arr.as_any().downcast_ref::<StructArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Struct did not downcast to StructArray",
+                ));
+            };
+            out.push(b'{');
+            let num_fields = struct_arr.num_columns();
+            let mut first = true;
+            for field_idx in 0..num_fields {
+                if !first {
+                    out.push(b',');
+                }
+                first = false;
+                let field_name = schema_fields[field_idx].name();
+                write_json_string(out, field_name)?;
+                out.push(b':');
+                let child_arr = struct_arr.column(field_idx);
+                if child_arr.is_null(row) {
+                    out.extend_from_slice(b"null");
+                } else {
+                    write_json_value(child_arr.as_ref(), row, out)?;
+                }
+            }
+            out.push(b'}');
+        }
+        DataType::Binary => {
+            let Some(bin_arr) = arr.as_any().downcast_ref::<BinaryArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Binary did not downcast to BinaryArray",
+                ));
+            };
+            let bytes = bin_arr.value(row);
+            write_json_hex_bytes(out, bytes);
+        }
+        DataType::LargeBinary => {
+            let Some(large_bin_arr) = arr.as_any().downcast_ref::<LargeBinaryArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::LargeBinary did not downcast to LargeBinaryArray",
+                ));
+            };
+            let bytes = large_bin_arr.value(row);
+            write_json_hex_bytes(out, bytes);
+        }
+        DataType::FixedSizeBinary(_) => {
+            let Some(fixed_bin_arr) = arr.as_any().downcast_ref::<FixedSizeBinaryArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::FixedSizeBinary did not downcast to FixedSizeBinaryArray",
+                ));
+            };
+            let bytes = fixed_bin_arr.value(row);
+            write_json_hex_bytes(out, bytes);
         }
         _ => {
             let fallback = array_value_to_string(arr, row).unwrap_or_default();
