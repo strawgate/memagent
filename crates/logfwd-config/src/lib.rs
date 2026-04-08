@@ -940,6 +940,11 @@ impl Config {
             for (j, enrichment) in pipe.enrichment.iter().enumerate() {
                 match enrichment {
                     EnrichmentConfig::GeoDatabase(geo_cfg) => {
+                        if geo_cfg.path.trim().is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: geo_database 'path' must not be empty"
+                            )));
+                        }
                         // Only check existence for absolute paths; relative paths
                         // are resolved against base_path in Pipeline::from_config.
                         let p = Path::new(&geo_cfg.path);
@@ -958,6 +963,11 @@ impl Config {
                         }
                     }
                     EnrichmentConfig::Csv(cfg) => {
+                        if cfg.path.trim().is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: csv 'path' must not be empty"
+                            )));
+                        }
                         let p = Path::new(&cfg.path);
                         if p.is_absolute() && !p.exists() {
                             return Err(ConfigError::Validation(format!(
@@ -967,6 +977,11 @@ impl Config {
                         }
                     }
                     EnrichmentConfig::Jsonl(cfg) => {
+                        if cfg.path.trim().is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: jsonl 'path' must not be empty"
+                            )));
+                        }
                         let p = Path::new(&cfg.path);
                         if p.is_absolute() && !p.exists() {
                             return Err(ConfigError::Validation(format!(
@@ -2699,6 +2714,75 @@ pipelines:
         assert!(
             err.to_string().contains("only supported for loki"),
             "expected loki-only message: {err}"
+        );
+    }
+
+    // Regression tests for issue #1667: empty paths for geo_database/csv/jsonl enrichment
+    // must be rejected at --validate time, not silently passed through to runtime.
+
+    #[test]
+    fn geo_database_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: geo_database
+        format: mmdb
+        path: ""
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "expected empty-path rejection for geo_database: {err}"
+        );
+    }
+
+    #[test]
+    fn csv_enrichment_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: csv
+        table_name: assets
+        path: ""
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "expected empty-path rejection for csv enrichment: {err}"
+        );
+    }
+
+    #[test]
+    fn jsonl_enrichment_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: jsonl
+        table_name: owners
+        path: "   "
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "expected empty-path rejection for jsonl enrichment: {err}"
         );
     }
 }
