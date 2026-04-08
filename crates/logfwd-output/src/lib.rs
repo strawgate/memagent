@@ -433,6 +433,32 @@ fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -> io::Resul
                 out.extend_from_slice(if v { b"true" } else { b"false" });
             }
         }
+        // Temporal types: Timestamp, Date, Time, Duration.
+        // str_value() falls through to "" for these types — silent data loss.
+        // Cast to Utf8 to get Arrow's human-readable (ISO 8601 / duration) representation.
+        DataType::Timestamp(_, _)
+        | DataType::Date32
+        | DataType::Date64
+        | DataType::Time32(_)
+        | DataType::Time64(_)
+        | DataType::Duration(_) => {
+            // Slice to 1 row and cast to Utf8 to get Arrow's built-in formatting.
+            let sliced = arr.slice(row, 1);
+            match arrow::compute::cast(sliced.as_ref(), &DataType::Utf8) {
+                Ok(cast_arr) => {
+                    let s_arr = cast_arr.as_string::<i32>();
+                    if s_arr.is_null(0) {
+                        out.extend_from_slice(b"null");
+                    } else {
+                        write_json_string(out, s_arr.value(0))?;
+                    }
+                }
+                Err(_) => {
+                    // Unexpected cast failure — emit null rather than corrupt output.
+                    out.extend_from_slice(b"null");
+                }
+            }
+        }
         _ => {
             write_json_string(out, str_value(arr, row))?;
         }
@@ -1797,6 +1823,57 @@ mod write_row_json_tests {
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["level"], "INFO");
+    }
+
+    // Regression tests for issue #1662: Timestamp and Date columns were silently
+    // emitted as "" because str_value() returns "" for non-string types.
+    // After the fix they must produce a non-empty JSON string value.
+
+    #[test]
+    fn timestamp_nanosecond_serializes_as_nonempty_string() {
+        use arrow::array::TimestampNanosecondArray;
+        use arrow::datatypes::TimeUnit;
+        // 2024-01-15 10:30:00 UTC in nanoseconds.
+        let ns: i64 = 1705314600_000_000_000;
+        let arr = TimestampNanosecondArray::from(vec![ns]);
+        let batch = make_batch(vec![("event_ts", Arc::new(arr) as Arc<dyn Array>)]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        // Before fix: v["event_ts"] == ""  (data loss)
+        // After fix: v["event_ts"] is a non-empty string representing the timestamp.
+        assert!(
+            v["event_ts"].is_string(),
+            "Timestamp column must serialize as string, got: {json}"
+        );
+        assert!(
+            !v["event_ts"].as_str().unwrap().is_empty(),
+            "Timestamp column must not be empty string, got: {json}"
+        );
+        // The output must contain the date 2024-01-15.
+        assert!(
+            v["event_ts"].as_str().unwrap().contains("2024"),
+            "Timestamp must contain the year 2024, got: {json}"
+        );
+        let _ = TimeUnit::Nanosecond; // silence unused import warning
+    }
+
+    #[test]
+    fn date32_serializes_as_nonempty_string() {
+        use arrow::array::Date32Array;
+        // Days since epoch for 2024-01-15 = 54,027 days.
+        let days = (2024 - 1970) * 365 + 13 * 30 + 15; // approximate
+        let arr = Date32Array::from(vec![days as i32]);
+        let batch = make_batch(vec![("event_date", Arc::new(arr) as Arc<dyn Array>)]);
+        let json = render(&batch, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
+        assert!(
+            v["event_date"].is_string(),
+            "Date32 column must serialize as string, got: {json}"
+        );
+        assert!(
+            !v["event_date"].as_str().unwrap().is_empty(),
+            "Date32 column must not be empty string, got: {json}"
+        );
     }
 
     /// Regression for #705: user-defined SQL aliases ending in `_int`, `_str`,
