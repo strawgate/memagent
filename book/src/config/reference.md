@@ -363,9 +363,7 @@ Special columns added by the scanner / input format layer:
 | `_raw` | string | Original input line (only when `keep_raw: true`, or when a non-JSON CRI line is wrapped for scanner safety). |
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream` | string | CRI stream name (`stdout` / `stderr`). |
-
-File-backed source-path metadata is not yet exposed as a SQL column. Track that
-gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
+| `_source_path` | string | Canonical file path for file-backed rows (JSON and CRI file inputs). |
 
 ### Built-in UDFs
 
@@ -415,10 +413,13 @@ enrichment:
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
 
-This enrichment table is ready to expose path-derived metadata, but file-backed
-inputs do not yet inject a source-path column into the `logs` table. The join
-shown in older docs is therefore not wired end to end today. Track that runtime
-gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
+Join file-backed logs on `_source_path`:
+
+```sql
+SELECT l.*, k.namespace, k.pod_name, k.container_name
+FROM logs l
+LEFT JOIN k8s k ON starts_with(l._source_path, k.log_path_prefix)
+```
 
 Columns exposed by `k8s`:
 

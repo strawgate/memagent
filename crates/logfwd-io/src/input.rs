@@ -79,6 +79,13 @@ pub trait InputSource: Send {
         vec![]
     }
 
+    /// Return source-id to canonical-path mappings for active file-backed sources.
+    ///
+    /// Default: empty (push sources, generators).
+    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+        vec![]
+    }
+
     /// Restore a file offset by SourceId (fingerprint). Default: no-op.
     ///
     /// Used for checkpoint restore — the checkpoint stores fingerprint + offset.
@@ -152,6 +159,10 @@ impl InputSource for FileInput {
 
     fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
         self.tailer.file_offsets()
+    }
+
+    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+        self.tailer.file_paths()
     }
 
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {
