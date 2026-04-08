@@ -368,7 +368,7 @@ impl StateMachineTest for TailCheckpointTest {
         // tracking across transitions).
     }
 
-    fn teardown(mut sut: Self::SystemUnderTest, ref_state: RefState) {
+    fn teardown(mut sut: Self::SystemUnderTest, _ref_state: RefState) {
         // Final drain: poll multiple times.
         for _ in 0..5 {
             sut.do_poll();
@@ -399,22 +399,8 @@ impl StateMachineTest for TailCheckpointTest {
             }
         }
 
-        // PROPERTY 4 (informational): Coverage.
-        // Count how many unique written lines were emitted at least once.
-        let emitted_set: std::collections::HashSet<u64> = sut.emitted_ids.iter().copied().collect();
-        let total_written = ref_state.written_line_ids.len();
-        let total_emitted_unique = emitted_set.len();
-
         // We don't assert 100% coverage because rotation and truncation
-        // can lose data that was overwritten before being read. But we
-        // log it for debugging.
-        if total_written > 0 {
-            let _coverage_pct = (total_emitted_unique as f64 / total_written as f64) * 100.0;
-            // eprintln!(
-            //     "Coverage: {}/{} lines ({:.1}%)",
-            //     total_emitted_unique, total_written, coverage_pct
-            // );
-        }
+        // can lose data that was overwritten before being read.
 
         drop(sut);
     }
@@ -426,7 +412,7 @@ impl StateMachineTest for TailCheckpointTest {
 
 prop_state_machine! {
     #![proptest_config(ProptestConfig {
-        cases: logfwd_test_utils::proptest_cases(),
+        cases: logfwd_test_utils::state_machine_proptest_cases(),
         max_shrink_iters: 5_000,
         failure_persistence: None,
         .. ProptestConfig::default()

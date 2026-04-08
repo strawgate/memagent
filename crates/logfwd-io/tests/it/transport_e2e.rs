@@ -5,10 +5,15 @@
 
 use std::io::Write;
 use std::net::{TcpStream, UdpSocket};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use logfwd_io::{
+    diagnostics::ComponentStats,
+    format::FormatDecoder,
+    framed::FramedInput,
+    http_input::HttpInput,
     input::{InputEvent, InputSource},
     otlp_receiver::OtlpReceiverInput,
     tcp_input::TcpInput,
@@ -280,6 +285,29 @@ fn tcp_large_message() {
 }
 
 #[test]
+fn tcp_rfc6587_octet_counting_prevents_newline_injection_split() {
+    let tcp = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let addr = tcp.local_addr().unwrap();
+    let stats = Arc::new(ComponentStats::new());
+    let mut input = FramedInput::new(
+        Box::new(tcp),
+        FormatDecoder::passthrough(Arc::clone(&stats)),
+        stats,
+    );
+
+    let payload = b"{\"msg\":\"hello\nFORGED\"}";
+    let mut wire = format!("{} ", payload.len()).into_bytes();
+    wire.extend_from_slice(payload);
+
+    let mut client = TcpStream::connect(addr).unwrap();
+    client.write_all(&wire).unwrap();
+    client.flush().unwrap();
+
+    let data = poll_until_data(&mut input, Duration::from_secs(5));
+    assert_eq!(data, [payload.as_slice(), b"\n"].concat());
+}
+
+#[test]
 fn tcp_rapid_connect_disconnect() {
     let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
     let addr = input.local_addr().unwrap();
@@ -422,6 +450,45 @@ fn udp_no_trailing_newline() {
 }
 
 // ---------------------------------------------------------------------------
+// HTTP tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn http_ndjson_roundtrip() {
+    let mut input = HttpInput::new("test", "127.0.0.1:0", Some("/ingest")).unwrap();
+    let addr = input.local_addr();
+    let url = format!("http://{addr}/ingest");
+
+    let resp = ureq::post(&url)
+        .header("Content-Type", "application/x-ndjson")
+        .send(b"{\"seq\":1}\n{\"seq\":2}\n")
+        .expect("HTTP POST should succeed");
+    assert_eq!(resp.status(), 200);
+
+    let data = poll_until(&mut input, Duration::from_secs(5), |d| {
+        let t = String::from_utf8_lossy(d);
+        t.contains("\"seq\":1") && t.contains("\"seq\":2")
+    });
+    let text = String::from_utf8_lossy(&data);
+    assert!(text.contains("\"seq\":1"), "missing seq 1 in: {text}");
+    assert!(text.contains("\"seq\":2"), "missing seq 2 in: {text}");
+}
+
+#[test]
+fn http_wrong_path_rejected() {
+    let input = HttpInput::new("test", "127.0.0.1:0", Some("/ingest")).unwrap();
+    let addr = input.local_addr();
+    let url = format!("http://{addr}/wrong");
+
+    let status = match ureq::post(&url).send(b"{\"x\":1}\n") {
+        Ok(resp) => resp.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
+        Err(err) => panic!("unexpected request failure: {err}"),
+    };
+    assert_eq!(status, 404, "wrong path should return 404");
+}
+
+// ---------------------------------------------------------------------------
 // OTLP tests
 // ---------------------------------------------------------------------------
 
@@ -481,6 +548,72 @@ fn otlp_protobuf_roundtrip() {
     );
     assert!(
         text.contains("\"message\":\"test message\""),
+        "expected message field, got: {text}"
+    );
+    assert!(
+        text.contains("\"env\":\"prod\""),
+        "expected env attribute, got: {text}"
+    );
+}
+
+#[test]
+fn otlp_gzip_protobuf_roundtrip() {
+    use opentelemetry_proto::tonic::{
+        collector::logs::v1::ExportLogsServiceRequest,
+        common::v1::{AnyValue, KeyValue, any_value::Value},
+        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+    };
+    use prost::Message;
+    use std::io::Write as _;
+
+    let mut input = OtlpReceiverInput::new("test", "127.0.0.1:0").unwrap();
+    let addr = input.local_addr();
+    let url = format!("http://{addr}/v1/logs");
+
+    let request = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord {
+                    time_unix_nano: 1_700_000_000_000_000_000,
+                    severity_text: "INFO".into(),
+                    body: Some(AnyValue {
+                        value: Some(Value::StringValue("test gzip".into())),
+                    }),
+                    attributes: vec![KeyValue {
+                        key: "env".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("prod".into())),
+                        }),
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+
+    let body = request.encode_to_vec();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&body).expect("gzip write");
+    let gzipped = encoder.finish().expect("gzip finish");
+
+    let resp = ureq::post(&url)
+        .header("Content-Type", "application/x-protobuf")
+        .header("Content-Encoding", "gzip")
+        .send(&gzipped)
+        .expect("OTLP POST should succeed");
+    assert_eq!(resp.status(), 200);
+
+    let data = poll_until_data(&mut input, Duration::from_secs(5));
+    let text = String::from_utf8_lossy(&data);
+
+    assert!(
+        text.contains("\"level\":\"INFO\""),
+        "expected level field, got: {text}"
+    );
+    assert!(
+        text.contains("\"message\":\"test gzip\""),
         "expected message field, got: {text}"
     );
     assert!(

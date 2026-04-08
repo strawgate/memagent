@@ -240,7 +240,7 @@ fn bench_persist(c: &mut Criterion) {
                 let batch = std::hint::black_box(scanner.scan(buf.clone()).unwrap());
                 let owned = logfwd_arrow::materialize::detach(&batch);
                 let compressed = write_ipc_zstd(&owned);
-                std::hint::black_box(compressed.len());
+                std::hint::black_box(&compressed);
             });
         });
 
@@ -250,7 +250,7 @@ fn bench_persist(c: &mut Criterion) {
             b.iter(|| {
                 let batch = std::hint::black_box(scanner.scan_detached(buf.clone()).unwrap());
                 let compressed = write_ipc_zstd(&batch);
-                std::hint::black_box(compressed.len());
+                std::hint::black_box(&compressed);
             });
         });
     }
@@ -281,7 +281,7 @@ fn bench_pipeline(c: &mut Criterion) {
             let transformed = transform.execute_blocking(batch).unwrap();
             let owned = detach_if_attached(&transformed, &buf);
             let compressed = write_ipc_zstd(&owned);
-            std::hint::black_box(compressed.len());
+            std::hint::black_box(&compressed);
         });
     });
 
@@ -292,7 +292,7 @@ fn bench_pipeline(c: &mut Criterion) {
             let batch = std::hint::black_box(scanner.scan_detached(buf.clone()).unwrap());
             let transformed = transform.execute_blocking(batch).unwrap();
             let compressed = write_ipc_zstd(&transformed);
-            std::hint::black_box(compressed.len());
+            std::hint::black_box(&compressed);
         });
     });
 
@@ -306,7 +306,7 @@ fn bench_pipeline(c: &mut Criterion) {
             let transformed = transform.execute_blocking(batch).unwrap();
             let owned = detach_if_attached(&transformed, &buf);
             let compressed = write_ipc_zstd(&owned);
-            std::hint::black_box(compressed.len());
+            std::hint::black_box(&compressed);
         });
     });
 
@@ -317,7 +317,7 @@ fn bench_pipeline(c: &mut Criterion) {
             let batch = std::hint::black_box(scanner.scan_detached(buf.clone()).unwrap());
             let transformed = transform.execute_blocking(batch).unwrap();
             let compressed = write_ipc_zstd(&transformed);
-            std::hint::black_box(compressed.len());
+            std::hint::black_box(&compressed);
         });
     });
 
@@ -334,7 +334,7 @@ fn bench_pipeline(c: &mut Criterion) {
             let transformed = transform.execute_blocking(batch).unwrap();
             let owned = detach_if_attached(&transformed, &buf);
             let compressed = write_ipc_zstd(&owned);
-            std::hint::black_box(compressed.len());
+            std::hint::black_box(&compressed);
         });
     });
 
@@ -348,7 +348,7 @@ fn bench_pipeline(c: &mut Criterion) {
             let batch = std::hint::black_box(scanner.scan_detached(buf.clone()).unwrap());
             let transformed = transform.execute_blocking(batch).unwrap();
             let compressed = write_ipc_zstd(&transformed);
-            std::hint::black_box(compressed.len());
+            std::hint::black_box(&compressed);
         });
     });
 

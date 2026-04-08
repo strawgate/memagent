@@ -23,9 +23,9 @@ use logfwd_transform::SqlTransform;
 // ---------------------------------------------------------------------------
 
 /// Parse CRI data and reassemble into JSON lines buffer.
-fn cri_to_json(data: &[u8]) -> Vec<u8> {
-    let mut reassembler = CriReassembler::new(1024 * 1024);
-    let mut json_buf = Vec::with_capacity(data.len());
+fn cri_to_json(data: &[u8], reassembler: &mut CriReassembler, json_buf: &mut Vec<u8>) {
+    reassembler.reset();
+    json_buf.clear();
     let mut start = 0;
     while start < data.len() {
         let end = memchr::memchr(b'\n', &data[start..]).map_or(data.len(), |p| start + p);
@@ -41,7 +41,6 @@ fn cri_to_json(data: &[u8]) -> Vec<u8> {
         }
         start = end + 1;
     }
-    json_buf
 }
 
 // ---------------------------------------------------------------------------
@@ -57,7 +56,7 @@ fn bench_json_chain(c: &mut Criterion) {
     for &n in &[1_000usize, 10_000, 100_000] {
         let data = generators::gen_production_mixed(n, 42);
 
-        group.throughput(Throughput::Elements(n as u64));
+        group.throughput(Throughput::Bytes(data.len() as u64));
 
         // Composed: scan → SELECT * → OTLP encode
         group.bench_with_input(BenchmarkId::new("composed", n), &data, |b, data| {
@@ -128,7 +127,7 @@ fn bench_cri_chain(c: &mut Criterion) {
     for &n in &[1_000usize, 10_000] {
         let data = generators::gen_cri_k8s(n, 42);
 
-        group.throughput(Throughput::Elements(n as u64));
+        group.throughput(Throughput::Bytes(data.len() as u64));
 
         // Composed: CRI parse → scan → WHERE filter → OTLP encode
         group.bench_with_input(BenchmarkId::new("composed", n), &data, |b, data| {
@@ -136,10 +135,12 @@ fn bench_cri_chain(c: &mut Criterion) {
             let mut transform =
                 SqlTransform::new("SELECT * FROM logs WHERE level = 'ERROR'").unwrap();
             let mut sink = make_otlp_sink(Compression::None);
+            let mut reassembler = CriReassembler::new(1024 * 1024);
+            let mut json_buf = Vec::with_capacity(data.len());
             b.iter(|| {
-                let json = cri_to_json(data);
+                cri_to_json(data, &mut reassembler, &mut json_buf);
                 let batch = scanner
-                    .scan_detached(bytes::Bytes::from(json))
+                    .scan_detached(bytes::Bytes::copy_from_slice(&json_buf))
                     .expect("scan should not fail");
                 let result = transform.execute_blocking(batch).unwrap();
                 std::hint::black_box(sink.encode_batch(&result, &meta));
@@ -148,7 +149,12 @@ fn bench_cri_chain(c: &mut Criterion) {
 
         // Stage 1: CRI parse + reassemble only
         group.bench_with_input(BenchmarkId::new("cri_parse_only", n), &data, |b, data| {
-            b.iter(|| std::hint::black_box(cri_to_json(data)));
+            let mut reassembler = CriReassembler::new(1024 * 1024);
+            let mut json_buf = Vec::with_capacity(data.len());
+            b.iter(|| {
+                cri_to_json(data, &mut reassembler, &mut json_buf);
+                std::hint::black_box(&json_buf);
+            });
         });
     }
 
@@ -168,7 +174,7 @@ fn bench_grok_chain(c: &mut Criterion) {
     for &n in &[1_000usize, 10_000] {
         let data = generators::gen_production_mixed(n, 42);
 
-        group.throughput(Throughput::Elements(n as u64));
+        group.throughput(Throughput::Bytes(data.len() as u64));
 
         // Composed: scan → grok+filter → JSON serialize
         group.bench_with_input(BenchmarkId::new("composed", n), &data, |b, data| {
@@ -195,7 +201,7 @@ fn bench_grok_chain(c: &mut Criterion) {
                         .expect("JSON serialization should not fail");
                     buf.push(b'\n');
                 }
-                std::hint::black_box(buf.len());
+                std::hint::black_box(&buf);
             });
         });
     }

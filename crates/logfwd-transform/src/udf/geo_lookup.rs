@@ -102,6 +102,12 @@ impl ScalarUDFImpl for GeoLookupUdf {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DfResult<ColumnarValue> {
+        if args.args.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "geo_lookup() expects exactly one argument".to_string(),
+            ));
+        }
+
         let input = &args.args[0];
 
         match input {

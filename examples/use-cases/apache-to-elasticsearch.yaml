@@ -1,0 +1,20 @@
+# logfwd example
+# Use case: Apache logs to Elasticsearch
+# Replace paths/endpoints with values for your environment.
+
+input:
+  type: file
+  path: /var/log/apache2/*.log
+  format: raw
+
+transform: |
+  SELECT * FROM logs
+
+output:
+  type: elasticsearch
+  endpoint: https://elasticsearch:9200
+  index: apache-logs-%Y.%m.%d
+
+# Optional: diagnostics
+# server:
+#   diagnostics: 127.0.0.1:9191

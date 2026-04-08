@@ -15,9 +15,9 @@ Read `AGENTS.md` in the repository root for full project context, crate structur
 Run these commands and fix any errors before pushing:
 
 ```bash
-cargo fmt --all                                    # format all Rust code
-cargo clippy --all-targets -- -D warnings          # lint — zero warnings allowed
-cargo test -p <crate-you-changed>                  # test the crate you modified
+just fmt                                           # format all Rust code
+just clippy                                        # lint changed crates — zero warnings
+just test                                          # test changed crates
 ```
 
 Or run the full CI gate (slower but comprehensive):
@@ -26,7 +26,7 @@ Or run the full CI gate (slower but comprehensive):
 just ci                                            # fmt + clippy + test + deny
 ```
 
-If `just ci` takes too long (>5 min), at minimum run `cargo fmt --all && cargo clippy --all-targets -- -D warnings` before every commit, then run `just test` before the final push.
+If `just ci` takes too long, at minimum run `just fmt && just clippy` before every commit.
 
 ## PR Descriptions
 

@@ -47,11 +47,11 @@ tla/
   PipelineMachine.thorough.cfg  — thorough safety model (3 sources, 4 batches)
   PipelineMachine.coverage.cfg  — reachability / vacuity guards
 
-  # Shutdown coordination (multi-process drain protocol)
-  ShutdownProtocol.tla          — N inputs + channel + consumer + pool
-  MCShutdownProtocol.tla        — TLC config
-  ShutdownProtocol.cfg          — safety model
-  ShutdownProtocol.liveness.cfg — liveness model
+  # Shutdown coordination (two-tier I/O+CPU worker drain protocol)
+  ShutdownProtocol.tla          — N inputs with I/O+CPU workers, per-input io channels, shared pipeline channel, and pool drain
+  MCShutdownProtocol.tla        — TLC config (small capacities: IoChannel=2, Pipeline=3)
+  ShutdownProtocol.cfg          — safety model (ordering + conservation invariants)
+  ShutdownProtocol.liveness.cfg — liveness model (shutdown completion, no deadlock)
   ShutdownProtocol.coverage.cfg — reachability guards
 
   # Batching protocol (multi-source, checkpoint merge, reject handling)
@@ -134,6 +134,60 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 # File -> Open Spec -> MCPipelineMachine.tla
 # TLC Model Checker -> New Model -> Load from PipelineMachine.cfg
 ```
+
+---
+
+## ShutdownProtocol.tla
+
+Models the two-tier shutdown cascade from `feat/io-compute-separation` (PR #1512).
+Per input: I/O worker -> bounded io_cpu channel -> CPU worker -> shared pipeline channel.
+
+### Model parameters
+
+| Config | NumInputs | IoChannelCapacity | PipelineChannelCapacity | MaxItems |
+|--------|-----------|-------------------|-------------------------|----------|
+| Safety | 2 | 2 | 3 | 3 |
+| Liveness | 2 | 2 | 3 | 2 |
+| Coverage | 2 | 2 | 3 | 3 |
+
+Production uses IoChannelCapacity=4, PipelineChannelCapacity=16. The protocol is
+capacity-independent so small values suffice for model checking.
+
+### What it proves
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `NoCpuStopBeforeIoDrain` | Safety | cpu_workers_stopped implies io_channels_drained |
+| `NoJoinBeforePipelineDrain` | Safety | workers_joined implies pipeline_channel_drained |
+| `NoStopBeforeJoin` | Safety | machine_stopped implies workers_joined |
+| `NormalStopImpliesPoolDrained` | Safety | normal stop (not forced) implies pool fully drained |
+| `IoConservation` | Safety | per-input: produced = in_io_channel + cpu_forwarded (no dup/loss) |
+| `PipelineConservation` | Safety | total forwarded = in_pipeline_channel + consumed (no dup/loss) |
+| `ShutdownCompletes` | Liveness | shutdown signal leads to machine_stopped |
+| `NoCpuWorkerDeadlock` | Liveness | io_channels_drained leads to cpu_workers_stopped |
+| `IoCpuChannelEventuallyDrained` | Liveness | all I/O workers stopped leads to io_channels_drained |
+| `CpuWorkersEventuallyStop` | Liveness | all I/O workers stopped leads to all CPU workers stopped |
+| `EventualStop` | Liveness | machine eventually reaches stopped state permanently |
+| `ShutdownReachable` | Reachability | shutdown_signaled is reachable (vacuity guard) |
+| `IoChannelsDrainedReachable` | Reachability | io_channels_drained is reachable |
+| `CpuWorkersStoppedReachable` | Reachability | cpu_workers_stopped is reachable |
+| `PipelineChannelDrainedReachable` | Reachability | pipeline_channel_drained is reachable |
+| `NormalStopReachable` | Reachability | normal stop is reachable |
+| `ForceStopReachable` | Reachability | force stop is reachable |
+| `IoChannelFullReachable` | Reachability | at least one io channel reaches capacity (backpressure) |
+| `PipelineChannelFullReachable` | Reachability | pipeline channel reaches capacity (backpressure) |
+
+### Key design: per-input CPU worker stop
+
+Each CPU worker independently decides to exit when its own I/O worker is dead
+and its own io_cpu channel is empty (`~io_alive[i] /\ Len(io_channels[i]) = 0`).
+This matches the implementation where each `cpu_worker`'s `io_rx.recv()` returns
+`None` independently. No global barrier is needed for individual CPU workers to exit.
+
+The global `io_channels_drained` flag can be set by two transitions:
+`MarkIoChannelsDrained` (when all I/O workers are down and all per-input channels
+are empty) or `MarkCpuWorkersStopped` (as a derived consistency observation when
+all CPU workers have exited). Neither is a precondition for `CpuWorkerStop`.
 
 ---
 

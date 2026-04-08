@@ -8,6 +8,7 @@ use std::sync::Arc;
 use logfwd_output::{BatchMetadata, Compression, OtlpProtocol, OtlpSink};
 use logfwd_types::diagnostics::ComponentStats;
 
+pub mod cardinality;
 pub mod generators;
 
 // ---------------------------------------------------------------------------

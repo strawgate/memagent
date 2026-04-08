@@ -270,7 +270,7 @@ chunks one at a time via `poll()`. No filesystem dependency.
 
 - [Turmoil docs](https://docs.rs/turmoil/latest/turmoil/)
 - [Turmoil GitHub](https://github.com/tokio-rs/turmoil)
-- [Announcing turmoil — Tokio blog](https://tokio.rs/blog/2023-01-03-announcing-turmoil)
+- [Announcing turmoil — source post](https://github.com/tokio-rs/website/blob/master/content/blog/2023-01-03-announcing-turmoil.md)
 - [DST for async Rust — S2.dev](https://s2.dev/blog/dst)
 - [RisingWave DST part 1](https://www.risingwave.com/blog/deterministic-simulation-a-new-era-of-distributed-system-testing/)
 - [RisingWave DST part 2](https://www.risingwave.com/blog/applying-deterministic-simulation-the-risingwave-story-part-2-of-2/)

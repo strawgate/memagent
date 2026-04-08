@@ -88,7 +88,17 @@ impl StdoutSink {
                         }
                     }
                 } else {
-                    // Fall back to JSON
+                    // No _raw column — fall back to JSON and warn once.
+                    static WARNED: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        tracing::warn!(
+                            sink = %self.name,
+                            "stdout/file 'text' format requires a '_raw' column in the output \
+                             batch; falling back to JSON. Add _raw to your SQL SELECT or use \
+                             format: json."
+                        );
+                    }
                     let cols = build_col_infos(batch);
                     for row in 0..num_rows {
                         self.buf.clear();
@@ -327,7 +337,7 @@ impl Sink for StdoutSink {
 // StdoutSinkFactory
 // ---------------------------------------------------------------------------
 
-/// Factory that creates [`StdoutSink`] instances for the output worker pool.
+/// Factory that creates stdout sink instances for the output worker pool.
 ///
 /// Because stdout is a single shared resource, this factory is single-use:
 /// only one worker should write to stdout at a time.
@@ -363,5 +373,106 @@ impl SinkFactory for StdoutSinkFactory {
 
     fn is_single_use(&self) -> bool {
         true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::StringArray;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use logfwd_types::diagnostics::ComponentStats;
+
+    fn make_metadata() -> BatchMetadata {
+        BatchMetadata {
+            resource_attrs: Arc::default(),
+            observed_time_ns: 0,
+        }
+    }
+
+    /// A batch with a `_raw` column should be written as plain text lines.
+    #[test]
+    fn text_format_with_raw_column_writes_raw_lines() {
+        let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+        let raw = StringArray::from(vec![Some("line one"), Some("line two")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(raw)]).unwrap();
+
+        let mut sink = StdoutSink::new(
+            "test-raw".to_string(),
+            StdoutFormat::Text,
+            Arc::new(ComponentStats::new()),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        sink.write_batch_to(&batch, &make_metadata(), &mut out)
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert_eq!(output, "line one\nline two\n");
+    }
+
+    /// A batch *without* a `_raw` column should fall back to JSON output so
+    /// existing behaviour is preserved.
+    #[test]
+    fn text_format_without_raw_column_falls_back_to_json() {
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
+        let msg = StringArray::from(vec![Some("hello"), Some("world")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(msg)]).unwrap();
+
+        let mut sink = StdoutSink::new(
+            "test-fallback".to_string(),
+            StdoutFormat::Text,
+            Arc::new(ComponentStats::new()),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        sink.write_batch_to(&batch, &make_metadata(), &mut out)
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2, "expected two JSON lines, got: {output:?}");
+        // Each line must be valid JSON containing the msg field.
+        let row0: serde_json::Value = serde_json::from_str(lines[0]).expect("row 0 is valid JSON");
+        let row1: serde_json::Value = serde_json::from_str(lines[1]).expect("row 1 is valid JSON");
+        assert_eq!(row0["msg"], "hello");
+        assert_eq!(row1["msg"], "world");
+    }
+
+    /// The JSON fallback output for text format must match what the explicit
+    /// JSON format would produce for the same batch.
+    #[test]
+    fn text_format_fallback_output_matches_json_format() {
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, true)]));
+        let col = StringArray::from(vec![Some("value")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap();
+        let meta = make_metadata();
+
+        let mut text_sink = StdoutSink::new(
+            "text".to_string(),
+            StdoutFormat::Text,
+            Arc::new(ComponentStats::new()),
+        );
+        let mut json_sink = StdoutSink::new(
+            "json".to_string(),
+            StdoutFormat::Json,
+            Arc::new(ComponentStats::new()),
+        );
+
+        let mut text_out: Vec<u8> = Vec::new();
+        let mut json_out: Vec<u8> = Vec::new();
+        text_sink
+            .write_batch_to(&batch, &meta, &mut text_out)
+            .unwrap();
+        json_sink
+            .write_batch_to(&batch, &meta, &mut json_out)
+            .unwrap();
+
+        assert_eq!(
+            text_out, json_out,
+            "text fallback should be identical to json format"
+        );
     }
 }

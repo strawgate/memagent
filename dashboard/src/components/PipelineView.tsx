@@ -2,6 +2,7 @@ import { useRef, useState } from "preact/hooks";
 import { fmt, fmtBytes } from "../lib/format";
 import { RateTracker } from "../lib/rates";
 import type { ComponentData, PipelineData, TraceRecord } from "../types";
+import { BottleneckBadge } from "./BottleneckBadge";
 import { TraceExplorer } from "./TraceExplorer";
 
 const POLL_OPTIONS = [
@@ -63,7 +64,10 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
 
   return (
     <div class="section">
-      <div class="heading">Pipeline: {p.name}</div>
+      <div class="heading heading-flex">
+        Pipeline: {p.name}
+        {p.bottleneck && <BottleneckBadge b={p.bottleneck} />}
+      </div>
       <div class="pipe-flow">
         {p.inputs.map((inp, i) => (
           <>

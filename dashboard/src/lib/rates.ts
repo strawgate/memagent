@@ -31,7 +31,4 @@ export class RateTracker {
     this.ema.set(key, smoothed);
     return smoothed;
   }
-
-  /** @deprecated No longer needed — each key tracks its own timestamp. */
-  tick() {}
 }

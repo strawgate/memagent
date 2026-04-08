@@ -15,7 +15,6 @@ doctest = false
 # - Userspace integration design (lib.rs)
 
 [dependencies]
-serde_json = "1"  # for test helpers only
 
 [dev-dependencies]
 

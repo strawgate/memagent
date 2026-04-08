@@ -4,7 +4,8 @@
 
 ```
 crates/
-  logfwd/              Binary crate. CLI, async pipeline orchestration.
+  logfwd/              Binary crate. CLI entrypoints and compatibility re-exports.
+  logfwd-runtime/      Runtime orchestration. Pipeline loop, worker pool, processors.
   logfwd-core/         Proven kernel. Scanner, parsers, pipeline state machine, OTLP encoding. no_std.
   logfwd-arrow/        Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
   logfwd-config/       YAML config parsing and validation.
@@ -20,15 +21,36 @@ crates/
 ## Build, test, lint, bench, fuzz
 
 ```bash
-just test                    # All tests
-just lint                    # fmt + clippy + toml + deny + typos
-just bench-framed-input -- --lines 200000 --iterations 5
-cargo test -p logfwd-core    # Core crate only (fastest iteration)
-
-RUSTFLAGS="-C target-cpu=native" cargo bench --bench scanner -p logfwd-core
-
-cd crates/logfwd-core && cargo +nightly fuzz run scanner -- -max_total_time=300
+just ci                      # lint + test (fast — skips datafusion)
+just ci-all                  # full workspace including datafusion
+just test                    # tests (default-members only, ~30s)
+just test-all                # tests (full workspace, ~3min)
+just lint                    # fmt + clippy + toml
+just lint-all                # full: fmt + clippy + toml + deny + kani-boundary
+just build                   # release logfwd binary (includes DataFusion SQL)
+just build-dev-lite          # dev-only fast binary (no DataFusion SQL)
+cargo test -p logfwd-core    # single crate (fastest iteration)
+just fuzz scanner 300        # fuzz a target for 300s (nightly)
 ```
+
+> **Why two tiers?** The workspace `default-members` excludes `logfwd-transform`
+> (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip
+> them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just
+> targets when you need the full build. CI always uses `--workspace`.
+
+## DataFusion in Dev vs Release
+
+`logfwd` now has a feature-gated SQL engine:
+
+- **Release/full package (default):** includes DataFusion.
+  - `cargo build --release -p logfwd`
+  - `just build`
+- **Dev-lite (opt-in):** skips DataFusion for faster local iteration.
+  - `cargo build --release -p logfwd --no-default-features`
+  - `just build-dev-lite`
+
+Use the dev-lite build only when you're intentionally working on non-SQL paths.
+If your config uses `transform:` SQL or `enrichment:`, run the full/default build.
 
 ## Compile caching with sccache
 
@@ -164,6 +186,14 @@ Profiling showed `get_or_create_field` dominating — SipHash + probe per field 
 ### StringViewArray memory reporting is misleading
 
 Arrow's `get_array_memory_size()` counts the backing buffer for every column sharing it. If 5 string columns point into the same buffer, reported memory is 5x actual. The `StreamingBuilder` produces shared-buffer columns; memory reports overcount significantly.
+
+### Source-byte accounting must happen before payload normalization
+
+If an input mutates payloads before framing or scanning, diagnostics must still
+charge bytes from the original source payload, not the normalized buffer. Two
+easy ways to get this wrong are synthetic newline insertion and compressed
+request decoding. Capture source bytes at the receiver boundary first, then
+carry them explicitly through `InputEvent::Data` or `InputEvent::Batch`.
 
 ### Arrow IPC compression is just a flag
 

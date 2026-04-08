@@ -91,8 +91,8 @@ The actual dependency graph (verify against `Cargo.toml`):
 - `logfwd-core` is the foundation: no sibling crate deps, only `memchr` and `wide`.
 - `logfwd-arrow` depends on `logfwd-core`.
 - `logfwd-io` depends on `logfwd-core` and `logfwd-arrow`.
-- `logfwd-transform` depends on `logfwd-core`, `logfwd-arrow`, and `logfwd-io`.
-- `logfwd-output` depends on `logfwd-core`, `logfwd-arrow`, `logfwd-io`, and `logfwd-config`.
+- `logfwd-transform` depends on `logfwd-core`, `logfwd-arrow`, and `logfwd-types`.
+- `logfwd-output` depends on `logfwd-core`, `logfwd-arrow`, `logfwd-config`, `logfwd-types`, and `logfwd-otap-proto`.
 - `logfwd-config` depends on `serde`; it does not depend on other workspace crates.
 - `logfwd` (binary) depends on all other crates.
 

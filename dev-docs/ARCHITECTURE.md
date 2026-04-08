@@ -7,30 +7,37 @@ How data flows through logfwd, from bytes on disk to serialized output.
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  logfwd (binary)                                        │
-│  Async orchestration, config, CLI, signal handling      │
+│  CLI entrypoints, config loading, signal handling       │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│  logfwd-runtime                                          │
+│  Async orchestration, worker pool, processor chain       │
 │                                                         │
 │  ┌──────────┐   ┌───────────┐   ┌───────────────────┐  │
 │  │  Input   │──▶│ Transform │──▶│     Output        │  │
 │  │ threads  │   │  (SQL)    │   │  (HTTP/stdout)    │  │
 │  └──────────┘   └───────────┘   └───────────────────┘  │
-│       │              │                    │              │
-│       ▼              ▼                    ▼              │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  logfwd-arrow                                    │   │
-│  │  ScanBuilder impls, SIMD backends, RecordBatch     │   │
-│  └──────────────────────────────────────────────────┘   │
-│       │                                                  │
-│       ▼                                                  │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  logfwd-core                                     │   │
-│  │  Pure logic, proven, no_std, forbid(unsafe)      │   │
-│  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
+       │              │                    │
+       ▼              ▼                    ▼
+┌──────────────────────────────────────────────────┐
+│  logfwd-arrow                                    │
+│  ScanBuilder impls, SIMD backends, RecordBatch   │
+└──────────────────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────────────────┐
+│  logfwd-core                                     │
+│  Pure logic, proven, no_std, forbid(unsafe)      │
+└──────────────────────────────────────────────────┘
 ```
 
 Dependencies flow downward. logfwd-core knows nothing about Arrow,
 IO, or async. logfwd-arrow bridges core's parsing to Arrow types.
-The binary crate wires everything together.
+`logfwd-runtime` owns the long-lived async runtime, and the binary crate
+now stays focused on startup/CLI/bootstrap concerns.
 
 ## Data flow
 
@@ -224,11 +231,11 @@ OutputSink / Sink traits       OtlpSink, ElasticsearchSink,
                                LokiSink, JsonLinesSink, StdoutSink
 ```
 
-The binary crate (`logfwd`) wires these together in `pipeline.rs`.
+`logfwd-runtime` wires these together in `pipeline.rs`.
 
 ## Pipeline loop
 
-The async pipeline in `run_async()` (`logfwd/src/pipeline.rs`):
+The async pipeline in `run_async()` (`logfwd-runtime/src/pipeline.rs`):
 
 ```
 loop {

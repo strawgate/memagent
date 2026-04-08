@@ -26,7 +26,7 @@ cargo build --release -p logfwd && cp target/release/logfwd .
 **2. Generate test data**
 
 ```bash
-./logfwd --generate-json 100000 logs.json
+./logfwd generate-json 100000 logs.json
 ```
 
 **3. Create a pipeline**
@@ -51,7 +51,7 @@ output:
 **4. Run it**
 
 ```bash
-./logfwd --config config.yaml
+./logfwd run --config config.yaml
 ```
 
 You'll see only the records that match your SQL filter:
@@ -115,10 +115,13 @@ sudo mv logfwd /usr/local/bin/
 
 # Docker
 docker run --rm -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  ghcr.io/strawgate/memagent:latest --config /etc/logfwd/config.yaml
+  ghcr.io/strawgate/memagent:latest run --config /etc/logfwd/config.yaml
 
 # From source (requires Rust 1.85+)
 cargo build --release -p logfwd
+
+# Dev-only faster local build (no DataFusion SQL support)
+cargo build --release -p logfwd --no-default-features
 ```
 
 See [Installation](book/src/getting-started/installation.md) for all platforms and options.
@@ -139,7 +142,7 @@ transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
-  endpoint: http://otel-collector:4318/v1/logs
+  endpoint: https://otel-collector:4318/v1/logs
   compression: zstd
 ```
 
@@ -155,7 +158,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
-        endpoint: http://otel-collector:4318/v1/logs
+        endpoint: https://otel-collector:4318/v1/logs
 
   debug:
     inputs:
@@ -186,26 +189,28 @@ See the [Deployment Guide](book/src/deployment/kubernetes.md) for resource sizin
 
 ## Output Destinations
 
-| Output          | Status         | Description |
-|-----------------|----------------|-------------|
-| `otlp`          | Implemented | OTLP protobuf over HTTP or gRPC |
-| `http`          | Implemented | JSON lines over HTTP POST, optional zstd |
-| `stdout`        | Implemented | JSON or colored console output |
-| `elasticsearch` | Implemented | Bulk API with retry and per-document error handling |
-| `loki`          | Implemented | Grafana Loki push API with label grouping |
+For current output support status, see the canonical tables in the
+[Configuration Reference](book/src/config/reference.md#output-types). The
+README and task-oriented guides intentionally avoid duplicating status claims.
 
 ---
 
 ## CLI Reference
 
 ```
-logfwd --config <file>                   Run the pipeline
-logfwd --config <file> --validate        Validate config syntax
-logfwd --config <file> --dry-run         Build pipeline, check SQL, don't start
-logfwd --blackhole [bind_addr]           Start OTLP blackhole receiver for testing
-logfwd --generate-json <n> <file>        Generate synthetic JSON log data
+logfwd run --config <file>               Run the pipeline
+logfwd validate --config <file>          Validate config and environment-dependent pipeline requirements
+logfwd dry-run --config <file>           Build and validate the pipeline without starting the runtime
+logfwd init                              Generate a starter config from built-in templates
+logfwd blackhole [bind_addr]             Start OTLP blackhole receiver for testing
+logfwd generate-json <n> <file>          Generate synthetic JSON log data
+logfwd effective-config [--config file]  Validate and print effective runnable config
+logfwd wizard                            Interactive config wizard
+logfwd completions <shell>               Generate shell completions (bash, zsh, fish, nushell, powershell, elvish)
 logfwd --version                         Print version
 ```
+
+For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.md) (20 common app/source patterns).
 
 ---
 

@@ -257,19 +257,10 @@ The pipeline runs on a tokio multi-thread runtime. Key components:
 | `logfwd-output` | Output sinks + async Sink trait. OTLP, JSON lines, HTTP, stdout. |
 | `logfwd-bench` | Criterion benchmarks. |
 
-## What's implemented vs not yet
+## Current Support Status
 
-**Implemented:** file input, CRI/JSON/Raw parsing, zero-copy scanner, two
-builder backends (StreamingBuilder default), DataFusion SQL transforms
-(async), custom UDFs (grok, regexp_extract, int, float), enrichment
-(K8s path, host info, static labels), OTLP output, JSON lines output,
-stdout output, diagnostics server, OTel metrics, signal handling
-(SIGINT/SIGTERM via CancellationToken), graceful shutdown, async Sink
-trait.
-
-**Not yet:** async pipeline runtime, async Source trait, Arrow IPC
-persistence (pre/post-transform), SegmentStore abstraction (local +
-S3/GCS), object storage upload, `_resource_*` column injection, OTLP
-resource grouping, output cursor tracking, TCP/UDP/OTLP input,
-Elasticsearch/Loki/Parquet output, file offset checkpointing, SQL
-rewriter, S3 source (for scaled-out deployment).
+For current input/output support status, see the canonical tables in the
+[Configuration Reference](../config/reference.md#input-types) and
+[Configuration Reference](../config/reference.md#output-types). This
+architecture guide focuses on data flow and system shape rather than
+duplicating per-surface availability claims.

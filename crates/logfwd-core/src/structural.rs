@@ -390,7 +390,7 @@ impl StructuralIndex {
                             b']'
                         };
                         if b != expected_close {
-                            return end; // mismatch — bail to line end
+                            return end; // mismatch — fail-closed to avoid emitting truncated values
                         }
                     }
                     pos += 1;
@@ -877,6 +877,88 @@ mod tests {
         let processed = classifier.process_block(&raw, 10);
         // Only first 10 bits should survive
         assert_eq!(processed.newline, (1u64 << 10) - 1);
+    }
+
+    #[test]
+    fn test_skip_nested_bug_repro() {
+        let mut buf = alloc::string::String::new();
+        for _ in 0..33 {
+            buf.push('{');
+        }
+        for _ in 0..33 {
+            buf.push('}');
+        }
+        let buf = buf.as_bytes();
+        let (idx, _) = StructuralIndex::new(buf);
+        let result = idx.skip_nested(buf, 0, buf.len());
+        assert_eq!(result, buf.len());
+    }
+
+    #[test]
+    fn test_skip_valid_json() {
+        let mut buf = alloc::string::String::new();
+        for _ in 0..100 {
+            buf.push('{');
+        }
+        for _ in 0..100 {
+            buf.push('}');
+        }
+        buf.push_str("after");
+        let buf = buf.as_bytes();
+        let (idx, _) = StructuralIndex::new(buf);
+        let pos = idx.skip_nested(buf, 0, buf.len());
+        assert_eq!(pos, 200);
+    }
+
+    #[test]
+    fn test_depths() {
+        for depth in 30..40 {
+            let mut buf = alloc::string::String::new();
+            for _ in 0..depth {
+                buf.push('{');
+            }
+            for _ in 0..depth {
+                buf.push('}');
+            }
+            buf.push_str("after");
+            let buf = buf.as_bytes();
+            let (idx, _) = StructuralIndex::new(buf);
+            let pos = idx.skip_nested(buf, 0, buf.len());
+            assert_eq!(pos, depth * 2, "Failed at depth {}", depth);
+        }
+    }
+
+    #[test]
+    fn test_skip_nested_balanced_at_depth_32() {
+        let mut buf = alloc::string::String::new();
+        for _ in 0..32 {
+            buf.push('{');
+        }
+        for _ in 0..32 {
+            buf.push('}');
+        }
+        buf.push_str("after");
+        let buf = buf.as_bytes();
+        let (idx, _) = StructuralIndex::new(buf);
+        let result = idx.skip_nested(buf, 0, buf.len());
+        assert_eq!(result, 64);
+    }
+
+    #[test]
+    fn test_skip_nested_bug_repro_2() {
+        let mut buf = alloc::string::String::new();
+        buf.push('{');
+        for _ in 0..33 {
+            buf.push('[');
+        }
+        for _ in 0..33 {
+            buf.push(']');
+        }
+        buf.push('}');
+        let buf = buf.as_bytes();
+        let (idx, _) = StructuralIndex::new(buf);
+        let result = idx.skip_nested(buf, 0, buf.len());
+        assert_eq!(result, buf.len());
     }
 }
 

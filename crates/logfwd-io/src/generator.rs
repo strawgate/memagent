@@ -3,12 +3,15 @@
 //! Produces JSON log lines at a configurable rate. Used for benchmarking
 //! and testing pipelines without external data sources.
 
+use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 
 use crate::input::{InputEvent, InputSource};
+use logfwd_types::diagnostics::ComponentHealth;
 
 /// Controls the complexity/size of generated lines.
+#[non_exhaustive]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GeneratorComplexity {
     /// Flat JSON object, ~200 bytes per line.
@@ -16,6 +19,41 @@ pub enum GeneratorComplexity {
     Simple,
     /// Includes occasional nested objects and arrays, ~400-800 bytes.
     Complex,
+}
+
+/// Named generator output profiles.
+#[non_exhaustive]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum GeneratorProfile {
+    /// Synthetic request-like JSON logs.
+    #[default]
+    Logs,
+    /// Flat JSON records built from static attributes and generated fields.
+    Record,
+}
+
+/// Monotonic generated field configuration.
+pub struct GeneratorGeneratedField {
+    /// Output field name for the generated sequence in record rows.
+    pub field: String,
+    /// Initial monotonic sequence value.
+    pub start: u64,
+}
+
+/// Static scalar attribute value written into generated `record` rows.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum GeneratorAttributeValue {
+    /// UTF-8 text scalar.
+    String(String),
+    /// Signed 64-bit integer scalar.
+    Integer(i64),
+    /// 64-bit floating point scalar.
+    Float(f64),
+    /// Boolean scalar.
+    Bool(bool),
+    /// JSON null scalar.
+    Null,
 }
 
 /// Configuration for the generator input.
@@ -28,6 +66,14 @@ pub struct GeneratorConfig {
     pub total_events: u64,
     /// Controls the size and shape of generated JSON lines.
     pub complexity: GeneratorComplexity,
+    /// Which event shape to emit.
+    pub profile: GeneratorProfile,
+    /// Static scalar attributes written into generated rows.
+    pub attributes: HashMap<String, GeneratorAttributeValue>,
+    /// Monotonic sequence field for `record` rows.
+    pub sequence: Option<GeneratorGeneratedField>,
+    /// Source-created timestamp field for `record` rows.
+    pub event_created_unix_nano_field: Option<String>,
 }
 
 impl Default for GeneratorConfig {
@@ -37,6 +83,10 @@ impl Default for GeneratorConfig {
             batch_size: 1000,
             total_events: 0,
             complexity: GeneratorComplexity::default(),
+            profile: GeneratorProfile::default(),
+            attributes: HashMap::new(),
+            sequence: None,
+            event_created_unix_nano_field: None,
         }
     }
 }
@@ -49,6 +99,7 @@ pub struct GeneratorInput {
     buf: Vec<u8>,
     done: bool,
     last_batch: std::time::Instant,
+    record_fields: RecordFields,
 }
 
 const LEVELS: [&str; 4] = ["INFO", "DEBUG", "WARN", "ERROR"];
@@ -62,14 +113,46 @@ const PATHS: [&str; 5] = [
 const METHODS: [&str; 4] = ["GET", "POST", "PUT", "DELETE"];
 const SERVICES: [&str; 3] = ["myapp", "gateway", "auth-svc"];
 
+#[derive(Debug, Clone)]
+struct RecordFields {
+    attributes: Vec<Vec<u8>>,
+    sequence: Option<GeneratorGeneratedFieldState>,
+    event_created_unix_nano_field: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GeneratorGeneratedFieldState {
+    field: String,
+    start: u64,
+}
+
 impl GeneratorInput {
     pub fn new(name: impl Into<String>, config: GeneratorConfig) -> Self {
+        let name = name.into();
+        let mut attributes: Vec<(&String, &GeneratorAttributeValue)> =
+            config.attributes.iter().collect();
+        attributes.sort_by(|a, b| a.0.cmp(b.0));
+        let record_fields = RecordFields {
+            attributes: attributes
+                .into_iter()
+                .map(|(key, value)| encode_static_field(key, value))
+                .collect(),
+            sequence: config
+                .sequence
+                .as_ref()
+                .map(|seq| GeneratorGeneratedFieldState {
+                    field: seq.field.clone(),
+                    start: seq.start,
+                }),
+            event_created_unix_nano_field: config.event_created_unix_nano_field.clone(),
+        };
         Self {
-            name: name.into(),
+            name,
             buf: Vec::with_capacity(config.batch_size * 512),
             config,
             counter: 0,
             done: false,
+            record_fields,
             // Use a time far in the past so the first poll() always succeeds.
             last_batch: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(3600))
@@ -85,18 +168,41 @@ impl GeneratorInput {
     fn generate_batch(&mut self) {
         self.buf.clear();
         let n = self.config.batch_size;
-        for _ in 0..n {
+        let batch_created_unix_nano = self
+            .record_fields
+            .event_created_unix_nano_field
+            .as_ref()
+            .map(|_| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            });
+        for batch_offset in 0_u128..n as u128 {
             if self.config.total_events > 0 && self.counter >= self.config.total_events {
                 self.done = true;
                 break;
             }
-            self.write_event();
+            let event_created_unix_nano = batch_created_unix_nano.map(|base| base + batch_offset);
+            let len_before = self.buf.len();
+            self.write_event(event_created_unix_nano);
+            if self.done {
+                self.buf.truncate(len_before);
+                break;
+            }
             self.buf.push(b'\n');
             self.counter += 1;
         }
     }
 
-    fn write_event(&mut self) {
+    fn write_event(&mut self, event_created_unix_nano: Option<u128>) {
+        match self.config.profile {
+            GeneratorProfile::Logs => self.write_logs_event(),
+            GeneratorProfile::Record => self.write_record_event(event_created_unix_nano),
+        }
+    }
+
+    fn write_logs_event(&mut self) {
         let i = self.counter as usize;
         let level = LEVELS[i % LEVELS.len()];
         let path = PATHS[i % PATHS.len()];
@@ -152,6 +258,32 @@ impl GeneratorInput {
             }
         }
     }
+
+    fn write_record_event(&mut self, event_created_unix_nano: Option<u128>) {
+        self.buf.push(b'{');
+        let mut first = true;
+        for encoded_field in &self.record_fields.attributes {
+            if !first {
+                self.buf.push(b',');
+            }
+            first = false;
+            self.buf.extend_from_slice(encoded_field);
+        }
+        if let Some(sequence) = &self.record_fields.sequence {
+            let Some(value) = sequence.start.checked_add(self.counter) else {
+                self.done = true;
+                return;
+            };
+            write_json_u64_field(&mut self.buf, &sequence.field, value, &mut first);
+        }
+        if let (Some(field), Some(event_created_unix_nano)) = (
+            &self.record_fields.event_created_unix_nano_field,
+            event_created_unix_nano,
+        ) {
+            write_json_u128_field(&mut self.buf, field, event_created_unix_nano, &mut first);
+        }
+        self.buf.push(b'}');
+    }
 }
 
 impl InputSource for GeneratorInput {
@@ -183,20 +315,112 @@ impl InputSource for GeneratorInput {
         // Swap buffers to preserve capacity (avoid realloc every batch).
         let mut out = Vec::with_capacity(self.config.batch_size * 512);
         std::mem::swap(&mut self.buf, &mut out);
+        let accounted_bytes = out.len() as u64;
         Ok(vec![InputEvent::Data {
             bytes: out,
             source_id: None,
+            accounted_bytes,
         }])
     }
 
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn health(&self) -> ComponentHealth {
+        // Generator input has no independent bind/startup/shutdown lifecycle.
+        // It is either idle or emitting synthetic events under pipeline control.
+        ComponentHealth::Healthy
+    }
+}
+
+fn write_json_u64_field(out: &mut Vec<u8>, key: &str, value: u64, first: &mut bool) {
+    if !*first {
+        out.push(b',');
+    }
+    *first = false;
+    write_json_key(out, key);
+    let _ = write!(out, ":{value}");
+}
+
+fn write_json_u128_field(out: &mut Vec<u8>, key: &str, value: u128, first: &mut bool) {
+    if !*first {
+        out.push(b',');
+    }
+    *first = false;
+    write_json_key(out, key);
+    let _ = write!(out, ":{value}");
+}
+
+fn write_json_key(out: &mut Vec<u8>, key: &str) {
+    write_json_quoted_string(out, key);
+}
+
+fn write_json_quoted_string(out: &mut Vec<u8>, value: &str) {
+    out.push(b'"');
+    write_json_escaped_string_contents(out, value);
+    out.push(b'"');
+}
+
+fn write_json_escaped_string_contents(out: &mut Vec<u8>, value: &str) {
+    for ch in value.chars() {
+        match ch {
+            '"' => out.extend_from_slice(br#"\""#),
+            '\\' => out.extend_from_slice(br"\\"),
+            '\n' => out.extend_from_slice(br"\n"),
+            '\r' => out.extend_from_slice(br"\r"),
+            '\t' => out.extend_from_slice(br"\t"),
+            c if c <= '\u{1F}' => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+}
+
+fn encode_static_field(key: &str, value: &GeneratorAttributeValue) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_json_key(&mut out, key);
+    out.push(b':');
+    match value {
+        GeneratorAttributeValue::String(value) => {
+            out.push(b'"');
+            write_json_escaped_string_contents(&mut out, value);
+            out.push(b'"');
+        }
+        GeneratorAttributeValue::Integer(value) => {
+            let _ = write!(&mut out, "{value}");
+        }
+        GeneratorAttributeValue::Float(value) => {
+            if value.is_finite() {
+                let rendered = serde_json::to_string(value).expect("finite float serializes");
+                out.extend_from_slice(rendered.as_bytes());
+            } else {
+                out.extend_from_slice(b"null");
+            }
+        }
+        GeneratorAttributeValue::Bool(value) => {
+            out.extend_from_slice(if *value { b"true" } else { b"false" });
+        }
+        GeneratorAttributeValue::Null => {
+            out.extend_from_slice(b"null");
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generator_health_is_explicitly_healthy() {
+        let input = GeneratorInput::new("test", GeneratorConfig::default());
+        assert_eq!(input.health(), ComponentHealth::Healthy);
+    }
 
     #[test]
     fn generates_valid_json_lines() {
@@ -214,7 +438,7 @@ mod tests {
 
         if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
-            let lines: Vec<&str> = text.trim().split('\n').collect();
+            let lines: Vec<&str> = text.trim().lines().collect();
             assert_eq!(lines.len(), 20);
             // Every line must parse as valid JSON.
             for (i, line) in lines.iter().enumerate() {
@@ -251,7 +475,7 @@ mod tests {
 
         if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
-            let lines: Vec<&str> = text.trim().split('\n').collect();
+            let lines: Vec<&str> = text.trim().lines().collect();
             assert_eq!(lines.len(), 50);
             let mut saw_nested = false;
             for (i, line) in lines.iter().enumerate() {
@@ -319,7 +543,7 @@ mod tests {
         let events = input.poll().unwrap();
         if let InputEvent::Data { bytes, .. } = &events[0] {
             let text = String::from_utf8_lossy(bytes);
-            let lines: Vec<&str> = text.trim().split('\n').collect();
+            let lines: Vec<&str> = text.trim().lines().collect();
             let ts0 = lines[0]
                 .find("\"timestamp\":")
                 .map(|p| &lines[0][p..p + 50]);
@@ -453,5 +677,187 @@ mod tests {
         // Subsequent polls must return empty.
         let events = input.poll().unwrap();
         assert!(events.is_empty(), "poll after completion must be empty");
+    }
+
+    #[test]
+    fn record_profile_emits_attributes_and_generated_fields() {
+        let mut input = GeneratorInput::new(
+            "bench",
+            GeneratorConfig {
+                batch_size: 3,
+                total_events: 3,
+                profile: GeneratorProfile::Record,
+                attributes: HashMap::from([
+                    (
+                        "benchmark_id".to_string(),
+                        GeneratorAttributeValue::String("run-123".to_string()),
+                    ),
+                    (
+                        "pod_name".to_string(),
+                        GeneratorAttributeValue::String("emitter-0".to_string()),
+                    ),
+                    (
+                        "stream_id".to_string(),
+                        GeneratorAttributeValue::String("emitter-0".to_string()),
+                    ),
+                    (
+                        "service".to_string(),
+                        GeneratorAttributeValue::String("bench-emitter".to_string()),
+                    ),
+                    ("status".to_string(), GeneratorAttributeValue::Integer(200)),
+                    ("sampled".to_string(), GeneratorAttributeValue::Bool(true)),
+                ]),
+                sequence: Some(GeneratorGeneratedField {
+                    field: "seq".to_string(),
+                    start: 1,
+                }),
+                event_created_unix_nano_field: Some("event_created_unix_nano".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let events = input.poll().unwrap();
+        assert_eq!(events.len(), 1);
+        let InputEvent::Data { bytes, .. } = &events[0] else {
+            panic!("expected Data event");
+        };
+        let text = String::from_utf8_lossy(bytes);
+        let lines: Vec<&str> = text.trim().lines().collect();
+        assert_eq!(lines.len(), 3);
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["benchmark_id"], "run-123");
+        assert_eq!(first["pod_name"], "emitter-0");
+        assert_eq!(first["stream_id"], "emitter-0");
+        assert_eq!(first["seq"], 1);
+        assert_eq!(first["service"], "bench-emitter");
+        assert_eq!(first["status"], 200);
+        assert_eq!(first["sampled"], true);
+        assert!(first.get("event_created_unix_nano").is_some());
+    }
+
+    #[test]
+    fn record_profile_supports_custom_sequence_start() {
+        let mut input = GeneratorInput::new(
+            "bench-input",
+            GeneratorConfig {
+                batch_size: 2,
+                total_events: 2,
+                profile: GeneratorProfile::Record,
+                sequence: Some(GeneratorGeneratedField {
+                    field: "seq".to_string(),
+                    start: 10,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let events = input.poll().unwrap();
+        let InputEvent::Data { bytes, .. } = &events[0] else {
+            panic!("expected Data event");
+        };
+        let rows: Vec<serde_json::Value> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(rows[0]["seq"], 10);
+        assert_eq!(rows[1]["seq"], 11);
+    }
+
+    #[test]
+    fn record_profile_stops_on_sequence_overflow() {
+        let mut input = GeneratorInput::new(
+            "bench-input",
+            GeneratorConfig {
+                batch_size: 2,
+                total_events: 2,
+                profile: GeneratorProfile::Record,
+                sequence: Some(GeneratorGeneratedField {
+                    field: "seq".to_string(),
+                    start: u64::MAX,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let events = input.poll().unwrap();
+        let InputEvent::Data { bytes, .. } = &events[0] else {
+            panic!("expected Data event");
+        };
+        let rows: Vec<serde_json::Value> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["seq"], u64::MAX);
+        assert!(input.poll().unwrap().is_empty());
+    }
+
+    #[test]
+    fn record_profile_escapes_string_fields() {
+        let mut input = GeneratorInput::new(
+            "bench",
+            GeneratorConfig {
+                batch_size: 1,
+                total_events: 1,
+                profile: GeneratorProfile::Record,
+                attributes: HashMap::from([
+                    (
+                        "benchmark_id".to_string(),
+                        GeneratorAttributeValue::String("run-\"quoted\"\nline".to_string()),
+                    ),
+                    (
+                        "pod_name".to_string(),
+                        GeneratorAttributeValue::String("pod-\\name".to_string()),
+                    ),
+                    (
+                        "stream_id".to_string(),
+                        GeneratorAttributeValue::String("stream-\"id\"".to_string()),
+                    ),
+                    (
+                        "service".to_string(),
+                        GeneratorAttributeValue::String("svc\tname".to_string()),
+                    ),
+                    ("ratio".to_string(), GeneratorAttributeValue::Float(1.25)),
+                    ("sampled".to_string(), GeneratorAttributeValue::Bool(false)),
+                ]),
+                ..Default::default()
+            },
+        );
+
+        let events = input.poll().unwrap();
+        let InputEvent::Data { bytes, .. } = &events[0] else {
+            panic!("expected Data event");
+        };
+        let row: serde_json::Value =
+            serde_json::from_slice(bytes.split(|b| *b == b'\n').next().unwrap()).unwrap();
+        assert_eq!(row["benchmark_id"], "run-\"quoted\"\nline");
+        assert_eq!(row["pod_name"], "pod-\\name");
+        assert_eq!(row["stream_id"], "stream-\"id\"");
+        assert_eq!(row["service"], "svc\tname");
+        assert_eq!(row["ratio"], 1.25);
+        assert_eq!(row["sampled"], false);
+    }
+
+    #[test]
+    fn encode_static_field_serializes_floats_as_json_numbers() {
+        let encoded = encode_static_field("ratio", &GeneratorAttributeValue::Float(1.0));
+        assert_eq!(std::str::from_utf8(&encoded).unwrap(), "\"ratio\":1.0");
+    }
+
+    #[test]
+    fn encode_static_field_serializes_non_finite_floats_as_null() {
+        let encoded = encode_static_field("ratio", &GeneratorAttributeValue::Float(f64::NAN));
+        assert_eq!(std::str::from_utf8(&encoded).unwrap(), "\"ratio\":null");
+    }
+
+    #[test]
+    fn encode_static_field_serializes_null_attribute() {
+        let encoded = encode_static_field("deleted_at", &GeneratorAttributeValue::Null);
+        assert_eq!(
+            std::str::from_utf8(&encoded).unwrap(),
+            "\"deleted_at\":null"
+        );
     }
 }

@@ -343,6 +343,15 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // _timestamp from time_unix_nano
     if let Ok(ts_idx) = logs_schema.index_of("time_unix_nano") {
         let ts_arr = star.logs.column(ts_idx);
+        if !matches!(
+            ts_arr.data_type(),
+            DataType::Timestamp(TimeUnit::Nanosecond, _)
+        ) {
+            return Err(ArrowError::SchemaError(format!(
+                "time_unix_nano must be Timestamp(Nanosecond), got {}",
+                ts_arr.data_type()
+            )));
+        }
         let col_pos = ensure_str_col("_timestamp", &mut flat_cols, &mut col_index);
         for row in 0..num_rows {
             if !ts_arr.is_null(row) {
@@ -369,6 +378,12 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // severity_text → level
     if let Ok(sev_idx) = logs_schema.index_of("severity_text") {
         let sev_arr = star.logs.column(sev_idx);
+        if !matches!(sev_arr.data_type(), DataType::Utf8 | DataType::Utf8View) {
+            return Err(ArrowError::SchemaError(format!(
+                "severity_text must be Utf8 or Utf8View, got {}",
+                sev_arr.data_type()
+            )));
+        }
         let col_pos = ensure_str_col("level", &mut flat_cols, &mut col_index);
         for row in 0..num_rows {
             if !sev_arr.is_null(row) {
@@ -385,6 +400,12 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // body_str → message
     if let Ok(body_idx) = logs_schema.index_of("body_str") {
         let body_arr = star.logs.column(body_idx);
+        if !matches!(body_arr.data_type(), DataType::Utf8 | DataType::Utf8View) {
+            return Err(ArrowError::SchemaError(format!(
+                "body_str must be Utf8 or Utf8View, got {}",
+                body_arr.data_type()
+            )));
+        }
         let col_pos = ensure_str_col("message", &mut flat_cols, &mut col_index);
         for row in 0..num_rows {
             if !body_arr.is_null(row) {
@@ -986,7 +1007,8 @@ pub(crate) fn parse_rfc3339_nanos(s: &str) -> Option<i64> {
     let min: u32 = s.get(14..16)?.parse().ok()?;
     let sec: u32 = s.get(17..19)?.parse().ok()?;
 
-    if hour >= 24 || min >= 60 || sec >= 60 {
+    if hour >= 24 || min >= 60 || sec > 60 {
+        // sec > 60 allows leap seconds (60)
         return None;
     }
 
@@ -1829,6 +1851,48 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_timestamp_to_nanos_integer() {
+        // Bug #1028: correctly scale magnitude-based epoch values
+        // seconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1705314600"),
+            Some(1_705_314_600_000_000_000)
+        );
+        // milliseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1705314600123"),
+            Some(1_705_314_600_123_000_000)
+        );
+        // microseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1705314600123456"),
+            Some(1_705_314_600_123_456_000)
+        );
+        // nanoseconds
+        assert_eq!(
+            parse_timestamp_to_nanos("1705314600123456789"),
+            Some(1_705_314_600_123_456_789)
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_to_nanos_overflow() {
+        // Bug #1085: integer seconds should not panic on overflow (e.g. year 2300)
+        // 10_413_792_000 seconds = ~year 2300.
+        // Multiply by 1_000_000_000 -> 10_413_792_000_000_000_000, which overflows i64.
+        assert_eq!(parse_timestamp_to_nanos("10413792000"), None);
+    }
+
+    #[test]
+    fn test_parse_rfc3339_nanos_invalid_time() {
+        // Bug #1088: reject invalid time values
+        assert_eq!(parse_rfc3339_nanos("2024-01-01T99:99:99Z"), None);
+        assert_eq!(parse_rfc3339_nanos("2024-01-01T24:00:00Z"), None);
+        assert_eq!(parse_rfc3339_nanos("2024-01-01T23:60:00Z"), None);
+        assert_eq!(parse_rfc3339_nanos("2024-01-01T23:59:61Z"), None); // 60 is leap second, 61 is invalid
+    }
+
+    #[test]
     fn timestamp_roundtrip_precision() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("_timestamp", DataType::Utf8, true),
@@ -1854,5 +1918,47 @@ mod tests {
 
         // Verify nanosecond precision is preserved.
         assert_eq!(ts_arr.value(0), ts);
+    }
+
+    #[test]
+    fn star_to_flat_returns_error_for_invalid_logs_column_types() {
+        let logs_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new("resource_id", DataType::UInt32, false),
+            Field::new("scope_id", DataType::UInt32, false),
+            // Wrong type: should be Timestamp(Nanosecond)
+            Field::new("time_unix_nano", DataType::Utf8, true),
+            // Wrong type: should be Utf8/Utf8View
+            Field::new("severity_text", DataType::Int64, true),
+            // Wrong type: should be Utf8/Utf8View
+            Field::new("body_str", DataType::Boolean, true),
+        ]));
+
+        let logs = RecordBatch::try_new(
+            logs_schema,
+            vec![
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(StringArray::from(vec![Some("2024-01-01T00:00:00Z")])),
+                Arc::new(Int64Array::from(vec![Some(9i64)])),
+                Arc::new(BooleanArray::from(vec![Some(true)])),
+            ],
+        )
+        .expect("valid malformed logs batch");
+
+        let star = StarSchema {
+            logs,
+            log_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+            resource_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+            scope_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+        };
+
+        let err = star_to_flat(&star).expect_err("invalid schema must return error");
+        assert!(
+            err.to_string()
+                .contains("time_unix_nano must be Timestamp(Nanosecond)"),
+            "unexpected error: {err}"
+        );
     }
 }
