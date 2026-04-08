@@ -13,9 +13,12 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::pipeline::Pipeline;
 
+/// Error returned while constructing or running the runtime orchestration shell.
 #[derive(Debug)]
 pub enum RuntimeError {
+    /// Configuration or pipeline-build validation failed before the runtime started.
     Config(String),
+    /// Runtime I/O or OS integration failed while bootstrapping or running pipelines.
     Io(io::Error),
 }
 
@@ -36,11 +39,17 @@ impl From<io::Error> for RuntimeError {
     }
 }
 
+/// Inputs needed by the runtime bootstrap layer that are owned by the CLI facade.
 pub struct RunOptions<'a> {
+    /// Resolved config path shown in diagnostics and startup output.
     pub config_path: &'a str,
+    /// Normalized config YAML snapshot exposed to diagnostics consumers.
     pub config_yaml: &'a str,
+    /// Human-readable CLI version string used in the startup banner.
     pub version: &'a str,
+    /// Whether ANSI color output should be used for stderr banners.
     pub use_color: bool,
+    /// Whether stderr logs should be emitted as JSON instead of text.
     pub json_logs_for_stderr: bool,
 }
 
@@ -376,6 +385,7 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputType::Tcp => format!("tcp   {}", i.listen.as_deref().unwrap_or(":514")),
         InputType::Udp => format!("udp   {}", i.listen.as_deref().unwrap_or(":514")),
         InputType::Otlp => format!("otlp  {}", i.listen.as_deref().unwrap_or(":4318")),
+        InputType::ArrowIpc => "arrow_ipc".to_string(),
         InputType::Generator => "generator".to_string(),
         _ => "unknown".to_string(),
     }
@@ -484,6 +494,11 @@ fn acquire_instance_lock(
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
+        // SAFETY: `lock_file` is opened just above and remains alive for the duration of
+        // this call, so `as_raw_fd()` yields a valid Unix file descriptor for `lock_path`.
+        // `libc::flock` only operates on that fd using `LOCK_EX | LOCK_NB`; it does not rely
+        // on any additional Rust aliasing invariants, and we immediately check
+        // `io::Error::last_os_error()` if the syscall returns failure.
         let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if ret != 0 {
             let err = io::Error::last_os_error();
@@ -540,7 +555,6 @@ fn build_tracer_provider(
     use_color: bool,
 ) -> io::Result<opentelemetry_sdk::trace::SdkTracerProvider> {
     use logfwd_io::span_exporter::RingBufferExporter;
-    use opentelemetry_otlp::WithExportConfig;
     use opentelemetry_sdk::trace::{SdkTracerProvider, SimpleSpanProcessor};
 
     let ring_processor = SimpleSpanProcessor::new(RingBufferExporter::new(buf));

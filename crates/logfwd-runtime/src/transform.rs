@@ -21,6 +21,7 @@ mod passthrough {
     use arrow::record_batch::RecordBatch;
     use logfwd_core::scan_config::ScanConfig;
 
+    /// Error returned when passthrough transform construction or execution fails.
     #[derive(Debug, Clone)]
     pub struct TransformError {
         message: String,
@@ -42,10 +43,13 @@ mod passthrough {
 
     impl std::error::Error for TransformError {}
 
+    /// Minimal analyzer surface for passthrough builds without DataFusion support.
     pub struct QueryAnalyzer {
+        /// Referenced columns inferred from the parsed query.
         pub referenced_columns: HashSet<String>,
     }
 
+    /// Passthrough SQL transform stub used when the `datafusion` feature is disabled.
     pub struct SqlTransform {
         analyzer: QueryAnalyzer,
     }
