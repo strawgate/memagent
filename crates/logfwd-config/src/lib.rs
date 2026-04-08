@@ -978,6 +978,48 @@ impl Config {
                     EnrichmentConfig::HostInfo(_) | EnrichmentConfig::K8sPath(_) => {}
                 }
             }
+
+            // Guard against feedback loops: reject configs where a file output
+            // path matches a file input path in the same pipeline (#1596).
+            //
+            // If a file output writes to the same path that a file input is
+            // tailing, every flushed batch is immediately re-ingested, causing
+            // unbounded exponential growth.  We check for exact canonical-path
+            // equality here; glob patterns that would also match the output path
+            // are not yet detected.
+            let file_input_paths: Vec<std::path::PathBuf> = pipe
+                .inputs
+                .iter()
+                .filter(|i| i.input_type == InputType::File)
+                .filter_map(|i| i.path.as_deref())
+                // Only check non-glob paths (globs contain '*' or '?').
+                .filter(|p| !p.contains('*') && !p.contains('?'))
+                .map(std::path::PathBuf::from)
+                .collect();
+
+            for output in &pipe.outputs {
+                if output.output_type != OutputType::File {
+                    continue;
+                }
+                let Some(out_path) = output.path.as_deref() else {
+                    continue;
+                };
+                let out_pb = std::path::PathBuf::from(out_path);
+                for in_pb in &file_input_paths {
+                    // Use canonical paths when both exist; otherwise fall back
+                    // to raw path comparison to catch the mistake before runtime.
+                    let out_canon = out_pb.canonicalize().unwrap_or_else(|_| out_pb.clone());
+                    let in_canon = in_pb.canonicalize().unwrap_or_else(|_| in_pb.clone());
+                    if out_canon == in_canon {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}': file output path '{}' is the same as file input path '{}' — \
+                            this creates an unbounded feedback loop",
+                            out_path,
+                            in_pb.display(),
+                        )));
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -2700,5 +2742,45 @@ pipelines:
             err.to_string().contains("only supported for loki"),
             "expected loki-only message: {err}"
         );
+    }
+
+    /// Regression test for #1596: file output pointing at the same path as a file
+    /// input must be rejected at validation time to prevent an unbounded feedback loop.
+    #[test]
+    fn file_output_same_as_input_rejected() {
+        let yaml = r#"
+pipelines:
+  looping:
+    inputs:
+      - type: file
+        path: /tmp/logfwd-feedback-test.log
+    outputs:
+      - type: file
+        path: /tmp/logfwd-feedback-test.log
+        format: json
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("feedback loop") || msg.contains("same as file input"),
+            "expected feedback-loop rejection, got: {msg}"
+        );
+    }
+
+    /// File output to a *different* path from the input must pass validation.
+    #[test]
+    fn file_output_different_from_input_allowed() {
+        let yaml = r#"
+pipelines:
+  ok:
+    inputs:
+      - type: file
+        path: /tmp/logfwd-input.log
+    outputs:
+      - type: file
+        path: /tmp/logfwd-output.log
+        format: json
+"#;
+        Config::load_str(yaml).expect("different input/output paths should be allowed");
     }
 }
