@@ -143,6 +143,7 @@ impl Pipeline {
             }
         };
 
+        let input_rows = num_rows as u64;
         let out_rows = result.num_rows() as u64;
         let submitted_at = tokio::time::Instant::now();
 
@@ -150,7 +151,7 @@ impl Pipeline {
             "batch",
             scan_ns = scan_ns,
             transform_ns = transform_ns,
-            input_rows = out_rows,
+            input_rows = input_rows,
             queue_wait_ns = tracing::field::Empty,
         );
 
