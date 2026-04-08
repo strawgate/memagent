@@ -79,7 +79,15 @@ pub(super) async fn worker_task(
                             resp_bytes = tracing::field::Empty,
                         );
                         let (outcome, send_latency_ns, retries) =
-                            process_item(id, &mut *sink, &output_health, batch, &metadata, max_retry_delay)
+                            process_item(
+                                id,
+                                &mut *sink,
+                                &output_health,
+                                batch,
+                                &metadata,
+                                max_retry_delay,
+                                &cancel,
+                            )
                         .instrument(output_span.clone())
                         .await;
                         output_span.record("retries", retries);
@@ -103,13 +111,19 @@ pub(super) async fn worker_task(
                             output_name: sink.name().to_string(),
                         };
                         if let Err(send_err) = ack_tx.send(ack) {
-                            let lost_ack = send_err.0;
+                            let mut lost_ack = send_err.0;
+                            let unresolved_tickets = lost_ack.tickets.len();
+                            for ticket in lost_ack.tickets.drain(..) {
+                                // Convert Sending -> Queued before drop to satisfy
+                                // typestate invariants when the ack channel is gone.
+                                let _ = ticket.fail();
+                            }
                             output_health
                                 .apply_worker_event(id, OutputHealthEvent::FatalFailure);
                             tracing::error!(
                                 worker_id = id,
                                 batch_id = lost_ack.batch_id,
-                                ticket_count = lost_ack.tickets.len(),
+                                ticket_count = unresolved_tickets,
                                 num_rows = lost_ack.num_rows,
                                 "outcome" = ?lost_ack.outcome,
                                 "worker: ack channel closed; cancelling worker pool to avoid unresolved checkpoint state"
@@ -155,6 +169,7 @@ pub(super) async fn process_item(
     batch: RecordBatch,
     metadata: &BatchMetadata,
     max_retry_delay: Duration,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> (DeliveryOutcome, u64, usize) {
     sink.begin_batch();
 
@@ -176,11 +191,18 @@ pub(super) async fn process_item(
         // Hard per-batch timeout: prevents one slow/broken batch from
         // tying up the worker indefinitely.
         let send_start = std::time::Instant::now();
-        let result = tokio::time::timeout(
-            Duration::from_secs(BATCH_TIMEOUT_SECS),
-            sink.send_batch(&batch, metadata),
-        )
-        .await;
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                tracing::warn!(worker_id, "worker_pool: cancellation observed during batch send");
+                send_latency_ns += send_start.elapsed().as_nanos() as u64;
+                return (DeliveryOutcome::PoolClosed, send_latency_ns, retries_count);
+            }
+            result = tokio::time::timeout(
+                Duration::from_secs(BATCH_TIMEOUT_SECS),
+                sink.send_batch(&batch, metadata),
+            ) => result,
+        };
         send_latency_ns += send_start.elapsed().as_nanos() as u64;
 
         match result {
@@ -228,7 +250,14 @@ pub(super) async fn process_item(
                 let sleep_for = retry_dur.min(max_retry_delay);
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
                 tracing::warn!(worker_id, ?sleep_for, "worker_pool: rate-limited, retrying");
-                tokio::time::sleep(sleep_for).await;
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => {
+                        tracing::warn!(worker_id, "worker_pool: cancellation observed during retry-after backoff");
+                        return (DeliveryOutcome::PoolClosed, send_latency_ns, retries_count);
+                    }
+                    () = tokio::time::sleep(sleep_for) => {}
+                }
             }
             Ok(SendResult::IoError(e)) => match backoff.next() {
                 Some(delay) => {
@@ -240,7 +269,14 @@ pub(super) async fn process_item(
                         error = %e,
                         "worker_pool: transient error, retrying with jitter"
                     );
-                    tokio::time::sleep(delay).await;
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => {
+                            tracing::warn!(worker_id, "worker_pool: cancellation observed during jitter backoff");
+                            return (DeliveryOutcome::PoolClosed, send_latency_ns, retries_count);
+                        }
+                        () = tokio::time::sleep(delay) => {}
+                    }
                 }
                 None => {
                     tracing::error!(
@@ -290,8 +326,8 @@ mod tests {
     use crate::worker_pool::pool::OutputHealthTracker;
 
     use super::super::pool::WorkerConfig;
-    use super::super::types::{WorkItem, WorkerMsg};
-    use super::worker_task;
+    use super::super::types::{DeliveryOutcome, WorkItem, WorkerMsg};
+    use super::{process_item, worker_task};
 
     struct OkSink;
 
@@ -310,6 +346,30 @@ mod tests {
 
         fn name(&self) -> &str {
             "ok-sink"
+        }
+
+        fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct HangingSink;
+
+    impl Sink for HangingSink {
+        fn send_batch<'a>(
+            &'a mut self,
+            _batch: &'a RecordBatch,
+            _metadata: &'a BatchMetadata,
+        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+            Box::pin(std::future::pending())
+        }
+
+        fn flush(&mut self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn name(&self) -> &str {
+            "hanging-sink"
         }
 
         fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + '_>> {
@@ -370,5 +430,31 @@ mod tests {
             cancel.is_cancelled(),
             "worker should cancel the pool when ack channel closes"
         );
+    }
+
+    #[tokio::test]
+    async fn process_item_returns_pool_closed_when_cancelled_before_send() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut sink = HangingSink;
+        let output_health = Arc::new(OutputHealthTracker::new(vec![]));
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::default(),
+            observed_time_ns: 0,
+        };
+
+        let (outcome, _send_latency_ns, retries) = process_item(
+            0,
+            &mut sink,
+            &output_health,
+            make_batch(),
+            &metadata,
+            Duration::from_millis(10),
+            &cancel,
+        )
+        .await;
+
+        assert_eq!(outcome, DeliveryOutcome::PoolClosed);
+        assert_eq!(retries, 0);
     }
 }

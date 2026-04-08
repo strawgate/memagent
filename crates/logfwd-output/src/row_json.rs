@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
+use arrow::util::display::array_value_to_string;
 
 use crate::conflict_columns::{ColInfo, get_array, is_null};
 
@@ -15,7 +16,10 @@ pub(crate) fn str_value(col: &dyn Array, row: usize) -> &str {
         DataType::Utf8 => col.as_string::<i32>().value(row),
         DataType::Utf8View => col.as_string_view().value(row),
         DataType::LargeUtf8 => col.as_string::<i64>().value(row),
-        _ => "",
+        _ => unreachable!(
+            "str_value called with non-string array type: {:?}",
+            col.data_type()
+        ),
     }
 }
 
@@ -49,7 +53,7 @@ pub(crate) fn coalesce_as_str(batch: &RecordBatch, row: usize, col: &ColInfo) ->
                 "false".to_string()
             }
         }
-        _ => str_value(arr, row).to_string(),
+        _ => array_value_to_string(arr, row).ok()?,
     };
     Some(s)
 }
@@ -153,7 +157,8 @@ pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -
             out.extend_from_slice(if v { b"true" } else { b"false" });
         }
         _ => {
-            write_json_string(out, str_value(arr, row))?;
+            let fallback = array_value_to_string(arr, row).unwrap_or_default();
+            write_json_string(out, &fallback)?;
         }
     }
     Ok(())

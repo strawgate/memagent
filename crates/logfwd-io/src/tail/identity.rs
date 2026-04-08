@@ -1,6 +1,5 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use logfwd_types::pipeline::SourceId;
@@ -30,21 +29,42 @@ impl FileIdentity {
         if self.fingerprint == 0 {
             return SourceId(0);
         }
-        let mut h = xxhash_rust::xxh64::Xxh64::new(0);
-        h.update(&self.device.to_le_bytes());
-        h.update(&self.inode.to_le_bytes());
-        h.update(&self.fingerprint.to_le_bytes());
-        source_id_from_digest(h.digest())
+        let primary = source_digest(self.device, self.inode, self.fingerprint, 0);
+        let fallback = source_digest(self.device, self.inode, self.fingerprint, 1);
+        source_id_from_digests(primary, fallback)
     }
 }
 
-fn source_id_from_digest(digest: u64) -> SourceId {
+fn source_digest(device: u64, inode: u64, fingerprint: u64, seed: u64) -> u64 {
+    let mut h = xxhash_rust::xxh64::Xxh64::new(seed);
+    h.update(&device.to_le_bytes());
+    h.update(&inode.to_le_bytes());
+    h.update(&fingerprint.to_le_bytes());
+    h.digest()
+}
+
+fn source_id_from_digests(primary: u64, fallback: u64) -> SourceId {
     // Reserve SourceId(0) as the empty-file sentinel.
-    if digest == 0 {
-        SourceId(1)
-    } else {
-        SourceId(digest)
+    if primary != 0 {
+        return SourceId(primary);
     }
+    if fallback != 0 {
+        return SourceId(fallback);
+    }
+    // Extremely unlikely: both seeds hashed to 0. Keep non-zero invariant.
+    SourceId(1)
+}
+
+#[cfg(unix)]
+fn metadata_device_inode(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+#[cfg(not(unix))]
+fn metadata_device_inode(_meta: &std::fs::Metadata) -> (u64, u64) {
+    // Fallback for non-Unix builds. Windows can later switch to file-index based ids.
+    (0, 0)
 }
 
 /// Compute the fingerprint of a file: xxhash64 of the first N bytes.
@@ -70,10 +90,11 @@ pub(super) fn identify_open_file(
     fingerprint_bytes: usize,
 ) -> io::Result<FileIdentity> {
     let meta = file.metadata()?;
+    let (device, inode) = metadata_device_inode(&meta);
     let fingerprint = compute_fingerprint(file, fingerprint_bytes)?;
     Ok(FileIdentity {
-        device: meta.dev(),
-        inode: meta.ino(),
+        device,
+        inode,
         fingerprint,
     })
 }
@@ -86,16 +107,21 @@ pub(super) fn identify_file(path: &Path, fingerprint_bytes: usize) -> io::Result
 
 #[cfg(test)]
 mod tests {
-    use super::source_id_from_digest;
+    use super::source_id_from_digests;
     use logfwd_types::pipeline::SourceId;
 
     #[test]
-    fn source_id_digest_zero_is_remapped() {
-        assert_eq!(source_id_from_digest(0), SourceId(1));
+    fn source_id_uses_primary_digest_when_nonzero() {
+        assert_eq!(source_id_from_digests(42, 7), SourceId(42));
     }
 
     #[test]
-    fn source_id_digest_nonzero_is_preserved() {
-        assert_eq!(source_id_from_digest(42), SourceId(42));
+    fn source_id_uses_fallback_digest_when_primary_is_zero() {
+        assert_eq!(source_id_from_digests(0, 7), SourceId(7));
+    }
+
+    #[test]
+    fn source_id_uses_nonzero_sentinel_when_both_digests_are_zero() {
+        assert_eq!(source_id_from_digests(0, 0), SourceId(1));
     }
 }

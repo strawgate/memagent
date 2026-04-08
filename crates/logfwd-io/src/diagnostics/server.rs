@@ -14,6 +14,7 @@ use crate::background_http_task::BackgroundHttpTask;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DASHBOARD_HTML: &str = include_str!("../dashboard.html");
 const REDACTED_SECRET: &str = "***redacted***";
+const REDACTED_CONFIG_UNAVAILABLE: &str = "<redacted config unavailable>";
 
 fn redact_endpoint_credentials(endpoint: &str) -> String {
     let Ok(mut parsed) = url::Url::parse(endpoint) else {
@@ -49,6 +50,8 @@ fn redact_yaml_value(value: &mut serde_yaml_ng::Value, in_auth_block: bool) {
                             *header_value =
                                 serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
                         }
+                    } else {
+                        *val = serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
                     }
                     continue;
                 }
@@ -76,7 +79,7 @@ fn redact_config_yaml(raw_yaml: &str) -> String {
         return raw_yaml.to_string();
     };
     redact_yaml_value(&mut parsed, false);
-    serde_yaml_ng::to_string(&parsed).unwrap_or_else(|_| raw_yaml.to_string())
+    serde_yaml_ng::to_string(&parsed).unwrap_or_else(|_| REDACTED_CONFIG_UNAVAILABLE.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1202,20 @@ output:
         let raw = "not: [valid: yaml";
         let redacted = redact_config_yaml(raw);
         assert_eq!(redacted, raw);
+    }
+
+    #[test]
+    fn redact_config_yaml_masks_non_mapping_headers() {
+        let raw = r#"
+output:
+  type: http
+  auth:
+    headers:
+      - "Bearer not-safe"
+"#;
+        let redacted = redact_config_yaml(raw);
+        assert!(!redacted.contains("not-safe"));
+        assert!(redacted.contains(REDACTED_SECRET));
     }
 
     #[test]

@@ -1444,10 +1444,13 @@ mod tests {
         assert_eq!(out_stats.health(), ComponentHealth::Stopped);
         assert!(!pool.output_health.has_active_workers());
         assert_eq!(pool.output_health.slot_health(0), None);
-        assert!(
-            pool.ack_rx_mut().try_recv().is_err(),
-            "forced-abort path should not emit a success ack for the hung batch"
-        );
+        if let Ok(ack) = pool.ack_rx_mut().try_recv() {
+            assert_ne!(
+                ack.outcome,
+                DeliveryOutcome::Delivered,
+                "forced-abort path must never emit a delivered ack for the hung batch"
+            );
+        }
     }
 
     #[tokio::test]

@@ -1,7 +1,5 @@
 use std::collections::HashSet;
-use std::fs;
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -42,17 +40,10 @@ impl FileDiscovery {
         let pattern_refs: Vec<&str> = self.glob_patterns.iter().map(String::as_str).collect();
         let candidates = expand_glob_patterns(&pattern_refs);
 
-        let existing: HashSet<PathBuf> = self
-            .watch_paths
-            .iter()
-            .map(|p| fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
-            .collect();
+        let existing: HashSet<PathBuf> = self.watch_paths.iter().cloned().collect();
         let new_paths: Vec<PathBuf> = candidates
             .into_iter()
-            .filter(|p| {
-                fs::canonicalize(p)
-                    .map_or_else(|_| !existing.contains(p), |c| !existing.contains(&c))
-            })
+            .filter(|p| !existing.contains(p))
             .collect();
 
         for path in new_paths {
@@ -155,7 +146,7 @@ impl FileDiscovery {
                 tailed
                     .file
                     .metadata()
-                    .map(|m| m.nlink() == 0)
+                    .map(|m| metadata_indicates_deleted(&m))
                     .unwrap_or(true)
             })
             .map(|(path, _)| path.clone())
@@ -172,4 +163,15 @@ impl FileDiscovery {
         }
         had_error
     }
+}
+
+#[cfg(unix)]
+fn metadata_indicates_deleted(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.nlink() == 0
+}
+
+#[cfg(not(unix))]
+fn metadata_indicates_deleted(_meta: &std::fs::Metadata) -> bool {
+    false
 }

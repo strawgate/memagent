@@ -1,34 +1,30 @@
 use crate::types::OutputType;
+use std::sync::OnceLock;
+
+const OUTPUT_TYPE_MAPPING: &[(&str, OutputType)] = &[
+    ("otlp", OutputType::Otlp),
+    ("http", OutputType::Http),
+    ("elasticsearch", OutputType::Elasticsearch),
+    ("loki", OutputType::Loki),
+    ("stdout", OutputType::Stdout),
+    ("file", OutputType::File),
+    ("parquet", OutputType::Parquet),
+    ("null", OutputType::Null),
+    ("tcp", OutputType::Tcp),
+    ("udp", OutputType::Udp),
+    ("arrow_ipc", OutputType::ArrowIpc),
+];
 
 pub(crate) fn parse_output_type_name(value: &str) -> Option<OutputType> {
-    match value {
-        "otlp" => Some(OutputType::Otlp),
-        "http" => Some(OutputType::Http),
-        "elasticsearch" => Some(OutputType::Elasticsearch),
-        "loki" => Some(OutputType::Loki),
-        "stdout" => Some(OutputType::Stdout),
-        "file" => Some(OutputType::File),
-        "parquet" => Some(OutputType::Parquet),
-        "null" => Some(OutputType::Null),
-        "tcp" => Some(OutputType::Tcp),
-        "udp" => Some(OutputType::Udp),
-        "arrow_ipc" => Some(OutputType::ArrowIpc),
-        _ => None,
-    }
+    OUTPUT_TYPE_MAPPING
+        .iter()
+        .find(|(name, _)| *name == value)
+        .map(|(_, ty)| ty.clone())
 }
 
 pub(crate) fn supported_output_type_names_for_errors() -> &'static [&'static str] {
-    &[
-        "otlp",
-        "http",
-        "elasticsearch",
-        "loki",
-        "stdout",
-        "file",
-        "parquet",
-        "null",
-        "tcp",
-        "udp",
-        "arrow_ipc",
-    ]
+    static NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
+    NAMES
+        .get_or_init(|| OUTPUT_TYPE_MAPPING.iter().map(|(name, _)| *name).collect())
+        .as_slice()
 }

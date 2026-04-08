@@ -39,6 +39,7 @@ pub(super) struct FileReader {
     pub(super) files: HashMap<PathBuf, TailedFile>,
     pub(super) read_buf: Vec<u8>,
     pub(super) evicted_offsets: HashMap<PathBuf, EvictedFile>,
+    pub(super) scratch_paths: Vec<PathBuf>,
     pub(super) config: TailConfig,
 }
 
@@ -248,15 +249,18 @@ impl FileReader {
 
     pub(super) fn read_all(&mut self, events: &mut Vec<TailEvent>) -> bool {
         let mut had_error = false;
-        let paths: Vec<PathBuf> = self.files.keys().cloned().collect();
-        for path in paths {
-            let pre_read_source_id = self.source_id_for_path(&path);
-            match self.read_new_data(&path) {
+        let mut paths = std::mem::take(&mut self.scratch_paths);
+        paths.clear();
+        paths.extend(self.files.keys().cloned());
+
+        for path in &paths {
+            let pre_read_source_id = self.source_id_for_path(path);
+            match self.read_new_data(path) {
                 Ok(ReadResult::Data(data)) => {
-                    if let Some(tailed) = self.files.get_mut(&path) {
+                    if let Some(tailed) = self.files.get_mut(path) {
                         tailed.eof_emitted = false;
                     }
-                    let source_id = self.source_id_for_path(&path);
+                    let source_id = self.source_id_for_path(path);
                     events.push(TailEvent::Data {
                         path: path.clone(),
                         bytes: data,
@@ -268,10 +272,10 @@ impl FileReader {
                         path: path.clone(),
                         source_id: pre_read_source_id,
                     });
-                    if let Some(tailed) = self.files.get_mut(&path) {
+                    if let Some(tailed) = self.files.get_mut(path) {
                         tailed.eof_emitted = false;
                     }
-                    let source_id = self.source_id_for_path(&path);
+                    let source_id = self.source_id_for_path(path);
                     events.push(TailEvent::Data {
                         path: path.clone(),
                         bytes: data,
@@ -279,7 +283,7 @@ impl FileReader {
                     });
                 }
                 Ok(ReadResult::Truncated) => {
-                    if let Some(tailed) = self.files.get_mut(&path) {
+                    if let Some(tailed) = self.files.get_mut(path) {
                         tailed.eof_emitted = false;
                     }
                     events.push(TailEvent::Truncated {
@@ -288,11 +292,11 @@ impl FileReader {
                     });
                 }
                 Ok(ReadResult::NoData) => {
-                    if let Some(tailed) = self.files.get_mut(&path)
+                    if let Some(tailed) = self.files.get_mut(path)
                         && !tailed.eof_emitted
                     {
                         tailed.eof_emitted = true;
-                        let source_id = self.source_id_for_path(&path);
+                        let source_id = self.source_id_for_path(path);
                         events.push(TailEvent::EndOfFile {
                             path: path.clone(),
                             source_id,
@@ -305,6 +309,7 @@ impl FileReader {
                 }
             }
         }
+        self.scratch_paths = paths;
         had_error
     }
 
@@ -354,6 +359,10 @@ impl FileReader {
             };
             tailed.offset = safe_offset;
             tailed.file.seek(SeekFrom::Start(safe_offset))?;
+            return Ok(());
+        }
+        if let Some(evicted) = self.evicted_offsets.get_mut(path) {
+            evicted.offset = offset;
         }
         Ok(())
     }
@@ -454,6 +463,7 @@ mod tests {
             files: HashMap::new(),
             read_buf: vec![0u8; 64],
             evicted_offsets: HashMap::new(),
+            scratch_paths: Vec::new(),
             config: TailConfig::default(),
         }
     }
@@ -486,6 +496,38 @@ mod tests {
             .expect("evicted entry should remain present")
             .offset;
         assert_eq!(updated, 7, "sentinel SourceId(0) must be a no-op");
+    }
+
+    #[test]
+    fn set_offset_updates_evicted_entry_when_file_is_not_active() {
+        let path = PathBuf::from("evicted.log");
+        let mut reader = test_reader();
+        reader.evicted_offsets.insert(
+            path.clone(),
+            EvictedFile {
+                identity: FileIdentity {
+                    device: 1,
+                    inode: 2,
+                    fingerprint: 123,
+                },
+                offset: 4,
+                path: path.clone(),
+                source_id: SourceId(99),
+            },
+        );
+
+        reader
+            .set_offset(&path, 17)
+            .expect("set_offset should update evicted entry");
+
+        assert_eq!(
+            reader
+                .evicted_offsets
+                .get(&path)
+                .expect("evicted entry should remain present")
+                .offset,
+            17
+        );
     }
 
     #[test]

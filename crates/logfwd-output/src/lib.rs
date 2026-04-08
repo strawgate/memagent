@@ -1245,6 +1245,19 @@ mod write_row_json_tests {
     }
 
     #[test]
+    fn is_conflict_struct_rejects_mismatched_child_types() {
+        use arrow::datatypes::Fields;
+        let fields = Fields::from(vec![
+            Field::new("int", DataType::Utf8, true),
+            Field::new("str", DataType::Int64, true),
+        ]);
+        assert!(
+            !is_conflict_struct(&fields),
+            "name-only matching should not classify arbitrary structs as conflict structs"
+        );
+    }
+
+    #[test]
     fn write_row_json_struct_int_emits_number() {
         // status: Struct{int=200, str=null} → {"status":200}
         let batch = make_int_str_struct_batch(vec![Some(200), None], vec![None, Some("OK")]);

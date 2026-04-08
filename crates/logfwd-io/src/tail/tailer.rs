@@ -115,6 +115,7 @@ impl FileTailer {
                 files: HashMap::new(),
                 read_buf: vec![0u8; config.read_buf_size],
                 evicted_offsets: HashMap::new(),
+                scratch_paths: Vec::new(),
                 config: config.clone(),
             },
             config,

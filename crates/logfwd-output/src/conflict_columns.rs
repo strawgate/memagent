@@ -2,6 +2,7 @@ use arrow::array::{Array, StructArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use logfwd_types::field_names;
+use std::collections::HashSet;
 
 /// Where to find one typed variant of a conflict field.
 pub enum ColVariant {
@@ -35,10 +36,33 @@ pub struct ColInfo {
 /// bool child, this detection and the priority functions will handle it
 /// automatically.
 pub(crate) fn is_conflict_struct(fields: &arrow::datatypes::Fields) -> bool {
-    !fields.is_empty()
-        && fields
-            .iter()
-            .all(|f| field_names::CONFLICT_CHILDREN.contains(&f.name().as_str()))
+    if fields.is_empty() {
+        return false;
+    }
+    let unique_count = fields
+        .iter()
+        .map(|f| f.name().as_str())
+        .collect::<HashSet<_>>()
+        .len();
+    unique_count == fields.len()
+        && fields.iter().all(|f| {
+            let child_name = f.name().as_str();
+            field_names::CONFLICT_CHILDREN.contains(&child_name)
+                && conflict_child_type_matches(child_name, f.data_type())
+        })
+}
+
+fn conflict_child_type_matches(child_name: &str, dt: &DataType) -> bool {
+    match child_name {
+        "int" => matches!(dt, DataType::Int64),
+        "float" => matches!(dt, DataType::Float64),
+        "str" => matches!(
+            dt,
+            DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
+        ),
+        "bool" => matches!(dt, DataType::Boolean),
+        _ => false,
+    }
 }
 
 /// JSON output priority: higher wins per row.  Int64 > Float64 > Boolean > Utf8.
