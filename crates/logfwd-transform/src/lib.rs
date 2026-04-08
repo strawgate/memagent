@@ -93,6 +93,27 @@ impl QueryAnalyzer {
                     collect_column_refs(selection, &mut referenced_columns);
                     where_clause = Some(selection.clone());
                 }
+
+                // Walk GROUP BY — columns may appear only here (not in SELECT or WHERE).
+                if let sqlast::GroupByExpr::Expressions(exprs, _) = &select.group_by {
+                    for e in exprs {
+                        collect_column_refs(e, &mut referenced_columns);
+                    }
+                }
+
+                // Walk HAVING — HAVING MAX(col) > N where col is not in SELECT.
+                if let Some(ref having) = select.having {
+                    collect_column_refs(having, &mut referenced_columns);
+                }
+            }
+
+            // Walk ORDER BY — columns may appear only here (not in SELECT or WHERE).
+            if let Some(ref order_by) = query.order_by {
+                if let sqlast::OrderByKind::Expressions(exprs) = &order_by.kind {
+                    for ob in exprs {
+                        collect_column_refs(&ob.expr, &mut referenced_columns);
+                    }
+                }
             }
         } else {
             return Err(TransformError::Sql(
@@ -2189,6 +2210,53 @@ mod tests {
         assert!(
             a.referenced_columns.contains("message"),
             "POSITION(... IN message) must add 'message' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// Columns that appear only in GROUP BY must be added to referenced_columns.
+    ///
+    /// Before the fix, `SELECT COUNT(*) AS cnt FROM logs GROUP BY level` would
+    /// not add `level` to referenced_columns because only SELECT and WHERE were
+    /// walked.  The scanner would then skip `level`, GROUP BY would operate on
+    /// all-NULLs, and all rows would land in one group — silently wrong.
+    #[test]
+    fn test_group_by_only_col_added_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT COUNT(*) AS cnt FROM logs GROUP BY level").unwrap();
+        assert!(
+            a.referenced_columns.contains("level"),
+            "GROUP BY level must add 'level' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// Columns that appear only in HAVING must be added to referenced_columns.
+    ///
+    /// `HAVING MAX(severity) > 3` where severity is not in SELECT would see
+    /// all-NULLs → `MAX(NULL) = NULL`, `NULL > 3 = false` → all groups filtered out.
+    #[test]
+    fn test_having_col_added_to_referenced_columns() {
+        let a = QueryAnalyzer::new(
+            "SELECT level, COUNT(*) AS cnt FROM logs GROUP BY level HAVING MAX(severity) > 3",
+        )
+        .unwrap();
+        assert!(
+            a.referenced_columns.contains("severity"),
+            "HAVING MAX(severity) must add 'severity' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// Columns that appear only in ORDER BY must be added to referenced_columns.
+    ///
+    /// `ORDER BY timestamp` where timestamp is not in SELECT would sort on
+    /// all-NULLs, producing arbitrary ordering with no error.
+    #[test]
+    fn test_order_by_only_col_added_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT message FROM logs ORDER BY timestamp").unwrap();
+        assert!(
+            a.referenced_columns.contains("timestamp"),
+            "ORDER BY timestamp must add 'timestamp' to referenced_columns, got {:?}",
             a.referenced_columns
         );
     }
