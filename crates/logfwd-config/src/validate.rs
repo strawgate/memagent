@@ -90,13 +90,19 @@ impl Config {
                     )));
                 }
                 match input.input_type {
-                    InputType::File => {
-                        if input.path.is_none() {
+                    InputType::File => match &input.path {
+                        None => {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': file input requires 'path'"
                             )));
                         }
-                    }
+                        Some(p) if p.trim().is_empty() => {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': file input 'path' must not be empty"
+                            )));
+                        }
+                        _ => {}
+                    },
                     InputType::Udp | InputType::Tcp => {
                         if input.listen.is_none() {
                             return Err(ConfigError::Validation(format!(
@@ -443,7 +449,7 @@ impl Config {
                     .map_or_else(|| format!("#{i}"), String::from);
 
                 // Reject placeholder output types that are not yet implemented.
-                if matches!(output.output_type, OutputType::Parquet) {
+                if matches!(output.output_type, OutputType::Parquet | OutputType::Http) {
                     return Err(ConfigError::Validation(format!(
                         "pipeline '{name}' output '{label}': {} output type is not yet implemented",
                         output.output_type,
@@ -452,7 +458,6 @@ impl Config {
 
                 match output.output_type {
                     OutputType::Otlp
-                    | OutputType::Http
                     | OutputType::Elasticsearch
                     | OutputType::Loki
                     | OutputType::ArrowIpc => {
@@ -470,6 +475,13 @@ impl Config {
                             )));
                         }
                         if output.output_type == OutputType::Elasticsearch {
+                            if let Some(idx) = &output.index
+                                && idx.trim().is_empty()
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': elasticsearch 'index' must not be empty"
+                                )));
+                            }
                             if let Some(mode) = output.request_mode.as_deref()
                                 && !matches!(mode, "buffered" | "streaming")
                             {
@@ -538,9 +550,10 @@ impl Config {
                             }
                         }
                     }
-                    OutputType::Parquet => {
-                        // Parquet output not yet implemented
-                    }
+                    // Http and Parquet are not yet implemented — already
+                    // rejected by the check above; these arms are unreachable
+                    // but required for exhaustiveness.
+                    OutputType::Http | OutputType::Parquet => {}
                 }
 
                 // Reject fields that don't apply to this output type.
@@ -617,6 +630,11 @@ impl Config {
             for (j, enrichment) in pipe.enrichment.iter().enumerate() {
                 match enrichment {
                     EnrichmentConfig::GeoDatabase(geo_cfg) => {
+                        if geo_cfg.path.trim().is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: geo_database 'path' must not be empty"
+                            )));
+                        }
                         // Only check existence for absolute paths; relative paths
                         // are resolved against base_path in Pipeline::from_config.
                         let p = Path::new(&geo_cfg.path);
@@ -645,6 +663,11 @@ impl Config {
                                 "pipeline '{name}' enrichment #{j}: table_name must not be empty"
                             )));
                         }
+                        if cfg.path.trim().is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: csv 'path' must not be empty"
+                            )));
+                        }
                         let p = Path::new(&cfg.path);
                         if p.is_absolute() && !p.exists() {
                             return Err(ConfigError::Validation(format!(
@@ -657,6 +680,11 @@ impl Config {
                         if cfg.table_name.is_empty() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                            )));
+                        }
+                        if cfg.path.trim().is_empty() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' enrichment #{j}: jsonl 'path' must not be empty"
                             )));
                         }
                         let p = Path::new(&cfg.path);
@@ -1053,6 +1081,77 @@ pipelines:
         assert!(
             msg.contains("feedback loop") || msg.contains("same as file input"),
             "expected normalized-path feedback-loop rejection, got: {msg}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod validate_empty_field_tests {
+    use crate::types::Config;
+
+    #[test]
+    fn file_input_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: ""
+    outputs:
+      - type: stdout
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path"),
+            "expected path rejection: {err}"
+        );
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "expected 'must not be empty' message: {err}"
+        );
+    }
+
+    #[test]
+    fn file_input_whitespace_path_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: \"   \"\n    outputs:\n      - type: stdout\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("must not be empty"),
+            "whitespace-only path must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn elasticsearch_empty_index_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        index: ""
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("index"),
+            "expected index rejection: {err}"
+        );
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "expected 'must not be empty' message: {err}"
+        );
+    }
+
+    #[test]
+    fn elasticsearch_whitespace_index_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: elasticsearch\n        endpoint: http://localhost:9200\n        index: \"   \"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("index") && err.to_string().contains("must not be empty"),
+            "whitespace-only index must be rejected: {err}"
         );
     }
 }
