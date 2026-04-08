@@ -346,8 +346,32 @@ impl InputSource for TcpInput {
         // remainder in FramedInput.  Emitting EndOfFile (after any Data for
         // the same source) signals FramedInput to flush that remainder so the
         // last unterminated record is not silently dropped — fixes #804/#580.
+        //
+        // Additionally, any bytes still held in client.pending were never
+        // passed to FramedInput as a Data event (extract_complete_records only
+        // emits complete newline-terminated records or octet-counted frames).
+        // On a clean close those bytes are a valid partial line that would
+        // otherwise be silently dropped.  Flush them now — with a synthetic
+        // newline so FramedInput treats them as a complete record rather than
+        // parking them in its own remainder — before the EndOfFile so that the
+        // subsequent EndOfFile can still flush any *prior* remainder already
+        // held by FramedInput.  Skip the flush if the client was mid-discard
+        // (oversized frame/line): those bytes are intentionally garbage.
         for (i, &is_alive) in alive.iter().enumerate() {
             if !is_alive {
+                let client = &mut self.clients[i];
+                let has_pending = !client.pending.is_empty();
+                let mid_discard = client.discard_octet_bytes > 0 || client.discard_until_newline;
+                if has_pending && !mid_discard {
+                    let mut tail = std::mem::take(&mut client.pending);
+                    tail.push(b'\n');
+                    let accounted_bytes = tail.len() as u64;
+                    events.push(InputEvent::Data {
+                        bytes: tail,
+                        source_id: Some(client.source_id),
+                        accounted_bytes,
+                    });
+                }
                 events.push(InputEvent::EndOfFile {
                     source_id: Some(self.clients[i].source_id),
                 });
@@ -658,6 +682,59 @@ mod tests {
             input.client_count(),
             0,
             "all storm connections should be cleaned up (no fd leak)"
+        );
+    }
+
+    /// Pending bytes held in `client.pending` (an unterminated line with no
+    /// trailing newline) must be emitted as a `Data` event — with a synthetic
+    /// trailing newline — before the `EndOfFile` event when the connection
+    /// closes.  Previously those bytes were silently dropped (data loss bug).
+    #[test]
+    fn pending_bytes_flushed_as_data_event_on_close() {
+        let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+        let addr = input.local_addr().unwrap();
+
+        {
+            let mut client = StdTcpStream::connect(addr).unwrap();
+            // Write a partial line with NO trailing newline so it ends up
+            // in client.pending without being emitted by extract_complete_records.
+            client.write_all(b"no-newline-tail").unwrap();
+            client.flush().unwrap();
+        } // client drops -> clean EOF
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+
+        // There must be a Data event whose bytes contain "no-newline-tail".
+        let data_bytes: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                InputEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        assert!(
+            !data_bytes.is_empty(),
+            "pending tail bytes must be emitted as a Data event on close (data loss fix)"
+        );
+        assert!(
+            data_bytes
+                .windows(b"no-newline-tail".len())
+                .any(|w| w == b"no-newline-tail"),
+            "emitted Data must contain the pending tail bytes; got: {:?}",
+            String::from_utf8_lossy(&data_bytes),
+        );
+
+        // The flushed tail must be followed by EndOfFile for the same source.
+        let has_eof = events
+            .iter()
+            .any(|e| matches!(e, InputEvent::EndOfFile { source_id } if source_id.is_some()));
+        assert!(
+            has_eof,
+            "EndOfFile must still be emitted after the pending Data"
         );
     }
 
