@@ -55,8 +55,8 @@ mod passthrough {
             if !is_passthrough_sql(sql) {
                 let preview = sql.trim().lines().next().unwrap_or("").trim();
                 return Err(TransformError::new(format!(
-                    "SQL transforms require DataFusion. Rebuild with `--features datafusion` \
-                     (unsupported SQL: {preview})"
+                    "SQL transforms require DataFusion. Build the full package \
+                     (default) or add `--features datafusion` (unsupported SQL: {preview})"
                 )));
             }
             Ok(Self {

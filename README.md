@@ -119,6 +119,9 @@ docker run --rm -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
 
 # From source (requires Rust 1.85+)
 cargo build --release -p logfwd
+
+# Dev-only faster local build (no DataFusion SQL support)
+cargo build --release -p logfwd --no-default-features
 ```
 
 See [Installation](book/src/getting-started/installation.md) for all platforms and options.

@@ -9,7 +9,7 @@ publish = false
 doctest = false
 
 [features]
-default = []
+default = ["datafusion"]
 dhat-heap = ["dhat"]
 cpu-profiling = ["pprof"]
 turmoil = ["dep:turmoil"]

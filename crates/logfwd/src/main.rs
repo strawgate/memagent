@@ -961,7 +961,8 @@ fn validate_pipeline_read_only(
     #[cfg(not(feature = "datafusion"))]
     if !config.enrichment.is_empty() {
         return Err(
-            "pipeline enrichment requires DataFusion. Rebuild with `--features datafusion`"
+            "pipeline enrichment requires DataFusion. Build default/full logfwd \
+             (or add `--features datafusion`)"
                 .to_owned(),
         );
     }
