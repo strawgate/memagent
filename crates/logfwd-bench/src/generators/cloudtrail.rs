@@ -15,8 +15,8 @@ use super::{
     CLOUDTRAIL_REGIONS_MULTI, CLOUDTRAIL_REGIONS_REGIONAL, CLOUDTRAIL_USER_AGENTS,
     CloudTrailActionSpec, CloudTrailIdentityKind, CloudTrailProfile, CloudTrailRegionMix,
     CloudTrailServiceKind, CloudTrailServiceMix, CloudTrailServiceSpec, SERVICE_BALANCED,
-    SERVICE_COMPUTE_HEAVY, SERVICE_SECURITY_HEAVY, SERVICE_STORAGE_HEAVY, append_uuid_like,
-    json_escape, pick, weighted_choice_pick, weighted_pick,
+    SERVICE_COMPUTE_HEAVY, SERVICE_SECURITY_HEAVY, SERVICE_STORAGE_HEAVY, json_escape, pick,
+    uuid_like_from_value, weighted_choice_pick, weighted_pick,
 };
 
 /// Generate CloudTrail-like audit logs using the benchmark-default profile.
@@ -53,16 +53,30 @@ pub fn gen_cloudtrail_audit_with_profile(
         let region = pick_cloudtrail_region(&mut rng, profile.region_mix, service.kind);
         let event_time = cloudtrail_event_time(i, &mut rng);
         let event_id = cloudtrail_uuid_like(&mut rng);
+        let identity_kind = pick_cloudtrail_identity_kind(&mut rng, service.kind, action.read_only);
+        let principal_id = state.principal_id(identity_kind, account_slot, principal_slot);
+        let user_arn = state.arn(identity_kind, account_slot, principal_slot);
         let shared_event_id =
             if action.data_event || chance(&mut rng, profile.optional_field_density / 3) {
-                Some(cloudtrail_uuid_like(&mut rng))
+                Some(state.shared_event_id(shared_event_slot(
+                    i,
+                    account_slot,
+                    principal_slot,
+                    state.shared_event_ids.len(),
+                    profile,
+                )))
             } else {
                 None
             };
-        let source_ip =
-            cloudtrail_source_ip(&mut rng, service.kind, profile.optional_field_density);
+        let source_ip = cloudtrail_source_ip(
+            &mut rng,
+            &state,
+            account_slot,
+            principal_slot,
+            service.kind,
+            profile.optional_field_density,
+        );
         let user_agent = cloudtrail_user_agent(&mut rng, service.kind, principal_slot);
-        let identity_kind = pick_cloudtrail_identity_kind(&mut rng, service.kind, action.read_only);
         let user_identity = build_user_identity_json(
             &mut rng,
             identity_kind,
@@ -70,7 +84,8 @@ pub fn gen_cloudtrail_audit_with_profile(
             principal_name,
             role_name,
             session_name,
-            principal_slot,
+            principal_id,
+            user_arn,
             region,
             profile.optional_field_density,
             service.kind,
@@ -224,26 +239,28 @@ pub fn gen_cloudtrail_batch_with_profile(
         let event_time = cloudtrail_event_time(i, &mut rng);
         let event_id = cloudtrail_uuid_like(&mut rng);
         let identity_kind = pick_cloudtrail_identity_kind(&mut rng, service.kind, action.read_only);
-        let principal_id = cloudtrail_principal_id(identity_kind, account_id, principal_slot);
-        let user_arn = if matches!(identity_kind, CloudTrailIdentityKind::AwsService) {
-            None
-        } else {
-            Some(cloudtrail_arn(
-                identity_kind,
-                account_id,
-                principal_name,
-                role_name,
-                session_name,
-            ))
-        };
+        let principal_id = state.principal_id(identity_kind, account_slot, principal_slot);
+        let user_arn = state.arn(identity_kind, account_slot, principal_slot);
         let shared_event_id =
             if action.data_event || chance(&mut rng, profile.optional_field_density / 3) {
-                Some(cloudtrail_uuid_like(&mut rng))
+                Some(state.shared_event_id(shared_event_slot(
+                    i,
+                    account_slot,
+                    principal_slot,
+                    state.shared_event_ids.len(),
+                    profile,
+                )))
             } else {
                 None
             };
-        let source_ip =
-            cloudtrail_source_ip(&mut rng, service.kind, profile.optional_field_density);
+        let source_ip = cloudtrail_source_ip(
+            &mut rng,
+            &state,
+            account_slot,
+            principal_slot,
+            service.kind,
+            profile.optional_field_density,
+        );
         let user_agent = cloudtrail_user_agent(&mut rng, service.kind, principal_slot);
         let request_parameters_present =
             !(action.read_only && !chance(&mut rng, profile.optional_field_density / 2));
@@ -353,7 +370,7 @@ pub fn gen_cloudtrail_batch_with_profile(
         builders.event_source.append_value(service.event_source);
         builders.event_name.append_value(action.event_name);
         builders.aws_region.append_value(region);
-        builders.source_ip_address.append_value(&source_ip);
+        builders.source_ip_address.append_value(source_ip);
         builders.user_agent.append_value(&user_agent);
         builders.event_id.append_value(&event_id);
         builders.event_type.append_value(event_type);
@@ -366,9 +383,9 @@ pub fn gen_cloudtrail_batch_with_profile(
             .append_value(cloudtrail_identity_type(identity_kind));
         builders
             .user_identity_principal_id
-            .append_value(&principal_id);
+            .append_value(principal_id);
         builders.user_identity_account_id.append_value(account_id);
-        append_optional_string(&mut builders.user_identity_arn, user_arn.as_deref());
+        append_optional_string(&mut builders.user_identity_arn, user_arn);
         append_optional_string(&mut builders.user_identity_user_name, user_name);
         append_optional_string(&mut builders.user_identity_invoked_by, invoked_by);
         builders
@@ -391,7 +408,7 @@ pub fn gen_cloudtrail_batch_with_profile(
             &mut builders.additional_event_data_tls_version,
             additional_event_data_tls_version,
         );
-        append_optional_string(&mut builders.shared_event_id, shared_event_id.as_deref());
+        append_optional_string(&mut builders.shared_event_id, shared_event_id);
         append_optional_string(&mut builders.vpc_endpoint_id, vpc_endpoint_id.as_deref());
         append_optional_string(&mut builders.error_code, error.map(|(code, _)| code));
         append_optional_string(
@@ -586,22 +603,82 @@ struct CloudTrailState {
     principals: Vec<String>,
     roles: Vec<String>,
     sessions: Vec<String>,
+    iam_user_principal_ids: Vec<String>,
+    assumed_role_principal_ids: Vec<String>,
+    federated_principal_ids: Vec<String>,
+    root_arns: Vec<String>,
+    iam_user_arns: Vec<String>,
+    assumed_role_arns: Vec<String>,
+    federated_arns: Vec<String>,
+    source_ips: Vec<String>,
+    shared_event_ids: Vec<String>,
 }
 
 impl CloudTrailState {
     fn new(profile: CloudTrailProfile) -> Self {
-        let mut accounts = Vec::with_capacity(profile.account_count.max(1));
-        for idx in 0..profile.account_count.max(1) {
+        let account_count = profile.account_count.max(1);
+        let principal_count = profile.principal_count.max(1);
+
+        let mut accounts = Vec::with_capacity(account_count);
+        for idx in 0..account_count {
             accounts.push(format!("{:012}", 100_000_000_000u64 + (idx as u64 * 137)));
         }
 
-        let mut principals = Vec::with_capacity(profile.principal_count.max(1));
-        let mut roles = Vec::with_capacity(profile.principal_count.max(1));
-        let mut sessions = Vec::with_capacity(profile.principal_count.max(1));
-        for idx in 0..profile.principal_count.max(1) {
+        let mut principals = Vec::with_capacity(principal_count);
+        let mut roles = Vec::with_capacity(principal_count);
+        let mut sessions = Vec::with_capacity(principal_count);
+        let mut iam_user_principal_ids = Vec::with_capacity(principal_count);
+        let mut assumed_role_principal_ids = Vec::with_capacity(principal_count);
+        let mut federated_principal_ids = Vec::with_capacity(principal_count);
+        for idx in 0..principal_count {
             principals.push(format!("user-{:03}", idx));
             roles.push(format!("cloudtrail-role-{:03}", idx));
             sessions.push(format!("session-{:03}", idx));
+            iam_user_principal_ids.push(format!("AIDA{:08X}", 0x1000_0000 + idx as u32));
+            assumed_role_principal_ids.push(format!(
+                "AROA{:08X}:{}",
+                0x2000_0000 + idx as u32,
+                idx % 1_000
+            ));
+            federated_principal_ids.push(format!(
+                "AROAFED{:08X}:{}",
+                0x3000_0000 + idx as u32,
+                idx % 1_000
+            ));
+        }
+
+        let mut root_arns = Vec::with_capacity(account_count);
+        let mut iam_user_arns = Vec::with_capacity(account_count * principal_count);
+        let mut assumed_role_arns = Vec::with_capacity(account_count * principal_count);
+        let mut federated_arns = Vec::with_capacity(account_count * principal_count);
+        for account_id in &accounts {
+            root_arns.push(format!("arn:aws:iam::{account_id}:root"));
+            for idx in 0..principal_count {
+                let principal_name = &principals[idx];
+                let role_name = &roles[idx];
+                let session_name = &sessions[idx];
+                iam_user_arns.push(format!("arn:aws:iam::{account_id}:user/{principal_name}"));
+                assumed_role_arns.push(format!(
+                    "arn:aws:sts::{account_id}:assumed-role/{role_name}/{session_name}"
+                ));
+                federated_arns.push(format!(
+                    "arn:aws:sts::{account_id}:federated-user/{principal_name}"
+                ));
+            }
+        }
+
+        let source_ip_count = principal_count.clamp(CLOUDTRAIL_PUBLIC_IPS.len(), 128);
+        let mut source_ips = Vec::with_capacity(source_ip_count);
+        for idx in 0..source_ip_count {
+            source_ips.push(cloudtrail_source_ip_seeded(idx));
+        }
+
+        let shared_event_count = (principal_count * 2).clamp(16, 256);
+        let mut shared_event_ids = Vec::with_capacity(shared_event_count);
+        for idx in 0..shared_event_count {
+            shared_event_ids.push(uuid_like_from_value(
+                0xfeed_face_cafe_babe_0000_0000_0000_0000u128 | idx as u128,
+            ));
         }
 
         Self {
@@ -609,6 +686,15 @@ impl CloudTrailState {
             principals,
             roles,
             sessions,
+            iam_user_principal_ids,
+            assumed_role_principal_ids,
+            federated_principal_ids,
+            root_arns,
+            iam_user_arns,
+            assumed_role_arns,
+            federated_arns,
+            source_ips,
+            shared_event_ids,
         }
     }
 
@@ -626,6 +712,54 @@ impl CloudTrailState {
 
     fn session_name(&self, idx: usize) -> &str {
         &self.sessions[idx % self.sessions.len()]
+    }
+
+    fn principal_id(
+        &self,
+        identity_kind: CloudTrailIdentityKind,
+        account_idx: usize,
+        principal_idx: usize,
+    ) -> &str {
+        match identity_kind {
+            CloudTrailIdentityKind::Root => &self.accounts[account_idx % self.accounts.len()],
+            CloudTrailIdentityKind::IamUser => {
+                &self.iam_user_principal_ids[principal_idx % self.iam_user_principal_ids.len()]
+            }
+            CloudTrailIdentityKind::AssumedRole => {
+                &self.assumed_role_principal_ids
+                    [principal_idx % self.assumed_role_principal_ids.len()]
+            }
+            CloudTrailIdentityKind::AwsService => "cloudtrail.amazonaws.com",
+            CloudTrailIdentityKind::FederatedUser => {
+                &self.federated_principal_ids[principal_idx % self.federated_principal_ids.len()]
+            }
+        }
+    }
+
+    fn arn(
+        &self,
+        identity_kind: CloudTrailIdentityKind,
+        account_idx: usize,
+        principal_idx: usize,
+    ) -> Option<&str> {
+        let account_idx = account_idx % self.accounts.len();
+        let principal_idx = principal_idx % self.principals.len();
+        let flat_idx = account_idx * self.principals.len() + principal_idx;
+        match identity_kind {
+            CloudTrailIdentityKind::Root => Some(&self.root_arns[account_idx]),
+            CloudTrailIdentityKind::IamUser => Some(&self.iam_user_arns[flat_idx]),
+            CloudTrailIdentityKind::AssumedRole => Some(&self.assumed_role_arns[flat_idx]),
+            CloudTrailIdentityKind::AwsService => None,
+            CloudTrailIdentityKind::FederatedUser => Some(&self.federated_arns[flat_idx]),
+        }
+    }
+
+    fn source_ip(&self, idx: usize) -> &str {
+        &self.source_ips[idx % self.source_ips.len()]
+    }
+
+    fn shared_event_id(&self, idx: usize) -> &str {
+        &self.shared_event_ids[idx % self.shared_event_ids.len()]
     }
 }
 
@@ -739,9 +873,7 @@ fn chance(rng: &mut fastrand::Rng, pct: u8) -> bool {
 }
 
 fn cloudtrail_uuid_like(rng: &mut fastrand::Rng) -> String {
-    let mut out = String::with_capacity(36);
-    append_uuid_like(rng, &mut out);
-    out
+    uuid_like_from_value(rng.u128(..))
 }
 
 fn cloudtrail_event_time(index: usize, rng: &mut fastrand::Rng) -> String {
@@ -750,17 +882,24 @@ fn cloudtrail_event_time(index: usize, rng: &mut fastrand::Rng) -> String {
     format!("2024-01-15T10:30:{sec:02}.{nano:09}Z")
 }
 
-fn cloudtrail_source_ip(
+fn cloudtrail_source_ip<'a>(
     rng: &mut fastrand::Rng,
+    state: &'a CloudTrailState,
+    account_slot: usize,
+    principal_slot: usize,
     service_kind: CloudTrailServiceKind,
     optional_density: u8,
-) -> String {
+) -> &'a str {
     if matches!(service_kind, CloudTrailServiceKind::CloudTrail)
         && chance(rng, optional_density / 2)
     {
-        return "AWS Internal".to_string();
+        return "AWS Internal";
     }
-    pick(rng, CLOUDTRAIL_PUBLIC_IPS).to_string()
+    state.source_ip(
+        principal_slot
+            .wrapping_mul(7)
+            .wrapping_add(account_slot.wrapping_mul(11)),
+    )
 }
 
 fn cloudtrail_user_agent(
@@ -871,48 +1010,6 @@ fn cloudtrail_identity_type(identity_kind: CloudTrailIdentityKind) -> &'static s
     }
 }
 
-fn cloudtrail_principal_id(
-    identity_kind: CloudTrailIdentityKind,
-    account_id: &str,
-    slot: usize,
-) -> String {
-    match identity_kind {
-        CloudTrailIdentityKind::Root => account_id.to_string(),
-        CloudTrailIdentityKind::IamUser => format!("AIDA{:08X}", 0x1000_0000 + slot as u32),
-        CloudTrailIdentityKind::AssumedRole => {
-            format!("AROA{:08X}:{}", 0x2000_0000 + slot as u32, slot % 1_000)
-        }
-        CloudTrailIdentityKind::AwsService => "cloudtrail.amazonaws.com".to_string(),
-        CloudTrailIdentityKind::FederatedUser => {
-            format!("AROAFED{:08X}:{}", 0x3000_0000 + slot as u32, slot % 1_000)
-        }
-    }
-}
-
-fn cloudtrail_arn(
-    identity_kind: CloudTrailIdentityKind,
-    account_id: &str,
-    principal_name: &str,
-    role_name: &str,
-    session_name: &str,
-) -> String {
-    match identity_kind {
-        CloudTrailIdentityKind::Root => format!("arn:aws:iam::{account_id}:root"),
-        CloudTrailIdentityKind::IamUser => {
-            format!("arn:aws:iam::{account_id}:user/{principal_name}")
-        }
-        CloudTrailIdentityKind::AssumedRole => {
-            format!("arn:aws:sts::{account_id}:assumed-role/{role_name}/{session_name}")
-        }
-        CloudTrailIdentityKind::AwsService => {
-            "arn:aws:iam::aws:policy/service-role/AWSCloudTrailFullAccess".to_string()
-        }
-        CloudTrailIdentityKind::FederatedUser => {
-            format!("arn:aws:sts::{account_id}:federated-user/{principal_name}")
-        }
-    }
-}
-
 fn cloudtrail_event_type(
     service_kind: CloudTrailServiceKind,
     identity_kind: CloudTrailIdentityKind,
@@ -940,25 +1037,18 @@ fn build_user_identity_json(
     principal_name: &str,
     role_name: &str,
     session_name: &str,
-    principal_slot: usize,
+    principal_id: &str,
+    arn: Option<&str>,
     region: &str,
     optional_density: u8,
     service_kind: CloudTrailServiceKind,
 ) -> String {
-    let principal_id = cloudtrail_principal_id(identity_kind, account_id, principal_slot);
-    let arn = cloudtrail_arn(
-        identity_kind,
-        account_id,
-        principal_name,
-        role_name,
-        session_name,
-    );
     let mut out = JsonObjectWriter::new(384);
     out.field_str("type", cloudtrail_identity_type(identity_kind));
-    out.field_str("principalId", &principal_id);
+    out.field_str("principalId", principal_id);
     out.field_str("accountId", account_id);
-    if !matches!(identity_kind, CloudTrailIdentityKind::AwsService) {
-        out.field_str("arn", &arn);
+    if let Some(arn) = arn {
+        out.field_str("arn", arn);
     } else if chance(rng, optional_density / 2) {
         out.field_str("invokedBy", "cloudtrail.amazonaws.com");
     }
@@ -982,7 +1072,8 @@ fn build_user_identity_json(
                         principal_name,
                         role_name,
                         session_name,
-                        principal_slot,
+                        principal_id,
+                        arn,
                         identity_kind,
                         optional_density,
                     ),
@@ -1016,24 +1107,18 @@ fn build_user_identity_json(
 fn build_session_context_json(
     rng: &mut fastrand::Rng,
     account_id: &str,
-    principal_name: &str,
+    _principal_name: &str,
     role_name: &str,
-    session_name: &str,
-    principal_slot: usize,
+    _session_name: &str,
+    principal_id: &str,
+    arn: Option<&str>,
     identity_kind: CloudTrailIdentityKind,
     optional_density: u8,
 ) -> String {
     let mut out = JsonObjectWriter::new(320);
     out.field_raw(
         "sessionIssuer",
-        &build_session_issuer_json(
-            identity_kind,
-            account_id,
-            principal_name,
-            role_name,
-            session_name,
-            principal_slot,
-        ),
+        &build_session_issuer_json(identity_kind, account_id, role_name, principal_id, arn),
     );
     let mut attr = JsonObjectWriter::new(160);
     attr.field_str("creationDate", &cloudtrail_event_time(rng.usize(..60), rng));
@@ -1055,10 +1140,9 @@ fn build_session_context_json(
 fn build_session_issuer_json(
     identity_kind: CloudTrailIdentityKind,
     account_id: &str,
-    principal_name: &str,
     role_name: &str,
-    session_name: &str,
-    principal_slot: usize,
+    principal_id: &str,
+    arn: Option<&str>,
 ) -> String {
     let mut out = JsonObjectWriter::new(256);
     let issuer_type = match identity_kind {
@@ -1069,23 +1153,40 @@ fn build_session_issuer_json(
         CloudTrailIdentityKind::AwsService => "AWSService",
     };
     out.field_str("type", issuer_type);
-    out.field_str(
-        "principalId",
-        &cloudtrail_principal_id(identity_kind, account_id, principal_slot),
-    );
-    out.field_str(
-        "arn",
-        &cloudtrail_arn(
-            identity_kind,
-            account_id,
-            principal_name,
-            role_name,
-            session_name,
-        ),
-    );
+    out.field_str("principalId", principal_id);
+    if let Some(arn) = arn {
+        out.field_str("arn", arn);
+    }
     out.field_str("accountId", account_id);
     out.field_str("userName", role_name);
     out.finish()
+}
+
+fn shared_event_tenure(profile: CloudTrailProfile) -> usize {
+    (profile.principal_tenure / 2).max(2)
+}
+
+fn shared_event_slot(
+    event_index: usize,
+    account_slot: usize,
+    principal_slot: usize,
+    pool_len: usize,
+    profile: CloudTrailProfile,
+) -> usize {
+    let epoch = event_index / shared_event_tenure(profile);
+    account_slot
+        .wrapping_mul(131)
+        .wrapping_add(principal_slot.wrapping_mul(17))
+        .wrapping_add(epoch)
+        % pool_len.max(1)
+}
+
+fn cloudtrail_source_ip_seeded(idx: usize) -> String {
+    match idx % 3 {
+        0 => format!("198.51.100.{}", 10 + ((idx as u32 * 17 + 3) % 200)),
+        1 => format!("203.0.113.{}", 10 + ((idx as u32 * 29 + 7) % 200)),
+        _ => format!("192.0.2.{}", 10 + ((idx as u32 * 41 + 11) % 200)),
+    }
 }
 
 fn build_request_parameters_json(

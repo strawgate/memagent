@@ -691,27 +691,26 @@ fn weighted_choice_pick<T: WeightedChoice + Copy>(rng: &mut fastrand::Rng, items
 }
 
 fn append_uuid_like(rng: &mut fastrand::Rng, out: &mut String) {
-    let bytes = rng.u128(..).to_be_bytes();
-    let _ = write!(
-        out,
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0],
-        bytes[1],
-        bytes[2],
-        bytes[3],
-        bytes[4],
-        bytes[5],
-        bytes[6],
-        bytes[7],
-        bytes[8],
-        bytes[9],
-        bytes[10],
-        bytes[11],
-        bytes[12],
-        bytes[13],
-        bytes[14],
-        bytes[15],
-    );
+    append_uuid_like_value(rng.u128(..), out);
+}
+
+fn append_uuid_like_value(value: u128, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let bytes = value.to_be_bytes();
+    for (idx, byte) in bytes.into_iter().enumerate() {
+        if matches!(idx, 4 | 6 | 8 | 10) {
+            out.push('-');
+        }
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+}
+
+fn uuid_like_from_value(value: u128) -> String {
+    let mut out = String::with_capacity(36);
+    append_uuid_like_value(value, &mut out);
+    out
 }
 
 fn append_ipv4(out: &mut String, a: u8, b: u8, c: u8, d: u8, port: u16) {
