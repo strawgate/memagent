@@ -1804,6 +1804,11 @@ mod tests {
             "disabled response must not include config body: {}",
             body
         );
+        assert!(
+            body.contains("LOGFWD_UNSAFE_EXPOSE_CONFIG"),
+            "disabled response must mention env var: {}",
+            body
+        );
     }
 
     #[test]

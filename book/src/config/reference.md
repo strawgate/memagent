@@ -34,7 +34,7 @@ output:
   compression: zstd
 
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
   log_level: info
 ```
 
@@ -63,7 +63,7 @@ pipelines:
         format: json
 
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
 ```
 
 The two layouts cannot be mixed: specifying both `input`/`output` at the top level and
@@ -594,7 +594,7 @@ enrichment:
       cluster: ${CLUSTER_NAME}
 
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
   log_level: info
   metrics_endpoint: ${OTEL_ENDPOINT}
   metrics_interval_secs: 60
