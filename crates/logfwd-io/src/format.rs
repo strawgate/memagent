@@ -123,6 +123,15 @@ impl FormatDecoder {
             }
         }
     }
+
+    /// Whether this decoder can produce JSON-object rows that should receive
+    /// `_source_path` metadata injection for file-backed input.
+    pub fn supports_source_path_injection(&self) -> bool {
+        matches!(
+            self,
+            Self::PassthroughJson { .. } | Self::Cri { .. } | Self::Auto { .. }
+        )
+    }
 }
 
 /// Count non-JSON lines in `chunk` and increment the parse-error counter.

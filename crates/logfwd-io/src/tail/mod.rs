@@ -10,1124 +10,28 @@
 //! The tailer yields raw byte chunks to the pipeline. It does NOT parse lines —
 //! that's the pipeline's job.
 
-use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
-use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-
-use logfwd_types::pipeline::SourceId;
-
-/// Byte offset within a file. Newtype prevents mixing with SourceId.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ByteOffset(pub u64);
-
-/// Identity of a file based on device + inode + content fingerprint.
-/// Survives renames. Detects inode reuse via fingerprint mismatch.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FileIdentity {
-    pub device: u64,
-    pub inode: u64,
-    pub fingerprint: u64,
-}
-
-impl FileIdentity {
-    /// Derive a stable `SourceId` from the compound key (device, inode, fingerprint).
-    ///
-    /// Hashing all three fields prevents collisions between files that share
-    /// the same first N bytes (same fingerprint) but live on different inodes.
-    /// Two files on the same inode+device are the same file, so the fingerprint
-    /// differentiates after inode reuse (e.g., log rotation).
-    pub fn source_id(&self) -> SourceId {
-        // Empty file sentinel: fingerprint 0 means no data to checkpoint.
-        if self.fingerprint == 0 {
-            return SourceId(0);
-        }
-        let mut h = xxhash_rust::xxh64::Xxh64::new(0);
-        h.update(&self.device.to_le_bytes());
-        h.update(&self.inode.to_le_bytes());
-        h.update(&self.fingerprint.to_le_bytes());
-        SourceId(h.digest())
-    }
-}
-
-/// State tracked per tailed file.
-struct TailedFile {
-    identity: FileIdentity,
-    file: File,
-    offset: u64,
-    /// Last time we successfully read new data.
-    last_read: Instant,
-    /// Whether we have already emitted an `EndOfFile` event for the current
-    /// "no new data" streak.  Reset to `false` whenever new data is read so
-    /// that a fresh `EndOfFile` can be emitted the next time reads stall.
-    eof_emitted: bool,
-}
-
-/// Saved state for a file evicted from the open-file LRU cache.
-struct EvictedFile {
-    identity: FileIdentity,
-    offset: u64,
-    path: PathBuf,
-    source_id: SourceId,
-}
-
-/// Internal result from read_new_data — distinguishes truncation from no-data.
-enum ReadResult {
-    /// New data available.
-    Data(Vec<u8>),
-    /// File was truncated, then new data read from beginning.
-    /// Downstream should clear remainder BEFORE processing the new data.
-    TruncatedThenData(Vec<u8>),
-    /// File was truncated but no new data yet.
-    Truncated,
-    /// No new data.
-    NoData,
-}
-
-/// Events emitted by the tailer.
-#[non_exhaustive]
-pub enum TailEvent {
-    /// New data available. The Vec is raw bytes read from the file.
-    /// NOT necessarily aligned on line boundaries — the pipeline handles that.
-    Data {
-        path: PathBuf,
-        bytes: Vec<u8>,
-        /// Identity of the source that produced this data, computed at read
-        /// time (before any rotation mutates the tailer's internal state).
-        source_id: Option<SourceId>,
-    },
-    /// A file was rotated (old file at path replaced by new file).
-    Rotated {
-        path: PathBuf,
-        /// Identity of the *old* (pre-rotation) file.
-        source_id: Option<SourceId>,
-    },
-    /// A file was truncated (copytruncate rotation).
-    Truncated {
-        path: PathBuf,
-        /// Identity of the file at the time truncation was detected.
-        source_id: Option<SourceId>,
-    },
-    /// The file has been fully read and contains no new data.
-    ///
-    /// Emitted once after every transition from "has data" to "no data"
-    /// (i.e., the first poll cycle after all available bytes have been
-    /// consumed). This lets downstream components flush any partial-line
-    /// remainder that was not terminated by a newline.
-    ///
-    /// The event is suppressed on subsequent polls until new data arrives,
-    /// at which point the flag resets so a fresh `EndOfFile` can be emitted
-    /// the next time the file is caught up.
-    EndOfFile {
-        path: PathBuf,
-        /// Identity of the source that reached EOF.
-        source_id: Option<SourceId>,
-    },
-}
-
-/// Configuration for the file tailer.
-#[derive(Clone, Debug)]
-pub struct TailConfig {
-    /// How often to poll for changes as a safety net (milliseconds).
-    pub poll_interval_ms: u64,
-    /// Read buffer size per file.
-    pub read_buf_size: usize,
-    /// Fingerprint size: how many bytes to hash at the start of the file.
-    pub fingerprint_bytes: usize,
-    /// Whether to start reading from the end of existing files (true)
-    /// or from the beginning (false).
-    pub start_from_end: bool,
-    /// How often to re-evaluate glob patterns to discover new files (milliseconds).
-    /// Set to 0 to disable periodic glob rescanning.
-    pub glob_rescan_interval_ms: u64,
-    /// Maximum number of file descriptors to keep open simultaneously.
-    /// When the limit is exceeded, the least-recently-read files are closed
-    /// until the count is within the limit. Evicted files are re-opened
-    /// automatically on the next poll if they have new data.
-    pub max_open_files: usize,
-}
-
-impl Default for TailConfig {
-    fn default() -> Self {
-        TailConfig {
-            poll_interval_ms: 250,
-            read_buf_size: 256 * 1024,
-            fingerprint_bytes: 1024,
-            start_from_end: true,
-            glob_rescan_interval_ms: 5000,
-            max_open_files: 1024,
-        }
-    }
-}
-
-/// Compute the fingerprint of a file: xxhash64 of the first N bytes.
-fn compute_fingerprint(file: &mut File, max_bytes: usize) -> io::Result<u64> {
-    let pos = file.stream_position()?;
-    file.seek(SeekFrom::Start(0))?;
-
-    let mut buf = vec![0u8; max_bytes];
-    let n = file.read(&mut buf)?;
-
-    file.seek(SeekFrom::Start(pos))?;
-
-    if n == 0 {
-        // Empty file gets a sentinel fingerprint.
-        return Ok(0);
-    }
-    Ok(xxhash_rust::xxh64::xxh64(&buf[..n], 0))
-}
-
-/// Build a FileIdentity for a path.
-fn identify_file(path: &Path, fingerprint_bytes: usize) -> io::Result<FileIdentity> {
-    let mut file = File::open(path)?;
-    let meta = file.metadata()?;
-    let fingerprint = compute_fingerprint(&mut file, fingerprint_bytes)?;
-    Ok(FileIdentity {
-        device: meta.dev(),
-        inode: meta.ino(),
-        fingerprint,
-    })
-}
-
-/// Extract the root directory from a glob pattern — the longest prefix path
-/// before the first wildcard character (`*`, `?`, `[`, `{`).
-///
-/// Examples:
-/// - `/var/log/*.log` → `/var/log`
-/// - `/var/log/**/*.log` → `/var/log`
-/// - `*.log` → `.`
-fn glob_root(pattern: &str) -> PathBuf {
-    let wildcard_pos = pattern.find(['*', '?', '[', '{']).unwrap_or(pattern.len());
-    let prefix = &pattern[..wildcard_pos];
-    if prefix.is_empty() {
-        return PathBuf::from(".");
-    }
-    // If the prefix ends with `/`, the wildcard starts a new path segment,
-    // so everything before that `/` is a concrete directory.
-    // E.g. "/var/log/*.log" → prefix "/var/log/" → root "/var/log"
-    // If it doesn't end with `/`, the wildcard is mid-filename.
-    // E.g. "/var/log/app*.log" → prefix "/var/log/app" → root "/var/log"
-    if prefix.ends_with('/') {
-        let trimmed = prefix.trim_end_matches('/');
-        if trimmed.is_empty() {
-            PathBuf::from("/")
-        } else {
-            PathBuf::from(trimmed)
-        }
-    } else {
-        let parent = Path::new(prefix).parent().unwrap_or(Path::new(""));
-        if parent.as_os_str().is_empty() {
-            PathBuf::from(".")
-        } else {
-            parent.to_path_buf()
-        }
-    }
-}
-
-/// Compute the maximum directory depth a glob pattern can match.
-/// Counts path components below the root directory.
-/// Returns `None` if the pattern contains `**` (unbounded depth).
-fn glob_max_depth(pattern: &str) -> Option<usize> {
-    if pattern.contains("**") {
-        return None;
-    }
-    let root = glob_root(pattern);
-    // Exclude the CurDir (`.`) component so relative roots don't
-    // inflate the depth count — Path::new(".").components().count() == 1
-    // but logically the root has 0 "meaningful" segments.
-    let root_depth = root
-        .components()
-        .filter(|c| *c != std::path::Component::CurDir)
-        .count();
-    let total_depth = Path::new(pattern).components().count();
-    // Ensure at least depth 1 — a file is always at depth ≥1 from its directory.
-    Some(total_depth.saturating_sub(root_depth).max(1))
-}
-
-/// Expand a list of glob patterns into the set of matching `PathBuf` values.
-///
-/// Uses `globset::GlobSet` for fast multi-pattern matching and `walkdir` for
-/// directory traversal with symlink loop detection.
-///
-/// Patterns that match no files are silently skipped. Errors from directory
-/// traversal (e.g., permission denied) are also skipped.
-fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
-    if patterns.is_empty() {
-        return Vec::new();
-    }
-
-    // Build a GlobSet for multi-pattern matching.
-    let mut builder = globset::GlobSetBuilder::new();
-    for pattern in patterns {
-        match globset::GlobBuilder::new(pattern)
-            .literal_separator(true) // `*` does not cross `/`
-            .build()
-        {
-            Ok(g) => {
-                builder.add(g);
-            }
-            Err(e) => {
-                tracing::warn!(pattern, error = %e, "tail.invalid_glob_pattern");
-            }
-        }
-    }
-    let glob_set = match builder.build() {
-        Ok(gs) => gs,
-        Err(e) => {
-            tracing::warn!(error = %e, "tail.globset_build_failed");
-            return Vec::new();
-        }
-    };
-
-    // Collect root directories and per-root max depth for bounded traversal.
-    let mut roots: Vec<(PathBuf, Option<usize>)> = Vec::new();
-    for pattern in patterns {
-        let root = glob_root(pattern);
-        let depth = glob_max_depth(pattern);
-        // Merge: if the same root already exists, take the larger depth.
-        if let Some(existing) = roots.iter_mut().find(|(r, _)| r == &root) {
-            existing.1 = match (existing.1, depth) {
-                (None, _) | (_, None) => None, // unbounded wins
-                (Some(a), Some(b)) => Some(a.max(b)),
-            };
-        } else {
-            roots.push((root, depth));
-        }
-    }
-
-    let mut paths = Vec::new();
-    for (root, max_depth) in &roots {
-        let mut walker = walkdir::WalkDir::new(root).follow_links(true);
-        if let Some(d) = max_depth {
-            walker = walker.max_depth(*d);
-        }
-        for entry in walker.into_iter().filter_map(Result::ok) {
-            if entry.file_type().is_file() && glob_set.is_match(entry.path()) {
-                paths.push(entry.into_path());
-            }
-        }
-    }
-    paths
-}
-
-// ---------------------------------------------------------------------------
-// FileDiscovery — filesystem watching and file discovery logic
-// ---------------------------------------------------------------------------
-
-/// Owns the filesystem watcher and file/glob discovery state.
-///
-/// Separated from `FileReader` so that discovery logic (watch registration,
-/// glob expansion, rotation detection) is decoupled from byte-level I/O.
-struct FileDiscovery {
-    /// Notify watcher for filesystem events.
-    watcher: notify::RecommendedWatcher,
-    /// Directories currently registered with the notify watcher.
-    watched_dirs: HashSet<PathBuf>,
-    /// Glob patterns to re-evaluate periodically for new file discovery.
-    glob_patterns: Vec<String>,
-    /// Paths we've been asked to watch (literal paths, including those discovered via globs).
-    watch_paths: Vec<PathBuf>,
-    /// Channel receiving filesystem events from the watcher.
-    fs_events: crossbeam_channel::Receiver<notify::Result<notify::Event>>,
-    /// Last time we re-evaluated glob patterns.
-    last_glob_rescan: Instant,
-}
-
-impl FileDiscovery {
-    /// Register a directory with the notify watcher if it has not been registered yet.
-    fn watch_dir(&mut self, dir: &Path) -> io::Result<()> {
-        if self.watched_dirs.insert(dir.to_path_buf()) {
-            use notify::Watcher;
-            self.watcher
-                .watch(dir, notify::RecursiveMode::NonRecursive)
-                .map_err(io::Error::other)?;
-        }
-        Ok(())
-    }
-
-    /// Re-evaluate all stored glob patterns and start tailing any newly-discovered files.
-    ///
-    /// Already-watched paths are skipped to avoid duplicate entries.
-    fn rescan_globs(&mut self, reader: &mut FileReader) {
-        if self.glob_patterns.is_empty() {
-            return;
-        }
-
-        let pattern_refs: Vec<&str> = self.glob_patterns.iter().map(String::as_str).collect();
-        let candidates = expand_glob_patterns(&pattern_refs);
-
-        // Canonicalize for dedup, falling back to raw path if resolve fails (#799).
-        let existing: HashSet<PathBuf> = self
-            .watch_paths
-            .iter()
-            .map(|p| fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
-            .collect();
-        let new_paths: Vec<PathBuf> = candidates
-            .into_iter()
-            .filter(|p| {
-                fs::canonicalize(p).map_or_else(
-                    |_| !existing.contains(p), // fallback to raw path check
-                    |c| !existing.contains(&c),
-                )
-            })
-            .collect();
-
-        for path in new_paths {
-            // Watch the parent directory for future events.
-            if let Some(parent) = path.parent()
-                && let Err(e) = self.watch_dir(parent)
-            {
-                tracing::warn!(path = %parent.display(), error = %e, "tail.watch_dir_failed");
-            }
-
-            // New files from glob discovery always read from the beginning.
-            if let Err(e) = reader.open_file_at(&path, false) {
-                tracing::warn!(path = %path.display(), error = %e, "tail.open_failed");
-            }
-
-            self.watch_paths.push(path);
-        }
-    }
-
-    /// Drain filesystem event notifications. Returns whether something changed.
-    fn drain_events(&self) -> bool {
-        let mut something_changed = false;
-        while let Ok(res) = self.fs_events.try_recv() {
-            if let Ok(_event) = res {
-                something_changed = true;
-            }
-        }
-        something_changed
-    }
-
-    /// Check for new or rotated files among the watched paths.
-    ///
-    /// For rotated files, drains remaining data from the old fd before
-    /// switching to the new file. For newly-appeared files, opens them
-    /// from the beginning.
-    fn detect_changes(&self, reader: &mut FileReader, events: &mut Vec<TailEvent>) {
-        let watch_paths = self.watch_paths.clone();
-        for path in &watch_paths {
-            if !path.exists() {
-                continue;
-            }
-
-            let current_identity = match identify_file(path, reader.config.fingerprint_bytes) {
-                Ok(id) => id,
-                Err(_) => continue,
-            };
-
-            // Check for rotation or new file — borrow released before any mutation.
-            //
-            // We only consider it a rotation if the device/inode changed.
-            // We ignore fingerprint changes for already-open files because
-            // the fingerprint can change if the file was very small (<fingerprint_bytes)
-            // and then grew. The open FD we hold is still valid for the same
-            // logical file.
-            //
-            // Actual copytruncate rotation is handled separately via the size
-            // check in `read_new_data`.
-            let is_rotated = reader.files.get(path).is_some_and(|tailed| {
-                tailed.identity.device != current_identity.device
-                    || tailed.identity.inode != current_identity.inode
-            });
-            let is_new = !reader.files.contains_key(path);
-
-            if is_rotated {
-                // Capture the old file's identity before any mutation so that
-                // drained bytes and the Rotated event carry the correct source_id.
-                let pre_rotate_source_id = reader.source_id_for_path(path);
-
-                // Drain any bytes written to the old fd after the last read but
-                // before the rename.  The kernel keeps the old inode alive while
-                // our File handle is open, so these bytes are still readable.
-                reader.drain_file(path, pre_rotate_source_id, events);
-
-                // Now that the old fd is fully drained, emit the rotation event
-                // and switch to the new file.
-                events.push(TailEvent::Rotated {
-                    path: path.clone(),
-                    source_id: pre_rotate_source_id,
-                });
-                let _ = reader.files.remove(path);
-                if let Err(e) = reader.open_file_at(path, false) {
-                    tracing::warn!(path = %path.display(), error = %e, "tail.open_after_rotation_failed");
-                }
-            } else if is_new {
-                if let Err(e) = reader.open_file_at(path, false) {
-                    tracing::warn!(path = %path.display(), error = %e, "tail.open_new_file_failed");
-                }
-            }
-        }
-    }
-
-    /// Remove entries for files that have been unlinked (nlink == 0).
-    ///
-    /// Using nlink instead of !path.exists() avoids data loss: on Unix a
-    /// file can be unlinked while the FD is still open, so the path
-    /// disappears but unread data remains readable through the FD.
-    fn cleanup_deleted(&mut self, reader: &mut FileReader, events: &mut Vec<TailEvent>) {
-        let deleted: Vec<PathBuf> = reader
-            .files
-            .iter()
-            .filter(|(_, tailed)| {
-                tailed
-                    .file
-                    .metadata()
-                    .map(|m| m.nlink() == 0)
-                    .unwrap_or(true)
-            })
-            .map(|(path, _)| path.clone())
-            .collect();
-        for path in &deleted {
-            // Capture source_id before removing the file entry.
-            let source_id = reader.source_id_for_path(path);
-            // Drain any remaining data before closing the FD.
-            reader.drain_file(path, source_id, events);
-            reader.files.remove(path);
-            reader.evicted_offsets.remove(path); // Bug G: prevent unbounded leak
-        }
-        // Remove deleted paths from watch_paths when using glob patterns so
-        // the list does not grow unboundedly with file churn. (#810)
-        // Glob-discovered paths will be re-added by the next rescan_globs() call
-        // when the file reappears.  Literal-path tailers (glob_patterns empty)
-        // must keep deleted paths so they detect the file if it is re-created.
-        if !self.glob_patterns.is_empty() && !deleted.is_empty() {
-            let deleted_set: HashSet<&PathBuf> = deleted.iter().collect();
-            self.watch_paths.retain(|p| !deleted_set.contains(p));
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// FileReader — open file descriptors and byte reading
-// ---------------------------------------------------------------------------
-
-/// Owns the open file descriptors, read buffer, and byte-level I/O.
-///
-/// Separated from `FileDiscovery` so that reading logic (open, seek, read,
-/// truncation detection, LRU eviction) is decoupled from watch/glob state.
-struct FileReader {
-    /// Files we're actively tailing, keyed by canonical path.
-    files: HashMap<PathBuf, TailedFile>,
-    /// Read buffer, reused across reads to avoid allocation.
-    read_buf: Vec<u8>,
-    /// Saved state for files evicted from the open-file LRU cache.
-    /// When a file is re-opened after eviction, we seek to the saved offset
-    /// to avoid duplicating or losing data. The identity is retained so that
-    /// `file_offsets()` can include evicted files in checkpoint data (#697)
-    /// and `open_file_at` can verify the fingerprint still matches (#817).
-    evicted_offsets: HashMap<PathBuf, EvictedFile>,
-    /// Configuration for read buffer size, fingerprint bytes, etc.
-    config: TailConfig,
-}
-
-impl FileReader {
-    /// Maximum bytes to read from a single file per poll cycle.
-    /// Prevents OOM when a file grows significantly between polls (#800).
-    const MAX_READ_PER_POLL: usize = 4 * 1024 * 1024; // 4 MiB
-
-    /// Open and start tailing a file.
-    ///
-    /// If `start_from_end` is true, seeks to EOF. If the file was previously
-    /// evicted from the LRU cache, restores the saved offset instead.
-    ///
-    /// Takes `start_from_end` as a parameter (Bug E) instead of reading
-    /// from `self.config` to avoid the fragile save/restore pattern.
-    fn open_file_at(&mut self, path: &Path, start_from_end: bool) -> io::Result<()> {
-        let identity = identify_file(path, self.config.fingerprint_bytes)?;
-        let mut file = File::open(path)?;
-
-        let offset = if let Some(evicted) = self.evicted_offsets.remove(path) {
-            // Verify the file identity still matches before restoring the
-            // saved offset. If the file was deleted and a new file appeared
-            // at the same path, the fingerprint will differ and we must not
-            // seek to the stale offset — that would skip data. (#817)
-            if evicted.identity == identity {
-                file.seek(SeekFrom::Start(evicted.offset))?
-            } else {
-                tracing::warn!(
-                    path = %path.display(),
-                    evicted_identity = ?evicted.identity,
-                    current_identity = ?identity,
-                    "evicted offset identity mismatch — ignoring saved offset"
-                );
-                if start_from_end {
-                    file.seek(SeekFrom::End(0))?
-                } else {
-                    0
-                }
-            }
-        } else if start_from_end {
-            file.seek(SeekFrom::End(0))?
-        } else {
-            0
-        };
-
-        self.files.insert(
-            path.to_path_buf(),
-            TailedFile {
-                identity,
-                file,
-                offset,
-                last_read: Instant::now(),
-                eof_emitted: false,
-            },
-        );
-
-        Ok(())
-    }
-
-    /// Read new data from a file, capped at [`Self::MAX_READ_PER_POLL`].
-    /// Returns [`ReadResult::Truncated`] or [`ReadResult::TruncatedThenData`]
-    /// if the file was truncated since the last read.
-    fn read_new_data(&mut self, path: &Path) -> io::Result<ReadResult> {
-        let tailed = match self.files.get_mut(path) {
-            Some(t) => t,
-            None => return Ok(ReadResult::NoData),
-        };
-
-        // Check current file size.
-        let meta = tailed.file.metadata()?;
-        let current_size = meta.len();
-
-        let was_truncated = current_size < tailed.offset;
-        if was_truncated {
-            // File was truncated (copytruncate rotation) (#796).
-            // Reset offset, fingerprint, and eof flag.
-            tailed.offset = 0;
-            tailed.eof_emitted = false; // Bug A: allow fresh EndOfFile after truncation
-            tailed.file.seek(SeekFrom::Start(0))?;
-            tailed.identity.fingerprint =
-                compute_fingerprint(&mut tailed.file, self.config.fingerprint_bytes)?;
-            tailed.file.seek(SeekFrom::Start(0))?;
-        }
-
-        if current_size <= tailed.offset {
-            return Ok(if was_truncated {
-                ReadResult::Truncated
-            } else {
-                ReadResult::NoData
-            });
-        }
-
-        // Read available bytes, capped at MAX_READ_PER_POLL (#800).
-        let mut result = Vec::with_capacity(self.config.read_buf_size);
-        loop {
-            if result.len() >= Self::MAX_READ_PER_POLL {
-                break; // continue on next poll
-            }
-            let n = tailed.file.read(&mut self.read_buf)?;
-            if n == 0 {
-                break;
-            }
-            result.extend_from_slice(&self.read_buf[..n]);
-            tailed.offset += n as u64;
-        }
-
-        if result.is_empty() {
-            return Ok(if was_truncated {
-                ReadResult::Truncated
-            } else {
-                ReadResult::NoData
-            });
-        }
-
-        tailed.last_read = Instant::now();
-
-        // Re-fingerprint files that started empty (fingerprint 0). Without
-        // this, files that were empty at open time never acquire a real
-        // fingerprint and stay invisible to source-aware checkpointing.
-        if tailed.identity.fingerprint == 0 {
-            let current_pos = tailed.file.stream_position()?;
-            tailed.file.seek(SeekFrom::Start(0))?;
-            let new_fp = compute_fingerprint(&mut tailed.file, self.config.fingerprint_bytes)?;
-            tailed.file.seek(SeekFrom::Start(current_pos))?;
-            if new_fp != 0 {
-                tailed.identity.fingerprint = new_fp;
-            }
-        }
-
-        Ok(if was_truncated {
-            ReadResult::TruncatedThenData(result)
-        } else {
-            ReadResult::Data(result)
-        })
-    }
-
-    /// Drain remaining data from a single file, emitting Data/Truncated events.
-    ///
-    /// Factored from the repeated drain pattern used during rotation and
-    /// deletion cleanup. Preserves source_id on all emitted events.
-    fn drain_file(
-        &mut self,
-        path: &Path,
-        source_id: Option<SourceId>,
-        events: &mut Vec<TailEvent>,
-    ) {
-        match self.read_new_data(path) {
-            Ok(ReadResult::Data(data)) => {
-                events.push(TailEvent::Data {
-                    path: path.to_path_buf(),
-                    bytes: data,
-                    source_id,
-                });
-            }
-            Ok(ReadResult::TruncatedThenData(data)) => {
-                events.push(TailEvent::Truncated {
-                    path: path.to_path_buf(),
-                    source_id,
-                });
-                events.push(TailEvent::Data {
-                    path: path.to_path_buf(),
-                    bytes: data,
-                    source_id,
-                });
-            }
-            Ok(ReadResult::Truncated) => {
-                events.push(TailEvent::Truncated {
-                    path: path.to_path_buf(),
-                    source_id,
-                });
-            }
-            Ok(ReadResult::NoData) => {}
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "tail.drain_file_error");
-            }
-        }
-    }
-
-    /// Read new data from all tailed files, emitting Data/Truncated/EndOfFile events.
-    fn read_all(&mut self, events: &mut Vec<TailEvent>) {
-        let paths: Vec<PathBuf> = self.files.keys().cloned().collect();
-        for path in paths {
-            // Capture source_id BEFORE read_new_data: truncation detection
-            // inside read_new_data updates the fingerprint, so the post-read
-            // identity is the NEW file. Downstream uses source_id to clear
-            // per-source state keyed by the OLD identity.
-            let pre_read_source_id = self.source_id_for_path(&path);
-            match self.read_new_data(&path) {
-                Ok(ReadResult::Data(data)) => {
-                    // New data arrived — reset the EOF-emitted flag so a fresh
-                    // EndOfFile event can be emitted the next time reads stall.
-                    if let Some(tailed) = self.files.get_mut(&path) {
-                        tailed.eof_emitted = false;
-                    }
-                    // Compute source_id AFTER read_new_data: empty files acquire
-                    // their real fingerprint during the read, so the post-read
-                    // identity is the correct one to associate with this data.
-                    let source_id = self.source_id_for_path(&path);
-                    events.push(TailEvent::Data {
-                        path: path.clone(),
-                        bytes: data,
-                        source_id,
-                    });
-                }
-                Ok(ReadResult::TruncatedThenData(data)) => {
-                    // Copytruncate detected + new data from beginning (#796).
-                    // Emit Truncated FIRST so downstream clears remainder,
-                    // then emit the new data. Use pre-read source_id for
-                    // Truncated (what downstream knows), post-read for Data.
-                    events.push(TailEvent::Truncated {
-                        path: path.clone(),
-                        source_id: pre_read_source_id,
-                    });
-                    if let Some(tailed) = self.files.get_mut(&path) {
-                        tailed.eof_emitted = false;
-                    }
-                    let source_id = self.source_id_for_path(&path);
-                    events.push(TailEvent::Data {
-                        path: path.clone(),
-                        bytes: data,
-                        source_id,
-                    });
-                }
-                Ok(ReadResult::Truncated) => {
-                    // Truncated but no new data yet. Use pre-read source_id
-                    // so downstream can find and clear the old identity.
-                    events.push(TailEvent::Truncated {
-                        path: path.clone(),
-                        source_id: pre_read_source_id,
-                    });
-                }
-                Ok(ReadResult::NoData) => {
-                    // No new data. Emit EndOfFile once so downstream can flush
-                    // any partial-line remainder that was not newline-terminated.
-                    if let Some(tailed) = self.files.get_mut(&path) {
-                        if !tailed.eof_emitted {
-                            tailed.eof_emitted = true;
-                            let source_id = self.source_id_for_path(&path);
-                            events.push(TailEvent::EndOfFile {
-                                path: path.clone(),
-                                source_id,
-                            });
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "tail.read_error");
-                }
-            }
-        }
-    }
-
-    /// Evict least-recently-read files when over the open-file limit.
-    ///
-    /// Saves each evicted file's offset so it can resume from the correct
-    /// position when re-opened on a future glob rescan.
-    fn evict_lru(&mut self, max_open: usize) {
-        if self.files.len() > max_open {
-            let mut by_age: Vec<(PathBuf, Instant)> = self
-                .files
-                .iter()
-                .map(|(path, tailed)| (path.clone(), tailed.last_read))
-                .collect();
-            by_age.sort_by_key(|(_, last_read)| *last_read);
-            let to_remove = self.files.len() - max_open;
-            for (path, _) in by_age.into_iter().take(to_remove) {
-                if let Some(tailed) = self.files.remove(&path) {
-                    let source_id = tailed.identity.source_id();
-                    self.evicted_offsets.insert(
-                        path.clone(),
-                        EvictedFile {
-                            identity: tailed.identity,
-                            offset: tailed.offset,
-                            path,
-                            source_id,
-                        },
-                    );
-                }
-            }
-        }
-    }
-
-    /// Get the current offset for a file (for checkpointing).
-    fn get_offset(&self, path: &Path) -> Option<u64> {
-        self.files.get(path).map(|f| f.offset)
-    }
-
-    /// Set the offset for a file (for restoring from checkpoint).
-    ///
-    /// Validates the offset against the current file size (#656). If the saved
-    /// offset exceeds the file size (file was truncated between runs), resets
-    /// to 0 instead of reading garbage.
-    fn set_offset(&mut self, path: &Path, offset: u64) -> io::Result<()> {
-        if let Some(tailed) = self.files.get_mut(path) {
-            let file_size = tailed.file.metadata()?.len();
-            let safe_offset = if offset > file_size {
-                tracing::warn!(
-                    path = %path.display(),
-                    saved_offset = offset,
-                    file_size,
-                    "checkpoint offset exceeds file size — resetting to 0"
-                );
-                0
-            } else {
-                offset
-            };
-            tailed.offset = safe_offset;
-            tailed.file.seek(SeekFrom::Start(safe_offset))?;
-        }
-        Ok(())
-    }
-
-    /// Restore a file offset by SourceId (compound identity), not path.
-    ///
-    /// Scans all tailed files for a matching compound identity
-    /// (device + inode + fingerprint). Used for checkpoint restore — the
-    /// checkpoint stores source_id + offset, not path.
-    fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) -> io::Result<()> {
-        for tailed in self.files.values_mut() {
-            if tailed.identity.source_id() == source_id {
-                tailed.offset = offset;
-                tailed.file.seek(SeekFrom::Start(offset))?;
-                return Ok(());
-            }
-        }
-        Ok(()) // source not found — file may not exist yet
-    }
-
-    /// Number of files currently being tailed.
-    fn num_files(&self) -> usize {
-        self.files.len()
-    }
-
-    /// Look up the `SourceId` for a given path.
-    ///
-    /// Returns `None` if the path is not currently tailed or is an empty file
-    /// (fingerprint 0).
-    fn source_id_for_path(&self, path: &Path) -> Option<SourceId> {
-        self.files.get(path).and_then(|tailed| {
-            let sid = tailed.identity.source_id();
-            if sid == SourceId(0) { None } else { Some(sid) }
-        })
-    }
-
-    /// Hot path: source identity + offset for all tailed files.
-    ///
-    /// Includes both actively-tailed files and files evicted from the LRU
-    /// cache (#697). This ensures evicted file offsets are persisted to the
-    /// checkpoint file, surviving crashes while files are in the evicted state.
-    ///
-    /// Skips empty files (fingerprint 0) — they have no data to checkpoint.
-    /// Called on every channel send (~100ms). No PathBuf allocation.
-    fn file_offsets(&self) -> Vec<(SourceId, ByteOffset)> {
-        let active = self
-            .files
-            .iter()
-            .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
-            .map(|(_, tailed)| (tailed.identity.source_id(), ByteOffset(tailed.offset)));
-
-        let evicted = self
-            .evicted_offsets
-            .values()
-            .filter(|e| e.identity.fingerprint != 0)
-            .map(|e| (e.source_id, ByteOffset(e.offset)));
-
-        active.chain(evicted).collect()
-    }
-
-    /// Cold path: source identity + canonical path for all tailed files.
-    ///
-    /// Includes evicted files so checkpoint paths stay consistent with offsets.
-    /// Called on file open/close/rotate, not per-batch. PathBuf cloning is
-    /// acceptable here since this runs infrequently.
-    fn file_paths(&self) -> Vec<(SourceId, PathBuf)> {
-        let active = self
-            .files
-            .iter()
-            .filter(|(_, tailed)| tailed.identity.fingerprint != 0)
-            .map(|(path, tailed)| (tailed.identity.source_id(), path.clone()));
-
-        let evicted = self
-            .evicted_offsets
-            .values()
-            .filter(|e| e.identity.fingerprint != 0)
-            .map(|e| (e.source_id, e.path.clone()));
-
-        active.chain(evicted).collect()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// FileTailer — public composition of FileDiscovery + FileReader
-// ---------------------------------------------------------------------------
-
-/// The file tailer. Watches one or more file paths and yields data as it appears.
-pub struct FileTailer {
-    discovery: FileDiscovery,
-    reader: FileReader,
-    config: TailConfig,
-    /// Last time we did a full poll scan.
-    last_poll: Instant,
-}
-
-impl FileTailer {
-    /// Create a new tailer watching the given file paths.
-    pub fn new(paths: &[PathBuf], config: TailConfig) -> io::Result<Self> {
-        let (tx, rx) = crossbeam_channel::unbounded();
-
-        let mut watcher = notify::recommended_watcher(move |res| {
-            let _ = tx.send(res);
-        })
-        .map_err(io::Error::other)?;
-
-        // Watch the parent directories (not the files themselves).
-        // This catches file creation, rename, and deletion events
-        // that inotify/kqueue on the file itself would miss.
-        let mut watched_dirs = HashSet::new();
-        for path in paths {
-            if let Some(parent) = path.parent()
-                && watched_dirs.insert(parent.to_path_buf())
-            {
-                use notify::Watcher;
-                watcher
-                    .watch(parent, notify::RecursiveMode::NonRecursive)
-                    .map_err(io::Error::other)?;
-            }
-        }
-
-        let mut tailer = FileTailer {
-            discovery: FileDiscovery {
-                watcher,
-                watched_dirs,
-                glob_patterns: Vec::new(),
-                watch_paths: paths.to_vec(),
-                fs_events: rx,
-                last_glob_rescan: Instant::now(),
-            },
-            reader: FileReader {
-                files: HashMap::new(),
-                read_buf: vec![0u8; config.read_buf_size],
-                evicted_offsets: HashMap::new(),
-                config: config.clone(),
-            },
-            config,
-            last_poll: Instant::now(),
-        };
-
-        // Open existing files. Warn about missing paths (#730).
-        for path in paths {
-            if path.exists() {
-                if let Err(e) = tailer
-                    .reader
-                    .open_file_at(path, tailer.config.start_from_end)
-                {
-                    tracing::warn!(path = %path.display(), error = %e, "tail.open_failed");
-                }
-            } else {
-                tracing::warn!(path = %path.display(), "tail.file_not_found — pipeline will wait until file appears");
-            }
-        }
-
-        Ok(tailer)
-    }
-
-    /// Create a new tailer from glob patterns.
-    ///
-    /// Each pattern is expanded immediately to find existing files and then
-    /// re-evaluated every [`TailConfig::glob_rescan_interval_ms`] milliseconds
-    /// to pick up files that appear after construction (e.g., new Kubernetes pods).
-    ///
-    /// Patterns that match no files at construction time are silently ignored —
-    /// they will be retried on the next rescan.
-    pub fn new_with_globs(patterns: &[&str], config: TailConfig) -> io::Result<Self> {
-        // Expand patterns to get the initial set of concrete paths.
-        let initial_paths: Vec<PathBuf> = expand_glob_patterns(patterns);
-
-        // Warn when glob patterns match no files (#730).
-        if initial_paths.is_empty() {
-            for pattern in patterns {
-                tracing::warn!(
-                    pattern,
-                    "tail.glob_no_matches — pipeline will wait until matching files appear"
-                );
-            }
-        }
-
-        let mut tailer = Self::new(&initial_paths, config)?;
-        tailer.discovery.glob_patterns = patterns.iter().map(ToString::to_string).collect();
-        Ok(tailer)
-    }
-
-    /// Maximum bytes to read from a single file per poll cycle.
-    /// Prevents OOM when a file grows significantly between polls (#800).
-    /// Exposed for test assertions; production code uses `FileReader::MAX_READ_PER_POLL`.
-    #[cfg(test)]
-    const MAX_READ_PER_POLL: usize = FileReader::MAX_READ_PER_POLL;
-
-    /// Poll for new data. Returns a batch of events.
-    /// Call this in your main loop. It will:
-    /// 1. Drain any filesystem notifications (low latency path)
-    /// 2. If enough time has passed, do a full poll scan (safety net)
-    /// 3. If enough time has passed, re-evaluate glob patterns (new file discovery)
-    /// 4. Read new data from any files that have grown
-    pub fn poll(&mut self) -> io::Result<Vec<TailEvent>> {
-        let mut events = Vec::new();
-
-        // Drain filesystem notifications. These tell us something changed
-        // but we still need to read() to get the data.
-        let something_changed = self.discovery.drain_events();
-
-        // Periodic full poll as safety net.
-        let poll_interval = Duration::from_millis(self.config.poll_interval_ms);
-        let glob_rescan_due = self.config.glob_rescan_interval_ms > 0
-            && self.discovery.last_glob_rescan.elapsed()
-                >= Duration::from_millis(self.config.glob_rescan_interval_ms);
-        let should_poll =
-            something_changed || self.last_poll.elapsed() >= poll_interval || glob_rescan_due;
-
-        if !should_poll {
-            return Ok(events);
-        }
-        self.last_poll = Instant::now();
-
-        // Re-evaluate glob patterns to discover new files.
-        if glob_rescan_due {
-            self.discovery.rescan_globs(&mut self.reader);
-            self.discovery.last_glob_rescan = Instant::now();
-        }
-
-        // Check for new/rotated files.
-        self.discovery.detect_changes(&mut self.reader, &mut events);
-
-        // Read new data from all tailed files.
-        self.reader.read_all(&mut events);
-
-        // Remove entries for files that have been unlinked (nlink == 0).
-        self.discovery
-            .cleanup_deleted(&mut self.reader, &mut events);
-
-        // Evict least-recently-read files when over the open-file limit.
-        self.reader.evict_lru(self.config.max_open_files);
-
-        Ok(events)
-    }
-
-    /// Get the current offset for a file (for checkpointing).
-    pub fn get_offset(&self, path: &Path) -> Option<u64> {
-        self.reader.get_offset(path)
-    }
-
-    /// Set the offset for a file (for restoring from checkpoint).
-    ///
-    /// Validates the offset against the current file size (#656). If the saved
-    /// offset exceeds the file size (file was truncated between runs), resets
-    /// to 0 instead of reading garbage.
-    pub fn set_offset(&mut self, path: &Path, offset: u64) -> io::Result<()> {
-        self.reader.set_offset(path, offset)
-    }
-
-    /// Restore a file offset by SourceId (compound identity), not path.
-    ///
-    /// Scans all tailed files for a matching compound identity
-    /// (device + inode + fingerprint). Used for checkpoint restore — the
-    /// checkpoint stores source_id + offset, not path.
-    pub fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) -> io::Result<()> {
-        self.reader.set_offset_by_source(source_id, offset)
-    }
-
-    /// Number of files currently being tailed.
-    pub fn num_files(&self) -> usize {
-        self.reader.num_files()
-    }
-
-    /// Look up the `SourceId` for a given path.
-    ///
-    /// Returns `None` if the path is not currently tailed or is an empty file
-    /// (fingerprint 0).
-    pub fn source_id_for_path(&self, path: &Path) -> Option<SourceId> {
-        self.reader.source_id_for_path(path)
-    }
-
-    /// Hot path: source identity + offset for all tailed files.
-    ///
-    /// Includes both actively-tailed files and files evicted from the LRU
-    /// cache (#697). This ensures evicted file offsets are persisted to the
-    /// checkpoint file, surviving crashes while files are in the evicted state.
-    ///
-    /// Skips empty files (fingerprint 0) — they have no data to checkpoint.
-    /// Called on every channel send (~100ms). No PathBuf allocation.
-    pub fn file_offsets(&self) -> Vec<(SourceId, ByteOffset)> {
-        self.reader.file_offsets()
-    }
-
-    /// Cold path: source identity + canonical path for all tailed files.
-    ///
-    /// Includes evicted files so checkpoint paths stay consistent with offsets.
-    /// Called on file open/close/rotate, not per-batch. PathBuf cloning is
-    /// acceptable here since this runs infrequently.
-    pub fn file_paths(&self) -> Vec<(SourceId, PathBuf)> {
-        self.reader.file_paths()
-    }
-}
+mod discovery;
+mod glob;
+mod identity;
+mod reader;
+mod tailer;
+
+pub use identity::ByteOffset;
+pub use tailer::{FileTailer, TailConfig, TailEvent};
+
+#[cfg(test)]
+use glob::{expand_glob_patterns, glob_max_depth, glob_root};
+#[cfg(test)]
+use identity::identify_file;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use logfwd_types::diagnostics::ComponentHealth;
+    use std::fs::{self, File};
+    use std::io::{self, Write};
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     // ---- glob_root / glob_max_depth unit tests ----
 
@@ -1193,6 +97,14 @@ mod tests {
         // */*.log → root=. (0 effective components), pattern has 2 → depth 2.
         // WalkDir must search at depth 2 to find files in subdirectories.
         assert_eq!(glob_max_depth("*/*.log"), Some(2));
+    }
+
+    #[test]
+    fn glob_max_depth_relative_dot_prefix() {
+        // `./` is syntactic sugar for the current directory and should not
+        // change traversal depth compared with the equivalent relative pattern.
+        assert_eq!(glob_max_depth("./*.log"), glob_max_depth("*.log"));
+        assert_eq!(glob_max_depth("./foo/*.log"), glob_max_depth("foo/*.log"));
     }
 
     // ---- end glob helper tests ----
@@ -1719,6 +631,62 @@ mod tests {
         assert_eq!(tailer.num_files(), 1, "should still tail exactly one file");
     }
 
+    /// #1375/#1463: glob patterns must match files regardless of `./` prefix
+    /// normalization, including bare `*.log`.
+    ///
+    /// This stays cwd-independent by asserting path-form matching directly
+    /// (`entry_path`, stripped, and `./`-prefixed forms) instead of mutating
+    /// process cwd in tests.
+    #[test]
+    fn test_expand_glob_patterns_path_normalization() {
+        let mut builder = globset::GlobSetBuilder::new();
+        builder.add(globset::Glob::new("*.log").unwrap());
+        let bare_set = builder.build().unwrap();
+        let bare_entry = PathBuf::from("./app.log");
+        let bare_stripped = bare_entry.strip_prefix(".").unwrap();
+        let bare_prefixed = PathBuf::from("./").join(bare_stripped);
+        assert!(
+            bare_set.is_match(&bare_entry)
+                || bare_set.is_match(bare_stripped)
+                || bare_set.is_match(&bare_prefixed),
+            "bare '*.log' must match at least one normalized form"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        fs::create_dir_all(&logs).unwrap();
+
+        let target = logs.join("app.log");
+        let other = logs.join("app.txt");
+        {
+            let mut f = File::create(&target).unwrap();
+            writeln!(f, "hello").unwrap();
+        }
+        File::create(&other).unwrap();
+
+        // Absolute pattern with subdirectory.
+        let pattern = format!("{}/*.log", logs.display());
+        let matches = expand_glob_patterns(&[&pattern]);
+        assert!(
+            matches.iter().any(|p| p == &target),
+            "absolute pattern should match app.log, got: {matches:?}"
+        );
+        assert!(
+            !matches.iter().any(|p| p == &other),
+            "should not match .txt file, got: {matches:?}"
+        );
+
+        // Flat file in root for wildcard testing.
+        let flat = dir.path().join("flat.log");
+        File::create(&flat).unwrap();
+        let flat_pattern = format!("{}/*.log", dir.path().display());
+        let flat_matches = expand_glob_patterns(&[&flat_pattern]);
+        assert!(
+            flat_matches.iter().any(|p| p == &flat),
+            "wildcard pattern should match flat.log, got: {flat_matches:?}"
+        );
+    }
+
     /// Verify that when open files exceed `max_open_files`, the least-recently-read
     /// files are evicted until the count is within the limit.
     #[test]
@@ -2192,9 +1160,10 @@ mod tests {
         );
     }
 
-    /// #800: read_new_data must not exceed MAX_READ_PER_POLL.
+    /// #800: when the configured budget exceeds the hard cap, reads must clamp
+    /// exactly at MAX_READ_PER_POLL rather than "within one extra buffer".
     #[test]
-    fn test_read_cap_prevents_oom() {
+    fn test_read_cap_clamps_exactly_at_max_read_per_poll() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("large.log");
 
@@ -2212,11 +1181,13 @@ mod tests {
         let config = TailConfig {
             start_from_end: false,
             poll_interval_ms: 10,
+            per_file_read_budget_bytes: FileTailer::MAX_READ_PER_POLL * 2,
             ..Default::default()
         };
         let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
 
-        // First poll should read at most MAX_READ_PER_POLL bytes.
+        // First poll should read exactly MAX_READ_PER_POLL bytes because the
+        // configured budget exceeds the hard cap and the file is larger still.
         std::thread::sleep(Duration::from_millis(50));
         let events = tailer.poll().unwrap();
 
@@ -2228,14 +1199,13 @@ mod tests {
             })
             .sum();
 
-        assert!(
-            total_bytes <= FileTailer::MAX_READ_PER_POLL + 512 * 1024, // allow one extra read_buf
-            "read should be capped near 64 MiB, got {} bytes",
-            total_bytes
+        assert_eq!(
+            total_bytes,
+            FileTailer::MAX_READ_PER_POLL,
+            "first poll should clamp exactly at MAX_READ_PER_POLL"
         );
-        assert!(total_bytes > 0, "should read some data");
 
-        // Second poll should read the remaining data.
+        // Second poll should read the remaining 1 MiB.
         std::thread::sleep(Duration::from_millis(50));
         let events2 = tailer.poll().unwrap();
         let total_bytes2: usize = events2
@@ -2245,7 +1215,11 @@ mod tests {
                 _ => None,
             })
             .sum();
-        assert!(total_bytes2 > 0, "second poll should read remaining data");
+        assert_eq!(
+            total_bytes2,
+            target_size - FileTailer::MAX_READ_PER_POLL,
+            "second poll should read the exact remainder"
+        );
     }
 
     /// #656: set_offset must reset to 0 if offset > file size.
@@ -2273,6 +1247,92 @@ mod tests {
         // Offset should be reset to 0, not 999_999.
         let offset = tailer.get_offset(&log_path).unwrap();
         assert_eq!(offset, 0, "stale offset should reset to 0");
+    }
+
+    /// #1037: set_offset_by_source must reset to 0 when checkpoint offset > file size.
+    #[test]
+    fn test_set_offset_by_source_validates_against_file_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("source_stale.log");
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "small file content").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+
+        let source_id = tailer
+            .file_offsets()
+            .into_iter()
+            .map(|(sid, _)| sid)
+            .next()
+            .expect("non-empty file should have source id");
+
+        // Try to set an offset beyond file size (stale checkpoint).
+        tailer.set_offset_by_source(source_id, 999_999).unwrap();
+        let offset = tailer.get_offset(&log_path).unwrap();
+        assert_eq!(offset, 0, "stale source offset should reset to 0");
+    }
+
+    /// #1600 follow-up: restoring checkpoint offsets by source_id must also
+    /// update evicted entries (not just currently-open files).
+    #[test]
+    fn test_set_offset_by_source_updates_evicted_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log_paths = Vec::new();
+        for i in 0..3 {
+            let p = dir.path().join(format!("evicted-{i}.log"));
+            {
+                let mut f = File::create(&p).unwrap();
+                writeln!(f, "line-0-{i}").unwrap();
+                writeln!(f, "line-1-{i}").unwrap();
+            }
+            log_paths.push(p);
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 60_000,
+            max_open_files: 2,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // Read initial data and trigger one eviction.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(tailer.num_files(), 2, "expected one file to be evicted");
+
+        let (evicted_sid, evicted_path) = tailer
+            .file_paths()
+            .into_iter()
+            .find(|(_, path)| tailer.get_offset(path).is_none())
+            .expect("expected one evicted file path");
+        assert!(
+            log_paths.iter().any(|p| p == &evicted_path),
+            "evicted path should come from test set"
+        );
+
+        tailer
+            .set_offset_by_source(evicted_sid, 5)
+            .expect("set offset by source should succeed for evicted entry");
+
+        let updated = tailer
+            .file_offsets()
+            .into_iter()
+            .find(|(sid, _)| *sid == evicted_sid)
+            .map(|(_, off)| off.0)
+            .expect("evicted source id should still be present in checkpoint data");
+        assert_eq!(updated, 5, "evicted checkpoint offset was not updated");
     }
 
     /// #697: Evicted file offsets must appear in file_offsets() so they are
@@ -2394,6 +1454,168 @@ mod tests {
         );
     }
 
+    /// Glob-discovered files must respect start_from_end config.
+    #[test]
+    fn glob_rescan_respects_start_from_end() {
+        // Verify that files discovered during glob rescan (new pods, new log files)
+        // respect the start_from_end config rather than hardcoding false.
+        let dir = tempfile::tempdir().unwrap();
+        let pattern = format!("{}/*.log", dir.path().display());
+
+        // Write an initial file with existing content before the tailer starts.
+        let initial_path = dir.path().join("initial.log");
+        {
+            let mut f = File::create(&initial_path).unwrap();
+            for i in 0..10 {
+                writeln!(f, "old line {i}").unwrap();
+            }
+        }
+
+        let config = TailConfig {
+            start_from_end: true,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // First poll: initial file is opened with start_from_end=true, so no old data.
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+        let old_data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            old_data.is_empty(),
+            "initial poll with start_from_end=true should produce no data from existing content"
+        );
+
+        // Now create a NEW file (simulates a new pod log appearing during rescan).
+        let new_path = dir.path().join("new-pod.log");
+        {
+            let mut f = File::create(&new_path).unwrap();
+            for i in 0..10 {
+                writeln!(f, "new pod old line {i}").unwrap();
+            }
+        }
+
+        // Poll enough times for the glob rescan to discover and open the new file.
+        std::thread::sleep(Duration::from_millis(100));
+        let events = tailer.poll().unwrap();
+        let discovered_data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            discovered_data.is_empty(),
+            "glob-rescan-discovered file with start_from_end=true must not return old content, got: {}",
+            String::from_utf8_lossy(&discovered_data)
+        );
+
+        // Appending new content to the discovered file MUST be visible.
+        {
+            let mut f = fs::OpenOptions::new().append(true).open(&new_path).unwrap();
+            writeln!(f, "new pod new line").unwrap();
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+        let events = tailer.poll().unwrap();
+        let new_content: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let s = String::from_utf8_lossy(&new_content);
+        assert!(
+            s.contains("new pod new line"),
+            "newly appended content must be visible after start_from_end discovery, got: {s}"
+        );
+    }
+
+    /// #1043: open_file_at must not restore an evicted offset that exceeds EOF.
+    #[test]
+    fn test_evicted_offset_clamped_when_file_shrinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.log");
+        let b = dir.path().join("b.log");
+
+        // Both files share the same 4-byte fingerprint prefix so that
+        // whichever file gets evicted will still match identity after truncation,
+        // exercising the stale-offset clamping path (not the identity-mismatch path).
+        {
+            let mut fa = File::create(&a).unwrap();
+            // 200 bytes so restored offset can exceed the later truncated size.
+            write!(fa, "ABCD").unwrap();
+            write!(fa, "{}", "x".repeat(196)).unwrap();
+            let mut fb = File::create(&b).unwrap();
+            write!(fb, "ABCD").unwrap();
+            writeln!(fb, " initial b content").unwrap();
+        }
+
+        let pattern = format!("{}/*.log", dir.path().display());
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            glob_rescan_interval_ms: 50,
+            max_open_files: 1,
+            fingerprint_bytes: 4,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
+
+        // Initial poll reads both and then evicts one due to max_open_files=1.
+        std::thread::sleep(Duration::from_millis(50));
+        tailer.poll().unwrap();
+        assert_eq!(tailer.num_files(), 1, "one file should be evicted");
+
+        let evicted = if tailer.get_offset(&a).is_none() {
+            a.clone()
+        } else if tailer.get_offset(&b).is_none() {
+            b.clone()
+        } else {
+            panic!("expected either a.log or b.log to be evicted");
+        };
+
+        // Shrink the evicted file but preserve the first 4 bytes ("ABCD")
+        // so identity still matches and stale-offset path is exercised.
+        {
+            let mut f = File::create(&evicted).unwrap(); // truncate
+            writeln!(f, "ABCD_shrunk").unwrap(); // size << previous offset
+        }
+
+        // Wait for rescan so evicted file is re-opened.
+        std::thread::sleep(Duration::from_millis(150));
+        let events = tailer.poll().unwrap();
+
+        // If stale offset is incorrectly restored past EOF, we'd read nothing.
+        // With clamping, we should read from beginning and see "ABCD_shrunk".
+        let data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { path, bytes, .. } if path == &evicted => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let s = String::from_utf8_lossy(&data);
+        assert!(
+            s.contains("ABCD_shrunk"),
+            "re-opened shrunken file should be read from beginning, got: {s}"
+        );
+    }
+
     /// #730: Non-existent file paths should not prevent construction.
     #[test]
     fn test_nonexistent_path_does_not_panic() {
@@ -2411,6 +1633,212 @@ mod tests {
         assert!(tailer.is_ok(), "missing path should not fail construction");
         assert_eq!(tailer.unwrap().num_files(), 0);
     }
+
+    /// #543: poll errors should trigger exponential backoff instead of spinning.
+    #[test]
+    fn test_error_backoff_grows_exponentially() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("backoff.log");
+        File::create(&log_path).unwrap();
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 0,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+
+        // Inject watcher errors directly through the discovery receiver.
+        let (tx, rx) = crossbeam_channel::unbounded();
+        tailer.discovery.fs_events = rx;
+
+        tx.send(Err(notify::Error::generic("boom-1"))).unwrap();
+        let first_poll_at = Instant::now();
+        let _ = tailer.poll().unwrap();
+        let first_until = tailer
+            .error_backoff_until
+            .expect("first error should schedule backoff");
+        let first_delay = first_until.duration_since(first_poll_at);
+        assert_eq!(tailer.consecutive_error_polls, 1);
+
+        // Wait until the first backoff has expired before triggering the second error,
+        // so the poll is not suppressed by the active backoff window.
+        while Instant::now() < first_until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        tx.send(Err(notify::Error::generic("boom-2"))).unwrap();
+        let second_poll_at = Instant::now();
+        let _ = tailer.poll().unwrap();
+        let second_until = tailer
+            .error_backoff_until
+            .expect("second error should schedule backoff");
+        let second_delay = second_until.duration_since(second_poll_at);
+        assert_eq!(tailer.consecutive_error_polls, 2);
+
+        assert!(
+            second_until > first_until,
+            "second backoff should be longer"
+        );
+        assert!(
+            second_delay > first_delay,
+            "exponential backoff should grow"
+        );
+    }
+
+    #[test]
+    fn test_error_backoff_marks_tailer_degraded_until_clean_poll() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("health.log");
+        File::create(&log_path).unwrap();
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 0,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+        assert_eq!(tailer.health(), ComponentHealth::Healthy);
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        tailer.discovery.fs_events = rx;
+        tx.send(Err(notify::Error::generic("boom-health"))).unwrap();
+
+        let _ = tailer.poll().unwrap();
+        assert_eq!(tailer.health(), ComponentHealth::Degraded);
+
+        let until = tailer
+            .error_backoff_until
+            .expect("error poll should schedule backoff");
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let _ = tailer.poll().unwrap();
+        assert_eq!(tailer.health(), ComponentHealth::Healthy);
+    }
+
+    /// #544: file I/O and watcher errors must not use eprintln!.
+    #[test]
+    fn test_tail_uses_tracing_not_eprintln() {
+        let source = [
+            include_str!("mod.rs"),
+            include_str!("identity.rs"),
+            include_str!("glob.rs"),
+            include_str!("discovery.rs"),
+            include_str!("reader.rs"),
+            include_str!("tailer.rs"),
+        ]
+        .concat();
+        let forbidden = ["eprint", "ln!("].concat();
+        assert!(
+            !source.contains(&forbidden),
+            "tailer should log via tracing, not eprintln!"
+        );
+    }
+
+    /// #801: a hot file must not consume the entire poll; each file gets a byte budget.
+    #[test]
+    fn test_per_file_budget_prevents_starvation() {
+        let dir = tempfile::tempdir().unwrap();
+        let hot_path = dir.path().join("hot.log");
+        let cold_path = dir.path().join("cold.log");
+
+        {
+            let mut hot = File::create(&hot_path).unwrap();
+            // 1 MiB hot file.
+            hot.write_all(&vec![b'x'; 1024 * 1024]).unwrap();
+        }
+        {
+            let mut cold = File::create(&cold_path).unwrap();
+            cold.write_all(b"cold-line\n").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 0,
+            per_file_read_budget_bytes: 64 * 1024,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(&[hot_path.clone(), cold_path.clone()], config).unwrap();
+
+        let events = tailer.poll().unwrap();
+        let hot_bytes: usize = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { path, bytes, .. } if path == &hot_path => Some(bytes.len()),
+                _ => None,
+            })
+            .sum();
+        let cold_bytes: usize = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { path, bytes, .. } if path == &cold_path => Some(bytes.len()),
+                _ => None,
+            })
+            .sum();
+
+        // The hot file is larger than the fairness budget, so one poll should
+        // read exactly one budget slice, not one extra buffer.
+        assert_eq!(
+            hot_bytes,
+            64 * 1024,
+            "hot file should clamp exactly to the configured budget"
+        );
+        assert!(cold_bytes > 0, "cold file should still be read this cycle");
+    }
+
+    /// #811: copytruncate must reset offset when file shrinks below current offset.
+    #[test]
+    fn test_copytruncate_resets_offset_on_size_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("copytruncate.log");
+
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "old-line-1").unwrap();
+            writeln!(f, "old-line-2").unwrap();
+            writeln!(f, "old-line-3").unwrap();
+        }
+
+        let config = TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let _ = tailer.poll().unwrap();
+        let prior_offset = tailer.get_offset(&log_path).unwrap();
+        assert!(prior_offset > 0);
+
+        // Truncate to a much smaller file so len < prior offset.
+        {
+            let mut f = File::create(&log_path).unwrap();
+            writeln!(f, "new-small-line").unwrap();
+        }
+
+        std::thread::sleep(Duration::from_millis(30));
+        let events = tailer.poll().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TailEvent::Truncated { .. })),
+            "must emit Truncated when size drops below offset"
+        );
+        let data: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let body = String::from_utf8_lossy(&data);
+        assert!(
+            body.contains("new-small-line"),
+            "must read from reset offset"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2419,8 +1847,6 @@ mod tests {
 
 #[cfg(kani)]
 mod verification {
-    use super::*;
-
     /// Pure model of the `eof_emitted` state transition in `FileTailer::poll()`.
     ///
     /// Mirrors the logic from the `ReadResult::Data`, `ReadResult::TruncatedThenData`,

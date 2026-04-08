@@ -1,13 +1,11 @@
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use arrow::array::{Array, StringArray, UInt64Array};
+use arrow::array::{Array, LargeStringArray, StringArray, StringViewArray, UInt64Array};
 use arrow::datatypes::DataType;
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
 /// UDF: hash(col) — computes a deterministic hash of a string, returning UInt64.
@@ -26,9 +24,40 @@ impl Default for HashUdf {
 impl HashUdf {
     pub fn new() -> Self {
         Self {
-            signature: Signature::exact(vec![DataType::Utf8], Volatility::Immutable),
+            signature: Signature::one_of(
+                vec![
+                    TypeSignature::Exact(vec![DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
+                ],
+                Volatility::Immutable,
+            ),
         }
     }
+}
+
+/// Downcast `array` to `$array_ty`, iterate with null-propagation, and return
+/// `(len, UInt64Array::builder)` ready to be finished.
+///
+/// All three string-type arms in `invoke_with_args` are structurally identical;
+/// this macro eliminates the repetition while keeping the per-type error message.
+macro_rules! hash_string_array {
+    ($array:expr, $array_ty:ty, $type_name:literal) => {{
+        let string_array = $array.as_any().downcast_ref::<$array_ty>().ok_or_else(|| {
+            datafusion::error::DataFusionError::Internal(
+                concat!("failed to downcast ", $type_name).to_string(),
+            )
+        })?;
+        let mut builder = UInt64Array::builder(string_array.len());
+        for i in 0..string_array.len() {
+            if string_array.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(fnv1a_hash(string_array.value(i).as_bytes()));
+            }
+        }
+        (string_array.len(), builder)
+    }};
 }
 
 impl ScalarUDFImpl for HashUdf {
@@ -49,40 +78,62 @@ impl ScalarUDFImpl for HashUdf {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
+        if args.args.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "hash() expects exactly one argument".to_string(),
+            ));
+        }
+
         let arg = &args.args[0];
         match arg {
             ColumnarValue::Array(array) => {
-                let string_array = array.as_any().downcast_ref::<StringArray>().unwrap();
-                let mut builder = UInt64Array::builder(string_array.len());
-
-                for i in 0..string_array.len() {
-                    if string_array.is_null(i) {
-                        builder.append_null();
-                    } else {
-                        let val = string_array.value(i);
-                        let mut hasher = DefaultHasher::new();
-                        val.hash(&mut hasher);
-                        builder.append_value(hasher.finish());
+                let dt = array.data_type();
+                let (_len, mut builder) = match dt {
+                    DataType::Utf8 => {
+                        hash_string_array!(array, StringArray, "Utf8 to StringArray")
                     }
-                }
+                    DataType::Utf8View => {
+                        hash_string_array!(array, StringViewArray, "Utf8View to StringViewArray")
+                    }
+                    DataType::LargeUtf8 => {
+                        hash_string_array!(array, LargeStringArray, "LargeUtf8 to LargeStringArray")
+                    }
+                    _ => {
+                        return Err(datafusion::error::DataFusionError::Execution(format!(
+                            "hash() expected string argument, got {:?}",
+                            dt
+                        )));
+                    }
+                };
 
                 Ok(ColumnarValue::Array(Arc::new(builder.finish())))
             }
-            ColumnarValue::Scalar(ScalarValue::Utf8(Some(val))) => {
-                let mut hasher = DefaultHasher::new();
-                val.hash(&mut hasher);
-                Ok(ColumnarValue::Scalar(ScalarValue::UInt64(Some(
-                    hasher.finish(),
-                ))))
-            }
-            ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {
-                Ok(ColumnarValue::Scalar(ScalarValue::UInt64(None)))
-            }
+            ColumnarValue::Scalar(
+                ScalarValue::Utf8(Some(val))
+                | ScalarValue::Utf8View(Some(val))
+                | ScalarValue::LargeUtf8(Some(val)),
+            ) => Ok(ColumnarValue::Scalar(ScalarValue::UInt64(Some(
+                fnv1a_hash(val.as_bytes()),
+            )))),
+            ColumnarValue::Scalar(
+                ScalarValue::Utf8(None)
+                | ScalarValue::Utf8View(None)
+                | ScalarValue::LargeUtf8(None),
+            ) => Ok(ColumnarValue::Scalar(ScalarValue::UInt64(None))),
             ColumnarValue::Scalar(_) => Err(datafusion::error::DataFusionError::Execution(
                 "hash() expected string argument".to_string(),
             )),
         }
     }
+}
+
+fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 #[cfg(test)]
@@ -94,14 +145,11 @@ mod tests {
         let val1 = "test-trace-id-12345";
         let val2 = "test-trace-id-12345";
 
-        let mut hasher1 = DefaultHasher::new();
-        val1.hash(&mut hasher1);
-        let hash1 = hasher1.finish();
-
-        let mut hasher2 = DefaultHasher::new();
-        val2.hash(&mut hasher2);
-        let hash2 = hasher2.finish();
+        let hash1 = fnv1a_hash(val1.as_bytes());
+        let hash2 = fnv1a_hash(val2.as_bytes());
 
         assert_eq!(hash1, hash2);
+        // Ensure it's stable across runs and Rust versions
+        assert_eq!(hash1, 10607781026064820607);
     }
 }

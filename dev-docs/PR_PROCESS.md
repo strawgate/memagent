@@ -91,11 +91,13 @@ gh pr list --author "app/copilot-swe-agent" --state open \
 PRs with `[WIP]` in the title are still being worked on by Copilot. Leave them as drafts.
 
 ### c. Mark non-WIP drafts as ready
+
 ```bash
 gh pr ready ISSUE_NUMBER
 ```
 
-### d. Update branches with master
+### d. Update branches with main
+
 ```bash
 gh api repos/{owner}/{repo}/pulls/ISSUE_NUMBER/update-branch \
   -X PUT -f update_method=merge
@@ -138,11 +140,11 @@ Fix lint and minor issues directly on the PR branch using worktree agents:
 
 For conflict resolution:
 ```bash
-# Merge master into the PR branch
+# Merge main into the PR branch
 cd worktree-path
-git fetch origin master
-git merge origin/master
-# Resolve conflicts (usually approx_constant values — accept master's version)
+git fetch origin main
+git merge origin/main
+# Resolve conflicts (usually approx_constant values — accept main's version)
 git checkout --theirs conflicted-file.rs
 git add conflicted-file.rs
 git commit --no-edit
@@ -244,20 +246,21 @@ If the underlying work is still needed, file a focused issue and assign to Copil
 Periodically check if WIP PRs are still relevant:
 
 1. List all WIP PRs
-2. For each, check if the feature already exists on master (search git log, grep source)
+2. For each, check if the feature already exists on main (search git log, grep source)
 3. **Fully superseded** → close with explanation
 4. **Partially superseded** → close, file focused issue for remaining work
 5. **Still needed** → leave open or close and refile with updated scope
 
-## 10. Master CI Health
+## 10. Main CI Health
 
-After merging batches, verify master CI is green:
+After merging batches, verify main CI is green:
+
 ```bash
-gh run list --branch master --workflow CI --limit 1 \
+gh run list --branch main --workflow CI --limit 1 \
   --json conclusion -q '.[0].conclusion'
 ```
 
 Common fixes:
-- **Lint failure** → `cargo fmt --all` on master
+- **Lint failure** → `cargo fmt --all` on main
 - **ARM64 cross-compile** → `apt-get update` before package install
 - **Flaky tests** → investigate timing-dependent assertions

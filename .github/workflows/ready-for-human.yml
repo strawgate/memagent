@@ -1,0 +1,274 @@
+name: "Auto: ready-for-human label"
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+  pull_request_review:
+    types: [submitted, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  sync-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync ready-for-human label
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const labelName = "ready-for-human";
+
+            function extractPullNumbers(payload) {
+              if (payload.pull_request?.number) {
+                return [payload.pull_request.number];
+              }
+              if (payload.workflow_run?.pull_requests?.length) {
+                return payload.workflow_run.pull_requests
+                  .map((pr) => pr.number)
+                  .filter((n) => Number.isInteger(n));
+              }
+              if (payload.check_suite?.pull_requests?.length) {
+                return payload.check_suite.pull_requests
+                  .map((pr) => pr.number)
+                  .filter((n) => Number.isInteger(n));
+              }
+              return [];
+            }
+
+            async function listOpenPullNumbers() {
+              const pulls = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                state: "open",
+                per_page: 100,
+              });
+              return pulls.map((pr) => pr.number);
+            }
+
+            async function ensureLabelExists() {
+              try {
+                await github.rest.issues.createLabel({
+                  owner,
+                  repo,
+                  name: labelName,
+                  color: "0e8a16",
+                  description:
+                    "PR has passing CI, at least one approval, and no unresolved review feedback.",
+                });
+                console.log(`Created label: ${labelName}`);
+              } catch (err) {
+                if (err.status !== 422) {
+                  throw err;
+                }
+              }
+            }
+
+            async function getPrState(prNumber) {
+              let unresolvedThreads = 0;
+              let cursor = null;
+              let prState = null;
+              let isDraft = null;
+              let reviewDecision = null;
+              let checkState = null;
+
+              while (true) {
+                const result = await github.graphql(
+                  `
+                  query ReadyForHumanState(
+                    $owner: String!,
+                    $repo: String!,
+                    $number: Int!,
+                    $cursor: String
+                  ) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        state
+                        isDraft
+                        reviewDecision
+                        commits(last: 1) {
+                          nodes {
+                            commit {
+                              oid
+                              statusCheckRollup {
+                                state
+                              }
+                            }
+                          }
+                        }
+                        reviewThreads(first: 100, after: $cursor) {
+                          pageInfo {
+                            hasNextPage
+                            endCursor
+                          }
+                          nodes {
+                            isResolved
+                          }
+                        }
+                      }
+                    }
+                  }
+                  `,
+                  {
+                    owner,
+                    repo,
+                    number: prNumber,
+                    cursor,
+                  }
+                );
+
+                const pr = result.repository.pullRequest;
+                if (!pr) {
+                  return null;
+                }
+
+                prState = pr.state;
+                isDraft = pr.isDraft;
+                reviewDecision = pr.reviewDecision;
+                checkState =
+                  pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? null;
+
+                const threads = pr.reviewThreads.nodes || [];
+                unresolvedThreads += threads.filter((t) => !t.isResolved).length;
+
+                if (!pr.reviewThreads.pageInfo.hasNextPage) {
+                  break;
+                }
+                cursor = pr.reviewThreads.pageInfo.endCursor;
+              }
+
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner,
+                repo,
+                pull_number: prNumber,
+                per_page: 100,
+              });
+
+              const latestByReviewer = new Map();
+              for (const review of reviews) {
+                const login = review.user?.login;
+                if (!login || !review.submitted_at) {
+                  continue;
+                }
+                const prev = latestByReviewer.get(login);
+                if (
+                  !prev ||
+                  new Date(review.submitted_at).getTime() >
+                    new Date(prev.submitted_at).getTime()
+                ) {
+                  latestByReviewer.set(login, review);
+                }
+              }
+
+              const approvalCount = [...latestByReviewer.values()].filter(
+                (r) => r.state === "APPROVED"
+              ).length;
+
+              return {
+                prState,
+                isDraft,
+                reviewDecision,
+                checkState,
+                unresolvedThreads,
+                approvalCount,
+              };
+            }
+
+            async function hasLabel(prNumber) {
+              const labels = await github.paginate(github.rest.issues.listLabelsOnIssue, {
+                owner,
+                repo,
+                issue_number: prNumber,
+                per_page: 100,
+              });
+              return labels.some((l) => l.name === labelName);
+            }
+
+            async function addLabel(prNumber) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: prNumber,
+                labels: [labelName],
+              });
+            }
+
+            async function removeLabel(prNumber) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  name: labelName,
+                });
+              } catch (err) {
+                if (err.status !== 404) {
+                  throw err;
+                }
+              }
+            }
+
+            let prNumbers = [...new Set(extractPullNumbers(context.payload))];
+            if (prNumbers.length === 0) {
+              // Some events (schedule/manual) do not target a single PR; reconcile all open PRs.
+              prNumbers = [...new Set(await listOpenPullNumbers())];
+            }
+            if (prNumbers.length === 0) {
+              console.log("No PR associated with this event; skipping.");
+              return;
+            }
+
+            await ensureLabelExists();
+
+            for (const prNumber of prNumbers) {
+              const state = await getPrState(prNumber);
+              if (!state) {
+                console.log(`PR #${prNumber} not found; skipping.`);
+                continue;
+              }
+
+              const isOpen = state.prState === "OPEN";
+              const ciPassing = state.checkState === "SUCCESS";
+              const hasApproval = state.approvalCount >= 1;
+              const noUnresolvedThreads = state.unresolvedThreads === 0;
+              const noRequestedChanges = state.reviewDecision !== "CHANGES_REQUESTED";
+
+              const shouldLabel =
+                isOpen &&
+                !state.isDraft &&
+                ciPassing &&
+                hasApproval &&
+                noUnresolvedThreads &&
+                noRequestedChanges;
+
+              const currentlyLabeled = await hasLabel(prNumber);
+
+              console.log(
+                `PR #${prNumber}: isOpen=${isOpen}, draft=${state.isDraft}, ` +
+                  `checkState=${state.checkState}, approvals=${state.approvalCount}, ` +
+                  `reviewDecision=${state.reviewDecision}, unresolvedThreads=${state.unresolvedThreads}, ` +
+                  `currentlyLabeled=${currentlyLabeled}, shouldLabel=${shouldLabel}`
+              );
+
+              if (shouldLabel && !currentlyLabeled) {
+                await addLabel(prNumber);
+                console.log(`Added ${labelName} to PR #${prNumber}.`);
+              } else if (!shouldLabel && currentlyLabeled) {
+                await removeLabel(prNumber);
+                console.log(`Removed ${labelName} from PR #${prNumber}.`);
+              } else {
+                console.log(`No label change for PR #${prNumber}.`);
+              }
+            }

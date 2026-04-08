@@ -1,4 +1,4 @@
-import type { ConfigResponse, PipelinesResponse, StatsResponse, TracesResponse } from "./types";
+import type { ConfigResponse, StatsResponse, StatusResponse, TracesResponse } from "./types";
 
 async function get<T>(url: string): Promise<T | null> {
   try {
@@ -13,9 +13,9 @@ async function get<T>(url: string): Promise<T | null> {
 export type HistoryResponse = Record<string, [number, number][]>;
 
 export const api = {
-  pipelines: () => get<PipelinesResponse>("/api/pipelines"),
-  stats: () => get<StatsResponse>("/api/stats"),
-  config: () => get<ConfigResponse>("/api/config"),
-  history: () => get<HistoryResponse>("/api/history"),
-  traces: () => get<TracesResponse>("/api/traces"),
+  status: () => get<StatusResponse>("/admin/v1/status"),
+  stats: () => get<StatsResponse>("/admin/v1/stats"),
+  config: () => get<ConfigResponse>("/admin/v1/config"),
+  history: () => get<HistoryResponse>("/admin/v1/history"),
+  traces: () => get<TracesResponse>("/admin/v1/traces"),
 };

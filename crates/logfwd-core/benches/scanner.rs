@@ -228,12 +228,12 @@ fn arrow_json_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
 // sonic-rs baseline: spec-compliant SIMD JSON parser → Scanner
 // ===========================================================================
 
-fn sonic_rs_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
+fn sonic_rs_parse(data: &[u8], ndjson: &mut Vec<u8>) -> arrow::record_batch::RecordBatch {
     // Use sonic-rs to produce NDJSON, then feed through Scanner::scan_detached.
     // This gives a fair comparison: sonic-rs parses, Scanner builds Arrow arrays.
     use sonic_rs::{JsonContainerTrait, JsonNumberTrait, JsonValueTrait};
 
-    let mut ndjson = Vec::with_capacity(data.len());
+    ndjson.clear();
     for line in data.split(|&b| b == b'\n') {
         if line.is_empty() {
             continue;
@@ -250,7 +250,7 @@ fn sonic_rs_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
 
     let mut scanner = Scanner::new(ScanConfig::default());
     scanner
-        .scan_detached(bytes::Bytes::from(ndjson))
+        .scan_detached(bytes::Bytes::copy_from_slice(ndjson))
         .expect("bench: scan_detached failed")
 }
 
@@ -267,17 +267,19 @@ macro_rules! bench_scenario {
 
             group.bench_function("Scanner", |b| {
                 let mut scanner = Scanner::new($config());
+                let data_bytes = bytes::Bytes::from(data.clone());
                 b.iter(|| {
                     black_box(
                         scanner
-                            .scan_detached(bytes::Bytes::from(data.clone()))
+                            .scan_detached(data_bytes.clone())
                             .expect("bench: scan should not fail"),
                     )
                 })
             });
 
             group.bench_function("sonic-rs DOM", |b| {
-                b.iter(|| black_box(sonic_rs_parse(black_box(&data))))
+                let mut ndjson = Vec::with_capacity(data.len());
+                b.iter(|| black_box(sonic_rs_parse(black_box(&data), &mut ndjson)))
             });
 
             group.bench_function("arrow-json", |b| {

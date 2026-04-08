@@ -16,12 +16,14 @@ just install-tools
 ## Common commands
 
 ```bash
-just ci          # Run full CI suite (lint + test)
+just ci          # Fast CI tier: lint + test (default workspace, no DataFusion)
+just ci-all      # Full CI tier: lint + test across all workspace members
 just fmt         # Format code
 just clippy      # Run lints
 just test        # Run all tests
 just bench       # Run Criterion microbenchmarks
-just build       # Build release binary
+just build       # Build release binary (full package, includes DataFusion SQL)
+just build-dev-lite # Build dev-only fast binary (no DataFusion SQL)
 ```
 
 ## Project structure

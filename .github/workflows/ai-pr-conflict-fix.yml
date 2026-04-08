@@ -23,7 +23,7 @@ jobs:
       additional-instructions: |
         Work only on PR #${{ inputs.pr-number }}.
         If the PR has merge conflicts, resolve them by merging the latest
-        origin/master into the PR branch and push.
+        origin/main into the PR branch and push.
         If there are no merge conflicts anymore, post a short note and
         make no code changes.
     secrets:

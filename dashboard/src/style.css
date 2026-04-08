@@ -9,6 +9,10 @@
   --err: #ef4444;
   --purple: #a78bfa;
 
+  /* Chart colors — mirrored in lib/theme.ts for uPlot JS options */
+  --chart-axis: #94a3b8;
+  --chart-grid: #252d40;
+
   /* Text — all pass WCAG AA on --bg/#12161e backgrounds */
   --t1: #f1f5f9; /* primary: 13.5:1 on #0a0d12 */
   --t2: #cbd5e1; /* secondary: 9.8:1 */
@@ -76,6 +80,10 @@ main {
   letter-spacing: 1px;
   color: var(--t3);
   margin-bottom: 8px;
+}
+.heading-flex {
+  display: flex;
+  align-items: center;
 }
 
 /* === Health pill === */
@@ -214,6 +222,34 @@ main {
 .chart-card {
   background: #0c0f16;
 }
+.chart-container {
+  width: 100%;
+  min-height: 130px;
+  overflow: hidden;
+}
+.chart-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 130px;
+  color: var(--t4);
+  font-size: 11px;
+}
+
+/* === Shared badge styles === */
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+}
+.bottleneck-badge {
+  margin-left: 8px;
+}
+.bottleneck-output { color: #f87171; }
+.bottleneck-input  { color: #fb923c; }
+.bottleneck-transform,
+.bottleneck-scan   { color: #facc15; }
+.bottleneck-none   { color: #4ade80; }
 
 /* === Pipeline === */
 .pipe-flow {

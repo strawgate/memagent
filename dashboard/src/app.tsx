@@ -9,7 +9,7 @@ import { StatusBar } from "./components/StatusBar";
 import { fmt, fmtBytes, fmtBytesCompact, fmtCompact } from "./lib/format";
 import { RateTracker } from "./lib/rates";
 import { RingBuffer } from "./lib/ring";
-import type { PipelinesResponse, StatsResponse, TraceRecord } from "./types";
+import type { StatsResponse, StatusResponse, TraceRecord } from "./types";
 
 const POLL_OPTIONS = [
   { label: "500ms", ms: 500 },
@@ -150,7 +150,7 @@ const HISTORY_MAP: Record<string, { series: string; mode: "gauge" | "counter" }>
 
 export function App() {
   const [connected, setConnected] = useState(false);
-  const [pipes, setPipes] = useState<PipelinesResponse | null>(null);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [totalErrors, setTotalErrors] = useState(0);
@@ -249,26 +249,100 @@ export function App() {
         }
       }
 
+      // Batch rate (batches/min) from server history.
+      if (batchesHist && batchesHist.length >= 2) {
+        const batchS = series.find((s) => s.id === "batches");
+        if (batchS) {
+          const latestT = batchesHist[batchesHist.length - 1][0];
+          for (let i = 1; i < batchesHist.length; i++) {
+            const dt = batchesHist[i][0] - batchesHist[i - 1][0];
+            if (dt <= 0) continue;
+            const rate = ((batchesHist[i][1] - batchesHist[i - 1][1]) / dt) * 60; // batches/min
+            if (rate >= 0) batchS.ring.pushRaw(now - (latestT - batchesHist[i][0]) * 1000, rate);
+          }
+        }
+      }
+
+      // Backpressure stalls/sec from server history.
+      const stallsHist = hist.backpressure_stalls;
+      if (stallsHist && stallsHist.length >= 2) {
+        const stallS = series.find((s) => s.id === "stalls");
+        if (stallS) {
+          const latestT = stallsHist[stallsHist.length - 1][0];
+          for (let i = 1; i < stallsHist.length; i++) {
+            const dt = stallsHist[i][0] - stallsHist[i - 1][0];
+            if (dt <= 0) continue;
+            const rate = (stallsHist[i][1] - stallsHist[i - 1][1]) / dt; // stalls/sec
+            if (rate >= 0) stallS.ring.pushRaw(now - (latestT - stallsHist[i][0]) * 1000, rate);
+          }
+        }
+      }
+
       forceUpdate((n) => n + 1);
     });
   }, []);
 
   const poll = useCallback(async () => {
-    const [pipeData, statsData, tracesData] = await Promise.all([
-      api.pipelines(),
+    const [statusData, statsData, tracesData] = await Promise.all([
+      api.status(),
       api.stats(),
       api.traces(),
     ]);
-    if (tracesData) setTraces(tracesData.traces);
+    if (tracesData) {
+      setTraces((prev) => {
+        const incoming = tracesData.traces;
+        // Build next array keyed by trace_id, reusing previous objects when all
+        // render-affecting fields are unchanged to preserve referential stability.
+        const prevById = new Map(prev.map((t) => [t.trace_id, t]));
+        const next = incoming.map((t) => {
+          const p = prevById.get(t.trace_id);
+          if (
+            p &&
+            p.pipeline === t.pipeline &&
+            p.start_unix_ns === t.start_unix_ns &&
+            p.total_ns === t.total_ns &&
+            p.status === t.status &&
+            p.in_progress === t.in_progress &&
+            p.stage === t.stage &&
+            p.errors === t.errors &&
+            p.scan_ns === t.scan_ns &&
+            p.transform_ns === t.transform_ns &&
+            p.output_ns === t.output_ns &&
+            p.queue_wait_ns === t.queue_wait_ns &&
+            p.worker_id === t.worker_id &&
+            p.send_ns === t.send_ns &&
+            p.recv_ns === t.recv_ns &&
+            p.took_ms === t.took_ms &&
+            p.retries === t.retries &&
+            p.req_bytes === t.req_bytes &&
+            p.cmp_bytes === t.cmp_bytes &&
+            p.resp_bytes === t.resp_bytes &&
+            p.flush_reason === t.flush_reason &&
+            p.output_start_unix_ns === t.output_start_unix_ns &&
+            p.stage_start_unix_ns === t.stage_start_unix_ns &&
+            p.scan_rows === t.scan_rows &&
+            p.input_rows === t.input_rows &&
+            p.output_rows === t.output_rows &&
+            p.bytes_in === t.bytes_in
+          ) {
+            return p;
+          }
+          return t;
+        });
+        // Always return `next`: it preserves referential stability for unchanged
+        // objects (via prevById lookup) while also reflecting server-side reordering.
+        return next;
+      });
+    }
 
-    if (pipeData) {
+    if (statusData) {
       setConnected(true);
-      setPipes(pipeData);
+      setStatus(statusData);
 
       let tl = 0,
         tb = 0,
         te = 0;
-      for (const p of pipeData.pipelines) {
+      for (const p of statusData.pipelines) {
         tl += p.transform.lines_in;
         for (const i of p.inputs) tb += i.bytes_total;
         for (const o of p.outputs) te += o.errors;
@@ -294,6 +368,7 @@ export function App() {
       }
     } else {
       setConnected(false);
+      setStatus(null);
     }
 
     if (statsData) {
@@ -329,9 +404,9 @@ export function App() {
       // Batch latency: rolling average of total_ns from recent traces.
       // This gives true ms/batch rather than the cumulative-rate approximation.
       if (tracesData && tracesData.traces.length > 0) {
-        const done = tracesData.traces.filter((t) => !t.in_progress).slice(0, 50);
+        const done = tracesData.traces.filter((t) => !t.in_progress && Number(t.total_ns) > 0).slice(0, 50);
         if (done.length > 0) {
-          const avgMs = done.reduce((s, t) => s + t.total_ns, 0) / done.length / 1e6;
+          const avgMs = done.reduce((s, t) => s + (Number(t.total_ns ?? "0") || 0), 0) / done.length / 1e6;
           series[6].ring.push(avgMs);
           series[6].value =
             avgMs >= 1000 ? `${(avgMs / 1000).toFixed(1)}s` : `${avgMs.toFixed(0)}ms`;
@@ -388,8 +463,11 @@ export function App() {
     };
   }, [poll, pollMs]);
 
-  const version = pipes?.system?.version ?? "?";
-  const uptime = stats?.uptime_sec ?? pipes?.system?.uptime_seconds ?? 0;
+  const version = status?.system?.version ?? "?";
+  const uptime = stats?.uptime_sec ?? status?.system?.uptime_seconds ?? 0;
+  const componentHealth = status?.component_health.status ?? "failed";
+  const ready = status?.ready.status ?? "not_ready";
+  const statusReason = status?.ready.reason ?? status?.component_health.reason ?? "";
 
   // Stable references — series composition never changes, only data mutated in place.
   const pipelineSeries = useMemo(
@@ -408,6 +486,9 @@ export function App() {
     <>
       <StatusBar
         connected={connected}
+        componentHealth={componentHealth}
+        ready={ready}
+        statusReason={statusReason}
         totalErrors={totalErrors}
         version={version}
         uptime={uptime}
@@ -427,7 +508,7 @@ export function App() {
 
         <LogViewer />
 
-        {pipes?.pipelines.map((p) => (
+        {status?.pipelines.map((p) => (
           <PipelineView
             key={p.name}
             pipeline={p}

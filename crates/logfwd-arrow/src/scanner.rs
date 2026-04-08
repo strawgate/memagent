@@ -46,6 +46,10 @@ impl ScanBuilder for StreamingBuilder {
         self.append_float_by_idx(idx, v);
     }
     #[inline(always)]
+    fn append_bool_by_idx(&mut self, idx: usize, v: bool) {
+        self.append_bool_by_idx(idx, v);
+    }
+    #[inline(always)]
     fn append_null_by_idx(&mut self, idx: usize) {
         self.append_null_by_idx(idx);
     }
@@ -69,6 +73,7 @@ impl ScanBuilder for StreamingBuilder {
 pub struct Scanner {
     builder: StreamingBuilder,
     config: ScanConfig,
+    resource_attrs: Vec<(String, String)>,
 }
 
 impl Scanner {
@@ -77,6 +82,16 @@ impl Scanner {
         Scanner {
             builder: StreamingBuilder::new(config.keep_raw),
             config,
+            resource_attrs: Vec::new(),
+        }
+    }
+
+    /// Create a scanner that injects constant `_resource_*` columns per row.
+    pub fn with_resource_attrs(config: ScanConfig, resource_attrs: Vec<(String, String)>) -> Self {
+        Scanner {
+            builder: StreamingBuilder::new(config.keep_raw),
+            config,
+            resource_attrs,
         }
     }
     /// Scan an NDJSON buffer into a zero-copy `RecordBatch`.
@@ -91,6 +106,8 @@ impl Scanner {
             })?;
         }
         self.builder.begin_batch(buf.clone());
+        self.builder
+            .set_resource_attributes(self.resource_attrs.as_slice());
         scan_streaming(&buf, &self.config, &mut self.builder);
         self.builder.finish_batch()
     }
@@ -110,6 +127,8 @@ impl Scanner {
             })?;
         }
         self.builder.begin_batch(buf.clone());
+        self.builder
+            .set_resource_attributes(self.resource_attrs.as_slice());
         scan_streaming(&buf, &self.config, &mut self.builder);
         self.builder.finish_batch_detached()
     }
@@ -118,7 +137,7 @@ impl Scanner {
 #[cfg(test)]
 mod tests {
     use crate::scanner::Scanner;
-    use arrow::array::{Array, Int64Array, StringArray};
+    use arrow::array::{Array, BooleanArray, Int64Array, StringArray};
     use bytes::Bytes;
     use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 
@@ -264,6 +283,93 @@ mod tests {
             .unwrap();
         assert!(batch.column_by_name("_raw").is_some());
     }
+
+    #[test]
+    fn test_resource_columns_injected_detached() {
+        let input = br#"{"message":"a"}
+{"message":"b"}
+"#;
+        let scanner = Scanner::with_resource_attrs(
+            ScanConfig::default(),
+            vec![
+                ("service.name".to_string(), "checkout".to_string()),
+                ("k8s.namespace".to_string(), "prod".to_string()),
+            ],
+        );
+        let mut scanner = scanner;
+        let batch = scanner
+            .scan_detached(Bytes::from(input.to_vec()))
+            .expect("batch");
+
+        let service = batch
+            .column_by_name("_resource_service_name")
+            .expect("resource service col")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8");
+        assert_eq!(service.value(0), "checkout");
+        assert_eq!(service.value(1), "checkout");
+
+        let ns = batch
+            .column_by_name("_resource_k8s_namespace")
+            .expect("resource namespace col")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8");
+        assert_eq!(ns.value(0), "prod");
+        assert_eq!(ns.value(1), "prod");
+    }
+
+    #[test]
+    fn test_resource_columns_injected() {
+        // Mirrors test_resource_columns_injected_detached but uses scan()
+        // (StringViewArray) instead of scan_detached() (StringArray).
+        let input = br#"{"message":"a"}
+{"message":"b"}
+"#;
+        let scanner = Scanner::with_resource_attrs(
+            ScanConfig::default(),
+            vec![
+                ("service.name".to_string(), "checkout".to_string()),
+                ("k8s.namespace".to_string(), "prod".to_string()),
+            ],
+        );
+        let mut scanner = scanner;
+        let batch = scanner.scan(Bytes::from(input.to_vec())).expect("batch");
+
+        let service = batch
+            .column_by_name("_resource_service_name")
+            .expect("resource service col")
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("utf8view");
+        assert_eq!(service.value(0), "checkout");
+        assert_eq!(service.value(1), "checkout");
+
+        let ns = batch
+            .column_by_name("_resource_k8s_namespace")
+            .expect("resource namespace col")
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("utf8view");
+        assert_eq!(ns.value(0), "prod");
+        assert_eq!(ns.value(1), "prod");
+
+        // Verify that the original dotted key is stored in field metadata.
+        let schema = batch.schema();
+        let svc_field = schema
+            .field_with_name("_resource_service_name")
+            .expect("field exists");
+        assert_eq!(
+            svc_field
+                .metadata()
+                .get("logfwd.resource_key")
+                .map(String::as_str),
+            Some("service.name"),
+            "field metadata must preserve original dotted key"
+        );
+    }
+
     #[test]
     fn test_batch_reuse() {
         let mut s = default_scanner(4);
@@ -282,16 +388,26 @@ mod tests {
                 b"{\"a\":true,\"b\":false,\"c\":null}\n".to_vec(),
             ))
             .unwrap();
-        // Single-type string field: bare name
+        // Single-type bool field: bare name
         assert_eq!(
             batch
                 .column_by_name("a")
                 .unwrap()
                 .as_any()
-                .downcast_ref::<StringArray>()
+                .downcast_ref::<BooleanArray>()
                 .unwrap()
                 .value(0),
-            "true"
+            true
+        );
+        assert_eq!(
+            batch
+                .column_by_name("b")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .unwrap()
+                .value(0),
+            false
         );
     }
     #[test]
@@ -376,10 +492,10 @@ mod tests {
                 .column_by_name("ok")
                 .unwrap()
                 .as_any()
-                .downcast_ref::<StringArray>()
+                .downcast_ref::<BooleanArray>()
                 .unwrap()
                 .value(0),
-            "true"
+            true
         );
     }
     #[test]

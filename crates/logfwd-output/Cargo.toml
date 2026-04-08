@@ -12,8 +12,10 @@ doctest = false
 logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
+logfwd-otap-proto = { version = "0.1.0", path = "../logfwd-otap-proto" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 arrow = { workspace = true }
+prost = "0.14"
 itoa = "1"
 ryu = "1"
 libc = "0.2"
@@ -28,6 +30,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 httpdate = "1"
 flate2 = "1"
 tokio-stream = "0.1.18"
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 proptest = "1"
@@ -38,7 +41,6 @@ serde_json = "1.0.149"
 tiny_http = "0.12"
 memchr = "2"
 insta = "1"
-prost = "0.14"
 opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-messages"] }
 mockito = "1.7.2"
 
