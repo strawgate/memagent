@@ -469,7 +469,7 @@ impl Pipeline {
         })
     }
 
-    /// Replace the output sink with an async [`Sink`].
+    /// Replace the output sink with an async sink implementation.
     ///
     /// Wraps the sink in a single-worker pool via [`OnceAsyncFactory`].
     pub fn with_sink(mut self, sink: Box<dyn logfwd_output::Sink>) -> Self {

@@ -104,7 +104,7 @@ fn is_conflict_struct(fields: &Fields) -> bool {
 /// Replace every conflict struct column with a flat `Utf8` column of the same name.
 ///
 /// A struct column is a conflict struct iff all its child field names are in
-/// `{"int", "float", "str", "bool"}` (see [`is_conflict_struct`]).
+/// `{"int", "float", "str", "bool"}` (see `is_conflict_struct`).
 ///
 /// Batches with no conflict struct columns are returned unchanged (zero
 /// allocation). Any schema metadata is preserved.

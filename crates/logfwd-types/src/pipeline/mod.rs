@@ -8,11 +8,11 @@
 //!
 //! Two typestate machines, generic over checkpoint type `C`:
 //!
-//! - [`BatchTicket`]`<S, C>`: Per-batch lifecycle (Queued → Sending → Acked/Rejected).
+//! - `BatchTicket<S, C>`: Per-batch lifecycle (Queued → Sending → Acked/Rejected).
 //!   `#[must_use]` + self-consuming transitions prevent double-ack and silent drops.
-//!   Fields are private; only [`PipelineMachine`] can create tickets.
+//!   Fields are private; only `PipelineMachine` can create tickets.
 //!
-//! - [`PipelineMachine`]`<S, C>`: Pipeline lifecycle (Starting → Running → Draining → Stopped).
+//! - `PipelineMachine<S, C>`: Pipeline lifecycle (Starting → Running → Draining → Stopped).
 //!   Ordered ACK: committed checkpoint advances only when ALL prior batches
 //!   for a source are acked (Filebeat registrar pattern).
 //!

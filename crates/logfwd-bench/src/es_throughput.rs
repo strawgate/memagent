@@ -3,18 +3,18 @@
 //! Tests the full pipeline with configurable workers, batch size, and compression.
 //! Credentials are read from environment variables:
 //!
-//!   ES_URL        — base URL (e.g. https://my-cluster.es.us-east-1.aws.elastic.cloud)
+//!   ES_URL        — base URL (e.g. <https://my-cluster.es.us-east-1.aws.elastic.cloud>)
 //!   ES_ENDPOINT   — alias for ES_URL (legacy)
 //!   ES_API_KEY    — Elasticsearch API key (without the "ApiKey " prefix)
 //!   ES_INDEX      — target index base name (default: logfwd-bench)
 //!
 //! Usage:
-//!   ES_URL=https://... ES_API_KEY=... ./es-throughput [duration_secs] [workers] [batch_lines] [compress: 0|1] [indices: default 1] [request_mode: buffered|streaming]
+//!   `ES_URL=https://... ES_API_KEY=... ./es-throughput [duration_secs] [workers] [batch_lines] [compress: 0|1] [indices: default 1] [request_mode: buffered|streaming]`
 //!
 //! Examples:
-//!   ./es-throughput 60 16 5000 1 4 buffered   # 16 workers, gzip, 5k batch, 4 indices
-//!   ./es-throughput 30 4 5000 0 1 streaming   # 4 workers, streamed request body
-//!   ./es-throughput 30 1 1000 0               # baseline (single worker, buffered, no compress)
+//!   `./es-throughput 60 16 5000 1 4 buffered`   # 16 workers, gzip, 5k batch, 4 indices
+//!   `./es-throughput 30 4 5000 0 1 streaming`   # 4 workers, streamed request body
+//!   `./es-throughput 30 1 1000 0`               # baseline (single worker, buffered, no compress)
 
 use std::fmt::Write as FmtWrite;
 use std::sync::Arc;

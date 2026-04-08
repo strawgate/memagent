@@ -148,7 +148,7 @@ impl EnrichmentTable for HostInfoTable {
 /// Extracts Kubernetes metadata from CRI log file paths.
 ///
 /// CRI log path format:
-///   /var/log/pods/<namespace>_<pod-name>_<pod-uid>/<container>/0.log
+///   `/var/log/pods/<namespace>_<pod-name>_<pod-uid>/<container>/0.log`
 ///
 /// This is zero-cost enrichment — no K8s API calls needed.
 pub struct K8sPathTable {

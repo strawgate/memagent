@@ -702,7 +702,7 @@ impl AttrArray<'_> {
 
 /// Pre-resolved column roles and downcast arrays for one RecordBatch.
 ///
-/// Built once in [`encode_batch`] before the per-row loop to avoid
+/// Built once in `encode_batch` before the per-row loop to avoid
 /// re-scanning the schema and re-downcasting arrays on every row.
 struct BatchColumns<'a> {
     /// Downcast array for the timestamp column (e.g. "2024-01-15T10:30:00Z").

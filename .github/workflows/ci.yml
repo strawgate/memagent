@@ -159,6 +159,9 @@ jobs:
       - name: Actionlint
         run: ./actionlint
 
+      - name: Source file length guardrail
+        run: python3 scripts/check_max_source_lines.py
+
       # --- Expensive steps below — only reached if fast checks pass ---
 
       - uses: Swatinem/rust-cache@v2
@@ -172,6 +175,11 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -- -D warnings
+
+      - name: Rustdoc warnings check
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --document-private-items
 
       - name: Dependency audit (licenses / bans / advisories)
         run: cargo deny check

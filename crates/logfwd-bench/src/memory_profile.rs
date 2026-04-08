@@ -9,7 +9,7 @@
 //! - Throughput (lines/sec, MB/sec)
 //! - Whether anything leaks or grows unboundedly
 //!
-//! Run with: cargo run -p logfwd-bench --release --bin memory-profile [duration_secs]
+//! Run with: `cargo run -p logfwd-bench --release --bin memory-profile [duration_secs]`
 //!   Default duration: 300 seconds (5 minutes)
 //!
 //! Options:

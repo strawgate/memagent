@@ -327,7 +327,7 @@ impl Sink for StdoutSink {
 // StdoutSinkFactory
 // ---------------------------------------------------------------------------
 
-/// Factory that creates [`StdoutSink`] instances for the output worker pool.
+/// Factory that creates stdout sink instances for the output worker pool.
 ///
 /// Because stdout is a single shared resource, this factory is single-use:
 /// only one worker should write to stdout at a time.

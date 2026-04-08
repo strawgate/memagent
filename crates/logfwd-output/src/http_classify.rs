@@ -1,7 +1,7 @@
 //! Shared HTTP response classification for all HTTP-based output sinks.
 //!
 //! Provides [`classify_http_status`] which maps HTTP status codes to
-//! [`SendResult`](super::sink::SendResult) values, and [`parse_retry_after`]
+//! [`SendResult`] values, and [`parse_retry_after`]
 //! which handles both delta-seconds and HTTP-date `Retry-After` headers
 //! (RFC 9110 §10.2.3).
 
