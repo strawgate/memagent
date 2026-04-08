@@ -6,9 +6,6 @@ edition = "2021"
 [dependencies]
 aya = "0.13"
 pipe-capture-common = { path = "pipe-capture-common" }
-tokio = { version = "1", features = ["macros", "rt", "signal"] }
-log = "0.4"
-env_logger = "0.11"
 
 [workspace]
 members = ["pipe-capture-ebpf", "pipe-capture-common"]

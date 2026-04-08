@@ -38,6 +38,22 @@ async fn cleanup_test_index() {
         .await;
 }
 
+/// Create an empty test index so ES|QL returns a zero-row result instead of a
+/// missing-index error.
+async fn create_empty_test_index() {
+    let client = reqwest::Client::new();
+    let response = client
+        .put(format!("{}/{}", ES_ENDPOINT, TEST_INDEX))
+        .send()
+        .await
+        .expect("failed to create empty test index");
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        panic!("failed to create empty test index (HTTP {status}): {body}");
+    }
+}
+
 /// Query Elasticsearch using ES|QL and return Arrow IPC batches.
 async fn query_arrow(query: &str) -> std::io::Result<Vec<RecordBatch>> {
     let client = reqwest::Client::new();
@@ -185,13 +201,7 @@ fn test_query_arrow_all_documents() {
 
                 println!("Successfully queried {} rows via Arrow IPC", total_rows);
             }
-            Err(e) => {
-                eprintln!(
-                    "Query failed (ES|QL might not be enabled or version < 8.11): {}",
-                    e
-                );
-                // Don't fail the test - ES|QL might not be available
-            }
+            Err(e) => panic!("ES|QL Arrow query failed: {e}"),
         }
 
         cleanup_test_index().await;
@@ -247,12 +257,7 @@ fn test_query_arrow_with_filter() {
                     total_rows
                 );
             }
-            Err(e) => {
-                eprintln!(
-                    "Query failed (ES|QL might not be enabled or version < 8.11): {}",
-                    e
-                );
-            }
+            Err(e) => panic!("ES|QL Arrow filter query failed: {e}"),
         }
 
         cleanup_test_index().await;
@@ -316,12 +321,7 @@ fn test_query_arrow_with_projection() {
 
                 println!("Successfully projected 2 columns via Arrow IPC");
             }
-            Err(e) => {
-                eprintln!(
-                    "Query failed (ES|QL might not be enabled or version < 8.11): {}",
-                    e
-                );
-            }
+            Err(e) => panic!("ES|QL Arrow projection query failed: {e}"),
         }
 
         cleanup_test_index().await;
@@ -342,21 +342,21 @@ fn test_query_arrow_empty_result() {
         }
 
         cleanup_test_index().await;
+        create_empty_test_index().await;
 
-        // Query non-existent index (should return empty or error gracefully)
+        // Query an existing but empty index to verify the zero-row Arrow path.
         let query = format!("FROM {} | LIMIT 100", TEST_INDEX);
         let result = query_arrow(&query).await;
 
         match result {
             Ok(batches) => {
                 let total_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
-                assert_eq!(total_rows, 0, "expected 0 rows from non-existent index");
+                assert_eq!(total_rows, 0, "expected 0 rows from empty index");
                 println!("Empty result handled correctly");
             }
-            Err(e) => {
-                // Error is acceptable for non-existent index
-                println!("Empty result error handled: {}", e);
-            }
+            Err(e) => panic!("empty-index ES|QL query should return zero rows, got error: {e}"),
         }
+
+        cleanup_test_index().await;
     });
 }

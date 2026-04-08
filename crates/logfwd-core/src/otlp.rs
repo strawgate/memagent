@@ -240,7 +240,10 @@ pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'stat
         2 => {
             // Length-delimited.
             let (len, new_pos) = decode_varint(buf, pos)?;
-            let end = new_pos + len as usize;
+            let len_usize = usize::try_from(len).map_err(|_| "skip: length overflow")?;
+            let end = new_pos
+                .checked_add(len_usize)
+                .ok_or("skip: length-delimited overflow")?;
             if end > buf.len() {
                 return Err("skip: length-delimited overflow");
             }
@@ -399,6 +402,10 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         return None;
     }
 
+    if hour > 23 || min > 59 || sec > 60 {
+        return None;
+    }
+
     // Reject years that would overflow u64 nanos (year > ~584 from epoch).
     // Year 2554 can exceed u64::MAX nanos; 2553-12-31T23:59:59.999999999Z fits.
     if year > 2553 {
@@ -410,8 +417,9 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         return None;
     }
 
-    let mut nanos = (days as u64) * 86400 + hour * 3600 + min * 60 + sec;
-    nanos *= 1_000_000_000;
+    // Parse timezone designator: 'Z' or ±HH:MM.
+    let mut tz_start = 19usize;
+    let mut frac_nanos = 0u64;
 
     // Parse fractional seconds if present.
     if ts.len() > 19 && ts[19] == b'.' {
@@ -430,10 +438,55 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
             for _ in frac_digits..9 {
                 frac_val *= 10;
             }
-            nanos += frac_val;
+            frac_nanos = frac_val;
         }
+        tz_start = frac_end;
     }
 
+    if tz_start >= ts.len() {
+        return None;
+    }
+
+    let tz_offset_secs: i64 = match ts[tz_start] {
+        b'Z' | b'z' if tz_start + 1 == ts.len() => 0,
+        b'+' | b'-' if tz_start + 6 == ts.len() => {
+            if ts[tz_start + 3] != b':' {
+                return None;
+            }
+            // Validate that timezone digits are actually ASCII digits before
+            // calling parse_2digits, which silently returns 0 for non-digits
+            // and would treat garbage as +00:00. (#1467)
+            if !ts[tz_start + 1].is_ascii_digit()
+                || !ts[tz_start + 2].is_ascii_digit()
+                || !ts[tz_start + 4].is_ascii_digit()
+                || !ts[tz_start + 5].is_ascii_digit()
+            {
+                return None;
+            }
+            let tz_h = parse_2digits(ts, tz_start + 1) as i64;
+            let tz_m = parse_2digits(ts, tz_start + 4) as i64;
+            if tz_h >= 24 || tz_m >= 60 {
+                return None;
+            }
+            let sign = if ts[tz_start] == b'-' { -1 } else { 1 };
+            sign * (tz_h * 3600 + tz_m * 60)
+        }
+        _ => return None,
+    };
+
+    let total_secs = (days as i64)
+        .checked_mul(86_400)?
+        .checked_add(hour as i64 * 3600)?
+        .checked_add(min as i64 * 60)?
+        .checked_add(sec as i64)?
+        .checked_sub(tz_offset_secs)?;
+    if total_secs < 0 {
+        return None;
+    }
+
+    let nanos = (total_secs as u64)
+        .checked_mul(1_000_000_000)?
+        .checked_add(frac_nanos)?;
     Some(nanos)
 }
 
@@ -501,6 +554,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn skip_field_length_overflow_rejected() {
+        // wire_type 2 (length-delimited) with a varint that encodes a length
+        // large enough that new_pos + len wraps usize — must return Err, not Ok.
+        use alloc::vec;
+        let mut buf = vec![0u8; 16];
+        // Encode varint for usize::MAX - 1 at position 0.
+        let big: u64 = (usize::MAX as u64) - 1;
+        let mut tmp = Vec::new();
+        encode_varint(&mut tmp, big);
+        buf[..tmp.len()].copy_from_slice(&tmp);
+        // new_pos = tmp.len() (~10); len = usize::MAX-1 → overflows
+        let result = skip_field(&buf, 2, 0);
+        assert!(result.is_err(), "expected overflow error, got {:?}", result);
+    }
+
+    #[test]
     fn test_parse_timestamp() {
         let ts = b"2024-01-15T10:30:00Z";
         let nanos = parse_timestamp_nanos(ts).unwrap();
@@ -521,6 +590,24 @@ mod tests {
         let ts = b"2024-01-15T10:30:00.123456789Z";
         let nanos = parse_timestamp_nanos(ts).unwrap();
         assert_eq!(nanos, 1_705_314_600_123_456_789);
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_timezone_offset() {
+        let plus = b"2024-01-15T10:30:00+02:30";
+        let minus = b"2024-01-15T10:30:00-02:30";
+        assert_eq!(parse_timestamp_nanos(plus), Some(1_705_305_600_000_000_000));
+        assert_eq!(
+            parse_timestamp_nanos(minus),
+            Some(1_705_323_600_000_000_000)
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_rejects_invalid_timezone_suffix() {
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+0230"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+02:30Z"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00"), None);
     }
 
     #[test]
@@ -636,10 +723,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_timestamp_rejects_non_digit_timezone() {
+        // Regression: non-digit bytes in timezone offset must be rejected (#1467).
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+0a:30"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+02:3x"), None);
+        assert_eq!(parse_timestamp_nanos(b"2024-01-15T10:30:00+ab:cd"), None);
+        // Valid offsets should still work.
+        assert!(parse_timestamp_nanos(b"2024-01-15T10:30:00+05:30").is_some());
+        assert!(parse_timestamp_nanos(b"2024-01-15T10:30:00-08:00").is_some());
+    }
+
+    #[test]
     fn parse_timestamp_invalid_returns_zero() {
         assert_eq!(parse_timestamp_nanos(b"not a timestamp"), None);
         assert_eq!(parse_timestamp_nanos(b""), None);
         assert_eq!(parse_timestamp_nanos(b"2024"), None);
+    }
+
+    #[test]
+    fn test_parse_timestamp_nanos_invalid_time() {
+        // Bug #1047: Invalid time of day should return None
+        assert_eq!(parse_timestamp_nanos(b"2024-01-01T99:99:99Z"), None);
+        // Invalid hour
+        assert_eq!(parse_timestamp_nanos(b"2024-01-01T24:00:00Z"), None);
+        // Invalid minute
+        assert_eq!(parse_timestamp_nanos(b"2024-01-01T23:60:00Z"), None);
+        // Invalid second (leap second 60 is allowed, 61 is not)
+        assert_eq!(parse_timestamp_nanos(b"2024-01-01T23:59:61Z"), None);
     }
 
     #[test]
@@ -1111,13 +1221,22 @@ mod verification {
     /// 1. buf.len() == predicted tag_len + val_len
     /// 2. Decoding buf gives back the original field_number (wire_type=0) and value
     /// 3. Both extremes of the constrained field-number range are reachable
+    ///
+    /// field_number <= 16 keeps the tag varint to 1 byte for most values
+    /// while still exercising multi-byte tags (field 16 → tag byte = 128,
+    /// which is 2-byte varint). Previous range <= 1000 caused SAT solver
+    /// timeouts on CI runners (~60 min) because the two decode loops with
+    /// full u64 value create a very large symbolic problem. The 1–16 range
+    /// covers 1-byte and 2-byte tag encodings, which is the interesting
+    /// boundary. Value remains fully symbolic (u64) to verify all 10 varint
+    /// bytes.
     #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(12)]
     fn verify_encode_varint_field() {
         let field_number: u32 = kani::any();
         let value: u64 = kani::any();
-        kani::assume(field_number > 0 && field_number <= 1000);
+        kani::assume(field_number > 0 && field_number <= 16);
 
         let mut buf = Vec::with_capacity(20); // tag max 5 bytes + value max 10 bytes + margin
         encode_varint_field(&mut buf, field_number, value);
@@ -1164,7 +1283,7 @@ mod verification {
         // Property 3: non-vacuity — confirm both extremes of the assumed range
         kani::cover!(field_number == 1 && value == 0, "min field, zero value");
         kani::cover!(
-            field_number == 1000 && value == u64::MAX,
+            field_number == 16 && value == u64::MAX,
             "max field, max value"
         );
     }

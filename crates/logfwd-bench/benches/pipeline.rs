@@ -32,9 +32,11 @@ fn bench_scanner(c: &mut Criterion) {
             let data_bytes = bytes::Bytes::from(data.clone());
             let mut scanner = Scanner::new(ScanConfig::default());
             b.iter(|| {
-                scanner
-                    .scan_detached(data_bytes.clone())
-                    .expect("bench: scan should not fail")
+                std::hint::black_box(
+                    scanner
+                        .scan_detached(data_bytes.clone())
+                        .expect("bench: scan should not fail"),
+                )
             });
         });
 
@@ -62,9 +64,11 @@ fn bench_scanner(c: &mut Criterion) {
             };
             let mut scanner = Scanner::new(config);
             b.iter(|| {
-                scanner
-                    .scan_detached(data_bytes.clone())
-                    .expect("bench: scan should not fail")
+                std::hint::black_box(
+                    scanner
+                        .scan_detached(data_bytes.clone())
+                        .expect("bench: scan should not fail"),
+                )
             });
         });
     }
@@ -125,7 +129,7 @@ fn bench_cri(c: &mut Criterion) {
                     }
                     start = end + 1;
                 }
-                std::hint::black_box(json_buf.len())
+                std::hint::black_box(json_buf.as_ptr());
             });
         });
     }
@@ -148,7 +152,7 @@ fn bench_transform(c: &mut Criterion) {
     let batch = scanner
         .scan_detached(bytes::Bytes::from(data.clone()))
         .expect("bench: scan should not fail");
-    group.throughput(Throughput::Elements(n as u64));
+    group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("select_star", |b| {
         let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
         b.iter(|| std::hint::black_box(transform.execute_blocking(batch.clone()).unwrap()));
@@ -228,7 +232,7 @@ fn bench_output(c: &mut Criterion) {
     let meta = generators::make_metadata();
 
     // NullSink (measures overhead of scan + batch creation only)
-    group.throughput(Throughput::Elements(n as u64));
+    group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_function("null_sink", |b| {
         let mut sink = NullSink;
         b.iter(|| std::hint::black_box(sink.send_batch(&batch, &meta).unwrap()));
@@ -245,7 +249,7 @@ fn bench_output(c: &mut Criterion) {
                     .expect("JSON serialization should not fail");
                 buf.push(b'\n');
             }
-            std::hint::black_box(buf.len());
+            std::hint::black_box(&buf);
         });
     });
 
@@ -265,7 +269,7 @@ fn bench_end_to_end(c: &mut Criterion) {
     let meta = generators::make_metadata();
 
     // Full pipeline: scan → SELECT * → capture sink
-    group.throughput(Throughput::Elements(n as u64));
+    group.throughput(Throughput::Bytes(data.len() as u64));
     let data_bytes = bytes::Bytes::from(data.clone());
     group.bench_function("scan_passthrough_capture", |b| {
         let mut scanner = Scanner::new(ScanConfig::default());
@@ -348,7 +352,7 @@ fn bench_elasticsearch_serialize(c: &mut Criterion) {
             .expect("bench: scan should not fail");
         let meta = generators::make_metadata();
 
-        group.throughput(Throughput::Elements(n as u64));
+        group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_with_input(
             BenchmarkId::new("serialize_batch", n),
             &batch,
@@ -359,7 +363,7 @@ fn bench_elasticsearch_serialize(c: &mut Criterion) {
                     // the buffer does not grow unboundedly across iterations.
                     sink.serialize_batch(batch, &meta)
                         .expect("bench: serialize should not fail");
-                    std::hint::black_box(sink.serialized_len());
+                    std::hint::black_box(&sink);
                 });
             },
         );

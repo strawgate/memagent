@@ -23,7 +23,7 @@ pub struct PipeWriteEvent {
     pub captured_len: u32,
     /// 1 = stdout (fd 1), 2 = stderr (fd 2), 0 = other pipe.
     pub stream: u8,
-    pub _pad: [u8; 3],
+    pub pad: [u8; 3],
     /// The captured bytes from the write buffer.
     pub data: [u8; MAX_CAPTURE_BYTES],
 }

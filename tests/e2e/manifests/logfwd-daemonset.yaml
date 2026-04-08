@@ -26,7 +26,7 @@ spec:
         - name: logfwd
           image: logfwd:e2e
           imagePullPolicy: IfNotPresent
-          args: ["--config", "/etc/logfwd/config.yaml"]
+          args: ["run", "--config", "/etc/logfwd/config.yaml"]
           securityContext:
             runAsNonRoot: false
             runAsUser: 0
@@ -47,7 +47,7 @@ spec:
               name: diagnostics
           livenessProbe:
             httpGet:
-              path: /health
+              path: /live
               port: diagnostics
             initialDelaySeconds: 5
             periodSeconds: 15
@@ -63,7 +63,7 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /health
+              path: /live
               port: diagnostics
             initialDelaySeconds: 2
             periodSeconds: 5

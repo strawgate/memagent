@@ -2,7 +2,18 @@
 # Install: cargo install just
 # Usage:  just --list
 
-# Default recipe: run all checks (same as CI)
+# Default recipe: run quick CI checks (default-members path).
+# Use `just ci-all` for full workspace CI checks (includes datafusion).
+
+# Limit all parallelism to 2 vCPU to avoid starving other processes.
+# This caps cargo compilation, test execution, rayon workers, and any Tokio
+# runtime that reads TOKIO_WORKER_THREADS (including Pipeline::run()).
+# Override with: JOBS=8 just test
+export CARGO_BUILD_JOBS := env("JOBS", "2")
+export RUST_TEST_THREADS := env("JOBS", "2")
+export NEXTEST_TEST_THREADS := env("JOBS", "2")
+export TOKIO_WORKER_THREADS := env("JOBS", "2")
+export RAYON_NUM_THREADS := env("JOBS", "2")
 default: ci
 
 # Format all Rust code
@@ -13,28 +24,49 @@ fmt:
 fmt-check:
     cargo fmt --check
 
-# Run clippy lints
+# Clippy — default-members only (skips datafusion, ~30s)
 clippy:
     cargo clippy -- -D warnings
 
-# Run all tests
+# Clippy — full workspace including datafusion (~3min, CI uses this)
+clippy-all:
+    cargo clippy --workspace -- -D warnings
+
+# Tests — default-members only (skips datafusion)
 test:
     cargo nextest run --profile ci
 
-# Run Kani formal verification proofs (logfwd-core only)
+# Tests — full workspace (CI uses this)
+test-all:
+    cargo nextest run --workspace --profile ci
+
+# Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:
-    RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
+    just kani-required
 
-# Run all tests with nextest (parallel, faster output)
-nextest:
-    cargo nextest run
+# Run the required Kani crate set enforced by CI guardrails.
+kani-required:
+    RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
+    RUSTC_WRAPPER="" cargo kani -p logfwd-arrow -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
+    RUSTC_WRAPPER="" cargo kani -p logfwd-io -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
+    RUSTC_WRAPPER="" cargo kani -p logfwd-output -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
 
-# Lint everything: format, clippy, TOML, deny (matches CI Lint job)
-lint: fmt-check clippy toml-check deny
+# Validate the non-core Kani boundary contract.
+kani-boundary:
+    python3 scripts/verify_kani_boundary_contract.py
 
-# Full CI suite: lint + test (run before pushing)
+# Lint — fast (default-members, skips datafusion)
+lint: fmt-check clippy toml-check
+
+# Lint — full workspace (CI uses this)
+lint-all: fmt-check kani-boundary clippy-all toml-check deny
+
+# Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test
+
+# Full CI — everything including datafusion (run before pushing)
+ci-all: lint-all test-all
 
 # Check TOML formatting (Cargo.toml, etc.)
 toml-check:
@@ -62,9 +94,14 @@ test-extended:
     cargo nextest run --profile ci --run-ignored ignored-only
     cargo test -p logfwd --features turmoil --test turmoil_sim
 
-# Build release binary
+# Build release binary (full package, includes DataFusion SQL)
 build:
-    cargo build --release
+    cargo build --release -p logfwd
+
+# Build a fast local dev binary without DataFusion SQL.
+# Useful for tighter compile/edit loops; this is NOT the release artifact.
+build-dev-lite:
+    cargo build --release -p logfwd --no-default-features
 
 # ---------------------------------------------------------------------------
 # End-to-end pipeline benchmarks (bench/scenarios/*.yaml)
@@ -76,10 +113,10 @@ _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
     #!/usr/bin/env bash
     set -euo pipefail
     LOGFWD=./target/release/logfwd
-    $LOGFWD --config {{config}} &
+    $LOGFWD run --config {{config}} &
     PID=$!
     sleep {{seconds}}
-    STATS=$(curl -s {{diag}}/api/stats 2>/dev/null || echo '{}')
+    STATS=$(curl -s {{diag}}/admin/v1/stats 2>/dev/null || echo '{}')
     kill $PID 2>/dev/null; wait $PID 2>/dev/null || true
     echo "$STATS" | python3 -c "
     import sys,json; d=json.load(sys.stdin)
@@ -95,7 +132,7 @@ _bench-pair name rx_config tx_config seconds="10":
     #!/usr/bin/env bash
     set -euo pipefail
     LOGFWD=./target/release/logfwd
-    $LOGFWD --config {{rx_config}} &
+    $LOGFWD run --config {{rx_config}} &
     RX=$!;
 
     # Poll /ready until the diagnostics HTTP server is up (503 → 200).
@@ -120,9 +157,9 @@ _bench-pair name rx_config tx_config seconds="10":
     # Give run_async() time to bind receiver sockets after /ready returns.
     sleep 1
 
-    $LOGFWD --config {{tx_config}} &
+    $LOGFWD run --config {{tx_config}} &
     TX=$!; sleep {{seconds}}
-    STATS=$(curl -s http://127.0.0.1:9091/api/stats 2>/dev/null || echo '{}')
+    STATS=$(curl -s http://127.0.0.1:9091/admin/v1/stats 2>/dev/null || echo '{}')
     kill $TX $RX 2>/dev/null; wait $TX $RX 2>/dev/null || true
     echo "$STATS" | python3 -c "
     import sys,json; d=json.load(sys.stdin)
@@ -299,7 +336,7 @@ profile-otlp-local lines="500000" seconds="6":
     cp target/release/logfwd "${ROOT}/bin/logfwd-prof"
 
     echo "==> Generate test data ({{lines}} lines)"
-    "${ROOT}/bin/logfwd-prof" --generate-json "{{lines}}" "${ROOT}/logs.json"
+    "${ROOT}/bin/logfwd-prof" generate-json "{{lines}}" "${ROOT}/logs.json"
 
     printf '%s\n' \
       "input:" \
@@ -316,7 +353,7 @@ profile-otlp-local lines="500000" seconds="6":
       > "${ROOT}/config.yaml"
 
     echo "==> Start blackhole on ${PORT}"
-    "${ROOT}/bin/logfwd-prof" --blackhole "127.0.0.1:${PORT}" > "${ROOT}/blackhole.log" 2>&1 &
+    "${ROOT}/bin/logfwd-prof" blackhole "127.0.0.1:${PORT}" > "${ROOT}/blackhole.log" 2>&1 &
     BLACKHOLE_PID=$!
     cleanup() {
         kill -TERM "${BLACKHOLE_PID}" 2>/dev/null || true
@@ -325,7 +362,7 @@ profile-otlp-local lines="500000" seconds="6":
 
     echo "==> Run profiled pipeline for {{seconds}}s"
     pushd "${ROOT}" >/dev/null
-    "${ROOT}/bin/logfwd-prof" --config "${ROOT}/config.yaml" > pipeline.log 2>&1 &
+    "${ROOT}/bin/logfwd-prof" run --config "${ROOT}/config.yaml" > pipeline.log 2>&1 &
     PIPELINE_PID=$!
     sleep "{{seconds}}"
     kill -TERM "${PIPELINE_PID}"
@@ -375,7 +412,7 @@ install-hooks:
     set -euo pipefail
     HOOKS_DIR=$(git rev-parse --git-common-dir)/hooks
     mkdir -p "$HOOKS_DIR"
-    printf '#!/bin/sh\nset -e\nRUSTC_WRAPPER="" cargo fmt --check\nRUSTC_WRAPPER="" cargo clippy -- -D warnings\nRUSTC_WRAPPER="" cargo check --all-targets\n' \
+    printf '#!/bin/sh\nset -e\njust fmt-check\njust clippy\njust check\n' \
         > "$HOOKS_DIR/pre-commit"
     chmod +x "$HOOKS_DIR/pre-commit"
     echo "Pre-commit hook installed ($HOOKS_DIR/pre-commit)"

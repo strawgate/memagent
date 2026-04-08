@@ -177,16 +177,14 @@ fn worker_panic_does_not_block_drain() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Rejected batch checkpoint behavior
+// Test 3: Explicit permanent reject checkpoint behavior
 // ---------------------------------------------------------------------------
 //
-// Bug hypothesis: `record_ack_and_advance` treats reject identically to
-// ack — checkpoint advances past rejected data. If data at offset
-// 1000-2000 is rejected (NOT delivered), the checkpoint advances to 2000,
-// and on restart that data is permanently skipped.
+// Contract: explicit permanent rejects still advance checkpoints. If a sink
+// returns a true non-retriable reject, replaying the same bytes forever would
+// create an infinite loop.
 //
-// This test DOCUMENTS the current behavior — whether reject advances the
-// checkpoint or not.
+// This test documents the intended behavior for explicit permanent rejects.
 
 #[test]
 fn rejected_batch_checkpoint_behavior() {
@@ -233,34 +231,14 @@ fn rejected_batch_checkpoint_behavior() {
     // Subsequent batches succeed.
     eprintln!("rejected_batch test: {delivered} rows delivered, {calls} send_batch calls");
 
-    // DOCUMENT: does the checkpoint advance past the rejected batch?
+    // DOCUMENT: explicit permanent rejects still advance the checkpoint.
     // In pipeline.rs `ack_all_tickets`, reject calls `ticket.reject()` which
     // still produces an AckReceipt that feeds into `record_ack_and_advance`.
-    // The machine treats reject and ack identically for checkpoint advancement.
-    //
-    // If durable offset > 0, the checkpoint advanced past SOME data.
-    // The question is whether it advanced past the rejected batch specifically.
     let durable = ckpt_handle.durable_offset(1);
     let updates = ckpt_handle.update_count(1);
 
     eprintln!("rejected_batch test: durable offset = {durable:?}, checkpoint updates = {updates}");
 
-    // CONFIRMED BUG / DESIGN DECISION: The checkpoint advances past rejected
-    // (undelivered) data. With default batch_target_bytes (64KB), all 20 lines
-    // fit into a single batch. That batch is rejected (0 rows delivered), yet
-    // the checkpoint advances to offset 520 (past all 20 lines).
-    //
-    // In `ack_all_tickets`, both `ticket.ack()` and `ticket.reject()` produce
-    // AckReceipts that feed into `record_ack_and_advance`. The machine treats
-    // them identically — checkpoint advances past rejected data.
-    //
-    // On restart, this data would be permanently skipped.
-    //
-    // Whether this is a bug depends on the rejection reason:
-    //   - Server 400 (bad data): advancing is correct (retry would fail again)
-    //   - Server 429 (rate limit): should NOT reject, should RetryAfter
-    //   - Transient server error: should NOT reject, should IO error + retry
-    //
     // All 20 lines fit in 1 batch (64KB target). That batch is rejected.
     assert_eq!(
         delivered, 0,
@@ -271,13 +249,9 @@ fn rejected_batch_checkpoint_behavior() {
         "expected exactly 1 send_batch call (1 batch, rejected)"
     );
 
-    // CONFIRMED BUG (issue #1001): checkpoint advances past rejected data.
-    // The PipelineMachine treats reject() identically to ack() for checkpoint
-    // advancement. On restart, rejected data is permanently skipped.
     assert!(
         durable.is_some() && durable.unwrap() > 0,
-        "CONFIRMED: checkpoint MUST advance past rejected data (current behavior). \
-         If this assertion fails, someone fixed issue #1001 — update this test. \
+        "permanent rejects must still advance checkpoint progress; \
          durable={durable:?}"
     );
 
@@ -286,7 +260,82 @@ fn rejected_batch_checkpoint_behavior() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: RetryAfter respects server-specified backoff timing
+// Test 4: Retry exhaustion must not advance checkpoints
+// ---------------------------------------------------------------------------
+//
+// Contract: retry/control-plane failures should hold checkpoint progress.
+// The current runtime does not retain enough payload state to retry these
+// batches in-process, so the conservative behavior is to leave them
+// unresolved and rely on replay after restart.
+
+#[test]
+fn retry_exhausted_does_not_advance_checkpoint() {
+    let mut sim = super::build_sim(120, 1);
+
+    let factory = Arc::new(InstrumentedSinkFactory::new(vec![vec![
+        FailureAction::IoError(std::io::ErrorKind::TimedOut),
+        FailureAction::IoError(std::io::ErrorKind::TimedOut),
+        FailureAction::IoError(std::io::ErrorKind::TimedOut),
+        FailureAction::IoError(std::io::ErrorKind::TimedOut),
+    ]]));
+    let delivered_counter = factory.delivered_counter();
+    let call_counter = factory.call_counter();
+
+    let (store, ckpt_handle) = ObservableCheckpointStore::new();
+
+    sim.client("pipeline", async move {
+        let lines = generate_json_lines(20);
+        let input = ChannelInputSource::new("test", SourceId(1), lines);
+
+        let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
+        pipeline.set_batch_timeout(Duration::from_millis(20));
+        pipeline.set_checkpoint_flush_interval(Duration::from_millis(100));
+        let mut pipeline = pipeline
+            .with_input("test", Box::new(input))
+            .with_checkpoint_store(Box::new(store));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            sd.cancel();
+        });
+
+        pipeline.run_async(&shutdown).await.unwrap();
+        Ok(())
+    });
+
+    sim.run().unwrap();
+
+    let delivered = delivered_counter.load(Ordering::Relaxed);
+    let calls = call_counter.load(Ordering::Relaxed);
+    let durable = ckpt_handle.durable_offset(1);
+    let updates = ckpt_handle.update_count(1);
+
+    eprintln!(
+        "retry_exhausted test: delivered={delivered} calls={calls} durable={durable:?} updates={updates}"
+    );
+
+    assert_eq!(
+        delivered, 0,
+        "expected no rows delivered after retry exhaustion"
+    );
+    assert_eq!(
+        calls, 4,
+        "expected 1 initial attempt + 3 retries before RetryExhausted"
+    );
+    assert!(
+        durable.is_none(),
+        "retry exhaustion must not advance checkpoint progress; durable={durable:?}"
+    );
+    assert_eq!(
+        updates, 0,
+        "retry exhaustion must not write checkpoint updates"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: RetryAfter respects server-specified backoff timing
 // ---------------------------------------------------------------------------
 //
 // Bug hypothesis: `process_item` resets `delay = Duration::from_millis(100)`

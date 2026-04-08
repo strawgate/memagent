@@ -15,8 +15,8 @@
  *     machine is Stopped (no silent drops during normal operation).
  *   CheckpointNeverAheadOfFlushed: the committed checkpoint for a
  *     source never exceeds what has actually been flushed to output.
- *   RejectAdvancesCheckpoint: transform errors advance the checkpoint
- *     to prevent infinite retry loops on restart.
+ *   RejectAdvancesCheckpoint: explicit permanent rejects advance the
+ *     checkpoint to prevent infinite retry loops on restart.
  *   MonotonicCheckpoints: checkpoints never decrease.
  *
  * What this spec does NOT model:
@@ -185,9 +185,9 @@ AckBatch ==
                    next_batch_id, flushed, flushed_total, phase,
                    done_producing>>
 
-\* Transform or output rejects the batch (permanent error).
+\* Transform or output rejects the batch (explicit permanent error).
 \* Checkpoint STILL advances — design decision from DESIGN.md:
-\* "Rejected batches advance the checkpoint."
+\* "Explicit permanent rejects advance the checkpoint."
 RejectBatch ==
     /\ in_flight_id > 0
     /\ acked_total' = acked_total + 1
@@ -275,7 +275,7 @@ MonotonicCheckpoints ==
 SingleInFlight ==
     in_flight_id \in 0..next_batch_id
 
-\* Reject advances checkpoint (same as ack — design decision).
+\* Explicit permanent reject advances checkpoint (same as ack — design decision).
 \* This is modeled by RejectBatch having the same committed update as AckBatch.
 \* Verified structurally: RejectBatch and AckBatch have identical committed' assignments.
 

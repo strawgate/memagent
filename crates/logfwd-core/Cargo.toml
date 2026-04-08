@@ -9,10 +9,8 @@ publish = false
 doctest = false
 
 [dependencies]
-logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 memchr = { version = "2", default-features = false }
 wide = { version = "1.2.0", default-features = false }
-thiserror = { workspace = true, default-features = false }
 
 [dev-dependencies]
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }

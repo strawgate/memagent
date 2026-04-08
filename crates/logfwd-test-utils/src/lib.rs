@@ -23,6 +23,20 @@ pub fn proptest_cases() -> u32 {
         .unwrap_or(256)
 }
 
+/// Return the number of proptest cases for expensive state-machine tests.
+///
+/// These tests exercise real file IO, fsyncs, restarts, and replay logic, so
+/// the generic `PROPTEST_CASES` default of 256 is too slow for normal PR runs.
+///
+/// Override with `LOGFWD_PROPTEST_STATE_MACHINE_CASES` when you want deeper coverage.
+/// If that env var is unset, we cap the general proptest budget at 16 cases.
+pub fn state_machine_proptest_cases() -> u32 {
+    std::env::var("LOGFWD_PROPTEST_STATE_MACHINE_CASES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| proptest_cases().min(16))
+}
+
 /// Return a no-op OpenTelemetry Meter for tests.
 pub fn test_meter() -> opentelemetry::metrics::Meter {
     opentelemetry::global::meter("test")

@@ -14,6 +14,7 @@
 |-----|-------------|
 | [`dev-docs/CRATE_RULES.md`](dev-docs/CRATE_RULES.md) | Per-crate rules enforced by CI |
 | [`dev-docs/CODE_STYLE.md`](dev-docs/CODE_STYLE.md) | Naming, error handling, hot path rules |
+| [`dev-docs/ADAPTER_CONTRACT.md`](dev-docs/ADAPTER_CONTRACT.md) | Receiver/pipeline/sink contracts, checkpoint rules, duplicate/loss windows, diagnostics/control-plane contract |
 | [`dev-docs/SCANNER_CONTRACT.md`](dev-docs/SCANNER_CONTRACT.md) | Scanner input requirements, output guarantees, limitations |
 | [`dev-docs/PR_PROCESS.md`](dev-docs/PR_PROCESS.md) | Copilot assignment, PR triage, review criteria, merge process |
 | [`dev-docs/CHANGE_MAP.md`](dev-docs/CHANGE_MAP.md) | What must change together for config, pipeline, verification, and crate-boundary edits |
@@ -32,16 +33,17 @@ User-facing documentation lives in `book/src/`. See `book/src/SUMMARY.md` for th
 
 ## Issue labels
 
-| Label | Meaning |
-|-------|---------|
-| `bug` | Broken behavior |
-| `enhancement` | New feature or improvement |
-| `performance` | Performance optimization |
-| `production` | Required for production readiness |
-| `research` | Needs investigation before implementation |
+See [`CONTRIBUTING.md`](CONTRIBUTING.md#issues-and-labels) for the full label taxonomy, triage process, and work-unit rules.
+
+Quick reference — every issue needs **type + priority + component(s)**:
+
+| Type | Priority |
+|------|----------|
+| `bug`, `enhancement`, `performance`, `architecture`, `research`, `documentation`, `work-unit` | `P0` critical, `P1` high, `P2` medium, `P3` low |
 
 ## Before submitting
 
 - `just ci` must pass
 - See `dev-docs/VERIFICATION.md` for proof requirements (Kani, TLA+, proptest)
+- For control-plane or state-machine fixes in mixed async/runtime code, prefer extracting a local pure reducer/state module and add Kani + proptest coverage there when feasible
 - See `dev-docs/CODE_STYLE.md` for style rules

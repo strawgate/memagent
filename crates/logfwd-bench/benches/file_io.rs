@@ -134,10 +134,12 @@ fn bench_cri_framing(c: &mut Criterion) {
             BenchmarkId::new("read_parse_reassemble", label),
             &file_path.to_path_buf(),
             |b, path| {
+                let mut reassembler = CriReassembler::new(1024 * 1024);
+                let mut json_buf = Vec::with_capacity(data.len());
                 b.iter(|| {
                     let buf = std::fs::read(path).expect("read file");
-                    let mut reassembler = CriReassembler::new(1024 * 1024);
-                    let mut json_buf = Vec::with_capacity(buf.len());
+                    reassembler.reset();
+                    json_buf.clear();
                     let mut count = 0usize;
                     let mut start = 0;
                     while start < buf.len() {

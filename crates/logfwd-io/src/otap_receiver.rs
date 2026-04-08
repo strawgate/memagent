@@ -9,15 +9,33 @@
 //! as `otlp_receiver.rs`. Responds with a hand-encoded `BatchStatus` protobuf.
 
 use std::io;
-use std::io::Read as _;
 use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU8, Ordering},
+};
 
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use http_body_util::BodyExt as _;
 use logfwd_arrow::star_schema::{StarSchema, attrs_schema, star_to_flat};
-use logfwd_core::otlp::{decode_tag, decode_varint, encode_tag, encode_varint, skip_field};
+use logfwd_otap_proto::otap::{
+    ArrowPayloadType as ProtoArrowPayloadType, BatchArrowRecords as ProtoBatchArrowRecords,
+    BatchStatus as ProtoBatchStatus, StatusCode as ProtoStatusCode,
+};
+use logfwd_types::diagnostics::ComponentHealth;
+use prost::Message;
+use tokio::sync::oneshot;
 
 use crate::InputError;
+use crate::background_http_task::BackgroundHttpTask;
+use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
 
 /// Maximum request body size: 10 MB.
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -30,27 +48,20 @@ const CHANNEL_BOUND: usize = 256;
 // ---------------------------------------------------------------------------
 
 /// LOGS fact table payload.
-const PAYLOAD_TYPE_LOGS: u32 = 0;
+const PAYLOAD_TYPE_LOGS: u32 = ProtoArrowPayloadType::Logs as u32;
 /// LOG_ATTRS dimension table payload.
-const PAYLOAD_TYPE_LOG_ATTRS: u32 = 30;
+const PAYLOAD_TYPE_LOG_ATTRS: u32 = ProtoArrowPayloadType::LogAttrs as u32;
 /// RESOURCE_ATTRS dimension table payload.
-const PAYLOAD_TYPE_RESOURCE_ATTRS: u32 = 40;
+const PAYLOAD_TYPE_RESOURCE_ATTRS: u32 = ProtoArrowPayloadType::ResourceAttrs as u32;
 /// SCOPE_ATTRS dimension table payload.
-const PAYLOAD_TYPE_SCOPE_ATTRS: u32 = 50;
+const PAYLOAD_TYPE_SCOPE_ATTRS: u32 = ProtoArrowPayloadType::ScopeAttrs as u32;
 
 // ---------------------------------------------------------------------------
 // BatchStatus status codes
 // ---------------------------------------------------------------------------
 
 /// Batch processed successfully.
-const BATCH_STATUS_OK: u32 = 1;
-
-// ---------------------------------------------------------------------------
-// Protobuf wire types
-// ---------------------------------------------------------------------------
-
-const WIRE_TYPE_VARINT: u8 = 0;
-const WIRE_TYPE_LENGTH_DELIMITED: u8 = 2;
+const BATCH_STATUS_OK: u32 = ProtoStatusCode::Ok as u32;
 
 // ---------------------------------------------------------------------------
 // OtapReceiver
@@ -62,8 +73,16 @@ pub struct OtapReceiver {
     name: String,
     rx: Option<mpsc::Receiver<RecordBatch>>,
     addr: std::net::SocketAddr,
-    server: std::sync::Arc<tiny_http::Server>,
-    handle: Option<std::thread::JoinHandle<()>>,
+    background_task: BackgroundHttpTask,
+    shutdown: Arc<AtomicBool>,
+    health: Arc<AtomicU8>,
+}
+
+#[derive(Clone)]
+struct OtapServerState {
+    tx: mpsc::SyncSender<RecordBatch>,
+    shutdown: Arc<AtomicBool>,
+    health: Arc<AtomicU8>,
 }
 
 impl OtapReceiver {
@@ -78,167 +97,64 @@ impl OtapReceiver {
         addr: &str,
         capacity: usize,
     ) -> io::Result<Self> {
-        let server = std::sync::Arc::new(
-            tiny_http::Server::http(addr)
-                .map_err(|e| io::Error::other(format!("OTAP receiver bind {addr}: {e}")))?,
-        );
-
-        let bound_addr = match server.server_addr() {
-            tiny_http::ListenAddr::IP(a) => a,
-            tiny_http::ListenAddr::Unix(_) => {
-                return Err(io::Error::other("OTAP receiver: unexpected listen addr"));
-            }
-        };
+        let std_listener = std::net::TcpListener::bind(addr)
+            .map_err(|e| io::Error::other(format!("OTAP receiver bind {addr}: {e}")))?;
+        let bound_addr = std_listener.local_addr()?;
+        std_listener.set_nonblocking(true).map_err(|e| {
+            io::Error::other(format!("OTAP receiver set_nonblocking {bound_addr}: {e}"))
+        })?;
 
         let (tx, rx) = mpsc::sync_channel(capacity);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let health = Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr()));
+        let state = Arc::new(OtapServerState {
+            tx,
+            shutdown: Arc::clone(&shutdown),
+            health: Arc::clone(&health),
+        });
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let shutdown_for_server = Arc::clone(&shutdown);
+        let health_for_server = Arc::clone(&health);
+        let state_for_server = Arc::clone(&state);
 
-        let server_clone = std::sync::Arc::clone(&server);
         let handle = std::thread::Builder::new()
             .name("otap-receiver".into())
             .spawn(move || {
-                for mut request in server_clone.incoming_requests() {
-                    let url = request.url().to_string();
-
-                    let path = url.split('?').next().unwrap_or(&url);
-                    if path != "/v1/arrow_logs" {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("not found").with_status_code(404),
-                        );
-                        continue;
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(_) => {
+                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
+                        return;
                     }
-                    if request.method() != &tiny_http::Method::Post {
-                        let allow_header = "Allow: POST"
-                            .parse::<tiny_http::Header>()
-                            .expect("static header is valid");
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("method not allowed")
-                                .with_status_code(405)
-                                .with_header(allow_header),
-                        );
-                        continue;
-                    }
+                };
 
-                    if request.body_length().unwrap_or(0) > MAX_BODY_SIZE {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("payload too large")
-                                .with_status_code(413),
-                        );
-                        continue;
-                    }
-
-                    // Read body with hard cap.
-                    let mut body =
-                        Vec::with_capacity(request.body_length().unwrap_or(0).min(MAX_BODY_SIZE));
-                    match request
-                        .as_reader()
-                        .take(MAX_BODY_SIZE as u64 + 1)
-                        .read_to_end(&mut body)
-                    {
-                        Ok(n) if n > MAX_BODY_SIZE => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("payload too large")
-                                    .with_status_code(413),
-                            );
-                            continue;
-                        }
+                runtime.block_on(async move {
+                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                        Ok(listener) => listener,
                         Err(_) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("read error")
-                                    .with_status_code(400),
+                            store_health_event(
+                                &health_for_server,
+                                ReceiverHealthEvent::FatalFailure,
                             );
-                            continue;
-                        }
-                        Ok(_) => {}
-                    }
-
-                    // Decode BatchArrowRecords protobuf.
-                    let batch_records = match decode_batch_arrow_records(&body) {
-                        Ok(b) => b,
-                        Err(msg) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(msg.to_string())
-                                    .with_status_code(400),
-                            );
-                            continue;
+                            return;
                         }
                     };
 
-                    // Group payloads by type, deserialize IPC bytes into
-                    // RecordBatches, and assemble a StarSchema.
-                    let star = match assemble_star_schema(&batch_records.payloads) {
-                        Ok(s) => s,
-                        Err(msg) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(msg.to_string())
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                    };
+                    let app = axum::Router::new()
+                        .route("/v1/arrow_logs", post(handle_otap_request))
+                        .with_state(state_for_server);
 
-                    // Convert star schema to flat RecordBatch.
-                    let flat = match star_to_flat(&star) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(format!(
-                                    "star_to_flat failed: {e}"
-                                ))
-                                .with_status_code(400),
-                            );
-                            continue;
-                        }
-                    };
+                    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.await;
+                    });
 
-                    // Skip empty batches.
-                    if flat.num_rows() == 0 {
-                        let resp_body =
-                            encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
-                        let _ = request.respond(
-                            tiny_http::Response::from_data(resp_body)
-                                .with_header(
-                                    "Content-Type: application/x-protobuf"
-                                        .parse::<tiny_http::Header>()
-                                        .expect("static header is valid"),
-                                )
-                                .with_status_code(200),
-                        );
-                        continue;
+                    if server.await.is_err() && !shutdown_for_server.load(Ordering::Relaxed) {
+                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
                     }
-
-                    // Send to pipeline via bounded channel.
-                    match tx.try_send(flat) {
-                        Ok(()) => {
-                            let resp_body =
-                                encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
-                            let _ = request.respond(
-                                tiny_http::Response::from_data(resp_body)
-                                    .with_header(
-                                        "Content-Type: application/x-protobuf"
-                                            .parse::<tiny_http::Header>()
-                                            .expect("static header is valid"),
-                                    )
-                                    .with_status_code(200),
-                            );
-                        }
-                        Err(mpsc::TrySendError::Full(_)) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "too many requests: pipeline backpressure",
-                                )
-                                .with_status_code(429),
-                            );
-                        }
-                        Err(mpsc::TrySendError::Disconnected(_)) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "service unavailable: pipeline disconnected",
-                                )
-                                .with_status_code(503),
-                            );
-                        }
-                    }
-                }
+                });
             })
             .map_err(io::Error::other)?;
 
@@ -246,8 +162,9 @@ impl OtapReceiver {
             name: name.into(),
             rx: Some(rx),
             addr: bound_addr,
-            server,
-            handle: Some(handle),
+            background_task: BackgroundHttpTask::new_axum(shutdown_tx, handle),
+            shutdown,
+            health,
         })
     }
 
@@ -258,8 +175,11 @@ impl OtapReceiver {
 
     /// Try to receive all available RecordBatches (non-blocking).
     pub fn try_recv_all(&self) -> Vec<RecordBatch> {
+        let Some(rx) = self.rx.as_ref() else {
+            return Vec::new();
+        };
         let mut batches = Vec::new();
-        while let Ok(batch) = self.rx.as_ref().expect("rx is Some until drop").try_recv() {
+        while let Ok(batch) = rx.try_recv() {
             batches.push(batch);
         }
         batches
@@ -267,38 +187,155 @@ impl OtapReceiver {
 
     /// Blocking receive of the next RecordBatch.
     pub fn recv(&self) -> io::Result<RecordBatch> {
-        self.rx
-            .as_ref()
-            .expect("rx is Some until drop")
-            .recv()
+        let Some(rx) = self.rx.as_ref() else {
+            return Err(io::Error::other("OTAP receiver: already closed"));
+        };
+        rx.recv()
             .map_err(|_| io::Error::other("OTAP receiver: channel disconnected"))
     }
 
     /// Receive with a timeout.
     pub fn recv_timeout(&self, timeout: std::time::Duration) -> io::Result<RecordBatch> {
-        self.rx
-            .as_ref()
-            .expect("rx is Some until drop")
-            .recv_timeout(timeout)
-            .map_err(|e| match e {
-                mpsc::RecvTimeoutError::Timeout => {
-                    io::Error::new(io::ErrorKind::TimedOut, "OTAP receiver: timed out")
-                }
-                mpsc::RecvTimeoutError::Disconnected => {
-                    io::Error::other("OTAP receiver: channel disconnected")
-                }
-            })
+        let Some(rx) = self.rx.as_ref() else {
+            return Err(io::Error::other("OTAP receiver: already closed"));
+        };
+        rx.recv_timeout(timeout).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => {
+                io::Error::new(io::ErrorKind::TimedOut, "OTAP receiver: timed out")
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                io::Error::other("OTAP receiver: channel disconnected")
+            }
+        })
     }
 
     /// Return the name of this receiver.
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// Coarse runtime health for readiness and diagnostics integration.
+    pub fn health(&self) -> ComponentHealth {
+        let stored = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
+        if self.background_task.is_finished() && !self.shutdown.load(Ordering::Relaxed) {
+            ComponentHealth::Failed
+        } else {
+            stored
+        }
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Decoded protobuf types
-// ---------------------------------------------------------------------------
+fn store_health_event(health: &AtomicU8, event: ReceiverHealthEvent) {
+    let current = ComponentHealth::from_repr(health.load(Ordering::Relaxed));
+    health.store(
+        reduce_receiver_health(current, event).as_repr(),
+        Ordering::Relaxed,
+    );
+}
+
+async fn handle_otap_request(
+    State(state): State<Arc<OtapServerState>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if declared_content_length(&headers).is_some_and(|body_len| body_len > MAX_BODY_SIZE as u64) {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
+    }
+
+    let body = match read_limited_body(body).await {
+        Ok(body) => body,
+        Err(status) => {
+            let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                "payload too large"
+            } else {
+                "read error"
+            };
+            return (status, message).into_response();
+        }
+    };
+
+    let batch_records = match decode_batch_arrow_records(&body) {
+        Ok(records) => records,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg.to_string()).into_response(),
+    };
+
+    let star = match assemble_star_schema(&batch_records.payloads) {
+        Ok(star) => star,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg.to_string()).into_response(),
+    };
+
+    let flat = match star_to_flat(&star) {
+        Ok(flat) => flat,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("star_to_flat failed: {e}")).into_response();
+        }
+    };
+
+    if flat.num_rows() == 0 {
+        store_health_event(&state.health, ReceiverHealthEvent::DeliveryNoop);
+        let resp_body = encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
+        return (
+            StatusCode::OK,
+            [(CONTENT_TYPE, "application/x-protobuf")],
+            resp_body,
+        )
+            .into_response();
+    }
+
+    match state.tx.try_send(flat) {
+        Ok(()) => {
+            store_health_event(&state.health, ReceiverHealthEvent::DeliveryAccepted);
+            let resp_body = encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
+            (
+                StatusCode::OK,
+                [(CONTENT_TYPE, "application/x-protobuf")],
+                resp_body,
+            )
+                .into_response()
+        }
+        Err(mpsc::TrySendError::Full(_)) => {
+            store_health_event(&state.health, ReceiverHealthEvent::Backpressure);
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many requests: pipeline backpressure",
+            )
+                .into_response()
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+            if !state.shutdown.load(Ordering::Relaxed) {
+                store_health_event(&state.health, ReceiverHealthEvent::FatalFailure);
+            }
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service unavailable: pipeline disconnected",
+            )
+                .into_response()
+        }
+    }
+}
+
+fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+async fn read_limited_body(body: Body) -> Result<Vec<u8>, StatusCode> {
+    let mut body = body;
+    let mut out = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
+        let Ok(chunk) = frame.into_data() else {
+            continue;
+        };
+        if out.len().saturating_add(chunk.len()) > MAX_BODY_SIZE {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
 
 /// Decoded `BatchArrowRecords` message.
 struct BatchArrowRecords {
@@ -312,9 +349,6 @@ struct ArrowPayload {
     record: Vec<u8>,
 }
 
-// Protobuf decode helpers (decode_varint, decode_tag, skip_field) are
-// imported from logfwd_core::otlp.
-
 /// Decode `BatchArrowRecords` from protobuf bytes.
 ///
 /// ```text
@@ -325,124 +359,19 @@ struct ArrowPayload {
 /// }
 /// ```
 fn decode_batch_arrow_records(buf: &[u8]) -> Result<BatchArrowRecords, InputError> {
-    let mut batch_id: i64 = 0;
-    let mut payloads: Vec<ArrowPayload> = Vec::new();
-    let mut pos = 0;
-
-    while pos < buf.len() {
-        let (field_number, wire_type, new_pos) =
-            decode_tag(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
-        pos = new_pos;
-
-        match (field_number, wire_type) {
-            // batch_id: int64, field 1, wire type 0 (varint)
-            (1, WIRE_TYPE_VARINT) => {
-                let (val, new_pos) =
-                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
-                batch_id = val as i64;
-                pos = new_pos;
-            }
-            // arrow_payloads: repeated ArrowPayload, field 2, wire type 2
-            (2, WIRE_TYPE_LENGTH_DELIMITED) => {
-                let (len, new_pos) =
-                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
-                let len_usize = usize::try_from(len).map_err(|_| {
-                    InputError::Receiver("ArrowPayload: length too large".to_string())
-                })?;
-                let end = new_pos.checked_add(len_usize).ok_or_else(|| {
-                    InputError::Receiver("ArrowPayload: length overflow".to_string())
-                })?;
-                if end > buf.len() {
-                    return Err(InputError::Receiver(
-                        "ArrowPayload: length overflow".to_string(),
-                    ));
-                }
-                let payload = decode_arrow_payload(&buf[new_pos..end])?;
-                payloads.push(payload);
-                pos = end;
-            }
-            // headers or unknown — skip
-            _ => {
-                pos = skip_field(buf, wire_type, pos)
-                    .map_err(|e| InputError::Receiver(e.to_string()))?;
-            }
-        }
-    }
-
-    Ok(BatchArrowRecords { batch_id, payloads })
-}
-
-/// Decode an `ArrowPayload` from protobuf bytes.
-///
-/// ```text
-/// message ArrowPayload {
-///   string schema_id = 1;
-///   ArrowPayloadType type = 2;
-///   bytes record = 3;
-/// }
-/// ```
-fn decode_arrow_payload(buf: &[u8]) -> Result<ArrowPayload, InputError> {
-    let mut payload_type: u32 = 0;
-    let mut record: Vec<u8> = Vec::new();
-    let mut pos = 0;
-
-    while pos < buf.len() {
-        let (field_number, wire_type, new_pos) =
-            decode_tag(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
-        pos = new_pos;
-
-        match (field_number, wire_type) {
-            // schema_id: string, field 1 — skip (not needed for decode)
-            (1, WIRE_TYPE_LENGTH_DELIMITED) => {
-                let (len, new_pos) =
-                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
-                let len_usize = usize::try_from(len).map_err(|_| {
-                    InputError::Receiver("ArrowPayload.schema_id: length too large".to_string())
-                })?;
-                pos = new_pos.checked_add(len_usize).ok_or_else(|| {
-                    InputError::Receiver("ArrowPayload.schema_id: length overflow".to_string())
-                })?;
-                if pos > buf.len() {
-                    return Err(InputError::Receiver(
-                        "ArrowPayload.schema_id: length overflow".to_string(),
-                    ));
-                }
-            }
-            // type: ArrowPayloadType enum, field 2, wire type 0
-            (2, WIRE_TYPE_VARINT) => {
-                let (val, new_pos) =
-                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
-                payload_type = val as u32;
-                pos = new_pos;
-            }
-            // record: bytes, field 3, wire type 2
-            (3, WIRE_TYPE_LENGTH_DELIMITED) => {
-                let (len, new_pos) =
-                    decode_varint(buf, pos).map_err(|e| InputError::Receiver(e.to_string()))?;
-                let len_usize = usize::try_from(len).map_err(|_| {
-                    InputError::Receiver("ArrowPayload.record: length too large".to_string())
-                })?;
-                let end = new_pos.checked_add(len_usize).ok_or_else(|| {
-                    InputError::Receiver("ArrowPayload.record: length overflow".to_string())
-                })?;
-                if end > buf.len() {
-                    return Err(InputError::Receiver(
-                        "ArrowPayload.record: length overflow".to_string(),
-                    ));
-                }
-                record = buf[new_pos..end].to_vec();
-                pos = end;
-            }
-            _ => {
-                pos = skip_field(buf, wire_type, pos)
-                    .map_err(|e| InputError::Receiver(e.to_string()))?;
-            }
-        }
-    }
-
-    Ok(ArrowPayload {
-        payload_type,
-        record,
+    let decoded =
+        ProtoBatchArrowRecords::decode(buf).map_err(|e| InputError::Receiver(e.to_string()))?;
+    let payloads = decoded
+        .arrow_payloads
+        .into_iter()
+        .map(|payload| ArrowPayload {
+            payload_type: payload.r#type as u32,
+            record: payload.record,
+        })
+        .collect();
+    Ok(BatchArrowRecords {
+        batch_id: decoded.batch_id,
+        payloads,
     })
 }
 
@@ -512,12 +441,12 @@ fn assemble_star_schema(payloads: &[ArrowPayload]) -> Result<StarSchema, InputEr
     })?;
 
     // Use empty batches with correct schemas for missing dimension tables.
-    let log_attrs = log_attrs_batch
-        .unwrap_or_else(|| RecordBatch::new_empty(std::sync::Arc::new(attrs_schema())));
-    let resource_attrs = resource_attrs_batch
-        .unwrap_or_else(|| RecordBatch::new_empty(std::sync::Arc::new(attrs_schema())));
-    let scope_attrs = scope_attrs_batch
-        .unwrap_or_else(|| RecordBatch::new_empty(std::sync::Arc::new(attrs_schema())));
+    let log_attrs =
+        log_attrs_batch.unwrap_or_else(|| RecordBatch::new_empty(Arc::new(attrs_schema())));
+    let resource_attrs =
+        resource_attrs_batch.unwrap_or_else(|| RecordBatch::new_empty(Arc::new(attrs_schema())));
+    let scope_attrs =
+        scope_attrs_batch.unwrap_or_else(|| RecordBatch::new_empty(Arc::new(attrs_schema())));
 
     Ok(StarSchema {
         logs,
@@ -543,21 +472,36 @@ fn assemble_star_schema(payloads: &[ArrowPayload]) -> Result<StarSchema, InputEr
 /// ```
 fn encode_batch_status(batch_id: i64, status_code: u32) -> Vec<u8> {
     let mut buf = Vec::with_capacity(16);
-    // field 1: batch_id (varint)
-    if batch_id != 0 {
-        encode_tag(&mut buf, 1, 0);
-        encode_varint(&mut buf, batch_id as u64);
-    }
-    // field 2: status_code (varint)
-    if status_code != 0 {
-        encode_tag(&mut buf, 2, 0);
-        encode_varint(&mut buf, status_code as u64);
-    }
+    let message = ProtoBatchStatus {
+        batch_id,
+        status_code: status_code as i32,
+        status_message: String::new(),
+    };
+    message
+        .encode(&mut buf)
+        .expect("vec-backed encode cannot fail");
     buf
 }
 
 // Protobuf encode helpers (encode_tag, encode_varint) are imported from
 // logfwd_core::otlp.
+
+impl Drop for OtapReceiver {
+    fn drop(&mut self) {
+        let current = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
+        self.health.store(
+            reduce_receiver_health(current, ReceiverHealthEvent::ShutdownRequested).as_repr(),
+            Ordering::Relaxed,
+        );
+        self.shutdown.store(true, Ordering::Relaxed);
+        self.rx.take();
+        let current = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
+        self.health.store(
+            reduce_receiver_health(current, ReceiverHealthEvent::ShutdownCompleted).as_repr(),
+            Ordering::Relaxed,
+        );
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -575,13 +519,26 @@ mod tests {
 
     use logfwd_arrow::star_schema::flat_to_star;
 
-    // --- Test-only protobuf encoding helpers ---
+    // Regression test for issue #1142: clean shutdown
+    #[test]
+    fn clean_shutdown_releases_port() {
+        let addr = "127.0.0.1:0";
+        let receiver = OtapReceiver::new("test", addr).unwrap();
+        let port = receiver.local_addr().port();
 
-    /// Encode a length-delimited field (tag + length + bytes).
-    fn encode_bytes_field(buf: &mut Vec<u8>, field_number: u32, data: &[u8]) {
-        encode_tag(buf, field_number, 2);
-        encode_varint(buf, data.len() as u64);
-        buf.extend_from_slice(data);
+        // Wait briefly for thread to start blocking
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Drop it
+        drop(receiver);
+
+        // Wait briefly for the OS to actually release the port
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // The port should now be free to bind to immediately
+        let new_addr = format!("127.0.0.1:{}", port);
+        let result = tiny_http::Server::http(&new_addr);
+        assert!(result.is_ok(), "Failed to bind to port {} after drop", port);
     }
 
     /// Build a `BatchArrowRecords` protobuf from components.
@@ -590,26 +547,23 @@ mod tests {
         payloads: &[(u32, &[u8])], // (payload_type, arrow_ipc_bytes)
     ) -> Vec<u8> {
         let mut buf = Vec::new();
-        // field 1: batch_id
-        if batch_id != 0 {
-            encode_tag(&mut buf, 1, 0);
-            encode_varint(&mut buf, batch_id as u64);
-        }
-        // field 2: repeated ArrowPayload
-        for (payload_type, record) in payloads {
-            let mut payload_buf = Vec::new();
-            // ArrowPayload.type = field 2 (varint)
-            if *payload_type != 0 {
-                encode_tag(&mut payload_buf, 2, 0);
-                encode_varint(&mut payload_buf, *payload_type as u64);
-            }
-            // ArrowPayload.record = field 3 (bytes)
-            if !record.is_empty() {
-                encode_bytes_field(&mut payload_buf, 3, record);
-            }
-            // Wrap as length-delimited field 2 of BatchArrowRecords.
-            encode_bytes_field(&mut buf, 2, &payload_buf);
-        }
+        let message = ProtoBatchArrowRecords {
+            batch_id,
+            arrow_payloads: payloads
+                .iter()
+                .map(
+                    |(payload_type, record)| logfwd_otap_proto::otap::ArrowPayload {
+                        schema_id: String::new(),
+                        r#type: *payload_type as i32,
+                        record: record.to_vec(),
+                    },
+                )
+                .collect(),
+            headers: Vec::new(),
+        };
+        message
+            .encode(&mut buf)
+            .expect("vec-backed encode cannot fail");
         buf
     }
 
@@ -909,6 +863,7 @@ mod tests {
         let receiver = OtapReceiver::new_with_capacity("test", "127.0.0.1:0", 16)
             .expect("bind should succeed");
         let addr = receiver.local_addr();
+        assert_eq!(receiver.health(), ComponentHealth::Healthy);
 
         // Build a valid OTAP payload.
         let logs_ipc = serialize_batch_to_ipc(&make_logs_batch());
@@ -938,6 +893,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("should receive a batch");
         assert_eq!(received.num_rows(), 2);
+        assert_eq!(receiver.health(), ComponentHealth::Healthy);
     }
 
     #[test]
@@ -985,6 +941,7 @@ mod tests {
             .send(&proto)
             .expect("first POST should succeed");
         assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(receiver.health(), ComponentHealth::Healthy);
 
         // Next request should get 429.
         let result = ureq::post(&url)
@@ -999,61 +956,25 @@ mod tests {
             status == 429 || status == 503,
             "expected 429 or 503, got {status}"
         );
+        assert_eq!(receiver.health(), ComponentHealth::Degraded);
 
         // Drain so the receiver is valid.
         let _ = receiver.try_recv_all();
+
+        let resp = ureq::post(&url)
+            .header("Content-Type", "application/x-protobuf")
+            .send(&proto)
+            .expect("recovery POST should succeed");
+        assert_eq!(resp.status().as_u16(), 200);
+        let _ = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        assert_eq!(receiver.health(), ComponentHealth::Healthy);
     }
 
     #[test]
     fn batch_status_response_is_valid_protobuf() {
         let resp = encode_batch_status(42, BATCH_STATUS_OK);
-        // Decode it back.
-        let mut pos = 0;
-        let mut batch_id: i64 = 0;
-        let mut status_code: u32 = 0;
-
-        while pos < resp.len() {
-            let (field_number, wire_type, new_pos) = decode_tag(&resp, pos).expect("decode tag");
-            pos = new_pos;
-            match (field_number, wire_type) {
-                (1, WIRE_TYPE_VARINT) => {
-                    let (val, new_pos) = decode_varint(&resp, pos).expect("varint");
-                    batch_id = val as i64;
-                    pos = new_pos;
-                }
-                (2, WIRE_TYPE_VARINT) => {
-                    let (val, new_pos) = decode_varint(&resp, pos).expect("varint");
-                    status_code = val as u32;
-                    pos = new_pos;
-                }
-                _ => {
-                    pos = skip_field(&resp, wire_type, pos).expect("skip");
-                }
-            }
-        }
-
-        assert_eq!(batch_id, 42);
-        assert_eq!(status_code, BATCH_STATUS_OK);
-    }
-
-    #[test]
-    fn varint_roundtrip() {
-        for value in [0u64, 1, 127, 128, 255, 300, 16383, 16384, u64::MAX] {
-            let mut buf = Vec::new();
-            encode_varint(&mut buf, value);
-            let (decoded, end) = decode_varint(&buf, 0).expect("decode");
-            assert_eq!(decoded, value, "varint roundtrip failed for {value}");
-            assert_eq!(end, buf.len());
-        }
-    }
-}
-
-impl Drop for OtapReceiver {
-    fn drop(&mut self) {
-        self.rx.take();
-        self.server.unblock();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        let decoded = ProtoBatchStatus::decode(resp.as_slice()).expect("decode status");
+        assert_eq!(decoded.batch_id, 42);
+        assert_eq!(decoded.status_code, BATCH_STATUS_OK as i32);
     }
 }

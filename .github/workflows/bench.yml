@@ -67,10 +67,11 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: |
           cargo build --release -p logfwd
+          cp target/release/logfwd target/release/logfwd-clean
           cargo build --release -p logfwd-competitive-bench
           cargo build --release --features dhat-heap -p logfwd
           cp target/release/logfwd target/release/logfwd-dhat
-          cargo build --release -p logfwd
+          cp target/release/logfwd-clean target/release/logfwd
           mkdir -p cached-binaries
           cp target/release/logfwd cached-binaries/
           cp target/release/logfwd-dhat cached-binaries/
@@ -395,7 +396,7 @@ jobs:
       # Commit bench data to the bench-data branch so the dashboard can fetch
       # it live via raw.githubusercontent.com — no Pages redeploy needed.
       - name: Commit results to bench-data branch
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.run_id }}
@@ -518,7 +519,7 @@ jobs:
           BODY="$(cat <<HEREDOC
           ## Benchmark Results --- ${DATE}
 
-          **Commit:** \`${COMMIT}\` on \`master\`
+          **Commit:** \`${COMMIT}\` on \`main\`
           **Runner:** \`ubuntu-latest\` (matrix: agent x scenario)
           **Iterations:** ${{ env.ITERATIONS }} per cell
           **Dashboard:** https://strawgate.github.io/memagent/bench/

@@ -170,7 +170,7 @@ impl Sink for ArrowIpcSink {
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             if let Err(e) = self.serialize_batch(batch) {
-                return SendResult::IoError(e);
+                return SendResult::from_io_error(e);
             }
             if self.ipc_buf.is_empty() {
                 return SendResult::Ok;

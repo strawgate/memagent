@@ -129,13 +129,13 @@ impl Sink for TcpSink {
             let cols = build_col_infos(batch);
             for row in 0..batch.num_rows() {
                 if let Err(e) = write_row_json(batch, row, &cols, &mut self.buf) {
-                    return SendResult::IoError(e);
+                    return SendResult::from_io_error(e);
                 }
                 self.buf.push(b'\n');
             }
 
             if let Err(e) = self.write_with_retry().await {
-                return SendResult::IoError(e);
+                return SendResult::from_io_error(e);
             }
             self.stats.inc_lines(batch.num_rows() as u64);
             self.stats.inc_bytes(self.buf.len() as u64);

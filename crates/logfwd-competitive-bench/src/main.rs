@@ -6,7 +6,7 @@
 //! and measures wall-clock throughput.
 //!
 //! Usage:
-//!   cargo run -p logfwd-competitive-bench --release -- [OPTIONS]
+//!   cargo run -p logfwd-competitive-bench --release -- \[OPTIONS]
 //!
 //!   --lines N        Number of JSON log lines to generate (default: 5_000_000)
 //!   --agents A,B,C   Comma-separated agents to run (default: all available)

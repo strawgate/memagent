@@ -211,7 +211,7 @@ fn scan_line<B: ScanBuilder>(
                 {
                     if wanted {
                         let idx = builder.resolve_field(key);
-                        builder.append_str_by_idx(idx, &buf[pos..pos + 4]);
+                        builder.append_bool_by_idx(idx, true);
                     }
                     pos += 4;
                 } else {
@@ -226,7 +226,7 @@ fn scan_line<B: ScanBuilder>(
                 {
                     if wanted {
                         let idx = builder.resolve_field(key);
-                        builder.append_str_by_idx(idx, &buf[pos..pos + 5]);
+                        builder.append_bool_by_idx(idx, false);
                     }
                     pos += 5;
                 } else {
@@ -380,7 +380,7 @@ fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'
                 };
                 let expected = if opener == b'{' { b'}' } else { b']' };
                 if b != expected {
-                    return end; // mismatch
+                    return end; // mismatch — fail-closed to avoid emitting truncated values
                 }
                 pos += 1;
                 if depth == 0 {
@@ -632,6 +632,10 @@ mod tests {
             self.current_row
                 .push((name, alloc::format!("float:{val_str}")));
         }
+        fn append_bool_by_idx(&mut self, idx: usize, val: bool) {
+            let name = self.field_names[idx].clone();
+            self.current_row.push((name, alloc::format!("bool:{val}")));
+        }
         fn append_null_by_idx(&mut self, idx: usize) {
             let name = self.field_names[idx].clone();
             self.current_row.push((name, "null".to_string()));
@@ -694,8 +698,8 @@ mod tests {
         assert_eq!(builder.rows.len(), 1);
         let row = &builder.rows[0];
         assert!(row.iter().any(|(k, v)| k == "n" && v == "null"));
-        assert!(row.iter().any(|(k, v)| k == "t" && v == "true"));
-        assert!(row.iter().any(|(k, v)| k == "f" && v == "false"));
+        assert!(row.iter().any(|(k, v)| k == "t" && v == "bool:true"));
+        assert!(row.iter().any(|(k, v)| k == "f" && v == "bool:false"));
         assert!(row.iter().any(|(k, v)| k == "i" && v == "int:42"));
         assert!(row.iter().any(|(k, v)| k == "x" && v == "float:3.14"));
     }
@@ -1051,6 +1055,29 @@ mod tests {
             }
         }
         s
+    }
+
+    #[test]
+    fn test_skip_nested_at_depth_32() {
+        let mut buf_str = "{\"a\":".to_string();
+        for _ in 0..32 {
+            buf_str.push_str("{\"x\":");
+        }
+        buf_str.push_str("1");
+        for _ in 0..32 {
+            buf_str.push_str("}");
+        }
+        buf_str.push_str(",\"b\":2}");
+
+        let buf = buf_str.as_bytes();
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        // If it drops remaining lines, it won't see "b"
+        assert!(row.iter().any(|(k, v)| k == "b" && v == "int:2"));
     }
 
     proptest! {
