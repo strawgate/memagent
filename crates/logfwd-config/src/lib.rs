@@ -836,11 +836,19 @@ impl Config {
                         }
                     }
                     OutputType::File => {
-                        if output.path.is_none() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': {} output requires 'path'",
-                                output.output_type,
-                            )));
+                        match &output.path {
+                            None => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': {} output requires 'path'",
+                                    output.output_type,
+                                )));
+                            }
+                            Some(p) if p.trim().is_empty() => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': file output 'path' must not be empty"
+                                )));
+                            }
+                            _ => {}
                         }
                         if let Some(fmt) = &output.format
                             && !matches!(fmt, Format::Json | Format::Text)
@@ -1495,6 +1503,19 @@ output:
         assert_eq!(
             cfg.pipelines["default"].outputs[0].output_type,
             OutputType::File
+        );
+    }
+
+    #[test]
+    fn file_output_empty_path_rejected() {
+        // Regression test for #1663: path: "" passed --validate but failed at startup.
+        let yaml =
+            "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: \"\"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("path' must not be empty") || msg.contains("path must not be empty"),
+            "expected 'path must not be empty' in error, got: {msg}"
         );
     }
 
