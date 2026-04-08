@@ -139,9 +139,9 @@ impl ScalarUDFImpl for HashUdf {
                 ScalarValue::Utf8(Some(val))
                 | ScalarValue::Utf8View(Some(val))
                 | ScalarValue::LargeUtf8(Some(val)),
-            ) => Ok(ColumnarValue::Scalar(ScalarValue::UInt64(Some(
-                fnv1a_64(val.as_bytes()),
-            )))),
+            ) => Ok(ColumnarValue::Scalar(ScalarValue::UInt64(Some(fnv1a_64(
+                val.as_bytes(),
+            ))))),
             ColumnarValue::Scalar(
                 ScalarValue::Utf8(None)
                 | ScalarValue::Utf8View(None)
@@ -153,7 +153,6 @@ impl ScalarUDFImpl for HashUdf {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

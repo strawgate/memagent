@@ -924,7 +924,6 @@ fn write_ts_suffix_simple(secs: u64, frac: u64) -> Vec<u8> {
     format!(",\"@timestamp\":\"{ts}.{frac:09}Z\"}}").into_bytes()
 }
 
-fn is_leap_year(y: u32) -> bool {
 pub(crate) fn is_leap_year(y: u32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }

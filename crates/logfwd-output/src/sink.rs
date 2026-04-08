@@ -313,24 +313,6 @@ impl Sink for AsyncFanoutSink {
 
     fn name(&self) -> &str {
         &self.name
-
-    fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
-        Box::pin(async move {
-            // Fixes #1648: flush ALL sinks even if one fails.  Using `?` would abort
-            // the loop on the first error, leaving later sinks unflushed.
-            let mut first_err: Option<io::Error> = None;
-            for sink in &mut self.sinks {
-                if let Err(e) = sink.flush().await {
-                    if first_err.is_none() {
-                        first_err = Some(e);
-                    }
-                }
-            }
-            match first_err {
-                Some(e) => Err(e),
-                None => Ok(()),
-            }
-        })
     }
 
     fn health(&self) -> ComponentHealth {
@@ -344,8 +326,6 @@ impl Sink for AsyncFanoutSink {
     /// all sinks have been shut down. Fixes #1648.
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
         Box::pin(async move {
-            // Fixes #1648: shut down ALL sinks even if one fails.  Using `?` would
-            // abort the loop on the first error, leaving later sinks unshutdown.
             let mut first_err: Option<io::Error> = None;
             for sink in &mut self.sinks {
                 if let Err(e) = sink.shutdown().await {
@@ -924,117 +904,6 @@ mod tests {
         assert!(
             second_shutdown.load(Ordering::SeqCst),
             "second sink must be shut down even though first sink failed"
-        );
-    }
-
-    /// A sink that records how many times flush/shutdown were called and
-    /// returns a configurable error from those operations.
-    struct TrackingSink {
-        flush_calls: Arc<Mutex<usize>>,
-        shutdown_calls: Arc<Mutex<usize>>,
-        flush_err: bool,
-        shutdown_err: bool,
-    }
-
-    impl TrackingSink {
-        fn new(
-            flush_err: bool,
-            shutdown_err: bool,
-        ) -> (Self, Arc<Mutex<usize>>, Arc<Mutex<usize>>) {
-            let flush_calls = Arc::new(Mutex::new(0usize));
-            let shutdown_calls = Arc::new(Mutex::new(0usize));
-            (
-                TrackingSink {
-                    flush_calls: Arc::clone(&flush_calls),
-                    shutdown_calls: Arc::clone(&shutdown_calls),
-                    flush_err,
-                    shutdown_err,
-                },
-                flush_calls,
-                shutdown_calls,
-            )
-        }
-    }
-
-    impl Sink for TrackingSink {
-        fn send_batch<'a>(
-            &'a mut self,
-            _batch: &'a RecordBatch,
-            _metadata: &'a BatchMetadata,
-        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
-            Box::pin(async { SendResult::Ok })
-        }
-
-        fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
-            *self.flush_calls.lock().unwrap() += 1;
-            let err = self.flush_err;
-            Box::pin(async move {
-                if err {
-                    Err(io::Error::other("flush error"))
-                } else {
-                    Ok(())
-                }
-            })
-        }
-
-        fn name(&self) -> &'static str {
-            "tracking"
-        }
-
-        fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
-            *self.shutdown_calls.lock().unwrap() += 1;
-            let err = self.shutdown_err;
-            Box::pin(async move {
-                if err {
-                    Err(io::Error::other("shutdown error"))
-                } else {
-                    Ok(())
-                }
-            })
-        }
-    }
-
-    /// Regression test for issue #1648.
-    ///
-    /// `AsyncFanoutSink::flush()` used to return early on the first error (`?`),
-    /// leaving remaining sinks unflushed.  All sinks must be flushed even if one fails.
-    #[tokio::test]
-    async fn fanout_flush_calls_all_sinks_even_after_first_error() {
-        let (s1, fc1, _) = TrackingSink::new(true, false); // s1 errors on flush
-        let (s2, fc2, _) = TrackingSink::new(false, false); // s2 succeeds
-        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
-
-        let result = fanout.flush().await;
-        assert!(result.is_err(), "must propagate the first error");
-        assert_eq!(*fc1.lock().unwrap(), 1, "first sink must have been flushed");
-        assert_eq!(
-            *fc2.lock().unwrap(),
-            1,
-            "second sink must have been flushed even though first returned an error"
-        );
-    }
-
-    /// Regression test for issue #1648.
-    ///
-    /// `AsyncFanoutSink::shutdown()` used to return early on the first error (`?`),
-    /// leaving remaining sinks unshutdown.  All sinks must be shut down even if one fails.
-    #[tokio::test]
-    async fn fanout_shutdown_calls_all_sinks_even_after_first_error() {
-        let (s1, _, sc1) = TrackingSink::new(false, true); // s1 errors on shutdown
-        let (s2, _, sc2) = TrackingSink::new(false, false); // s2 succeeds
-        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
-
-        let result = fanout.shutdown().await;
-        assert!(result.is_err(), "must propagate the first error");
-        assert_eq!(
-            *sc1.lock().unwrap(),
-            1,
-            "first sink must have been shut down"
-        );
-        assert_eq!(
-            *sc2.lock().unwrap(),
-            1,
-            "second sink must have been shut down even though first returned an error"
         );
     }
 

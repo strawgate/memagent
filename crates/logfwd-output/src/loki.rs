@@ -279,17 +279,17 @@ impl LokiSink {
                         DataType::UInt64 => col
                             .as_primitive::<arrow::datatypes::UInt64Type>()
                             .value(row),
-                        _ => metadata.observed_time_ns,
-                    }
-                    // String timestamp columns (ISO 8601) — produced by the scanner
-                    // when tailing log files, and by star_to_flat for `_timestamp`.
-                    DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => {
-                        if col.is_null(row) {
-                            metadata.observed_time_ns
-                        } else {
-                            parse_timestamp_nanos(str_value(col.as_ref(), row).as_bytes())
-                                .unwrap_or(metadata.observed_time_ns)
+                        // String timestamp columns (ISO 8601) — produced by the scanner
+                        // when tailing log files, and by star_to_flat for `_timestamp`.
+                        DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => {
+                            if col.is_null(row) {
+                                metadata.observed_time_ns
+                            } else {
+                                parse_timestamp_nanos(str_value(col.as_ref(), row).as_bytes())
+                                    .unwrap_or(metadata.observed_time_ns)
+                            }
                         }
+                        _ => metadata.observed_time_ns,
                     }
                 }
             } else {
