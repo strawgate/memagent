@@ -216,7 +216,7 @@ mod tests {
     ) -> datafusion::error::Result<Vec<RecordBatch>> {
         let ctx = SessionContext::new();
         ctx.register_udf(ScalarUDF::from(RegexpExtractUdf::new()));
-        ctx.register_udf(ScalarUDF::from(crate::IntCastUdf::new()));
+        ctx.register_udf(ScalarUDF::from(crate::cast_udf::IntCastUdf::new()));
         let table =
             datafusion::datasource::MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         ctx.register_table("logs", Arc::new(table)).unwrap();

@@ -73,9 +73,21 @@ reason = "The file still mixes HTTP/runtime shell code with pure protojson parsi
 issue = 1484
 
 [[seams]]
-path = "crates/logfwd-io/src/tail/mod.rs"
+path = "crates/logfwd-io/src/otlp_receiver/convert.rs"
+status = "recommended"
+reason = "Structured conversion and protojson numeric normalization helpers are isolated pure seams inside OTLP receiver internals."
+issue = 1484
+
+[[seams]]
+path = "crates/logfwd-io/src/tail/verification.rs"
 status = "required"
 reason = "The EOF emission state machine is a local proof seam despite living in an IO crate."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-io/src/tail/mod.rs"
+status = "recommended"
+reason = "Module shell gates tail-specific verification under #[cfg(kani)] and should stay aligned with the verification seam."
 issue = 1314
 
 [[seams]]
