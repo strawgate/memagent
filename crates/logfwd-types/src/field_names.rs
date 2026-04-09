@@ -97,7 +97,7 @@ pub const SEVERITY_NUMBER: &str = "severity_number";
 // Flags
 // ---------------------------------------------------------------------------
 
-/// Log record flags column — W3C trace flags (Int64).
+/// Log record flags column — W3C trace flags (UInt32).
 ///
 /// Written by the OTLP receiver for `flags`.
 pub const FLAGS: &str = "flags";

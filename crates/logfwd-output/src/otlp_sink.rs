@@ -189,7 +189,8 @@ impl OtlpSink {
         };
 
         // Resolve column roles and downcast arrays once for the whole batch.
-        let columns = resolve_batch_columns(batch, field_names::DEFAULT_RESOURCE_PREFIX);
+        let resource_prefix = resource_prefix_from_batch(batch);
+        let columns = resolve_batch_columns(batch, &resource_prefix);
 
         // Phase 1: encode all LogRecords and assign each row to a resource group.
         let mut records_buf: Vec<u8> = Vec::with_capacity(num_rows * 128);
@@ -412,7 +413,8 @@ impl OtlpSink {
             batch
         };
 
-        let columns = resolve_batch_columns(batch, field_names::DEFAULT_RESOURCE_PREFIX);
+        let resource_prefix = resource_prefix_from_batch(batch);
+        let columns = resolve_batch_columns(batch, &resource_prefix);
         self.encoder_buf.reserve(num_rows * 128);
 
         for row in 0..num_rows {
@@ -1013,6 +1015,35 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, resource_prefix: &str) -> B
         attribute_cols,
         resource_cols,
     }
+}
+
+fn resource_prefix_from_batch(batch: &RecordBatch) -> String {
+    let schema = batch.schema();
+
+    if let Some(prefix) = schema.metadata().get("logfwd.resource_prefix")
+        && !prefix.is_empty()
+    {
+        return prefix.clone();
+    }
+
+    if schema
+        .fields()
+        .iter()
+        .any(|f| f.name().starts_with(field_names::DEFAULT_RESOURCE_PREFIX))
+    {
+        return field_names::DEFAULT_RESOURCE_PREFIX.to_string();
+    }
+
+    for field in schema.fields() {
+        if let Some(resource_key) = field.metadata().get("logfwd.resource_key")
+            && let Some(prefix) = field.name().strip_suffix(resource_key)
+            && !prefix.is_empty()
+        {
+            return prefix.to_string();
+        }
+    }
+
+    field_names::DEFAULT_RESOURCE_PREFIX.to_string()
 }
 
 fn numeric_timestamp_ns(arr: &dyn Array, row: usize) -> u64 {

@@ -59,10 +59,10 @@ const WELL_KNOWN_FLAGS: &[&str] = &["flags", "trace_flags"];
 
 /// Default resource attribute prefix. Use `field_names::DEFAULT_RESOURCE_PREFIX`
 /// from the types crate; kept here as a local alias for readability.
-const RESOURCE_PREFIX: &str = "resource.attributes.";
+pub(crate) const RESOURCE_PREFIX: &str = "resource.attributes.";
 
 /// Legacy prefix for backwards compatibility with older batches.
-const LEGACY_RESOURCE_PREFIX: &str = "_resource_";
+pub(crate) const LEGACY_RESOURCE_PREFIX: &str = "_resource_";
 
 // ---------------------------------------------------------------------------
 // Attribute type tags (stored in the `type` column of attrs tables)
@@ -165,11 +165,20 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
         let name = field.name().as_str();
 
         // Check both current and legacy resource attribute prefixes.
-        if let Some(stripped) = name
+        let resource_key = name
             .strip_prefix(RESOURCE_PREFIX)
-            .or_else(|| name.strip_prefix(LEGACY_RESOURCE_PREFIX))
-        {
-            resource_cols.push((stripped.to_string(), idx));
+            .map(str::to_string)
+            .or_else(|| {
+                name.strip_prefix(LEGACY_RESOURCE_PREFIX).map(|stripped| {
+                    field
+                        .metadata()
+                        .get("logfwd.resource_key")
+                        .cloned()
+                        .unwrap_or_else(|| stripped.to_string())
+                })
+            });
+        if let Some(resource_key) = resource_key {
+            resource_cols.push((resource_key, idx));
             continue;
         }
 
@@ -1843,6 +1852,38 @@ mod tests {
             .expect("str");
         assert_eq!(svc_arr.value(0), "api");
         assert_eq!(svc_arr.value(1), "worker");
+    }
+
+    #[test]
+    fn legacy_resource_column_uses_metadata_key_for_roundtrip() {
+        let legacy_field = Field::new("_resource_service_name", DataType::Utf8, true)
+            .with_metadata(HashMap::from([(
+                "logfwd.resource_key".to_string(),
+                "service.name".to_string(),
+            )]));
+        let schema = Arc::new(Schema::new(vec![legacy_field]));
+        let columns: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec!["api", "worker"]))];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+        let rt_schema = roundtrip.schema();
+        assert!(
+            rt_schema
+                .index_of("resource.attributes.service_name")
+                .is_err(),
+            "legacy stripped key must not override explicit metadata key"
+        );
+        let idx = rt_schema
+            .index_of("resource.attributes.service.name")
+            .expect("resource key from metadata");
+        let arr = roundtrip
+            .column(idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("str");
+        assert_eq!(arr.value(0), "api");
+        assert_eq!(arr.value(1), "worker");
     }
 
     #[test]

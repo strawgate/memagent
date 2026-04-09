@@ -22,6 +22,7 @@ use logfwd_core::scan_config::{parse_float_fast, parse_int_fast};
 use logfwd_core::scanner::BuilderState;
 
 use crate::check_dup_bits;
+use crate::star_schema::RESOURCE_PREFIX;
 
 // ---------------------------------------------------------------------------
 // Per-field state
@@ -164,11 +165,8 @@ impl StreamingBuilder {
     }
 
     fn resource_col_name(key: &str) -> String {
-        // Canonical prefix + verbatim key. No mangling — the key is
-        // preserved exactly as the OTLP semantic convention defines it.
-        // Must match RESOURCE_PREFIX in star_schema.rs and
-        // DEFAULT_RESOURCE_PREFIX in field_names.rs.
-        format!("resource.attributes.{key}")
+        // Canonical prefix + verbatim key. No mangling.
+        format!("{RESOURCE_PREFIX}{key}")
     }
 
     /// Start a new batch. Takes ownership of the input buffer via Bytes

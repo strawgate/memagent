@@ -29,14 +29,14 @@ pub(super) fn convert_request_to_batch(
     let mut hex_buf = Vec::with_capacity(64);
 
     for resource_logs in &request.resource_logs {
-        // Collect resource attributes with the configured prefix.
-        let mut resource_attr_keys: Vec<String> = Vec::new();
-        let mut resource_attr_values: Vec<&AnyValue> = Vec::new();
+        // Resolve resource attribute fields once per ResourceLogs.
+        let mut resource_attr_fields: Vec<(usize, &AnyValue)> = Vec::new();
         if let Some(ref resource) = resource_logs.resource {
             for attr in &resource.attributes {
                 if let Some(ref value) = attr.value {
-                    resource_attr_keys.push(format!("{resource_prefix}{}", attr.key));
-                    resource_attr_values.push(value);
+                    let key = format!("{resource_prefix}{}", attr.key);
+                    let field_idx = builder.resolve_field(key.as_bytes());
+                    resource_attr_fields.push((field_idx, value));
                 }
             }
         }
@@ -93,9 +93,9 @@ pub(super) fn convert_request_to_batch(
                     }
                 }
 
-                // resource attributes (prefixed)
-                for (key, value) in resource_attr_keys.iter().zip(resource_attr_values.iter()) {
-                    append_attribute_value(&mut builder, key, value, &mut hex_buf);
+                // resource attributes (prefixed, pre-resolved per ResourceLogs)
+                for (field_idx, value) in &resource_attr_fields {
+                    append_attribute_value_by_idx(&mut builder, *field_idx, value, &mut hex_buf);
                 }
 
                 // trace context
@@ -140,6 +140,15 @@ fn append_attribute_value(
     hex_buf: &mut Vec<u8>,
 ) {
     let idx = builder.resolve_field(key.as_bytes());
+    append_attribute_value_by_idx(builder, idx, value, hex_buf);
+}
+
+fn append_attribute_value_by_idx(
+    builder: &mut StreamingBuilder,
+    idx: usize,
+    value: &AnyValue,
+    hex_buf: &mut Vec<u8>,
+) {
     match &value.value {
         Some(Value::IntValue(v)) => builder.append_i64_value_by_idx(idx, *v),
         Some(Value::DoubleValue(v)) => builder.append_f64_value_by_idx(idx, *v),
