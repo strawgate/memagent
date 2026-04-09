@@ -20,7 +20,7 @@ input:
 
 **Tuning knobs (optional):**
 
-- `poll_interval_ms` (default: 50): How often the tailer checks the file for new data when at the end of the file.
+- `poll_interval_ms` (default: 50): How often, in milliseconds, the tailer checks the file for new data when at the end of the file.
 - `read_buf_size` (default: 262144): The buffer size used when reading chunks of the file.
 - `per_file_read_budget_bytes` (default: 262144): The maximum bytes to read from a single file during one polling iteration before yielding to other files.
 

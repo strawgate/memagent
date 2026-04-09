@@ -648,8 +648,12 @@ output:
         let inputs = [
             ("http", "listen: 0.0.0.0:8080"),
             ("tcp", "listen: 0.0.0.0:8080"),
+            ("udp", "listen: 0.0.0.0:514"),
             ("generator", ""),
             ("otlp", "listen: 0.0.0.0:4318"),
+            ("linux_sensor_beta", ""),
+            ("macos_sensor_beta", ""),
+            ("windows_sensor_beta", ""),
         ];
         let fields = [
             "poll_interval_ms: 100",
@@ -677,6 +681,23 @@ output:
                 );
             }
         }
+    }
+
+    #[test]
+    fn file_input_rejects_oversized_read_buf() {
+        let yaml = r"
+input:
+  type: file
+  path: /tmp/test.log
+  read_buf_size: 5242880
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("'read_buf_size' must not exceed 4 MiB"),
+            "expected upper bound error, got: {err}"
+        );
     }
 
     #[test]

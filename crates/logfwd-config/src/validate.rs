@@ -114,6 +114,13 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'read_buf_size' must be at least 1"
                             )));
                         }
+                        if let Some(v) = input.read_buf_size {
+                            if v > 4 * 1024 * 1024 {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'read_buf_size' must not exceed 4 MiB (4194304)"
+                                )));
+                            }
+                        }
                         if input.per_file_read_budget_bytes == Some(0) {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' must be at least 1"
