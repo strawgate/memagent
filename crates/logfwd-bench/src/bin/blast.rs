@@ -16,8 +16,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -606,7 +606,10 @@ mod tests {
     #[test]
     fn render_output_yaml_redacts_secrets_and_keeps_all_supported_fields() {
         let mut auth_headers = HashMap::new();
-        auth_headers.insert("Authorization".to_string(), "ApiKey secret-value".to_string());
+        auth_headers.insert(
+            "Authorization".to_string(),
+            "ApiKey secret-value".to_string(),
+        );
         auth_headers.insert("X-Custom".to_string(), "custom-secret".to_string());
 
         let mut static_labels = HashMap::new();
