@@ -1,49 +1,217 @@
-# Agent Guide
+# Agent Guide — logfwd
 
-## Start here
+> A Rust log forwarder: tails files, parses JSON/CRI with portable SIMD, transforms with SQL (DataFusion), ships to OTLP collectors. Single static binary, ~15 MB.
 
-- `README.md` — what logfwd does, performance targets
-- `DEVELOPING.md` — build/test/bench commands, hard-won lessons
-- `dev-docs/ARCHITECTURE.md` — pipeline data flow, scanner stages, crate map
-- `dev-docs/DESIGN.md` — vision, target architecture, architecture decisions
-- `dev-docs/VERIFICATION.md` — TLA+, Kani, proptest — when to use each, proof requirements, per-module status
+## Prerequisites
 
-## Reference docs
+- **Rust 1.85+** (`rustup` recommended)
+- **[just](https://github.com/casey/just)** task runner (`cargo install just`)
+- **[taplo](https://taplo.tamasfe.dev/)** for TOML formatting (`cargo install taplo-cli`)
+- **[cargo-nextest](https://nexte.st/)** for test execution (`cargo install cargo-nextest`)
+- **[sccache](https://github.com/mozilla/sccache)** for compile caching (`cargo install sccache --locked`) — pre-configured in `.cargo/config.toml`
+- **Optional:** [pre-commit](https://pre-commit.com/) (`pip install pre-commit && pre-commit install`)
+- **Optional:** [Kani](https://github.com/model-checking/kani) for formal verification (`cargo install --locked kani-verifier && cargo kani setup`)
 
-| Doc | When to read |
-|-----|-------------|
-| [`dev-docs/CRATE_RULES.md`](dev-docs/CRATE_RULES.md) | Per-crate rules enforced by CI |
-| [`dev-docs/CODE_STYLE.md`](dev-docs/CODE_STYLE.md) | Naming, error handling, hot path rules |
-| [`dev-docs/ADAPTER_CONTRACT.md`](dev-docs/ADAPTER_CONTRACT.md) | Receiver/pipeline/sink contracts, checkpoint rules, duplicate/loss windows, diagnostics/control-plane contract |
-| [`dev-docs/SCANNER_CONTRACT.md`](dev-docs/SCANNER_CONTRACT.md) | Scanner input requirements, output guarantees, limitations |
-| [`dev-docs/PR_PROCESS.md`](dev-docs/PR_PROCESS.md) | Copilot assignment, PR triage, review criteria, merge process |
-| [`dev-docs/CHANGE_MAP.md`](dev-docs/CHANGE_MAP.md) | What must change together for config, pipeline, verification, and crate-boundary edits |
-| [Roadmap (GitHub issue #889)](https://github.com/strawgate/memagent/issues/889) | What's done, what's in progress, what's next |
-| [`dev-docs/references/arrow.md`](dev-docs/references/arrow.md) | RecordBatch, StringViewArray, schema evolution |
-| [`dev-docs/references/datafusion.md`](dev-docs/references/datafusion.md) | SessionContext, MemTable, UDF creation, SQL execution |
-| [`dev-docs/references/tokio-async-patterns.md`](dev-docs/references/tokio-async-patterns.md) | Runtime, bounded channels, CancellationToken, select! safety |
-| [`dev-docs/references/opentelemetry-otlp.md`](dev-docs/references/opentelemetry-otlp.md) | OTLP protobuf nesting, HTTP vs gRPC |
-| [`dev-docs/references/kani-verification.md`](dev-docs/references/kani-verification.md) | Kani proofs, function contracts, solver selection |
-| [`dev-docs/DOCS_STANDARDS.md`](dev-docs/DOCS_STANDARDS.md) | Doc taxonomy, lifecycle rules, anti-drift measures |
-| [`tla/README.md`](tla/README.md) | TLA+ specs: PipelineMachine, ShutdownProtocol, PipelineBatch |
+## Primary commands
 
-## User docs
+All commands use `just` recipes. **Never use bare `cargo clippy`** — it won't catch CI failures because CI runs `cargo clippy -- -D warnings`.
 
-User-facing documentation lives in `book/src/`. See `book/src/SUMMARY.md` for the full table of contents.
+```bash
+# ── Build ───────────────────────────────────────────────
+just build                   # Release binary with DataFusion SQL
+just build-dev-lite          # Fast dev binary (no DataFusion SQL)
+cargo build --release -p logfwd  # Equivalent to `just build`
 
-## Issue labels
+# ── Test ────────────────────────────────────────────────
+just test                    # Default-members only (~30s, skips datafusion)
+just test-all                # Full workspace (~3min, includes datafusion)
+cargo test -p logfwd-core    # Single-crate iteration (fastest)
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md#issues-and-labels) for the full label taxonomy, triage process, and work-unit rules.
+# ── Lint & Format ──────────────────────────────────────
+just lint                    # fmt-check + clippy + toml-check (fast)
+just lint-all                # fmt-check + kani-boundary + clippy-all + toml-check + deny
+just fmt                     # Auto-format Rust code
+just clippy                  # Clippy with -D warnings (matches CI)
+just toml-check              # Validate TOML formatting
+just toml-fmt                # Auto-format TOML files
 
-Quick reference — every issue needs **type + priority + component(s)**:
+# ── CI (run before pushing) ────────────────────────────
+just ci                      # lint + test (default-members, fast)
+just ci-all                  # lint-all + test-all (full workspace, CI parity)
+
+# ── Formal Verification ────────────────────────────────
+just kani                    # Kani proofs for production crates
+just kani-boundary           # Validate non-core Kani boundary contract
+
+# ── Benchmarks ──────────────────────────────────────────
+just bench                   # Tier 1 Criterion benchmarks (~30s: pipeline, output_encode, full_chain)
+
+# ── Fuzz ────────────────────────────────────────────────
+just fuzz scanner 300        # Fuzz a target for 300s (requires nightly)
+
+# ── Profiling ───────────────────────────────────────────
+just profile-otlp-local      # CPU profile: file → OTLP with flamegraph
+```
+
+### Why two tiers?
+
+The workspace `default-members` excludes `logfwd-transform` (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just targets when you need the full build. CI always uses `--workspace`.
+
+## Repository map
+
+```
+.
+├── AGENTS.md                    ← You are here
+├── CLAUDE.md                    ← Identical (for Claude Code compatibility)
+├── DEVELOPING.md                ← Build/test/bench commands, hard-won lessons
+├── CONTRIBUTING.md              ← PR process, issue labels, pre-commit checklist
+├── README.md                    ← Product overview, quick start, CLI reference
+├── justfile                     ← All task-runner recipes
+├── Cargo.toml                   ← Workspace root, workspace-level lints
+├── .cargo/config.toml           ← sccache wrapper, build settings
+│
+├── crates/
+│   ├── logfwd/                  ← Binary crate: CLI, startup, signal handling
+│   ├── logfwd-runtime/          ← Async orchestration: pipeline loop, worker pool
+│   ├── logfwd-core/             ← Proven kernel (no_std, forbid(unsafe)): scanner, parsers, framer, OTLP encoding
+│   ├── logfwd-arrow/            ← Arrow integration: ScanBuilder impls, SIMD backends, RecordBatch
+│   ├── logfwd-config/           ← YAML config parsing and validation
+│   ├── logfwd-io/               ← I/O layer: file tailing, TCP/UDP/OTLP inputs, checkpointing
+│   ├── logfwd-transform/        ← DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup)
+│   ├── logfwd-output/           ← Output sinks: OTLP, Elasticsearch, Loki, JSON lines, stdout
+│   ├── logfwd-types/            ← Shared value types, state-machine semantics, diagnostics
+│   ├── logfwd-bench/            ← Criterion benchmarks for the scanner pipeline
+│   ├── logfwd-competitive-bench/← Comparative benchmarks vs other log agents
+│   ├── logfwd-test-utils/       ← Shared test utilities
+│   ├── logfwd-ebpf-proto/       ← eBPF log capture protocol definitions (experimental)
+│   ├── logfwd-otap-proto/       ← OTAP protocol definitions
+│   └── logfwd-proto-build/      ← Protobuf build scripts
+│
+├── dev-docs/                    ← Developer documentation
+│   ├── ARCHITECTURE.md          ← Pipeline data flow, scanner stages, crate map, buffer lifecycle
+│   ├── DESIGN.md                ← Vision, target architecture, architecture decision records
+│   ├── VERIFICATION.md          ← TLA+, Kani, proptest: when to use each, proof requirements
+│   ├── CRATE_RULES.md           ← Per-crate rules enforced by CI
+│   ├── CODE_STYLE.md            ← Naming, error handling, hot path rules
+│   ├── ADAPTER_CONTRACT.md      ← Receiver/pipeline/sink contracts, checkpoint rules
+│   ├── SCANNER_CONTRACT.md      ← Scanner input requirements, output guarantees
+│   ├── CHANGE_MAP.md            ← What must change together (config, pipeline, verification, crates)
+│   ├── PR_PROCESS.md            ← Copilot assignment, PR triage, review criteria
+│   ├── DOCS_STANDARDS.md        ← Doc taxonomy, lifecycle rules
+│   ├── verification/            ← Kani boundary contract TOML + scripts
+│   └── references/              ← Library-specific guides (Arrow, DataFusion, Tokio, OTLP, Kani)
+│
+├── book/src/                    ← User-facing documentation (mdbook)
+│   └── SUMMARY.md               ← Table of contents for the user book
+│
+├── tla/                         ← TLA+ specs: PipelineMachine, ShutdownProtocol, PipelineBatch
+│   └── README.md                ← TLA+ documentation and model config
+│
+├── examples/use-cases/          ← 20 ready-made config starters for common patterns
+├── deploy/                      ← Kubernetes DaemonSet manifests
+└── scripts/                     ← CI and verification helper scripts
+```
+
+## Architecture overview
+
+```
+log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → collector
+```
+
+Data flows through four layers (dependencies flow downward only):
+
+```
+logfwd (binary)           CLI entrypoints, config loading, signal handling
+       ↓
+logfwd-runtime            Async orchestration, pipeline loop, worker pool
+       ↓
+logfwd-arrow              ScanBuilder impls, SIMD backends, RecordBatch builders
+       ↓
+logfwd-core               Pure logic, proven, no_std, forbid(unsafe)
+```
+
+**Pipeline loop** (`logfwd-runtime/src/pipeline.rs`): input threads (OS threads, blocking IO) feed a bounded `tokio::sync::mpsc` channel → async pipeline loop batches and flushes → scanner → SQL transform → output sinks. See `dev-docs/ARCHITECTURE.md` for the full data flow.
+
+**Key abstraction boundary**: `ScanBuilder` trait (defined in `logfwd-core`, implemented in `logfwd-arrow`). The scanner knows nothing about Arrow — it calls trait methods.
+
+## Crate rules (CI-enforced)
+
+| Crate | Key constraints |
+|-------|----------------|
+| `logfwd-core` | `no_std` + `forbid(unsafe_code)`. Only deps: memchr + wide. Every public fn needs a Kani proof. No panics, no unwrap, no indexing. |
+| `logfwd-arrow` | Implements core's ScanBuilder. unsafe allowed for SIMD only. proptest: SIMD ≡ scalar. |
+| `logfwd-io` | IO lives here. Tests use tempfiles. No raw payload injection (see #1615). |
+| `logfwd-transform` | DataFusion is the SQL engine. Enrichment tables implement Arrow RecordBatchReader. |
+| `logfwd-output` | Uses core for OTLP encoding. Transport separated from serialization. |
+| `logfwd-runtime` | Async orchestration only. Extract pure reducers instead of growing async shells. |
+| `logfwd` (binary) | CLI/bootstrap only. No long-lived runtime orchestration logic. |
+
+Full details: `dev-docs/CRATE_RULES.md`.
+
+## Code style essentials
+
+- **No `.unwrap()` in production paths.** Use `?`, `.expect("reason")`, or `unwrap_or`.
+- **Hot path** (reader → framer → scanner → builders → OTLP → compress): no per-record allocations, no `format!()` in loops, no `Vec::push` in per-line loops, prefer `&[u8]` over `&str`.
+- **Naming:** functions are `verb_noun`, booleans are `is_`/`has_`/`should_` prefixed.
+- **Comments:** doc comments (`///`) on all public items. No restating the code. TODOs: `// TODO(#123): description`.
+- **Tests:** one test per behavior. Names describe the scenario: `empty_input_returns_none`.
+- **Workspace lints** in root `Cargo.toml` under `[workspace.lints]` — all crates inherit. No per-crate overrides.
+
+Full details: `dev-docs/CODE_STYLE.md`.
+
+## Verification requirements
+
+| Technique | Use when |
+|-----------|----------|
+| **TLA+** (`tla/`) | Temporal properties: liveness, drain, protocol ordering |
+| **Kani** | Pure functions, bounded inputs, unsafe code — exhaustive bounded proofs |
+| **proptest** | Stateful, heap-heavy, or async code; SIMD conformance |
+| **Miri** | UB detection, allocator behavior |
+
+- Every new public function in `logfwd-core` **requires** a Kani proof.
+- SIMD backends **require** proptest (SIMD output ≡ scalar output).
+- State-machine changes **require** updating TLA+ specs + Kani/proptest.
+
+Full details: `dev-docs/VERIFICATION.md`.
+
+## Change map — what must change together
+
+Before editing code, check `dev-docs/CHANGE_MAP.md`:
+
+- **Config fields changed** → update parsing code, `book/src/config/reference.md`, example configs, validation tests.
+- **Pipeline behavior changed** → update `dev-docs/ARCHITECTURE.md`, troubleshooting, performance docs.
+- **Invariants changed** → update `dev-docs/VERIFICATION.md`, Kani/proptest harnesses, TLA+ specs.
+- **Crate boundaries changed** → update `dev-docs/CRATE_RULES.md`, crate-level `AGENTS.md` files.
+
+## Git and PR conventions
+
+- **Commit messages:** `type: concise description` — `fix:`, `feat:`, `refactor:`, `docs:`, `bench:`, `test:`
+- **One concern per commit.** Don't mix fixes with features.
+- **PR titles:** same format as commits, under 70 chars.
+- **PR body:** explain what and why. Include benchmark results if relevant.
+- **Tests required** in every PR.
+- **`just ci` must pass** before pushing.
+
+Full details: `CONTRIBUTING.md`, `dev-docs/PR_PROCESS.md`.
+
+## Issue labels (quick reference)
+
+Every issue needs **type + priority + component(s)**:
 
 | Type | Priority |
 |------|----------|
 | `bug`, `enhancement`, `performance`, `architecture`, `research`, `documentation`, `work-unit` | `P0` critical, `P1` high, `P2` medium, `P3` low |
 
-## Before submitting
+Component labels use `component:` prefix (e.g., `component:processor/scanner`). Full taxonomy: `CONTRIBUTING.md`.
 
-- `just ci` must pass
-- See `dev-docs/VERIFICATION.md` for proof requirements (Kani, TLA+, proptest)
-- For control-plane or state-machine fixes in mixed async/runtime code, prefer extracting a local pure reducer/state module and add Kani + proptest coverage there when feasible
-- See `dev-docs/CODE_STYLE.md` for style rules
+## Navigation tips
+
+- **Find a crate's purpose:** `crates/<name>/` — each has a `Cargo.toml` and many have an `AGENTS.md` with crate-specific rules.
+- **Find how data flows:** `dev-docs/ARCHITECTURE.md` — full pipeline diagram and buffer lifecycle.
+- **Find what SQL UDFs exist:** `crates/logfwd-transform/src/udf/` — `int()`, `float()`, `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()`.
+- **Find config schema:** `book/src/config/reference.md` — all YAML fields, input/output types.
+- **Find example configs:** `examples/use-cases/` — 20 common patterns.
+- **Find roadmap/priorities:** [GitHub issue #889](https://github.com/strawgate/memagent/issues/889).
+- **Find library-specific patterns:** `dev-docs/references/` — Arrow, DataFusion, Tokio, OTLP, Kani.
+- **Find verification status:** `dev-docs/VERIFICATION.md` — per-module proof status.
+- **Find what breaks together:** `dev-docs/CHANGE_MAP.md` — co-change requirements.

@@ -620,3 +620,148 @@ fn test_is_transient_error_network() {
 fn test_is_transient_error_non_retryable() {
     assert!(!is_transient_error(&ureq::Error::BadUri("bad".to_string())));
 }
+
+// ---------------------------------------------------------------------------
+// Regression test for #1620: console format must show struct column values
+// ---------------------------------------------------------------------------
+
+/// `write_console()` must serialise Struct columns (e.g. from `grok()`) as
+/// inline JSON rather than silently dropping them as empty strings.
+#[test]
+fn test_console_format_struct_column_rendered_as_json() {
+    use arrow::array::{ArrayRef, StructArray};
+    use arrow::datatypes::Fields;
+
+    let method_field = Arc::new(Field::new("method", DataType::Utf8, true));
+    let status_field = Arc::new(Field::new("status", DataType::Utf8, true));
+
+    let method_arr: ArrayRef = Arc::new(StringArray::from(vec![Some("GET"), Some("POST")]));
+    let status_arr: ArrayRef = Arc::new(StringArray::from(vec![Some("200"), Some("500")]));
+
+    let struct_arr = StructArray::new(
+        Fields::from(vec![method_field, status_field]),
+        vec![method_arr, status_arr],
+        None,
+    );
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("level", DataType::Utf8, true),
+        Field::new("message", DataType::Utf8, true),
+        Field::new(
+            "parsed",
+            DataType::Struct(Fields::from(vec![
+                Field::new("method", DataType::Utf8, true),
+                Field::new("status", DataType::Utf8, true),
+            ])),
+            true,
+        ),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(vec![Some("ERROR"), Some("INFO")])),
+            Arc::new(StringArray::from(vec![Some("request failed"), Some("ok")])),
+            Arc::new(struct_arr),
+        ],
+    )
+    .unwrap();
+
+    let meta = make_metadata();
+    let mut sink = StdoutSink::new(
+        "test".to_string(),
+        StdoutFormat::Console,
+        Arc::new(ComponentStats::new()),
+    );
+    let mut out: Vec<u8> = Vec::new();
+    sink.write_batch_to(&batch, &meta, &mut out).unwrap();
+
+    let output = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines.len(), 2, "expected 2 output lines, got: {output:?}");
+
+    assert!(
+        lines[0].contains("parsed="),
+        "expected 'parsed=' in: {}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("\"method\""),
+        "console format must render struct as JSON, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("\"GET\""),
+        "struct field value must be visible, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("\"POST\""),
+        "row 1 struct field value must be visible, got: {}",
+        lines[1]
+    );
+}
+
+/// Console output currently skips null values for all field types.
+/// This regression test asserts that behavior remains consistent for Struct:
+/// null struct row is omitted, while non-null row renders as JSON.
+#[test]
+fn test_console_format_null_struct_cell() {
+    use arrow::array::{ArrayRef, StructArray};
+    use arrow::buffer::{BooleanBuffer, NullBuffer};
+    use arrow::datatypes::Fields;
+
+    let method_field = Arc::new(Field::new("method", DataType::Utf8, true));
+    let method_arr: ArrayRef = Arc::new(StringArray::from(vec![None::<&str>, Some("POST")]));
+
+    let nulls = NullBuffer::new(BooleanBuffer::collect_bool(2, |i| i == 1));
+    let struct_arr = StructArray::new(
+        Fields::from(vec![method_field]),
+        vec![method_arr],
+        Some(nulls),
+    );
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("level", DataType::Utf8, true),
+        Field::new(
+            "parsed",
+            DataType::Struct(Fields::from(vec![Field::new(
+                "method",
+                DataType::Utf8,
+                true,
+            )])),
+            true,
+        ),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(vec![Some("WARN"), Some("INFO")])),
+            Arc::new(struct_arr),
+        ],
+    )
+    .unwrap();
+
+    let meta = make_metadata();
+    let mut sink = StdoutSink::new(
+        "test".to_string(),
+        StdoutFormat::Console,
+        Arc::new(ComponentStats::new()),
+    );
+    let mut out: Vec<u8> = Vec::new();
+    sink.write_batch_to(&batch, &meta, &mut out).unwrap();
+
+    let output = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines.len(), 2, "expected 2 output lines: {output:?}");
+
+    assert!(
+        !lines[0].contains("parsed="),
+        "row 0 null struct should be omitted, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("\"POST\""),
+        "row 1 non-null struct must render, got: {}",
+        lines[1]
+    );
+}
