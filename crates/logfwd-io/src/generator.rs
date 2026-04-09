@@ -56,6 +56,27 @@ pub enum GeneratorAttributeValue {
     Null,
 }
 
+/// Resolved timestamp configuration for the `logs` profile.
+///
+/// Controls the base timestamp and per-event step for generated log lines.
+/// Resolved at pipeline build time — `"now"` is converted to an epoch ms value.
+pub struct GeneratorTimestamp {
+    /// Base timestamp in milliseconds since Unix epoch.
+    pub start_epoch_ms: i64,
+    /// Milliseconds between events. Negative = events go backward in time.
+    pub step_ms: i64,
+}
+
+/// Default: 2024-01-15T00:00:00Z, +1ms per event.
+impl Default for GeneratorTimestamp {
+    fn default() -> Self {
+        Self {
+            start_epoch_ms: 1_705_276_800_000, // 2024-01-15T00:00:00Z
+            step_ms: 1,
+        }
+    }
+}
+
 /// Configuration for the generator input.
 pub struct GeneratorConfig {
     /// Target events per second. 0 = unlimited (as fast as possible).
@@ -74,6 +95,8 @@ pub struct GeneratorConfig {
     pub sequence: Option<GeneratorGeneratedField>,
     /// Source-created timestamp field for `record` rows.
     pub event_created_unix_nano_field: Option<String>,
+    /// Timestamp configuration for the `logs` profile.
+    pub timestamp: GeneratorTimestamp,
 }
 
 impl Default for GeneratorConfig {
@@ -87,6 +110,7 @@ impl Default for GeneratorConfig {
             attributes: HashMap::new(),
             sequence: None,
             event_created_unix_nano_field: None,
+            timestamp: GeneratorTimestamp::default(),
         }
     }
 }
@@ -112,69 +136,112 @@ const PATHS: [&str; 5] = [
 ];
 const METHODS: [&str; 4] = ["GET", "POST", "PUT", "DELETE"];
 const SERVICES: [&str; 3] = ["myapp", "gateway", "auth-svc"];
-#[cfg(test)]
-const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
+// ---------------------------------------------------------------------------
+// Date math helpers (Howard Hinnant algorithms)
+// ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TimestampParts {
-    year: i32,
-    month: u32,
-    day: u32,
-    hour: u64,
-    minute: u64,
-    second: u64,
-    millisecond: u64,
+/// Days from 1970-01-01 to the given civil date.
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year } as i64;
+    let m = if month <= 2 {
+        month as i64 + 9
+    } else {
+        month as i64 - 3
+    };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * m + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
 }
 
-fn timestamp_parts(counter: u64) -> TimestampParts {
-    // 2024-01-15T00:00:00.000Z + counter milliseconds.
-    let total_ms = counter;
-    let millisecond = total_ms % 1000;
-    let total_sec = total_ms / 1000;
-    let second = total_sec % 60;
-    let total_min = total_sec / 60;
-    let minute = total_min % 60;
-    let total_hour = total_min / 60;
-    let hour = total_hour % 24;
-    let day_offset = (total_hour / 24) as i64;
-    let base_days = days_from_civil(2024, 1, 15);
-    let (year, month, day) = civil_from_days(base_days + day_offset);
+/// Civil date from days since 1970-01-01.
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = (y + i64::from(month <= 2)) as i32;
+    (year, month, day)
+}
 
-    TimestampParts {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        millisecond,
+/// Decompose epoch milliseconds into `(year, month, day, hour, min, sec, ms)`.
+fn epoch_ms_to_parts(epoch_ms: i64) -> (i32, u32, u32, u32, u32, u32, u32) {
+    let day_count = epoch_ms.div_euclid(86_400_000);
+    let day_ms = epoch_ms.rem_euclid(86_400_000) as u32;
+    let (year, month, day) = civil_from_days(day_count);
+    let hour = day_ms / 3_600_000;
+    let min = (day_ms % 3_600_000) / 60_000;
+    let sec = (day_ms % 60_000) / 1000;
+    let ms = day_ms % 1000;
+    (year, month, day, hour, min, sec, ms)
+}
+
+/// Parse `YYYY-MM-DDTHH:MM:SSZ` to epoch milliseconds.
+pub fn parse_iso8601_to_epoch_ms(s: &str) -> Result<i64, String> {
+    let b = s.as_bytes();
+    if b.len() != 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b[19] != b'Z'
+    {
+        return Err(format!("expected YYYY-MM-DDTHH:MM:SSZ format, got {s:?}"));
+    }
+    let year = parse_digits(b, 0, 4).ok_or("invalid year")? as i32;
+    let month = parse_digits(b, 5, 2).ok_or("invalid month")? as u32;
+    let day = parse_digits(b, 8, 2).ok_or("invalid day")? as u32;
+    let hour = parse_digits(b, 11, 2).ok_or("invalid hour")? as u32;
+    let min = parse_digits(b, 14, 2).ok_or("invalid minute")? as u32;
+    let sec = parse_digits(b, 17, 2).ok_or("invalid second")? as u32;
+
+    if !(1..=12).contains(&month) || day < 1 || hour > 23 || min > 59 || sec > 59 {
+        return Err(format!("date/time component out of range in {s:?}"));
+    }
+    let max_day = max_days_in_month(year, month);
+    if day > max_day {
+        return Err(format!(
+            "day {day} out of range for {year:04}-{month:02} (max {max_day}) in {s:?}"
+        ));
+    }
+
+    let days = days_from_civil(year, month, day);
+    let ms = days * 86_400_000 + hour as i64 * 3_600_000 + min as i64 * 60_000 + sec as i64 * 1000;
+    Ok(ms)
+}
+
+fn max_days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
     }
 }
 
-// Howard Hinnant civil-date conversion helpers:
-// https://howardhinnant.github.io/date_algorithms.html
-fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
-    let y = year - i32::from(month <= 2);
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let m = month as i32;
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    i64::from(era) * 146_097 + i64::from(doe) - 719_468
-}
-
-fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
-    let z = days_since_epoch + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i32 + (era as i32) * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let month = mp + if mp < 10 { 3 } else { -9 }; // [1, 12]
-    let year = y + i32::from(month <= 2);
-    (year, month as u32, day as u32)
+fn parse_digits(b: &[u8], offset: usize, count: usize) -> Option<u64> {
+    let mut v = 0u64;
+    for i in 0..count {
+        let c = b[offset + i];
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        v = v * 10 + (c - b'0') as u64;
+    }
+    Some(v)
 }
 
 #[derive(Debug, Clone)]
@@ -281,65 +348,44 @@ impl GeneratorInput {
             3 => 429,
             _ => 200,
         };
-        let ts = timestamp_parts(seq);
+        let Ok(counter_i64) = i64::try_from(self.counter) else {
+            self.done = true;
+            return;
+        };
+        let Some(event_ms) = counter_i64
+            .checked_mul(self.config.timestamp.step_ms)
+            .and_then(|offset| self.config.timestamp.start_epoch_ms.checked_add(offset))
+        else {
+            self.done = true;
+            return;
+        };
+        let (year, month, day, hour, min, sec, msec) = epoch_ms_to_parts(event_ms);
 
         match self.config.complexity {
             GeneratorComplexity::Simple => {
                 let _ = write!(
                     self.buf,
-                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millisecond:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status}}}"#,
-                    year = ts.year,
-                    month = ts.month,
-                    day = ts.day,
-                    hour = ts.hour,
-                    minute = ts.minute,
-                    second = ts.second,
-                    millisecond = ts.millisecond,
+                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status}}}"#,
                 );
             }
             GeneratorComplexity::Complex => {
                 let bytes_in = 128 + seq.wrapping_mul(17) % 8192;
                 let bytes_out = 64 + seq.wrapping_mul(31) % 4096;
-                // Occasionally add nested objects and arrays to exercise the
-                // scanner and schema inference more thoroughly.
                 if seq % 5 == 0 {
-                    // Nested: headers object + tags array
                     let _ = write!(
                         self.buf,
-                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millisecond:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"headers":{{"content-type":"application/json","x-request-id":"{rid:016x}"}},"tags":["web","{service}","{level}"]}}"#,
-                        year = ts.year,
-                        month = ts.month,
-                        day = ts.day,
-                        hour = ts.hour,
-                        minute = ts.minute,
-                        second = ts.second,
-                        millisecond = ts.millisecond,
+                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"headers":{{"content-type":"application/json","x-request-id":"{rid:016x}"}},"tags":["web","{service}","{level}"]}}"#,
                     );
                 } else if seq % 7 == 0 {
-                    // Nested: upstream array of objects
                     let upstream_ms = 1 + seq.wrapping_mul(19) % 200;
                     let _ = write!(
                         self.buf,
-                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millisecond:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"upstream":[{{"host":"10.0.0.1","latency_ms":{upstream_ms}}},{{"host":"10.0.0.2","latency_ms":{dur}}}]}}"#,
-                        year = ts.year,
-                        month = ts.month,
-                        day = ts.day,
-                        hour = ts.hour,
-                        minute = ts.minute,
-                        second = ts.second,
-                        millisecond = ts.millisecond,
+                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"upstream":[{{"host":"10.0.0.1","latency_ms":{upstream_ms}}},{{"host":"10.0.0.2","latency_ms":{dur}}}]}}"#,
                     );
                 } else {
                     let _ = write!(
                         self.buf,
-                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millisecond:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out}}}"#,
-                        year = ts.year,
-                        month = ts.month,
-                        day = ts.day,
-                        hour = ts.hour,
-                        minute = ts.minute,
-                        second = ts.second,
-                        millisecond = ts.millisecond,
+                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out}}}"#,
                     );
                 }
             }
@@ -616,70 +662,129 @@ mod tests {
         }
     }
 
+    fn extract_timestamp(line: &str) -> &str {
+        let start = line.find("\"timestamp\":\"").unwrap() + 13;
+        let end = start + line[start..].find('"').unwrap();
+        &line[start..end]
+    }
+
     #[test]
     fn timestamps_are_monotonically_increasing() {
         let mut input = GeneratorInput::new(
             "test",
             GeneratorConfig {
                 batch_size: 2000,
-                total_events: 0,
+                total_events: 2000,
                 ..Default::default()
             },
         );
-        // Start just before the 24-hour rollover boundary to validate date carry.
-        input.counter = MILLIS_PER_DAY - 5;
 
         let events = input.poll().unwrap();
-        if let InputEvent::Data { bytes, .. } = &events[0] {
-            let text = String::from_utf8_lossy(bytes);
-            let lines: Vec<&str> = text.trim().split('\n').collect();
+        let InputEvent::Data { bytes, .. } = &events[0] else {
+            panic!("expected Data event");
+        };
+        let text = String::from_utf8_lossy(bytes);
+        let lines: Vec<&str> = text.trim().lines().collect();
+        assert_eq!(lines.len(), 2000);
 
-            let extract_ts = |line: &str| -> Option<String> {
-                let start = line.find("\"timestamp\":\"").map(|p| p + 13)?;
-                let end = line[start..].find('"').map(|p| p + start)?;
-                Some(line[start..end].to_string())
-            };
-
-            let mut prev = extract_ts(lines[0]).expect("first line has timestamp");
-            for (i, line) in lines.iter().enumerate().skip(1) {
-                let ts =
-                    extract_ts(line).unwrap_or_else(|| panic!("line {i} has no timestamp: {line}"));
+        let mut prev = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            let ts = extract_timestamp(line);
+            if i > 0 {
                 assert!(
-                    ts > prev,
-                    "timestamp did not strictly increase at line {i}: {prev} >= {ts}"
+                    ts > prev.as_str(),
+                    "timestamp at event {i} ({ts}) must be > previous ({prev})"
                 );
-                prev = ts;
             }
-
-            assert!(
-                lines
-                    .iter()
-                    .any(|line| line.contains("\"timestamp\":\"2024-01-16T")),
-                "expected rollover into next day near 24h boundary"
-            );
+            prev = ts.to_string();
         }
     }
 
     #[test]
-    fn timestamp_parts_rolls_day_after_24_hours() {
-        let before = timestamp_parts(MILLIS_PER_DAY - 1);
-        assert_eq!((before.year, before.month, before.day), (2024, 1, 15));
-        assert_eq!(
-            (
-                before.hour,
-                before.minute,
-                before.second,
-                before.millisecond
-            ),
-            (23, 59, 59, 999)
+    fn negative_step_produces_decreasing_timestamps() {
+        let mut input = GeneratorInput::new(
+            "test",
+            GeneratorConfig {
+                batch_size: 100,
+                total_events: 100,
+                timestamp: GeneratorTimestamp {
+                    start_epoch_ms: 1_705_276_800_000,
+                    step_ms: -1,
+                },
+                ..Default::default()
+            },
         );
 
-        let after = timestamp_parts(MILLIS_PER_DAY);
-        assert_eq!((after.year, after.month, after.day), (2024, 1, 16));
-        assert_eq!(
-            (after.hour, after.minute, after.second, after.millisecond),
-            (0, 0, 0, 0)
+        let events = input.poll().unwrap();
+        let InputEvent::Data { bytes, .. } = &events[0] else {
+            panic!("expected Data event");
+        };
+        let text = String::from_utf8_lossy(bytes);
+        let lines: Vec<&str> = text.trim().lines().collect();
+
+        let first_ts = extract_timestamp(lines[0]);
+        let last_ts = extract_timestamp(lines[99]);
+        assert!(
+            first_ts > last_ts,
+            "negative step should decrease: {first_ts} vs {last_ts}"
         );
+    }
+
+    #[test]
+    fn custom_start_timestamp() {
+        let mut input = GeneratorInput::new(
+            "test",
+            GeneratorConfig {
+                batch_size: 1,
+                total_events: 1,
+                timestamp: GeneratorTimestamp {
+                    start_epoch_ms: 0,
+                    step_ms: 1,
+                },
+                ..Default::default()
+            },
+        );
+
+        let events = input.poll().unwrap();
+        let InputEvent::Data { bytes, .. } = &events[0] else {
+            panic!("expected Data event");
+        };
+        let text = String::from_utf8_lossy(bytes);
+        let line = text.trim().lines().next().unwrap();
+        let ts = extract_timestamp(line);
+        assert_eq!(ts, "1970-01-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn epoch_ms_to_parts_known_values() {
+        let (y, mo, d, h, mi, s, ms) = epoch_ms_to_parts(1_705_276_800_000);
+        assert_eq!((y, mo, d, h, mi, s, ms), (2024, 1, 15, 0, 0, 0, 0));
+
+        let (y, mo, d, h, mi, s, ms) = epoch_ms_to_parts(0);
+        assert_eq!((y, mo, d, h, mi, s, ms), (1970, 1, 1, 0, 0, 0, 0));
+
+        let leap_ms = days_from_civil(2000, 2, 29) * 86_400_000
+            + 23 * 3_600_000
+            + 59 * 60_000
+            + 59 * 1000
+            + 999;
+        let (y, mo, d, h, mi, s, ms) = epoch_ms_to_parts(leap_ms);
+        assert_eq!((y, mo, d, h, mi, s, ms), (2000, 2, 29, 23, 59, 59, 999));
+    }
+
+    #[test]
+    fn parse_iso8601_roundtrip() {
+        let ms = parse_iso8601_to_epoch_ms("2024-01-15T00:00:00Z").unwrap();
+        assert_eq!(ms, 1_705_276_800_000);
+
+        let ms = parse_iso8601_to_epoch_ms("1970-01-01T00:00:00Z").unwrap();
+        assert_eq!(ms, 0);
+
+        assert!(parse_iso8601_to_epoch_ms("not-a-date").is_err());
+        assert!(parse_iso8601_to_epoch_ms("2024-13-01T00:00:00Z").is_err());
+        assert!(parse_iso8601_to_epoch_ms("2024-02-31T00:00:00Z").is_err());
+        assert!(parse_iso8601_to_epoch_ms("2023-02-29T00:00:00Z").is_err());
+        assert!(parse_iso8601_to_epoch_ms("2024-02-29T00:00:00Z").is_ok());
     }
 
     #[test]
@@ -985,5 +1090,272 @@ mod tests {
             std::str::from_utf8(&encoded).unwrap(),
             "\"deleted_at\":null"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Oracle & property-based tests for date math
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn epoch_ms_to_parts_matches_chrono() {
+        use chrono::{DateTime, Datelike, Timelike};
+        use proptest::prelude::*;
+
+        let max_ms = 7_258_118_400_000_i64;
+        proptest!(|(ms in 0_i64..max_ms)| {
+            let (year, month, day, hour, min, sec, millis) = epoch_ms_to_parts(ms);
+            let dt = DateTime::from_timestamp_millis(ms).unwrap();
+            prop_assert_eq!(year, dt.year());
+            prop_assert_eq!(month, dt.month());
+            prop_assert_eq!(day, dt.day());
+            prop_assert_eq!(hour, dt.hour());
+            prop_assert_eq!(min, dt.minute());
+            prop_assert_eq!(sec, dt.second());
+            prop_assert_eq!(millis, dt.nanosecond() / 1_000_000);
+        });
+    }
+
+    #[test]
+    fn epoch_ms_to_parts_negative_matches_chrono() {
+        use chrono::{DateTime, Datelike, Timelike};
+        use proptest::prelude::*;
+
+        let min_ms = -2_208_988_800_000_i64;
+        proptest!(|(ms in min_ms..0_i64)| {
+            let (year, month, day, hour, min, sec, millis) = epoch_ms_to_parts(ms);
+            let dt = DateTime::from_timestamp_millis(ms).unwrap();
+            prop_assert_eq!(year, dt.year());
+            prop_assert_eq!(month, dt.month());
+            prop_assert_eq!(day, dt.day());
+            prop_assert_eq!(hour, dt.hour());
+            prop_assert_eq!(min, dt.minute());
+            prop_assert_eq!(sec, dt.second());
+            prop_assert_eq!(millis, dt.nanosecond() / 1_000_000);
+        });
+    }
+
+    #[test]
+    fn civil_days_roundtrip() {
+        use proptest::prelude::*;
+
+        proptest!(|(y in 1_i32..3000, m in 1_u32..=12, d in 1_u32..=28)| {
+            let days = days_from_civil(y, m, d);
+            let (y2, m2, d2) = civil_from_days(days);
+            prop_assert_eq!((y, m, d), (y2, m2, d2));
+        });
+    }
+
+    #[test]
+    fn parse_iso8601_roundtrip_proptest() {
+        use proptest::prelude::*;
+
+        proptest!(|(
+            y in 1970_i32..2200,
+            m in 1_u32..=12,
+            d in 1_u32..=28,
+            h in 0_u32..=23,
+            mi in 0_u32..=59,
+            s in 0_u32..=59,
+        )| {
+            let input = format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z");
+            let ms = parse_iso8601_to_epoch_ms(&input).unwrap();
+            let (y2, m2, d2, h2, mi2, s2, ms2) = epoch_ms_to_parts(ms);
+            prop_assert_eq!((y, m, d, h, mi, s, 0_u32), (y2, m2, d2, h2, mi2, s2, ms2));
+        });
+    }
+
+    #[test]
+    fn timestamp_boundary_crossings() {
+        use chrono::{DateTime, Datelike, Timelike};
+
+        struct Case {
+            label: &'static str,
+            start: &'static str,
+            step_ms: i64,
+            count: usize,
+            checks: Vec<(usize, &'static str)>,
+        }
+
+        let cases = [
+            Case {
+                label: "midnight crossing",
+                start: "2024-01-15T23:59:59Z",
+                step_ms: 1000,
+                count: 5,
+                checks: vec![(0, "2024-01-15T23:59:59"), (1, "2024-01-16T00:00:00")],
+            },
+            Case {
+                label: "leap day crossing (2024)",
+                start: "2024-02-28T23:59:58Z",
+                step_ms: 1000,
+                count: 5,
+                checks: vec![(0, "2024-02-28T23:59:58"), (2, "2024-02-29T00:00:00")],
+            },
+            Case {
+                label: "leap day to March",
+                start: "2024-02-29T23:59:58Z",
+                step_ms: 1000,
+                count: 5,
+                checks: vec![(0, "2024-02-29T23:59:58"), (2, "2024-03-01T00:00:00")],
+            },
+            Case {
+                label: "non-leap Feb to March",
+                start: "2023-02-28T23:59:58Z",
+                step_ms: 1000,
+                count: 5,
+                checks: vec![(0, "2023-02-28T23:59:58"), (2, "2023-03-01T00:00:00")],
+            },
+            Case {
+                label: "year-end crossing",
+                start: "2024-12-31T23:59:58Z",
+                step_ms: 1000,
+                count: 5,
+                checks: vec![(0, "2024-12-31T23:59:58"), (2, "2025-01-01T00:00:00")],
+            },
+            Case {
+                label: "backward across midnight",
+                start: "2024-01-16T00:00:02Z",
+                step_ms: -1000,
+                count: 5,
+                checks: vec![(0, "2024-01-16T00:00:02"), (3, "2024-01-15T23:59:59")],
+            },
+        ];
+
+        for case in &cases {
+            let start_ms = parse_iso8601_to_epoch_ms(case.start).unwrap();
+            let mut input = GeneratorInput::new(
+                "boundary",
+                GeneratorConfig {
+                    batch_size: case.count,
+                    total_events: case.count as u64,
+                    timestamp: GeneratorTimestamp {
+                        start_epoch_ms: start_ms,
+                        step_ms: case.step_ms,
+                    },
+                    ..Default::default()
+                },
+            );
+            let events = input.poll().unwrap();
+            let InputEvent::Data { bytes, .. } = &events[0] else {
+                panic!("{}: expected Data event", case.label);
+            };
+            let text = String::from_utf8_lossy(bytes);
+            let lines: Vec<&str> = text.trim().lines().collect();
+
+            for &(idx, expected_prefix) in &case.checks {
+                let ts = extract_timestamp(lines[idx]);
+                assert!(
+                    ts.starts_with(expected_prefix),
+                    "{}: event {idx} timestamp {ts} does not start with {expected_prefix}",
+                    case.label
+                );
+            }
+
+            // Verify every event against chrono as oracle
+            for (i, line) in lines.iter().enumerate() {
+                let ts = extract_timestamp(line);
+                let event_ms = start_ms + (i as i64) * case.step_ms;
+                let dt = DateTime::from_timestamp_millis(event_ms).unwrap();
+                let expected = format!(
+                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+                    dt.year(),
+                    dt.month(),
+                    dt.day(),
+                    dt.hour(),
+                    dt.minute(),
+                    dt.second(),
+                    dt.nanosecond() / 1_000_000,
+                );
+                assert_eq!(ts, expected, "{}: event {i} mismatch", case.label);
+            }
+        }
+    }
+
+    #[test]
+    fn prop_positive_step_always_monotonic() {
+        use proptest::prelude::*;
+
+        proptest!(|(
+            start_ms in 0_i64..4_102_444_800_000_i64,
+            step_ms in 1_i64..10_000,
+        )| {
+            let mut input = GeneratorInput::new(
+                "prop",
+                GeneratorConfig {
+                    batch_size: 100,
+                    total_events: 100,
+                    timestamp: GeneratorTimestamp { start_epoch_ms: start_ms, step_ms },
+                    ..Default::default()
+                },
+            );
+            let events = input.poll().unwrap();
+            let InputEvent::Data { bytes, .. } = &events[0] else { panic!("expected Data"); };
+            let text = String::from_utf8_lossy(bytes);
+            let lines: Vec<&str> = text.trim().lines().collect();
+            let timestamps: Vec<&str> = lines.iter().map(|l| extract_timestamp(l)).collect();
+            for i in 1..timestamps.len() {
+                prop_assert!(timestamps[i] > timestamps[i - 1]);
+            }
+        });
+    }
+
+    #[test]
+    fn prop_negative_step_always_decreasing() {
+        use proptest::prelude::*;
+
+        proptest!(|(
+            start_ms in 1_000_000_000_i64..4_102_444_800_000_i64,
+            step_ms in -10_000_i64..=-1,
+        )| {
+            let mut input = GeneratorInput::new(
+                "prop",
+                GeneratorConfig {
+                    batch_size: 100,
+                    total_events: 100,
+                    timestamp: GeneratorTimestamp { start_epoch_ms: start_ms, step_ms },
+                    ..Default::default()
+                },
+            );
+            let events = input.poll().unwrap();
+            let InputEvent::Data { bytes, .. } = &events[0] else { panic!("expected Data"); };
+            let text = String::from_utf8_lossy(bytes);
+            let lines: Vec<&str> = text.trim().lines().collect();
+            let timestamps: Vec<&str> = lines.iter().map(|l| extract_timestamp(l)).collect();
+            for i in 1..timestamps.len() {
+                prop_assert!(timestamps[i] < timestamps[i - 1]);
+            }
+        });
+    }
+
+    #[test]
+    fn prop_json_valid_with_any_timestamp_config() {
+        use proptest::prelude::*;
+
+        proptest!(|(
+            start_ms in 0_i64..4_102_444_800_000_i64,
+            step_ms in -1000_i64..1000,
+            count in 1_u64..50,
+        )| {
+            prop_assume!(step_ms != 0);
+            let mut generator = GeneratorInput::new(
+                "prop",
+                GeneratorConfig {
+                    batch_size: count as usize,
+                    total_events: count,
+                    timestamp: GeneratorTimestamp { start_epoch_ms: start_ms, step_ms },
+                    ..Default::default()
+                },
+            );
+            let events = generator.poll().unwrap();
+            prop_assert_eq!(events.len(), 1);
+            let InputEvent::Data { bytes, .. } = &events[0] else { panic!("expected Data"); };
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            for (i, line) in text.trim().lines().enumerate() {
+                prop_assert!(
+                    serde_json::from_str::<serde_json::Value>(line).is_ok(),
+                    "invalid JSON at event {i}: {line}"
+                );
+            }
+        });
     }
 }

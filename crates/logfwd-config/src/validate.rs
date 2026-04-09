@@ -402,6 +402,27 @@ impl Config {
                                     )));
                                 }
                             }
+                            if let Some(ts) = &generator.timestamp {
+                                if is_record_profile {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': generator.timestamp is only supported for the logs profile"
+                                    )));
+                                }
+                                if ts.step_ms == Some(0) {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': generator.timestamp.step_ms must not be zero"
+                                    )));
+                                }
+                                if let Some(start) = &ts.start {
+                                    if !start.eq_ignore_ascii_case("now") {
+                                        if let Err(e) = validate_iso8601_timestamp(start) {
+                                            return Err(ConfigError::Validation(format!(
+                                                "pipeline '{name}' input '{label}': generator.timestamp.start: {e}"
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     InputType::ArrowIpc => {
@@ -875,6 +896,72 @@ fn validate_log_level(level: &str) -> Result<(), String> {
             "'{level}' is not a recognised log level; expected one of: trace, debug, info, warn, error"
         )),
     }
+}
+
+/// Validate an ISO8601 timestamp string: `YYYY-MM-DDTHH:MM:SSZ`.
+///
+/// Checks both format and semantic validity (month/day/hour/min/sec ranges,
+/// including correct days-per-month with leap year handling).
+///
+/// Note: `logfwd-io::generator::parse_iso8601_to_epoch_ms` performs the same
+/// validation plus epoch conversion.  We duplicate the range checks here because
+/// `logfwd-config` cannot depend on `logfwd-io` (wrong crate-dependency direction).
+fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
+    let b = s.as_bytes();
+    if b.len() != 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b[19] != b'Z'
+    {
+        return Err(format!(
+            "must be \"now\" or YYYY-MM-DDTHH:MM:SSZ format, got {s:?}"
+        ));
+    }
+    let digits = |off: usize, n: usize| -> Result<u32, String> {
+        let mut v = 0u32;
+        for i in 0..n {
+            let c = b[off + i];
+            if !c.is_ascii_digit() {
+                return Err(format!("non-digit character in {s:?}"));
+            }
+            v = v * 10 + (c - b'0') as u32;
+        }
+        Ok(v)
+    };
+    let year = digits(0, 4)? as i32;
+    let month = digits(5, 2)?;
+    let day = digits(8, 2)?;
+    let hour = digits(11, 2)?;
+    let min = digits(14, 2)?;
+    let sec = digits(17, 2)?;
+
+    if !(1..=12).contains(&month) {
+        return Err(format!("month {month} out of range 1-12 in {s:?}"));
+    }
+    if hour > 23 || min > 59 || sec > 59 {
+        return Err(format!("time component out of range in {s:?}"));
+    }
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => unreachable!(),
+    };
+    if day < 1 || day > max_day {
+        return Err(format!(
+            "day {day} out of range for {year:04}-{month:02} (max {max_day}) in {s:?}"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

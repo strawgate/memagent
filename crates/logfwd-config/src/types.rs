@@ -181,6 +181,20 @@ pub struct GeneratorSequenceConfig {
     pub start: Option<u64>,
 }
 
+/// Timestamp configuration for the `logs` profile generator.
+///
+/// Controls the base timestamp and per-event step for generated log lines.
+/// Only valid for `profile: logs` (default); rejected for `profile: record`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratorTimestampConfig {
+    /// ISO8601 datetime (`YYYY-MM-DDTHH:MM:SSZ`) or `"now"`.
+    /// Default: `"2024-01-15T00:00:00Z"`.
+    pub start: Option<String>,
+    /// Milliseconds between events. Negative = backward. Default: 1.
+    pub step_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum HttpMethodConfig {
@@ -215,6 +229,8 @@ pub struct GeneratorInputConfig {
     pub attributes: HashMap<String, GeneratorAttributeValueConfig>,
     pub sequence: Option<GeneratorSequenceConfig>,
     pub event_created_unix_nano_field: Option<String>,
+    /// Timestamp configuration for the `logs` profile.
+    pub timestamp: Option<GeneratorTimestampConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
