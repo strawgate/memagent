@@ -4,6 +4,7 @@ mod policy;
 mod process;
 mod render;
 mod server;
+mod telemetry;
 
 // Re-export ComponentStats from logfwd-types so existing `logfwd_io::diagnostics::ComponentStats`
 // paths keep working.
