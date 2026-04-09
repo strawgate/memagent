@@ -1,11 +1,11 @@
 //! In-process ring-buffer span exporter for the diagnostics trace explorer.
 //!
-//! [`RingBufferExporter`] implements [`SpanExporter`] and stores the last
+//! `RingBufferExporter` implements `SpanExporter` and stores the last
 //! `MAX_SPANS` completed spans in an `Arc<Mutex<VecDeque>>`. The
-//! [`SpanBuffer`] handle is shared with the diagnostics server, which reads
+//! `SpanBuffer` handle is shared with the diagnostics server, which reads
 //! from it to serve `/admin/v1/traces`.
 //!
-//! Spans are converted to [`TraceSpan`] (a lightweight, serde-serializable
+//! Spans are converted to `TraceSpan` (a lightweight, serde-serializable
 //! snapshot) on export so the raw SDK types don't escape this module.
 
 use opentelemetry::KeyValue;
