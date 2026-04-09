@@ -101,17 +101,23 @@ mod kani_proofs {
     #[kani::proof]
     fn verify_json_priority_ordering() {
         assert!(json_priority(&DataType::Int64) > json_priority(&DataType::Float64));
-        assert!(json_priority(&DataType::Float64) > json_priority(&DataType::Utf8));
+        assert!(json_priority(&DataType::Float64) > json_priority(&DataType::Boolean));
+        assert!(json_priority(&DataType::Boolean) > json_priority(&DataType::Utf8));
         assert!(json_priority(&DataType::Int64) > json_priority(&DataType::Utf8));
         kani::cover!(
             json_priority(&DataType::Int64) > json_priority(&DataType::Utf8),
             "int beats utf8"
+        );
+        kani::cover!(
+            json_priority(&DataType::Boolean) > json_priority(&DataType::Utf8),
+            "bool beats utf8"
         );
     }
 
     #[kani::proof]
     fn verify_str_priority_ordering() {
         assert!(str_priority(&DataType::Utf8) > str_priority(&DataType::Int64));
+        assert!(str_priority(&DataType::Boolean) > str_priority(&DataType::Int64));
         assert!(str_priority(&DataType::Utf8View) > str_priority(&DataType::Float64));
         assert!(str_priority(&DataType::Utf8) == str_priority(&DataType::Utf8View));
         kani::cover!(
