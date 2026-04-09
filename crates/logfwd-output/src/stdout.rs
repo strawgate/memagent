@@ -11,6 +11,8 @@ use tokio::io::AsyncWriteExt;
 use logfwd_types::diagnostics::ComponentStats;
 
 use super::sink::{SendResult, Sink, SinkFactory};
+use arrow::util::display::array_value_to_string;
+
 use super::{
     BatchMetadata, ColVariant, build_col_infos, get_array, is_null, str_value, write_json_value,
     write_row_json,
@@ -144,10 +146,42 @@ impl StdoutSink {
         let schema = batch.schema();
         let fields = schema.fields();
 
-        // Find well-known columns by name (with or without type suffix).
-        let ts_idx = find_col(fields, &["timestamp_str", "timestamp"]);
-        let level_idx = find_col(fields, &["level_str", "level"]);
-        let msg_idx = find_col(fields, &["message_str", "message", "msg_str", "msg"]);
+        // Find well-known columns by name — check all canonical variants so
+        // CRI (_timestamp), OTLP (timestamp), and ES (@timestamp) sources work.
+        let ts_idx = find_col(
+            fields,
+            &[
+                "timestamp",
+                "_timestamp",
+                "@timestamp",
+                "time",
+                "ts",
+                "timestamp_str",
+            ],
+        );
+        let level_idx = find_col(
+            fields,
+            &[
+                "level",
+                "level_str",
+                "severity",
+                "log_level",
+                "loglevel",
+                "lvl",
+            ],
+        );
+        let msg_idx = find_col(
+            fields,
+            &[
+                "message",
+                "message_str",
+                "msg",
+                "msg_str",
+                "_msg",
+                "body",
+                "_raw",
+            ],
+        );
 
         let cols = build_col_infos(batch);
 
@@ -158,9 +192,9 @@ impl StdoutSink {
             if let Some(idx) = ts_idx {
                 let col = batch.column(idx);
                 if !col.is_null(row) {
-                    let ts = str_value(col, row);
+                    let ts = safe_col_to_string(col, row);
                     // Show just the time portion if it's a full ISO timestamp.
-                    let short = ts.find('T').map_or(ts, |i| &ts[i + 1..]);
+                    let short = ts.find('T').map_or(ts.as_str(), |i| &ts[i + 1..]);
                     if self.color {
                         self.buf.extend_from_slice(b"\x1b[2m");
                     }
@@ -176,9 +210,9 @@ impl StdoutSink {
             if let Some(idx) = level_idx {
                 let col = batch.column(idx);
                 if !col.is_null(row) {
-                    let level = str_value(col, row);
+                    let level = safe_col_to_string(col, row);
                     if self.color {
-                        let color = match level {
+                        let color = match level.as_str() {
                             "ERROR" => "\x1b[1;31m", // bold red
                             "WARN" => "\x1b[33m",    // yellow
                             "INFO" => "\x1b[32m",    // green
@@ -200,7 +234,8 @@ impl StdoutSink {
             if let Some(idx) = msg_idx {
                 let col = batch.column(idx);
                 if !col.is_null(row) {
-                    self.buf.extend_from_slice(str_value(col, row).as_bytes());
+                    let msg = safe_col_to_string(col, row);
+                    self.buf.extend_from_slice(msg.as_bytes());
                 }
             }
 
@@ -266,7 +301,8 @@ impl StdoutSink {
                         write_json_value(arr, row, &mut self.buf)?;
                     }
                     _ => {
-                        self.buf.extend_from_slice(str_value(arr, row).as_bytes());
+                        let s = array_value_to_string(arr, row).unwrap_or_default();
+                        self.buf.extend_from_slice(s.as_bytes());
                     }
                 }
 
@@ -279,6 +315,19 @@ impl StdoutSink {
             dest.write_all(&self.buf)?;
         }
         Ok(())
+    }
+}
+
+/// Safely convert any Arrow column value to a display string.
+///
+/// Unlike `str_value` (which panics on non-string types), this handles all
+/// Arrow data types via `array_value_to_string` for non-Utf8 columns.
+fn safe_col_to_string(col: &dyn Array, row: usize) -> String {
+    match col.data_type() {
+        DataType::Utf8 => col.as_string::<i32>().value(row).to_string(),
+        DataType::Utf8View => col.as_string_view().value(row).to_string(),
+        DataType::LargeUtf8 => col.as_string::<i64>().value(row).to_string(),
+        _ => array_value_to_string(col, row).unwrap_or_default(),
     }
 }
 

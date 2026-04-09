@@ -91,7 +91,11 @@ impl GeoLookupUdf {
     pub fn new(db: Arc<dyn GeoDatabase>) -> Self {
         Self {
             signature: Signature::new(
-                TypeSignature::Exact(vec![DataType::Utf8]),
+                TypeSignature::OneOf(vec![
+                    TypeSignature::Exact(vec![DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
+                ]),
                 Volatility::Immutable,
             ),
             db,
@@ -127,8 +131,7 @@ impl ScalarUDFImpl for GeoLookupUdf {
 
         match input {
             ColumnarValue::Array(array) => {
-                let str_array = array.as_string::<i32>();
-                let num_rows = str_array.len();
+                let num_rows = array.len();
 
                 // One builder per struct field.
                 let mut country_code = StringBuilder::with_capacity(num_rows, num_rows * 4);
@@ -141,10 +144,16 @@ impl ScalarUDFImpl for GeoLookupUdf {
                 let mut org = StringBuilder::with_capacity(num_rows, num_rows * 16);
 
                 for row in 0..num_rows {
-                    let result = if str_array.is_null(row) {
+                    let result = if array.is_null(row) {
                         None
                     } else {
-                        self.db.lookup(str_array.value(row))
+                        let ip = match array.data_type() {
+                            DataType::Utf8 => array.as_string::<i32>().value(row),
+                            DataType::Utf8View => array.as_string_view().value(row),
+                            DataType::LargeUtf8 => array.as_string::<i64>().value(row),
+                            _ => "",
+                        };
+                        self.db.lookup(ip)
                     };
                     append_result(
                         result.as_ref(),
@@ -175,7 +184,9 @@ impl ScalarUDFImpl for GeoLookupUdf {
             ColumnarValue::Scalar(scalar) => {
                 // Single-value path: look up once, return a scalar struct.
                 let ip_str = match scalar {
-                    datafusion::common::ScalarValue::Utf8(Some(s)) => Some(s.as_str()),
+                    datafusion::common::ScalarValue::Utf8(Some(s))
+                    | datafusion::common::ScalarValue::Utf8View(Some(s))
+                    | datafusion::common::ScalarValue::LargeUtf8(Some(s)) => Some(s.as_str()),
                     _ => None,
                 };
                 let result = ip_str.and_then(|ip| self.db.lookup(ip));

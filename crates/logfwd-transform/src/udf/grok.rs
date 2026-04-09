@@ -109,7 +109,14 @@ impl GrokUdf {
     pub fn new() -> Self {
         Self {
             signature: Signature::new(
-                TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8]),
+                TypeSignature::OneOf(vec![
+                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View, DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8, DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8View]),
+                    TypeSignature::Exact(vec![DataType::Utf8View, DataType::Utf8View]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8, DataType::Utf8View]),
+                ]),
                 Volatility::Immutable,
             ),
             grok_cache: Mutex::new(HashMap::new()),
@@ -182,7 +189,11 @@ impl ScalarUDFImpl for GrokUdf {
 
         // Extract pattern string.
         let pattern_str = match pattern {
-            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(s))) => s.clone(),
+            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(s)))
+            | ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8View(Some(s)))
+            | ColumnarValue::Scalar(datafusion::common::ScalarValue::LargeUtf8(Some(s))) => {
+                s.clone()
+            }
             ColumnarValue::Scalar(s) => {
                 let s = s.to_string();
                 s.trim_matches('"').trim_matches('\'').to_string()
@@ -218,8 +229,7 @@ impl ScalarUDFImpl for GrokUdf {
 
         match input {
             ColumnarValue::Array(array) => {
-                let str_array = array.as_string::<i32>();
-                let num_rows = str_array.len();
+                let num_rows = array.len();
 
                 // Build one StringBuilder per capture group.
                 let mut builders: Vec<StringBuilder> = compiled
@@ -229,13 +239,18 @@ impl ScalarUDFImpl for GrokUdf {
                     .collect();
 
                 for row in 0..num_rows {
-                    if str_array.is_null(row) {
+                    if array.is_null(row) {
                         for b in &mut builders {
                             b.append_null();
                         }
                         continue;
                     }
-                    let val = str_array.value(row);
+                    let val = match array.data_type() {
+                        DataType::Utf8 => array.as_string::<i32>().value(row),
+                        DataType::Utf8View => array.as_string_view().value(row),
+                        DataType::LargeUtf8 => array.as_string::<i64>().value(row),
+                        _ => "",
+                    };
                     match compiled.pattern.match_against(val) {
                         Some(matches) => {
                             for (i, name) in compiled.field_names.iter().enumerate() {

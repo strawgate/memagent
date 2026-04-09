@@ -64,7 +64,26 @@ impl RegexpExtractUdf {
     pub fn new() -> Self {
         Self {
             signature: Signature::new(
-                TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8, DataType::Int64]),
+                TypeSignature::OneOf(vec![
+                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8, DataType::Int64]),
+                    TypeSignature::Exact(vec![DataType::Utf8View, DataType::Utf8, DataType::Int64]),
+                    TypeSignature::Exact(vec![
+                        DataType::LargeUtf8,
+                        DataType::Utf8,
+                        DataType::Int64,
+                    ]),
+                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8View, DataType::Int64]),
+                    TypeSignature::Exact(vec![
+                        DataType::Utf8View,
+                        DataType::Utf8View,
+                        DataType::Int64,
+                    ]),
+                    TypeSignature::Exact(vec![
+                        DataType::LargeUtf8,
+                        DataType::Utf8View,
+                        DataType::Int64,
+                    ]),
+                ]),
                 Volatility::Immutable,
             ),
             regex_cache: Mutex::new(HashMap::new()),
@@ -102,7 +121,11 @@ impl ScalarUDFImpl for RegexpExtractUdf {
 
         // Extract the pattern string (must be a constant/scalar).
         let pattern_str = match pattern {
-            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(s))) => s.clone(),
+            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(s)))
+            | ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8View(Some(s)))
+            | ColumnarValue::Scalar(datafusion::common::ScalarValue::LargeUtf8(Some(s))) => {
+                s.clone()
+            }
             ColumnarValue::Scalar(s) => {
                 let s = s.to_string();
                 s.trim_matches('"').trim_matches('\'').to_string()
@@ -160,16 +183,20 @@ impl ScalarUDFImpl for RegexpExtractUdf {
 
         match input {
             ColumnarValue::Array(array) => {
-                let str_array = array.as_string::<i32>();
-                let mut builder =
-                    StringBuilder::with_capacity(str_array.len(), str_array.len() * 32);
+                let num_rows = array.len();
+                let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 32);
 
-                for i in 0..str_array.len() {
-                    if str_array.is_null(i) {
+                for i in 0..num_rows {
+                    if array.is_null(i) {
                         builder.append_null();
                         continue;
                     }
-                    let val = str_array.value(i);
+                    let val = match array.data_type() {
+                        DataType::Utf8 => array.as_string::<i32>().value(i),
+                        DataType::Utf8View => array.as_string_view().value(i),
+                        DataType::LargeUtf8 => array.as_string::<i64>().value(i),
+                        _ => "",
+                    };
                     match re.captures(val) {
                         Some(caps) => match caps.get(idx) {
                             Some(m) => builder.append_value(m.as_str()),

@@ -293,6 +293,32 @@ impl LokiSink {
                             parse_timestamp_nanos(col.as_string::<i64>().value(row).as_bytes())
                                 .unwrap_or(metadata.observed_time_ns)
                         }
+                        DataType::Timestamp(unit, _) => {
+                            use arrow::datatypes::{
+                                TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+                                TimestampNanosecondType, TimestampSecondType,
+                            };
+                            let raw_ns = match unit {
+                                TimeUnit::Nanosecond => {
+                                    Some(col.as_primitive::<TimestampNanosecondType>().value(row))
+                                }
+                                TimeUnit::Microsecond => col
+                                    .as_primitive::<TimestampMicrosecondType>()
+                                    .value(row)
+                                    .checked_mul(1_000),
+                                TimeUnit::Millisecond => col
+                                    .as_primitive::<TimestampMillisecondType>()
+                                    .value(row)
+                                    .checked_mul(1_000_000),
+                                TimeUnit::Second => col
+                                    .as_primitive::<TimestampSecondType>()
+                                    .value(row)
+                                    .checked_mul(1_000_000_000),
+                            };
+                            raw_ns
+                                .and_then(|ns| u64::try_from(ns).ok())
+                                .unwrap_or(metadata.observed_time_ns)
+                        }
                         _ => metadata.observed_time_ns,
                     }
                 }
