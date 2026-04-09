@@ -70,22 +70,24 @@ record_check "bpftool_installed" command -v bpftool >/dev/null 2>&1 || true
 
 if [[ "$(status_of bpftool_installed)" == "1" ]]; then
     record_cmd "bpftool_version" bpftool version || true
-    record_cmd "bpftool_feature_unprivileged" bpftool feature probe kernel unprivileged || true
+    if [[ "$(status_of bpftool_version)" == "1" ]]; then
+        record_cmd "bpftool_feature_unprivileged" bpftool feature probe kernel unprivileged || true
 
-    if sudo -n true >/dev/null 2>&1; then
-        record_check "sudo_available" true || true
-        record_cmd "bpftool_feature_privileged" sudo bpftool feature probe kernel || true
-        if ! is_bpffs_mounted; then
-            sudo mount -t bpf bpf /sys/fs/bpf >/dev/null 2>&1 || true
+        if sudo -n true >/dev/null 2>&1; then
+            record_check "sudo_available" true || true
+            record_cmd "bpftool_feature_privileged" sudo bpftool feature probe kernel || true
+            if ! is_bpffs_mounted; then
+                sudo mount -t bpf bpf /sys/fs/bpf >/dev/null 2>&1 || true
+            fi
+            record_check "bpffs_mounted_after_probe" is_bpffs_mounted || true
+            record_cmd \
+                "bpftool_map_create" \
+                sudo bpftool map create /sys/fs/bpf/logfwd_ci_probe_map type hash key 4 value 8 entries 16 name logfwd_ci_probe_map \
+                || true
+            sudo rm -f /sys/fs/bpf/logfwd_ci_probe_map >/dev/null 2>&1 || true
+        else
+            record_check "sudo_available" false || true
         fi
-        record_check "bpffs_mounted_after_probe" is_bpffs_mounted || true
-        record_cmd \
-            "bpftool_map_create" \
-            sudo bpftool map create /sys/fs/bpf/logfwd_ci_probe_map type hash key 4 value 8 entries 16 name logfwd_ci_probe_map \
-            || true
-        sudo rm -f /sys/fs/bpf/logfwd_ci_probe_map >/dev/null 2>&1 || true
-    else
-        record_check "sudo_available" false || true
     fi
 fi
 
@@ -103,7 +105,8 @@ BTF_VMLINUX=$(yes_no "$(status_of btf_vmlinux)")
 BPFFS_EXISTS=$(yes_no "$(status_of bpffs_mountpoint_exists)")
 BPFFS_ALREADY_MOUNTED=$(yes_no "$(status_of bpffs_already_mounted)")
 BPFFS_MOUNTED_AFTER_PROBE=$(yes_no "$(status_of bpffs_mounted_after_probe)")
-BPFTOOL_INSTALLED=$(yes_no "$(status_of bpftool_installed)")
+BPFTOOL_PRESENT=$(yes_no "$(status_of bpftool_installed)")
+BPFTOOL_RUNNABLE=$(yes_no "$(status_of bpftool_version)")
 BPFTOOL_UNPRIV_FEATURE_PROBE=$(yes_no "$(status_of bpftool_feature_unprivileged)")
 BPFTOOL_PRIV_FEATURE_PROBE=$(yes_no "$(status_of bpftool_feature_privileged)")
 BPFTOOL_MAP_CREATE=$(yes_no "$(status_of bpftool_map_create)")
@@ -122,7 +125,8 @@ cat > "${summary_file}" <<EOF
 | bpffs mountpoint exists | $(yes_no "$(status_of bpffs_mountpoint_exists)") |
 | bpffs already mounted | $(yes_no "$(status_of bpffs_already_mounted)") |
 | bpffs mounted after probe | $(yes_no "$(status_of bpffs_mounted_after_probe)") |
-| \`bpftool\` installed | $(yes_no "$(status_of bpftool_installed)") |
+| \`bpftool\` present in PATH | $(yes_no "$(status_of bpftool_installed)") |
+| \`bpftool\` runnable (\`bpftool version\`) | $(yes_no "$(status_of bpftool_version)") |
 | Unprivileged feature probe | $(yes_no "$(status_of bpftool_feature_unprivileged)") |
 | Privileged feature probe | $(yes_no "$(status_of bpftool_feature_privileged)") |
 | Privileged map create smoke test | $(yes_no "$(status_of bpftool_map_create)") |

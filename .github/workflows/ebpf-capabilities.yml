@@ -43,6 +43,8 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
+          sudo apt-get install -y linux-tools-azure linux-cloud-tools-azure || true
+          sudo apt-get install -y "linux-tools-$(uname -r)" "linux-cloud-tools-$(uname -r)" || true
           if ! sudo apt-get install -y bpftool; then
             sudo apt-get install -y linux-tools-common || true
             # Ubuntu 24.04 often installs bpftool under versioned linux-tools paths.
@@ -53,7 +55,11 @@ jobs:
               fi
             fi
           fi
-          command -v bpftool || echo "bpftool not found; capability probe will record this."
+          if command -v bpftool >/dev/null 2>&1; then
+            bpftool version || true
+          else
+            echo "bpftool not found; capability probe will record this."
+          fi
 
       - name: Test eBPF proto crate
         run: cargo test -p logfwd-ebpf-proto --all-targets
