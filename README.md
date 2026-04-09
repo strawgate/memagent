@@ -180,18 +180,18 @@ See the [Configuration Reference](book/src/config/reference.md) for all YAML fie
 - `macos_sensor_beta`
 - `windows_sensor_beta`
 
-These inputs are platform-gated and currently emit sensor-control heartbeat rows while
+These inputs are platform-gated and emit Arrow-native sensor control/signal batches while
 deeper native sensor integrations are being brought online.
 
 ```yaml
 input:
   type: linux_sensor_beta
+  format: raw
   sensor_beta:
     poll_interval_ms: 2000
     emit_heartbeat: true
 output:
   type: stdout
-  format: json
 ```
 
 See [Configuration Reference](book/src/config/reference.md#input-types) for full status/details.

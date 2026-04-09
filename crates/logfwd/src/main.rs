@@ -967,6 +967,9 @@ fn validate_pipeline_read_only(
             .clone()
             .unwrap_or(match input_cfg.input_type {
                 InputType::File => Format::Auto,
+                InputType::LinuxSensorBeta
+                | InputType::MacosSensorBeta
+                | InputType::WindowsSensorBeta => Format::Raw,
                 _ => Format::Json,
             });
         validate_input_format_read_only(&input_name, input_cfg.input_type.clone(), &format)?;
@@ -1003,11 +1006,10 @@ fn validate_input_format_read_only(
             format,
             Format::Cri | Format::Auto | Format::Json | Format::Raw
         ),
-        InputType::Generator
-        | InputType::Otlp
-        | InputType::LinuxSensorBeta
-        | InputType::MacosSensorBeta
-        | InputType::WindowsSensorBeta => matches!(format, Format::Json),
+        InputType::Generator | InputType::Otlp => matches!(format, Format::Json),
+        InputType::LinuxSensorBeta | InputType::MacosSensorBeta | InputType::WindowsSensorBeta => {
+            matches!(format, Format::Raw | Format::Json)
+        }
         InputType::Udp | InputType::Tcp => matches!(format, Format::Json | Format::Raw),
         InputType::ArrowIpc => false,
         other => {
@@ -1952,6 +1954,23 @@ output:
         let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
         let result = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(matches!(result, Err(CliError::Config(_))));
+    }
+
+    #[test]
+    fn validate_pipelines_read_only_accepts_sensor_beta_raw() {
+        let yaml = r#"
+input:
+  type: linux_sensor_beta
+  format: raw
+output:
+  type: null
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let result = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            result.is_ok(),
+            "sensor beta raw format should be accepted in read-only validation"
+        );
     }
     #[test]
     fn read_wizard_line_rejects_eof() {
