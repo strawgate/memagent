@@ -203,7 +203,7 @@ input:
 
 ### `windows_sensor_beta` input
 
-Windows beta sensor lane for eBPF/ETW hybrid adapter bring-up. This input only
+Windows beta sensor lane for eBPF/ETW hybrid adapter bring-up. This input
 supports `format: raw` (default) or `format: json`.
 
 | Field | Type | Required | Description |

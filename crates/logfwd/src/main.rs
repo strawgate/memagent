@@ -1958,19 +1958,27 @@ output:
 
     #[test]
     fn validate_pipelines_read_only_accepts_sensor_beta_raw() {
-        let yaml = r#"
+        for input_type in [
+            "linux_sensor_beta",
+            "macos_sensor_beta",
+            "windows_sensor_beta",
+        ] {
+            let yaml = format!(
+                r#"
 input:
-  type: linux_sensor_beta
+  type: {input_type}
   format: raw
 output:
   type: null
-"#;
-        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
-        let result = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
-        assert!(
-            result.is_ok(),
-            "sensor beta raw format should be accepted in read-only validation"
-        );
+"#
+            );
+            let config = logfwd_config::Config::load_str(&yaml).expect("config should parse");
+            let result = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+            assert!(
+                result.is_ok(),
+                "sensor beta raw format should be accepted in read-only validation for {input_type}"
+            );
+        }
     }
     #[test]
     fn read_wizard_line_rejects_eof() {
