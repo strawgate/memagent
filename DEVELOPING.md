@@ -71,6 +71,8 @@ just ci                      # lint + test (fast — skips datafusion)
 just ci-all                  # full workspace including datafusion
 just test                    # tests (default-members only, ~30s)
 just test-all                # tests (full workspace, ~3min)
+just test-ebpf               # tests for crates/logfwd-ebpf-proto
+just check-ebpf-pipe-capture # Linux-only compile-check for aya userspace loader prototype
 just lint                    # fmt + clippy + toml
 just lint-all                # full: fmt + clippy + toml + deny + kani-boundary
 just build                   # release logfwd binary (includes DataFusion SQL)
@@ -83,6 +85,16 @@ just fuzz scanner 300        # fuzz a target for 300s (nightly)
 > (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip
 > them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just
 > targets when you need the full build. CI always uses `--workspace`.
+
+## eBPF capability checks in GitHub Actions
+
+Workflow: `.github/workflows/ebpf-capabilities.yml`
+
+- Runs `cargo test -p logfwd-ebpf-proto --all-targets`.
+- Runs `cargo check --manifest-path crates/logfwd-ebpf-proto/pipe-capture/Cargo.toml`.
+- Executes `scripts/ci-ebpf-capabilities.sh` on `ubuntu-latest` and uploads probe artifacts.
+
+The probe is a visibility tool (what hosted runners allow right now), not a hard gate on specific kernel features. Use the artifact summary to decide which eBPF paths can run in GitHub-hosted CI versus requiring self-hosted runners.
 
 ## DataFusion in Dev vs Release
 

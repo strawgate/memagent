@@ -133,6 +133,20 @@ test:
 test-all:
     cargo nextest run --workspace --profile ci
 
+# Tests — eBPF prototype crate only
+test-ebpf:
+    cargo test -p logfwd-ebpf-proto --all-targets
+
+# Build check — eBPF pipe-capture userspace loader
+check-ebpf-pipe-capture:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        echo "Skipping: check-ebpf-pipe-capture is Linux-only (aya userspace bindings)."
+        exit 0
+    fi
+    cargo check --manifest-path crates/logfwd-ebpf-proto/pipe-capture/Cargo.toml
+
 # Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:
