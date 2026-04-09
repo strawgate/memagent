@@ -217,13 +217,19 @@ impl DiagnosticsServer {
                     .build()
                 {
                     Ok(rt) => rt,
-                    Err(_) => return,
+                    Err(e) => {
+                        tracing::error!(error = %e, "diagnostics runtime creation failed");
+                        return;
+                    }
                 };
 
                 runtime.block_on(async move {
                     let listener = match tokio::net::TcpListener::from_std(std_listener) {
                         Ok(l) => l,
-                        Err(_) => return,
+                        Err(e) => {
+                            tracing::error!(error = %e, "diagnostics TcpListener conversion failed");
+                            return;
+                        }
                     };
 
                     // Spawn sampler task.
@@ -257,6 +263,14 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
+        // Always collect logs to keep last_log_count in sync with the ring buffer,
+        // but skip OTLP serialization + broadcast when no WebSocket subscribers.
+        let logs = telemetry::collect_new_logs(&state.stderr, &mut last_log_count);
+
+        if state.telemetry_tx.receiver_count() == 0 {
+            continue;
+        }
+
         let metrics = telemetry::sample_metrics(
             &state.pipelines,
             state.memory_stats_fn,
@@ -266,17 +280,13 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
             .telemetry_tx
             .send(telemetry::metrics_to_otlp_json(&metrics));
 
-        let spans =
-            telemetry::collect_spans(state.trace_buf.as_ref(), &state.pipelines);
+        let spans = telemetry::collect_spans(state.trace_buf.as_ref(), &state.pipelines);
         let _ = state
             .telemetry_tx
             .send(telemetry::spans_to_otlp_json(&spans));
 
-        let logs = telemetry::collect_new_logs(&state.stderr, &mut last_log_count);
         if !logs.is_empty() {
-            let _ = state
-                .telemetry_tx
-                .send(telemetry::logs_to_otlp_json(&logs));
+            let _ = state.telemetry_tx.send(telemetry::logs_to_otlp_json(&logs));
         }
     }
 }
@@ -303,9 +313,7 @@ async fn serve_live(
     )
 }
 
-async fn serve_ready(
-    State(state): State<Arc<DiagnosticsState>>,
-) -> impl IntoResponse {
+async fn serve_ready(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
     let snapshot = policy::readiness_snapshot(&state.pipelines);
     let observed_at_unix_ns = now_nanos();
 
@@ -337,9 +345,7 @@ async fn serve_status(
     )
 }
 
-async fn serve_config(
-    State(state): State<Arc<DiagnosticsState>>,
-) -> impl IntoResponse {
+async fn serve_config(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
     if !state.config_endpoint_enabled {
         let body = r#"{"error":"config_endpoint_disabled","message":"set LOGFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config"}"#;
         return (
@@ -383,7 +389,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
                     break;
                 }
             }
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Lagged(_)) => {} // skip missed messages
             Err(_) => break,
         }
     }
@@ -394,8 +400,9 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
 // ---------------------------------------------------------------------------
 
 fn status_body(state: &DiagnosticsState) -> String {
-    let uptime = state.start_time.elapsed().as_secs();
-    let uptime_s = state.start_time.elapsed().as_secs_f64();
+    let elapsed = state.start_time.elapsed();
+    let uptime = elapsed.as_secs();
+    let uptime_s = elapsed.as_secs_f64();
     let observed_at_unix_ns = now_nanos();
     let mut pipelines_json = Vec::new();
 
@@ -684,9 +691,7 @@ mod tests {
         let mut stream = stream.unwrap_or_else(|| {
             panic!("connect failed after retries to {addr}");
         });
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .ok();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
         let req = format!(
             "GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
             path

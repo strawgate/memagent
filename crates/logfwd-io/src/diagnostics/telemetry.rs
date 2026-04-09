@@ -106,36 +106,128 @@ pub(super) fn sample_metrics(
             }
         };
 
-        pts.push(MetricPoint { name: "logfwd.input_lines", value: MetricValue::Sum(pipe_in_lines), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.input_bytes", value: MetricValue::Sum(pipe_in_bytes), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.output_lines", value: MetricValue::Sum(pipe_out_lines), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.output_bytes", value: MetricValue::Sum(pipe_out_bytes), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.output_errors", value: MetricValue::Sum(pipe_out_errors), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.batches", value: MetricValue::Sum(p_batches), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.batch_rows", value: MetricValue::Sum(p_batch_rows), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.stage_nanos", value: MetricValue::Sum(p_scan_ns), attributes: attr("scan") });
-        pts.push(MetricPoint { name: "logfwd.stage_nanos", value: MetricValue::Sum(p_transform_ns), attributes: attr("transform") });
-        pts.push(MetricPoint { name: "logfwd.stage_nanos", value: MetricValue::Sum(p_output_ns), attributes: attr("output") });
-        pts.push(MetricPoint { name: "logfwd.queue_wait_nanos", value: MetricValue::Sum(p_queue_ns), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.send_nanos", value: MetricValue::Sum(p_send_ns), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.inflight_batches", value: MetricValue::Gauge(p_inflight as f64), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.backpressure_stalls", value: MetricValue::Sum(p_backpressure), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.dropped_batches", value: MetricValue::Sum(p_dropped), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.scan_errors", value: MetricValue::Sum(p_scan_errors), attributes: attr("") });
-        pts.push(MetricPoint { name: "logfwd.parse_errors", value: MetricValue::Sum(p_parse_errors), attributes: attr("") });
+        pts.push(MetricPoint {
+            name: "logfwd.input_lines",
+            value: MetricValue::Sum(pipe_in_lines),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.input_bytes",
+            value: MetricValue::Sum(pipe_in_bytes),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.output_lines",
+            value: MetricValue::Sum(pipe_out_lines),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.output_bytes",
+            value: MetricValue::Sum(pipe_out_bytes),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.output_errors",
+            value: MetricValue::Sum(pipe_out_errors),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.batches",
+            value: MetricValue::Sum(p_batches),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.batch_rows",
+            value: MetricValue::Sum(p_batch_rows),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.stage_nanos",
+            value: MetricValue::Sum(p_scan_ns),
+            attributes: attr("scan"),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.stage_nanos",
+            value: MetricValue::Sum(p_transform_ns),
+            attributes: attr("transform"),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.stage_nanos",
+            value: MetricValue::Sum(p_output_ns),
+            attributes: attr("output"),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.queue_wait_nanos",
+            value: MetricValue::Sum(p_queue_ns),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.send_nanos",
+            value: MetricValue::Sum(p_send_ns),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.inflight_batches",
+            value: MetricValue::Gauge(p_inflight as f64),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.backpressure_stalls",
+            value: MetricValue::Sum(p_backpressure),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.dropped_batches",
+            value: MetricValue::Sum(p_dropped),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.scan_errors",
+            value: MetricValue::Sum(p_scan_errors),
+            attributes: attr(""),
+        });
+        pts.push(MetricPoint {
+            name: "logfwd.parse_errors",
+            value: MetricValue::Sum(p_parse_errors),
+            attributes: attr(""),
+        });
     }
 
     // Process-level metrics.
     if let Some((rss, cpu_user, cpu_sys)) = process_metrics() {
-        pts.push(MetricPoint { name: "process.memory.rss", value: MetricValue::Gauge(rss as f64), attributes: vec![] });
-        pts.push(MetricPoint { name: "process.cpu.user_ms", value: MetricValue::Sum(cpu_user), attributes: vec![] });
-        pts.push(MetricPoint { name: "process.cpu.sys_ms", value: MetricValue::Sum(cpu_sys), attributes: vec![] });
+        pts.push(MetricPoint {
+            name: "process.memory.rss",
+            value: MetricValue::Gauge(rss as f64),
+            attributes: vec![],
+        });
+        pts.push(MetricPoint {
+            name: "process.cpu.user_ms",
+            value: MetricValue::Sum(cpu_user),
+            attributes: vec![],
+        });
+        pts.push(MetricPoint {
+            name: "process.cpu.sys_ms",
+            value: MetricValue::Sum(cpu_sys),
+            attributes: vec![],
+        });
     }
 
     if let Some(m) = memory_fn.and_then(|f| f()) {
-        pts.push(MetricPoint { name: "process.memory.resident", value: MetricValue::Gauge(m.resident as f64), attributes: vec![] });
-        pts.push(MetricPoint { name: "process.memory.allocated", value: MetricValue::Gauge(m.allocated as f64), attributes: vec![] });
-        pts.push(MetricPoint { name: "process.memory.active", value: MetricValue::Gauge(m.active as f64), attributes: vec![] });
+        pts.push(MetricPoint {
+            name: "process.memory.resident",
+            value: MetricValue::Gauge(m.resident as f64),
+            attributes: vec![],
+        });
+        pts.push(MetricPoint {
+            name: "process.memory.allocated",
+            value: MetricValue::Gauge(m.allocated as f64),
+            attributes: vec![],
+        });
+        pts.push(MetricPoint {
+            name: "process.memory.active",
+            value: MetricValue::Gauge(m.active as f64),
+            attributes: vec![],
+        });
     }
 
     pts
@@ -154,7 +246,7 @@ pub(super) fn collect_spans(
             let mut attrs: Vec<(&'static str, String)> = Vec::new();
             for kv in &s.attrs {
                 // We leak the key into a &'static str via a match on known keys.
-                // Unknown keys are stored with a "attr." prefix in the value.
+                // Unknown keys are dropped (skipped via `continue`).
                 let key = match kv[0].as_str() {
                     "pipeline" => "pipeline",
                     "bytes_in" => "bytes_in",
@@ -212,7 +304,7 @@ pub(super) fn collect_spans(
                     attrs.push(("output_start_unix_ns", b.output_start_unix_ns.to_string()));
                 }
                 spans.push(SpanRecord {
-                    trace_id: format!("00000000000000000000000000{:06x}", id),
+                    trace_id: format!("{:032x}", id),
                     span_id: format!("{:016x}", id),
                     parent_id: "0000000000000000".to_string(),
                     name: "batch".to_string(),
@@ -236,7 +328,12 @@ pub(super) fn collect_new_logs(
     last_count: &mut usize,
 ) -> Vec<LogRecord> {
     let all = stderr.get_logs();
-    let new_start = (*last_count).min(all.len());
+    let new_start = if all.len() < *last_count {
+        // Buffer was evicted — can't know exact new items, take everything
+        0
+    } else {
+        *last_count
+    };
     *last_count = all.len();
     let ts = now_nanos();
     all[new_start..]
@@ -272,9 +369,11 @@ pub(super) fn metrics_to_otlp_json(points: &[MetricPoint]) -> String {
                 out.push_str(r#","gauge":{"dataPoints":[{"timeUnixNano":""#);
                 let _ = write!(out, "{}", now);
                 out.push_str(r#"","asDouble":"#);
-                // Write f64 — JSON number.
-                if v.fract() == 0.0 && v.is_finite() {
-                    let _ = write!(out, "{:.1}", v);
+                // Write f64 — JSON number. Emit null for non-finite values.
+                if !v.is_finite() {
+                    let _ = write!(out, "null");
+                } else if v.fract() == 0.0 {
+                    let _ = write!(out, "{}", *v as i64);
                 } else {
                     let _ = write!(out, "{}", v);
                 }
@@ -319,7 +418,7 @@ pub(super) fn spans_to_otlp_json(spans: &[SpanRecord]) -> String {
         out.push_str(r#"","startTimeUnixNano":""#);
         let _ = write!(out, "{}", s.start_unix_ns);
         out.push_str(r#"","endTimeUnixNano":""#);
-        let _ = write!(out, "{}", s.start_unix_ns + s.duration_ns);
+        let _ = write!(out, "{}", s.start_unix_ns.saturating_add(s.duration_ns));
         out.push('"');
 
         // Attributes — include in_progress flag.
@@ -424,8 +523,8 @@ mod tests {
             },
         ];
         let json = metrics_to_otlp_json(&pts);
-        let v: serde_json::Value = serde_json::from_str(&json)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
+        let v: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
         assert!(v["resourceMetrics"].is_array());
         let metrics = &v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"];
         assert_eq!(metrics.as_array().unwrap().len(), 2);
@@ -450,8 +549,8 @@ mod tests {
             in_progress: false,
         }];
         let json = spans_to_otlp_json(&spans);
-        let v: serde_json::Value = serde_json::from_str(&json)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
+        let v: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
         let span = &v["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
         assert_eq!(span["traceId"], "aabbccdd00112233aabbccdd00112233");
         assert_eq!(span["startTimeUnixNano"], "1000000000");
@@ -473,8 +572,8 @@ mod tests {
             in_progress: true,
         }];
         let json = spans_to_otlp_json(&spans);
-        let v: serde_json::Value = serde_json::from_str(&json)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
+        let v: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
         let attrs = v["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"]
             .as_array()
             .unwrap();
@@ -493,8 +592,8 @@ mod tests {
             body: "something happened".into(),
         }];
         let json = logs_to_otlp_json(&logs);
-        let v: serde_json::Value = serde_json::from_str(&json)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
+        let v: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
         let rec = &v["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0];
         assert_eq!(rec["severityText"], "WARN");
         assert_eq!(rec["body"]["stringValue"], "something happened");
@@ -509,8 +608,8 @@ mod tests {
             body: "line with \"quotes\" and\nnewline".into(),
         }];
         let json = logs_to_otlp_json(&logs);
-        let v: serde_json::Value = serde_json::from_str(&json)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
+        let v: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
         let body = v["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["body"]["stringValue"]
             .as_str()
             .unwrap();
@@ -520,22 +619,22 @@ mod tests {
     #[test]
     fn empty_metrics_produces_valid_json() {
         let json = metrics_to_otlp_json(&[]);
-        let _: serde_json::Value = serde_json::from_str(&json)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
+        let _: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
     }
 
     #[test]
     fn empty_spans_produces_valid_json() {
         let json = spans_to_otlp_json(&[]);
-        let _: serde_json::Value = serde_json::from_str(&json)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
+        let _: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
     }
 
     #[test]
     fn empty_logs_produces_valid_json() {
         let json = logs_to_otlp_json(&[]);
-        let _: serde_json::Value = serde_json::from_str(&json)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
+        let _: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"));
     }
 
     #[test]
