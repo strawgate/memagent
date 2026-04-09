@@ -161,46 +161,52 @@ input:
 
 ### `linux_sensor_beta` input
 
-Linux beta sensor lane for early platform-native ingestion development.
+Linux beta sensor lane for early platform-native ingestion development. This
+input only supports `format: json`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
+| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Must be `>= 1`. Defaults to `10000`. |
 | `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
 
 ```yaml
 input:
   type: linux_sensor_beta
+  format: json
   sensor_beta:
     poll_interval_ms: 2000
 ```
 
 ### `macos_sensor_beta` input
 
-macOS beta sensor lane for EndpointSecurity-oriented adapter bring-up.
+macOS beta sensor lane for EndpointSecurity-oriented adapter bring-up. This
+input only supports `format: json`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
+| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Must be `>= 1`. Defaults to `10000`. |
 | `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
 
 ```yaml
 input:
   type: macos_sensor_beta
+  format: json
 ```
 
 ### `windows_sensor_beta` input
 
-Windows beta sensor lane for eBPF/ETW hybrid adapter bring-up.
+Windows beta sensor lane for eBPF/ETW hybrid adapter bring-up. This input only
+supports `format: json`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
+| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Must be `>= 1`. Defaults to `10000`. |
 | `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
 
 ```yaml
 input:
   type: windows_sensor_beta
+  format: json
 ```
 
 ### `arrow_ipc` input *(not yet supported)*

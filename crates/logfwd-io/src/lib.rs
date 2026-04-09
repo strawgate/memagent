@@ -15,6 +15,7 @@ pub mod input;
 pub mod metric_history;
 pub mod otap_receiver;
 pub mod otlp_receiver;
+/// Platform beta sensor inputs (`*_sensor_beta`) and heartbeat/control event emission.
 pub mod platform_sensor_beta;
 pub(crate) mod polling_input_health;
 pub(crate) mod receiver_health;
