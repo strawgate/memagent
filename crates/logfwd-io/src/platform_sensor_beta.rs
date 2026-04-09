@@ -638,7 +638,11 @@ impl InputSource for PlatformSensorBetaInput {
     }
 
     fn health(&self) -> ComponentHealth {
-        ComponentHealth::Healthy
+        match self.machine.as_ref() {
+            Some(PlatformSensorMachine::Init(_)) => ComponentHealth::Starting,
+            Some(PlatformSensorMachine::Running(_)) => ComponentHealth::Healthy,
+            None => ComponentHealth::Failed,
+        }
     }
 }
 
@@ -1110,5 +1114,19 @@ mod tests {
             !second_err.to_string().contains("state missing"),
             "machine should not be lost after an error: {second_err}"
         );
+    }
+
+    #[test]
+    fn health_transitions_from_starting_to_healthy_after_first_poll() {
+        let mut input = PlatformSensorBetaInput::new(
+            "beta",
+            host_target(),
+            PlatformSensorBetaConfig::default(),
+        )
+        .expect("host target should be valid");
+
+        assert_eq!(input.health(), ComponentHealth::Starting);
+        let _ = input.poll().expect("startup poll succeeds");
+        assert_eq!(input.health(), ComponentHealth::Healthy);
     }
 }
