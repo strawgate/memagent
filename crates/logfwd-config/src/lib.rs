@@ -438,6 +438,25 @@ output:
     }
 
     #[test]
+    fn legacy_output_aliases_are_rejected() {
+        for alias in ["file_out", "tcp_out", "udp_out"] {
+            let extra = match alias {
+                "file_out" => "path: /tmp/out.ndjson",
+                "tcp_out" | "udp_out" => "endpoint: 127.0.0.1:5140",
+                _ => unreachable!(),
+            };
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {alias}\n  {extra}\n"
+            );
+            let err = Config::load_str(&yaml).expect_err("legacy alias should fail");
+            assert!(
+                err.to_string().contains("unknown variant"),
+                "expected unknown variant error for {alias}: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn http_output_is_rejected() {
         let yaml = r"
 input:
@@ -1927,6 +1946,151 @@ pipelines:
         assert!(
             err.to_string().contains("require generator.profile=record"),
             "expected record profile requirement rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_timestamp_config_accepted() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          timestamp:
+            start: "2023-06-01T12:00:00Z"
+            step_ms: 5000
+    outputs:
+      - type: null
+"#;
+        let cfg = Config::load_str(yaml).expect("timestamp config should be valid");
+        let ts = cfg.pipelines["test"].inputs[0]
+            .generator
+            .as_ref()
+            .unwrap()
+            .timestamp
+            .as_ref()
+            .expect("timestamp config");
+        assert_eq!(ts.start.as_deref(), Some("2023-06-01T12:00:00Z"));
+        assert_eq!(ts.step_ms, Some(5000));
+    }
+
+    #[test]
+    fn generator_timestamp_now_accepted() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          timestamp:
+            start: "now"
+            step_ms: -100
+    outputs:
+      - type: null
+"#;
+        Config::load_str(yaml).expect("timestamp start=now should be valid");
+    }
+
+    #[test]
+    fn generator_timestamp_rejects_zero_step() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          timestamp:
+            step_ms: 0
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("step_ms must not be zero"),
+            "expected zero step rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_timestamp_rejects_invalid_start() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          timestamp:
+            start: "not-a-date"
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("YYYY-MM-DDTHH:MM:SSZ"),
+            "expected format rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_timestamp_rejects_record_profile() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+          timestamp:
+            start: "now"
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only supported for the logs profile"),
+            "expected logs-only rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_timestamp_rejects_invalid_calendar_date() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          timestamp:
+            start: "2024-02-31T00:00:00Z"
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("day 31 out of range"),
+            "expected invalid date rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn generator_timestamp_rejects_month_13() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          timestamp:
+            start: "2024-13-01T00:00:00Z"
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("month 13 out of range"),
+            "expected invalid month rejection: {err}"
         );
     }
 
