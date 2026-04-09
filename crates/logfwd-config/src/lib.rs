@@ -305,6 +305,16 @@ pub struct PlatformSensorBetaInputConfig {
     pub poll_interval_ms: Option<u64>,
     /// Emit periodic heartbeat rows while the sensor is idle. Defaults to true.
     pub emit_heartbeat: Option<bool>,
+    /// Optional JSON control-plane file path for runtime reloads.
+    pub control_path: Option<String>,
+    /// How often to check `control_path` for updates. Defaults to 1_000 when omitted.
+    pub control_reload_interval_ms: Option<u64>,
+    /// Optional explicit sensor signal families to enable.
+    ///
+    /// When omitted, each platform uses its default family set.
+    pub enabled_families: Option<Vec<String>>,
+    /// Emit periodic per-family sample rows. Defaults to true.
+    pub emit_signal_rows: Option<bool>,
 }
 
 /// A single input source.
@@ -1023,6 +1033,48 @@ impl Config {
                                 "pipeline '{name}' input '{label}': sensor_beta.poll_interval_ms must be at least 1"
                             )));
                         }
+                        if input
+                            .sensor_beta
+                            .as_ref()
+                            .and_then(|cfg| cfg.control_reload_interval_ms)
+                            == Some(0)
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': sensor_beta.control_reload_interval_ms must be at least 1"
+                            )));
+                        }
+                        if input
+                            .sensor_beta
+                            .as_ref()
+                            .and_then(|cfg| cfg.control_path.as_deref())
+                            .is_some_and(|path| path.trim().is_empty())
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': sensor_beta.control_path must not be empty"
+                            )));
+                        }
+                        if let Some(families) = input
+                            .sensor_beta
+                            .as_ref()
+                            .and_then(|cfg| cfg.enabled_families.as_ref())
+                        {
+                            for family in families {
+                                let normalized = family.trim();
+                                if normalized.is_empty() {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': sensor_beta.enabled_families entries must not be empty"
+                                    )));
+                                }
+                                if !validate_sensor_beta_family_name(&input.input_type, normalized)
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': unknown sensor_beta family '{normalized}' for {} input (supported: {})",
+                                        input.input_type,
+                                        sensor_beta_supported_families_csv(&input.input_type)
+                                    )));
+                                }
+                            }
+                        }
                     }
                     InputType::ArrowIpc => {
                         if input.generator.is_some() {
@@ -1302,6 +1354,30 @@ fn validate_no_sensor_beta_for_input(
         )));
     }
     Ok(())
+}
+
+fn sensor_beta_supported_families(input_type: &InputType) -> &'static [&'static str] {
+    match input_type {
+        InputType::LinuxSensorBeta => &["process", "file", "network", "dns", "authz"],
+        InputType::MacosSensorBeta => &["process", "file", "network", "dns", "module", "authz"],
+        InputType::WindowsSensorBeta => &[
+            "process", "file", "network", "dns", "module", "registry", "authz",
+        ],
+        _ => &[],
+    }
+}
+
+fn sensor_beta_supported_families_csv(input_type: &InputType) -> &'static str {
+    match input_type {
+        InputType::LinuxSensorBeta => "process,file,network,dns,authz",
+        InputType::MacosSensorBeta => "process,file,network,dns,module,authz",
+        InputType::WindowsSensorBeta => "process,file,network,dns,module,registry,authz",
+        _ => "",
+    }
+}
+
+fn validate_sensor_beta_family_name(input_type: &InputType, name: &str) -> bool {
+    sensor_beta_supported_families(input_type).contains(&name)
 }
 
 /// Validate that a string has a valid `host:port` format where port is a u16.
@@ -2086,6 +2162,100 @@ output:
             err.to_string()
                 .contains("sensor_beta.poll_interval_ms must be at least 1")
         );
+    }
+
+    #[test]
+    fn sensor_beta_rejects_zero_control_reload_interval() {
+        let yaml = r"
+input:
+  type: linux_sensor_beta
+  sensor_beta:
+    control_reload_interval_ms: 0
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor_beta.control_reload_interval_ms must be at least 1")
+        );
+    }
+
+    #[test]
+    fn sensor_beta_rejects_unknown_family() {
+        let yaml = r"
+input:
+  type: linux_sensor_beta
+  sensor_beta:
+    enabled_families: [process, made_up_family]
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown sensor_beta family 'made_up_family'")
+        );
+    }
+
+    #[test]
+    fn sensor_beta_rejects_family_not_supported_by_target_os() {
+        let yaml = r"
+input:
+  type: linux_sensor_beta
+  sensor_beta:
+    enabled_families: [process, module]
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown sensor_beta family 'module'"));
+        assert!(msg.contains("supported: process,file,network,dns,authz"));
+    }
+
+    #[test]
+    fn sensor_beta_macos_accepts_module_family() {
+        let yaml = r"
+input:
+  type: macos_sensor_beta
+  sensor_beta:
+    enabled_families: [process, module]
+output:
+  type: stdout
+";
+        Config::load_str(yaml).expect("macOS sensor should accept module family");
+    }
+
+    #[test]
+    fn sensor_beta_windows_accepts_registry_family() {
+        let yaml = r"
+input:
+  type: windows_sensor_beta
+  sensor_beta:
+    enabled_families: [process, registry]
+output:
+  type: stdout
+";
+        Config::load_str(yaml).expect("windows sensor should accept registry family");
+    }
+
+    #[test]
+    fn sensor_beta_accepts_control_plane_fields() {
+        let yaml = r"
+input:
+  type: linux_sensor_beta
+  sensor_beta:
+    poll_interval_ms: 250
+    emit_heartbeat: true
+    control_path: ./control/sensor.json
+    control_reload_interval_ms: 500
+    enabled_families: [process, network, dns]
+    emit_signal_rows: false
+output:
+  type: stdout
+";
+        Config::load_str(yaml).expect("sensor_beta control fields should validate");
     }
 
     #[test]

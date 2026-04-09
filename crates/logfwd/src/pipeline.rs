@@ -337,6 +337,21 @@ impl Pipeline {
                     resolved_cfg.path = Some(path.to_string_lossy().into_owned());
                 }
             }
+            if let Some(sensor_cfg) = resolved_cfg.sensor_beta.as_mut()
+                && let Some(control_path) = sensor_cfg.control_path.as_ref()
+            {
+                let mut path = PathBuf::from(control_path);
+                if path.is_relative()
+                    && let Some(base) = base_path
+                {
+                    path = base.join(path);
+                }
+                if let Ok(abs_path) = std::fs::canonicalize(&path) {
+                    sensor_cfg.control_path = Some(abs_path.to_string_lossy().into_owned());
+                } else {
+                    sensor_cfg.control_path = Some(path.to_string_lossy().into_owned());
+                }
+            }
 
             let input_name = input_cfg
                 .name
@@ -1442,14 +1457,18 @@ fn make_format(
 
 fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> Result<(), String> {
     match input_type {
-        InputType::Generator
-        | InputType::Otlp
-        | InputType::LinuxSensorBeta
-        | InputType::MacosSensorBeta
-        | InputType::WindowsSensorBeta => {
+        InputType::Generator | InputType::Otlp => {
             if !matches!(format, Format::Json) {
                 return Err(format!(
                     "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
+                    format, input_type
+                ));
+            }
+        }
+        InputType::LinuxSensorBeta | InputType::MacosSensorBeta | InputType::WindowsSensorBeta => {
+            if !matches!(format, Format::Raw | Format::Json) {
+                return Err(format!(
+                    "input '{name}': format {:?} is not supported for {:?} inputs (expected raw or json)",
                     format, input_type
                 ));
             }
@@ -1620,7 +1639,7 @@ fn build_input_state(
                 _ => unreachable!("handled by outer match"),
             };
 
-            let format = cfg.format.clone().unwrap_or(Format::Json);
+            let format = cfg.format.clone().unwrap_or(Format::Raw);
             validate_input_format(name, cfg.input_type.clone(), &format)?;
 
             let beta_cfg = build_platform_sensor_beta_config(cfg.sensor_beta.as_ref());
@@ -1640,6 +1659,14 @@ fn build_input_state(
         }
     };
 
+    if is_sensor_beta_input_type(&cfg.input_type) {
+        return Ok(InputState {
+            source: raw_source,
+            buf: BytesMut::with_capacity(buf_cap),
+            stats,
+        });
+    }
+
     // Wrap the raw transport with framing + format processing.
     let format_proc = make_format(name, cfg.input_type.clone(), &format, &stats)?;
     let framed = FramedInput::new(raw_source, format_proc, Arc::clone(&stats));
@@ -1651,14 +1678,32 @@ fn build_input_state(
     })
 }
 
+fn is_sensor_beta_input_type(input_type: &InputType) -> bool {
+    matches!(
+        input_type,
+        InputType::LinuxSensorBeta | InputType::MacosSensorBeta | InputType::WindowsSensorBeta
+    )
+}
+
 fn build_platform_sensor_beta_config(
     cfg: Option<&PlatformSensorBetaInputConfig>,
 ) -> logfwd_io::platform_sensor_beta::PlatformSensorBetaConfig {
     let poll_interval_ms = cfg.and_then(|c| c.poll_interval_ms).unwrap_or(10_000);
     let emit_heartbeat = cfg.and_then(|c| c.emit_heartbeat).unwrap_or(true);
+    let control_reload_interval_ms = cfg
+        .and_then(|c| c.control_reload_interval_ms)
+        .unwrap_or(1_000);
+    let emit_signal_rows = cfg.and_then(|c| c.emit_signal_rows).unwrap_or(true);
+    let control_path = cfg.and_then(|c| c.control_path.as_ref()).map(PathBuf::from);
+    let enabled_families = cfg.and_then(|c| c.enabled_families.clone());
+
     logfwd_io::platform_sensor_beta::PlatformSensorBetaConfig {
         emit_heartbeat,
         poll_interval: Duration::from_millis(poll_interval_ms.max(1)),
+        control_path,
+        control_reload_interval: Duration::from_millis(control_reload_interval_ms.max(1)),
+        enabled_families,
+        emit_signal_rows,
     }
 }
 
@@ -1709,6 +1754,21 @@ mod tests {
         assert_eq!(factory.name(), "test");
         let sink = factory.create().expect("create should succeed");
         assert_eq!(sink.name(), "test");
+    }
+
+    #[test]
+    fn sensor_beta_formats_allow_raw_and_json_only() {
+        assert!(validate_input_format("sensor", InputType::LinuxSensorBeta, &Format::Raw).is_ok());
+        assert!(
+            validate_input_format("sensor", InputType::WindowsSensorBeta, &Format::Json).is_ok()
+        );
+
+        let err = validate_input_format("sensor", InputType::MacosSensorBeta, &Format::Cri)
+            .expect_err("sensor beta should reject CRI framing");
+        assert!(
+            err.contains("expected raw or json"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
