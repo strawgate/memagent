@@ -699,8 +699,14 @@ impl Config {
                             if let Some(idx) = &output.index
                                 && let Some(bad) = es_illegal_index_char(idx)
                             {
+                                let reason =
+                                    if matches!(bad, '-' | '_' | '+') && idx.starts_with(bad) {
+                                        format!("has illegal prefix '{bad}'")
+                                    } else {
+                                        format!("contains illegal character '{bad}'")
+                                    };
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': elasticsearch index '{idx}' contains illegal character '{bad}'"
+                                    "pipeline '{name}' output '{label}': elasticsearch index '{idx}' {reason}"
                                 )));
                             }
                             if let Some(mode) = output.request_mode.as_deref()

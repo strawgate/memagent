@@ -264,15 +264,8 @@ fn walk_set_expr(
             *where_clause = None;
         }
         SetExpr::Query(query) => {
-            if let Some(ref order_by) = query.order_by
-                && let sqlast::OrderByKind::Expressions(exprs) = &order_by.kind
-            {
-                for ob in exprs {
-                    collect_column_refs(&ob.expr, referenced_columns);
-                }
-            }
-            walk_set_expr(
-                query.body.as_ref(),
+            walk_query(
+                query,
                 referenced_columns,
                 uses_select_star,
                 except_fields,

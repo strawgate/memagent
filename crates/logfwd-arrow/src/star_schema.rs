@@ -199,17 +199,23 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
 
     // --- Resource deduplication ---
     // Build a map of unique resource attribute sets → resource_id.
-    // Key: sorted string of all resource attribute values for one row.
-    let mut resource_id_map: HashMap<Vec<String>, u32> = HashMap::new();
+    // Key preserves NULL vs empty-string distinctions for each attribute.
+    let mut resource_id_map: HashMap<Vec<Option<String>>, u32> = HashMap::new();
     let mut row_resource_ids: Vec<u32> = Vec::with_capacity(num_rows);
     let mut resource_template_rows: Vec<usize> = Vec::new();
 
     for row in 0..num_rows {
-        let mut key_parts: Vec<String> = Vec::with_capacity(resource_cols.len());
+        let mut key_parts: Vec<Option<String>> = Vec::with_capacity(resource_cols.len());
 
         for (attr_key, col_idx) in &resource_cols {
-            let val = str_value_at(batch.column(*col_idx).as_ref(), row);
-            key_parts.push(format!("{attr_key}={val}"));
+            let arr = batch.column(*col_idx);
+            let val = if arr.is_null(row) {
+                None
+            } else {
+                Some(str_value_at(arr.as_ref(), row))
+            };
+            let _ = attr_key; // key order is fixed by `resource_cols`.
+            key_parts.push(val);
         }
 
         let next_id = resource_id_map.len() as u32;
@@ -1499,37 +1505,72 @@ fn scatter_resource_attrs(
 
     // For each resource column, build a map of resource_id → value from
     // the template rows, then scatter to all matching rows.
-    // Resource attrs are always strings (from _resource_* flat columns).
     for &col_pos in &resource_col_indices {
-        // Phase 1: collect distinct resource_id → value.
-        let rid_to_val: HashMap<u32, Option<String>> = {
-            let values = match &flat_cols[col_pos].1 {
-                TypedColumn::Str(v) => v,
-                _ => continue,
-            };
-            let mut map: HashMap<u32, Option<String>> = HashMap::new();
-            for row in 0..num_rows {
-                let rid = resource_ids.value(row);
-                if let std::collections::hash_map::Entry::Vacant(e) = map.entry(rid) {
-                    let rid_row = rid as usize;
-                    if rid_row < num_rows {
-                        e.insert(values[rid_row].clone());
+        match &flat_cols[col_pos].1 {
+            TypedColumn::Str(values) => {
+                let rid_to_val = collect_resource_template_values(values, resource_ids, num_rows);
+                if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        let rid = resource_ids.value(row);
+                        if let Some(val) = rid_to_val.get(&rid) {
+                            *slot = val.clone();
+                        }
                     }
                 }
             }
-            map
-        };
-
-        // Phase 2: scatter to all rows.
-        if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
-            for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
-                let rid = resource_ids.value(row);
-                if let Some(val) = rid_to_val.get(&rid) {
-                    *slot = val.clone();
+            TypedColumn::Int(values) => {
+                let rid_to_val = collect_resource_template_values(values, resource_ids, num_rows);
+                if let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        let rid = resource_ids.value(row);
+                        if let Some(val) = rid_to_val.get(&rid) {
+                            *slot = val.clone();
+                        }
+                    }
+                }
+            }
+            TypedColumn::Double(values) => {
+                let rid_to_val = collect_resource_template_values(values, resource_ids, num_rows);
+                if let TypedColumn::Double(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        let rid = resource_ids.value(row);
+                        if let Some(val) = rid_to_val.get(&rid) {
+                            *slot = val.clone();
+                        }
+                    }
+                }
+            }
+            TypedColumn::Bool(values) => {
+                let rid_to_val = collect_resource_template_values(values, resource_ids, num_rows);
+                if let TypedColumn::Bool(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        let rid = resource_ids.value(row);
+                        if let Some(val) = rid_to_val.get(&rid) {
+                            *slot = val.clone();
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+fn collect_resource_template_values<T: Clone>(
+    values: &[Option<T>],
+    resource_ids: &UInt32Array,
+    num_rows: usize,
+) -> HashMap<u32, Option<T>> {
+    let mut map: HashMap<u32, Option<T>> = HashMap::new();
+    for row in 0..num_rows {
+        let rid = resource_ids.value(row);
+        if let std::collections::hash_map::Entry::Vacant(e) = map.entry(rid) {
+            let rid_row = rid as usize;
+            if rid_row < num_rows {
+                e.insert(values[rid_row].clone());
+            }
+        }
+    }
+    map
 }
 
 // ---------------------------------------------------------------------------
@@ -1877,6 +1918,32 @@ mod tests {
     }
 
     #[test]
+    fn resource_dedup_distinguishes_null_and_empty_values() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("_resource_svc", DataType::Utf8, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec![None, Some(""), Some("")])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let rid_arr = star
+            .logs
+            .column(1)
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("resource_id");
+        assert_ne!(
+            rid_arr.value(0),
+            rid_arr.value(1),
+            "NULL and empty-string resource attrs must dedupe separately"
+        );
+        assert_eq!(rid_arr.value(1), rid_arr.value(2));
+    }
+
+    #[test]
     fn severity_mapping() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("level", DataType::Utf8, true),
@@ -2076,6 +2143,34 @@ mod tests {
         assert_eq!(payload_arr.value(0), "deadbeef");
         assert_eq!(payload_arr.value(1), "deadbeef");
         assert_eq!(payload_arr.value(2), "0102");
+    }
+
+    #[test]
+    fn typed_resource_attrs_scatter_for_duplicate_resource_ids() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("_resource_retry_count", DataType::Int64, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int64Array::from(vec![Some(5), Some(5), Some(9)])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+
+        let idx = roundtrip
+            .schema()
+            .index_of("_resource_retry_count")
+            .expect("_resource_retry_count");
+        let arr = roundtrip
+            .column(idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int64");
+        assert_eq!(arr.value(0), 5);
+        assert_eq!(arr.value(1), 5);
+        assert_eq!(arr.value(2), 9);
     }
 
     #[test]
