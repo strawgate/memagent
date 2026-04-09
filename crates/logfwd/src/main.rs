@@ -274,9 +274,9 @@ struct BlastArgs {
     #[arg(long, default_value_t = 5_000)]
     batch_lines: usize,
 
-    /// Benchmark active-send duration in seconds.
-    #[arg(long, default_value_t = 30)]
-    duration_secs: u64,
+    /// Optional run duration in seconds (default: run until stopped).
+    #[arg(long)]
+    duration_secs: Option<u64>,
 
     /// Diagnostics server bind address for generated config.
     #[arg(long, default_value = "127.0.0.1:0")]
@@ -511,9 +511,9 @@ async fn cmd_run(config_path: &str, validate_only: bool, dry_run: bool) -> Resul
 async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
     maybe_prompt_blast_setup(&mut args)?;
 
-    if args.duration_secs == 0 {
+    if args.duration_secs == Some(0) {
         return Err(CliError::Config(
-            "--duration-secs must be at least 1".to_owned(),
+            "--duration-secs must be at least 1 when provided".to_owned(),
         ));
     }
     if args.workers == 0 {
@@ -532,15 +532,21 @@ async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
 
     println!("Starting blast (runtime pipeline shortcut)...");
     println!(
-        "destination={} workers={} batch_lines={} duration={}s",
-        output_cfg.output_type, args.workers, args.batch_lines, args.duration_secs
+        "destination={} workers={} batch_lines={}",
+        output_cfg.output_type, args.workers, args.batch_lines
     );
+    match args.duration_secs {
+        Some(duration) => println!("duration={}s", duration),
+        None => println!("duration=until-stopped (Ctrl-C)"),
+    }
     if let Some(endpoint) = &output_cfg.endpoint {
         println!("endpoint={endpoint}");
     }
     println!("diagnostics={}", args.diagnostics_addr);
 
-    schedule_self_interrupt_after(Duration::from_secs(args.duration_secs));
+    if let Some(duration) = args.duration_secs {
+        schedule_self_interrupt_after(Duration::from_secs(duration));
+    }
     run_pipelines(config, None, "<blast-generated>", &config_yaml).await
 }
 
@@ -603,6 +609,7 @@ fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
 
     println!("blast quick setup");
     println!("Press Enter to accept defaults. Leave auth blank to skip.");
+    println!("Leave duration blank to run until Ctrl-C.");
 
     let destination_raw = prompt_text(
         "Destination [otlp/elasticsearch_otlp/elasticsearch/elasticsearch_bulk/loki/arrow_ipc/udp/tcp/null]",
@@ -631,9 +638,21 @@ fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
     args.batch_lines = prompt_text("Batch lines", &args.batch_lines.to_string())?
         .parse::<usize>()
         .map_err(|_| CliError::Config("Batch lines must be a positive integer".to_owned()))?;
-    args.duration_secs = prompt_text("Duration seconds", &args.duration_secs.to_string())?
-        .parse::<u64>()
-        .map_err(|_| CliError::Config("Duration seconds must be a positive integer".to_owned()))?;
+    let duration_default = args
+        .duration_secs
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let duration_raw = prompt_text(
+        "Duration seconds (optional, blank=run until Ctrl-C)",
+        &duration_default,
+    )?;
+    args.duration_secs = if duration_raw.trim().is_empty() {
+        None
+    } else {
+        Some(duration_raw.parse::<u64>().map_err(|_| {
+            CliError::Config("Duration seconds must be a positive integer".to_owned())
+        })?)
+    };
 
     Ok(())
 }
@@ -727,7 +746,7 @@ fn render_devour_yaml(args: &DevourArgs, listen: &str) -> String {
             yaml_quote(listen)
         ),
         DevourMode::ElasticsearchBulk => format!(
-            "input:\n  type: http\n  listen: {}\n  format: json\n  http:\n    path: '/'\n    strict_path: false\n    method: POST\n    response_code: 200\n",
+            "input:\n  type: http\n  listen: {}\n  format: json\n  http:\n    path: '/_bulk'\n    strict_path: false\n    method: POST\n    response_code: 200\n",
             yaml_quote(listen)
         ),
         DevourMode::Tcp => format!(
@@ -786,12 +805,15 @@ fn yaml_quote(value: &str) -> String {
 fn schedule_self_interrupt_after(duration: Duration) {
     #[cfg(unix)]
     {
-        let pid = std::process::id().to_string();
         std::thread::spawn(move || {
             std::thread::sleep(duration);
-            let _ = std::process::Command::new("kill")
-                .args(["-s", "INT", &pid])
-                .status();
+            let pid = std::process::id() as libc::pid_t;
+            // SAFETY: pid is the current process id; sending SIGINT mirrors Ctrl-C.
+            let rc = unsafe { libc::kill(pid, libc::SIGINT) };
+            if rc != 0 {
+                let err = io::Error::last_os_error();
+                eprintln!("warning: failed to send SIGINT for --duration-secs auto-stop: {err}");
+            }
         });
     }
     #[cfg(not(unix))]
@@ -1553,7 +1575,7 @@ async fn run_pipelines(
 }
 
 #[cfg(test)]
-fn format_duration(d: std::time::Duration) -> String {
+fn format_duration(d: Duration) -> String {
     logfwd_runtime::bootstrap::format_duration(d)
 }
 
@@ -1793,23 +1815,17 @@ mod cli_tests {
 
     #[test]
     fn format_duration_seconds() {
-        assert_eq!(format_duration(std::time::Duration::from_secs(42)), "42s");
+        assert_eq!(format_duration(Duration::from_secs(42)), "42s");
     }
 
     #[test]
     fn format_duration_minutes() {
-        assert_eq!(
-            format_duration(std::time::Duration::from_secs(125)),
-            "2m 5s"
-        );
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
     }
 
     #[test]
     fn format_duration_hours() {
-        assert_eq!(
-            format_duration(std::time::Duration::from_secs(7260)),
-            "2h 1m"
-        );
+        assert_eq!(format_duration(Duration::from_secs(7260)), "2h 1m");
     }
 
     #[test]
@@ -1858,11 +1874,40 @@ mod cli_tests {
     }
 
     #[test]
+    fn blast_duration_defaults_to_none() {
+        let cli = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "otlp",
+            "--endpoint",
+            "http://127.0.0.1:4318/v1/logs",
+        ])
+        .expect("blast with explicit destination should parse");
+        match cli.command.expect("command") {
+            Commands::Blast(args) => assert!(args.duration_secs.is_none()),
+            other => panic!("expected blast command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn blast_arrow_ipc_default_endpoint_is_http_url() {
         assert_eq!(
             BlastDestination::ArrowIpc.default_endpoint(),
             "http://127.0.0.1:18081"
         );
+    }
+
+    #[test]
+    fn devour_elasticsearch_bulk_uses_bulk_path() {
+        let args = DevourArgs {
+            mode: DevourMode::ElasticsearchBulk,
+            listen: None,
+            duration_secs: None,
+            diagnostics_addr: "127.0.0.1:0".to_owned(),
+        };
+        let yaml = render_devour_yaml(&args, "127.0.0.1:9200");
+        assert!(yaml.contains("path: '/_bulk'"));
     }
 
     #[test]
