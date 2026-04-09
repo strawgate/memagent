@@ -336,6 +336,76 @@ fn structured_values_are_serialized_deterministically() {
 }
 
 #[test]
+fn canonical_fields_are_not_shadowed_by_attribute_collisions() {
+    let request = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                scope: Some(
+                    opentelemetry_proto::tonic::common::v1::InstrumentationScope {
+                        name: "otel-scope".into(),
+                        version: "1.2.3".into(),
+                        ..Default::default()
+                    },
+                ),
+                log_records: vec![LogRecord {
+                    flags: 123,
+                    attributes: vec![
+                        KeyValue {
+                            key: field_names::FLAGS.into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("shadow-flags".into())),
+                            }),
+                        },
+                        KeyValue {
+                            key: field_names::SCOPE_NAME.into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("shadow-scope".into())),
+                            }),
+                        },
+                        KeyValue {
+                            key: field_names::SCOPE_VERSION.into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("shadow-version".into())),
+                            }),
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+
+    let batch = convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect("structured decode succeeds");
+
+    let flags = batch
+        .column_by_name(field_names::FLAGS)
+        .expect("flags column must exist")
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("flags must be Int64");
+    assert_eq!(flags.value(0), 123);
+
+    let scope_name = batch
+        .column_by_name(field_names::SCOPE_NAME)
+        .expect("scope.name column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("scope.name must be Utf8");
+    assert_eq!(scope_name.value(0), "otel-scope");
+
+    let scope_version = batch
+        .column_by_name(field_names::SCOPE_VERSION)
+        .expect("scope.version column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("scope.version must be Utf8");
+    assert_eq!(scope_version.value(0), "1.2.3");
+}
+
+#[test]
 fn decodes_protobuf_to_batch() {
     let body = make_test_request();
     let batch =

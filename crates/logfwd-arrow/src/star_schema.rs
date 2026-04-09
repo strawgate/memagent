@@ -57,8 +57,7 @@ const WELL_KNOWN_TRACE_ID: &[&str] = &["trace_id"];
 const WELL_KNOWN_SPAN_ID: &[&str] = &["span_id"];
 const WELL_KNOWN_FLAGS: &[&str] = &["flags", "trace_flags"];
 
-/// Default resource attribute prefix. Use `field_names::DEFAULT_RESOURCE_PREFIX`
-/// from the types crate; kept here as a local alias for readability.
+/// Canonical resource attribute prefix shared across receivers/sinks.
 pub(crate) const RESOURCE_PREFIX: &str = "resource.attributes.";
 
 /// Legacy prefix for backwards compatibility with older batches.
@@ -522,13 +521,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
                 if !trace_arr.is_null(row)
                     && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
                 {
-                    let bytes = trace_arr.value(row);
-                    let mut hex = String::with_capacity(bytes.len() * 2);
-                    for byte in bytes {
-                        use std::fmt::Write as _;
-                        let _ = write!(&mut hex, "{byte:02x}");
-                    }
-                    v[row] = Some(hex);
+                    v[row] = Some(hex_encode_lower(trace_arr.value(row)));
                 }
             }
         }
@@ -549,13 +542,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
                 if !span_arr.is_null(row)
                     && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
                 {
-                    let bytes = span_arr.value(row);
-                    let mut hex = String::with_capacity(bytes.len() * 2);
-                    for byte in bytes {
-                        use std::fmt::Write as _;
-                        let _ = write!(&mut hex, "{byte:02x}");
-                    }
-                    v[row] = Some(hex);
+                    v[row] = Some(hex_encode_lower(span_arr.value(row)));
                 }
             }
         }
@@ -721,6 +708,16 @@ fn str_value_at(arr: &dyn Array, row: usize) -> String {
             .unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+fn hex_encode_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 /// Read a string value from a Utf8 or Utf8View array.
@@ -1756,10 +1753,7 @@ fn scatter_scope_attrs(
             for row in 0..num_rows {
                 let sid = scope_ids.value(row);
                 if let std::collections::hash_map::Entry::Vacant(e) = map.entry(sid) {
-                    let sid_row = sid as usize;
-                    if sid_row < num_rows {
-                        e.insert(values[sid_row].clone());
-                    }
+                    e.insert(values[row].clone());
                 }
             }
             map

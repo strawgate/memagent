@@ -165,7 +165,7 @@ Receive OTLP log records from another agent or SDK.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:4318`. |
-| `resource_prefix` | string | No | Prefix used when flattening OTLP resource attributes. Defaults to `resource.attributes.`. |
+| `resource_prefix` | string | No | Prefix used when flattening OTLP resource attributes. Defaults to `resource.attributes.`. Currently only `resource.attributes.` is supported. |
 
 ```yaml
 input:

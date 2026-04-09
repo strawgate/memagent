@@ -311,7 +311,7 @@ output:
 input:
   type: otlp
   listen: 127.0.0.1:4318
-  resource_prefix: otel.resource.
+  resource_prefix: resource.attributes.
 output:
   type: stdout
 "#;
@@ -321,7 +321,26 @@ output:
         assert_eq!(pipe.inputs[0].input_type, InputType::Otlp);
         assert_eq!(
             pipe.inputs[0].resource_prefix.as_deref(),
-            Some("otel.resource.")
+            Some("resource.attributes.")
+        );
+    }
+
+    #[test]
+    fn otlp_input_rejects_non_default_resource_prefix() {
+        let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+  resource_prefix: otel.resource.
+output:
+  type: stdout
+"#;
+        let err = Config::load_str(yaml)
+            .expect_err("non-default otlp resource_prefix should be rejected for now");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported otlp resource_prefix"),
+            "expected unsupported resource_prefix validation error, got: {msg}"
         );
     }
 
