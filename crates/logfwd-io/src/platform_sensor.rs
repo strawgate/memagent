@@ -277,15 +277,15 @@ impl PlatformSensorState<RunningState> {
             rows.extend(reload_rows);
         }
 
-        if self.state.last_emit.elapsed() >= self.common.cfg.poll_interval {
-            if self.state.control.emit_signal_rows {
-                rows.extend(self.common.signal_sample_rows(
-                    &self.state.control,
-                    "sample",
-                    "periodic signal snapshot",
-                ));
-                self.state.last_emit = Instant::now();
-            }
+        if self.state.last_emit.elapsed() >= self.common.cfg.poll_interval
+            && self.state.control.emit_signal_rows
+        {
+            rows.extend(self.common.signal_sample_rows(
+                &self.state.control,
+                "sample",
+                "periodic signal snapshot",
+            ));
+            self.state.last_emit = Instant::now();
         }
 
         rows
