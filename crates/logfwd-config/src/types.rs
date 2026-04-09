@@ -271,6 +271,12 @@ pub struct InputConfig {
     pub path: Option<String>,
     pub listen: Option<String>,
     pub format: Option<Format>,
+    /// File input poll cadence in milliseconds (default: 50, minimum: 1).
+    pub poll_interval_ms: Option<u64>,
+    /// File tail read buffer in bytes (default: 262_144, minimum: 1, maximum: 4_194_304).
+    pub read_buf_size: Option<usize>,
+    /// Maximum bytes read per file per poll (default: 262_144, minimum: 1).
+    pub per_file_read_budget_bytes: Option<usize>,
     pub max_open_files: Option<usize>,
     pub glob_rescan_interval_ms: Option<u64>,
     #[serde(default)]

@@ -71,21 +71,6 @@ impl std::fmt::Debug for GeoLookupUdf {
     }
 }
 
-// Hash/Eq by name: only one GeoLookupUdf is registered per DataFusion context.
-impl std::hash::Hash for GeoLookupUdf {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name().hash(state);
-    }
-}
-
-impl PartialEq for GeoLookupUdf {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
-}
-
-impl Eq for GeoLookupUdf {}
-
 impl GeoLookupUdf {
     /// Create a new UDF wrapping the given database backend.
     pub fn new(db: Arc<dyn GeoDatabase>) -> Self {

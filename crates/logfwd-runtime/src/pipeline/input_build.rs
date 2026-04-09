@@ -82,8 +82,9 @@ pub(super) fn build_input_state(
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
                 start_from_end: false,
-                poll_interval_ms: 50,
-                read_buf_size: 256 * 1024,
+                poll_interval_ms: cfg.poll_interval_ms.unwrap_or(50),
+                read_buf_size: cfg.read_buf_size.unwrap_or(256 * 1024),
+                per_file_read_budget_bytes: cfg.per_file_read_budget_bytes.unwrap_or(256 * 1024),
                 max_open_files: cfg.max_open_files.unwrap_or(1024),
                 ..Default::default()
             };
@@ -389,6 +390,62 @@ mod tests {
     }
 
     #[test]
+    fn build_input_state_file_tuning_knobs() {
+        use logfwd_io::diagnostics::PipelineMetrics;
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
+        let stats = pm.add_input("test_in", "file");
+
+        // Omitted / defaults
+        let cfg_defaults = InputConfig {
+            name: Some("test_in".into()),
+            input_type: InputType::File,
+            path: Some("/tmp/test.log".into()),
+            listen: None,
+            format: None,
+            poll_interval_ms: None,
+            read_buf_size: None,
+            per_file_read_budget_bytes: None,
+            max_open_files: None,
+            glob_rescan_interval_ms: None,
+            generator: None,
+            sensor_beta: None,
+            http: None,
+            sql: None,
+            tls: None,
+        };
+
+        // Note: build_input_state doesn't return the raw TailConfig directly in
+        // InputState, so we just run it to ensure it successfully builds without
+        // error. A more involved test requires exposing or inspecting the internal
+        // file tailer state, but here we at least verify it parses and maps defaults
+        // cleanly for a valid file input configuration.
+        assert!(build_input_state("test_in", &cfg_defaults, Arc::clone(&stats), false).is_ok());
+
+        // Explicit tuning overrides
+        let cfg_overrides = InputConfig {
+            name: Some("test_in".into()),
+            input_type: InputType::File,
+            path: Some("/tmp/test.log".into()),
+            listen: None,
+            format: None,
+            poll_interval_ms: Some(123),
+            read_buf_size: Some(456),
+            per_file_read_budget_bytes: Some(789),
+            max_open_files: Some(10),
+            glob_rescan_interval_ms: None,
+            generator: None,
+            sensor_beta: None,
+            http: None,
+            sql: None,
+            tls: None,
+        };
+
+        assert!(build_input_state("test_in", &cfg_overrides, Arc::clone(&stats), false).is_ok());
+    }
+
+    #[test]
     fn build_input_state_rejects_udp_tcp_cri_and_auto_formats() {
         use logfwd_io::diagnostics::PipelineMetrics;
 
@@ -403,6 +460,9 @@ mod tests {
                     path: None,
                     listen: Some("127.0.0.1:0".to_string()),
                     format: Some(format),
+                    poll_interval_ms: None,
+                    read_buf_size: None,
+                    per_file_read_budget_bytes: None,
                     max_open_files: None,
                     glob_rescan_interval_ms: None,
                     generator: None,

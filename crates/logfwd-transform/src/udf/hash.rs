@@ -42,20 +42,6 @@ pub struct HashUdf {
     signature: Signature,
 }
 
-impl std::hash::Hash for HashUdf {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name().hash(state);
-    }
-}
-
-impl PartialEq for HashUdf {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
-}
-
-impl Eq for HashUdf {}
-
 impl Default for HashUdf {
     fn default() -> Self {
         Self::new()

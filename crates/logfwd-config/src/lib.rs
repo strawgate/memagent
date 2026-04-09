@@ -597,6 +597,89 @@ pipelines:
     }
 
     #[test]
+    fn file_input_accepts_tuning_knobs() {
+        let yaml = r"
+input:
+  type: file
+  path: /tmp/test.log
+  poll_interval_ms: 100
+  read_buf_size: 1048576
+  per_file_read_budget_bytes: 2097152
+output:
+  type: stdout
+";
+        let cfg = Config::load_str(yaml).unwrap();
+        let pipe = &cfg.pipelines["default"];
+        let input = &pipe.inputs[0];
+        assert_eq!(input.poll_interval_ms, Some(100));
+        assert_eq!(input.read_buf_size, Some(1048576));
+        assert_eq!(input.per_file_read_budget_bytes, Some(2097152));
+    }
+
+    #[test]
+    fn file_input_rejects_zero_tuning_knobs() {
+        let cases = [
+            ("poll_interval_ms", 0),
+            ("read_buf_size", 0),
+            ("per_file_read_budget_bytes", 0),
+        ];
+
+        for (field, value) in cases {
+            let yaml = format!(
+                r#"
+input:
+  type: file
+  path: /tmp/test.log
+  {field}: {value}
+output:
+  type: stdout
+"#
+            );
+            let err = Config::load_str(&yaml).unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("'{field}' must be at least 1")),
+                "expected error about positive {field}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_file_input_rejects_tuning_knobs() {
+        let inputs = [
+            ("http", "listen: 0.0.0.0:8080"),
+            ("tcp", "listen: 0.0.0.0:8080"),
+            ("generator", ""),
+            ("otlp", "listen: 0.0.0.0:4318"),
+        ];
+        let fields = [
+            "poll_interval_ms: 100",
+            "read_buf_size: 1024",
+            "per_file_read_budget_bytes: 1024",
+        ];
+
+        for (in_type, extra) in inputs {
+            for field in fields {
+                let yaml = format!(
+                    r#"
+input:
+  type: {in_type}
+  {extra}
+  {field}
+output:
+  type: stdout
+"#
+                );
+                let err = Config::load_str(&yaml).unwrap_err().to_string();
+                let field_name = field.split(':').next().unwrap();
+                assert!(
+                    err.contains(&format!("'{field_name}' is not supported for")),
+                    "expected error about {field_name} not supported for {in_type}, got: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn file_input_rejects_sensor_beta_block() {
         let yaml = r"
 input:
