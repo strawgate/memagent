@@ -67,13 +67,17 @@ record_check "btf_vmlinux" test -r /sys/kernel/btf/vmlinux || true
 record_check "bpffs_mountpoint_exists" test -d /sys/fs/bpf || true
 record_check "bpffs_already_mounted" is_bpffs_mounted || true
 record_check "bpftool_installed" command -v bpftool >/dev/null 2>&1 || true
+if sudo -n true >/dev/null 2>&1; then
+    record_check "sudo_available" true || true
+else
+    record_check "sudo_available" false || true
+fi
 
 if [[ "$(status_of bpftool_installed)" == "1" ]]; then
     record_cmd "bpftool_version" bpftool version || true
     record_cmd "bpftool_feature_unprivileged" bpftool feature probe kernel unprivileged || true
 
-    if sudo -n true >/dev/null 2>&1; then
-        record_check "sudo_available" true || true
+    if [[ "$(status_of sudo_available)" == "1" ]]; then
         record_cmd "bpftool_feature_privileged" sudo bpftool feature probe kernel || true
         if ! is_bpffs_mounted; then
             sudo mount -t bpf bpf /sys/fs/bpf >/dev/null 2>&1 || true
@@ -84,8 +88,6 @@ if [[ "$(status_of bpftool_installed)" == "1" ]]; then
             sudo bpftool map create /sys/fs/bpf/logfwd_ci_probe_map type hash key 4 value 8 entries 16 name logfwd_ci_probe_map \
             || true
         sudo rm -f /sys/fs/bpf/logfwd_ci_probe_map >/dev/null 2>&1 || true
-    else
-        record_check "sudo_available" false || true
     fi
 fi
 

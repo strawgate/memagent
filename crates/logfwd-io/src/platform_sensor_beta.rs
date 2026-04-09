@@ -147,6 +147,7 @@ impl Default for PlatformSensorBetaConfig {
 /// Beta input source for per-platform sensor bring-up.
 #[derive(Debug)]
 pub struct PlatformSensorBetaInput {
+    name: String,
     machine: Option<PlatformSensorMachine>,
 }
 
@@ -233,7 +234,12 @@ struct ControlFileConfig {
 }
 
 impl PlatformSensorState<InitState> {
-    fn start(self) -> io::Result<(PlatformSensorState<RunningState>, Vec<InputEvent>)> {
+    fn start(
+        self,
+    ) -> Result<
+        (PlatformSensorState<RunningState>, Vec<InputEvent>),
+        (PlatformSensorState<InitState>, io::Error),
+    > {
         let mut rows = vec![self.common.control_row(
             &self.state.control,
             "startup",
@@ -247,7 +253,10 @@ impl PlatformSensorState<InitState> {
             "initial signal snapshot",
         ));
 
-        let event = self.common.build_batch_event(rows)?;
+        let event = match self.common.build_batch_event(rows) {
+            Ok(event) => event,
+            Err(err) => return Err((self, err)),
+        };
         let running = PlatformSensorState {
             common: self.common,
             state: RunningState {
@@ -543,6 +552,7 @@ impl PlatformSensorBetaInput {
         target: PlatformSensorTarget,
         cfg: PlatformSensorBetaConfig,
     ) -> io::Result<Self> {
+        let name = name.into();
         let host_platform = current_host_platform().as_str().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -577,9 +587,10 @@ impl PlatformSensorBetaInput {
         }
 
         Ok(Self {
+            name: name.clone(),
             machine: Some(PlatformSensorMachine::Init(PlatformSensorState {
                 common: PlatformSensorCommon {
-                    name: name.into(),
+                    name,
                     target,
                     host_platform,
                     cfg,
@@ -598,34 +609,30 @@ impl InputSource for PlatformSensorBetaInput {
             .take()
             .ok_or_else(|| io::Error::other("platform sensor beta state missing"))?;
 
-        match machine {
-            PlatformSensorMachine::Init(init) => {
-                let (running, events) = init.start()?;
-                self.machine = Some(PlatformSensorMachine::Running(running));
-                Ok(events)
-            }
+        let (next_machine, result) = match machine {
+            PlatformSensorMachine::Init(init) => match init.start() {
+                Ok((running, events)) => (PlatformSensorMachine::Running(running), Ok(events)),
+                Err((init, err)) => (PlatformSensorMachine::Init(init), Err(err)),
+            },
             PlatformSensorMachine::Running(mut running) => {
                 let rows = running.poll_rows();
-                let events = if rows.is_empty() {
-                    Vec::new()
+                let result = if rows.is_empty() {
+                    Ok(Vec::new())
                 } else {
-                    vec![running.common.build_batch_event(rows)?]
+                    running
+                        .common
+                        .build_batch_event(rows)
+                        .map(|event| vec![event])
                 };
-                self.machine = Some(PlatformSensorMachine::Running(running));
-                Ok(events)
+                (PlatformSensorMachine::Running(running), result)
             }
-        }
+        };
+        self.machine = Some(next_machine);
+        result
     }
 
     fn name(&self) -> &str {
-        match self
-            .machine
-            .as_ref()
-            .expect("platform sensor beta state should always be present")
-        {
-            PlatformSensorMachine::Init(init) => &init.common.name,
-            PlatformSensorMachine::Running(running) => &running.common.name,
-        }
+        &self.name
     }
 
     fn health(&self) -> ComponentHealth {
@@ -780,6 +787,7 @@ fn current_host_platform() -> HostPlatform {
 mod tests {
     use super::*;
     use arrow::array::Array;
+    use std::sync::Arc;
 
     fn host_target() -> PlatformSensorTarget {
         #[cfg(target_os = "linux")]
@@ -1062,6 +1070,43 @@ mod tests {
         assert!(
             events.is_empty(),
             "unchanged control file should not emit reload-applied rows"
+        );
+    }
+
+    #[test]
+    fn poll_error_preserves_machine_and_name_invariants() {
+        let mut input = PlatformSensorBetaInput::new(
+            "beta",
+            host_target(),
+            PlatformSensorBetaConfig::default(),
+        )
+        .expect("host target should be valid");
+
+        let init = match input.machine.as_mut() {
+            Some(PlatformSensorMachine::Init(init)) => init,
+            _ => panic!("expected init machine"),
+        };
+        init.common.schema = Arc::new(Schema::new(Vec::<Field>::new()));
+
+        let err = match input.poll() {
+            Ok(_) => panic!("invalid schema must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            !err.to_string().contains("state missing"),
+            "unexpected state-loss error: {err}"
+        );
+
+        // Even after a poll error, public API should remain non-panicking.
+        assert_eq!(input.name(), "beta");
+
+        let second_err = match input.poll() {
+            Ok(_) => panic!("machine should still be present"),
+            Err(err) => err,
+        };
+        assert!(
+            !second_err.to_string().contains("state missing"),
+            "machine should not be lost after an error: {second_err}"
         );
     }
 }

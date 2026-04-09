@@ -1688,7 +1688,16 @@ fn is_sensor_beta_input_type(input_type: &InputType) -> bool {
 fn build_platform_sensor_beta_config(
     cfg: Option<&PlatformSensorBetaInputConfig>,
 ) -> logfwd_io::platform_sensor_beta::PlatformSensorBetaConfig {
-    let poll_interval_ms = cfg.and_then(|c| c.poll_interval_ms).unwrap_or(10_000);
+    let original_poll_interval_ms = cfg.and_then(|c| c.poll_interval_ms);
+    let poll_interval_ms = original_poll_interval_ms.unwrap_or(10_000);
+    let clamped_poll_interval_ms = poll_interval_ms.max(1);
+    if original_poll_interval_ms == Some(0) {
+        tracing::warn!(
+            original = 0u64,
+            clamped = clamped_poll_interval_ms,
+            "sensor beta poll_interval_ms was below minimum and clamped to 1ms"
+        );
+    }
     let emit_heartbeat = cfg.and_then(|c| c.emit_heartbeat).unwrap_or(true);
     let control_reload_interval_ms = cfg
         .and_then(|c| c.control_reload_interval_ms)
@@ -1699,7 +1708,7 @@ fn build_platform_sensor_beta_config(
 
     logfwd_io::platform_sensor_beta::PlatformSensorBetaConfig {
         emit_heartbeat,
-        poll_interval: Duration::from_millis(poll_interval_ms.max(1)),
+        poll_interval: Duration::from_millis(clamped_poll_interval_ms),
         control_path,
         control_reload_interval: Duration::from_millis(control_reload_interval_ms.max(1)),
         enabled_families,

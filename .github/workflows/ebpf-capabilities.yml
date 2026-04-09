@@ -9,6 +9,8 @@ on:
       - "crates/logfwd-ebpf-proto/**"
       - "crates/logfwd-io/src/platform_sensor_beta.rs"
       - "crates/logfwd-config/src/lib.rs"
+      - "crates/logfwd/src/main.rs"
+      - "crates/logfwd/src/pipeline.rs"
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
@@ -18,6 +20,8 @@ on:
       - "crates/logfwd-ebpf-proto/**"
       - "crates/logfwd-io/src/platform_sensor_beta.rs"
       - "crates/logfwd-config/src/lib.rs"
+      - "crates/logfwd/src/main.rs"
+      - "crates/logfwd/src/pipeline.rs"
   workflow_dispatch:
   schedule:
     - cron: "17 9 * * 1"
@@ -80,6 +84,7 @@ jobs:
         run: |
           cargo test -p logfwd-io platform_sensor_beta::tests -- --nocapture
           cargo test -p logfwd-config sensor_beta -- --nocapture
+          cargo test -p logfwd sensor_beta_formats_allow_raw_and_json_only -- --nocapture
 
       - name: Check pipe-capture userspace loader builds
         run: cargo check --manifest-path crates/logfwd-ebpf-proto/pipe-capture/Cargo.toml
@@ -130,6 +135,7 @@ jobs:
         run: |
           cargo test -p logfwd-io platform_sensor_beta::tests -- --nocapture
           cargo test -p logfwd-config sensor_beta -- --nocapture
+          cargo test -p logfwd sensor_beta_formats_allow_raw_and_json_only -- --nocapture
 
       - name: Probe macOS sensor capabilities
         run: |
@@ -187,7 +193,16 @@ jobs:
 
       - name: Add macOS probe summary
         if: always()
-        run: cat artifacts/macos-sensor/summary.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          if [[ -f artifacts/macos-sensor/summary.md ]]; then
+            cat artifacts/macos-sensor/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## macOS sensor capability snapshot"
+              echo ""
+              echo "Probe summary not generated (earlier macOS steps failed)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload macOS capability artifacts
         if: always()
@@ -220,6 +235,7 @@ jobs:
         run: |
           cargo test -p logfwd-io platform_sensor_beta::tests -- --nocapture
           cargo test -p logfwd-config sensor_beta -- --nocapture
+          cargo test -p logfwd sensor_beta_formats_allow_raw_and_json_only -- --nocapture
 
       - name: Probe eBPF for Windows capabilities
         shell: pwsh
@@ -284,7 +300,16 @@ jobs:
       - name: Add Windows probe summary
         if: always()
         shell: pwsh
-        run: Get-Content artifacts/windows-ebpf/summary.md | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+        run: |
+          if (Test-Path "artifacts/windows-ebpf/summary.md") {
+            Get-Content artifacts/windows-ebpf/summary.md | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          } else {
+            @(
+              "## Windows eBPF capability snapshot",
+              "",
+              "Probe summary not generated (earlier Windows steps failed)."
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
 
       - name: Upload Windows capability artifacts
         if: always()
