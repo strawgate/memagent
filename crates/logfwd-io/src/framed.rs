@@ -287,11 +287,11 @@ impl InputSource for FramedInput {
                 // When source_id is known, clear only the affected source's
                 // state. When unknown (None), clear all sources as a
                 // conservative fallback.
-                event @ InputEvent::Rotated { .. }
-                | event @ InputEvent::Truncated { .. } => {
+                event @ InputEvent::Rotated { .. } | event @ InputEvent::Truncated { .. } => {
                     let source_id = match &event {
-                        InputEvent::Rotated { source_id }
-                        | InputEvent::Truncated { source_id } => *source_id,
+                        InputEvent::Rotated { source_id } | InputEvent::Truncated { source_id } => {
+                            *source_id
+                        }
                         _ => unreachable!(),
                     };
                     match source_id {
