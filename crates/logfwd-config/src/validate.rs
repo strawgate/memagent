@@ -1341,6 +1341,22 @@ fn glob_could_match(glob_pattern: &str, file_path: &str) -> bool {
 
     let same_directory = matches!((&glob_dir, &file_dir), (Some(g), Some(f)) if g == f);
     let recursive_double_star = glob_pattern.contains("**");
+    let recursive_root_match = if recursive_double_star {
+        let prefix = glob_pattern
+            .split("**")
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(std::path::MAIN_SEPARATOR);
+        if prefix.is_empty() {
+            false
+        } else {
+            let normalized_prefix = normalize_path_lexically(Path::new(prefix));
+            let normalized_file = normalize_path_lexically(file);
+            normalized_file.starts_with(&normalized_prefix)
+        }
+    } else {
+        false
+    };
     let recursive_prefix_match = if recursive_double_star {
         if let (Some(g), Some(f)) = (&glob_dir, &file_dir) {
             let mut prefix = std::path::PathBuf::new();
@@ -1362,7 +1378,7 @@ fn glob_could_match(glob_pattern: &str, file_path: &str) -> bool {
 
     // If the file is in the same directory as the glob (or the glob uses a
     // recursive `**` prefix that includes the file directory), it could match.
-    if same_directory || recursive_prefix_match {
+    if same_directory || recursive_prefix_match || recursive_root_match {
         // Also check filename pattern if the glob has a simple `*.ext` form.
         if let Some(glob_name) = glob_path.file_name().and_then(|n| n.to_str())
             && let Some(file_name) = file.file_name().and_then(|n| n.to_str())
@@ -1533,6 +1549,13 @@ pipelines:
             "/var/log/**/access.log",
             "/var/log/subdir/error.log"
         ));
+    }
+
+    #[test]
+    fn glob_could_match_recursive_double_star_directory_only_pattern() {
+        assert!(glob_could_match("/var/log/**", "/var/log/subdir/app.log"));
+        assert!(glob_could_match("/var/log/**", "/var/log/app.log"));
+        assert!(!glob_could_match("/var/log/**", "/srv/log/app.log"));
     }
 }
 
