@@ -391,7 +391,7 @@ impl OtlpSink {
     /// Compress, frame, and send the encoded payload via reqwest.
     ///
     /// Returns `SendResult::RetryAfter` on 429, `SendResult::Ok` on success,
-    /// and retries transient 5xx / network errors with exponential backoff.
+    /// and surfaces transient 5xx / network errors for worker-pool retry.
     async fn send_payload(&mut self, batch_rows: u64) -> io::Result<super::sink::SendResult> {
         if self.encoder_buf.is_empty() {
             return Ok(super::sink::SendResult::Ok);

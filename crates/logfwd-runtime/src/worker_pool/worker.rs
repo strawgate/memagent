@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
+use std::{any::Any, panic::AssertUnwindSafe};
 
 use arrow::record_batch::RecordBatch;
 use backon::{BackoffBuilder, ExponentialBuilder};
+use futures_util::FutureExt;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
@@ -78,7 +80,7 @@ pub(super) async fn worker_task(
                             cmp_bytes = tracing::field::Empty,
                             resp_bytes = tracing::field::Empty,
                         );
-                        let (outcome, send_latency_ns, retries) =
+                        let process_result = AssertUnwindSafe(
                             process_item(
                                 id,
                                 &mut *sink,
@@ -88,8 +90,24 @@ pub(super) async fn worker_task(
                                 max_retry_delay,
                                 &cancel,
                             )
-                        .instrument(output_span.clone())
+                            .instrument(output_span.clone()),
+                        )
+                        .catch_unwind()
                         .await;
+                        let mut recycle_worker_after_ack = false;
+                        let (outcome, send_latency_ns, retries) = match process_result {
+                            Ok(result) => result,
+                            Err(payload) => {
+                                recycle_worker_after_ack = true;
+                                output_health.apply_worker_event(id, OutputHealthEvent::FatalFailure);
+                                tracing::error!(
+                                    worker_id = id,
+                                    panic = %panic_payload_message(payload.as_ref()),
+                                    "worker_pool: sink send panicked; emitting failure ack and recycling worker"
+                                );
+                                (DeliveryOutcome::InternalFailure, 0, 0)
+                            }
+                        };
                         output_span.record("retries", retries);
                         output_span.record("send_ns", send_latency_ns);
                         let output_ns = submitted_at.elapsed().as_nanos() as u64 - queue_wait_ns;
@@ -131,6 +149,9 @@ pub(super) async fn worker_task(
                             cancel.cancel();
                             break;
                         }
+                        if recycle_worker_after_ack {
+                            break;
+                        }
                     }
                 }
             }
@@ -143,6 +164,16 @@ pub(super) async fn worker_task(
     if let Err(e) = sink.shutdown().await {
         tracing::error!(worker_id = id, error = %e, "worker_pool: sink shutdown failed");
         metrics.output_error(sink.name());
+    }
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> &str {
+    if let Some(msg) = payload.downcast_ref::<&'static str>() {
+        msg
+    } else if let Some(msg) = payload.downcast_ref::<String>() {
+        msg.as_str()
+    } else {
+        "<non-string panic payload>"
     }
 }
 
