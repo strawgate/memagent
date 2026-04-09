@@ -33,6 +33,16 @@ impl Config {
             }
         }
 
+        // Validate storage.data_dir is not an existing regular file.
+        if let Some(ref dir) = self.storage.data_dir {
+            let path = Path::new(dir);
+            if path.is_file() {
+                return Err(ConfigError::Validation(format!(
+                    "storage.data_dir '{dir}' is a regular file, not a directory"
+                )));
+            }
+        }
+
         if self.pipelines.is_empty() {
             return Err(ConfigError::Validation(
                 "at least one pipeline must be defined".into(),
@@ -686,6 +696,13 @@ impl Config {
                                     "pipeline '{name}' output '{label}': elasticsearch 'index' must not be empty"
                                 )));
                             }
+                            if let Some(idx) = &output.index
+                                && let Some(bad) = es_illegal_index_char(idx)
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': elasticsearch index '{idx}' contains illegal character '{bad}'"
+                                )));
+                            }
                             if let Some(mode) = output.request_mode.as_deref()
                                 && !matches!(mode, "buffered" | "streaming")
                             {
@@ -1290,6 +1307,18 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Return the first illegal character in an Elasticsearch index name, or None.
+/// ES rejects: uppercase, `*`, `?`, `"`, `<`, `>`, `|`, ` `, `,`, `#`, `:`, `\`, `/`.
+fn es_illegal_index_char(index: &str) -> Option<char> {
+    index.chars().find(|c| {
+        c.is_ascii_uppercase()
+            || matches!(
+                c,
+                '*' | '?' | '"' | '<' | '>' | '|' | ' ' | ',' | '#' | ':' | '\\' | '/'
+            )
+    })
 }
 
 #[cfg(test)]
