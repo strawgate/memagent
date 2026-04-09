@@ -602,7 +602,7 @@ The framework **extends, not replaces** the existing turmoil_sim tests:
 
 | Invariant | Description | TLA+ coverage | Runtime oracle |
 |-----------|-------------|---------------|---------------|
-| **ALO** | At-least-once: every input record identity eventually delivered | Partial (protocol-level ordering/liveness only) | `delivered_ids ⊇ input_ids` |
+| **At-Least-Once** | At-least-once: every input record identity eventually delivered | Partial (protocol-level ordering/liveness only) | `delivered_ids ⊇ input_ids` |
 | **CM** | Checkpoint monotonicity: offsets never decrease | Yes (`tla/PipelineMachine.tla`) | `assert_monotonic(source_id)` |
 | **OA** | Ordered ACK: checkpoint doesn't skip ahead | Yes (`tla/PipelineMachine.tla`) | `BatchId` ordering + checkpoint trace checks |
 | **SC** | Shutdown completeness: pipeline reaches Stopped | Yes (liveness config) | `sim.run()` returns `Ok` and no forced stop |
