@@ -40,20 +40,6 @@ pub struct RegexpExtractUdf {
     regex_cache: Mutex<HashMap<String, Arc<Regex>>>,
 }
 
-impl std::hash::Hash for RegexpExtractUdf {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name().hash(state);
-    }
-}
-
-impl PartialEq for RegexpExtractUdf {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
-}
-
-impl Eq for RegexpExtractUdf {}
-
 impl Default for RegexpExtractUdf {
     fn default() -> Self {
         Self::new()

@@ -6,9 +6,6 @@ input:
   type: file
   path: /var/log/containers/*.log
   format: cri
-  poll_interval_ms: 50
-  read_buf_size: 262144
-  per_file_read_budget_bytes: 262144
 
 transform: |
   SELECT * FROM logs

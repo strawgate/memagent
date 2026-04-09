@@ -397,16 +397,11 @@ mod tests {
         let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
         let stats = pm.add_input("test_in", "file");
 
-        let tmp_dir = tempfile::tempdir().expect("create temp dir");
-        let log_path = tmp_dir.path().join("test.log");
-        std::fs::write(&log_path, "").expect("create temp log file");
-        let log_path_str = log_path.to_str().expect("valid utf-8 path").to_string();
-
         // Omitted / defaults
         let cfg_defaults = InputConfig {
             name: Some("test_in".into()),
             input_type: InputType::File,
-            path: Some(log_path_str.clone()),
+            path: Some("/tmp/test.log".into()),
             listen: None,
             format: None,
             poll_interval_ms: None,
@@ -421,13 +416,18 @@ mod tests {
             tls: None,
         };
 
+        // Note: build_input_state doesn't return the raw TailConfig directly in
+        // InputState, so we just run it to ensure it successfully builds without
+        // error. A more involved test requires exposing or inspecting the internal
+        // file tailer state, but here we at least verify it parses and maps defaults
+        // cleanly for a valid file input configuration.
         assert!(build_input_state("test_in", &cfg_defaults, Arc::clone(&stats), false).is_ok());
 
         // Explicit tuning overrides
         let cfg_overrides = InputConfig {
             name: Some("test_in".into()),
             input_type: InputType::File,
-            path: Some(log_path_str),
+            path: Some("/tmp/test.log".into()),
             listen: None,
             format: None,
             poll_interval_ms: Some(123),

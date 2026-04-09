@@ -8,29 +8,29 @@ use url::Url;
 impl Config {
     /// Validate the loaded configuration.
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
-        if let Some(ep) = &self.server.traces_endpoint
-            && let Err(msg) = validate_endpoint_url(ep)
-        {
-            return Err(ConfigError::Validation(format!(
-                "server.traces_endpoint: {msg}"
-            )));
+        if let Some(ep) = &self.server.traces_endpoint {
+            if let Err(msg) = validate_endpoint_url(ep) {
+                return Err(ConfigError::Validation(format!(
+                    "server.traces_endpoint: {msg}"
+                )));
+            }
         }
 
         // Validate server.diagnostics bind address at config time so that
         // `validate` catches typos before the server tries to bind at runtime.
-        if let Some(addr) = &self.server.diagnostics
-            && let Err(msg) = validate_bind_addr(addr)
-        {
-            return Err(ConfigError::Validation(format!(
-                "server.diagnostics: {msg}"
-            )));
+        if let Some(addr) = &self.server.diagnostics {
+            if let Err(msg) = validate_bind_addr(addr) {
+                return Err(ConfigError::Validation(format!(
+                    "server.diagnostics: {msg}"
+                )));
+            }
         }
 
         // Validate server.log_level is a recognised level (#481).
-        if let Some(level) = &self.server.log_level
-            && let Err(msg) = validate_log_level(level)
-        {
-            return Err(ConfigError::Validation(format!("server.log_level: {msg}")));
+        if let Some(level) = &self.server.log_level {
+            if let Err(msg) = validate_log_level(level) {
+                return Err(ConfigError::Validation(format!("server.log_level: {msg}")));
+            }
         }
 
         if self.pipelines.is_empty() {
@@ -60,12 +60,12 @@ impl Config {
                     "pipeline '{name}': batch_target_bytes must be greater than 0"
                 )));
             }
-            if let Some(sql) = &pipe.transform
-                && sql.trim().is_empty()
-            {
-                return Err(ConfigError::Validation(format!(
-                    "pipeline '{name}': transform SQL cannot be empty"
-                )));
+            if let Some(sql) = &pipe.transform {
+                if sql.trim().is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{name}': transform SQL cannot be empty"
+                    )));
+                }
             }
             if pipe.inputs.is_empty() {
                 return Err(ConfigError::Validation(format!(
@@ -114,13 +114,6 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'read_buf_size' must be at least 1"
                             )));
                         }
-                        if let Some(v) = input.read_buf_size
-                            && v > 4 * 1024 * 1024
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'read_buf_size' must not exceed 4 MiB (4194304)"
-                            )));
-                        }
                         if input.per_file_read_budget_bytes == Some(0) {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' must be at least 1"
@@ -133,12 +126,12 @@ impl Config {
                                 "pipeline '{name}' input '{label}': udp/tcp input requires 'listen'"
                             )));
                         }
-                        if let Some(addr) = &input.listen
-                            && let Err(msg) = validate_bind_addr(addr)
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': {msg}"
-                            )));
+                        if let Some(addr) = &input.listen {
+                            if let Err(msg) = validate_bind_addr(addr) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': {msg}"
+                                )));
+                            }
                         }
                         if let Some(tls) = &input.tls {
                             if matches!(input.input_type, InputType::Udp) {
@@ -184,12 +177,12 @@ impl Config {
                                 input.input_type
                             )));
                         }
-                        if let Some(addr) = &input.listen
-                            && let Err(msg) = validate_bind_addr(addr)
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': {msg}"
-                            )));
+                        if let Some(addr) = &input.listen {
+                            if let Err(msg) = validate_bind_addr(addr) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': {msg}"
+                                )));
+                            }
                         }
                     }
                     InputType::Generator
@@ -526,13 +519,14 @@ impl Config {
                                         "pipeline '{name}' input '{label}': generator.timestamp.step_ms must not be zero"
                                     )));
                                 }
-                                if let Some(start) = &ts.start
-                                    && !start.eq_ignore_ascii_case("now")
-                                    && let Err(e) = validate_iso8601_timestamp(start)
-                                {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': generator.timestamp.start: {e}"
-                                    )));
+                                if let Some(start) = &ts.start {
+                                    if !start.eq_ignore_ascii_case("now") {
+                                        if let Err(e) = validate_iso8601_timestamp(start) {
+                                            return Err(ConfigError::Validation(format!(
+                                                "pipeline '{name}' input '{label}': generator.timestamp.start: {e}"
+                                            )));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -643,12 +637,12 @@ impl Config {
                 }
 
                 // Reject whitespace-only per-input SQL (mirrors pipeline-level check).
-                if let Some(sql) = &input.sql
-                    && sql.trim().is_empty()
-                {
-                    return Err(ConfigError::Validation(format!(
-                        "pipeline '{name}' input '{label}': per-input sql cannot be empty"
-                    )));
+                if let Some(sql) = &input.sql {
+                    if sql.trim().is_empty() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' input '{label}': per-input sql cannot be empty"
+                        )));
+                    }
                 }
             }
 
@@ -752,12 +746,12 @@ impl Config {
                                 output.output_type,
                             )));
                         }
-                        if let Some(ep) = &output.endpoint
-                            && let Err(msg) = validate_host_port(ep)
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': {msg}",
-                            )));
+                        if let Some(ep) = &output.endpoint {
+                            if let Err(msg) = validate_host_port(ep) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': {msg}",
+                                )));
+                            }
                         }
                     }
                     // Http and Parquet are not yet implemented — already

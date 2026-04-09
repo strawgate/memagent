@@ -235,17 +235,22 @@ impl InputSource for FramedInput {
                             .format
                             .process_lines(&chunk[process_start..], &mut self.out_buf);
                     }
-                    if inject_source_path
-                        && let Some(source_path) =
+                    if inject_source_path {
+                        if let Some(source_path) =
                             source_path_for(key, &mut source_path_by_id, self.inner.as_ref())
-                    {
-                        let mut with_source = std::mem::take(&mut self.spare_buf);
-                        with_source.clear();
-                        inject_source_path_metadata(&self.out_buf, source_path, &mut with_source);
-                        // Reclaim out_buf's capacity as spare_buf before replacing it,
-                        // preserving the buffer-bouncing optimization (no allocation per poll).
-                        self.out_buf.clear();
-                        self.spare_buf = std::mem::replace(&mut self.out_buf, with_source);
+                        {
+                            let mut with_source = std::mem::take(&mut self.spare_buf);
+                            with_source.clear();
+                            inject_source_path_metadata(
+                                &self.out_buf,
+                                source_path,
+                                &mut with_source,
+                            );
+                            // Reclaim out_buf's capacity as spare_buf before replacing it,
+                            // preserving the buffer-bouncing optimization (no allocation per poll).
+                            self.out_buf.clear();
+                            self.spare_buf = std::mem::replace(&mut self.out_buf, with_source);
+                        }
                     }
 
                     let line_count = memchr::memchr_iter(b'\n', &chunk[process_start..]).count();
@@ -282,13 +287,8 @@ impl InputSource for FramedInput {
                 // When source_id is known, clear only the affected source's
                 // state. When unknown (None), clear all sources as a
                 // conservative fallback.
-                event @ InputEvent::Rotated { .. } | event @ InputEvent::Truncated { .. } => {
-                    let source_id = match &event {
-                        InputEvent::Rotated { source_id } | InputEvent::Truncated { source_id } => {
-                            *source_id
-                        }
-                        _ => unreachable!(),
-                    };
+                event @ (InputEvent::Rotated { source_id }
+                | InputEvent::Truncated { source_id }) => {
                     match source_id {
                         Some(_) => {
                             self.sources.remove(&source_id);
@@ -315,59 +315,63 @@ impl InputSource for FramedInput {
                         None => self.sources.keys().copied().collect(),
                     };
                     for key in keys_to_flush {
-                        if let Some(state) = self.sources.get_mut(&key)
-                            && !state.remainder.is_empty()
-                        {
-                            let mut remainder = std::mem::take(&mut state.remainder);
-                            remainder.push(b'\n');
-                            let mut process_start = 0usize;
-                            if state.overflow_tainted {
-                                process_start =
-                                    memchr::memchr(b'\n', &remainder).map_or(0, |i| i + 1);
-                                state.overflow_tainted = false;
-                            }
+                        if let Some(state) = self.sources.get_mut(&key) {
+                            if !state.remainder.is_empty() {
+                                let mut remainder = std::mem::take(&mut state.remainder);
+                                remainder.push(b'\n');
+                                let mut process_start = 0usize;
+                                if state.overflow_tainted {
+                                    process_start =
+                                        memchr::memchr(b'\n', &remainder).map_or(0, |i| i + 1);
+                                    state.overflow_tainted = false;
+                                }
 
-                            self.out_buf.clear();
-                            let state = self.sources.get_mut(&key).expect("just checked existence");
-                            if process_start < remainder.len() {
-                                state
-                                    .format
-                                    .process_lines(&remainder[process_start..], &mut self.out_buf);
-                            }
-                            if inject_source_path
-                                && let Some(source_path) = source_path_for(
-                                    key,
-                                    &mut source_path_by_id,
-                                    self.inner.as_ref(),
-                                )
-                            {
-                                let mut with_source = std::mem::take(&mut self.spare_buf);
-                                with_source.clear();
-                                inject_source_path_metadata(
-                                    &self.out_buf,
-                                    source_path,
-                                    &mut with_source,
-                                );
                                 self.out_buf.clear();
-                                self.spare_buf = std::mem::replace(&mut self.out_buf, with_source);
-                            }
+                                let state =
+                                    self.sources.get_mut(&key).expect("just checked existence");
+                                if process_start < remainder.len() {
+                                    state.format.process_lines(
+                                        &remainder[process_start..],
+                                        &mut self.out_buf,
+                                    );
+                                }
+                                if inject_source_path {
+                                    if let Some(source_path) = source_path_for(
+                                        key,
+                                        &mut source_path_by_id,
+                                        self.inner.as_ref(),
+                                    ) {
+                                        let mut with_source = std::mem::take(&mut self.spare_buf);
+                                        with_source.clear();
+                                        inject_source_path_metadata(
+                                            &self.out_buf,
+                                            source_path,
+                                            &mut with_source,
+                                        );
+                                        self.out_buf.clear();
+                                        self.spare_buf =
+                                            std::mem::replace(&mut self.out_buf, with_source);
+                                    }
+                                }
 
-                            self.stats.inc_lines(1);
+                                self.stats.inc_lines(1);
 
-                            // Remainder was flushed — update tracker so
-                            // checkpointable_offset advances past the
-                            // flushed bytes.
-                            let state = self.sources.get_mut(&key).expect("just checked existence");
-                            state.tracker.apply_remainder_consumed();
+                                // Remainder was flushed — update tracker so
+                                // checkpointable_offset advances past the
+                                // flushed bytes.
+                                let state =
+                                    self.sources.get_mut(&key).expect("just checked existence");
+                                state.tracker.apply_remainder_consumed();
 
-                            if !self.out_buf.is_empty() {
-                                let data = std::mem::take(&mut self.out_buf);
-                                std::mem::swap(&mut self.out_buf, &mut self.spare_buf);
-                                result_events.push(InputEvent::Data {
-                                    bytes: data,
-                                    source_id: key,
-                                    accounted_bytes: 0,
-                                });
+                                if !self.out_buf.is_empty() {
+                                    let data = std::mem::take(&mut self.out_buf);
+                                    std::mem::swap(&mut self.out_buf, &mut self.spare_buf);
+                                    result_events.push(InputEvent::Data {
+                                        bytes: data,
+                                        source_id: key,
+                                        accounted_bytes: 0,
+                                    });
+                                }
                             }
                         }
                     }

@@ -85,20 +85,6 @@ pub struct GrokUdf {
     grok_cache: Mutex<HashMap<String, Arc<CompiledGrok>>>,
 }
 
-impl std::hash::Hash for GrokUdf {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name().hash(state);
-    }
-}
-
-impl PartialEq for GrokUdf {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
-}
-
-impl Eq for GrokUdf {}
-
 impl Default for GrokUdf {
     fn default() -> Self {
         Self::new()
