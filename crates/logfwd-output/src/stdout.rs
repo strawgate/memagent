@@ -12,7 +12,8 @@ use logfwd_types::diagnostics::ComponentStats;
 
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{
-    BatchMetadata, ColVariant, build_col_infos, get_array, is_null, str_value, write_row_json,
+    BatchMetadata, ColVariant, build_col_infos, get_array, is_null, str_value, write_json_value,
+    write_row_json,
 };
 
 // ---------------------------------------------------------------------------
@@ -256,6 +257,13 @@ impl StdoutSink {
                             .value(row);
                         self.buf
                             .extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
+                    }
+                    DataType::Struct(_) => {
+                        // Encode structs (e.g. grok() or geo_lookup() results) as
+                        // inline JSON so the values are visible in console output.
+                        // Without this arm, str_value() returns "" for any Struct,
+                        // silently discarding parsed data (#1620).
+                        write_json_value(arr, row, &mut self.buf)?;
                     }
                     _ => {
                         self.buf.extend_from_slice(str_value(arr, row).as_bytes());

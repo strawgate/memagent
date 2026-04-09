@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 /// Returns (rss_bytes, cpu_user_ms, cpu_sys_ms) for the current process.
-pub(super) fn process_metrics() -> Option<(u64, u64, u64)> {
+pub(crate) fn process_metrics() -> Option<(u64, u64, u64)> {
     get_process_metrics_linux().or_else(get_process_metrics_unix)
 }
 

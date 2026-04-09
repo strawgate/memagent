@@ -132,6 +132,8 @@ pub struct DiagnosticsServer {
     history: Arc<crate::metric_history::MetricHistory>,
     /// Ring buffer of recent batch spans for /admin/v1/traces.
     trace_buf: Option<crate::span_exporter::SpanBuffer>,
+    /// OTLP JSON telemetry buffers for the dashboard.
+    telemetry: crate::telemetry_buffer::TelemetryBuffers,
 }
 
 impl DiagnosticsServer {
@@ -147,6 +149,7 @@ impl DiagnosticsServer {
             stderr: crate::stderr_capture::StderrCapture::new(),
             history: Arc::new(crate::metric_history::MetricHistory::new()),
             trace_buf: None,
+            telemetry: crate::telemetry_buffer::TelemetryBuffers::new(),
         }
     }
 
@@ -217,15 +220,39 @@ impl DiagnosticsServer {
         let sampler_history = Arc::clone(&self.history);
         let sampler_mem_fn = self.memory_stats_fn;
         let sampler_running = Arc::clone(&running);
+        let sampler_telemetry = self.telemetry.clone();
+        let sampler_stderr = self.stderr.clone();
+        let sampler_start = self.start_time;
         let sampler_handle = thread::Builder::new()
             .name("metric-sampler".into())
             .spawn(move || {
+                let mut last_stderr_count: usize = 0;
+                let mut prev_health = std::collections::HashMap::new();
                 while sampler_running.load(Ordering::Relaxed) {
                     thread::sleep(std::time::Duration::from_secs(2));
                     // Re-check the flag after sleeping so we exit promptly on
                     // shutdown rather than performing one last sample.
                     if sampler_running.load(Ordering::Relaxed) {
                         sample_metrics(&sampler_pipelines, &sampler_history, sampler_mem_fn);
+
+                        // OTLP telemetry buffers (metrics + logs).
+                        let uptime = sampler_start.elapsed().as_secs_f64();
+                        crate::telemetry_buffer::sample_all_metrics(
+                            &sampler_pipelines,
+                            sampler_mem_fn,
+                            uptime,
+                            &sampler_telemetry,
+                        );
+                        crate::telemetry_buffer::sample_stderr_logs(
+                            &sampler_stderr,
+                            &sampler_telemetry.logs,
+                            &mut last_stderr_count,
+                        );
+                        crate::telemetry_buffer::sample_health_transitions(
+                            &sampler_pipelines,
+                            &sampler_telemetry.logs,
+                            &mut prev_health,
+                        );
                     }
                 }
             })
@@ -290,6 +317,9 @@ impl DiagnosticsServer {
             "/admin/v1/logs" => self.serve_logs(request),
             "/admin/v1/history" => self.serve_history(request),
             "/admin/v1/traces" => self.serve_traces(request),
+            "/admin/v1/telemetry/metrics" => self.serve_telemetry_metrics(request),
+            "/admin/v1/telemetry/traces" => self.serve_telemetry_traces(request),
+            "/admin/v1/telemetry/logs" => self.serve_telemetry_logs(request),
             _ => {
                 let header =
                     tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..])
@@ -971,6 +1001,45 @@ impl DiagnosticsServer {
             ),
             None => String::new(),
         }
+    }
+
+    // -- OTLP JSON telemetry endpoints ----------------------------------------
+
+    fn serve_telemetry_metrics(
+        &self,
+        request: tiny_http::Request,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let points = self.telemetry.metrics.snapshot();
+        let body = crate::telemetry_buffer::metrics_to_otlp_json(&points);
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        request.respond(tiny_http::Response::from_string(body).with_header(header))?;
+        Ok(())
+    }
+
+    fn serve_telemetry_traces(
+        &self,
+        request: tiny_http::Request,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let spans =
+            crate::telemetry_buffer::collect_all_spans(self.trace_buf.as_ref(), &self.pipelines);
+        let body = crate::telemetry_buffer::traces_to_otlp_json(&spans);
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        request.respond(tiny_http::Response::from_string(body).with_header(header))?;
+        Ok(())
+    }
+
+    fn serve_telemetry_logs(
+        &self,
+        request: tiny_http::Request,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let logs = self.telemetry.logs.snapshot();
+        let body = crate::telemetry_buffer::logs_to_otlp_json(&logs);
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .map_err(|()| io::Error::other("invalid HTTP header"))?;
+        request.respond(tiny_http::Response::from_string(body).with_header(header))?;
+        Ok(())
     }
 }
 
@@ -1980,6 +2049,179 @@ output:
             let status = http_post(port, path);
             assert_eq!(status, 405, "POST {path} should return 405, got {status}");
         }
+    }
+
+    // -- OTLP telemetry endpoint tests --
+
+    #[test]
+    fn telemetry_metrics_endpoint_returns_valid_otlp() {
+        let server = server_with_test_pipeline();
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        // Wait for at least one 2s sampler cycle.
+        thread::sleep(std::time::Duration::from_millis(2500));
+
+        let (status, body) = http_get(port, "/admin/v1/telemetry/metrics");
+        assert_eq!(status, 200, "body: {body}");
+
+        // Must be valid JSON.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("telemetry/metrics must be valid JSON");
+
+        // Must have OTLP structure.
+        assert!(
+            parsed["resourceMetrics"].is_array(),
+            "expected resourceMetrics array"
+        );
+
+        // After a 2s sample cycle, should have metrics.
+        let rm = &parsed["resourceMetrics"];
+        if rm.as_array().unwrap().is_empty() {
+            // Sampler may not have run yet — just verify the structure is valid.
+            return;
+        }
+        let resource = &rm[0]["resource"];
+        assert_eq!(
+            resource["attributes"][0]["key"], "service.name",
+            "resource must have service.name"
+        );
+        assert_eq!(resource["attributes"][0]["value"]["stringValue"], "logfwd");
+
+        let metrics = &rm[0]["scopeMetrics"][0]["metrics"];
+        assert!(
+            metrics.as_array().map_or(false, |a| !a.is_empty()),
+            "expected at least one metric"
+        );
+    }
+
+    #[test]
+    fn telemetry_traces_endpoint_with_spans() {
+        use crate::span_exporter::{SpanBuffer, TraceSpan};
+
+        let trace_buf = SpanBuffer::new();
+        trace_buf.push_test_span(TraceSpan {
+            trace_id: "aabbccdd00112233aabbccdd00112233".into(),
+            span_id: "aabbccdd00112233".into(),
+            parent_id: "0000000000000000".into(),
+            name: "batch".into(),
+            start_unix_ns: 1_000_000_000,
+            duration_ns: 200_000_000,
+            attrs: vec![
+                ["pipeline".into(), "default".into()],
+                ["flush_reason".into(), "size".into()],
+            ],
+            status: "ok",
+        });
+
+        let mut server = server_with_test_pipeline();
+        server.set_trace_buffer(trace_buf);
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/admin/v1/telemetry/traces");
+        assert_eq!(status, 200, "body: {body}");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("telemetry/traces must be valid JSON");
+
+        let spans = &parsed["resourceSpans"][0]["scopeSpans"][0]["spans"];
+        assert!(
+            spans.as_array().map_or(false, |a| !a.is_empty()),
+            "expected at least one span, got: {body}"
+        );
+
+        // Verify the span has OTLP-compliant fields.
+        let span = &spans[0];
+        assert_eq!(span["traceId"], "aabbccdd00112233aabbccdd00112233");
+        assert!(span["kind"].is_number(), "kind must be integer");
+        assert!(
+            span["startTimeUnixNano"].is_string(),
+            "startTimeUnixNano must be a string"
+        );
+    }
+
+    #[test]
+    fn telemetry_logs_endpoint_returns_valid_otlp() {
+        let server = server_with_test_pipeline();
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/admin/v1/telemetry/logs");
+        assert_eq!(status, 200, "body: {body}");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("telemetry/logs must be valid JSON");
+
+        // On a fresh server with no stderr capture output, logs may be empty.
+        assert!(
+            parsed["resourceLogs"].is_array(),
+            "expected resourceLogs array"
+        );
+    }
+
+    #[test]
+    fn telemetry_endpoints_empty_on_fresh_start() {
+        let server = server_with_test_pipeline();
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        // Immediately hit telemetry endpoints before any sampler run.
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        for (path, key) in [
+            ("/admin/v1/telemetry/metrics", "resourceMetrics"),
+            ("/admin/v1/telemetry/logs", "resourceLogs"),
+        ] {
+            let (status, body) = http_get(port, path);
+            assert_eq!(status, 200, "{path}: {body}");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&body).expect("must be valid JSON");
+            assert!(parsed[key].is_array(), "{path} must have {key} array");
+        }
+
+        // Traces endpoint should work even with no trace buffer.
+        let (status, body) = http_get(port, "/admin/v1/telemetry/traces");
+        assert_eq!(status, 200, "traces: {body}");
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("must be valid JSON");
+        // May have active-batch spans from the test pipeline, or may be empty.
+        assert!(
+            parsed["resourceSpans"].is_array(),
+            "traces must have resourceSpans array"
+        );
+    }
+
+    #[test]
+    fn existing_endpoints_unchanged_after_telemetry() {
+        // Backward compatibility: existing endpoints must still work.
+        let server = server_with_test_pipeline();
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        // Original endpoints must return 200 with their expected format.
+        let (status, body) = http_get(port, "/admin/v1/stats");
+        assert_eq!(status, 200, "stats: {body}");
+        assert!(
+            body.contains("\"input_lines\""),
+            "stats must have input_lines: {body}"
+        );
+
+        let (status, body) = http_get(port, "/admin/v1/status");
+        assert_eq!(status, 200, "status: {body}");
+        assert!(
+            body.contains("\"pipelines\""),
+            "status must have pipelines: {body}"
+        );
+
+        let (status, body) = http_get(port, "/live");
+        assert_eq!(status, 200, "live: {body}");
+        assert!(body.contains("\"status\":\"live\""), "live: {body}");
     }
 
     #[test]
