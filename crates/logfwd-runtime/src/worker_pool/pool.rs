@@ -1116,18 +1116,22 @@ mod tests {
         status: u16,
         body: &'static str,
         expected_requests: usize,
-    ) -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind failed");
-        let addr = listener.local_addr().expect("local addr");
-        drop(listener);
-
-        let server = Server::http(addr).expect("server start failed");
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let server = Server::http("127.0.0.1:0").expect("server start failed");
+        let addr = match server.server_addr() {
+            tiny_http::ListenAddr::IP(addr) => addr,
+            _ => panic!("expected IP listen addr"),
+        };
         let content_type =
             Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
 
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             for _ in 0..expected_requests {
-                let mut req = server.recv().expect("request");
+                let mut req = match server.recv_timeout(Duration::from_secs(10)) {
+                    Ok(Some(req)) => req,
+                    Ok(None) => break,
+                    Err(_) => break,
+                };
                 let mut request_body = Vec::new();
                 req.as_reader()
                     .read_to_end(&mut request_body)
@@ -1139,7 +1143,7 @@ mod tests {
             }
         });
 
-        format!("http://{addr}")
+        (format!("http://{addr}"), handle)
     }
 
     #[tokio::test]
@@ -1378,7 +1382,7 @@ mod tests {
             .expect("runtime");
 
         runtime.block_on(async {
-            let endpoint = start_elasticsearch_mock(
+            let (endpoint, mock_handle) = start_elasticsearch_mock(
                 400,
                 r#"{"error":{"type":"mapper_parsing_exception","reason":"bad field"}}"#,
                 1,
@@ -1403,9 +1407,11 @@ mod tests {
                 OutputWorkerPool::new(factory, 1, Duration::from_secs(60), Arc::clone(&metrics));
 
             pool.submit(empty_work_item()).await;
-            tokio::time::sleep(Duration::from_millis(200)).await;
 
-            let ack = pool.ack_rx_mut().try_recv().expect("expected ack item");
+            let ack = tokio::time::timeout(Duration::from_secs(5), pool.ack_rx_mut().recv())
+                .await
+                .expect("timed out waiting for ack")
+                .expect("ack channel closed");
             assert!(
                 matches!(ack.outcome, DeliveryOutcome::Rejected { .. }),
                 "expected rejected outcome, got {:?}",
@@ -1413,6 +1419,7 @@ mod tests {
             );
 
             pool.drain(Duration::from_secs(5)).await;
+            mock_handle.join().expect("mock thread panicked");
         });
 
         let output_span = capture.closed_output_span().expect("closed output span");
@@ -1450,7 +1457,7 @@ mod tests {
             .expect("runtime");
 
         runtime.block_on(async {
-            let endpoint = start_elasticsearch_mock(
+            let (endpoint, mock_handle) = start_elasticsearch_mock(
                 503,
                 r#"{"error":{"type":"unavailable_shards_exception","reason":"busy"}}"#,
                 4,
@@ -1475,12 +1482,15 @@ mod tests {
                 OutputWorkerPool::new(factory, 1, Duration::from_secs(60), Arc::clone(&metrics));
 
             pool.submit(empty_work_item()).await;
-            tokio::time::sleep(Duration::from_millis(2_000)).await;
 
-            let ack = pool.ack_rx_mut().try_recv().expect("expected ack item");
+            let ack = tokio::time::timeout(Duration::from_secs(15), pool.ack_rx_mut().recv())
+                .await
+                .expect("timed out waiting for ack")
+                .expect("ack channel closed");
             assert_eq!(ack.outcome, DeliveryOutcome::RetryExhausted);
 
             pool.drain(Duration::from_secs(5)).await;
+            mock_handle.join().expect("mock thread panicked");
         });
 
         let output_span = capture.closed_output_span().expect("closed output span");
