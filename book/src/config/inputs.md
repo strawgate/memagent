@@ -117,18 +117,7 @@ Framing behavior:
 - Fall back to newline-delimited records for legacy senders.
 - Records larger than 1 MiB are discarded.
 
-Optional TLS/mTLS config:
-
-```yaml
-input:
-  type: tcp
-  listen: 0.0.0.0:5140
-  tls:
-    cert_file: /etc/logfwd/tls/server.pem
-    key_file: /etc/logfwd/tls/server.key
-    require_client_auth: true
-    client_ca_file: /etc/logfwd/tls/clients-ca.pem
-```
+TLS is not supported for TCP inputs.
 
 ## OTLP
 
