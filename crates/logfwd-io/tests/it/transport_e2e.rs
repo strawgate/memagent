@@ -86,7 +86,12 @@ where
 
 #[test]
 fn tcp_single_line() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = TcpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     let mut client = TcpStream::connect(addr).unwrap();
@@ -103,7 +108,12 @@ fn tcp_single_line() {
 
 #[test]
 fn tcp_multiple_lines() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = TcpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     let mut client = TcpStream::connect(addr).unwrap();
@@ -129,7 +139,12 @@ fn tcp_multiple_lines() {
 
 #[test]
 fn tcp_partial_line_across_reads() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = TcpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     let mut client = TcpStream::connect(addr).unwrap();
@@ -153,7 +168,12 @@ fn tcp_partial_line_across_reads() {
 
 #[test]
 fn tcp_multiple_clients() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = TcpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     let handles: Vec<_> = (0..3)
@@ -191,7 +211,12 @@ fn tcp_multiple_clients() {
 
 #[test]
 fn tcp_client_disconnect_mid_stream() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = TcpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     {
@@ -224,7 +249,12 @@ fn tcp_client_disconnect_mid_stream() {
 
 #[test]
 fn tcp_partial_line_disconnect_emits_eof() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = TcpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     {
@@ -262,7 +292,12 @@ fn tcp_partial_line_disconnect_emits_eof() {
 
 #[test]
 fn tcp_large_message() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = TcpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     // Build a 64 KB JSON line.
@@ -286,7 +321,12 @@ fn tcp_large_message() {
 
 #[test]
 fn tcp_rfc6587_octet_counting_prevents_newline_injection_split() {
-    let tcp = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let tcp = TcpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = tcp.local_addr().unwrap();
     let stats = Arc::new(ComponentStats::new());
     let mut input = FramedInput::new(
@@ -309,7 +349,12 @@ fn tcp_rfc6587_octet_counting_prevents_newline_injection_split() {
 
 #[test]
 fn tcp_rapid_connect_disconnect() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = TcpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     // Rapidly connect and disconnect 50 times.
@@ -343,7 +388,12 @@ fn tcp_rapid_connect_disconnect() {
 
 #[test]
 fn udp_single_datagram() {
-    let mut input = UdpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = UdpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -359,7 +409,12 @@ fn udp_single_datagram() {
 
 #[test]
 fn udp_multiple_datagrams() {
-    let mut input = UdpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = UdpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -392,7 +447,12 @@ fn udp_multiple_datagrams() {
 
 #[test]
 fn udp_max_size_datagram() {
-    let mut input = UdpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = UdpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     // 65507 is the max UDP payload: 65535 - 20 (IP) - 8 (UDP).
@@ -430,7 +490,12 @@ fn udp_max_size_datagram() {
 
 #[test]
 fn udp_no_trailing_newline() {
-    let mut input = UdpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut input = UdpInput::new(
+        "test",
+        "127.0.0.1:0",
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     let addr = input.local_addr().unwrap();
 
     let sender = UdpSocket::bind("127.0.0.1:0").unwrap();

@@ -1872,12 +1872,16 @@ output:
             body
         );
         assert!(
-            body.contains(r#""transport":{"tcp":{"accepted_connections":42,"active_connections":3}}"#),
+            body.contains(
+                r#""transport":{"tcp":{"accepted_connections":42,"active_connections":3}}"#
+            ),
             "body missing tcp transport: {}",
             body
         );
         assert!(
-            body.contains(r#""transport":{"udp":{"drops_detected":100,"recv_buffer_size":8388608}}"#),
+            body.contains(
+                r#""transport":{"udp":{"drops_detected":100,"recv_buffer_size":8388608}}"#
+            ),
             "body missing udp transport: {}",
             body
         );

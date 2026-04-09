@@ -2,7 +2,7 @@
 
 mod health;
 
-use std::sync::atomic::{AtomicU32, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Meter};

@@ -101,7 +101,12 @@ pub struct FileInput {
 
 impl FileInput {
     /// Create a new `FileInput` wrapping a `FileTailer`.
-    pub fn new(name: String, paths: &[PathBuf], config: TailConfig, stats: std::sync::Arc<logfwd_types::diagnostics::ComponentStats>) -> io::Result<Self> {
+    pub fn new(
+        name: String,
+        paths: &[PathBuf],
+        config: TailConfig,
+        stats: std::sync::Arc<logfwd_types::diagnostics::ComponentStats>,
+    ) -> io::Result<Self> {
         let tailer = FileTailer::new(paths, config, stats)?;
         Ok(FileInput { name, tailer })
     }
@@ -110,7 +115,12 @@ impl FileInput {
     ///
     /// Patterns are expanded immediately and re-evaluated periodically to
     /// discover files created after startup (e.g., new Kubernetes pods).
-    pub fn new_with_globs(name: String, patterns: &[&str], config: TailConfig, stats: std::sync::Arc<logfwd_types::diagnostics::ComponentStats>) -> io::Result<Self> {
+    pub fn new_with_globs(
+        name: String,
+        patterns: &[&str],
+        config: TailConfig,
+        stats: std::sync::Arc<logfwd_types::diagnostics::ComponentStats>,
+    ) -> io::Result<Self> {
         let tailer = FileTailer::new_with_globs(patterns, config, stats)?;
         Ok(FileInput { name, tailer })
     }

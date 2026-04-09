@@ -188,7 +188,11 @@ pub struct TcpInput {
 
 impl TcpInput {
     /// Bind to `addr` (e.g. "0.0.0.0:5140") with the default idle timeout.
-    pub fn new(name: impl Into<String>, addr: &str, stats: std::sync::Arc<logfwd_types::diagnostics::ComponentStats>) -> io::Result<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        addr: &str,
+        stats: std::sync::Arc<logfwd_types::diagnostics::ComponentStats>,
+    ) -> io::Result<Self> {
         Self::with_idle_timeout(name, addr, DEFAULT_IDLE_TIMEOUT, stats)
     }
 
@@ -267,7 +271,10 @@ impl InputSource for TcpInput {
                     let sid = source_id_for_connection(self.next_connection_seq);
                     self.next_connection_seq += 1;
                     self.connections_accepted += 1;
-                    self.stats.tcp_accepted.store(self.connections_accepted, std::sync::atomic::Ordering::Relaxed);
+                    self.stats.tcp_accepted.store(
+                        self.connections_accepted,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     self.clients.push(Client {
                         stream,
                         source_id: sid,
@@ -446,7 +453,9 @@ impl InputSource for TcpInput {
             },
         );
 
-        self.stats.tcp_active.store(self.clients.len(), std::sync::atomic::Ordering::Relaxed);
+        self.stats
+            .tcp_active
+            .store(self.clients.len(), std::sync::atomic::Ordering::Relaxed);
 
         Ok(events)
     }
@@ -468,7 +477,12 @@ mod tests {
 
     #[test]
     fn receives_tcp_data() {
-        let input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.listener.local_addr().unwrap();
 
         let mut client = StdTcpStream::connect(addr).unwrap();
@@ -496,7 +510,12 @@ mod tests {
 
     #[test]
     fn handles_disconnect() {
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.listener.local_addr().unwrap();
 
         {
@@ -530,7 +549,12 @@ mod tests {
 
     #[test]
     fn tcp_health_recovers_after_clean_poll() {
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         input.health = ComponentHealth::Degraded;
 
         let events = input.poll().unwrap();
@@ -543,7 +567,12 @@ mod tests {
     /// the partial remainder — fixes #804 / #580.
     #[test]
     fn tcp_partial_line_on_disconnect_emits_eof() {
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         {
@@ -592,8 +621,13 @@ mod tests {
     #[test]
     fn tcp_idle_timeout() {
         // Use a very short idle timeout so the test runs fast.
-        let mut input =
-            TcpInput::with_idle_timeout("test", "127.0.0.1:0", Duration::from_millis(200), std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::with_idle_timeout(
+            "test",
+            "127.0.0.1:0",
+            Duration::from_millis(200),
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         // Connect but send nothing.
@@ -618,7 +652,12 @@ mod tests {
 
     #[test]
     fn tcp_max_line_length() {
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         // Spawn the writer in a background thread because write_all of >1MB
@@ -676,7 +715,12 @@ mod tests {
     fn tcp_max_line_length_exact_boundary() {
         // A line of exactly MAX_LINE_LENGTH bytes (content only, excluding \n)
         // is accepted; only records strictly larger are dropped.
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         let writer = std::thread::spawn(move || {
@@ -712,7 +756,12 @@ mod tests {
 
     #[test]
     fn tcp_octet_counted_frame_with_embedded_newline_is_single_record() {
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
         let mut client = StdTcpStream::connect(addr).unwrap();
         client.write_all(b"11 hello\nworld").unwrap();
@@ -733,7 +782,12 @@ mod tests {
 
     #[test]
     fn tcp_legacy_line_starting_with_digits_space_is_not_stalled_as_octet() {
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
         let mut client = StdTcpStream::connect(addr).unwrap();
         client.write_all(b"200 OK\n").unwrap();
@@ -758,7 +812,12 @@ mod tests {
 
     #[test]
     fn tcp_connection_storm() {
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         // Rapidly connect and disconnect 100 times.
@@ -788,7 +847,12 @@ mod tests {
     /// closes.  Previously those bytes were silently dropped (data loss bug).
     #[test]
     fn pending_bytes_flushed_as_data_event_on_close() {
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         {
@@ -839,7 +903,12 @@ mod tests {
     /// so that `FramedInput` can track per-connection remainders independently.
     #[test]
     fn distinct_source_ids_per_connection() {
-        let mut input = TcpInput::new("test", "127.0.0.1:0", std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         let mut client_a = StdTcpStream::connect(addr).unwrap();

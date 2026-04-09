@@ -122,7 +122,12 @@ fn test_tail_new_data() {
         ..Default::default()
     };
 
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // First poll should read existing content.
     let events = poll_until(
@@ -201,7 +206,12 @@ fn test_tail_truncation() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Read initial data.
     std::thread::sleep(Duration::from_millis(50));
@@ -254,7 +264,12 @@ fn test_tail_rotation() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Read initial data.
     std::thread::sleep(Duration::from_millis(50));
@@ -311,7 +326,12 @@ fn test_tail_rotation_drains_truncated_file() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // First poll — drain initial data.
     std::thread::sleep(Duration::from_millis(50));
@@ -366,7 +386,12 @@ fn test_tail_rotation_drains_old_data() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // First poll — drain initial data.
     std::thread::sleep(Duration::from_millis(50));
@@ -448,7 +473,12 @@ fn test_tail_start_from_end() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // First poll should get no data (started from end).
     std::thread::sleep(Duration::from_millis(50));
@@ -536,7 +566,12 @@ fn test_glob_initial_discovery() {
         glob_rescan_interval_ms: 60_000, // long interval — not relevant for this test
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Both files should have been discovered immediately.
     assert_eq!(tailer.num_files(), 2, "should tail both initial log files");
@@ -571,7 +606,12 @@ fn test_glob_rescan_discovers_new_file() {
         glob_rescan_interval_ms: 50,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // No files exist yet — tailer starts with nothing.
     assert_eq!(tailer.num_files(), 0, "no files should be tailed initially");
@@ -643,7 +683,12 @@ fn test_glob_rescan_no_duplicates() {
         glob_rescan_interval_ms: 50,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // File discovered at construction.
     assert_eq!(tailer.num_files(), 1);
@@ -742,7 +787,12 @@ fn test_eviction_lru() {
         max_open_files: 5,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // All 10 files discovered at construction — eviction happens during poll.
     assert_eq!(tailer.num_files(), 10, "all files opened before first poll");
@@ -783,7 +833,12 @@ fn test_evicted_file_reopen() {
         max_open_files: 2,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // After first poll, eviction brings count to 2.
     let _ = poll_until(
@@ -853,7 +908,12 @@ fn test_tail_growing_fingerprint() {
         ..Default::default()
     };
 
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Initial poll reads the 100 'a's.
     std::thread::sleep(Duration::from_millis(50));
@@ -908,7 +968,12 @@ fn test_deleted_file_cleanup() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Confirm file is being tailed.
     std::thread::sleep(Duration::from_millis(50));
@@ -952,7 +1017,12 @@ fn test_deleted_file_cleanup_drains_truncated_file() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // First poll — drain initial data.
     std::thread::sleep(Duration::from_millis(50));
@@ -1012,7 +1082,12 @@ fn test_poll_truncated_then_data_uses_new_source_id() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // First poll — consume the initial data so offset > 0.
     std::thread::sleep(Duration::from_millis(50));
@@ -1105,7 +1180,12 @@ fn test_glob_deleted_file_removed_from_watch_paths() {
         glob_rescan_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Read initial data so the tailer advances past the initial content.
     let _ = poll_until(
@@ -1154,7 +1234,12 @@ fn test_file_offsets_returns_fingerprint_and_offset() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     std::thread::sleep(Duration::from_millis(50));
     let _ = tailer.poll().unwrap();
@@ -1180,7 +1265,12 @@ fn test_file_offsets_skips_empty_files() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_millis(50));
     let _ = tailer.poll().unwrap();
 
@@ -1210,7 +1300,12 @@ fn test_file_offsets_multiple_files() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(&[path_a, path_b], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        &[path_a, path_b],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_millis(50));
     let _ = tailer.poll().unwrap();
 
@@ -1237,7 +1332,12 @@ fn test_file_paths_matches_offsets() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_millis(50));
     let _ = tailer.poll().unwrap();
 
@@ -1273,7 +1373,12 @@ fn test_truncation_emits_truncated_event() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Read all initial data.
     std::thread::sleep(Duration::from_millis(50));
@@ -1339,7 +1444,12 @@ fn test_read_cap_clamps_exactly_at_max_read_per_poll() {
         per_file_read_budget_bytes: FileTailer::MAX_READ_PER_POLL * 2,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // First poll should read exactly MAX_READ_PER_POLL bytes because the
     // configured budget exceeds the hard cap and the file is larger still.
@@ -1394,7 +1504,12 @@ fn test_set_offset_validates_against_file_size() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Try to set offset beyond file size (stale checkpoint).
     tailer.set_offset(&log_path, 999_999).unwrap();
@@ -1419,7 +1534,12 @@ fn test_set_offset_by_source_validates_against_file_size() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_millis(50));
     tailer.poll().unwrap();
 
@@ -1460,7 +1580,12 @@ fn test_set_offset_by_source_updates_evicted_entries() {
         max_open_files: 2,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Read initial data and trigger one eviction.
     std::thread::sleep(Duration::from_millis(50));
@@ -1515,7 +1640,12 @@ fn test_evicted_offsets_in_checkpoint_data() {
         max_open_files: 2,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Read initial data, then trigger eviction.
     std::thread::sleep(Duration::from_millis(50));
@@ -1571,7 +1701,12 @@ fn test_evicted_offset_fingerprint_mismatch() {
         max_open_files: 2,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Read and trigger eviction.
     std::thread::sleep(Duration::from_millis(50));
@@ -1636,7 +1771,12 @@ fn glob_rescan_respects_start_from_end() {
         glob_rescan_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // First poll: initial file is opened with start_from_end=true, so no old data.
     std::thread::sleep(Duration::from_millis(50));
@@ -1732,7 +1872,12 @@ fn test_evicted_offset_clamped_when_file_shrinks() {
         fingerprint_bytes: 4,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new_with_globs(&[&pattern], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new_with_globs(
+        &[&pattern],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Initial poll reads both and then evicts one due to max_open_files=1.
     let _ = poll_until(
@@ -1806,7 +1951,11 @@ fn test_nonexistent_path_does_not_panic() {
     };
 
     // Should succeed — missing files are warned but not fatal.
-    let tailer = FileTailer::new(std::slice::from_ref(&missing), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()));
+    let tailer = FileTailer::new(
+        std::slice::from_ref(&missing),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    );
     assert!(tailer.is_ok(), "missing path should not fail construction");
     assert_eq!(tailer.unwrap().num_files(), 0);
 }
@@ -1823,7 +1972,12 @@ fn test_error_backoff_grows_exponentially() {
         poll_interval_ms: 0,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     // Inject watcher errors directly through the discovery receiver.
     let (tx, rx) = crossbeam_channel::unbounded();
@@ -1873,7 +2027,12 @@ fn test_error_backoff_marks_tailer_degraded_until_clean_poll() {
         poll_interval_ms: 0,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     assert_eq!(tailer.health(), ComponentHealth::Healthy);
 
     let (tx, rx) = crossbeam_channel::unbounded();
@@ -1936,7 +2095,12 @@ fn test_per_file_budget_prevents_starvation() {
         per_file_read_budget_bytes: 64 * 1024,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(&[hot_path.clone(), cold_path.clone()], config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        &[hot_path.clone(), cold_path.clone()],
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
 
     let events = tailer.poll().unwrap();
     let hot_bytes: usize = events
@@ -1982,7 +2146,12 @@ fn test_copytruncate_resets_offset_on_size_drop() {
         poll_interval_ms: 10,
         ..Default::default()
     };
-    let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config, std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new())).unwrap();
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_millis(30));
     let _ = tailer.poll().unwrap();
     let prior_offset = tailer.get_offset(&log_path).unwrap();

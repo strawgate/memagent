@@ -92,9 +92,19 @@ pub(super) fn build_input_state(
             }
             let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
             let source = if is_glob {
-                FileInput::new_with_globs(name.to_string(), &[path.as_str()], tail_config, Arc::clone(&stats))
+                FileInput::new_with_globs(
+                    name.to_string(),
+                    &[path.as_str()],
+                    tail_config,
+                    Arc::clone(&stats),
+                )
             } else {
-                FileInput::new(name.to_string(), &[PathBuf::from(path)], tail_config, Arc::clone(&stats))
+                FileInput::new(
+                    name.to_string(),
+                    &[PathBuf::from(path)],
+                    tail_config,
+                    Arc::clone(&stats),
+                )
             }
             .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
             validate_input_format(name, InputType::File, &format)?;
