@@ -11,4 +11,5 @@ pub use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
 pub use metrics::PipelineMetrics;
 pub use models::{ActiveBatch, MemoryStats};
+pub(crate) use process::process_metrics;
 pub use server::{DiagnosticsServer, ServerHandle};
