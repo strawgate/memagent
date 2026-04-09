@@ -94,10 +94,10 @@ impl PlatformSensorBetaInput {
 
 impl InputSource for PlatformSensorBetaInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
-        let should_emit = if !self.started {
-            true
-        } else {
+        let should_emit = if self.started {
             self.cfg.emit_heartbeat && self.last_emit.elapsed() >= self.cfg.poll_interval
+        } else {
+            true
         };
 
         if !should_emit {
