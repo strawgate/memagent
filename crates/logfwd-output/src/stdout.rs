@@ -151,9 +151,9 @@ impl StdoutSink {
         let ts_idx = find_col(
             fields,
             &[
-                "timestamp",
                 "_timestamp",
                 "@timestamp",
+                "timestamp",
                 "time",
                 "ts",
                 "timestamp_str",
