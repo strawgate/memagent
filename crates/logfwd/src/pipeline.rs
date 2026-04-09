@@ -33,6 +33,7 @@ use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
 use logfwd_config::{
     Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorProfileConfig,
     InputConfig, InputType, PipelineConfig, PlatformSensorBetaInputConfig,
+    PlatformSensorFamilyConfig,
 };
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
@@ -1656,9 +1657,43 @@ fn build_platform_sensor_beta_config(
 ) -> logfwd_io::platform_sensor_beta::PlatformSensorBetaConfig {
     let poll_interval_ms = cfg.and_then(|c| c.poll_interval_ms).unwrap_or(10_000);
     let emit_heartbeat = cfg.and_then(|c| c.emit_heartbeat).unwrap_or(true);
+    let max_rows_per_poll = cfg.and_then(|c| c.max_rows_per_poll).unwrap_or(256).max(1);
+    let families = cfg
+        .and_then(|c| c.families.as_ref())
+        .map_or_else(default_platform_sensor_families, |families| {
+            families.iter().map(map_platform_sensor_family).collect()
+        });
     logfwd_io::platform_sensor_beta::PlatformSensorBetaConfig {
         emit_heartbeat,
         poll_interval: Duration::from_millis(poll_interval_ms.max(1)),
+        families,
+        max_rows_per_poll,
+    }
+}
+
+fn default_platform_sensor_families() -> Vec<logfwd_io::platform_sensor_beta::PlatformSensorFamily>
+{
+    vec![
+        logfwd_io::platform_sensor_beta::PlatformSensorFamily::Process,
+        logfwd_io::platform_sensor_beta::PlatformSensorFamily::Network,
+        logfwd_io::platform_sensor_beta::PlatformSensorFamily::DiskIo,
+    ]
+}
+
+fn map_platform_sensor_family(
+    family: &PlatformSensorFamilyConfig,
+) -> logfwd_io::platform_sensor_beta::PlatformSensorFamily {
+    match family {
+        PlatformSensorFamilyConfig::Process => {
+            logfwd_io::platform_sensor_beta::PlatformSensorFamily::Process
+        }
+        PlatformSensorFamilyConfig::Network => {
+            logfwd_io::platform_sensor_beta::PlatformSensorFamily::Network
+        }
+        PlatformSensorFamilyConfig::DiskIo => {
+            logfwd_io::platform_sensor_beta::PlatformSensorFamily::DiskIo
+        }
+        _ => logfwd_io::platform_sensor_beta::PlatformSensorFamily::Process,
     }
 }
 

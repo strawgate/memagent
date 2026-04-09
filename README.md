@@ -180,14 +180,16 @@ See the [Configuration Reference](book/src/config/reference.md) for all YAML fie
 - `macos_sensor_beta`
 - `windows_sensor_beta`
 
-These inputs are platform-gated and currently emit sensor-control heartbeat rows while
-deeper native sensor integrations are being brought online.
+These inputs are platform-gated and emit beta snapshot coverage for core families
+(`process`, `network`, `disk_io`) plus sensor-control lifecycle events.
 
 ```yaml
 input:
   type: linux_sensor_beta
   sensor_beta:
     poll_interval_ms: 2000
+    families: [process, network, disk_io]
+    max_rows_per_poll: 256
     emit_heartbeat: true
 output:
   type: stdout

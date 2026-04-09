@@ -298,6 +298,16 @@ pub struct GeneratorInputConfig {
 }
 
 /// Platform beta sensor configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum PlatformSensorFamilyConfig {
+    Process,
+    Network,
+    DiskIo,
+}
+
+/// Platform beta sensor configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformSensorBetaInputConfig {
@@ -305,6 +315,10 @@ pub struct PlatformSensorBetaInputConfig {
     pub poll_interval_ms: Option<u64>,
     /// Emit periodic heartbeat rows while the sensor is idle. Defaults to true.
     pub emit_heartbeat: Option<bool>,
+    /// Event families to collect each poll. Defaults to process/network/disk_io.
+    pub families: Option<Vec<PlatformSensorFamilyConfig>>,
+    /// Upper bound on data rows emitted per poll across selected families.
+    pub max_rows_per_poll: Option<usize>,
 }
 
 /// A single input source.
@@ -1037,6 +1051,26 @@ impl Config {
                         {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': sensor_beta.poll_interval_ms must be at least 1"
+                            )));
+                        }
+                        if input
+                            .sensor_beta
+                            .as_ref()
+                            .and_then(|cfg| cfg.max_rows_per_poll)
+                            == Some(0)
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': sensor_beta.max_rows_per_poll must be at least 1"
+                            )));
+                        }
+                        if input
+                            .sensor_beta
+                            .as_ref()
+                            .and_then(|cfg| cfg.families.as_ref())
+                            .is_some_and(Vec::is_empty)
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': sensor_beta.families must include at least one family"
                             )));
                         }
                     }
@@ -2092,6 +2126,40 @@ output:
         assert!(
             err.to_string()
                 .contains("sensor_beta.poll_interval_ms must be at least 1")
+        );
+    }
+
+    #[test]
+    fn sensor_beta_rejects_zero_max_rows_per_poll() {
+        let yaml = r"
+input:
+  type: windows_sensor_beta
+  sensor_beta:
+    max_rows_per_poll: 0
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor_beta.max_rows_per_poll must be at least 1")
+        );
+    }
+
+    #[test]
+    fn sensor_beta_rejects_empty_families() {
+        let yaml = r"
+input:
+  type: macos_sensor_beta
+  sensor_beta:
+    families: []
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor_beta.families must include at least one family")
         );
     }
 

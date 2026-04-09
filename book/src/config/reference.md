@@ -167,12 +167,16 @@ Linux beta sensor lane for early platform-native ingestion development.
 |-------|------|----------|-------------|
 | `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
 | `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
+| `sensor_beta.families` | list | No | Core families to collect each poll. Allowed values: `process`, `network`, `disk_io`. Defaults to all three. |
+| `sensor_beta.max_rows_per_poll` | integer | No | Max data rows emitted per poll across selected families. Defaults to `256`. |
 
 ```yaml
 input:
   type: linux_sensor_beta
   sensor_beta:
     poll_interval_ms: 2000
+    families: [process, network, disk_io]
+    max_rows_per_poll: 256
 ```
 
 ### `macos_sensor_beta` input
@@ -183,6 +187,8 @@ macOS beta sensor lane for EndpointSecurity-oriented adapter bring-up.
 |-------|------|----------|-------------|
 | `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
 | `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
+| `sensor_beta.families` | list | No | Core families to collect each poll. Allowed values: `process`, `network`, `disk_io`. Defaults to all three. |
+| `sensor_beta.max_rows_per_poll` | integer | No | Max data rows emitted per poll across selected families. Defaults to `256`. |
 
 ```yaml
 input:
@@ -197,6 +203,8 @@ Windows beta sensor lane for eBPF/ETW hybrid adapter bring-up.
 |-------|------|----------|-------------|
 | `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
 | `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
+| `sensor_beta.families` | list | No | Core families to collect each poll. Allowed values: `process`, `network`, `disk_io`. Defaults to all three. |
+| `sensor_beta.max_rows_per_poll` | integer | No | Max data rows emitted per poll across selected families. Defaults to `256`. |
 
 ```yaml
 input:
@@ -219,9 +227,9 @@ config validation currently rejects it.
 | `udp` | Implemented | Receive log lines over UDP. |
 | `tcp` | Implemented | Accept log lines over TCP. |
 | `otlp` | Implemented | Receive OTLP logs over a bound listen address. |
-| `linux_sensor_beta` | Beta | Linux platform sensor beta lane (heartbeat/control events while integration is in progress). |
-| `macos_sensor_beta` | Beta | macOS platform sensor beta lane (heartbeat/control events while integration is in progress). |
-| `windows_sensor_beta` | Beta | Windows platform sensor beta lane (heartbeat/control events while integration is in progress). |
+| `linux_sensor_beta` | Beta | Linux platform sensor beta lane with process/network/disk_io snapshots plus sensor control events. |
+| `macos_sensor_beta` | Beta | macOS platform sensor beta lane with process/network/disk_io snapshots plus sensor control events. |
+| `windows_sensor_beta` | Beta | Windows platform sensor beta lane with process/network/disk_io snapshots plus sensor control events. |
 | `arrow_ipc` | Not yet supported | Reserved for future Arrow IPC ingest. |
 
 ---
