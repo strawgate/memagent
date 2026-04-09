@@ -247,6 +247,39 @@ output:
     }
 
     #[test]
+    fn validation_storage_data_dir_existing_non_directory_rejected() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time must be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "logfwd-config-storage-non-dir-{}-{unique}.tmp",
+            std::process::id()
+        ));
+        fs::write(&path, b"not-a-directory").expect("write temp file");
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: stdout
+storage:
+  data_dir: {}
+"#,
+            path.display()
+        );
+
+        let err = Config::load_str(&yaml).expect_err("non-directory storage.data_dir must fail");
+        assert!(
+            err.to_string().contains("exists but is not a directory"),
+            "expected non-directory storage.data_dir rejection, got: {err}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn validation_udp_requires_listen() {
         let yaml = r"
 input:

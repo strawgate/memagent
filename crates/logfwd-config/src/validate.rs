@@ -33,13 +33,20 @@ impl Config {
             }
         }
 
-        // Validate storage.data_dir is not an existing regular file.
+        // Validate storage.data_dir is either absent/non-existent or an existing directory.
         if let Some(ref dir) = self.storage.data_dir {
             let path = Path::new(dir);
-            if path.is_file() {
-                return Err(ConfigError::Validation(format!(
-                    "storage.data_dir '{dir}' is a regular file, not a directory"
-                )));
+            if path.exists() {
+                let md = path.metadata().map_err(|e| {
+                    ConfigError::Validation(format!(
+                        "storage.data_dir '{dir}' metadata lookup failed: {e}"
+                    ))
+                })?;
+                if !md.is_dir() {
+                    return Err(ConfigError::Validation(format!(
+                        "storage.data_dir '{dir}' exists but is not a directory"
+                    )));
+                }
             }
         }
 
@@ -984,7 +991,7 @@ impl Config {
 
                 // Check if the output path could match any glob input pattern.
                 for glob_pattern in &glob_input_patterns {
-                    if glob_could_match(glob_pattern, out_path) {
+                    if is_glob_match_possible(glob_pattern, out_path) {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{out_label}': output path '{out_path}' \
                              could match file input glob '{glob_pattern}' — this creates an \
@@ -1295,6 +1302,12 @@ fn redact_url(endpoint: &str) -> String {
         } else {
             endpoint.to_string()
         }
+    } else if let Some(at) = endpoint.rfind('@') {
+        // Last-resort redaction for malformed URLs: hide authority userinfo.
+        let authority_start = endpoint.find("://").map(|idx| idx + 3).unwrap_or(0);
+        let prefix = &endpoint[..authority_start];
+        let suffix = &endpoint[at + 1..];
+        format!("{prefix}{REDACTED_URL_USERINFO}@{suffix}")
     } else {
         endpoint.to_string()
     }
@@ -1338,7 +1351,7 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
 /// Check if a file path could match a glob pattern by comparing the directory
 /// prefix. A glob like `/var/log/*.log` has prefix `/var/log/` and would match
 /// any output file in that directory with a `.log` extension.
-fn glob_could_match(glob_pattern: &str, file_path: &str) -> bool {
+fn is_glob_match_possible(glob_pattern: &str, file_path: &str) -> bool {
     let glob_path = Path::new(glob_pattern);
     let file = Path::new(file_path);
 
@@ -1381,10 +1394,35 @@ fn glob_could_match(glob_pattern: &str, file_path: &str) -> bool {
     } else {
         false
     };
+    let directory_wildcard_prefix_match = {
+        let raw_glob_dir = glob_path.parent().and_then(|p| p.to_str()).unwrap_or("");
+        if raw_glob_dir.contains(['*', '?', '[']) {
+            let prefix = raw_glob_dir
+                .split(|c| ['*', '?', '['].contains(&c))
+                .next()
+                .unwrap_or("")
+                .trim_end_matches(std::path::MAIN_SEPARATOR);
+            if prefix.is_empty() {
+                true
+            } else {
+                let normalized_prefix = normalize_path_lexically(Path::new(prefix));
+                let normalized_file = normalize_path_lexically(file);
+                normalized_file
+                    .to_string_lossy()
+                    .starts_with(normalized_prefix.to_string_lossy().as_ref())
+            }
+        } else {
+            false
+        }
+    };
 
     // If the file is in the same directory as the glob (or the glob uses a
     // recursive `**` prefix that includes the file directory), it could match.
-    if same_directory || recursive_prefix_match || recursive_root_match {
+    if same_directory
+        || recursive_prefix_match
+        || recursive_root_match
+        || directory_wildcard_prefix_match
+    {
         // Also check filename pattern if the glob has a simple `*.ext` form.
         if let Some(glob_name) = glob_path.file_name().and_then(|n| n.to_str())
             && let Some(file_name) = file.file_name().and_then(|n| n.to_str())
@@ -1449,11 +1487,20 @@ mod validate_endpoint_url_tests {
             );
         }
     }
+
+    #[test]
+    fn endpoint_url_redacts_userinfo_for_malformed_urls() {
+        let err = validate_endpoint_url("https://user:secret@/bulk").expect_err("must fail");
+        assert!(
+            err.contains("***redacted***") && !err.contains("secret"),
+            "malformed endpoint errors must redact userinfo: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
 mod feedback_loop_tests {
-    use super::glob_could_match;
+    use super::is_glob_match_possible;
     use crate::types::Config;
 
     #[test]
@@ -1516,11 +1563,11 @@ pipelines:
 
     #[test]
     fn glob_could_match_literal_filename_requires_exact_name() {
-        assert!(glob_could_match(
+        assert!(is_glob_match_possible(
             "/var/log/access.log",
             "/var/log/access.log"
         ));
-        assert!(!glob_could_match(
+        assert!(!is_glob_match_possible(
             "/var/log/access.log",
             "/var/log/other.log"
         ));
@@ -1528,18 +1575,24 @@ pipelines:
 
     #[test]
     fn glob_could_match_wildcard_suffix_pattern() {
-        assert!(glob_could_match("/var/log/*.log", "/var/log/access.log"));
-        assert!(!glob_could_match("/var/log/*.log", "/var/log/access.txt"));
+        assert!(is_glob_match_possible(
+            "/var/log/*.log",
+            "/var/log/access.log"
+        ));
+        assert!(!is_glob_match_possible(
+            "/var/log/*.log",
+            "/var/log/access.txt"
+        ));
     }
 
     #[test]
     fn glob_could_match_rejects_different_directory() {
-        assert!(!glob_could_match("/var/log/*.log", "/tmp/access.log"));
+        assert!(!is_glob_match_possible("/var/log/*.log", "/tmp/access.log"));
     }
 
     #[test]
     fn glob_could_match_nested_wildcards_are_conservative() {
-        assert!(glob_could_match(
+        assert!(is_glob_match_possible(
             "/var/log/*test*.log",
             "/var/log/mytest_file.log"
         ));
@@ -1547,11 +1600,11 @@ pipelines:
 
     #[test]
     fn glob_could_match_recursive_double_star_matches_nested_directories() {
-        assert!(glob_could_match(
+        assert!(is_glob_match_possible(
             "/var/log/**/access.log",
             "/var/log/subdir/access.log"
         ));
-        assert!(!glob_could_match(
+        assert!(!is_glob_match_possible(
             "/var/log/**/access.log",
             "/var/log/subdir/error.log"
         ));
@@ -1559,9 +1612,25 @@ pipelines:
 
     #[test]
     fn glob_could_match_recursive_double_star_directory_only_pattern() {
-        assert!(glob_could_match("/var/log/**", "/var/log/subdir/app.log"));
-        assert!(glob_could_match("/var/log/**", "/var/log/app.log"));
-        assert!(!glob_could_match("/var/log/**", "/srv/log/app.log"));
+        assert!(is_glob_match_possible(
+            "/var/log/**",
+            "/var/log/subdir/app.log"
+        ));
+        assert!(is_glob_match_possible("/var/log/**", "/var/log/app.log"));
+        assert!(!is_glob_match_possible("/var/log/**", "/srv/log/app.log"));
+    }
+
+    #[test]
+    fn glob_could_match_directory_wildcards_are_conservative() {
+        assert!(is_glob_match_possible("/var/*/app.log", "/var/log/app.log"));
+        assert!(is_glob_match_possible(
+            "/var/log[12]/*.log",
+            "/var/log1/a.log"
+        ));
+        assert!(!is_glob_match_possible(
+            "/var/*/app.log",
+            "/srv/log/app.log"
+        ));
     }
 }
 
@@ -1650,7 +1719,7 @@ pipelines:
 "#;
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
-            err.to_string().contains("contains illegal character '_'"),
+            err.to_string().contains("has illegal prefix '_'"),
             "expected prefix rejection: {err}"
         );
     }
