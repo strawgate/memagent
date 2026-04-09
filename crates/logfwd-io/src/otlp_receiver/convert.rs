@@ -18,10 +18,10 @@ pub(super) fn convert_request_to_json_lines(request: &ExportLogsServiceRequest) 
         let mut resource_attrs: Vec<(&str, String)> = Vec::new();
         if let Some(ref resource) = resource_logs.resource {
             for attr in &resource.attributes {
-                if let Some(ref value) = attr.value {
-                    if let Some(value) = any_value_to_string(value) {
-                        resource_attrs.push((&attr.key, value));
-                    }
+                if let Some(ref value) = attr.value
+                    && let Some(value) = any_value_to_string(value)
+                {
+                    resource_attrs.push((&attr.key, value));
                 }
             }
         }
@@ -52,11 +52,11 @@ pub(super) fn convert_request_to_json_lines(request: &ExportLogsServiceRequest) 
                 }
 
                 // body
-                if let Some(ref body_val) = record.body {
-                    if let Some(body_str) = any_value_to_string(body_val) {
-                        write_json_string_field(&mut out, field_names::BODY, &body_str);
-                        out.push(b',');
-                    }
+                if let Some(ref body_val) = record.body
+                    && let Some(body_str) = any_value_to_string(body_val)
+                {
+                    write_json_string_field(&mut out, field_names::BODY, &body_str);
+                    out.push(b',');
                 }
 
                 // resource attributes
@@ -67,10 +67,10 @@ pub(super) fn convert_request_to_json_lines(request: &ExportLogsServiceRequest) 
 
                 // log record attributes
                 for attr in &record.attributes {
-                    if let Some(ref value) = attr.value {
-                        if write_json_any_value(&mut out, &attr.key, value) {
-                            out.push(b',');
-                        }
+                    if let Some(ref value) = attr.value
+                        && write_json_any_value(&mut out, &attr.key, value)
+                    {
+                        out.push(b',');
                     }
                 }
 
@@ -137,10 +137,10 @@ pub(super) fn convert_request_to_batch(
                 } else {
                     record.observed_time_unix_nano
                 };
-                if let Ok(ts) = i64::try_from(ts_raw) {
-                    if ts > 0 {
-                        builder.append_i64_value_by_idx(timestamp_idx, ts);
-                    }
+                if let Ok(ts) = i64::try_from(ts_raw)
+                    && ts > 0
+                {
+                    builder.append_i64_value_by_idx(timestamp_idx, ts);
                 }
 
                 if !record.severity_text.is_empty() {

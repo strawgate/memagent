@@ -486,40 +486,40 @@ impl OtlpSink {
                     // trailers frame, only from the initial HEADERS frame. This
                     // catches trailers-only responses (the common error path for
                     // OTLP collectors) but not normal headers→data→trailers flow.
-                    if self.protocol == OtlpProtocol::Grpc {
-                        if let Some(grpc_status) = response.headers().get("grpc-status") {
-                            let code = grpc_status
-                                .to_str()
-                                .unwrap_or("unknown")
-                                .trim()
-                                .parse::<u32>()
-                                .unwrap_or(2); // default to UNKNOWN
-                            if code != 0 {
-                                let msg = response
-                                    .headers()
-                                    .get("grpc-message")
-                                    .and_then(|v| v.to_str().ok())
-                                    .unwrap_or("")
-                                    .to_string();
-                                // Classify gRPC status codes per gRPC spec:
-                                // Retryable: CANCELLED(1), DEADLINE_EXCEEDED(4),
-                                //   RESOURCE_EXHAUSTED(8), ABORTED(10), UNAVAILABLE(14)
-                                // Permanent: all others (INVALID_ARGUMENT, NOT_FOUND, etc.)
-                                return Ok(match code {
-                                    1 | 4 | 10 | 14 => super::sink::SendResult::IoError(
-                                        io::Error::other(format!("gRPC error {code}: {msg}")),
-                                    ),
-                                    8 => {
-                                        // RESOURCE_EXHAUSTED → treat like 429
-                                        super::sink::SendResult::RetryAfter(Duration::from_secs(
-                                            DEFAULT_RETRY_AFTER_SECS,
-                                        ))
-                                    }
-                                    _ => super::sink::SendResult::Rejected(format!(
-                                        "gRPC error {code}: {msg}"
-                                    )),
-                                });
-                            }
+                    if self.protocol == OtlpProtocol::Grpc
+                        && let Some(grpc_status) = response.headers().get("grpc-status")
+                    {
+                        let code = grpc_status
+                            .to_str()
+                            .unwrap_or("unknown")
+                            .trim()
+                            .parse::<u32>()
+                            .unwrap_or(2); // default to UNKNOWN
+                        if code != 0 {
+                            let msg = response
+                                .headers()
+                                .get("grpc-message")
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("")
+                                .to_string();
+                            // Classify gRPC status codes per gRPC spec:
+                            // Retryable: CANCELLED(1), DEADLINE_EXCEEDED(4),
+                            //   RESOURCE_EXHAUSTED(8), ABORTED(10), UNAVAILABLE(14)
+                            // Permanent: all others (INVALID_ARGUMENT, NOT_FOUND, etc.)
+                            return Ok(match code {
+                                1 | 4 | 10 | 14 => super::sink::SendResult::IoError(
+                                    io::Error::other(format!("gRPC error {code}: {msg}")),
+                                ),
+                                8 => {
+                                    // RESOURCE_EXHAUSTED → treat like 429
+                                    super::sink::SendResult::RetryAfter(Duration::from_secs(
+                                        DEFAULT_RETRY_AFTER_SECS,
+                                    ))
+                                }
+                                _ => super::sink::SendResult::Rejected(format!(
+                                    "gRPC error {code}: {msg}"
+                                )),
+                            });
                         }
                     }
                     self.stats.inc_lines(batch_rows);
@@ -1072,34 +1072,34 @@ fn encode_row_as_log_record(
     // LogRecord.flags (fixed32) — W3C trace flags.
     // Clamp to u32 range: negative or >u32::MAX values are invalid per the
     // W3C Trace Context spec (only 8 bits are defined). (#1121)
-    if let Some((_, arr)) = columns.flags_col {
-        if !arr.is_null(row) {
-            let raw = arr.value(row);
-            if let Ok(flags) = u32::try_from(raw) {
-                encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
-            }
+    if let Some((_, arr)) = columns.flags_col
+        && !arr.is_null(row)
+    {
+        let raw = arr.value(row);
+        if let Ok(flags) = u32::try_from(raw) {
+            encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
         }
     }
 
     // LogRecord.trace_id (bytes, 16 bytes) — hex-decoded from 32-char string column
-    if let Some((_, arr)) = columns.trace_id_col {
-        if !arr.is_null(row) {
-            let hex = arr.value(row);
-            let mut decoded = [0u8; 16];
-            if hex_decode(hex.as_bytes(), &mut decoded) {
-                encode_bytes_field(buf, otlp::LOG_RECORD_TRACE_ID, &decoded);
-            }
+    if let Some((_, arr)) = columns.trace_id_col
+        && !arr.is_null(row)
+    {
+        let hex = arr.value(row);
+        let mut decoded = [0u8; 16];
+        if hex_decode(hex.as_bytes(), &mut decoded) {
+            encode_bytes_field(buf, otlp::LOG_RECORD_TRACE_ID, &decoded);
         }
     }
 
     // LogRecord.span_id (bytes, 8 bytes) — hex-decoded from 16-char string column
-    if let Some((_, arr)) = columns.span_id_col {
-        if !arr.is_null(row) {
-            let hex = arr.value(row);
-            let mut decoded = [0u8; 8];
-            if hex_decode(hex.as_bytes(), &mut decoded) {
-                encode_bytes_field(buf, otlp::LOG_RECORD_SPAN_ID, &decoded);
-            }
+    if let Some((_, arr)) = columns.span_id_col
+        && !arr.is_null(row)
+    {
+        let hex = arr.value(row);
+        let mut decoded = [0u8; 8];
+        if hex_decode(hex.as_bytes(), &mut decoded) {
+            encode_bytes_field(buf, otlp::LOG_RECORD_SPAN_ID, &decoded);
         }
     }
 

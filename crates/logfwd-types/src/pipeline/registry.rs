@@ -76,12 +76,12 @@ impl<K: Ord + Clone, M> SourceRegistry<K, M> {
     /// Returns true if the transition succeeded (was Active).
     /// Returns false if not Active (no state change).
     pub fn begin_drain(&mut self, key: &K) -> bool {
-        if let Some(entry) = self.entries.get_mut(key) {
-            if entry.state == SourceState::Active {
-                entry.state = SourceState::Draining;
-                entry.generation = self.current_generation;
-                return true;
-            }
+        if let Some(entry) = self.entries.get_mut(key)
+            && entry.state == SourceState::Active
+        {
+            entry.state = SourceState::Draining;
+            entry.generation = self.current_generation;
+            return true;
         }
         false
     }
@@ -91,12 +91,12 @@ impl<K: Ord + Clone, M> SourceRegistry<K, M> {
     /// Returns true if the transition succeeded (was Draining).
     /// Returns false if not Draining (no state change).
     pub fn commit(&mut self, key: &K) -> bool {
-        if let Some(entry) = self.entries.get_mut(key) {
-            if entry.state == SourceState::Draining {
-                entry.state = SourceState::Committed;
-                entry.generation = self.current_generation;
-                return true;
-            }
+        if let Some(entry) = self.entries.get_mut(key)
+            && entry.state == SourceState::Draining
+        {
+            entry.state = SourceState::Committed;
+            entry.generation = self.current_generation;
+            return true;
         }
         false
     }

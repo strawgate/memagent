@@ -707,10 +707,10 @@ fn discover_config() -> Option<std::path::PathBuf> {
                 .ok()
                 .map(|h| PathBuf::from(h).join(".config"))
         });
-    if let Some(xdg) = xdg_base.map(|b| b.join("logfwd/config.yaml")) {
-        if xdg.is_file() {
-            return Some(xdg);
-        }
+    if let Some(xdg) = xdg_base.map(|b| b.join("logfwd/config.yaml"))
+        && xdg.is_file()
+    {
+        return Some(xdg);
     }
 
     // 4. System config

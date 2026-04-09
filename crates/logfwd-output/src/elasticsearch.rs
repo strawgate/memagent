@@ -225,22 +225,22 @@ impl ElasticsearchSink {
                 .as_object()
                 .and_then(|obj| obj.values().next())
                 .and_then(serde_json::Value::as_object);
-            if let Some(action_obj) = action {
-                if let Some(error) = action_obj.get("error") {
-                    let error_type = error
-                        .get("type")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown");
-                    let reason = error
-                        .get("reason")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("no reason provided");
-                    // InvalidData: document-level rejection — permanent, do not retry.
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("ES bulk error: {error_type}: {reason}"),
-                    ));
-                }
+            if let Some(action_obj) = action
+                && let Some(error) = action_obj.get("error")
+            {
+                let error_type = error
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                let reason = error
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("no reason provided");
+                // InvalidData: document-level rejection — permanent, do not retry.
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("ES bulk error: {error_type}: {reason}"),
+                ));
             }
         }
         // errors: true but no specific error found in items — treat as failure rather
@@ -927,7 +927,7 @@ fn write_ts_suffix_simple(secs: u64, frac: u64) -> Vec<u8> {
 }
 
 pub(crate) fn is_leap_year(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 #[cfg(test)]

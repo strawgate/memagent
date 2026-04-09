@@ -121,11 +121,10 @@ impl FileDiscovery {
                     tracing::warn!(path = %path.display(), error = %e, "tail.open_after_rotation_failed");
                     had_error = true;
                 }
-            } else if is_new {
-                if let Err(e) = reader.open_file_at(path, reader.config.start_from_end) {
-                    tracing::warn!(path = %path.display(), error = %e, "tail.open_new_file_failed");
-                    had_error = true;
-                }
+            } else if is_new && let Err(e) = reader.open_file_at(path, reader.config.start_from_end)
+            {
+                tracing::warn!(path = %path.display(), error = %e, "tail.open_new_file_failed");
+                had_error = true;
             }
         }
         had_error

@@ -123,10 +123,10 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
                         )
                     })?;
                 }
-                if ts_val == 0 {
-                    if let Some(obs) = record.get("observedTimeUnixNano") {
-                        ts_val = parse_protojson_u64(obs).unwrap_or(0);
-                    }
+                if ts_val == 0
+                    && let Some(obs) = record.get("observedTimeUnixNano")
+                {
+                    ts_val = parse_protojson_u64(obs).unwrap_or(0);
                 }
                 if ts_val > 0 {
                     write_json_key(&mut out, field_names::TIMESTAMP);
@@ -134,11 +134,11 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
                     out.push(b',');
                 }
 
-                if let Some(sev) = record.get("severityText").and_then(|v| v.as_str()) {
-                    if !sev.is_empty() {
-                        write_json_string_field(&mut out, field_names::SEVERITY, sev);
-                        out.push(b',');
-                    }
+                if let Some(sev) = record.get("severityText").and_then(|v| v.as_str())
+                    && !sev.is_empty()
+                {
+                    write_json_string_field(&mut out, field_names::SEVERITY, sev);
+                    out.push(b',');
                 }
 
                 if let Some(body_val) = record.get("body")
@@ -164,17 +164,17 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
                     }
                 }
 
-                if let Some(tid) = record.get("traceId").and_then(|v| v.as_str()) {
-                    if !tid.is_empty() {
-                        write_json_string_field(&mut out, field_names::TRACE_ID, tid);
-                        out.push(b',');
-                    }
+                if let Some(tid) = record.get("traceId").and_then(|v| v.as_str())
+                    && !tid.is_empty()
+                {
+                    write_json_string_field(&mut out, field_names::TRACE_ID, tid);
+                    out.push(b',');
                 }
-                if let Some(sid) = record.get("spanId").and_then(|v| v.as_str()) {
-                    if !sid.is_empty() {
-                        write_json_string_field(&mut out, field_names::SPAN_ID, sid);
-                        out.push(b',');
-                    }
+                if let Some(sid) = record.get("spanId").and_then(|v| v.as_str())
+                    && !sid.is_empty()
+                {
+                    write_json_string_field(&mut out, field_names::SPAN_ID, sid);
+                    out.push(b',');
                 }
 
                 if out.last() == Some(&b',') {

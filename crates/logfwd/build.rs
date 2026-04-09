@@ -36,7 +36,8 @@ fn build_date() -> String {
     let mut days = (epoch_secs / 86400) as u32;
     let mut year = 1970u32;
     loop {
-        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let leap =
+            year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
         let days_in_year = if leap { 366 } else { 365 };
         if days < days_in_year {
             break;
@@ -44,7 +45,7 @@ fn build_date() -> String {
         days -= days_in_year;
         year += 1;
     }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
     let month_days: [u32; 12] = [
         31,
         if leap { 29 } else { 28 },

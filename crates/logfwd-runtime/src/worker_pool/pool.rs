@@ -10,14 +10,10 @@ use tokio_util::sync::CancellationToken;
 use logfwd_io::diagnostics::{ComponentHealth, ComponentStats, PipelineMetrics};
 use logfwd_output::sink::{OutputHealthEvent, SinkFactory};
 
-use super::dispatch::{ChannelState, DispatchOutcome, dispatch_step};
 use super::health::{
     aggregate_output_health, idle_health_after_worker_insert, reduce_worker_slot_health,
 };
-use super::types::{
-    AckItem, DeliveryOutcome, MAX_REJECTION_REASON_BYTES, WorkItem, WorkerMsg,
-    bound_rejection_reason,
-};
+use super::types::{AckItem, DeliveryOutcome, WorkItem, WorkerMsg};
 use super::worker::worker_task;
 
 #[cfg(not(test))]
@@ -323,15 +319,15 @@ impl OutputWorkerPool {
         }
 
         // --- Step 2: spawn a new worker if under limit ---
-        if self.workers.len() < self.max_workers {
-            if let Ok(handle) = self.spawn_worker() {
-                // New channel: guaranteed to have space.
-                let _ = handle.tx.try_send(msg);
-                self.workers.push_front(handle);
-                return;
-            }
-            // Sink factory failed — fall through to back-pressure path.
+        if self.workers.len() < self.max_workers
+            && let Ok(handle) = self.spawn_worker()
+        {
+            // New channel: guaranteed to have space.
+            let _ = handle.tx.try_send(msg);
+            self.workers.push_front(handle);
+            return;
         }
+        // Sink factory failed — fall through to back-pressure path.
 
         // --- Step 3: at max or spawn failed — async-wait on MRU worker ---
         if let Some(front) = self.workers.front() {
@@ -435,10 +431,10 @@ impl OutputWorkerPool {
         // Phase 2 — wait with timeout.
         let drain_fut = async {
             while let Some(res) = self.join_set.join_next().await {
-                if let Err(e) = res {
-                    if e.is_panic() {
-                        tracing::error!(error = ?e, "worker_pool: worker panicked during drain");
-                    }
+                if let Err(e) = res
+                    && e.is_panic()
+                {
+                    tracing::error!(error = ?e, "worker_pool: worker panicked during drain");
                 }
             }
         };
@@ -459,10 +455,10 @@ impl OutputWorkerPool {
             self.cancel.cancel();
             let _ = tokio::time::timeout(DRAIN_CANCEL_GRACE, async {
                 while let Some(res) = self.join_set.join_next().await {
-                    if let Err(e) = res {
-                        if e.is_panic() {
-                            tracing::error!(error = ?e, "worker_pool: worker panicked");
-                        }
+                    if let Err(e) = res
+                        && e.is_panic()
+                    {
+                        tracing::error!(error = ?e, "worker_pool: worker panicked");
                     }
                 }
             })
@@ -529,6 +525,8 @@ impl OutputWorkerPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worker_pool::dispatch::{ChannelState, DispatchOutcome, dispatch_step};
+    use crate::worker_pool::types::{MAX_REJECTION_REASON_BYTES, bound_rejection_reason};
 
     // -----------------------------------------------------------------------
     // Pure dispatch_step tests (no async required)

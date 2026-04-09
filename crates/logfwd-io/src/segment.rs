@@ -336,14 +336,14 @@ impl SegmentFile {
         }
 
         // Check SQL hash if provided.
-        if let Some(expected) = expected_sql_hash {
-            if header.sql_hash != expected {
-                return SegmentStatus::SchemaMismatch {
-                    path: path.to_path_buf(),
-                    expected_sql_hash: expected,
-                    found_sql_hash: header.sql_hash,
-                };
-            }
+        if let Some(expected) = expected_sql_hash
+            && header.sql_hash != expected
+        {
+            return SegmentStatus::SchemaMismatch {
+                path: path.to_path_buf(),
+                expected_sql_hash: expected,
+                found_sql_hash: header.sql_hash,
+            };
         }
 
         SegmentStatus::Valid(SegmentFile {
@@ -794,12 +794,11 @@ pub fn recover_segments(
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("lchk") {
             // Parse segment ID from filename: "seg-0000000042.lchk" → 42
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if let Some(id_str) = stem.strip_prefix("seg-") {
-                    if let Ok(id) = id_str.parse::<u64>() {
-                        max_seen_id = max_seen_id.max(id);
-                    }
-                }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && let Some(id_str) = stem.strip_prefix("seg-")
+                && let Ok(id) = id_str.parse::<u64>()
+            {
+                max_seen_id = max_seen_id.max(id);
             }
             entries.push(path);
         }

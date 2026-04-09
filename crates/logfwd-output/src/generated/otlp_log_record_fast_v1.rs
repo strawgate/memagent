@@ -120,34 +120,31 @@ pub(super) fn encode_row_as_log_record_fast_v1(
         }
     }
 
-    if let Some((_, arr)) = columns.flags_col {
-        if !arr.is_null(row) {
+    if let Some((_, arr)) = columns.flags_col
+        && !arr.is_null(row) {
             let raw = arr.value(row);
             if let Ok(flags) = u32::try_from(raw) {
                 encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
             }
         }
-    }
 
-    if let Some((_, arr)) = columns.trace_id_col.as_ref() {
-        if !arr.is_null(row) {
+    if let Some((_, arr)) = columns.trace_id_col.as_ref()
+        && !arr.is_null(row) {
             let hex = arr.value(row);
             let mut decoded = [0u8; 16];
             if hex_decode(hex.as_bytes(), &mut decoded) {
                 encode_bytes_field(buf, otlp::LOG_RECORD_TRACE_ID, &decoded);
             }
         }
-    }
 
-    if let Some((_, arr)) = columns.span_id_col.as_ref() {
-        if !arr.is_null(row) {
+    if let Some((_, arr)) = columns.span_id_col.as_ref()
+        && !arr.is_null(row) {
             let hex = arr.value(row);
             let mut decoded = [0u8; 8];
             if hex_decode(hex.as_bytes(), &mut decoded) {
                 encode_bytes_field(buf, otlp::LOG_RECORD_SPAN_ID, &decoded);
             }
         }
-    }
 
     encode_fixed64(
         buf,

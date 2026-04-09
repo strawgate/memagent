@@ -411,10 +411,10 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         for row in 0..num_rows {
             if !sev_arr.is_null(row) {
                 let val = str_from_array(sev_arr.as_ref(), row);
-                if !val.is_empty() {
-                    if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
-                        v[row] = Some(val);
-                    }
+                if !val.is_empty()
+                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[row] = Some(val);
                 }
             }
         }
@@ -433,10 +433,10 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         for row in 0..num_rows {
             if !body_arr.is_null(row) {
                 let val = str_from_array(body_arr.as_ref(), row);
-                if !val.is_empty() {
-                    if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
-                        v[row] = Some(val);
-                    }
+                if !val.is_empty()
+                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[row] = Some(val);
                 }
             }
         }
@@ -1305,32 +1305,32 @@ fn unpivot_attrs_to_flat(
         // Write the typed value into the column.
         match type_tag {
             ATTR_TYPE_INT => {
-                if !int_arr.is_null(row) {
-                    if let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1 {
-                        v[target_row] = Some(int_arr.value(row));
-                    }
+                if !int_arr.is_null(row)
+                    && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[target_row] = Some(int_arr.value(row));
                 }
             }
             ATTR_TYPE_DOUBLE => {
-                if !double_arr.is_null(row) {
-                    if let TypedColumn::Double(ref mut v) = flat_cols[col_pos].1 {
-                        v[target_row] = Some(double_arr.value(row));
-                    }
+                if !double_arr.is_null(row)
+                    && let TypedColumn::Double(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[target_row] = Some(double_arr.value(row));
                 }
             }
             ATTR_TYPE_BOOL => {
-                if !bool_arr.is_null(row) {
-                    if let TypedColumn::Bool(ref mut v) = flat_cols[col_pos].1 {
-                        v[target_row] = Some(bool_arr.value(row));
-                    }
+                if !bool_arr.is_null(row)
+                    && let TypedColumn::Bool(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[target_row] = Some(bool_arr.value(row));
                 }
             }
             _ => {
                 // ATTR_TYPE_STR or ATTR_TYPE_BYTES — read from str column.
-                if !str_arr.is_null(row) {
-                    if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
-                        v[target_row] = Some(str_arr.value(row).to_string());
-                    }
+                if !str_arr.is_null(row)
+                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[target_row] = Some(str_arr.value(row).to_string());
                 }
             }
         }

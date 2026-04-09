@@ -661,17 +661,16 @@ impl Pipeline {
             };
             if let Some(receipt) = receipt {
                 let advance = machine.apply_ack(receipt);
-                if advance.advanced {
-                    if let (Some(ref mut store), Some(offset)) =
+                if advance.advanced
+                    && let (Some(ref mut store), Some(offset)) =
                         (self.checkpoint_store.as_mut(), advance.checkpoint)
-                    {
-                        store.update(SourceCheckpoint {
-                            source_id: advance.source.0,
-                            path: None, // path is metadata, not required for restore
-                            offset,
-                        });
-                        any_advanced = true;
-                    }
+                {
+                    store.update(SourceCheckpoint {
+                        source_id: advance.source.0,
+                        path: None, // path is metadata, not required for restore
+                        offset,
+                    });
+                    any_advanced = true;
                 }
             }
         }
@@ -685,10 +684,10 @@ impl Pipeline {
         // Advance the timer even on failure to prevent retry flooding.
         if any_advanced && self.last_checkpoint_flush.elapsed() >= self.checkpoint_flush_interval {
             self.last_checkpoint_flush = tokio::time::Instant::now();
-            if let Some(ref mut store) = self.checkpoint_store {
-                if let Err(e) = store.flush() {
-                    tracing::warn!(error = %e, "pipeline: checkpoint flush error");
-                }
+            if let Some(ref mut store) = self.checkpoint_store
+                && let Err(e) = store.flush()
+            {
+                tracing::warn!(error = %e, "pipeline: checkpoint flush error");
             }
         }
     }

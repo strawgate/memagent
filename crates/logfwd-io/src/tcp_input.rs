@@ -374,15 +374,15 @@ impl InputSource for TcpInput {
 
         // Step 1: Data events.
         for (i, data) in client_data.into_iter().enumerate() {
-            if let Some(bytes) = data {
-                if !bytes.is_empty() {
-                    let accounted_bytes = bytes.len() as u64;
-                    events.push(InputEvent::Data {
-                        bytes,
-                        source_id: Some(self.clients[i].source_id),
-                        accounted_bytes,
-                    });
-                }
+            if let Some(bytes) = data
+                && !bytes.is_empty()
+            {
+                let accounted_bytes = bytes.len() as u64;
+                events.push(InputEvent::Data {
+                    bytes,
+                    source_id: Some(self.clients[i].source_id),
+                    accounted_bytes,
+                });
             }
         }
 
