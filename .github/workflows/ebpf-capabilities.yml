@@ -41,8 +41,19 @@ jobs:
 
       - name: Install eBPF userspace tooling
         run: |
+          set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y bpftool
+          if ! sudo apt-get install -y bpftool; then
+            sudo apt-get install -y linux-tools-common || true
+            # Ubuntu 24.04 often installs bpftool under versioned linux-tools paths.
+            if ! command -v bpftool >/dev/null 2>&1; then
+              candidate="$(compgen -G '/usr/lib/linux-tools/*/bpftool' | head -n1 || true)"
+              if [[ -n "${candidate}" ]]; then
+                sudo ln -sf "${candidate}" /usr/local/bin/bpftool
+              fi
+            fi
+          fi
+          command -v bpftool || echo "bpftool not found; capability probe will record this."
 
       - name: Test eBPF proto crate
         run: cargo test -p logfwd-ebpf-proto --all-targets
@@ -55,7 +66,12 @@ jobs:
 
       - name: Add probe summary
         if: always()
-        run: cat artifacts/ebpf-capabilities/summary.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          if [[ -f artifacts/ebpf-capabilities/summary.md ]]; then
+            cat artifacts/ebpf-capabilities/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "eBPF capability summary was not generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload eBPF capability artifacts
         if: always()
