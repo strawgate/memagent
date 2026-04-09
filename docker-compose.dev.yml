@@ -1,0 +1,50 @@
+# Local dev services for logfwd.
+#
+# Start:  docker compose -f docker-compose.dev.yml up -d
+# Stop:   docker compose -f docker-compose.dev.yml down
+# Logs:   docker compose -f docker-compose.dev.yml logs -f
+#
+# These services are optional — most Rust development and `just ci` do not
+# require them.  They are used by:
+#   • `just bench-es` / `just bench-es-streaming`  (Elasticsearch)
+#   • OTLP end-to-end tests and examples           (OTLP collector)
+
+services:
+  # -------------------------------------------------------------------------
+  # Elasticsearch — used by ES benchmarks and the examples/elasticsearch flow.
+  # UI: http://localhost:9200
+  # -------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.16.0
+    container_name: logfwd-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.name=logfwd-dev
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # -------------------------------------------------------------------------
+  # OTLP blackhole — lightweight receiver that accepts and discards OTLP data.
+  # Useful for end-to-end testing without a full collector stack.
+  # Endpoint: http://localhost:4318
+  # -------------------------------------------------------------------------
+  otlp-blackhole:
+    # TODO: pin to a specific release tag once one is published.
+    image: ghcr.io/strawgate/memagent:latest
+    container_name: logfwd-otlp-blackhole
+    command: ["blackhole", "0.0.0.0:4318"]
+    ports:
+      - "4318:4318"
+
+volumes:
+  es-data:
+    driver: local

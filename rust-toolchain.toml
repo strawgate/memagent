@@ -1,3 +1,5 @@
 [toolchain]
-channel = "stable"
+# Pin to the MSRV declared in Cargo.toml [workspace.package].
+# Bump this when the workspace rust-version changes.
+channel = "1.85"
 components = ["clippy", "rustfmt"]

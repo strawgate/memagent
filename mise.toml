@@ -1,0 +1,25 @@
+# mise (https://mise.jdx.dev) — declares the exact tool versions used by CI.
+# Run `mise install` to set them up, or install each tool manually.
+# See DEVELOPING.md for setup instructions.
+
+[tools]
+# Task runner — all dev workflows go through `just`.
+just       = "1.40"
+
+# TOML formatter / linter — keeps Cargo.toml files consistent.
+# Must match TAPLO_VERSION in .github/workflows/ci.yml.
+"cargo:taplo-cli" = "0.10.0"
+
+# License / ban / advisory auditor.
+# Must match CARGO_DENY_VERSION in .github/workflows/ci.yml.
+"cargo:cargo-deny" = "0.19.0"
+
+# Fast test runner used by `just test`.
+"cargo:cargo-nextest" = "0.9"
+
+# Unused-dependency detector.
+# Must match cargo-machete version in .github/workflows/ci.yml.
+"cargo:cargo-machete" = "0.9.1"
+
+# Node.js — only needed for the diagnostics dashboard (dashboard/).
+node       = "22"
