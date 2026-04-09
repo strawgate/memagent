@@ -104,12 +104,19 @@ impl InputSource for PlatformSensorBetaInput {
             return Ok(vec![]);
         }
 
+        let sensor_event = if self.started { "heartbeat" } else { "startup" };
+        let message = match sensor_event {
+            "startup" => "platform sensor beta startup",
+            "heartbeat" => "platform sensor beta heartbeat",
+            _ => unreachable!("sensor_event is derived from known variants"),
+        };
+
         let event = SensorControlEvent {
             timestamp_unix_nano: now_unix_nano(),
             level: "INFO",
-            message: "platform sensor beta heartbeat",
+            message,
             event_family: "sensor_control",
-            sensor_event: if self.started { "heartbeat" } else { "startup" },
+            sensor_event,
             sensor_status: "beta",
             sensor_target_platform: self.target.as_str(),
             sensor_host_platform: current_host_platform(),
@@ -250,6 +257,7 @@ mod tests {
             _ => panic!("expected Data event"),
         };
         assert!(payload.contains("\"sensor_event\":\"startup\""));
+        assert!(payload.contains("\"message\":\"platform sensor beta startup\""));
         assert!(payload.contains("\"sensor_status\":\"beta\""));
     }
 
@@ -267,5 +275,28 @@ mod tests {
 
         assert_eq!(input.poll().expect("startup poll").len(), 1);
         assert!(input.poll().expect("second poll").is_empty());
+    }
+
+    #[test]
+    fn second_poll_emits_heartbeat_with_matching_message() {
+        let mut input = PlatformSensorBetaInput::new(
+            "beta",
+            host_target(),
+            PlatformSensorBetaConfig {
+                emit_heartbeat: true,
+                poll_interval: Duration::from_millis(0),
+            },
+        )
+        .expect("host target should be valid");
+
+        let _startup = input.poll().expect("startup poll");
+        let heartbeat = input.poll().expect("heartbeat poll");
+        assert_eq!(heartbeat.len(), 1);
+        let payload = match &heartbeat[0] {
+            InputEvent::Data { bytes, .. } => std::str::from_utf8(bytes).expect("utf8"),
+            _ => panic!("expected Data event"),
+        };
+        assert!(payload.contains("\"sensor_event\":\"heartbeat\""));
+        assert!(payload.contains("\"message\":\"platform sensor beta heartbeat\""));
     }
 }
