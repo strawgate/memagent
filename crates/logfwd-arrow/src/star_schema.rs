@@ -365,6 +365,16 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         .as_any()
         .downcast_ref::<UInt32Array>()
         .ok_or_else(|| ArrowError::SchemaError("resource_id not UInt32".to_string()))?;
+    let scope_ids = star
+        .logs
+        .column(
+            logs_schema
+                .index_of("scope_id")
+                .map_err(|e| ArrowError::SchemaError(format!("missing scope_id: {e}")))?,
+        )
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+        .ok_or_else(|| ArrowError::SchemaError("scope_id not UInt32".to_string()))?;
 
     // Collect flat columns: name → TypedColumn.
     let mut flat_cols: Vec<(String, TypedColumn)> = Vec::new();
@@ -380,6 +390,19 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         } else {
             let idx = flat_cols.len();
             flat_cols.push((name.to_string(), TypedColumn::new_str(num_rows)));
+            col_index.insert(name.to_string(), idx);
+            idx
+        }
+    };
+    let ensure_int_col = |name: &str,
+                          flat_cols: &mut Vec<(String, TypedColumn)>,
+                          col_index: &mut HashMap<String, usize>|
+     -> usize {
+        if let Some(&idx) = col_index.get(name) {
+            idx
+        } else {
+            let idx = flat_cols.len();
+            flat_cols.push((name.to_string(), TypedColumn::new_int(num_rows)));
             col_index.insert(name.to_string(), idx);
             idx
         }
@@ -465,6 +488,98 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         }
     }
 
+    // severity_number
+    if let Ok(sev_num_idx) = logs_schema.index_of("severity_number") {
+        let sev_num_arr = star.logs.column(sev_num_idx);
+        if matches!(sev_num_arr.data_type(), DataType::Int32) {
+            let col_pos = ensure_int_col("severity_number", &mut flat_cols, &mut col_index);
+            let sev_num_arr = sev_num_arr
+                .as_any()
+                .downcast_ref::<arrow::array::Int32Array>()
+                .ok_or_else(|| ArrowError::SchemaError("severity_number not Int32".to_string()))?;
+            for row in 0..num_rows {
+                if !sev_num_arr.is_null(row)
+                    && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[row] = Some(i64::from(sev_num_arr.value(row)));
+                }
+            }
+        }
+    }
+
+    // trace_id (16-byte fixed binary) -> lowercase hex string
+    if let Ok(trace_idx) = logs_schema.index_of("trace_id") {
+        let trace_arr = star.logs.column(trace_idx);
+        if matches!(trace_arr.data_type(), DataType::FixedSizeBinary(16)) {
+            let col_pos = ensure_str_col("trace_id", &mut flat_cols, &mut col_index);
+            let trace_arr = trace_arr
+                .as_any()
+                .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+                .ok_or_else(|| {
+                    ArrowError::SchemaError("trace_id not FixedSizeBinary(16)".to_string())
+                })?;
+            for row in 0..num_rows {
+                if !trace_arr.is_null(row)
+                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+                {
+                    let bytes = trace_arr.value(row);
+                    let mut hex = String::with_capacity(bytes.len() * 2);
+                    for byte in bytes {
+                        use std::fmt::Write as _;
+                        let _ = write!(&mut hex, "{byte:02x}");
+                    }
+                    v[row] = Some(hex);
+                }
+            }
+        }
+    }
+
+    // span_id (8-byte fixed binary) -> lowercase hex string
+    if let Ok(span_idx) = logs_schema.index_of("span_id") {
+        let span_arr = star.logs.column(span_idx);
+        if matches!(span_arr.data_type(), DataType::FixedSizeBinary(8)) {
+            let col_pos = ensure_str_col("span_id", &mut flat_cols, &mut col_index);
+            let span_arr = span_arr
+                .as_any()
+                .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+                .ok_or_else(|| {
+                    ArrowError::SchemaError("span_id not FixedSizeBinary(8)".to_string())
+                })?;
+            for row in 0..num_rows {
+                if !span_arr.is_null(row)
+                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+                {
+                    let bytes = span_arr.value(row);
+                    let mut hex = String::with_capacity(bytes.len() * 2);
+                    for byte in bytes {
+                        use std::fmt::Write as _;
+                        let _ = write!(&mut hex, "{byte:02x}");
+                    }
+                    v[row] = Some(hex);
+                }
+            }
+        }
+    }
+
+    // flags
+    if let Ok(flags_idx) = logs_schema.index_of("flags") {
+        let flags_arr = star.logs.column(flags_idx);
+        if matches!(flags_arr.data_type(), DataType::UInt32) {
+            let col_pos = ensure_int_col("flags", &mut flat_cols, &mut col_index);
+            let flags_arr = flags_arr
+                .as_any()
+                .downcast_ref::<UInt32Array>()
+                .ok_or_else(|| ArrowError::SchemaError("flags not UInt32".to_string()))?;
+            for row in 0..num_rows {
+                if !flags_arr.is_null(row)
+                    && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[row] = Some(i64::from(flags_arr.value(row)));
+                }
+            }
+        }
+    }
+
     // --- Unpivot LOG_ATTRS → flat columns ---
     unpivot_attrs_to_flat(
         &star.log_attrs,
@@ -492,9 +607,27 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         |key| format!("{RESOURCE_PREFIX}{key}"),
     )?;
 
+    // --- Unpivot SCOPE_ATTRS ---
+    unpivot_attrs_to_flat(
+        &star.scope_attrs,
+        &mut flat_cols,
+        &mut col_index,
+        num_rows,
+        |parent_id| parent_id as usize,
+        |key| match key {
+            "scope_name" => "scope.name".to_string(),
+            "scope_version" => "scope.version".to_string(),
+            _ if key.starts_with("scope.") => key.to_string(),
+            _ => format!("scope.{key}"),
+        },
+    )?;
+
     // The unpivot above set values at the resource_id index, but we need to
     // scatter them to all rows that share that resource_id.
     scatter_resource_attrs(&mut flat_cols, &col_index, resource_ids, num_rows);
+    // Scope attrs are keyed by scope_id and must be scattered to all rows
+    // sharing that scope.
+    scatter_scope_attrs(&mut flat_cols, &col_index, scope_ids, num_rows);
 
     // --- Build the flat RecordBatch ---
     let mut fields: Vec<Field> = Vec::with_capacity(flat_cols.len());
@@ -1592,6 +1725,54 @@ fn collect_resource_template_values<T: Clone>(
     map
 }
 
+/// Scatter scope attribute values from template rows (indexed by scope_id) to
+/// all rows that share the same scope_id.
+fn scatter_scope_attrs(
+    flat_cols: &mut [(String, TypedColumn)],
+    col_index: &HashMap<String, usize>,
+    scope_ids: &UInt32Array,
+    num_rows: usize,
+) {
+    let scope_col_indices: Vec<usize> = col_index
+        .iter()
+        .filter(|(name, _)| name.starts_with("scope."))
+        .map(|(_, &idx)| idx)
+        .collect();
+
+    if scope_col_indices.is_empty() {
+        return;
+    }
+
+    for &col_pos in &scope_col_indices {
+        let sid_to_val: HashMap<u32, Option<String>> = {
+            let values = match &flat_cols[col_pos].1 {
+                TypedColumn::Str(v) => v,
+                _ => continue,
+            };
+            let mut map: HashMap<u32, Option<String>> = HashMap::new();
+            for row in 0..num_rows {
+                let sid = scope_ids.value(row);
+                if let std::collections::hash_map::Entry::Vacant(e) = map.entry(sid) {
+                    let sid_row = sid as usize;
+                    if sid_row < num_rows {
+                        e.insert(values[sid_row].clone());
+                    }
+                }
+            }
+            map
+        };
+
+        if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
+            for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                let sid = scope_ids.value(row);
+                if let Some(val) = sid_to_val.get(&sid) {
+                    *slot = val.clone();
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1607,6 +1788,9 @@ mod tests {
             Field::new("_timestamp", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("message", DataType::Utf8, true),
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+            Field::new("flags", DataType::Int64, true),
             Field::new("resource.attributes.service_name", DataType::Utf8, true),
             Field::new("resource.attributes.k8s_pod", DataType::Utf8, true),
             Field::new("host", DataType::Utf8, true),
@@ -1629,6 +1813,17 @@ mod tests {
                 Some("connection failed"),
                 Some("retry attempt"),
             ])),
+            Arc::new(StringArray::from(vec![
+                Some("00112233445566778899aabbccddeeff"),
+                Some("fedcba98765432100123456789abcdef"),
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ])),
+            Arc::new(StringArray::from(vec![
+                Some("0011223344556677"),
+                Some("8899aabbccddeeff"),
+                Some("1234567890abcdef"),
+            ])),
+            Arc::new(Int64Array::from(vec![Some(1), Some(3), Some(255)])),
             Arc::new(StringArray::from(vec![
                 Some("api-server"),
                 Some("api-server"),
@@ -1707,6 +1902,58 @@ mod tests {
         assert_eq!(msg_arr.value(0), "request started");
         assert_eq!(msg_arr.value(1), "connection failed");
         assert_eq!(msg_arr.value(2), "retry attempt");
+
+        let trace_idx = rt_schema.index_of("trace_id").expect("trace_id col");
+        let trace_arr = roundtrip
+            .column(trace_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("trace string");
+        assert_eq!(trace_arr.value(0), "00112233445566778899aabbccddeeff");
+        assert_eq!(trace_arr.value(1), "fedcba98765432100123456789abcdef");
+        assert_eq!(trace_arr.value(2), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+        let span_idx = rt_schema.index_of("span_id").expect("span_id col");
+        let span_arr = roundtrip
+            .column(span_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("span string");
+        assert_eq!(span_arr.value(0), "0011223344556677");
+        assert_eq!(span_arr.value(1), "8899aabbccddeeff");
+        assert_eq!(span_arr.value(2), "1234567890abcdef");
+
+        let flags_idx = rt_schema.index_of("flags").expect("flags col");
+        let flags_arr = roundtrip
+            .column(flags_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("flags i64");
+        assert_eq!(flags_arr.value(0), 1);
+        assert_eq!(flags_arr.value(1), 3);
+        assert_eq!(flags_arr.value(2), 255);
+
+        let sev_num_idx = rt_schema
+            .index_of("severity_number")
+            .expect("severity_number col");
+        let sev_num_arr = roundtrip
+            .column(sev_num_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("severity_number i64");
+        assert_eq!(sev_num_arr.value(0), 9); // INFO
+        assert_eq!(sev_num_arr.value(1), 17); // ERROR
+        assert_eq!(sev_num_arr.value(2), 13); // WARN
+
+        let scope_name_idx = rt_schema.index_of("scope.name").expect("scope.name col");
+        let scope_name_arr = roundtrip
+            .column(scope_name_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("scope.name string");
+        assert_eq!(scope_name_arr.value(0), "logfwd");
+        assert_eq!(scope_name_arr.value(1), "logfwd");
+        assert_eq!(scope_name_arr.value(2), "logfwd");
 
         // _resource_service_name
         let rs_idx = rt_schema

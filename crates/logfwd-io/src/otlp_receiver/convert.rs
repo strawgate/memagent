@@ -155,6 +155,11 @@ fn append_attribute_value_by_idx(
         Some(Value::BoolValue(v)) => builder.append_bool_by_idx(idx, *v),
         Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
+        Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_)) => {
+            if let Some(text) = any_value_to_deterministic_json_string(value) {
+                builder.append_decoded_str_by_idx(idx, text.as_bytes());
+            }
+        }
         _ => {}
     }
 }
@@ -179,8 +184,65 @@ fn append_any_value_as_string(
             builder.append_decoded_str_by_idx(idx, if *v { b"true" } else { b"false" });
         }
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
+        Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_)) => {
+            if let Some(text) = any_value_to_deterministic_json_string(value) {
+                builder.append_decoded_str_by_idx(idx, text.as_bytes());
+            }
+        }
         _ => {}
     }
+}
+
+fn any_value_to_deterministic_json_string(value: &AnyValue) -> Option<String> {
+    let json_value = any_value_to_deterministic_json(value)?;
+    serde_json::to_string(&json_value).ok()
+}
+
+fn any_value_to_deterministic_json(value: &AnyValue) -> Option<serde_json::Value> {
+    match &value.value {
+        Some(Value::StringValue(v)) => Some(serde_json::Value::String(v.clone())),
+        Some(Value::IntValue(v)) => Some(serde_json::Value::Number((*v).into())),
+        Some(Value::DoubleValue(v)) => serde_json::Number::from_f64(*v)
+            .map(serde_json::Value::Number)
+            .or_else(|| Some(serde_json::Value::String(v.to_string()))),
+        Some(Value::BoolValue(v)) => Some(serde_json::Value::Bool(*v)),
+        Some(Value::BytesValue(v)) => Some(serde_json::Value::String(bytes_to_hex(v))),
+        Some(Value::ArrayValue(arr)) => {
+            let mut out = Vec::with_capacity(arr.values.len());
+            for item in &arr.values {
+                if let Some(json) = any_value_to_deterministic_json(item) {
+                    out.push(json);
+                } else {
+                    out.push(serde_json::Value::Null);
+                }
+            }
+            Some(serde_json::Value::Array(out))
+        }
+        Some(Value::KvlistValue(kvs)) => {
+            let mut pairs: Vec<_> = kvs.values.iter().collect();
+            pairs.sort_by(|a, b| a.key.cmp(&b.key));
+            let mut map = serde_json::Map::new();
+            for kv in pairs {
+                let json = kv
+                    .value
+                    .as_ref()
+                    .and_then(any_value_to_deterministic_json)
+                    .unwrap_or(serde_json::Value::Null);
+                map.insert(kv.key.clone(), json);
+            }
+            Some(serde_json::Value::Object(map))
+        }
+        None => None,
+    }
+}
+
+fn bytes_to_hex(input: &[u8]) -> String {
+    let mut out = String::with_capacity(input.len() * 2);
+    for byte in input {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 fn append_hex_field(

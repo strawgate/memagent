@@ -907,8 +907,8 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, resource_prefix: &str) -> B
         if field_name == field_names::SEVERITY_NUMBER {
             if severity_num_col.is_none() && matches!(field.data_type(), DataType::Int64) {
                 severity_num_col = Some((idx, batch.column(idx).as_primitive::<Int64Type>()));
+                continue;
             }
-            continue;
         }
 
         // Observed timestamp.
@@ -920,8 +920,8 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, resource_prefix: &str) -> B
                 )
             {
                 observed_ts_col = Some((idx, batch.column(idx).as_ref()));
+                continue;
             }
-            continue;
         }
 
         // Scope metadata.
@@ -929,15 +929,19 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, resource_prefix: &str) -> B
             if scope_name_col.is_none() {
                 scope_name_col =
                     resolve_otlp_str_col(batch.column(idx).as_ref()).map(|arr| (idx, arr));
+                if scope_name_col.is_some() {
+                    continue;
+                }
             }
-            continue;
         }
         if field_name == field_names::SCOPE_VERSION {
             if scope_version_col.is_none() {
                 scope_version_col =
                     resolve_otlp_str_col(batch.column(idx).as_ref()).map(|arr| (idx, arr));
+                if scope_version_col.is_some() {
+                    continue;
+                }
             }
-            continue;
         }
 
         // Resource attributes — check configured prefix and legacy `_resource_` prefix.
@@ -1115,9 +1119,9 @@ fn encode_row_as_log_record(
         };
     let severity_number = if let Some((_, arr)) = columns.severity_num_col.as_ref() {
         if arr.is_null(row) {
-            0
+            severity_num as u64
         } else {
-            u64::try_from(arr.value(row)).unwrap_or(0)
+            u64::try_from(arr.value(row)).unwrap_or(severity_num as u64)
         }
     } else {
         severity_num as u64
@@ -2157,6 +2161,113 @@ mod tests {
         assert_eq!(body_str, Some("hello world"), "body mismatch");
         assert!(lr.trace_id.is_empty(), "no trace_id column means empty");
         assert!(lr.span_id.is_empty(), "no span_id column means empty");
+    }
+
+    #[test]
+    fn severity_number_null_falls_back_to_level() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new(field_names::SEVERITY_NUMBER, DataType::Int64, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("ERROR")])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(StringArray::from(vec![Some("broken")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            lr.severity_number, 17,
+            "null severity_number column must fall back to parsed level"
+        );
+    }
+
+    #[test]
+    fn unsupported_well_known_types_fall_back_to_attributes() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::default(),
+            observed_time_ns: 123_456_789,
+        };
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new(field_names::SEVERITY_NUMBER, DataType::Utf8, true),
+            Field::new(field_names::OBSERVED_TIMESTAMP, DataType::Utf8, true),
+            Field::new(field_names::SCOPE_NAME, DataType::Int64, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("ERROR")])),
+                Arc::new(StringArray::from(vec![Some("17")])),
+                Arc::new(StringArray::from(vec![Some("not-a-nanos-value")])),
+                Arc::new(Int64Array::from(vec![Some(42)])),
+                Arc::new(StringArray::from(vec![Some("hello")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &metadata);
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let rl = &request.resource_logs[0];
+        let sl = &rl.scope_logs[0];
+        let lr = &sl.log_records[0];
+
+        // Unsupported severity_number type must not suppress level-derived severity.
+        assert_eq!(lr.severity_number, 17);
+        // Unsupported observed_timestamp type must not override metadata fallback.
+        assert_eq!(lr.observed_time_unix_nano, metadata.observed_time_ns);
+        // Unsupported scope.name type must not override default instrumentation scope.
+        let scope = sl.scope.as_ref().expect("scope must exist");
+        assert_eq!(scope.name, "logfwd");
+
+        let find_attr = |name: &str| lr.attributes.iter().find(|kv| kv.key == name);
+
+        let sev_attr = find_attr(field_names::SEVERITY_NUMBER)
+            .expect("severity_number should fall back to regular attribute");
+        let sev_text = sev_attr.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(sev_text, Some("17"));
+
+        let observed_attr = find_attr(field_names::OBSERVED_TIMESTAMP)
+            .expect("observed_timestamp should fall back to regular attribute");
+        let observed_text = observed_attr.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(observed_text, Some("not-a-nanos-value"));
+
+        let scope_name_attr = find_attr(field_names::SCOPE_NAME)
+            .expect("scope.name should fall back to regular attribute");
+        let scope_name_int = scope_name_attr.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::IntValue(i)) => Some(*i),
+            _ => None,
+        });
+        assert_eq!(scope_name_int, Some(42));
     }
 
     #[test]

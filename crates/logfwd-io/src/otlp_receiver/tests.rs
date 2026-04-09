@@ -4,7 +4,7 @@ use arrow::datatypes::DataType;
 use logfwd_types::field_names;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
-    common::v1::{AnyValue, KeyValue, any_value::Value},
+    common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList, any_value::Value},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     resource::v1::Resource,
 };
@@ -231,6 +231,99 @@ fn structured_batch_preserves_resource_boolean_type() {
         .downcast_ref::<BooleanArray>()
         .expect("resource.sampled must be BooleanArray");
     assert!(sampled.value(0), "resource bool attribute must stay typed");
+}
+
+#[test]
+fn structured_values_are_serialized_deterministically() {
+    let request = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "resource.labels".into(),
+                    value: Some(AnyValue {
+                        value: Some(Value::ArrayValue(ArrayValue {
+                            values: vec![
+                                AnyValue {
+                                    value: Some(Value::BoolValue(true)),
+                                },
+                                AnyValue {
+                                    value: Some(Value::StringValue("x".into())),
+                                },
+                            ],
+                        })),
+                    }),
+                }],
+                ..Default::default()
+            }),
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord {
+                    body: Some(AnyValue {
+                        value: Some(Value::ArrayValue(ArrayValue {
+                            values: vec![
+                                AnyValue {
+                                    value: Some(Value::StringValue("hello".into())),
+                                },
+                                AnyValue {
+                                    value: Some(Value::IntValue(2)),
+                                },
+                            ],
+                        })),
+                    }),
+                    attributes: vec![KeyValue {
+                        key: "ctx".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::KvlistValue(KeyValueList {
+                                values: vec![
+                                    KeyValue {
+                                        key: "b".into(),
+                                        value: Some(AnyValue {
+                                            value: Some(Value::StringValue("two".into())),
+                                        }),
+                                    },
+                                    KeyValue {
+                                        key: "a".into(),
+                                        value: Some(AnyValue {
+                                            value: Some(Value::IntValue(1)),
+                                        }),
+                                    },
+                                ],
+                            })),
+                        }),
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+
+    let batch = convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect("structured decode succeeds");
+
+    let body = batch
+        .column_by_name(field_names::BODY)
+        .expect("body column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("body must be Utf8");
+    assert_eq!(body.value(0), "[\"hello\",2]");
+
+    let ctx = batch
+        .column_by_name("ctx")
+        .expect("ctx column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("ctx must be Utf8");
+    assert_eq!(ctx.value(0), "{\"a\":1,\"b\":\"two\"}");
+
+    let labels = batch
+        .column_by_name("resource.attributes.resource.labels")
+        .expect("resource labels column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("resource labels must be Utf8");
+    assert_eq!(labels.value(0), "[true,\"x\"]");
 }
 
 #[test]
