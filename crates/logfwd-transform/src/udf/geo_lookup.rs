@@ -143,29 +143,75 @@ impl ScalarUDFImpl for GeoLookupUdf {
                 let mut asn = Int64Builder::with_capacity(num_rows);
                 let mut org = StringBuilder::with_capacity(num_rows, num_rows * 16);
 
-                for row in 0..num_rows {
-                    let result = if array.is_null(row) {
-                        None
-                    } else {
-                        let ip = match array.data_type() {
-                            DataType::Utf8 => array.as_string::<i32>().value(row),
-                            DataType::Utf8View => array.as_string_view().value(row),
-                            DataType::LargeUtf8 => array.as_string::<i64>().value(row),
-                            _ => "",
-                        };
-                        self.db.lookup(ip)
-                    };
-                    append_result(
-                        result.as_ref(),
-                        &mut country_code,
-                        &mut country_name,
-                        &mut city,
-                        &mut region,
-                        &mut latitude,
-                        &mut longitude,
-                        &mut asn,
-                        &mut org,
-                    );
+                match array.data_type() {
+                    DataType::Utf8 => {
+                        let strings = array.as_string::<i32>();
+                        for row in 0..num_rows {
+                            let result = if strings.is_null(row) {
+                                None
+                            } else {
+                                self.db.lookup(strings.value(row))
+                            };
+                            append_result(
+                                result.as_ref(),
+                                &mut country_code,
+                                &mut country_name,
+                                &mut city,
+                                &mut region,
+                                &mut latitude,
+                                &mut longitude,
+                                &mut asn,
+                                &mut org,
+                            );
+                        }
+                    }
+                    DataType::Utf8View => {
+                        let strings = array.as_string_view();
+                        for row in 0..num_rows {
+                            let result = if strings.is_null(row) {
+                                None
+                            } else {
+                                self.db.lookup(strings.value(row))
+                            };
+                            append_result(
+                                result.as_ref(),
+                                &mut country_code,
+                                &mut country_name,
+                                &mut city,
+                                &mut region,
+                                &mut latitude,
+                                &mut longitude,
+                                &mut asn,
+                                &mut org,
+                            );
+                        }
+                    }
+                    DataType::LargeUtf8 => {
+                        let strings = array.as_string::<i64>();
+                        for row in 0..num_rows {
+                            let result = if strings.is_null(row) {
+                                None
+                            } else {
+                                self.db.lookup(strings.value(row))
+                            };
+                            append_result(
+                                result.as_ref(),
+                                &mut country_code,
+                                &mut country_name,
+                                &mut city,
+                                &mut region,
+                                &mut latitude,
+                                &mut longitude,
+                                &mut asn,
+                                &mut org,
+                            );
+                        }
+                    }
+                    other => {
+                        return Err(datafusion::error::DataFusionError::Execution(format!(
+                            "geo_lookup() input must be Utf8/Utf8View/LargeUtf8, got {other:?}"
+                        )));
+                    }
                 }
 
                 let struct_array = build_struct_array(
@@ -708,6 +754,44 @@ mod tests {
             true,
         )]));
         let arr: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("1.2.3.4"),
+            Some("5.6.7.8"),
+            None,
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![arr]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            db,
+            "SELECT get_field(geo_lookup(ip), 'country_code') AS cc FROM logs",
+        ));
+
+        let cc = result
+            .column_by_name("cc")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(cc.value(0), "US");
+        assert_eq!(cc.value(1), "DE");
+        assert!(cc.is_null(2));
+    }
+
+    #[test]
+    fn geo_lookup_largeutf8_input() {
+        use arrow::array::LargeStringArray;
+
+        let db = make_db();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "ip",
+            DataType::LargeUtf8,
+            true,
+        )]));
+        let arr: ArrayRef = Arc::new(LargeStringArray::from(vec![
             Some("1.2.3.4"),
             Some("5.6.7.8"),
             None,

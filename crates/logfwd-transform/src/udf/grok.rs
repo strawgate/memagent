@@ -156,8 +156,11 @@ impl ScalarUDFImpl for GrokUdf {
     ) -> DfResult<arrow::datatypes::FieldRef> {
         // If the pattern argument is a literal, extract field names and return Struct type.
         if args.scalar_arguments.len() >= 2
-            && let Some(datafusion::common::ScalarValue::Utf8(Some(pattern_str))) =
-                args.scalar_arguments[1]
+            && let Some(
+                datafusion::common::ScalarValue::Utf8(Some(pattern_str))
+                | datafusion::common::ScalarValue::Utf8View(Some(pattern_str))
+                | datafusion::common::ScalarValue::LargeUtf8(Some(pattern_str)),
+            ) = args.scalar_arguments[1]
             && let Ok(compiled) = compile_grok(pattern_str)
         {
             let fields: Vec<Field> = compiled
@@ -238,33 +241,89 @@ impl ScalarUDFImpl for GrokUdf {
                     .map(|_| StringBuilder::with_capacity(num_rows, num_rows * 32))
                     .collect();
 
-                for row in 0..num_rows {
-                    if array.is_null(row) {
-                        for b in &mut builders {
-                            b.append_null();
-                        }
-                        continue;
-                    }
-                    let val = match array.data_type() {
-                        DataType::Utf8 => array.as_string::<i32>().value(row),
-                        DataType::Utf8View => array.as_string_view().value(row),
-                        DataType::LargeUtf8 => array.as_string::<i64>().value(row),
-                        _ => "",
-                    };
-                    match compiled.pattern.match_against(val) {
-                        Some(matches) => {
-                            for (i, name) in compiled.field_names.iter().enumerate() {
-                                match matches.get(name) {
-                                    Some(v) => builders[i].append_value(v),
-                                    None => builders[i].append_null(),
+                match array.data_type() {
+                    DataType::Utf8 => {
+                        let strings = array.as_string::<i32>();
+                        for row in 0..num_rows {
+                            if strings.is_null(row) {
+                                for b in &mut builders {
+                                    b.append_null();
+                                }
+                                continue;
+                            }
+                            match compiled.pattern.match_against(strings.value(row)) {
+                                Some(matches) => {
+                                    for (i, name) in compiled.field_names.iter().enumerate() {
+                                        match matches.get(name) {
+                                            Some(v) => builders[i].append_value(v),
+                                            None => builders[i].append_null(),
+                                        }
+                                    }
+                                }
+                                None => {
+                                    for b in &mut builders {
+                                        b.append_null();
+                                    }
                                 }
                             }
                         }
-                        None => {
-                            for b in &mut builders {
-                                b.append_null();
+                    }
+                    DataType::Utf8View => {
+                        let strings = array.as_string_view();
+                        for row in 0..num_rows {
+                            if strings.is_null(row) {
+                                for b in &mut builders {
+                                    b.append_null();
+                                }
+                                continue;
+                            }
+                            match compiled.pattern.match_against(strings.value(row)) {
+                                Some(matches) => {
+                                    for (i, name) in compiled.field_names.iter().enumerate() {
+                                        match matches.get(name) {
+                                            Some(v) => builders[i].append_value(v),
+                                            None => builders[i].append_null(),
+                                        }
+                                    }
+                                }
+                                None => {
+                                    for b in &mut builders {
+                                        b.append_null();
+                                    }
+                                }
                             }
                         }
+                    }
+                    DataType::LargeUtf8 => {
+                        let strings = array.as_string::<i64>();
+                        for row in 0..num_rows {
+                            if strings.is_null(row) {
+                                for b in &mut builders {
+                                    b.append_null();
+                                }
+                                continue;
+                            }
+                            match compiled.pattern.match_against(strings.value(row)) {
+                                Some(matches) => {
+                                    for (i, name) in compiled.field_names.iter().enumerate() {
+                                        match matches.get(name) {
+                                            Some(v) => builders[i].append_value(v),
+                                            None => builders[i].append_null(),
+                                        }
+                                    }
+                                }
+                                None => {
+                                    for b in &mut builders {
+                                        b.append_null();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    other => {
+                        return Err(datafusion::error::DataFusionError::Execution(format!(
+                            "grok() input must be Utf8/Utf8View/LargeUtf8, got {other:?}"
+                        )));
                     }
                 }
 
@@ -536,6 +595,42 @@ mod tests {
             true,
         )]));
         let msgs: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("GET /api/users 200"),
+            Some("POST /api/orders 500"),
+            None,
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT get_field(grok(message, '%{WORD:method} %{URIPATH:path} %{NUMBER:status}'), 'method') AS http_method FROM logs",
+        ));
+
+        let method = result
+            .column_by_name("http_method")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(method.value(0), "GET");
+        assert_eq!(method.value(1), "POST");
+        assert!(method.is_null(2));
+    }
+
+    #[test]
+    fn test_grok_largeutf8_input() {
+        use arrow::array::LargeStringArray;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "message",
+            DataType::LargeUtf8,
+            true,
+        )]));
+        let msgs: ArrayRef = Arc::new(LargeStringArray::from(vec![
             Some("GET /api/users 200"),
             Some("POST /api/orders 500"),
             None,

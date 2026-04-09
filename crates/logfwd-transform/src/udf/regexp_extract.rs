@@ -186,23 +186,59 @@ impl ScalarUDFImpl for RegexpExtractUdf {
                 let num_rows = array.len();
                 let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 32);
 
-                for i in 0..num_rows {
-                    if array.is_null(i) {
-                        builder.append_null();
-                        continue;
+                match array.data_type() {
+                    DataType::Utf8 => {
+                        let strings = array.as_string::<i32>();
+                        for i in 0..num_rows {
+                            if strings.is_null(i) {
+                                builder.append_null();
+                                continue;
+                            }
+                            match re.captures(strings.value(i)) {
+                                Some(caps) => match caps.get(idx) {
+                                    Some(m) => builder.append_value(m.as_str()),
+                                    None => builder.append_null(),
+                                },
+                                None => builder.append_null(),
+                            }
+                        }
                     }
-                    let val = match array.data_type() {
-                        DataType::Utf8 => array.as_string::<i32>().value(i),
-                        DataType::Utf8View => array.as_string_view().value(i),
-                        DataType::LargeUtf8 => array.as_string::<i64>().value(i),
-                        _ => "",
-                    };
-                    match re.captures(val) {
-                        Some(caps) => match caps.get(idx) {
-                            Some(m) => builder.append_value(m.as_str()),
-                            None => builder.append_null(),
-                        },
-                        None => builder.append_null(),
+                    DataType::Utf8View => {
+                        let strings = array.as_string_view();
+                        for i in 0..num_rows {
+                            if strings.is_null(i) {
+                                builder.append_null();
+                                continue;
+                            }
+                            match re.captures(strings.value(i)) {
+                                Some(caps) => match caps.get(idx) {
+                                    Some(m) => builder.append_value(m.as_str()),
+                                    None => builder.append_null(),
+                                },
+                                None => builder.append_null(),
+                            }
+                        }
+                    }
+                    DataType::LargeUtf8 => {
+                        let strings = array.as_string::<i64>();
+                        for i in 0..num_rows {
+                            if strings.is_null(i) {
+                                builder.append_null();
+                                continue;
+                            }
+                            match re.captures(strings.value(i)) {
+                                Some(caps) => match caps.get(idx) {
+                                    Some(m) => builder.append_value(m.as_str()),
+                                    None => builder.append_null(),
+                                },
+                                None => builder.append_null(),
+                            }
+                        }
+                    }
+                    other => {
+                        return Err(datafusion::error::DataFusionError::Execution(format!(
+                            "regexp_extract() input must be Utf8/Utf8View/LargeUtf8, got {other:?}"
+                        )));
                     }
                 }
 
@@ -495,6 +531,42 @@ mod tests {
             .unwrap();
         assert_eq!(status.value(0), "200");
         assert_eq!(status.value(1), "500");
+        assert!(status.is_null(2));
+    }
+
+    #[test]
+    fn test_regexp_extract_largeutf8_input() {
+        use arrow::array::LargeStringArray;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "msg",
+            DataType::LargeUtf8,
+            true,
+        )]));
+        let msgs: Arc<dyn Array> = Arc::new(LargeStringArray::from(vec![
+            Some("status=201 user=carol"),
+            Some("status=404 user=dave"),
+            None,
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT regexp_extract(msg, 'status=(\\d+)', 1) AS status FROM logs",
+        ));
+
+        let status = result
+            .column_by_name("status")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(status.value(0), "201");
+        assert_eq!(status.value(1), "404");
         assert!(status.is_null(2));
     }
 

@@ -9,6 +9,7 @@ use arrow::record_batch::RecordBatch;
 use tokio::io::AsyncWriteExt;
 
 use logfwd_types::diagnostics::ComponentStats;
+use logfwd_types::field_names;
 
 use super::sink::{SendResult, Sink, SinkFactory};
 use arrow::util::display::array_value_to_string;
@@ -151,35 +152,35 @@ impl StdoutSink {
         let ts_idx = find_col(
             fields,
             &[
-                "_timestamp",
-                "@timestamp",
-                "timestamp",
-                "time",
-                "ts",
+                field_names::TIMESTAMP,
+                field_names::TIMESTAMP_UNDERSCORE,
+                field_names::TIMESTAMP_AT,
+                field_names::TIMESTAMP_VARIANTS[0],
+                field_names::TIMESTAMP_VARIANTS[1],
                 "timestamp_str",
             ],
         );
         let level_idx = find_col(
             fields,
             &[
-                "level",
+                field_names::SEVERITY,
                 "level_str",
-                "severity",
-                "log_level",
-                "loglevel",
-                "lvl",
+                field_names::SEVERITY_VARIANTS[0],
+                field_names::SEVERITY_VARIANTS[1],
+                field_names::SEVERITY_VARIANTS[2],
+                field_names::SEVERITY_VARIANTS[3],
             ],
         );
         let msg_idx = find_col(
             fields,
             &[
-                "message",
+                field_names::BODY,
                 "message_str",
-                "msg",
+                field_names::BODY_VARIANTS[0],
                 "msg_str",
-                "_msg",
-                "body",
-                "_raw",
+                field_names::BODY_VARIANTS[1],
+                field_names::BODY_VARIANTS[2],
+                field_names::RAW,
             ],
         );
 
@@ -301,7 +302,7 @@ impl StdoutSink {
                         write_json_value(arr, row, &mut self.buf)?;
                     }
                     _ => {
-                        let s = array_value_to_string(arr, row).unwrap_or_default();
+                        let s = safe_array_value_to_string(arr, row);
                         self.buf.extend_from_slice(s.as_bytes());
                     }
                 }
@@ -327,7 +328,18 @@ fn safe_col_to_string(col: &dyn Array, row: usize) -> String {
         DataType::Utf8 => col.as_string::<i32>().value(row).to_string(),
         DataType::Utf8View => col.as_string_view().value(row).to_string(),
         DataType::LargeUtf8 => col.as_string::<i64>().value(row).to_string(),
-        _ => array_value_to_string(col, row).unwrap_or_default(),
+        _ => safe_array_value_to_string(col, row),
+    }
+}
+
+/// Convert an Arrow value to string without panicking or silently erasing errors.
+fn safe_array_value_to_string(col: &dyn Array, row: usize) -> String {
+    match array_value_to_string(col, row) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(error = %e, dtype = ?col.data_type(), row, "stdout: value formatting failed");
+            "<format_error>".to_string()
+        }
     }
 }
 
