@@ -199,8 +199,15 @@ impl BlastDestination {
         }
     }
 
-    fn requires_endpoint(self) -> bool {
+    fn should_require_endpoint(self) -> bool {
         !matches!(self, Self::Null)
+    }
+
+    fn has_auth_support(self) -> bool {
+        matches!(
+            self,
+            Self::Otlp | Self::Elasticsearch | Self::Loki | Self::ArrowIpc
+        )
     }
 
     fn default_endpoint(self) -> &'static str {
@@ -608,7 +615,7 @@ fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
     }
 
     println!("blast quick setup");
-    println!("Press Enter to accept defaults. Leave auth blank to skip.");
+    println!("Press Enter to accept defaults.");
     println!("Leave duration blank to run until Ctrl-C.");
 
     let destination_raw = prompt_text(
@@ -622,14 +629,13 @@ fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
     })?;
     args.destination = Some(destination);
 
-    if destination.requires_endpoint() {
+    if destination.should_require_endpoint() && args.endpoint.is_none() {
         let endpoint = prompt_text("Endpoint", destination.default_endpoint())?;
         args.endpoint = Some(endpoint);
     }
 
-    let token = prompt_text("Bearer token (optional)", "")?;
-    if !token.is_empty() {
-        args.auth_bearer_token = Some(token);
+    if args.auth_bearer_token.is_none() {
+        println!("Bearer token prompt skipped in wizard; pass --auth-bearer-token if needed.");
     }
 
     args.workers = prompt_text("Workers", &args.workers.to_string())?
@@ -667,7 +673,7 @@ fn resolve_blast_output_config(args: &BlastArgs) -> Result<logfwd_config::Output
         ..logfwd_config::OutputConfig::default()
     };
 
-    if destination.requires_endpoint() {
+    if destination.should_require_endpoint() {
         let endpoint = args.endpoint.clone().ok_or_else(|| {
             CliError::Config("blast requires --endpoint for this destination".to_owned())
         })?;
@@ -675,6 +681,12 @@ fn resolve_blast_output_config(args: &BlastArgs) -> Result<logfwd_config::Output
     }
 
     if args.auth_bearer_token.is_some() || !args.auth_header.is_empty() {
+        if !destination.has_auth_support() {
+            return Err(CliError::Config(
+                "--auth-bearer-token/--auth-header are only supported for otlp, elasticsearch, loki, and arrow_ipc destinations"
+                    .to_owned(),
+            ));
+        }
         let mut auth = output_cfg.auth.clone().unwrap_or_default();
         if let Some(token) = &args.auth_bearer_token {
             auth.bearer_token = Some(token.clone());
@@ -746,8 +758,9 @@ fn render_devour_yaml(args: &DevourArgs, listen: &str) -> String {
             yaml_quote(listen)
         ),
         DevourMode::ElasticsearchBulk => format!(
-            "input:\n  type: http\n  listen: {}\n  format: json\n  http:\n    path: '/_bulk'\n    strict_path: false\n    method: POST\n    response_code: 200\n",
-            yaml_quote(listen)
+            "input:\n  type: http\n  listen: {}\n  format: json\n  http:\n    path: '/_bulk'\n    strict_path: false\n    method: POST\n    response_code: 200\n    response_body: {}\n",
+            yaml_quote(listen),
+            yaml_quote("{\"errors\":false}")
         ),
         DevourMode::Tcp => format!(
             "input:\n  type: tcp\n  listen: {}\n  format: json\n",
@@ -1734,6 +1747,19 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
 mod cli_tests {
     use super::*;
 
+    fn blast_args_for_validation() -> BlastArgs {
+        BlastArgs {
+            destination: Some(BlastDestination::Otlp),
+            endpoint: Some("http://127.0.0.1:4318/v1/logs".to_owned()),
+            auth_bearer_token: None,
+            auth_header: Vec::new(),
+            workers: 2,
+            batch_lines: 5_000,
+            duration_secs: None,
+            diagnostics_addr: "127.0.0.1:0".to_owned(),
+        }
+    }
+
     #[test]
     fn clap_parses_validate_subcommand() {
         let cli = Cli::try_parse_from(["logfwd", "validate", "--config", "foo.yaml"])
@@ -1814,6 +1840,45 @@ mod cli_tests {
     }
 
     #[test]
+    fn clap_parses_blast_and_devour_aliases() {
+        let blast = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "elasticsearch_otlp",
+            "--endpoint",
+            "http://127.0.0.1:4318/v1/logs",
+        ])
+        .expect("blast alias should parse");
+        match blast.command.expect("command") {
+            Commands::Blast(args) => {
+                assert!(matches!(args.destination, Some(BlastDestination::Otlp)))
+            }
+            other => panic!("expected blast command, got {other:?}"),
+        }
+
+        let devour = Cli::try_parse_from(["logfwd", "devour", "--mode", "elasticsearch"])
+            .expect("devour elasticsearch alias should parse");
+        match devour.command.expect("command") {
+            Commands::Devour(args) => assert!(matches!(args.mode, DevourMode::ElasticsearchBulk)),
+            other => panic!("expected devour command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clap_parses_devour_defaults() {
+        let cli = Cli::try_parse_from(["logfwd", "devour"]).expect("devour should parse");
+        match cli.command.expect("command") {
+            Commands::Devour(args) => {
+                assert!(matches!(args.mode, DevourMode::Otlp));
+                assert!(args.listen.is_none());
+                assert!(args.duration_secs.is_none());
+            }
+            other => panic!("expected devour command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn format_duration_seconds() {
         assert_eq!(format_duration(Duration::from_secs(42)), "42s");
     }
@@ -1891,6 +1956,18 @@ mod cli_tests {
     }
 
     #[test]
+    fn blast_missing_destination_fails_in_non_interactive_mode() {
+        let mut args = blast_args_for_validation();
+        args.destination = None;
+        args.endpoint = None;
+        let err = maybe_prompt_blast_setup(&mut args).expect_err("missing destination should fail");
+        assert!(
+            err.to_string().contains("no destination provided"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn blast_arrow_ipc_default_endpoint_is_http_url() {
         assert_eq!(
             BlastDestination::ArrowIpc.default_endpoint(),
@@ -1908,6 +1985,74 @@ mod cli_tests {
         };
         let yaml = render_devour_yaml(&args, "127.0.0.1:9200");
         assert!(yaml.contains("path: '/_bulk'"));
+        assert!(yaml.contains("response_body: \"{\\\"errors\\\":false}\""));
+    }
+
+    #[test]
+    fn resolve_blast_output_config_rejects_auth_for_udp_destination() {
+        let mut args = blast_args_for_validation();
+        args.destination = Some(BlastDestination::Udp);
+        args.endpoint = Some("127.0.0.1:15514".to_owned());
+        args.auth_bearer_token = Some("token".to_owned());
+        let err =
+            resolve_blast_output_config(&args).expect_err("udp destination should reject auth");
+        assert!(
+            err.to_string()
+                .contains("only supported for otlp, elasticsearch, loki, and arrow_ipc"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_blast_rejects_zero_workers() {
+        let mut args = blast_args_for_validation();
+        args.workers = 0;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_blast(args))
+            .expect_err("zero workers should fail");
+        assert!(
+            err.to_string().contains("--workers must be at least 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_blast_rejects_zero_batch_lines() {
+        let mut args = blast_args_for_validation();
+        args.batch_lines = 0;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_blast(args))
+            .expect_err("zero batch lines should fail");
+        assert!(
+            err.to_string().contains("--batch-lines must be at least 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_blast_rejects_zero_duration_when_provided() {
+        let mut args = blast_args_for_validation();
+        args.duration_secs = Some(0);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_blast(args))
+            .expect_err("zero duration should fail");
+        assert!(
+            err.to_string()
+                .contains("--duration-secs must be at least 1 when provided"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

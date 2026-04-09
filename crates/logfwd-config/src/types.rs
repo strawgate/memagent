@@ -224,6 +224,7 @@ pub struct HttpInputConfig {
     pub method: Option<HttpMethodConfig>,
     pub max_request_body_size: Option<usize>,
     pub response_code: Option<u16>,
+    pub response_body: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

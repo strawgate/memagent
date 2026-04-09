@@ -237,6 +237,9 @@ pub(super) fn build_input_state(
                 if let Some(response_code) = http.response_code {
                     options.response_code = response_code;
                 }
+                if let Some(response_body) = &http.response_body {
+                    options.response_body = Some(response_body.clone());
+                }
                 if let Some(method) = &http.method {
                     options.method = match method {
                         HttpMethodConfig::Get => logfwd_io::http_input::HttpInputMethod::Get,
