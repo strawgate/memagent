@@ -517,6 +517,30 @@ The framework **extends, not replaces** the existing turmoil_sim tests:
 | **RAC** | Reject advances checkpoint: permanent rejects DO advance | `durable_offset > 0` after reject |
 | **NR** | No regression: durable offset never goes backward across restarts | Cross-run checkpoint comparison |
 
+## Future Consideration: `fail-rs` Failpoints
+
+The `fail` crate (tikv/fail-rs) provides compile-time failpoints for injecting
+faults at arbitrary internal code points that turmoil cannot reach (checkpoint
+writes, scanner internals, config reload). Key properties:
+
+- **Zero production overhead** — `fail_point!` macro expands to nothing when
+  the `failpoints` feature is disabled
+- **Action DSL** — `"20%3*print(alive)->panic"` means 20% chance to print
+  (max 3 times), then always panic
+- **Probabilistic/conditional** — `p%` prefix, `cnt*` prefix, boolean guards
+
+**Critical async limitation**: `sleep`/`pause`/`delay` actions use
+`std::thread::sleep`, which blocks the tokio runtime thread. In logfwd's async
+code paths, **only use `return`-type failpoints** (`fail_point!("name", |_| Err(...))`)
+and `panic` failpoints. Never use `sleep`/`pause`/`delay` in async contexts.
+
+**Integration approach** (if adopted in a later phase):
+- Add `fail` as optional dep with `failpoints` feature in `logfwd-runtime` and `logfwd-io`
+- NOT in `logfwd-core` (which is `no_std` + `forbid(unsafe)`)
+- Place at I/O boundaries: checkpoint write, file open, OTLP connect, sink create
+- Complements turmoil (network-level) with internal code-path injection
+- Global state requires `FailScenario` mutex — failpoint tests cannot run in parallel
+
 ## Open Questions
 
 1. **Should `FaultInputSource` live in `logfwd-test-utils` or in the test module?**
