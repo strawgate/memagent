@@ -43,7 +43,7 @@ reason = "Local CRI metadata injection and mode dispatch helpers are already Kan
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/stderr_capture.rs"
+path = "crates/logfwd-diagnostics/src/stderr_capture.rs"
 status = "required"
 reason = "Pure escaping helpers are already Kani-targeted here."
 issue = 1314
@@ -61,7 +61,7 @@ reason = "Polling input source-origin lifecycle reduction is an isolated local s
 issue = 1415
 
 [[seams]]
-path = "crates/logfwd-io/src/diagnostics/policy.rs"
+path = "crates/logfwd-diagnostics/src/diagnostics/policy.rs"
 status = "required"
 reason = "Control-plane readiness and component-health labeling must stay aligned with shared health semantics."
 issue = 1306
@@ -133,7 +133,7 @@ reason = "Pool-level health insertion and aggregation policy is isolated here an
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/diagnostics.rs"
+path = "crates/logfwd-diagnostics/src/diagnostics.rs"
 status = "exempt"
 reason = "Still mixes HTTP shell code, JSON formatting, and runtime snapshot assembly; pure policy extraction is tracked separately."
 issue = 1438

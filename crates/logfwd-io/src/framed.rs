@@ -9,14 +9,13 @@
 //! interleaved data from multiple files (or TCP connections) never
 //! cross-contaminates partial lines or CRI P/F aggregation state.
 
-use crate::diagnostics::ComponentStats;
 use crate::filter_hints::FilterHints;
 use crate::format::FormatDecoder;
 use crate::input::{InputEvent, InputSource};
 use crate::tail::ByteOffset;
 use logfwd_core::checkpoint_tracker::CheckpointTracker;
 use logfwd_core::cri::json_escape_bytes;
-use logfwd_types::diagnostics::ComponentHealth;
+use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use logfwd_types::pipeline::SourceId;
 use std::collections::HashMap;
 use std::io;

@@ -150,7 +150,7 @@ pub async fn run_pipelines(
     let meter_provider = build_meter_provider(&config, use_color)?;
     let meter = meter_provider.meter("logfwd");
 
-    let trace_buf = logfwd_io::span_exporter::SpanBuffer::new();
+    let trace_buf = logfwd_diagnostics::span_exporter::SpanBuffer::new();
     let tracer_provider = build_tracer_provider(trace_buf.clone(), &config, use_color)?;
     let tracer = tracer_provider.tracer("logfwd");
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
@@ -185,7 +185,7 @@ pub async fn run_pipelines(
     }
 
     let diag_handle = if let Some(ref addr) = config.server.diagnostics {
-        let mut server = logfwd_io::diagnostics::DiagnosticsServer::new(addr);
+        let mut server = logfwd_diagnostics::diagnostics::DiagnosticsServer::new(addr);
         server.set_config(options.config_path, options.config_yaml);
         let expose_config = std::env::var("LOGFWD_UNSAFE_EXPOSE_CONFIG")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -419,7 +419,7 @@ fn output_label(o: &logfwd_config::OutputConfig) -> String {
 }
 
 fn print_shutdown_stats(
-    metrics: &[Arc<logfwd_io::diagnostics::PipelineMetrics>],
+    metrics: &[Arc<logfwd_diagnostics::diagnostics::PipelineMetrics>],
     uptime: Duration,
     use_color: bool,
 ) {
@@ -558,11 +558,11 @@ fn build_meter_provider(
 }
 
 fn build_tracer_provider(
-    buf: logfwd_io::span_exporter::SpanBuffer,
+    buf: logfwd_diagnostics::span_exporter::SpanBuffer,
     config: &logfwd_config::Config,
     use_color: bool,
 ) -> io::Result<opentelemetry_sdk::trace::SdkTracerProvider> {
-    use logfwd_io::span_exporter::RingBufferExporter;
+    use logfwd_diagnostics::span_exporter::RingBufferExporter;
     use opentelemetry_sdk::trace::{SdkTracerProvider, SimpleSpanProcessor};
 
     let ring_processor = SimpleSpanProcessor::new(RingBufferExporter::new(buf));
@@ -604,7 +604,7 @@ fn redact_url(url: &str) -> String {
 }
 
 #[cfg(unix)]
-fn jemalloc_stats() -> Option<logfwd_io::diagnostics::MemoryStats> {
+fn jemalloc_stats() -> Option<logfwd_diagnostics::diagnostics::MemoryStats> {
     use tikv_jemalloc_ctl::{epoch, stats};
 
     epoch::mib().ok()?.advance().ok()?;
@@ -613,7 +613,7 @@ fn jemalloc_stats() -> Option<logfwd_io::diagnostics::MemoryStats> {
     let allocated = stats::allocated::mib().ok()?.read().ok()?;
     let active = stats::active::mib().ok()?.read().ok()?;
 
-    Some(logfwd_io::diagnostics::MemoryStats {
+    Some(logfwd_diagnostics::diagnostics::MemoryStats {
         resident,
         allocated,
         active,

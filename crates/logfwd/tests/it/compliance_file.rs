@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use logfwd::pipeline::Pipeline;
 use logfwd_config::Config;
-use logfwd_io::diagnostics::PipelineMetrics;
+use logfwd_diagnostics::diagnostics::PipelineMetrics;
 use logfwd_test_utils::test_meter;
 use tokio_util::sync::CancellationToken;
 

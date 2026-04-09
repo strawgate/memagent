@@ -37,11 +37,20 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 |------|-------------|
 | IO is expected here | — |
 | Tests use tempfiles, not real filesystems | Convention |
-| Deps: core + arrow + notify + serde | Cargo.toml |
+| Deps: core + arrow + notify + serde + logfwd-diagnostics | Cargo.toml |
 | `InputSource` implementations must define `health()` explicitly; no optimistic trait default | Compilation + code review |
 | `InputSource` trait-shape changes must pass cross-workspace compile checks for turmoil tests and bench binaries (`cargo test -p logfwd --features turmoil --test turmoil_sim --no-run`, `cargo build -p logfwd-bench --bin framed_input_profile`) | CI/local verification checklist |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 | **No raw payload injection.** Legacy `_source_path` raw-byte insertion exists only in `framed.rs::inject_source_path_metadata` as a deprecated compatibility seam (#1615) and must not be expanded. New source metadata fields must be attached post-scan as Arrow columns using canonical `_resource_*` naming (scanner-attached resource columns shared across OTLP/OTAP paths). | CI guard script (`python3 scripts/check_no_raw_payload_injection.py`) + code review |
+
+## logfwd-diagnostics
+
+| Rule | Enforcement |
+|------|-------------|
+| Owns diagnostics server, telemetry shaping, and stderr/span buffering | Architecture |
+| Allowed deps: `logfwd-types`, `axum`, `tiny_http`, `tokio`, `tracing`, `serde(_yaml_ng/_json)`, `opentelemetry(_sdk)`, `url`, `libc` | Cargo.toml + review |
+| Must not depend on runtime orchestration crates (`logfwd-runtime`, `logfwd-output`) | Cargo dependency graph + review |
+| Kani seams for readiness policy and stderr escaping stay tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
 ## logfwd-transform
 

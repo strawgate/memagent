@@ -24,9 +24,9 @@ use arrow::array::{Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
-use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::sink::{Sink, SinkFactory};
 use logfwd_output::{BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory};
+use logfwd_types::diagnostics::ComponentStats;
 use tokio::runtime::Runtime;
 
 const ES_ENDPOINT: &str = "http://localhost:9200";

@@ -8,11 +8,10 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use serial_test::serial;
 
-use logfwd_io::diagnostics::ComponentHealth;
-use logfwd_io::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
+use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;

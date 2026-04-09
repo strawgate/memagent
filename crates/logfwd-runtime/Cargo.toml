@@ -24,6 +24,7 @@ logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
+logfwd-diagnostics = { version = "0.1.0", path = "../logfwd-diagnostics" }
 logfwd-transform = { version = "0.1.0", path = "../logfwd-transform", optional = true }
 logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }

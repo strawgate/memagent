@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::otlp_contract_support::expected_single_row_from_request;
-use logfwd_io::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::otlp_receiver::OtlpReceiverInput;
+use logfwd_types::diagnostics::ComponentStats;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value::Value},

@@ -13,8 +13,8 @@
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_arrow::scanner::Scanner;
-use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::{BatchMetadata, Compression, JsonLinesSink, OtlpProtocol, OtlpSink};
+use logfwd_types::diagnostics::ComponentStats;
 use std::sync::Arc;
 
 fn run_sinks(data: &[u8], validate_utf8: bool) {

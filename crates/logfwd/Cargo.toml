@@ -44,6 +44,7 @@ tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 [dev-dependencies]
 arrow = { workspace = true }
 bytes = { workspace = true }
+logfwd-diagnostics = { version = "0.1.0", path = "../logfwd-diagnostics" }
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1.11.0"
 serde_json = "1"

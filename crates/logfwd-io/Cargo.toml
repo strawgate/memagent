@@ -13,6 +13,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 base64 = { workspace = true }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
+logfwd-diagnostics = { version = "0.1.0", path = "../logfwd-diagnostics" }
 logfwd-otap-proto = { version = "0.1.0", path = "../logfwd-otap-proto" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 arrow = { workspace = true }

@@ -8,11 +8,10 @@ use axum::extract::State;
 use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
 use crate::InputError;
-use crate::diagnostics::ComponentStats;
 use crate::receiver_http::{declared_content_length, read_limited_body};
-use logfwd_types::diagnostics::ComponentHealth;
 
 use super::OtlpServerState;
 use super::decode::{

@@ -4,6 +4,7 @@ members = [
     "crates/logfwd-config",
     "crates/logfwd-runtime",
     "crates/logfwd-types",
+    "crates/logfwd-diagnostics",
     "crates/logfwd-core",
     "crates/logfwd-arrow",
     "crates/logfwd-transform",
@@ -24,6 +25,7 @@ members = [
 default-members = [
     "crates/logfwd-config",
     "crates/logfwd-types",
+    "crates/logfwd-diagnostics",
     "crates/logfwd-core",
     "crates/logfwd-arrow",
     "crates/logfwd-io",

@@ -7,10 +7,10 @@ use opentelemetry::metrics::Meter;
 #[cfg(feature = "datafusion")]
 use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
 use logfwd_config::{Format, PipelineConfig};
+use logfwd_diagnostics::diagnostics::PipelineMetrics;
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
 };
-use logfwd_io::diagnostics::PipelineMetrics;
 use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory};
 use logfwd_types::pipeline::{PipelineMachine, SourceId};
 

@@ -3,7 +3,7 @@
 //! This module keeps terminal-state and aggregation semantics out of the
 //! runtime shell so they can be Kani-proved directly.
 
-use logfwd_io::diagnostics::ComponentHealth;
+use logfwd_diagnostics::diagnostics::ComponentHealth;
 use logfwd_output::sink::{OutputHealthEvent, reduce_output_health};
 
 /// Pool-level idle health to use after inserting a worker slot.
@@ -44,7 +44,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{aggregate_output_health, idle_health_after_worker_insert};
-    use logfwd_io::diagnostics::ComponentHealth;
+    use logfwd_diagnostics::diagnostics::ComponentHealth;
     use proptest::prelude::*;
 
     #[test]
@@ -122,7 +122,7 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::{aggregate_output_health, idle_health_after_worker_insert};
-    use logfwd_io::diagnostics::ComponentHealth;
+    use logfwd_diagnostics::diagnostics::ComponentHealth;
 
     #[kani::proof]
     fn verify_insert_worker_preserves_terminal_pool_phase() {

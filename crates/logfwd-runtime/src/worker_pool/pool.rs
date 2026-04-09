@@ -7,18 +7,19 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use logfwd_io::diagnostics::{ComponentHealth, ComponentStats, PipelineMetrics};
+use logfwd_diagnostics::diagnostics::{ComponentHealth, ComponentStats, PipelineMetrics};
 use logfwd_output::sink::{OutputHealthEvent, SinkFactory};
 
-use super::dispatch::{ChannelState, DispatchOutcome, dispatch_step};
 use super::health::{
     aggregate_output_health, idle_health_after_worker_insert, reduce_worker_slot_health,
 };
-use super::types::{
-    AckItem, DeliveryOutcome, MAX_REJECTION_REASON_BYTES, WorkItem, WorkerMsg,
-    bound_rejection_reason,
-};
+use super::types::{AckItem, DeliveryOutcome, WorkItem, WorkerMsg};
 use super::worker::worker_task;
+
+#[cfg(test)]
+use super::dispatch::{ChannelState, DispatchOutcome, dispatch_step};
+#[cfg(test)]
+use super::types::{MAX_REJECTION_REASON_BYTES, bound_rejection_reason};
 
 #[cfg(not(test))]
 const DRAIN_CANCEL_GRACE: Duration = Duration::from_secs(5);
@@ -614,7 +615,7 @@ mod tests {
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use logfwd_io::diagnostics::ComponentHealth;
+    use logfwd_diagnostics::diagnostics::ComponentHealth;
     use logfwd_output::sink::{SendResult, Sink, SinkFactory};
     use logfwd_output::{BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory};
     use std::collections::{BTreeMap, VecDeque};

@@ -102,18 +102,17 @@ pub fn redact_config_yaml(raw_yaml: &str) -> String {
 pub struct ServerHandle {
     running: Arc<AtomicBool>,
     sampler_handle: Option<JoinHandle<()>>,
-    _http_task: BackgroundHttpTask,
+    http_task: BackgroundHttpTask,
 }
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
         // Signal the sampler loop to exit.
         self.running.store(false, Ordering::Relaxed);
-        // Join sampler thread; HTTP thread is unblocked and joined by
-        // `BackgroundHttpTask` during field drop.
         if let Some(h) = self.sampler_handle.take() {
             let _ = h.join();
         }
+        self.http_task.shutdown_and_join();
     }
 }
 
@@ -289,7 +288,7 @@ impl DiagnosticsServer {
             ServerHandle {
                 running,
                 sampler_handle: Some(sampler_handle),
-                _http_task: BackgroundHttpTask::new(Arc::clone(&http_server), http_handle),
+                http_task: BackgroundHttpTask::new(Arc::clone(&http_server), http_handle),
             },
             bound_addr,
         ))

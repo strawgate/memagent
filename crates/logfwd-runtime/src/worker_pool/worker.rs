@@ -351,7 +351,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use logfwd_io::diagnostics::PipelineMetrics;
+    use logfwd_diagnostics::diagnostics::PipelineMetrics;
     use logfwd_output::BatchMetadata;
     use logfwd_output::sink::{SendResult, Sink};
 

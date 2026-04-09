@@ -81,7 +81,7 @@ deny:
     cargo deny check
 
 # Build the diagnostics dashboard (Preact + TypeScript → single HTML file)
-# Requires Node.js. Output: crates/logfwd-io/src/dashboard.html
+# Requires Node.js. Output: crates/logfwd-diagnostics/src/dashboard.html
 # Must run before cargo build/test/clippy (CI does this automatically).
 dashboard:
     cd dashboard && npm install --prefer-offline && npm run build

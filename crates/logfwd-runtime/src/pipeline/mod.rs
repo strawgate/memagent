@@ -33,10 +33,10 @@ use logfwd_arrow::Scanner;
 use crate::processor::Processor;
 use crate::transform::SqlTransform;
 use crate::worker_pool::{AckItem, OutputWorkerPool};
+use logfwd_diagnostics::diagnostics::{ComponentHealth, ComponentStats, PipelineMetrics};
 #[cfg(test)]
 use logfwd_io::checkpoint::FileCheckpointStore;
 use logfwd_io::checkpoint::{CheckpointStore, SourceCheckpoint};
-use logfwd_io::diagnostics::{ComponentHealth, ComponentStats, PipelineMetrics};
 #[cfg(test)]
 use logfwd_io::format::FormatDecoder;
 #[cfg(any(test, feature = "turmoil"))]
@@ -720,7 +720,7 @@ mod tests {
 
     use logfwd_config::{Format, OutputConfig, OutputType};
     use logfwd_core::scan_config::ScanConfig;
-    use logfwd_io::diagnostics::ComponentStats;
+    use logfwd_diagnostics::diagnostics::ComponentStats;
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::test_meter;
 

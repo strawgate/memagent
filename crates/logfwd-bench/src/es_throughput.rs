@@ -23,12 +23,12 @@ use std::time::Instant;
 
 use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::sink::Sink;
 use logfwd_output::{
     BatchMetadata, ElasticsearchRequestMode, ElasticsearchSink, ElasticsearchSinkFactory,
 };
 use logfwd_transform::SqlTransform;
+use logfwd_types::diagnostics::ComponentStats;
 use pprof::ProfilerGuardBuilder;
 
 fn es_endpoint() -> String {

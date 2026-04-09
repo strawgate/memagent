@@ -131,8 +131,11 @@ impl MetricBuffer {
     }
 }
 
-/// Collection of metric histories. Thread-safe via Mutex (only accessed by
-/// the diagnostics thread for writes and HTTP handler for reads).
+/// Collection of metric histories.
+///
+/// The diagnostics sampler records into this buffer, and HTTP handlers read
+/// snapshots out of it. Internal synchronization is handled with a `Mutex`
+/// because writes are infrequent and isolated to the diagnostics path.
 pub struct MetricHistory {
     start: Instant,
     metrics: Mutex<Vec<MetricBuffer>>,
@@ -145,6 +148,7 @@ impl Default for MetricHistory {
 }
 
 impl MetricHistory {
+    /// Creates an empty history buffer anchored to the current instant.
     pub fn new() -> Self {
         Self {
             start: Instant::now(),

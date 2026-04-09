@@ -17,5 +17,5 @@ chck = "chck"
 [files]
 extend-exclude = [
     # Built/minified dashboard — not human-authored, skip spell check.
-    "crates/logfwd-io/src/dashboard.html",
+    "crates/logfwd-diagnostics/src/dashboard.html",
 ]

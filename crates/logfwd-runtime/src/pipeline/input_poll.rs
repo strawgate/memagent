@@ -6,7 +6,7 @@ use std::time::Duration;
 #[cfg(feature = "turmoil")]
 use arrow::record_batch::RecordBatch;
 #[cfg(feature = "turmoil")]
-use logfwd_io::diagnostics::PipelineMetrics;
+use logfwd_diagnostics::diagnostics::PipelineMetrics;
 #[cfg(feature = "turmoil")]
 use logfwd_io::input::InputEvent;
 #[cfg(feature = "turmoil")]

@@ -23,12 +23,11 @@ use std::sync::{Arc, mpsc};
 
 use arrow::record_batch::RecordBatch;
 use axum::routing::post;
+use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use tokio::sync::oneshot;
 
 use crate::background_http_task::BackgroundHttpTask;
-use crate::diagnostics::ComponentStats;
 use crate::input::{InputEvent, InputSource};
-use logfwd_types::diagnostics::ComponentHealth;
 
 const CHANNEL_BOUND: usize = 4096;
 

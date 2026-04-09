@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[cfg(feature = "turmoil")]
 use arrow::record_batch::RecordBatch;
 #[cfg(feature = "turmoil")]
-use logfwd_io::diagnostics::PipelineMetrics;
+use logfwd_diagnostics::diagnostics::PipelineMetrics;
 #[cfg(feature = "turmoil")]
 use logfwd_io::tail::ByteOffset;
 use logfwd_output::BatchMetadata;

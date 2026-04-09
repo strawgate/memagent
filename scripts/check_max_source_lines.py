@@ -28,7 +28,7 @@ EXCLUDED_PARTS = {
     "dashboard-dist",
 }
 EXCLUDED_FILES = {
-    "crates/logfwd-io/src/dashboard.html",
+    "crates/logfwd-diagnostics/src/dashboard.html",
 }
 
 

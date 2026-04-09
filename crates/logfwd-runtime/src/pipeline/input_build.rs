@@ -6,7 +6,7 @@ use logfwd_config::{
     Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorProfileConfig,
     HttpMethodConfig, InputConfig, InputType, PlatformSensorBetaInputConfig,
 };
-use logfwd_io::diagnostics::ComponentStats;
+use logfwd_diagnostics::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{FileInput, InputSource};
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn build_input_state_file_tuning_knobs() {
-        use logfwd_io::diagnostics::PipelineMetrics;
+        use logfwd_diagnostics::diagnostics::PipelineMetrics;
 
         let meter = logfwd_test_utils::test_meter();
         let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn build_input_state_rejects_udp_tcp_cri_and_auto_formats() {
-        use logfwd_io::diagnostics::PipelineMetrics;
+        use logfwd_diagnostics::diagnostics::PipelineMetrics;
 
         let meter = logfwd_test_utils::test_meter();
         let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);

@@ -38,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(not(feature = "turmoil"))]
-use logfwd_io::diagnostics::PipelineMetrics;
+use logfwd_diagnostics::diagnostics::PipelineMetrics;
 #[cfg(not(feature = "turmoil"))]
 use logfwd_io::input::InputEvent;
 #[cfg(not(feature = "turmoil"))]

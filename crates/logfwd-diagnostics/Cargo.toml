@@ -1,0 +1,27 @@
+[package]
+name = "logfwd-diagnostics"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
+libc = "0.2"
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+tiny_http = "0.12"
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

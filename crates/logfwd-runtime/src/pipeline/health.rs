@@ -3,7 +3,7 @@
 //! This module keeps deterministic lifecycle mapping out of the async
 //! orchestration shell so sync and async paths can share one bounded reducer.
 
-use logfwd_io::diagnostics::ComponentHealth;
+use logfwd_diagnostics::diagnostics::ComponentHealth;
 
 /// Explicit lifecycle events that can update a pipeline component snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,7 +55,7 @@ pub(super) const fn reduce_component_health(
 #[cfg(test)]
 mod tests {
     use super::{HealthTransitionEvent, reduce_component_health};
-    use logfwd_io::diagnostics::ComponentHealth;
+    use logfwd_diagnostics::diagnostics::ComponentHealth;
     use proptest::prelude::*;
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::{HealthTransitionEvent, reduce_component_health};
-    use logfwd_io::diagnostics::ComponentHealth;
+    use logfwd_diagnostics::diagnostics::ComponentHealth;
 
     #[kani::proof]
     fn verify_observed_does_not_resurrect_terminal_states() {

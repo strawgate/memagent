@@ -10,7 +10,6 @@ use std::thread;
 use std::time::Duration;
 
 use logfwd_io::{
-    diagnostics::ComponentStats,
     format::FormatDecoder,
     framed::FramedInput,
     http_input::HttpInput,
@@ -19,6 +18,7 @@ use logfwd_io::{
     tcp_input::TcpInput,
     udp_input::UdpInput,
 };
+use logfwd_types::diagnostics::ComponentStats;
 
 /// Poll `input` with exponential backoff until at least one byte of data
 /// arrives or `timeout` elapses.  Returns all collected bytes.

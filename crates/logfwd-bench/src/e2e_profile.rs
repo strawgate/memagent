@@ -8,8 +8,9 @@ use std::time::Instant;
 use logfwd_arrow::scanner::Scanner;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_io::compress::ChunkCompressor;
-use logfwd_transform::SqlTransform;
 use logfwd_output::BatchMetadata;
+use logfwd_transform::SqlTransform;
+use logfwd_types::diagnostics::ComponentStats;
 
 fn main() {
     let lines = 100_000;
@@ -37,7 +38,7 @@ fn main() {
         "http://localhost:19877".to_string(),
         vec![],
         logfwd_output::Compression::None,
-        std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
+        std::sync::Arc::new(ComponentStats::new()),
     );
     json_sink.serialize_batch(&result);
     let json_ms = t2.elapsed().as_millis();
@@ -52,7 +53,7 @@ fn main() {
         logfwd_output::Compression::None,
         vec![],
         reqwest::Client::new(),
-        std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()),
+        std::sync::Arc::new(ComponentStats::new()),
     );
     let metadata = BatchMetadata {
         resource_attrs: Arc::new(vec![]),
@@ -103,7 +104,7 @@ fn main() {
         let xform = t.elapsed().as_millis();
         
         let t = Instant::now();
-        let mut sink = logfwd_output::OtlpSink::new("b".into(), "http://x".into(), logfwd_output::OtlpProtocol::Http, logfwd_output::Compression::None, vec![], reqwest::Client::new(), std::sync::Arc::new(logfwd_io::diagnostics::ComponentStats::new()));
+        let mut sink = logfwd_output::OtlpSink::new("b".into(), "http://x".into(), logfwd_output::OtlpProtocol::Http, logfwd_output::Compression::None, vec![], reqwest::Client::new(), std::sync::Arc::new(ComponentStats::new()));
         let meta = BatchMetadata { resource_attrs: Arc::new(vec![]), observed_time_ns: 0 };
         sink.encode_batch(&result, &meta);
         let encode = t.elapsed().as_millis();

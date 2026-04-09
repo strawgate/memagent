@@ -2483,6 +2483,7 @@ dependencies = [
  "logfwd-arrow",
  "logfwd-config",
  "logfwd-core",
+ "logfwd-diagnostics",
  "logfwd-io",
  "logfwd-output",
  "logfwd-runtime",
@@ -2604,6 +2605,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "logfwd-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "logfwd-types",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "proptest",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tiny_http",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "logfwd-ebpf-proto"
 version = "0.1.0"
 
@@ -2624,6 +2642,7 @@ dependencies = [
  "libc",
  "logfwd-arrow",
  "logfwd-core",
+ "logfwd-diagnostics",
  "logfwd-otap-proto",
  "logfwd-test-utils",
  "logfwd-types",
@@ -2717,6 +2736,7 @@ dependencies = [
  "logfwd-arrow",
  "logfwd-config",
  "logfwd-core",
+ "logfwd-diagnostics",
  "logfwd-io",
  "logfwd-output",
  "logfwd-test-utils",
