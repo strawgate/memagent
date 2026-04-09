@@ -2710,6 +2710,7 @@ dependencies = [
  "backon",
  "bytes",
  "dhat",
+ "futures-util",
  "libc",
  "logfwd-arrow",
  "logfwd-config",

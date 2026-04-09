@@ -1469,6 +1469,22 @@ mod tests {
         wait_for_flag(&entered_send).await;
         wait_for_no_active_workers(&pool).await;
 
+        let ack = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(ack) = pool.ack_rx_mut().try_recv() {
+                    break ack;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("panicking worker must still emit an ack");
+        assert_eq!(
+            ack.outcome,
+            DeliveryOutcome::InternalFailure,
+            "panic path must surface InternalFailure to hold checkpoint seam"
+        );
+
         assert_eq!(pool.output_health.slot_health(0), None);
         assert_eq!(out_stats.health(), ComponentHealth::Healthy);
 
