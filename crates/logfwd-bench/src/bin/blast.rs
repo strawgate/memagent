@@ -356,9 +356,9 @@ fn run_worker(
                 counters.errors.fetch_add(1, Ordering::Relaxed);
                 eprintln!("worker {worker_id}: rejected: {reason}");
             }
-            _ => {
+            other => {
                 counters.errors.fetch_add(1, Ordering::Relaxed);
-                eprintln!("worker {worker_id}: unknown send result");
+                eprintln!("worker {worker_id}: unexpected send result: {other:?}");
             }
         }
     }
