@@ -1265,11 +1265,15 @@ mod validate_host_port_tests {
 
 /// Redact userinfo (username:password) from a URL for safe inclusion in error
 /// messages.  Replaces `scheme://user:pass@host` with `scheme://***@host`.
+const REDACTED_URL_USERINFO: &str = "***redacted***";
+
+/// Redact userinfo (username:password) from a URL for safe inclusion in error
+/// messages.
 fn redact_url(endpoint: &str) -> String {
     // Try to parse; if that fails, just redact anything between :// and @.
     if let Ok(mut parsed) = Url::parse(endpoint) {
         if !parsed.username().is_empty() || parsed.password().is_some() {
-            let _ = parsed.set_username("***");
+            let _ = parsed.set_username(REDACTED_URL_USERINFO);
             let _ = parsed.set_password(None);
         }
         parsed.to_string()
@@ -1277,8 +1281,9 @@ fn redact_url(endpoint: &str) -> String {
         let after_scheme = &endpoint[scheme_end + 3..];
         if let Some(at) = after_scheme.find('@') {
             format!(
-                "{}://***@{}",
+                "{}://{}@{}",
                 &endpoint[..scheme_end],
+                REDACTED_URL_USERINFO,
                 &after_scheme[at + 1..]
             )
         } else {
@@ -1343,6 +1348,9 @@ fn glob_could_match(glob_pattern: &str, file_path: &str) -> bool {
             && let Some(file_name) = file.file_name().and_then(|n| n.to_str())
         {
             if let Some(ext) = glob_name.strip_prefix('*') {
+                if ext.contains(['*', '?', '[']) {
+                    return true;
+                }
                 return file_name.ends_with(ext);
             }
 
@@ -1363,6 +1371,11 @@ fn glob_could_match(glob_pattern: &str, file_path: &str) -> bool {
 /// Return the first illegal character in an Elasticsearch index name, or None.
 /// ES rejects: uppercase, `*`, `?`, `"`, `<`, `>`, `|`, ` `, `,`, `#`, `:`, `\`, `/`.
 fn es_illegal_index_char(index: &str) -> Option<char> {
+    if let Some(c) = index.chars().next()
+        && matches!(c, '-' | '_' | '+')
+    {
+        return Some(c);
+    }
     index.chars().find(|c| {
         c.is_ascii_uppercase()
             || matches!(
@@ -1476,6 +1489,27 @@ pipelines:
         assert!(glob_could_match("/var/log/*.log", "/var/log/access.log"));
         assert!(!glob_could_match("/var/log/*.log", "/var/log/access.txt"));
     }
+
+    #[test]
+    fn glob_could_match_rejects_different_directory() {
+        assert!(!glob_could_match("/var/log/*.log", "/tmp/access.log"));
+    }
+
+    #[test]
+    fn glob_could_match_nested_wildcards_are_conservative() {
+        assert!(glob_could_match(
+            "/var/log/*test*.log",
+            "/var/log/mytest_file.log"
+        ));
+    }
+
+    #[test]
+    fn glob_could_match_nested_glob_paths_do_not_cross_directory_check() {
+        assert!(!glob_could_match(
+            "/var/log/**/access.log",
+            "/var/log/subdir/access.log"
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -1545,6 +1579,26 @@ pipelines:
         assert!(
             err.to_string().contains("index") && err.to_string().contains("must not be empty"),
             "whitespace-only index must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn elasticsearch_index_prefix_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        index: "_bad-index"
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("contains illegal character '_'"),
+            "expected prefix rejection: {err}"
         );
     }
 }

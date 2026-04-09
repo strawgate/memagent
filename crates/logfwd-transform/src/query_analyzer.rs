@@ -205,18 +205,12 @@ fn walk_set_expr(
             }
 
             for table_with_joins in &select.from {
-                for join in &table_with_joins.joins {
-                    if let sqlast::JoinOperator::AsOf {
-                        match_condition, ..
-                    } = &join.join_operator
-                    {
-                        collect_column_refs(match_condition, referenced_columns);
-                    }
-
-                    if let Some(constraint) = join_constraint(&join.join_operator) {
-                        collect_join_constraint_columns(constraint, referenced_columns);
-                    }
-                }
+                walk_table_with_joins(
+                    table_with_joins,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
 
             for sqlast::NamedWindowDefinition(_, named_expr) in &select.named_window {
@@ -253,6 +247,13 @@ fn walk_set_expr(
             *where_clause = None;
         }
         SetExpr::Query(query) => {
+            if let Some(ref order_by) = query.order_by
+                && let sqlast::OrderByKind::Expressions(exprs) = &order_by.kind
+            {
+                for ob in exprs {
+                    collect_column_refs(&ob.expr, referenced_columns);
+                }
+            }
             walk_set_expr(
                 query.body.as_ref(),
                 referenced_columns,
@@ -397,8 +398,71 @@ fn extract_except_fields(opts: &WildcardAdditionalOptions, out: &mut Vec<String>
     }
 }
 
+fn walk_table_factor(
+    factor: &sqlast::TableFactor,
+    referenced_columns: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+) {
+    match factor {
+        sqlast::TableFactor::Derived { subquery, .. } => {
+            let mut nested_where = None;
+            walk_set_expr(
+                subquery.body.as_ref(),
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+                &mut nested_where,
+            );
+        }
+        sqlast::TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => {
+            walk_table_with_joins(
+                table_with_joins,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn walk_table_with_joins(
+    table_with_joins: &sqlast::TableWithJoins,
+    referenced_columns: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+) {
+    walk_table_factor(
+        &table_with_joins.relation,
+        referenced_columns,
+        uses_select_star,
+        except_fields,
+    );
+    for join in &table_with_joins.joins {
+        walk_table_factor(
+            &join.relation,
+            referenced_columns,
+            uses_select_star,
+            except_fields,
+        );
+        if let sqlast::JoinOperator::AsOf {
+            match_condition, ..
+        } = &join.join_operator
+        {
+            collect_column_refs(match_condition, referenced_columns);
+        }
+
+        if let Some(constraint) = extract_join_constraint(&join.join_operator) {
+            collect_join_constraint_columns(constraint, referenced_columns);
+        }
+    }
+}
+
 /// Extract the `JoinConstraint` from any `JoinOperator` variant that carries one.
-fn join_constraint(op: &sqlast::JoinOperator) -> Option<&sqlast::JoinConstraint> {
+fn extract_join_constraint(op: &sqlast::JoinOperator) -> Option<&sqlast::JoinConstraint> {
     use sqlast::JoinOperator as J;
     match op {
         J::Join(c)

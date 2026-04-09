@@ -928,6 +928,46 @@ fn test_query_analyzer_straight_join_on_column_refs() {
     );
 }
 
+#[test]
+fn test_query_analyzer_derived_subquery_column_refs() {
+    let a = QueryAnalyzer::new(
+        "SELECT q.level FROM (SELECT level, status, host FROM logs WHERE status = '500' ORDER BY host) q",
+    )
+    .unwrap();
+    assert!(
+        a.referenced_columns.contains("level"),
+        "derived SELECT column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("status"),
+        "derived WHERE column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("host"),
+        "derived ORDER BY column must be in referenced_columns"
+    );
+}
+
+#[test]
+fn test_query_analyzer_joined_derived_relation_column_refs() {
+    let a = QueryAnalyzer::new(
+        "SELECT l.message FROM logs l JOIN (SELECT level, service FROM logs WHERE service = 'api') d ON l.level = d.level",
+    )
+    .unwrap();
+    assert!(
+        a.referenced_columns.contains("message"),
+        "outer SELECT column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("level"),
+        "join key from derived relation must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("service"),
+        "derived subquery column must be in referenced_columns"
+    );
+}
+
 // -----------------------------------------------------------------------
 
 /// Verify that a stable schema does NOT trigger repeated context recreation
