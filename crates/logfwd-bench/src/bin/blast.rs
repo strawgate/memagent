@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use logfwd_arrow::scanner::Scanner;
-use logfwd_config::{AuthConfig, Config, OutputConfig, OutputType};
+use logfwd_config::{Config, OutputConfig, OutputType};
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_output::build_sink_factory;
 use logfwd_output::sink::SendResult;
@@ -179,6 +179,16 @@ fn main() {
 }
 
 fn run_benchmark(args: RunArgs) -> Result<(), String> {
+    if args.duration_secs == 0 {
+        return Err("--duration-secs must be at least 1".to_string());
+    }
+    if args.workers == 0 {
+        return Err("--workers must be at least 1".to_string());
+    }
+    if args.batch_lines == 0 {
+        return Err("--batch-lines must be at least 1".to_string());
+    }
+
     let output_cfg = resolve_output_config(&args)?;
     let resolved_yaml = render_output_yaml(&output_cfg);
 
@@ -376,10 +386,14 @@ fn resolve_output_config(args: &RunArgs) -> Result<OutputConfig, String> {
     }
 
     if args.auth_bearer_token.is_some() || !headers.is_empty() {
-        output_cfg.auth = Some(AuthConfig {
-            bearer_token: args.auth_bearer_token.clone(),
-            headers,
-        });
+        let mut merged = output_cfg.auth.clone().unwrap_or_default();
+        if let Some(token) = &args.auth_bearer_token {
+            merged.bearer_token = Some(token.clone());
+        }
+        for (k, v) in headers {
+            merged.headers.insert(k, v);
+        }
+        output_cfg.auth = Some(merged);
     }
 
     if matches!(
@@ -483,8 +497,8 @@ fn render_output_yaml(output: &OutputConfig) -> String {
         if auth.bearer_token.is_some() {
             lines.push("  bearer_token: <redacted>".to_string());
         }
-        for (key, value) in &auth.headers {
-            lines.push(format!("  headers.{key}: {value}"));
+        for (key, _value) in &auth.headers {
+            lines.push(format!("  headers.{key}: <redacted>"));
         }
     }
 
