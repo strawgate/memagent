@@ -1,5 +1,15 @@
 use std::path::{Path, PathBuf};
 
+fn build_glob_set(builder: globset::GlobSetBuilder) -> Option<globset::GlobSet> {
+    match builder.build() {
+        Ok(gs) => Some(gs),
+        Err(e) => {
+            tracing::warn!(error = %e, "tail.globset_build_failed");
+            None
+        }
+    }
+}
+
 /// Extract the root directory from a glob pattern — the longest prefix path
 /// before the first wildcard character (`*`, `?`, `[`, `{`).
 ///
@@ -75,12 +85,8 @@ pub(super) fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
             }
         }
     }
-    let glob_set = match builder.build() {
-        Ok(gs) => gs,
-        Err(e) => {
-            tracing::warn!(error = %e, "tail.globset_build_failed");
-            return Vec::new();
-        }
+    let Some(glob_set) = build_glob_set(builder) else {
+        return Vec::new();
     };
 
     let mut roots: Vec<(PathBuf, Option<usize>)> = Vec::new();
@@ -126,8 +132,19 @@ pub(super) fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
-    use super::expand_glob_patterns;
+    use super::{build_glob_set, expand_glob_patterns, glob_root};
+
+    #[test]
+    fn glob_root_slash_is_root() {
+        assert_eq!(glob_root("/*.log"), PathBuf::from("/"));
+    }
+
+    #[test]
+    fn expand_glob_patterns_empty_patterns_returns_empty() {
+        assert!(expand_glob_patterns(&[]).is_empty());
+    }
 
     #[test]
     fn expand_glob_patterns_deduplicates_overlapping_roots() {
@@ -142,5 +159,65 @@ mod tests {
         let matches = expand_glob_patterns(&[&p1, &p2]);
 
         assert_eq!(matches, vec![log_file]);
+    }
+
+    #[test]
+    fn expand_glob_patterns_skips_invalid_patterns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("logs");
+        fs::create_dir_all(&nested).expect("create nested dir");
+        let log_file = nested.join("service.log");
+        fs::write(&log_file, b"line\n").expect("write log");
+
+        let valid = format!("{}/**/*.log", dir.path().display());
+        let matches = expand_glob_patterns(&["[", &valid]);
+        assert_eq!(matches, vec![log_file]);
+    }
+
+    #[test]
+    fn expand_glob_patterns_merges_root_depth_when_unbounded_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("a/b");
+        fs::create_dir_all(&nested).expect("create nested dir");
+        let deep = nested.join("deep.log");
+        fs::write(&deep, b"line\n").expect("write deep log");
+
+        let bounded = format!("{}/a/*.log", dir.path().display());
+        let unbounded = format!("{}/a/**/*.log", dir.path().display());
+        let matches = expand_glob_patterns(&[&bounded, &unbounded]);
+        assert_eq!(matches, vec![deep]);
+    }
+
+    #[test]
+    fn expand_glob_patterns_merges_bounded_depths_using_max() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shallow_dir = dir.path().join("a");
+        let deep_dir = dir.path().join("a/b");
+        fs::create_dir_all(&deep_dir).expect("create nested dirs");
+
+        let shallow = shallow_dir.join("shallow.log");
+        let deep = deep_dir.join("deep.log");
+        fs::write(&shallow, b"line\n").expect("write shallow log");
+        fs::write(&deep, b"line\n").expect("write deep log");
+
+        let p1 = format!("{}/a/*.log", dir.path().display());
+        let p2 = format!("{}/a/*/*.log", dir.path().display());
+        let matches = expand_glob_patterns(&[&p1, &p2]);
+
+        assert_eq!(matches, vec![deep, shallow]);
+    }
+
+    #[test]
+    fn expand_glob_patterns_all_invalid_patterns_returns_empty() {
+        let matches = expand_glob_patterns(&[""]);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn build_glob_set_accepts_empty_builder() {
+        let builder = globset::GlobSetBuilder::new();
+        let built = build_glob_set(builder);
+        let set = built.expect("empty builder should yield empty set");
+        assert!(!set.is_match("any/path.log"));
     }
 }

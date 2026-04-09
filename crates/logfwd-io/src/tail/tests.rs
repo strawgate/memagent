@@ -2046,6 +2046,120 @@ fn test_error_backoff_marks_tailer_degraded_until_clean_poll() {
     assert_eq!(tailer.health(), ComponentHealth::Healthy);
 }
 
+#[test]
+fn test_directory_path_does_not_fail_construction() {
+    let dir = tempfile::tempdir().unwrap();
+    let directory_as_path = dir.path().join("logs");
+    fs::create_dir_all(&directory_as_path).unwrap();
+
+    let config = TailConfig {
+        start_from_end: false,
+        poll_interval_ms: 10,
+        ..Default::default()
+    };
+    let tailer = FileTailer::new(
+        std::slice::from_ref(&directory_as_path),
+        config,
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    );
+    assert!(
+        tailer.is_ok(),
+        "directory entries should warn and continue rather than failing construction"
+    );
+    assert_eq!(
+        tailer.unwrap().num_files(),
+        0,
+        "directory path must not be tracked as a tailed file"
+    );
+}
+
+#[test]
+fn test_poll_during_active_backoff_still_records_watcher_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("backoff-active.log");
+    File::create(&log_path).unwrap();
+
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 60_000,
+            ..Default::default()
+        },
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
+
+    let (tx, rx) = crossbeam_channel::unbounded();
+    tailer.discovery.fs_events = rx;
+    tailer.error_backoff_until = Some(Instant::now() + Duration::from_millis(200));
+    tx.send(Err(notify::Error::generic("still-backing-off")))
+        .unwrap();
+
+    let events = tailer.poll().unwrap();
+    assert!(
+        events.is_empty(),
+        "active backoff should suppress polling work"
+    );
+    assert_eq!(
+        tailer.consecutive_error_polls, 1,
+        "watcher errors should still advance backoff state while suppressed"
+    );
+}
+
+#[test]
+fn test_watcher_error_updates_backoff_even_without_poll_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("no-tick-backoff.log");
+    File::create(&log_path).unwrap();
+
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 60_000,
+            ..Default::default()
+        },
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    tailer.discovery.fs_events = rx;
+    tx.send(Err(notify::Error::generic("watcher-only-error")))
+        .unwrap();
+
+    let events = tailer.poll().unwrap();
+    assert!(events.is_empty());
+    assert_eq!(tailer.consecutive_error_polls, 1);
+    assert!(
+        tailer.error_backoff_until.is_some(),
+        "watcher-only error should schedule backoff even when should_poll=false"
+    );
+}
+
+#[test]
+fn test_source_id_for_missing_path_is_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("source-id.log");
+    File::create(&log_path).unwrap();
+
+    let tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 10,
+            ..Default::default()
+        },
+        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        tailer.source_id_for_path(&dir.path().join("missing.log")),
+        None
+    );
+}
+
 /// #544: file I/O and watcher errors must not use eprintln!.
 #[test]
 fn test_tail_uses_tracing_not_eprintln() {

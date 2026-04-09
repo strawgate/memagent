@@ -14,6 +14,7 @@ mod discovery;
 mod glob;
 mod identity;
 mod reader;
+mod state;
 mod tailer;
 
 pub use identity::ByteOffset;

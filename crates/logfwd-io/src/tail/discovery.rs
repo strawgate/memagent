@@ -8,6 +8,24 @@ use super::identity::identify_file;
 use super::reader::FileReader;
 use super::tailer::TailEvent;
 
+fn mark_watch_dir_result(path: &Path, result: io::Result<()>) -> bool {
+    if let Err(e) = result {
+        tracing::warn!(path = %path.display(), error = %e, "tail.watch_dir_failed");
+        true
+    } else {
+        false
+    }
+}
+
+fn mark_open_result(path: &Path, context: &'static str, result: io::Result<()>) -> bool {
+    if let Err(e) = result {
+        tracing::warn!(path = %path.display(), error = %e, context, "tail.open_failed");
+        true
+    } else {
+        false
+    }
+}
+
 /// Owns the filesystem watcher and file/glob discovery state.
 pub(super) struct FileDiscovery {
     pub(super) watcher: notify::RecommendedWatcher,
@@ -47,17 +65,15 @@ impl FileDiscovery {
             .collect();
 
         for path in new_paths {
-            if let Some(parent) = path.parent()
-                && let Err(e) = self.watch_dir(parent)
-            {
-                tracing::warn!(path = %parent.display(), error = %e, "tail.watch_dir_failed");
-                had_error = true;
+            if let Some(parent) = path.parent() {
+                had_error |= mark_watch_dir_result(parent, self.watch_dir(parent));
             }
 
-            if let Err(e) = reader.open_file_at(&path, reader.config.start_from_end) {
-                tracing::warn!(path = %path.display(), error = %e, "tail.open_failed");
-                had_error = true;
-            }
+            had_error |= mark_open_result(
+                &path,
+                "rescan",
+                reader.open_file_at(&path, reader.config.start_from_end),
+            );
 
             self.watch_paths.push(path);
         }
@@ -117,15 +133,13 @@ impl FileDiscovery {
                     source_id: pre_rotate_source_id,
                 });
                 let _ = reader.files.remove(path);
-                if let Err(e) = reader.open_file_at(path, false) {
-                    tracing::warn!(path = %path.display(), error = %e, "tail.open_after_rotation_failed");
-                    had_error = true;
-                }
+                had_error |= mark_open_result(path, "rotation", reader.open_file_at(path, false));
             } else if is_new {
-                if let Err(e) = reader.open_file_at(path, reader.config.start_from_end) {
-                    tracing::warn!(path = %path.display(), error = %e, "tail.open_new_file_failed");
-                    had_error = true;
-                }
+                had_error |= mark_open_result(
+                    path,
+                    "new_file",
+                    reader.open_file_at(path, reader.config.start_from_end),
+                );
             }
         }
         had_error
@@ -178,7 +192,7 @@ fn metadata_indicates_deleted(_meta: &std::fs::Metadata) -> bool {
 mod tests {
     use std::collections::{HashMap, HashSet};
     use std::fs;
-    use std::io::Write;
+    use std::io::{self, Write};
     use std::time::{Duration, Instant};
 
     use logfwd_types::pipeline::SourceId;
@@ -188,13 +202,8 @@ mod tests {
     use super::super::tailer::{TailConfig, TailEvent};
     use super::*;
 
-    #[test]
-    fn detect_changes_respects_start_from_end_for_evicted_identity_mismatch() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("replaced.log");
-        fs::write(&path, b"old replaced content\n").unwrap();
-
-        let mut reader = FileReader {
+    fn test_reader() -> FileReader {
+        FileReader {
             files: HashMap::new(),
             read_buf: vec![0u8; 128],
             evicted_offsets: HashMap::new(),
@@ -205,7 +214,40 @@ mod tests {
                 glob_rescan_interval_ms: 0,
                 ..Default::default()
             },
-        };
+        }
+    }
+
+    fn test_watcher() -> (
+        notify::RecommendedWatcher,
+        crossbeam_channel::Receiver<notify::Result<notify::Event>>,
+    ) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })
+        .expect("watcher");
+        (watcher, rx)
+    }
+
+    fn data_for_path(events: &[TailEvent], path: &Path) -> String {
+        let mut out = String::new();
+        for event in events {
+            if let TailEvent::Data { path: p, bytes, .. } = event
+                && p == path
+            {
+                out.push_str(&String::from_utf8_lossy(bytes));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn detect_changes_respects_start_from_end_for_evicted_identity_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("replaced.log");
+        fs::write(&path, b"old replaced content\n").unwrap();
+
+        let mut reader = test_reader();
         reader.evicted_offsets.insert(
             path.clone(),
             EvictedFile {
@@ -220,11 +262,7 @@ mod tests {
             },
         );
 
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let watcher = notify::recommended_watcher(move |res| {
-            let _ = tx.send(res);
-        })
-        .unwrap();
+        let (watcher, rx) = test_watcher();
 
         let discovery = FileDiscovery {
             watcher,
@@ -241,15 +279,7 @@ mod tests {
         let had_error = reader.read_all(&mut events);
         assert!(!had_error, "read_all should succeed");
 
-        let initial_text: String = events
-            .iter()
-            .filter_map(|e| match e {
-                TailEvent::Data { path: p, bytes, .. } if p == &path => {
-                    Some(String::from_utf8_lossy(bytes).to_string())
-                }
-                _ => None,
-            })
-            .collect();
+        let initial_text = data_for_path(&events, &path);
         assert!(
             !initial_text.contains("old replaced content"),
             "replaced file should open at EOF when start_from_end=true and evicted identity mismatches"
@@ -264,15 +294,7 @@ mod tests {
         let had_error = reader.read_all(&mut events);
         assert!(!had_error, "read_all after append should succeed");
 
-        let appended_text: String = events
-            .iter()
-            .filter_map(|e| match e {
-                TailEvent::Data { path: p, bytes, .. } if p == &path => {
-                    Some(String::from_utf8_lossy(bytes).to_string())
-                }
-                _ => None,
-            })
-            .collect();
+        let appended_text = data_for_path(&events, &path);
         assert!(
             appended_text.contains("fresh content"),
             "newly appended content should be read after opening at EOF"
@@ -281,5 +303,117 @@ mod tests {
             !appended_text.contains("old replaced content"),
             "historical content must remain skipped"
         );
+    }
+
+    #[test]
+    fn rescan_globs_noop_when_no_patterns() {
+        let (watcher, rx) = test_watcher();
+        let mut discovery = FileDiscovery {
+            watcher,
+            watched_dirs: HashSet::new(),
+            glob_patterns: Vec::new(),
+            watch_paths: Vec::new(),
+            fs_events: rx,
+            last_glob_rescan: Instant::now(),
+        };
+        let mut reader = test_reader();
+
+        let had_error = discovery.rescan_globs(&mut reader);
+        assert!(!had_error);
+        assert!(discovery.watch_paths.is_empty());
+    }
+
+    #[test]
+    fn detect_changes_handles_identify_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let non_file = dir.path().join("logs");
+        fs::create_dir_all(&non_file).expect("create dir");
+
+        let (watcher, rx) = test_watcher();
+        let discovery = FileDiscovery {
+            watcher,
+            watched_dirs: HashSet::new(),
+            glob_patterns: Vec::new(),
+            watch_paths: vec![non_file],
+            fs_events: rx,
+            last_glob_rescan: Instant::now(),
+        };
+        let mut reader = test_reader();
+        let mut events = Vec::new();
+
+        let had_error = discovery.detect_changes(&mut reader, &mut events);
+        assert!(
+            had_error,
+            "identify failure should be surfaced as had_error"
+        );
+        assert!(events.is_empty(), "no data events should be emitted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rescan_globs_reports_open_file_error_for_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret.log");
+        fs::write(&path, b"hidden\n").expect("write log");
+
+        let mut perms = fs::metadata(&path).expect("metadata").permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&path, perms).expect("chmod 000");
+
+        let pattern = format!("{}/**/*.log", dir.path().display());
+        let (watcher, rx) = test_watcher();
+        let mut discovery = FileDiscovery {
+            watcher,
+            watched_dirs: HashSet::new(),
+            glob_patterns: vec![pattern],
+            watch_paths: Vec::new(),
+            fs_events: rx,
+            last_glob_rescan: Instant::now(),
+        };
+        let mut reader = test_reader();
+
+        let had_error = discovery.rescan_globs(&mut reader);
+        assert!(had_error, "rescan should surface open_file_at failure");
+        assert!(
+            discovery.watch_paths.contains(&path),
+            "path should still be tracked for future retries"
+        );
+    }
+
+    #[test]
+    fn test_watcher_callback_forwards_fs_events_to_channel() {
+        use notify::Watcher;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("event.log");
+
+        let (mut watcher, rx) = test_watcher();
+        watcher
+            .watch(dir.path(), notify::RecursiveMode::NonRecursive)
+            .expect("watch dir");
+        fs::write(&file, b"event\n").expect("write file");
+
+        let _received = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("expected fs event from watcher callback");
+    }
+
+    #[test]
+    fn helper_result_markers_flag_errors() {
+        let path = PathBuf::from("x.log");
+        assert!(!mark_watch_dir_result(&path, Ok(())));
+        assert!(mark_watch_dir_result(
+            &path,
+            Err(io::Error::other("watch failed"))
+        ));
+
+        assert!(!mark_open_result(&path, "test", Ok(())));
+        assert!(mark_open_result(
+            &path,
+            "test",
+            Err(io::Error::other("open failed"))
+        ));
     }
 }

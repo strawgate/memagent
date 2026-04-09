@@ -200,6 +200,32 @@ TLA+ proves the **design** is correct — no race conditions, correct ordering, 
 
 ---
 
+## TailLifecycle.tla
+
+Models the pure tail reducer behavior extracted in `crates/logfwd-io/src/tail/state.rs`:
+
+- EOF emission thresholding (`eof_emitted` + idle streak)
+- EOF reset on data/truncate paths
+- error backoff growth/cap/reset (`consecutive_error_polls`, `backoff_ms`)
+
+### What it proves
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `EofEmissionRequiresThreshold` | Safety | EOF emit transition only occurs once idle threshold is reached |
+| `DataResetsEofState` | Safety | data transition always clears EOF state and idle streak |
+| `BackoffZeroIffNoErrors` | Safety | backoff state is cleared exactly when error streak is zero |
+| `BackoffDelayConsistent` | Safety | backoff delay follows the bounded exponential schedule |
+
+### Run
+
+```bash
+cd tla/
+java -cp /path/to/tla2tools.jar tlc2.TLC MCTailLifecycle.tla -config TailLifecycle.cfg
+```
+
+---
+
 ## Comparison with production systems
 
 | Feature | Our Design | Vector | Filebeat | Fluent Bit | OTel |

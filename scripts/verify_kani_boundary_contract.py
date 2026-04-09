@@ -41,7 +41,7 @@ def rust_files_with_kani() -> set[str]:
         if rel.startswith("crates/logfwd-core/"):
             continue
         text = path.read_text(encoding="utf-8")
-        if "#[cfg(kani)]" in text or "#[kani::proof]" in text:
+        if "#![cfg(kani)]" in text or "#[cfg(kani)]" in text or "#[kani::proof]" in text:
             result.add(rel)
     return result
 
@@ -81,12 +81,12 @@ def validate() -> list[str]:
             continue
 
         text = file_path.read_text(encoding="utf-8")
-        has_kani_cfg = "#[cfg(kani)]" in text
+        has_kani_cfg = "#![cfg(kani)]" in text or "#[cfg(kani)]" in text
         has_kani_proof = "#[kani::proof]" in text
 
         if status == "required":
             if not has_kani_cfg:
-                errors.append(f"{path}: required seam is missing #[cfg(kani)]")
+                errors.append(f"{path}: required seam is missing #![cfg(kani)] or #[cfg(kani)]")
             if not has_kani_proof:
                 errors.append(f"{path}: required seam is missing #[kani::proof]")
         elif status == "exempt" and (has_kani_cfg or has_kani_proof):

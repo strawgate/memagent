@@ -65,6 +65,9 @@ lint-all: fmt-check kani-boundary clippy-all toml-check deny
 # Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test
 
+# Compatibility alias used by pre-commit hooks.
+check: ci
+
 # Full CI — everything including datafusion (run before pushing)
 ci-all: lint-all test-all
 

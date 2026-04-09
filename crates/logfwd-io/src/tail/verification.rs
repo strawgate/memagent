@@ -1,38 +1,25 @@
 #![cfg(kani)]
 
-/// File tailer waits for two consecutive no-data polls before emitting EOF.
-const EOF_IDLE_POLLS_BEFORE_EMIT: u8 = 2;
-
-/// Pure model of the file-tail `EndOfFile` emission state machine.
-///
-/// Returns `(new_eof_emitted, new_idle_polls, should_emit_eof_event)`.
-fn eof_transition(
-    eof_emitted: bool,
-    idle_polls: u8,
-    had_data: bool,
-    idle_window_elapsed: bool,
-) -> (bool, u8, bool) {
-    if had_data {
-        (false, 0, false)
-    } else {
-        let next_idle = idle_polls.saturating_add(1);
-        let should_emit =
-            !eof_emitted && next_idle >= EOF_IDLE_POLLS_BEFORE_EMIT && idle_window_elapsed;
-        (eof_emitted || should_emit, next_idle, should_emit)
-    }
-}
+use super::state::{
+    EOF_IDLE_POLLS_BEFORE_EMIT, EofModelState, MAX_BACKOFF_MS, backoff_delay_ms,
+    backoff_transition, eof_model_transition,
+};
 
 /// EndOfFile can only fire when we cross the idle-poll threshold for the first
 /// time in a no-data streak.
-#[cfg(kani)]
 #[kani::proof]
 fn verify_eof_emitted_at_most_once_per_no_data_streak() {
-    let eof_emitted: bool = kani::any();
+    let emitted: bool = kani::any();
     let idle_polls: u8 = kani::any();
     let idle_window_elapsed: bool = kani::any();
-    let (_, _, fires) = eof_transition(eof_emitted, idle_polls, false, idle_window_elapsed); // NoData
+    let state = EofModelState {
+        emitted,
+        idle_polls,
+    };
+
+    let (_, fires) = eof_model_transition(state, false, idle_window_elapsed);
     if fires {
-        assert!(!eof_emitted, "EndOfFile may only fire when flag was false");
+        assert!(!emitted, "EndOfFile may only fire when flag was false");
         assert!(
             idle_polls.saturating_add(1) >= EOF_IDLE_POLLS_BEFORE_EMIT,
             "EndOfFile may only fire once idle threshold is reached"
@@ -42,38 +29,44 @@ fn verify_eof_emitted_at_most_once_per_no_data_streak() {
             "EndOfFile may only fire once minimum idle time has elapsed"
         );
     }
+
     kani::cover!(fires, "EndOfFile event fired");
     kani::cover!(
-        !fires && eof_emitted,
+        !fires && emitted,
         "EndOfFile suppressed after already emitted in same no-data streak"
     );
 }
 
 /// Data/truncation paths must reset both EOF state and idle streak.
 #[kani::proof]
-fn verify_data_resets_eof_flag() {
-    let eof_emitted: bool = kani::any();
-    let idle_polls: u8 = kani::any();
-    let idle_window_elapsed: bool = kani::any();
-    let (new_flag, new_idle, fires) =
-        eof_transition(eof_emitted, idle_polls, true, idle_window_elapsed); // Data
-    assert!(!new_flag, "Data must reset eof_emitted to false");
-    assert_eq!(new_idle, 0, "Data must reset idle poll streak");
+fn verify_data_resets_eof_state() {
+    let state = EofModelState {
+        emitted: kani::any(),
+        idle_polls: kani::any(),
+    };
+    let (next, fires) = eof_model_transition(state, true, kani::any()); // Data
+
+    assert_eq!(
+        next,
+        EofModelState::default(),
+        "Data must reset EOF model state"
+    );
     assert!(!fires, "Data must not emit EndOfFile");
-    kani::cover!(eof_emitted, "eof_emitted was true before data arrived");
-    kani::cover!(idle_polls > 0, "idle streak existed before data");
+    kani::cover!(state.emitted, "eof_emitted was true before data arrived");
+    kani::cover!(state.idle_polls > 0, "idle streak existed before data");
 }
 
 /// Two consecutive no-data polls emit EOF exactly once (on the second poll).
 #[kani::proof]
 fn verify_two_no_data_polls_emit_exactly_once() {
-    let (state1, idle1, fires1) = eof_transition(false, 0, false, false); // first NoData
-    let (state2, idle2, fires2) = eof_transition(state1, idle1, false, true); // second NoData
+    let (state1, fires1) = eof_model_transition(EofModelState::default(), false, false);
+    let (state2, fires2) = eof_model_transition(state1, false, true);
+
     assert!(!fires1, "first NoData poll must not emit EndOfFile");
     assert!(fires2, "second NoData poll must emit EndOfFile");
-    assert!(state2, "flag becomes true once EOF fires");
+    assert!(state2.emitted, "flag becomes true once EOF fires");
     assert!(
-        idle2 >= EOF_IDLE_POLLS_BEFORE_EMIT,
+        state2.idle_polls >= EOF_IDLE_POLLS_BEFORE_EMIT,
         "idle streak reached EOF threshold"
     );
     kani::cover!(!fires1 && fires2, "only second NoData emits EOF");
@@ -82,11 +75,12 @@ fn verify_two_no_data_polls_emit_exactly_once() {
 /// After reset, a fresh two-poll no-data streak emits EOF again.
 #[kani::proof]
 fn verify_eof_fires_again_after_data_resets_flag() {
-    let (state1, idle1, fires1) = eof_transition(false, 0, false, false);
-    let (state2, idle2, fires2) = eof_transition(state1, idle1, false, true);
-    let (after_data, after_idle, fires3) = eof_transition(state2, idle2, true, false);
-    let (state4, idle4, fires4) = eof_transition(after_data, after_idle, false, false);
-    let (_, _, fires5) = eof_transition(state4, idle4, false, true);
+    let (state1, fires1) = eof_model_transition(EofModelState::default(), false, false);
+    let (state2, fires2) = eof_model_transition(state1, false, true);
+    let (after_data, fires3) = eof_model_transition(state2, true, false);
+    let (state4, fires4) = eof_model_transition(after_data, false, false);
+    let (_, fires5) = eof_model_transition(state4, false, true);
+
     assert!(!fires1);
     assert!(fires2, "first no-data streak should fire on second poll");
     assert!(!fires3, "data reset must not emit EOF");
@@ -94,4 +88,48 @@ fn verify_eof_fires_again_after_data_resets_flag() {
     assert!(fires5, "new no-data streak second poll must emit EOF");
     kani::cover!(fires2, "first post-threshold EOF fired");
     kani::cover!(fires5, "EOF fires again after data reset");
+}
+
+#[kani::proof]
+fn verify_backoff_is_capped_and_non_zero_after_error() {
+    let current_errors: u32 = kani::any();
+    let (next_errors, next_backoff) = backoff_transition(current_errors, true);
+
+    assert!(
+        next_errors >= current_errors,
+        "error transitions must not decrease consecutive error count"
+    );
+    assert!(
+        next_backoff.is_some(),
+        "error transition must set a backoff"
+    );
+    if let Some(ms) = next_backoff {
+        assert!(ms > 0, "backoff delay must be positive");
+        assert!(ms <= MAX_BACKOFF_MS, "backoff delay must be capped");
+    }
+    kani::cover!(
+        next_backoff == Some(MAX_BACKOFF_MS),
+        "backoff cap is reachable"
+    );
+}
+
+#[kani::proof]
+fn verify_backoff_resets_on_clean_poll() {
+    let current_errors: u32 = kani::any();
+    let (next_errors, next_backoff) = backoff_transition(current_errors, false);
+    assert_eq!(next_errors, 0, "clean poll must reset consecutive errors");
+    assert!(next_backoff.is_none(), "clean poll must clear backoff");
+}
+
+#[kani::proof]
+fn verify_backoff_delay_is_monotonic_in_error_count() {
+    let a: u32 = kani::any();
+    let b: u32 = kani::any();
+    if a <= b {
+        assert!(
+            backoff_delay_ms(a) <= backoff_delay_ms(b),
+            "backoff delay must be monotonic as error streak grows"
+        );
+    }
+    kani::cover!(a < b, "strict growth case explored");
 }

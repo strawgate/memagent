@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use logfwd_types::pipeline::SourceId;
 
 use super::identity::{ByteOffset, FileIdentity, compute_fingerprint, identify_open_file};
+use super::state::{EOF_IDLE_POLLS_BEFORE_EMIT, EofState};
 use super::tailer::{TailConfig, TailEvent};
 
 /// State tracked per tailed file.
@@ -15,9 +16,7 @@ pub(super) struct TailedFile {
     pub(super) file: File,
     pub(super) offset: u64,
     pub(super) last_read: Instant,
-    pub(super) eof_emitted: bool,
-    pub(super) idle_polls: u8,
-    pub(super) idle_since: Option<Instant>,
+    pub(super) eof_state: EofState,
 }
 
 /// Saved state for a file evicted from the open-file LRU cache.
@@ -36,6 +35,14 @@ pub(super) enum ReadResult {
     NoData,
 }
 
+fn classify_empty_read_result(was_truncated: bool) -> ReadResult {
+    if was_truncated {
+        ReadResult::Truncated
+    } else {
+        ReadResult::NoData
+    }
+}
+
 /// Owns the open file descriptors, read buffer, and byte-level I/O.
 pub(super) struct FileReader {
     pub(super) files: HashMap<PathBuf, TailedFile>,
@@ -47,13 +54,12 @@ pub(super) struct FileReader {
 
 impl FileReader {
     pub(super) const MAX_READ_PER_POLL: usize = 4 * 1024 * 1024;
-    const EOF_IDLE_POLLS_BEFORE_EMIT: u8 = 2;
 
     fn eof_min_idle_duration(&self) -> Duration {
         Duration::from_millis(
             self.config
                 .poll_interval_ms
-                .saturating_mul(Self::EOF_IDLE_POLLS_BEFORE_EMIT as u64),
+                .saturating_mul(EOF_IDLE_POLLS_BEFORE_EMIT as u64),
         )
     }
 
@@ -80,12 +86,7 @@ impl FileReader {
         let offset = if let Some(evicted) = evicted {
             if evicted.identity == identity {
                 let safe_offset = if evicted.offset > file_size {
-                    tracing::warn!(
-                        path = %path.display(),
-                        saved_offset = evicted.offset,
-                        file_size,
-                        "evicted offset exceeds file size — resetting to 0"
-                    );
+                    tracing::warn!(path = %path.display(), saved_offset = evicted.offset, file_size, "evicted offset exceeds file size — resetting to 0");
                     0
                 } else {
                     evicted.offset
@@ -100,12 +101,7 @@ impl FileReader {
                 // from 0 to non-zero when data is first appended.
                 0
             } else {
-                tracing::warn!(
-                    path = %path.display(),
-                    evicted_identity = ?evicted.identity,
-                    current_identity = ?identity,
-                    "evicted offset identity mismatch — ignoring saved offset"
-                );
+                tracing::warn!(path = %path.display(), evicted_identity = ?evicted.identity, current_identity = ?identity, "evicted offset identity mismatch — ignoring saved offset");
                 if start_from_end {
                     file.seek(SeekFrom::End(0))?
                 } else {
@@ -125,9 +121,7 @@ impl FileReader {
                 file,
                 offset,
                 last_read: Instant::now(),
-                eof_emitted: false,
-                idle_polls: 0,
-                idle_since: None,
+                eof_state: EofState::default(),
             },
         );
 
@@ -146,9 +140,7 @@ impl FileReader {
         let was_truncated = current_size < tailed.offset;
         if was_truncated {
             tailed.offset = 0;
-            tailed.eof_emitted = false;
-            tailed.idle_polls = 0;
-            tailed.idle_since = None;
+            tailed.eof_state.on_data();
             tailed.file.seek(SeekFrom::Start(0))?;
             tailed.identity.fingerprint =
                 compute_fingerprint(&mut tailed.file, self.config.fingerprint_bytes)?;
@@ -182,11 +174,7 @@ impl FileReader {
         }
 
         if result.is_empty() {
-            return Ok(if was_truncated {
-                ReadResult::Truncated
-            } else {
-                ReadResult::NoData
-            });
+            return Ok(classify_empty_read_result(was_truncated));
         }
 
         tailed.last_read = Instant::now();
@@ -218,9 +206,7 @@ impl FileReader {
         match self.read_new_data(path) {
             Ok(ReadResult::Data(data)) => {
                 if let Some(tailed) = self.files.get_mut(path) {
-                    tailed.eof_emitted = false;
-                    tailed.idle_polls = 0;
-                    tailed.idle_since = None;
+                    tailed.eof_state.on_data();
                 }
                 let source_id = self.source_id_for_path(path);
                 events.push(TailEvent::Data {
@@ -236,9 +222,7 @@ impl FileReader {
                     source_id: pre_read_source_id,
                 });
                 if let Some(tailed) = self.files.get_mut(path) {
-                    tailed.eof_emitted = false;
-                    tailed.idle_polls = 0;
-                    tailed.idle_since = None;
+                    tailed.eof_state.on_data();
                 }
                 let source_id = self.source_id_for_path(path);
                 events.push(TailEvent::Data {
@@ -250,9 +234,7 @@ impl FileReader {
             }
             Ok(ReadResult::Truncated) => {
                 if let Some(tailed) = self.files.get_mut(path) {
-                    tailed.eof_emitted = false;
-                    tailed.idle_polls = 0;
-                    tailed.idle_since = None;
+                    tailed.eof_state.on_data();
                 }
                 events.push(TailEvent::Truncated {
                     path: path.to_path_buf(),
@@ -280,8 +262,7 @@ impl FileReader {
             match self.read_new_data(path) {
                 Ok(ReadResult::Data(data)) => {
                     if let Some(tailed) = self.files.get_mut(path) {
-                        tailed.eof_emitted = false;
-                        tailed.idle_polls = 0;
+                        tailed.eof_state.on_data();
                     }
                     let source_id = self.source_id_for_path(path);
                     events.push(TailEvent::Data {
@@ -296,8 +277,7 @@ impl FileReader {
                         source_id: pre_read_source_id,
                     });
                     if let Some(tailed) = self.files.get_mut(path) {
-                        tailed.eof_emitted = false;
-                        tailed.idle_polls = 0;
+                        tailed.eof_state.on_data();
                     }
                     let source_id = self.source_id_for_path(path);
                     events.push(TailEvent::Data {
@@ -308,8 +288,7 @@ impl FileReader {
                 }
                 Ok(ReadResult::Truncated) => {
                     if let Some(tailed) = self.files.get_mut(path) {
-                        tailed.eof_emitted = false;
-                        tailed.idle_polls = 0;
+                        tailed.eof_state.on_data();
                     }
                     events.push(TailEvent::Truncated {
                         path: path.clone(),
@@ -319,17 +298,7 @@ impl FileReader {
                 Ok(ReadResult::NoData) => {
                     let mut emit_eof = false;
                     if let Some(tailed) = self.files.get_mut(path) {
-                        let now = Instant::now();
-                        tailed.idle_polls = tailed.idle_polls.saturating_add(1);
-                        let idle_since = tailed.idle_since.get_or_insert(now);
-                        let idle_elapsed = now.duration_since(*idle_since) >= eof_min_idle;
-                        if !tailed.eof_emitted
-                            && tailed.idle_polls >= Self::EOF_IDLE_POLLS_BEFORE_EMIT
-                            && idle_elapsed
-                        {
-                            tailed.eof_emitted = true;
-                            emit_eof = true;
-                        }
+                        emit_eof = tailed.eof_state.on_no_data(Instant::now(), eof_min_idle);
                     }
                     if emit_eof {
                         let source_id = self.source_id_for_path(path);
@@ -383,12 +352,7 @@ impl FileReader {
         if let Some(tailed) = self.files.get_mut(path) {
             let file_size = tailed.file.metadata()?.len();
             let safe_offset = if offset > file_size {
-                tracing::warn!(
-                    path = %path.display(),
-                    saved_offset = offset,
-                    file_size,
-                    "checkpoint offset exceeds file size — resetting to 0"
-                );
+                tracing::warn!(path = %path.display(), saved_offset = offset, file_size, "checkpoint offset exceeds file size — resetting to 0");
                 0
             } else {
                 offset
@@ -492,9 +456,21 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
     use std::thread::sleep;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn classify_empty_read_result_matches_truncation_flag() {
+        assert!(matches!(
+            classify_empty_read_result(true),
+            ReadResult::Truncated
+        ));
+        assert!(matches!(
+            classify_empty_read_result(false),
+            ReadResult::NoData
+        ));
+    }
 
     fn test_reader() -> FileReader {
         FileReader {
@@ -638,25 +614,14 @@ mod tests {
         assert!(!had_error);
         assert_eq!(events.len(), 2, "expected truncated + data events");
 
-        match &events[0] {
-            TailEvent::Truncated { source_id, .. } => {
-                assert_eq!(
-                    *source_id, pre_source,
-                    "truncated event keeps pre-read source id"
-                );
-            }
-            _ => panic!("unexpected first event kind"),
-        }
-        match &events[1] {
-            TailEvent::Data { source_id, .. } => {
-                assert_eq!(
-                    *source_id,
-                    reader.source_id_for_path(&path),
-                    "data event should use refreshed source id after truncation"
-                );
-            }
-            _ => panic!("unexpected second event kind"),
-        }
+        assert!(
+            matches!(&events[0], TailEvent::Truncated { source_id, .. } if *source_id == pre_source),
+            "first event should be Truncated with pre-read source id"
+        );
+        assert!(
+            matches!(&events[1], TailEvent::Data { source_id, .. } if *source_id == reader.source_id_for_path(&path)),
+            "second event should be Data with refreshed source id"
+        );
     }
 
     #[test]
@@ -747,6 +712,257 @@ mod tests {
         assert!(
             matches!(events.first(), Some(TailEvent::EndOfFile { .. })),
             "EOF should emit once the idle window has elapsed"
+        );
+    }
+
+    #[test]
+    fn read_new_data_missing_path_returns_no_data() {
+        let mut reader = test_reader();
+        let missing = PathBuf::from("missing.log");
+        let got = reader.read_new_data(&missing).expect("read_new_data");
+        assert!(matches!(got, ReadResult::NoData));
+    }
+
+    #[test]
+    fn open_file_at_clamps_evicted_offset_beyond_file_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clamp.log");
+        fs::write(&path, b"abc").unwrap();
+
+        let mut reader = test_reader();
+        reader.open_file_at(&path, false).unwrap();
+        let identity = reader.files.get(&path).unwrap().identity.clone();
+        let source_id = identity.source_id();
+        let _ = reader.files.remove(&path);
+        reader.evicted_offsets.insert(
+            path.clone(),
+            EvictedFile {
+                identity,
+                offset: 999,
+                path: path.clone(),
+                source_id,
+            },
+        );
+
+        reader.open_file_at(&path, false).unwrap();
+        assert_eq!(reader.get_offset(&path), Some(0));
+    }
+
+    #[test]
+    fn open_file_at_identity_mismatch_uses_start_from_beginning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mismatch.log");
+        fs::write(&path, b"abcdef").unwrap();
+
+        let mut reader = test_reader();
+        reader.evicted_offsets.insert(
+            path.clone(),
+            EvictedFile {
+                identity: FileIdentity {
+                    device: 999,
+                    inode: 999,
+                    fingerprint: 999,
+                },
+                offset: 5,
+                path: path.clone(),
+                source_id: SourceId(5),
+            },
+        );
+
+        reader.open_file_at(&path, false).unwrap();
+        assert_eq!(reader.get_offset(&path), Some(0));
+    }
+
+    #[test]
+    fn read_new_data_promotes_empty_fingerprint_after_first_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty-first.log");
+        File::create(&path).unwrap();
+
+        let mut reader = test_reader();
+        reader.open_file_at(&path, false).unwrap();
+        assert_eq!(reader.files.get(&path).unwrap().identity.fingerprint, 0);
+
+        fs::write(&path, b"hello").unwrap();
+        let got = reader.read_new_data(&path).unwrap();
+        assert!(matches!(got, ReadResult::Data(_)));
+        assert_ne!(reader.files.get(&path).unwrap().identity.fingerprint, 0);
+    }
+
+    #[test]
+    fn read_new_data_truncated_without_new_bytes_returns_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncate-empty.log");
+        fs::write(&path, b"abc").unwrap();
+
+        let mut reader = test_reader();
+        reader.open_file_at(&path, false).unwrap();
+        reader.set_offset(&path, 3).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+
+        let got = reader.read_new_data(&path).unwrap();
+        assert!(matches!(got, ReadResult::Truncated));
+    }
+
+    #[test]
+    fn read_all_marks_error_for_unreadable_open_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unreadable.log");
+        fs::write(&path, b"abc").unwrap();
+
+        let mut reader = test_reader();
+        let file = OpenOptions::new().write(true).open(&path).unwrap();
+        reader.files.insert(
+            path.clone(),
+            TailedFile {
+                identity: FileIdentity {
+                    device: 1,
+                    inode: 2,
+                    fingerprint: 3,
+                },
+                file,
+                offset: 0,
+                last_read: Instant::now(),
+                eof_state: EofState::default(),
+            },
+        );
+
+        let mut events = Vec::new();
+        let had_error = reader.read_all(&mut events);
+        assert!(had_error);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn drain_file_marks_error_for_unreadable_open_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unreadable-drain.log");
+        fs::write(&path, b"abc").unwrap();
+
+        let mut reader = test_reader();
+        let file = OpenOptions::new().write(true).open(&path).unwrap();
+        reader.files.insert(
+            path.clone(),
+            TailedFile {
+                identity: FileIdentity {
+                    device: 1,
+                    inode: 2,
+                    fingerprint: 3,
+                },
+                file,
+                offset: 0,
+                last_read: Instant::now(),
+                eof_state: EofState::default(),
+            },
+        );
+
+        let mut events = Vec::new();
+        let had_error = reader.drain_file(&path, Some(SourceId(3)), &mut events);
+        assert!(had_error);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn set_offset_clamps_to_zero_when_beyond_file_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("offset-clamp.log");
+        fs::write(&path, b"abc").unwrap();
+
+        let mut reader = test_reader();
+        reader.open_file_at(&path, false).unwrap();
+        reader.set_offset(&path, 99).unwrap();
+        assert_eq!(reader.get_offset(&path), Some(0));
+    }
+
+    #[test]
+    fn set_offset_by_source_no_match_is_noop() {
+        let mut reader = test_reader();
+        reader.evicted_offsets.insert(
+            PathBuf::from("other.log"),
+            EvictedFile {
+                identity: FileIdentity {
+                    device: 1,
+                    inode: 2,
+                    fingerprint: 3,
+                },
+                offset: 7,
+                path: PathBuf::from("other.log"),
+                source_id: SourceId(1),
+            },
+        );
+
+        reader.set_offset_by_source(SourceId(999), 42).unwrap();
+        assert_eq!(
+            reader
+                .evicted_offsets
+                .get(&PathBuf::from("other.log"))
+                .expect("evicted entry")
+                .offset,
+            7
+        );
+    }
+
+    #[test]
+    fn drain_file_emits_truncated_without_data_when_file_becomes_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncate-only.log");
+        fs::write(&path, b"abc").unwrap();
+
+        let mut reader = test_reader();
+        reader.open_file_at(&path, false).unwrap();
+        reader.set_offset(&path, 3).unwrap();
+        let pre_source = reader.source_id_for_path(&path);
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+
+        let mut events = Vec::new();
+        let had_error = reader.drain_file(&path, pre_source, &mut events);
+        assert!(!had_error);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], TailEvent::Truncated { source_id, .. } if *source_id == pre_source),
+            "truncated-only read should emit a single Truncated event"
+        );
+    }
+
+    #[test]
+    fn set_offset_by_source_applies_in_range_offset_to_active_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("by-source.log");
+        fs::write(&path, b"abcdef").unwrap();
+
+        let mut reader = test_reader();
+        reader.open_file_at(&path, false).unwrap();
+        let source_id = reader
+            .source_id_for_path(&path)
+            .expect("active file should have source id");
+
+        reader.set_offset_by_source(source_id, 2).unwrap();
+        assert_eq!(reader.get_offset(&path), Some(2));
+    }
+
+    #[test]
+    fn read_new_data_with_zero_len_buffer_classifies_empty_read_as_no_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty-read-buffer.log");
+        fs::write(&path, b"abcdef").unwrap();
+
+        let mut reader = test_reader();
+        reader.read_buf.clear();
+        reader.open_file_at(&path, false).unwrap();
+        reader.set_offset(&path, 1).unwrap();
+
+        let got = reader.read_new_data(&path).unwrap();
+        assert!(
+            matches!(got, ReadResult::NoData),
+            "zero-length read buffer should produce empty read classification"
         );
     }
 }
