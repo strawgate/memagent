@@ -1416,3 +1416,38 @@ fn test_scan_config_keep_raw_false_when_raw_not_referenced() {
         "scan_config.keep_raw must be false when _raw is not referenced, got true"
     );
 }
+
+// -----------------------------------------------------------------------
+// Named WINDOW definitions and CONVERT
+// -----------------------------------------------------------------------
+
+/// Named WINDOW definition columns must be collected.
+#[test]
+fn test_named_window_definition_cols_added_to_referenced_columns() {
+    let a = QueryAnalyzer::new(
+        "SELECT ROW_NUMBER() OVER mywin AS rn FROM logs \
+         WINDOW mywin AS (PARTITION BY level ORDER BY timestamp)",
+    )
+    .unwrap();
+    assert!(
+        a.referenced_columns.contains("level"),
+        "Named WINDOW PARTITION BY must collect 'level', got {:?}",
+        a.referenced_columns
+    );
+    assert!(
+        a.referenced_columns.contains("timestamp"),
+        "Named WINDOW ORDER BY must collect 'timestamp', got {:?}",
+        a.referenced_columns
+    );
+}
+
+/// CONVERT(col, ...) must add col to referenced_columns.
+#[test]
+fn test_convert_col_adds_to_referenced_columns() {
+    let a = QueryAnalyzer::new("SELECT CONVERT(message USING utf8) FROM logs").unwrap();
+    assert!(
+        a.referenced_columns.contains("message"),
+        "CONVERT must collect 'message', got {:?}",
+        a.referenced_columns
+    );
+}

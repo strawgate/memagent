@@ -83,6 +83,19 @@ impl QueryAnalyzer {
                 if let Some(ref having) = select.having {
                     collect_column_refs(having, &mut referenced_columns);
                 }
+
+                // Walk WINDOW named definitions — PARTITION BY / ORDER BY
+                // columns may only appear in named window specs.
+                for sqlast::NamedWindowDefinition(_, named_expr) in &select.named_window {
+                    if let sqlast::NamedWindowExpr::WindowSpec(spec) = named_expr {
+                        for e in &spec.partition_by {
+                            collect_column_refs(e, &mut referenced_columns);
+                        }
+                        for ob in &spec.order_by {
+                            collect_column_refs(&ob.expr, &mut referenced_columns);
+                        }
+                    }
+                }
             }
 
             // Walk ORDER BY — columns may appear only here (not in SELECT or WHERE).
@@ -430,11 +443,19 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             collect_column_refs(pattern, cols);
         }
         SqlExpr::Trim {
-            expr, trim_what, ..
+            expr,
+            trim_what,
+            trim_characters,
+            ..
         } => {
             collect_column_refs(expr, cols);
             if let Some(tw) = trim_what {
                 collect_column_refs(tw, cols);
+            }
+            if let Some(chars) = trim_characters {
+                for c in chars {
+                    collect_column_refs(c, cols);
+                }
             }
         }
         SqlExpr::Substring {
