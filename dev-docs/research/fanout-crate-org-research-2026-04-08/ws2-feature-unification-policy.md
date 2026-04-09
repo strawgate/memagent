@@ -1,6 +1,6 @@
 # Workstream 2: Feature Unification and Dependency Surface Policy
 
-> **Status:** Active
+> **Status:** Proposed
 > **Date:** 2026-04-09
 > **Context:** Fanout workstream analysis of workspace feature topology and dependency declaration patterns, with a concrete policy for predictable builds.
 
@@ -174,7 +174,8 @@ one authority point for version/default policy, plus explicit per-crate capabili
 ```toml
 [dependencies]
 # Exception: benchmark-only protocol experiment.
-# Tracked by issue #XXXX. Must not be copied into production crates.
+# Tracked by issue <issue-id-required>. MUST be replaced before merge.
+# Include rationale, scope (bench/test/prod), and reevaluation owner.
 experimental-client = { version = "0.9", default-features = false, features = ["zstd"] }
 ```
 
@@ -199,18 +200,5 @@ comment with rationale, scope (bench/test/prod), and tracking issue for reevalua
 
 Recommendation: **Adopt Workspace-Authority with Explicit Exception Gates (WA-EEG)**
 
-Top 5 policy rules
-
-1. Shared dependencies (2+ crates) must be declared in `[workspace.dependencies]`.
-2. High-risk dependencies must use `default-features = false` by default.
-3. Crates may add features locally but may not override shared dependency versions without an approved exception.
-4. Feature-forwarding contracts (`datafusion`, `turmoil`, similar) must be centralized at boundary crates and documented.
-5. Bench/research crates may diverge only with explicit exception comments and tracking issues.
-
-A short migration order
-
-1. Document policy in crate rules and contributor docs.
-2. Normalize `tokio`/`bytes` declarations.
-3. Normalize network/proto dependency defaults.
-4. Annotate bench-only exceptions.
-5. Add CI policy checks.
+Canonical rules are defined above in **Decision matrix** and **Additional enforcement recommendations**.
+Execution sequence is defined in **Migration order (short, low-risk sequence)**.

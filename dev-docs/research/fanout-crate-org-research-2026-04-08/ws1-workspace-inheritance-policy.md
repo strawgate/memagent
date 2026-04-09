@@ -2,6 +2,11 @@
 
 Date: 2026-04-09
 Scope: root workspace + all discovered `Cargo.toml` manifests under `crates/`
+Status: Proposed (research output; not yet enforced)
+Owner: Build/Infra maintainers
+Review cadence: Revalidate each release cut or when workspace members/manifests change
+Supersedes: N/A
+Adoption target: After Phase 1 CI readiness
 
 ## Bounded orientation pass (completed)
 
@@ -40,6 +45,18 @@ Define a strict but practical policy for:
 
 ## Current state audit
 
+### Evidence and reproducibility
+
+Last verified: 2026-04-09
+Evidence source: `python scripts/check_workspace_inheritance.py --report markdown`
+Regenerate:
+
+```bash
+python scripts/check_workspace_inheritance.py --report markdown > /tmp/workspace-inheritance-report.md
+```
+
+Snapshot notes below are informative and may drift; CI-generated report output is the source of truth.
+
 ## 1) Root workspace inheritance surface
 
 ### Present today
@@ -58,14 +75,14 @@ The repo already has the right primitives, but policy enforcement is partial and
 
 ## 2) Workspace member compliance (`[lints] workspace = true`)
 
-All 15 root workspace members have:
+All current root workspace members have:
 
 ```toml
 [lints]
 workspace = true
 ```
 
-No gaps found among members listed in root `Cargo.toml`.
+No gaps were found among members listed in root `Cargo.toml` at verification time.
 
 ---
 
@@ -244,6 +261,19 @@ Checks:
 2. root members use `edition.workspace = true` and `rust-version.workspace = true`
 3. for keys present in `[workspace.dependencies]`, disallow version literals unless allowlisted
 4. report unused workspace dependencies as warning only
+
+Canonical exception registry:
+
+- File: `dev-docs/policy/workspace-inheritance-exceptions.toml`
+- Schema:
+  - `[[exception]]`
+  - `crate = "crates/logfwd-core/fuzz"`
+  - `dependency = "arrow"`
+  - `reason = "fuzz ABI compatibility"`
+  - `tracking_issue = "https://github.com/strawgate/memagent/issues/<id>"`
+  - `expires = "YYYY-MM-DD"`
+- Ownership: Build/Infra maintainers
+- CI rule: expired exceptions fail strict checks
 
 False-positive risk:
 

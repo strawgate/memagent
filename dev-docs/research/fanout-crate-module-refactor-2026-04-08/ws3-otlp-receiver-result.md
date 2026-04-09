@@ -50,15 +50,19 @@ A second viable split was to isolate all numeric parsing + JSON writer primitive
 ## Behavior/contract risk notes
 
 ### Byte accounting
+
 - Preserved: `accounted_bytes` continues to be captured from the accepted HTTP body bytes before decode normalization, then propagated through `ReceiverPayload` into `InputEvent`.
 
 ### Error mapping
+
 - Preserved in `server.rs`: content-encoding/header/body/decode/channel errors map to the same status classes used previously; parse failures continue to charge `parse_errors` while transport/handling failures charge `errors`.
 
 ### Health transitions
+
 - Preserved: healthy on successful send, degraded on channel-full backpressure, failed on disconnected pipeline while running.
 
 ### Test seam exposure
+
 - Root module now explicitly re-exports decode/convert internals for test-module access (`#[cfg(test)] use ...::*`), preserving existing test behavior without broad public API changes.
 
 ## Tests/check outcomes

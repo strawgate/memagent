@@ -107,13 +107,14 @@ pub(super) async fn handle_otlp_request(
         }
     };
 
-    let content_type = headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("application/x-protobuf");
-    let is_json = content_type
-        .to_ascii_lowercase()
-        .contains("application/json");
+    let content_type = match parse_content_type(&headers) {
+        Ok(content_type) => content_type,
+        Err(status) => {
+            record_error(state.stats.as_ref());
+            return (status, "invalid content-type header").into_response();
+        }
+    };
+    let is_json = matches!(content_type.as_deref(), Some("application/json"));
 
     let payload = if is_json {
         decode_otlp_logs_with_mode_json(&body, state.mode, accounted_bytes)
@@ -173,4 +174,16 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusC
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Some(parsed.to_ascii_lowercase()))
+}
+
+fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
+    let Some(value) = headers.get(CONTENT_TYPE) else {
+        return Ok(None);
+    };
+    let raw = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let media_type = raw.split(';').next().unwrap_or_default().trim();
+    if media_type.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Some(media_type.to_ascii_lowercase()))
 }

@@ -11,11 +11,16 @@ use datafusion::sql::sqlparser::parser::Parser;
 use logfwd_core::scan_config::ScanConfig;
 
 use crate::TransformError;
+
 /// Parses SQL at startup, extracts column references and determines scan config.
 pub struct QueryAnalyzer {
+    /// User-provided SQL text.
     pub user_sql: String,
+    /// Referenced columns collected from SELECT/WHERE/GROUP BY/HAVING/ORDER BY.
     pub referenced_columns: HashSet<String>,
+    /// Whether the query projection contains `*` or a qualified wildcard.
     pub uses_select_star: bool,
+    /// Fields listed in a `SELECT * EXCEPT (...)` clause.
     pub except_fields: Vec<String>,
     /// The WHERE clause AST, if present. Used for predicate pushdown extraction.
     where_clause: Option<SqlExpr>,
@@ -174,6 +179,7 @@ impl QueryAnalyzer {
             Some(
                 self.referenced_columns
                     .iter()
+                    .filter(|name| name.as_str() != "_raw")
                     .map(|c| strip_type_suffix(c))
                     .collect(),
             )

@@ -455,6 +455,8 @@ pub(super) fn write_i64_to_buf(out: &mut Vec<u8>, mut n: i64) {
     while n > 0 {
         out[pos] = b'0' + (n % 10) as u8;
         n /= 10;
+        // `pos` may wrap on the final iteration, but the loop exits immediately
+        // after `n` reaches zero and `pos` is never read again.
         pos = pos.wrapping_sub(1);
     }
 }
@@ -538,10 +540,9 @@ pub(super) fn write_json_escaped_string_contents(out: &mut Vec<u8>, value: &str)
 
 /// Write hex-encoded bytes directly to output buffer (zero allocation).
 pub(super) fn write_hex_to_buf(out: &mut Vec<u8>, bytes: &[u8]) {
-    const HEX_TABLE: &[u8; 16] = b"0123456789abcdef";
     for &b in bytes {
-        out.push(HEX_TABLE[(b >> 4) as usize]);
-        out.push(HEX_TABLE[(b & 0xf) as usize]);
+        out.push(HEX_DIGITS[(b >> 4) as usize]);
+        out.push(HEX_DIGITS[(b & 0xf) as usize]);
     }
 }
 

@@ -7,6 +7,27 @@ use std::time::{Duration, Instant};
 
 use super::glob::{expand_glob_patterns, glob_max_depth, glob_root};
 use super::identity::identify_file;
+
+fn poll_until<F>(
+    tailer: &mut FileTailer,
+    timeout: Duration,
+    mut predicate: F,
+    failure_message: &str,
+) -> Vec<TailEvent>
+where
+    F: FnMut(&[TailEvent], &FileTailer) -> bool,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        let events = tailer.poll().unwrap();
+        if predicate(&events, tailer) {
+            return events;
+        }
+        assert!(Instant::now() < deadline, "{failure_message}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 // ---- glob_root / glob_max_depth unit tests ----
 
 #[test]
@@ -104,8 +125,12 @@ fn test_tail_new_data() {
     let mut tailer = FileTailer::new(std::slice::from_ref(&log_path), config).unwrap();
 
     // First poll should read existing content.
-    std::thread::sleep(Duration::from_millis(50));
-    let events = tailer.poll().unwrap();
+    let events = poll_until(
+        &mut tailer,
+        Duration::from_secs(1),
+        |events, _| events.iter().any(|e| matches!(e, TailEvent::Data { .. })),
+        "timed out waiting for initial tail data",
+    );
     let data_events: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
@@ -126,8 +151,22 @@ fn test_tail_new_data() {
     }
 
     // Poll again — should get the new data.
-    std::thread::sleep(Duration::from_millis(50));
-    let events = tailer.poll().unwrap();
+    let events = poll_until(
+        &mut tailer,
+        Duration::from_secs(1),
+        |events, _| {
+            let new_data: Vec<u8> = events
+                .iter()
+                .filter_map(|e| match e {
+                    TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            String::from_utf8_lossy(&new_data).contains("line 3")
+        },
+        "timed out waiting for appended tail data",
+    );
     let new_data: Vec<u8> = events
         .iter()
         .filter_map(|e| match e {
@@ -544,9 +583,26 @@ fn test_glob_rescan_discovers_new_file() {
         writeln!(f, "pod xyz line 1").unwrap();
     }
 
-    // Wait for the glob rescan interval to expire, then poll.
-    std::thread::sleep(Duration::from_millis(150));
-    let events = tailer.poll().unwrap();
+    // Poll until the rescan discovers and reads the new file.
+    let events = poll_until(
+        &mut tailer,
+        Duration::from_secs(2),
+        |events, tailer| {
+            if tailer.num_files() != 1 {
+                return false;
+            }
+            let all_data: Vec<u8> = events
+                .iter()
+                .filter_map(|e| match e {
+                    TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            String::from_utf8_lossy(&all_data).contains("pod xyz line 1")
+        },
+        "timed out waiting for glob rescan to discover new file",
+    );
 
     assert_eq!(
         tailer.num_files(),
@@ -730,8 +786,12 @@ fn test_evicted_file_reopen() {
     let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
 
     // After first poll, eviction brings count to 2.
-    std::thread::sleep(Duration::from_millis(50));
-    tailer.poll().unwrap();
+    let _ = poll_until(
+        &mut tailer,
+        Duration::from_secs(1),
+        |_, tailer| tailer.num_files() == 2,
+        "timed out waiting for initial max_open_files eviction",
+    );
     assert_eq!(tailer.num_files(), 2, "evicted to max_open_files=2");
 
     // Append data to all files. The evicted file will be re-discovered.
@@ -740,9 +800,23 @@ fn test_evicted_file_reopen() {
         writeln!(f, "new data").unwrap();
     }
 
-    // Wait for glob rescan interval, then poll — evicted file re-opened.
-    std::thread::sleep(Duration::from_millis(150));
-    let events = tailer.poll().unwrap();
+    // Poll until glob rescan re-opens an evicted file and emits new data.
+    let events = poll_until(
+        &mut tailer,
+        Duration::from_secs(2),
+        |events, _| {
+            let all_data: Vec<u8> = events
+                .iter()
+                .filter_map(|e| match e {
+                    TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            String::from_utf8_lossy(&all_data).contains("new data")
+        },
+        "timed out waiting for evicted file rescan data",
+    );
 
     // At least one Data event should arrive (evicted file re-opened + read).
     let all_data: Vec<u8> = events
@@ -1034,8 +1108,12 @@ fn test_glob_deleted_file_removed_from_watch_paths() {
     let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
 
     // Read initial data so the tailer advances past the initial content.
-    std::thread::sleep(Duration::from_millis(50));
-    tailer.poll().unwrap();
+    let _ = poll_until(
+        &mut tailer,
+        Duration::from_secs(1),
+        |events, _| events.iter().any(|e| matches!(e, TailEvent::Data { .. })),
+        "timed out waiting for initial glob tail data",
+    );
 
     let paths_before = tailer.discovery.watch_paths.len();
     assert_eq!(paths_before, 5, "should have 5 watch_paths before deletion");
@@ -1045,9 +1123,13 @@ fn test_glob_deleted_file_removed_from_watch_paths() {
         fs::remove_file(p).unwrap();
     }
 
-    // Poll to trigger deletion cleanup.
-    std::thread::sleep(Duration::from_millis(50));
-    tailer.poll().unwrap();
+    // Poll until deletion cleanup is reflected in both watch_paths and files.
+    let _ = poll_until(
+        &mut tailer,
+        Duration::from_secs(1),
+        |_, tailer| tailer.discovery.watch_paths.is_empty() && tailer.num_files() == 0,
+        "timed out waiting for deleted files cleanup",
+    );
 
     assert_eq!(
         tailer.discovery.watch_paths.len(),
@@ -1653,8 +1735,12 @@ fn test_evicted_offset_clamped_when_file_shrinks() {
     let mut tailer = FileTailer::new_with_globs(&[&pattern], config).unwrap();
 
     // Initial poll reads both and then evicts one due to max_open_files=1.
-    std::thread::sleep(Duration::from_millis(50));
-    tailer.poll().unwrap();
+    let _ = poll_until(
+        &mut tailer,
+        Duration::from_secs(1),
+        |_, tailer| tailer.num_files() == 1,
+        "timed out waiting for initial single-open-file eviction",
+    );
     assert_eq!(tailer.num_files(), 1, "one file should be evicted");
 
     let evicted = if tailer.get_offset(&a).is_none() {
@@ -1672,9 +1758,23 @@ fn test_evicted_offset_clamped_when_file_shrinks() {
         writeln!(f, "ABCD_shrunk").unwrap(); // size << previous offset
     }
 
-    // Wait for rescan so evicted file is re-opened.
-    std::thread::sleep(Duration::from_millis(150));
-    let events = tailer.poll().unwrap();
+    // Poll until rescan re-opens the evicted file and emits truncated content.
+    let events = poll_until(
+        &mut tailer,
+        Duration::from_secs(2),
+        |events, _| {
+            let data: Vec<u8> = events
+                .iter()
+                .filter_map(|e| match e {
+                    TailEvent::Data { path, bytes, .. } if path == &evicted => Some(bytes.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            String::from_utf8_lossy(&data).contains("ABCD_shrunk")
+        },
+        "timed out waiting for stale-offset rescan data",
+    );
 
     // If stale offset is incorrectly restored past EOF, we'd read nothing.
     // With clamping, we should read from beginning and see "ABCD_shrunk".

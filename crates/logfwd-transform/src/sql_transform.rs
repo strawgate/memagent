@@ -96,9 +96,9 @@ impl SqlTransform {
     /// Schema changes (new fields in later batches) are handled automatically
     /// since the MemTable is recreated with the batch's schema each call.
     pub async fn execute(&mut self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
-        if batch.num_rows() == 0 {
-            return Ok(batch);
-        }
+        // Normalize first so schema fingerprinting is based on the actual
+        // table shape presented to DataFusion.
+        let batch = conflict_schema::normalize_conflict_columns(batch);
 
         // Invalidate the cached SessionContext when the schema changes.
         //
@@ -115,17 +115,16 @@ impl SqlTransform {
 
         // Ensure the SessionContext exists (created once, reused across batches).
         self.ensure_context();
-        let ctx = self.ctx.as_ref().expect("context just ensured");
+        let ctx = self.ctx.as_ref().ok_or_else(|| {
+            TransformError::Sql(
+                "Failed to initialize SessionContext after ensure_context()".to_string(),
+            )
+        })?;
 
         // Swap the `logs` table: build new table first, then deregister + register.
         // Building the MemTable before deregistering ensures that on error we
         // don't leave the context without a `logs` table.
         //
-        // Normalize the batch first: if the scanner detected type conflicts it
-        // emits struct columns (`status: Struct { int: Int64, str: Utf8View }`).
-        // Replace each conflict struct with a flat `status: Utf8` column so SQL
-        // using bare names resolves on both clean and conflict batches.
-        let batch = conflict_schema::normalize_conflict_columns(batch);
         let schema = batch.schema();
         let table = MemTable::try_new(schema, vec![vec![batch]])
             .map_err(|e| TransformError::Sql(format!("Failed to create MemTable: {e}")))?;
@@ -232,8 +231,10 @@ impl SqlTransform {
     /// When the calling code is made async, switch to `execute().await` directly.
     pub fn execute_blocking(&mut self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(self.execute(batch))),
-            Err(_) => {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| handle.block_on(self.execute(batch)))
+            }
+            Ok(_) | Err(_) => {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -283,7 +284,7 @@ impl SqlTransform {
         let schema = Arc::new(Schema::new(fields.clone()));
         let arrays: Vec<ArrayRef> = fields
             .iter()
-            .map(|_| Arc::new(StringArray::from(vec![Some("x")])) as ArrayRef)
+            .map(|_| Arc::new(StringArray::from(vec![Option::<&str>::None])) as ArrayRef)
             .collect();
 
         let batch = RecordBatch::try_new(schema, arrays)

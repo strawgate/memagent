@@ -315,17 +315,19 @@ fn test_build_sink_factory_stdout_rejects_unsupported_format() {
 fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
     let base_dir = unique_temp_dir("base");
     let cwd_dir = unique_temp_dir("cwd");
-    let original_cwd = std::env::current_dir().unwrap();
+    let filename = format!(
+        "capture-{}.ndjson",
+        NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed)
+    );
 
     let cfg = OutputConfig {
         name: Some("capture".to_string()),
         output_type: OutputType::File,
-        path: Some("capture.ndjson".to_string()),
+        path: Some(filename.clone()),
         format: Some(Format::Json),
         ..Default::default()
     };
 
-    std::env::set_current_dir(&cwd_dir).unwrap();
     let factory = build_sink_factory(
         "capture",
         &cfg,
@@ -333,13 +335,12 @@ fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
         Arc::new(ComponentStats::new()),
     )
     .unwrap();
-    std::env::set_current_dir(&original_cwd).unwrap();
 
     assert_eq!(factory.name(), "capture");
-    assert!(base_dir.join("capture.ndjson").exists());
-    assert!(!cwd_dir.join("capture.ndjson").exists());
+    assert!(base_dir.join(&filename).exists());
+    assert!(!cwd_dir.join(&filename).exists());
 
-    let _ = std::fs::remove_file(base_dir.join("capture.ndjson"));
+    let _ = std::fs::remove_file(base_dir.join(&filename));
     let _ = std::fs::remove_dir(&base_dir);
     let _ = std::fs::remove_dir(&cwd_dir);
 }

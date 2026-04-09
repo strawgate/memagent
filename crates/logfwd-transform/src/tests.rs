@@ -936,6 +936,15 @@ fn validate_plan_accepts_filter_query() {
         .expect("filter query should pass plan validation");
 }
 
+#[test]
+fn validate_plan_uses_null_probe_values_for_cast_paths() {
+    let mut transform =
+        SqlTransform::new("SELECT int(status) FROM logs WHERE int(status) <= 4").unwrap();
+    transform
+        .validate_plan()
+        .expect("cast-heavy query should validate with null probe values");
+}
+
 /// When a WHERE clause filters out every row, execute should return an
 /// empty RecordBatch with the correct output schema — without calling
 /// `ctx.sql()` a second time (the original bug).
@@ -950,6 +959,20 @@ fn test_where_drops_all_rows_returns_correct_schema() {
     assert_eq!(result.num_columns(), 2, "output should have 2 columns");
     assert_eq!(result.schema().field(0).name(), "level");
     assert_eq!(result.schema().field(1).name(), "msg");
+}
+
+#[test]
+fn test_empty_input_batch_uses_transformed_output_schema() {
+    let schema = Arc::new(Schema::new(vec![Field::new("level", DataType::Utf8, true)]));
+    let level: ArrayRef = Arc::new(StringArray::from(Vec::<Option<&str>>::new()));
+    let batch = RecordBatch::try_new(schema, vec![level]).unwrap();
+
+    let mut transform = SqlTransform::new("SELECT level AS severity FROM logs").unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 0);
+    assert_eq!(result.num_columns(), 1);
+    assert_eq!(result.schema().field(0).name(), "severity");
 }
 
 // -----------------------------------------------------------------------
@@ -1008,6 +1031,20 @@ fn test_scan_config_keep_raw_only_when_raw_is_referenced() {
     assert!(
         !without_cfg.keep_raw,
         "keep_raw must remain false when query does not reference _raw"
+    );
+}
+
+#[test]
+fn test_filter_hints_wanted_fields_excludes_raw() {
+    let analyzer =
+        QueryAnalyzer::new("SELECT level FROM logs WHERE json(_raw, 'status') = '500'").unwrap();
+    let hints = analyzer.filter_hints();
+    let wanted = hints
+        .wanted_fields
+        .expect("non-wildcard query should produce wanted_fields");
+    assert!(
+        !wanted.iter().any(|name| name == "_raw"),
+        "filter_hints wanted_fields must not include _raw: {wanted:?}"
     );
 }
 

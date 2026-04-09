@@ -1,6 +1,6 @@
 # Workstream 3 — Build Profile Strategy for Monorepo Velocity
 
-Date: 2026-04-09
+Date: 2026-04-08
 Scope: Cargo profile policy for local dev/test/release/bench + CI in this workspace.
 
 ## 1) Bounded orientation pass (completed)
@@ -165,14 +165,14 @@ Also recommend:
 
 ## 4) Cross-Crate Impact Map
 
-## 4.1 High impact crates for profile policy
+## 4.1 High-impact crates for profile policy
 
 - `crates/logfwd` — binary packaging target, feature gate for DataFusion.
 - `crates/logfwd-transform` — DataFusion entry point; major compile-time driver.
 - `crates/logfwd-bench` and `crates/logfwd-competitive-bench` — sensitive to bench/release profile alignment.
 - `crates/logfwd-runtime` — runtime hot path; affected by overflow-check and LTO/codegen posture in release-like profiles.
 
-## 4.2 Medium impact crates
+## 4.2 Medium-impact crates
 
 - `crates/logfwd-output`, `crates/logfwd-io`, `crates/logfwd-arrow`, `crates/logfwd-core` — built frequently in default-members and full lanes; will inherit global dev/test/release choices.
 

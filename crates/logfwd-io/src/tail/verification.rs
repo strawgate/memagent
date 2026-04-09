@@ -19,7 +19,6 @@ fn eof_transition(eof_emitted: bool, had_data: bool) -> (bool, bool) {
 /// EndOfFile is emitted at most once per no-data streak: the event fires only
 /// when `eof_emitted` transitions from `false` to `true`, never while it is
 /// already `true`.
-#[cfg(kani)]
 #[kani::proof]
 fn verify_eof_emitted_at_most_once_per_no_data_streak() {
     let eof_emitted: bool = kani::any();
@@ -56,7 +55,8 @@ fn verify_two_no_data_polls_emit_exactly_once() {
     assert!(fires1, "first NoData poll must emit EndOfFile");
     assert!(!fires2, "second NoData poll must not emit again");
     assert!(state1 && state2, "flag stays true after both polls");
-    kani::cover!(true, "two-poll no-data sequence verified");
+    kani::cover!(fires1 && !fires2, "only first NoData emits EOF");
+    kani::cover!(state2, "eof_emitted remains true after second NoData");
 }
 
 /// After data resets the flag, the next NoData streak fires EndOfFile again.
@@ -69,5 +69,6 @@ fn verify_eof_fires_again_after_data_resets_flag() {
     let (_, fires2) = eof_transition(after_data, false); // second stall
     assert!(fires1, "first stall must emit EndOfFile");
     assert!(fires2, "second stall must emit EndOfFile after data reset");
-    kani::cover!(true, "data-reset cycle verified");
+    kani::cover!(fires1, "first no-data streak emitted EOF");
+    kani::cover!(fires2, "second no-data streak emitted EOF after reset");
 }

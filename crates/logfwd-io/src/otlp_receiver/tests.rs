@@ -13,6 +13,7 @@ use opentelemetry_proto::tonic::{
 };
 use proptest::prelude::*;
 use prost::Message;
+use std::time::{Duration, Instant};
 
 fn make_test_request() -> Vec<u8> {
     let request = ExportLogsServiceRequest {
@@ -61,6 +62,40 @@ fn make_test_request() -> Vec<u8> {
         }],
     };
     request.encode_to_vec()
+}
+
+fn wait_until<F>(timeout: Duration, mut predicate: F, failure_message: &str)
+where
+    F: FnMut() -> bool,
+{
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(predicate(), "{failure_message}");
+}
+
+fn poll_receiver_until<F>(
+    receiver: &mut OtlpReceiverInput,
+    timeout: Duration,
+    mut predicate: F,
+    failure_message: &str,
+) -> Vec<InputEvent>
+where
+    F: FnMut(&[InputEvent]) -> bool,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        let events = receiver.poll().unwrap();
+        if predicate(&events) {
+            return events;
+        }
+        assert!(Instant::now() < deadline, "{failure_message}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn unicode_string(max_len: usize) -> impl Strategy<Value = String> {
@@ -1724,11 +1759,44 @@ fn content_type_matching_is_case_insensitive() {
         "Application/JSON should be decoded as JSON and return 200"
     );
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    let data = receiver.poll().unwrap();
+    let data = poll_receiver_until(
+        &mut receiver,
+        Duration::from_secs(1),
+        |events| !events.is_empty(),
+        "timed out waiting for mixed-case Content-Type JSON payload",
+    );
     assert!(
         !data.is_empty(),
         "expected data from JSON body with mixed-case Content-Type"
+    );
+}
+
+#[test]
+fn content_type_substring_match_does_not_route_json() {
+    let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
+    let port = receiver.local_addr().port();
+    let url = format!("http://127.0.0.1:{port}/v1/logs");
+
+    let body = serde_json::json!({
+        "resourceLogs": [{
+            "scopeLogs": [{
+                "logRecords": [{"body": {"stringValue": "hello"}}]
+            }]
+        }]
+    })
+    .to_string();
+
+    let status = match ureq::post(&url)
+        .header("content-type", "application/jsonl")
+        .send(body.as_bytes())
+    {
+        Ok(resp) => resp.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
+        Err(e) => panic!("unexpected error: {e}"),
+    };
+    assert_eq!(
+        status, 400,
+        "application/jsonl must not route to JSON decoder"
     );
 }
 
@@ -1787,15 +1855,12 @@ fn receiver_shuts_down_cleanly_on_drop() {
     // and join the thread, closing the HTTP server and releasing the port.
     drop(receiver);
 
-    // Wait a tiny bit for the OS to actually release the port if needed,
-    // though join() in Drop should make it synchronous.
-    std::thread::sleep(std::time::Duration::from_millis(10));
-
-    // Try to bind to the exact same port again. If the previous receiver
-    // thread didn't shut down properly and leaked the server, this will fail
-    // with "Address already in use".
-    let _new_receiver = OtlpReceiverInput::new("test-drop-2", &local_addr.to_string())
-        .expect("should bind successfully to the exact same port");
+    // Retry bind on the same port until it succeeds or times out.
+    wait_until(
+        Duration::from_secs(1),
+        || OtlpReceiverInput::new("test-drop-2", &local_addr.to_string()).is_ok(),
+        "should bind successfully to the exact same port",
+    );
 }
 
 #[test]
@@ -1827,7 +1892,11 @@ fn receiver_health_reports_failed_when_server_thread_exits() {
     let (shutdown_tx, _shutdown_rx) = oneshot::channel();
     receiver.background_task = BackgroundHttpTask::new_axum(shutdown_tx, std::thread::spawn(|| {}));
     receiver.is_running.store(true, Ordering::Relaxed);
-    std::thread::sleep(std::time::Duration::from_millis(10));
+    wait_until(
+        Duration::from_secs(1),
+        || receiver.health() == ComponentHealth::Failed,
+        "receiver health did not transition to failed",
+    );
 
     assert_eq!(receiver.health(), ComponentHealth::Failed);
 }

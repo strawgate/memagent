@@ -243,12 +243,12 @@ fn write_json_any_value_field_from_json(
     value: &serde_json::Value,
 ) -> Result<bool, InputError> {
     if let Some(i) = value.get("intValue") {
-        write_json_key(out, key);
         let parsed = parse_protojson_i64(i).ok_or_else(|| {
             InputError::Receiver(format!(
                 "invalid OTLP JSON intValue for key {key}: not a valid integer"
             ))
         })?;
+        write_json_key(out, key);
         write_i64_to_buf(out, parsed);
         return Ok(true);
     }
