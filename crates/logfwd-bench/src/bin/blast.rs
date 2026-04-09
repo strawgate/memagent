@@ -49,7 +49,7 @@ struct RunArgs {
     #[arg(long)]
     config: Option<PathBuf>,
 
-    /// Pipeline name in config.yaml (defaults to first pipeline).
+    /// Pipeline name in config.yaml (defaults to lexicographically first pipeline).
     #[arg(long)]
     pipeline: Option<String>,
 
@@ -451,7 +451,7 @@ fn load_output_from_config(
         config
             .pipelines
             .keys()
-            .next()
+            .min()
             .cloned()
             .ok_or_else(|| "config has no pipelines".to_string())?
     };
