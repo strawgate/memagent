@@ -854,11 +854,7 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'listen' is not supported for file inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
-                            )));
-                        }
+                        validate_no_sensor_beta_for_input(input, name, &label)?;
                     }
                     InputType::Tcp | InputType::Udp => {
                         if input.generator.is_some() {
@@ -881,11 +877,7 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for tcp/udp inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
-                            )));
-                        }
+                        validate_no_sensor_beta_for_input(input, name, &label)?;
                     }
                     InputType::Otlp => {
                         if input.generator.is_some() {
@@ -908,11 +900,7 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for otlp inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
-                            )));
-                        }
+                        validate_no_sensor_beta_for_input(input, name, &label)?;
                     }
                     InputType::Generator => {
                         if input.listen.is_some() {
@@ -935,11 +923,7 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for generator inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
-                            )));
-                        }
+                        validate_no_sensor_beta_for_input(input, name, &label)?;
                         if input.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': generator.batch_size must be at least 1"
@@ -1080,11 +1064,7 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
-                            )));
-                        }
+                        validate_no_sensor_beta_for_input(input, name, &label)?;
                     }
                 }
 
@@ -1343,6 +1323,19 @@ impl Config {
 /// Validate that a bind address is a parseable `host:port` socket address.
 fn validate_bind_addr(addr: &str) -> Result<(), String> {
     validate_host_port(addr)
+}
+
+fn validate_no_sensor_beta_for_input(
+    input: &InputConfig,
+    pipeline_name: &str,
+    input_label: &str,
+) -> Result<(), ConfigError> {
+    if input.sensor_beta.is_some() {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' input '{input_label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
+        )));
+    }
+    Ok(())
 }
 
 /// Validate that a string has a valid `host:port` format where port is a u16.

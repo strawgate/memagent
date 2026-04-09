@@ -83,13 +83,37 @@ impl Default for PlatformSensorBetaConfig {
 /// Beta input source for per-platform sensor bring-up.
 #[derive(Debug)]
 pub struct PlatformSensorBetaInput {
+    machine: Option<PlatformSensorMachineState>,
+}
+
+#[derive(Debug)]
+enum PlatformSensorMachineState {
+    Init(PlatformSensorMachine<InitState>),
+    Running(PlatformSensorMachine<RunningState>),
+}
+
+#[derive(Debug)]
+struct PlatformSensorMachine<S> {
+    common: PlatformSensorCommon,
+    state: S,
+}
+
+#[derive(Debug)]
+struct PlatformSensorCommon {
     name: String,
     target: PlatformSensorTarget,
+    host_platform: &'static str,
     cfg: PlatformSensorBetaConfig,
-    started: bool,
-    last_cycle: Instant,
     system: System,
     networks: Networks,
+}
+
+#[derive(Debug)]
+struct InitState;
+
+#[derive(Debug)]
+struct RunningState {
+    last_cycle: Instant,
 }
 
 impl PlatformSensorBetaInput {
@@ -101,14 +125,21 @@ impl PlatformSensorBetaInput {
         target: PlatformSensorTarget,
         mut cfg: PlatformSensorBetaConfig,
     ) -> io::Result<Self> {
-        if !is_supported_on_current_host(target) {
+        let host_platform = current_host_platform().as_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "platform sensor beta inputs are unsupported on this host",
+            )
+        })?;
+
+        if target.as_str() != host_platform {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
                     "{} sensor beta input can only run on {} hosts (current host: {})",
                     target.as_str(),
                     target.as_str(),
-                    current_host_platform()
+                    host_platform
                 ),
             ));
         }
@@ -121,18 +152,22 @@ impl PlatformSensorBetaInput {
         }
 
         Ok(Self {
-            name: name.into(),
-            target,
-            cfg,
-            started: false,
-            last_cycle: Instant::now()
-                .checked_sub(Duration::from_secs(3600))
-                .unwrap_or_else(Instant::now),
-            system: System::new_all(),
-            networks: Networks::new_with_refreshed_list(),
+            machine: Some(PlatformSensorMachineState::Init(PlatformSensorMachine {
+                common: PlatformSensorCommon {
+                    name: name.into(),
+                    target,
+                    host_platform,
+                    cfg,
+                    system: System::new_all(),
+                    networks: Networks::new_with_refreshed_list(),
+                },
+                state: InitState,
+            })),
         })
     }
+}
 
+impl PlatformSensorCommon {
     fn run_collection_cycle(&mut self, out: &mut Vec<u8>) -> usize {
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
@@ -176,11 +211,11 @@ impl PlatformSensorBetaInput {
                     "sensor_event": "snapshot",
                     "sensor_status": "beta",
                     "sensor_target_platform": self.target.as_str(),
-                    "sensor_host_platform": current_host_platform(),
-                    "sensor_name": self.name,
+                    "sensor_host_platform": self.host_platform,
+                    "sensor_name": &self.name,
                     "sensor_beta": true,
                     "process_pid": pid.as_u32(),
-                    "process_parent_pid": process.parent().map(|v| v.as_u32()),
+                    "process_parent_pid": process.parent().map(sysinfo::Pid::as_u32),
                     "process_name": os_to_string(process.name()),
                     "process_cmd": os_vec_to_string(process.cmd()),
                     "process_exe": process.exe().map(|p| p.to_string_lossy().to_string()),
@@ -214,8 +249,8 @@ impl PlatformSensorBetaInput {
                     "sensor_event": "snapshot",
                     "sensor_status": "beta",
                     "sensor_target_platform": self.target.as_str(),
-                    "sensor_host_platform": current_host_platform(),
-                    "sensor_name": self.name,
+                    "sensor_host_platform": self.host_platform,
+                    "sensor_name": &self.name,
                     "sensor_beta": true,
                     "network_interface": iface,
                     "network_received_delta_bytes": data.received(),
@@ -262,8 +297,8 @@ impl PlatformSensorBetaInput {
                     "sensor_event": "snapshot",
                     "sensor_status": "beta",
                     "sensor_target_platform": self.target.as_str(),
-                    "sensor_host_platform": current_host_platform(),
-                    "sensor_name": self.name,
+                    "sensor_host_platform": self.host_platform,
+                    "sensor_name": &self.name,
                     "sensor_beta": true,
                     "process_pid": pid.as_u32(),
                     "process_name": os_to_string(process.name()),
@@ -290,7 +325,7 @@ impl PlatformSensorBetaInput {
                 sensor_event: "startup",
                 sensor_status: "beta",
                 sensor_target_platform: self.target.as_str(),
-                sensor_host_platform: current_host_platform(),
+                sensor_host_platform: self.host_platform,
                 sensor_name: &self.name,
                 sensor_beta: true,
             },
@@ -306,8 +341,8 @@ impl PlatformSensorBetaInput {
                     "sensor_event": "capability",
                     "sensor_status": "beta",
                     "sensor_target_platform": self.target.as_str(),
-                    "sensor_host_platform": current_host_platform(),
-                    "sensor_name": self.name,
+                    "sensor_host_platform": self.host_platform,
+                    "sensor_name": &self.name,
                     "sensor_beta": true,
                     "sensor_family": family.as_str(),
                     "sensor_family_state": "beta_supported",
@@ -317,22 +352,25 @@ impl PlatformSensorBetaInput {
     }
 }
 
-impl InputSource for PlatformSensorBetaInput {
-    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
-        let mut bytes = Vec::with_capacity(16 * 1024);
-        let mut ran_cycle = false;
-
-        if !self.started {
-            self.emit_startup_control(&mut bytes);
-            self.started = true;
-            ran_cycle = true;
+impl PlatformSensorMachine<InitState> {
+    fn start(self, out: &mut Vec<u8>) -> PlatformSensorMachine<RunningState> {
+        self.common.emit_startup_control(out);
+        PlatformSensorMachine {
+            common: self.common,
+            state: RunningState {
+                last_cycle: Instant::now(),
+            },
         }
+    }
+}
 
-        if ran_cycle || self.last_cycle.elapsed() >= self.cfg.poll_interval {
-            let emitted_rows = self.run_collection_cycle(&mut bytes);
-            if emitted_rows == 0 && self.cfg.emit_heartbeat {
+impl PlatformSensorMachine<RunningState> {
+    fn poll_collection_if_due(&mut self, out: &mut Vec<u8>, force: bool) {
+        if force || self.state.last_cycle.elapsed() >= self.common.cfg.poll_interval {
+            let emitted_rows = self.common.run_collection_cycle(out);
+            if emitted_rows == 0 && self.common.cfg.emit_heartbeat {
                 append_json_line(
-                    &mut bytes,
+                    out,
                     &SensorControlEvent {
                         timestamp_unix_nano: now_unix_nano(),
                         level: "INFO",
@@ -340,15 +378,38 @@ impl InputSource for PlatformSensorBetaInput {
                         event_family: "sensor_control",
                         sensor_event: "heartbeat",
                         sensor_status: "beta",
-                        sensor_target_platform: self.target.as_str(),
-                        sensor_host_platform: current_host_platform(),
-                        sensor_name: &self.name,
+                        sensor_target_platform: self.common.target.as_str(),
+                        sensor_host_platform: self.common.host_platform,
+                        sensor_name: &self.common.name,
                         sensor_beta: true,
                     },
                 );
             }
-            self.last_cycle = Instant::now();
+            self.state.last_cycle = Instant::now();
         }
+    }
+}
+
+impl InputSource for PlatformSensorBetaInput {
+    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        let mut bytes = Vec::with_capacity(16 * 1024);
+        let machine = self
+            .machine
+            .take()
+            .ok_or_else(|| io::Error::other("platform sensor beta state missing"))?;
+
+        let next_machine = match machine {
+            PlatformSensorMachineState::Init(init) => {
+                let mut running = init.start(&mut bytes);
+                running.poll_collection_if_due(&mut bytes, true);
+                PlatformSensorMachineState::Running(running)
+            }
+            PlatformSensorMachineState::Running(mut running) => {
+                running.poll_collection_if_due(&mut bytes, false);
+                PlatformSensorMachineState::Running(running)
+            }
+        };
+        self.machine = Some(next_machine);
 
         if bytes.is_empty() {
             return Ok(vec![]);
@@ -363,7 +424,14 @@ impl InputSource for PlatformSensorBetaInput {
     }
 
     fn name(&self) -> &str {
-        &self.name
+        match self
+            .machine
+            .as_ref()
+            .expect("platform sensor beta state should always be present")
+        {
+            PlatformSensorMachineState::Init(init) => &init.common.name,
+            PlatformSensorMachineState::Running(running) => &running.common.name,
+        }
     }
 
     fn health(&self) -> ComponentHealth {
@@ -383,6 +451,25 @@ struct SensorControlEvent<'a> {
     sensor_host_platform: &'static str,
     sensor_name: &'a str,
     sensor_beta: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostPlatform {
+    Linux,
+    Macos,
+    Windows,
+    Unsupported,
+}
+
+impl HostPlatform {
+    const fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::Linux => Some("linux"),
+            Self::Macos => Some("macos"),
+            Self::Windows => Some("windows"),
+            Self::Unsupported => None,
+        }
+    }
 }
 
 fn append_json_line<T: Serialize>(out: &mut Vec<u8>, value: &T) {
@@ -410,30 +497,15 @@ fn now_unix_nano() -> u64 {
         .as_nanos() as u64
 }
 
-fn current_host_platform() -> &'static str {
-    #[cfg(target_os = "linux")]
-    {
-        "linux"
-    }
-    #[cfg(target_os = "macos")]
-    {
-        "macos"
-    }
-    #[cfg(target_os = "windows")]
-    {
-        "windows"
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        "unsupported"
-    }
-}
-
-fn is_supported_on_current_host(target: PlatformSensorTarget) -> bool {
-    match target {
-        PlatformSensorTarget::Linux => cfg!(target_os = "linux"),
-        PlatformSensorTarget::Macos => cfg!(target_os = "macos"),
-        PlatformSensorTarget::Windows => cfg!(target_os = "windows"),
+fn current_host_platform() -> HostPlatform {
+    if cfg!(target_os = "linux") {
+        HostPlatform::Linux
+    } else if cfg!(target_os = "macos") {
+        HostPlatform::Macos
+    } else if cfg!(target_os = "windows") {
+        HostPlatform::Windows
+    } else {
+        HostPlatform::Unsupported
     }
 }
 
