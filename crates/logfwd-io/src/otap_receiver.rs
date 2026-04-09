@@ -745,7 +745,7 @@ mod tests {
             Field::new("_timestamp", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("message", DataType::Utf8, true),
-            Field::new("_resource_service_name", DataType::Utf8, true),
+            Field::new("resource.attributes.service_name", DataType::Utf8, true),
             Field::new("host", DataType::Utf8, true),
         ]));
 
@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(lvl_arr.value(1), "ERROR");
 
         let rs_idx = rt_schema
-            .index_of("_resource_service_name")
+            .index_of("resource.attributes.service_name")
             .expect("resource col");
         let rs_arr = roundtrip
             .column(rs_idx)
