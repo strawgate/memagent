@@ -344,6 +344,27 @@ impl InvariantSet {
             }
         }
 
+        if self.ordered_ack {
+            if let Err(err) = outcome.checkpoint_handle.assert_ordered_ack_result() {
+                failures.push(format!("ordered-ack violated: {err}"));
+            }
+        }
+
+        if self.hold_on_transient_failure {
+            if let Err(err) = outcome.checkpoint_handle.assert_hold_on_transient_failure_result() {
+                failures.push(format!("hold-on-transient-failure violated: {err}"));
+            }
+        }
+
+        if self.reject_advances_checkpoint {
+            if let Err(err) = outcome
+                .checkpoint_handle
+                .assert_reject_advances_checkpoint_result()
+            {
+                failures.push(format!("reject-advances-checkpoint violated: {err}"));
+            }
+        }
+
         if self.shutdown_completeness && (!outcome.completed || outcome.force_stopped) {
             failures.push("shutdown did not complete cleanly (completed=false or force_stopped=true)".to_string());
         }
