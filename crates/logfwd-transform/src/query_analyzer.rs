@@ -206,20 +206,15 @@ fn walk_set_expr(
 
             for table_with_joins in &select.from {
                 for join in &table_with_joins.joins {
-                    match join_constraint(&join.join_operator) {
-                        sqlast::JoinConstraint::On(expr) => {
-                            collect_column_refs(expr, referenced_columns);
-                        }
-                        sqlast::JoinConstraint::Using(cols) => {
-                            for obj_name in cols {
-                                if let Some(part) = obj_name.0.last()
-                                    && let Some(ident) = part.as_ident()
-                                {
-                                    referenced_columns.insert(ident.value.clone());
-                                }
-                            }
-                        }
-                        sqlast::JoinConstraint::Natural | sqlast::JoinConstraint::None => {}
+                    if let sqlast::JoinOperator::AsOf {
+                        match_condition, ..
+                    } = &join.join_operator
+                    {
+                        collect_column_refs(match_condition, referenced_columns);
+                    }
+
+                    if let Some(constraint) = join_constraint(&join.join_operator) {
+                        collect_join_constraint_columns(constraint, referenced_columns);
                     }
                 }
             }
@@ -236,20 +231,26 @@ fn walk_set_expr(
             }
         }
         SetExpr::SetOperation { left, right, .. } => {
+            // Set-operation branches can each have independent WHERE clauses.
+            // We intentionally avoid extracting filter hints from compound
+            // queries to prevent pushing one branch's predicate to all input.
+            let mut left_where = None;
             walk_set_expr(
                 left,
                 referenced_columns,
                 uses_select_star,
                 except_fields,
-                where_clause,
+                &mut left_where,
             );
+            let mut right_where = None;
             walk_set_expr(
                 right,
                 referenced_columns,
                 uses_select_star,
                 except_fields,
-                where_clause,
+                &mut right_where,
             );
+            *where_clause = None;
         }
         SetExpr::Query(query) => {
             walk_set_expr(
@@ -396,8 +397,8 @@ fn extract_except_fields(opts: &WildcardAdditionalOptions, out: &mut Vec<String>
     }
 }
 
-/// Extract the `JoinConstraint` from any `JoinOperator` variant.
-fn join_constraint(op: &sqlast::JoinOperator) -> &sqlast::JoinConstraint {
+/// Extract the `JoinConstraint` from any `JoinOperator` variant that carries one.
+fn join_constraint(op: &sqlast::JoinOperator) -> Option<&sqlast::JoinConstraint> {
     use sqlast::JoinOperator as J;
     match op {
         J::Join(c)
@@ -413,10 +414,32 @@ fn join_constraint(op: &sqlast::JoinOperator) -> &sqlast::JoinConstraint {
         | J::RightSemi(c)
         | J::Anti(c)
         | J::LeftAnti(c)
-        | J::RightAnti(c) => c,
-        J::CrossApply | J::OuterApply | J::AsOf { .. } | J::StraightJoin(_) => {
-            &sqlast::JoinConstraint::None
+        | J::RightAnti(c)
+        | J::StraightJoin(c)
+        | J::AsOf { constraint: c, .. } => Some(c),
+        J::CrossApply | J::OuterApply => None,
+    }
+}
+
+/// Collect column references from a `JoinConstraint`.
+fn collect_join_constraint_columns(
+    constraint: &sqlast::JoinConstraint,
+    cols: &mut HashSet<String>,
+) {
+    match constraint {
+        sqlast::JoinConstraint::On(expr) => {
+            collect_column_refs(expr, cols);
         }
+        sqlast::JoinConstraint::Using(using_cols) => {
+            for obj_name in using_cols {
+                if let Some(part) = obj_name.0.last()
+                    && let Some(ident) = part.as_ident()
+                {
+                    cols.insert(ident.value.clone());
+                }
+            }
+        }
+        sqlast::JoinConstraint::Natural | sqlast::JoinConstraint::None => {}
     }
 }
 

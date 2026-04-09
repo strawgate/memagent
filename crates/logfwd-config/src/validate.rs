@@ -1345,7 +1345,14 @@ fn glob_could_match(glob_pattern: &str, file_path: &str) -> bool {
             if let Some(ext) = glob_name.strip_prefix('*') {
                 return file_name.ends_with(ext);
             }
-            // Pattern contains `?` or other wildcards — conservatively match.
+
+            // Literal filename (no wildcard chars) must match exactly.
+            if !glob_name.contains(['*', '?', '[']) {
+                return glob_name == file_name;
+            }
+
+            // Pattern contains wildcard syntax we don't parse here —
+            // conservatively report a possible match.
             return true;
         }
         return true;
@@ -1391,6 +1398,7 @@ mod validate_endpoint_url_tests {
 
 #[cfg(test)]
 mod feedback_loop_tests {
+    use super::glob_could_match;
     use crate::types::Config;
 
     #[test]
@@ -1449,6 +1457,24 @@ pipelines:
             msg.contains("feedback loop") || msg.contains("same as file input"),
             "expected normalized-path feedback-loop rejection, got: {msg}"
         );
+    }
+
+    #[test]
+    fn glob_could_match_literal_filename_requires_exact_name() {
+        assert!(glob_could_match(
+            "/var/log/access.log",
+            "/var/log/access.log"
+        ));
+        assert!(!glob_could_match(
+            "/var/log/access.log",
+            "/var/log/other.log"
+        ));
+    }
+
+    #[test]
+    fn glob_could_match_wildcard_suffix_pattern() {
+        assert!(glob_could_match("/var/log/*.log", "/var/log/access.log"));
+        assert!(!glob_could_match("/var/log/*.log", "/var/log/access.txt"));
     }
 }
 

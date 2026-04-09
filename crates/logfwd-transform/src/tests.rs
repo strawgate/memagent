@@ -381,6 +381,19 @@ fn test_filter_hints_no_where() {
 }
 
 #[test]
+fn test_filter_hints_disabled_for_set_operation_branches() {
+    let a = QueryAnalyzer::new(
+        "SELECT * FROM logs WHERE severity <= 2 UNION ALL SELECT * FROM logs WHERE severity <= 4",
+    )
+    .unwrap();
+    let h = a.filter_hints();
+    assert!(
+        h.max_severity.is_none(),
+        "set-operation branch predicates must not be pushed globally"
+    );
+}
+
+#[test]
 fn test_filter_hints_field_pushdown() {
     let a = QueryAnalyzer::new("SELECT hostname, message FROM logs WHERE severity <= 2").unwrap();
     let h = a.filter_hints();
@@ -896,6 +909,22 @@ fn test_query_analyzer_join_using_column_refs() {
     assert!(
         a.referenced_columns.contains("level"),
         "USING column must be in referenced_columns"
+    );
+}
+
+#[test]
+fn test_query_analyzer_straight_join_on_column_refs() {
+    let a = QueryAnalyzer::new(
+        "SELECT a.message FROM logs a STRAIGHT_JOIN logs b ON a.level = b.level",
+    )
+    .unwrap();
+    assert!(
+        a.referenced_columns.contains("message"),
+        "SELECT column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("level"),
+        "STRAIGHT_JOIN ON column must be in referenced_columns"
     );
 }
 

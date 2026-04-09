@@ -1340,12 +1340,12 @@ fn unpivot_attrs_to_flat(
                 if !bytes_arr.is_null(row)
                     && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
                 {
-                    let hex: String =
-                        bytes_arr.value(row).iter().fold(String::new(), |mut s, b| {
-                            use std::fmt::Write;
-                            let _ = write!(s, "{b:02x}");
-                            s
-                        });
+                    let bytes = bytes_arr.value(row);
+                    let mut hex = String::with_capacity(bytes.len() * 2);
+                    for byte in bytes {
+                        use std::fmt::Write;
+                        let _ = write!(&mut hex, "{byte:02x}");
+                    }
                     v[target_row] = Some(hex);
                 }
             }
@@ -1896,6 +1896,36 @@ mod tests {
             }
         }
         assert!(found, "status attr not found in log_attrs");
+    }
+
+    #[test]
+    fn binary_attrs_roundtrip_as_hex_strings() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("payload", DataType::Binary, true),
+        ]));
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec![Some("row-0"), Some("row-1")])),
+            Arc::new(BinaryArray::from(vec![
+                Some(&[0x00_u8, 0x0f_u8, 0xff_u8][..]),
+                Some(&[0xab_u8, 0xcd_u8][..]),
+            ])),
+        ];
+
+        let batch = RecordBatch::try_new(schema, columns).expect("valid batch");
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+
+        let payload_idx = roundtrip.schema().index_of("payload").expect("payload col");
+        let payload_arr = roundtrip
+            .column(payload_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("payload string");
+
+        assert_eq!(payload_arr.value(0), "000fff");
+        assert_eq!(payload_arr.value(1), "abcd");
     }
 
     #[test]
