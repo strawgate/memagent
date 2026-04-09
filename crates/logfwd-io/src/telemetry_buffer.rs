@@ -928,7 +928,8 @@ fn attrs_to_json(attrs: &[(&str, String)]) -> String {
         .iter()
         .map(|(k, v)| {
             format!(
-                "{{\"key\":\"{k}\",\"value\":{{\"stringValue\":\"{}\"}}}}",
+                "{{\"key\":\"{}\",\"value\":{{\"stringValue\":\"{}\"}}}}",
+                json_escape(k),
                 json_escape(v)
             )
         })
