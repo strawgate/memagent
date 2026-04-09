@@ -51,6 +51,8 @@ pub struct RunOptions<'a> {
     pub use_color: bool,
     /// Whether stderr logs should be emitted as JSON instead of text.
     pub json_logs_for_stderr: bool,
+    /// Optional auto-shutdown duration for benchmarking helpers.
+    pub auto_shutdown_after: Option<Duration>,
 }
 
 pub async fn run_pipelines(
@@ -146,6 +148,14 @@ pub async fn run_pipelines(
 
         shutdown_for_signal.cancel();
     });
+
+    if let Some(duration) = options.auto_shutdown_after {
+        let shutdown_for_timer = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(duration).await;
+            shutdown_for_timer.cancel();
+        });
+    }
 
     let meter_provider = build_meter_provider(&config, use_color)?;
     let meter = meter_provider.meter("logfwd");

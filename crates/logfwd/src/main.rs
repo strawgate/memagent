@@ -512,7 +512,7 @@ async fn cmd_run(config_path: &str, validate_only: bool, dry_run: bool) -> Resul
         return validate_pipelines(&config, dry_run, base_path);
     }
 
-    run_pipelines(config, base_path, config_path, &config_yaml).await
+    run_pipelines(config, base_path, config_path, &config_yaml, None).await
 }
 
 async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
@@ -551,10 +551,15 @@ async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
     }
     println!("diagnostics={}", args.diagnostics_addr);
 
-    if let Some(duration) = args.duration_secs {
-        schedule_self_interrupt_after(Duration::from_secs(duration));
-    }
-    run_pipelines(config, None, "<blast-generated>", &config_yaml).await
+    let auto_shutdown_after = args.duration_secs.map(Duration::from_secs);
+    run_pipelines(
+        config,
+        None,
+        "<blast-generated>",
+        &config_yaml,
+        auto_shutdown_after,
+    )
+    .await
 }
 
 async fn cmd_devour(args: DevourArgs) -> Result<(), CliError> {
@@ -582,14 +587,21 @@ async fn cmd_devour(args: DevourArgs) -> Result<(), CliError> {
     println!("diagnostics={}", args.diagnostics_addr);
     if let Some(duration) = args.duration_secs {
         println!("duration={}s", duration);
-        schedule_self_interrupt_after(Duration::from_secs(duration));
     }
 
     let config_yaml = render_devour_yaml(&args, &listen);
     let config = logfwd_config::Config::load_str(&config_yaml)
         .map_err(|e| CliError::Config(format!("build generated config: {e}")))?;
 
-    run_pipelines(config, None, "<devour-generated>", &config_yaml).await
+    let auto_shutdown_after = args.duration_secs.map(Duration::from_secs);
+    run_pipelines(
+        config,
+        None,
+        "<devour-generated>",
+        &config_yaml,
+        auto_shutdown_after,
+    )
+    .await
 }
 
 async fn cmd_blackhole(bind_addr: Option<&str>) -> Result<(), CliError> {
@@ -813,32 +825,6 @@ fn yaml_quote(value: &str) -> String {
     }
     escaped.push('"');
     escaped
-}
-
-fn schedule_self_interrupt_after(duration: Duration) {
-    #[cfg(unix)]
-    {
-        std::thread::spawn(move || {
-            // Give runtime bootstrap a moment to install signal handlers before
-            // the auto-stop timer can fire.
-            let arm_delay = Duration::from_millis(250);
-            std::thread::sleep(arm_delay.saturating_add(duration));
-            let pid = std::process::id() as libc::pid_t;
-            // SAFETY: pid is the current process id; sending SIGINT mirrors Ctrl-C.
-            let rc = unsafe { libc::kill(pid, libc::SIGINT) };
-            if rc != 0 {
-                let err = io::Error::last_os_error();
-                eprintln!("warning: failed to send SIGINT for --duration-secs auto-stop: {err}");
-            }
-        });
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = duration;
-        eprintln!(
-            "warning: --duration-secs auto-stop is only supported on unix; press Ctrl-C to stop"
-        );
-    }
 }
 
 fn cmd_generate_json(num_lines: usize, output_file: &str) -> Result<(), CliError> {
@@ -1574,6 +1560,7 @@ async fn run_pipelines(
     base_path: Option<&std::path::Path>,
     config_path: &str,
     config_yaml: &str,
+    auto_shutdown_after: Option<Duration>,
 ) -> Result<(), CliError> {
     logfwd_runtime::bootstrap::run_pipelines(
         config,
@@ -1584,6 +1571,7 @@ async fn run_pipelines(
             version: VERSION,
             use_color: use_color(),
             json_logs_for_stderr: use_json_logs_for_stderr(io::stderr().is_terminal()),
+            auto_shutdown_after,
         },
     )
     .await
