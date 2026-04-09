@@ -172,6 +172,30 @@ pipelines:
 
 See the [Configuration Reference](book/src/config/reference.md) for all YAML fields, input/output types, and enrichment tables.
 
+### Platform Sensor Betas
+
+`logfwd` includes explicit beta input lanes for all three major host platforms:
+
+- `linux_sensor_beta`
+- `macos_sensor_beta`
+- `windows_sensor_beta`
+
+These inputs are platform-gated and currently emit sensor-control heartbeat rows while
+deeper native sensor integrations are being brought online.
+
+```yaml
+input:
+  type: linux_sensor_beta
+  sensor_beta:
+    poll_interval_ms: 2000
+    emit_heartbeat: true
+output:
+  type: stdout
+  format: json
+```
+
+See [Configuration Reference](book/src/config/reference.md#input-types) for full status/details.
+
 ---
 
 ## Kubernetes

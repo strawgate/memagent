@@ -168,7 +168,11 @@ impl Config {
                             }
                         }
                     }
-                    InputType::Generator | InputType::ArrowIpc => {}
+                    InputType::Generator
+                    | InputType::LinuxSensorBeta
+                    | InputType::MacosSensorBeta
+                    | InputType::WindowsSensorBeta
+                    | InputType::ArrowIpc => {}
                 }
 
                 // Reject fields that don't apply to this input type.
@@ -192,6 +196,11 @@ impl Config {
                         if input.tls.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'tls' is not supported for file inputs"
+                            )));
+                        }
+                        if input.sensor_beta.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
                             )));
                         }
                     }
@@ -219,6 +228,11 @@ impl Config {
                         if input.glob_rescan_interval_ms.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for tcp/udp inputs"
+                            )));
+                        }
+                        if input.sensor_beta.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
                             )));
                         }
                     }
@@ -253,6 +267,11 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for otlp inputs"
                             )));
                         }
+                        if input.sensor_beta.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
+                            )));
+                        }
                     }
                     InputType::Http => {
                         if input.tls.is_some() {
@@ -278,6 +297,11 @@ impl Config {
                         if input.glob_rescan_interval_ms.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for http inputs"
+                            )));
+                        }
+                        if input.sensor_beta.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
                             )));
                         }
                         if let Some(http) = &input.http {
@@ -331,6 +355,11 @@ impl Config {
                         if input.glob_rescan_interval_ms.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for generator inputs"
+                            )));
+                        }
+                        if input.sensor_beta.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
                             )));
                         }
                         if input.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
@@ -425,6 +454,60 @@ impl Config {
                             }
                         }
                     }
+                    InputType::LinuxSensorBeta
+                    | InputType::MacosSensorBeta
+                    | InputType::WindowsSensorBeta => {
+                        if input.generator.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
+                            )));
+                        }
+                        if input.listen.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'listen' is not supported for {} inputs",
+                                input.input_type
+                            )));
+                        }
+                        if input.path.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'path' is not supported for {} inputs",
+                                input.input_type
+                            )));
+                        }
+                        if input.max_open_files.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'max_open_files' is not supported for {} inputs",
+                                input.input_type
+                            )));
+                        }
+                        if input.glob_rescan_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for {} inputs",
+                                input.input_type
+                            )));
+                        }
+                        if input.tls.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'tls' is not supported for {} inputs",
+                                input.input_type
+                            )));
+                        }
+                        if input.http.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
+                            )));
+                        }
+                        if input
+                            .sensor_beta
+                            .as_ref()
+                            .and_then(|cfg| cfg.poll_interval_ms)
+                            == Some(0)
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': sensor_beta.poll_interval_ms must be at least 1"
+                            )));
+                        }
+                    }
                     InputType::ArrowIpc => {
                         if input.generator.is_some() {
                             return Err(ConfigError::Validation(format!(
@@ -434,6 +517,11 @@ impl Config {
                         if input.http.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
+                            )));
+                        }
+                        if input.sensor_beta.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
                             )));
                         }
                     }

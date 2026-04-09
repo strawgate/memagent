@@ -21,8 +21,9 @@ pub use types::{
     GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
     GeneratorProfileConfig, GeneratorSequenceConfig, GeoDatabaseConfig, GeoDatabaseFormat,
     HostInfoConfig, HttpInputConfig, HttpMethodConfig, InputConfig, InputType,
-    JsonlEnrichmentConfig, K8sPathConfig, OutputConfig, OutputType, PipelineConfig, ServerConfig,
-    StaticEnrichmentConfig, StorageConfig, TlsInputConfig,
+    JsonlEnrichmentConfig, K8sPathConfig, OutputConfig, OutputType, PipelineConfig,
+    PlatformSensorBetaInputConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
+    TlsInputConfig,
 };
 pub use validate::validate_host_port;
 
@@ -586,10 +587,48 @@ pipelines:
             ("otlp", "listen: 0.0.0.0:4317"),
             ("http", "listen: 0.0.0.0:8080"),
             ("generator", ""),
+            ("linux_sensor_beta", ""),
+            ("macos_sensor_beta", ""),
+            ("windows_sensor_beta", ""),
         ] {
             let yaml = format!("input:\n  type: {itype}\n  {extra}\noutput:\n  type: stdout\n");
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));
         }
+    }
+
+    #[test]
+    fn file_input_rejects_sensor_beta_block() {
+        let yaml = r"
+input:
+  type: file
+  path: /tmp/x.log
+  sensor_beta:
+    poll_interval_ms: 1000
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'sensor_beta' settings are only supported for *_sensor_beta inputs")
+        );
+    }
+
+    #[test]
+    fn sensor_beta_rejects_zero_poll_interval() {
+        let yaml = r"
+input:
+  type: linux_sensor_beta
+  sensor_beta:
+    poll_interval_ms: 0
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor_beta.poll_interval_ms must be at least 1")
+        );
     }
 
     #[test]

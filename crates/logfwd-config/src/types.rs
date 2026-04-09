@@ -35,6 +35,12 @@ pub enum InputType {
     Otlp,
     Http,
     Generator,
+    /// Linux beta sensor input (eBPF-oriented runtime path).
+    LinuxSensorBeta,
+    /// macOS beta sensor input (EndpointSecurity-oriented runtime path).
+    MacosSensorBeta,
+    /// Windows beta sensor input (eBPF/ETW hybrid-oriented runtime path).
+    WindowsSensorBeta,
     ArrowIpc,
 }
 
@@ -47,6 +53,9 @@ impl fmt::Display for InputType {
             InputType::Otlp => f.write_str("otlp"),
             InputType::Http => f.write_str("http"),
             InputType::Generator => f.write_str("generator"),
+            InputType::LinuxSensorBeta => f.write_str("linux_sensor_beta"),
+            InputType::MacosSensorBeta => f.write_str("macos_sensor_beta"),
+            InputType::WindowsSensorBeta => f.write_str("windows_sensor_beta"),
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
         }
     }
@@ -233,6 +242,16 @@ pub struct GeneratorInputConfig {
     pub timestamp: Option<GeneratorTimestampConfig>,
 }
 
+/// Platform beta sensor configuration.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformSensorBetaInputConfig {
+    /// Sensor heartbeat cadence. Defaults to 10_000 when omitted.
+    pub poll_interval_ms: Option<u64>,
+    /// Emit periodic heartbeat rows while the sensor is idle. Defaults to true.
+    pub emit_heartbeat: Option<bool>,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TlsInputConfig {
@@ -256,6 +275,8 @@ pub struct InputConfig {
     pub glob_rescan_interval_ms: Option<u64>,
     #[serde(default)]
     pub generator: Option<GeneratorInputConfig>,
+    #[serde(default)]
+    pub sensor_beta: Option<PlatformSensorBetaInputConfig>,
     #[serde(default)]
     pub http: Option<HttpInputConfig>,
     pub sql: Option<String>,

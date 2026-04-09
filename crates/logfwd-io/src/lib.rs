@@ -17,6 +17,7 @@ pub mod input;
 pub mod metric_history;
 pub mod otap_receiver;
 pub mod otlp_receiver;
+pub mod platform_sensor_beta;
 pub(crate) mod polling_input_health;
 pub(crate) mod receiver_health;
 pub(crate) mod receiver_http;

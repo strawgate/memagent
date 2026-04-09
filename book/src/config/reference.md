@@ -195,6 +195,50 @@ input:
     response_code: 200
 ```
 
+### `linux_sensor_beta` input
+
+Linux beta sensor lane for early platform-native ingestion development.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
+| `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
+
+```yaml
+input:
+  type: linux_sensor_beta
+  sensor_beta:
+    poll_interval_ms: 2000
+```
+
+### `macos_sensor_beta` input
+
+macOS beta sensor lane for EndpointSecurity-oriented adapter bring-up.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
+| `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
+
+```yaml
+input:
+  type: macos_sensor_beta
+```
+
+### `windows_sensor_beta` input
+
+Windows beta sensor lane for eBPF/ETW hybrid adapter bring-up.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
+| `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
+
+```yaml
+input:
+  type: windows_sensor_beta
+```
+
 ### `arrow_ipc` input *(not yet supported)*
 
 Reserved for future Arrow IPC ingest. Config parsing recognizes the type, but
@@ -212,6 +256,9 @@ config validation currently rejects it.
 | `tcp` | Implemented | Accept log lines over TCP. |
 | `otlp` | Implemented | Receive OTLP logs over a bound listen address. |
 | `http` | Implemented | Receive newline-delimited payloads via HTTP `POST`. |
+| `linux_sensor_beta` | Beta | Linux platform sensor beta lane (heartbeat/control events while integration is in progress). |
+| `macos_sensor_beta` | Beta | macOS platform sensor beta lane (heartbeat/control events while integration is in progress). |
+| `windows_sensor_beta` | Beta | Windows platform sensor beta lane (heartbeat/control events while integration is in progress). |
 | `arrow_ipc` | Not yet supported | Reserved for future Arrow IPC ingest. |
 
 ---

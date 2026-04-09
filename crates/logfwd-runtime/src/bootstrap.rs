@@ -389,8 +389,12 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputType::Tcp => format!("tcp   {}", i.listen.as_deref().unwrap_or(":514")),
         InputType::Udp => format!("udp   {}", i.listen.as_deref().unwrap_or(":514")),
         InputType::Otlp => format!("otlp  {}", i.listen.as_deref().unwrap_or(":4318")),
+        InputType::Http => format!("http  {}", i.listen.as_deref().unwrap_or(":8080")),
         InputType::ArrowIpc => "arrow_ipc".to_string(),
         InputType::Generator => "generator".to_string(),
+        InputType::LinuxSensorBeta => "linux_sensor_beta".to_string(),
+        InputType::MacosSensorBeta => "macos_sensor_beta".to_string(),
+        InputType::WindowsSensorBeta => "windows_sensor_beta".to_string(),
         _ => "unknown".to_string(),
     }
 }
