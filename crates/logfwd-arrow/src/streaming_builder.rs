@@ -164,16 +164,11 @@ impl StreamingBuilder {
     }
 
     fn resource_col_name(key: &str) -> String {
-        let mut out = String::with_capacity("_resource_".len() + key.len());
-        out.push_str("_resource_");
-        for ch in key.chars() {
-            if ch.is_ascii_alphanumeric() {
-                out.push(ch.to_ascii_lowercase());
-            } else {
-                out.push('_');
-            }
-        }
-        out
+        // Canonical prefix + verbatim key. No mangling — the key is
+        // preserved exactly as the OTLP semantic convention defines it.
+        // Must match RESOURCE_PREFIX in star_schema.rs and
+        // DEFAULT_RESOURCE_PREFIX in field_names.rs.
+        format!("resource.attributes.{key}")
     }
 
     /// Start a new batch. Takes ownership of the input buffer via Bytes
@@ -773,7 +768,7 @@ impl StreamingBuilder {
             }
         }
 
-        // Emit _resource_* columns unconditionally (even for empty batches) so
+        // Emit resource.attributes.* columns unconditionally (even for empty batches) so
         // that the schema is identical regardless of row count. Arrow pipelines
         // that concatenate or compare batches require a consistent schema; omitting
         // these columns for num_rows == 0 would cause schema mismatch errors.
@@ -1030,7 +1025,7 @@ impl StreamingBuilder {
             }
         }
 
-        // Emit _resource_* columns unconditionally (even for empty batches) so
+        // Emit resource.attributes.* columns unconditionally (even for empty batches) so
         // that the schema is identical regardless of row count. Arrow pipelines
         // that concatenate or compare batches require a consistent schema; omitting
         // these columns for num_rows == 0 would cause schema mismatch errors.
@@ -2257,7 +2252,7 @@ mod tests {
         assert_eq!(batch.num_rows(), 1);
 
         let service = batch
-            .column_by_name("_resource_service_name")
+            .column_by_name("resource.attributes.service.name")
             .expect("service resource column");
         let service = service
             .as_any()
@@ -2266,7 +2261,7 @@ mod tests {
         assert_eq!(service.value(0), "checkout");
 
         let namespace = batch
-            .column_by_name("_resource_k8s_namespace")
+            .column_by_name("resource.attributes.k8s.namespace")
             .expect("namespace resource column");
         let namespace = namespace
             .as_any()
@@ -2276,10 +2271,10 @@ mod tests {
 
         let schema = batch.schema();
         let service_field = schema
-            .field_with_name("_resource_service_name")
+            .field_with_name("resource.attributes.service.name")
             .expect("service field");
         let namespace_field = schema
-            .field_with_name("_resource_k8s_namespace")
+            .field_with_name("resource.attributes.k8s.namespace")
             .expect("namespace field");
         assert_eq!(
             service_field
@@ -2308,9 +2303,9 @@ mod tests {
         assert_eq!(view_batch.num_rows(), 0);
         assert!(
             view_batch
-                .column_by_name("_resource_service_name")
+                .column_by_name("resource.attributes.service.name")
                 .is_some(),
-            "empty view batch should preserve _resource_* schema"
+            "empty view batch should preserve resource.attributes.* schema"
         );
 
         let mut detached_builder = StreamingBuilder::new(false);
@@ -2322,9 +2317,9 @@ mod tests {
         assert_eq!(detached_batch.num_rows(), 0);
         assert!(
             detached_batch
-                .column_by_name("_resource_service_name")
+                .column_by_name("resource.attributes.service.name")
                 .is_some(),
-            "empty detached batch should preserve _resource_* schema"
+            "empty detached batch should preserve resource.attributes.* schema"
         );
     }
 

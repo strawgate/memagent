@@ -1,11 +1,9 @@
 //! OTLP HTTP receiver input source.
 //!
 //! Listens for OTLP ExportLogsServiceRequest via HTTP POST, decodes the
-//! protobuf, and produces JSON lines that the scanner can process.
+//! protobuf or JSON payload, and produces structured Arrow record batches.
 //!
 //! Endpoint: POST /v1/logs (protobuf or JSON)
-//!
-//! This replaces the hand-rolled `--blackhole` with a proper pipeline input.
 
 mod convert;
 mod decode;
@@ -23,6 +21,7 @@ use std::sync::{Arc, mpsc};
 
 use arrow::record_batch::RecordBatch;
 use axum::routing::post;
+use logfwd_types::field_names;
 use tokio::sync::oneshot;
 
 use crate::background_http_task::BackgroundHttpTask;
@@ -45,28 +44,16 @@ pub struct OtlpReceiverInput {
     health: Arc<AtomicU8>,
 }
 
-#[derive(Clone, Copy)]
-enum ReceiverMode {
-    JsonLines,
-    StructuredBatch,
-}
-
-enum ReceiverPayload {
-    JsonLines {
-        lines: Vec<u8>,
-        accounted_bytes: u64,
-    },
-    Batch {
-        batch: RecordBatch,
-        accounted_bytes: u64,
-    },
+struct ReceiverPayload {
+    batch: RecordBatch,
+    accounted_bytes: u64,
 }
 
 struct OtlpServerState {
     tx: mpsc::SyncSender<ReceiverPayload>,
     is_running: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
-    mode: ReceiverMode,
+    resource_prefix: String,
     stats: Option<Arc<ComponentStats>>,
 }
 
@@ -74,13 +61,7 @@ impl OtlpReceiverInput {
     /// Bind an HTTP server on `addr` (e.g. "0.0.0.0:4318").
     /// Spawns a background thread to handle requests.
     pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
-        Self::new_with_capacity_mode_and_stats(
-            name,
-            addr,
-            CHANNEL_BOUND,
-            ReceiverMode::JsonLines,
-            None,
-        )
+        Self::new_with_capacity_and_stats(name, addr, CHANNEL_BOUND, None)
     }
 
     /// Like [`Self::new`], but wires input diagnostics into receiver-side
@@ -90,70 +71,19 @@ impl OtlpReceiverInput {
         addr: &str,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_mode_and_stats(
-            name,
-            addr,
-            CHANNEL_BOUND,
-            ReceiverMode::JsonLines,
-            Some(stats),
-        )
-    }
-
-    /// Like [`Self::new`], but emits structured batches directly instead of
-    /// JSON lines.
-    pub fn new_structured(name: impl Into<String>, addr: &str) -> io::Result<Self> {
-        Self::new_with_capacity_mode_and_stats(
-            name,
-            addr,
-            CHANNEL_BOUND,
-            ReceiverMode::StructuredBatch,
-            None,
-        )
-    }
-
-    /// Like [`Self::new_structured`], but wires input diagnostics into
-    /// receiver-side transport and decode failures.
-    pub fn new_structured_with_stats(
-        name: impl Into<String>,
-        addr: &str,
-        stats: Arc<ComponentStats>,
-    ) -> io::Result<Self> {
-        Self::new_with_capacity_mode_and_stats(
-            name,
-            addr,
-            CHANNEL_BOUND,
-            ReceiverMode::StructuredBatch,
-            Some(stats),
-        )
+        Self::new_with_capacity_and_stats(name, addr, CHANNEL_BOUND, Some(stats))
     }
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
     #[cfg(test)]
     fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
-        Self::new_with_capacity_mode_and_stats(name, addr, capacity, ReceiverMode::JsonLines, None)
+        Self::new_with_capacity_and_stats(name, addr, capacity, None)
     }
 
-    #[cfg(test)]
     fn new_with_capacity_and_stats(
         name: impl Into<String>,
         addr: &str,
         capacity: usize,
-        stats: Arc<ComponentStats>,
-    ) -> io::Result<Self> {
-        Self::new_with_capacity_mode_and_stats(
-            name,
-            addr,
-            capacity,
-            ReceiverMode::JsonLines,
-            Some(stats),
-        )
-    }
-
-    fn new_with_capacity_mode_and_stats(
-        name: impl Into<String>,
-        addr: &str,
-        capacity: usize,
-        mode: ReceiverMode,
         stats: Option<Arc<ComponentStats>>,
     ) -> io::Result<Self> {
         let std_listener = std::net::TcpListener::bind(addr)
@@ -170,7 +100,7 @@ impl OtlpReceiverInput {
             tx,
             is_running: Arc::clone(&is_running),
             health: Arc::clone(&health),
-            mode,
+            resource_prefix: field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
             stats,
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -254,43 +184,20 @@ impl InputSource for OtlpReceiverInput {
         let Some(rx) = self.rx.as_ref() else {
             return Ok(vec![]);
         };
-        let mut all = Vec::new();
-        let mut all_accounted_bytes = 0_u64;
         let mut batches = Vec::new();
 
         while let Ok(data) = rx.try_recv() {
-            match data {
-                ReceiverPayload::JsonLines {
-                    lines,
-                    accounted_bytes,
-                } => {
-                    all.extend_from_slice(&lines);
-                    all_accounted_bytes = all_accounted_bytes.saturating_add(accounted_bytes);
-                }
-                ReceiverPayload::Batch {
-                    batch,
-                    accounted_bytes,
-                } => batches.push((batch, accounted_bytes)),
-            }
+            batches.push((data.batch, data.accounted_bytes));
         }
 
-        let mut events = Vec::with_capacity((!all.is_empty()) as usize + batches.len());
-        if !all.is_empty() {
-            events.push(InputEvent::Data {
-                bytes: all,
+        let events: Vec<InputEvent> = batches
+            .into_iter()
+            .map(|(batch, accounted_bytes)| InputEvent::Batch {
+                batch,
                 source_id: None,
-                accounted_bytes: all_accounted_bytes,
-            });
-        }
-        events.extend(
-            batches
-                .into_iter()
-                .map(|(batch, accounted_bytes)| InputEvent::Batch {
-                    batch,
-                    source_id: None,
-                    accounted_bytes,
-                }),
-        );
+                accounted_bytes,
+            })
+            .collect();
         Ok(events)
     }
 
@@ -304,15 +211,6 @@ impl InputSource for OtlpReceiverInput {
             ComponentHealth::Failed
         } else {
             stored
-        }
-    }
-}
-
-impl ReceiverPayload {
-    fn is_empty(&self) -> bool {
-        match self {
-            ReceiverPayload::JsonLines { lines, .. } => lines.is_empty(),
-            ReceiverPayload::Batch { batch, .. } => batch.num_rows() == 0,
         }
     }
 }

@@ -1,7 +1,7 @@
 //! Flat ↔ OTAP star schema conversion for Arrow RecordBatches.
 //!
 //! logfwd uses a **flat schema**: one `RecordBatch` with all fields as columns.
-//! Resource attributes are prefixed with `_resource_*`. This is directly
+//! Resource attributes are prefixed with `resource.attributes.*``. This is directly
 //! queryable by DuckDB, Polars, DataFusion with zero schema knowledge.
 //!
 //! OTAP uses a **star schema**: 4 tables with foreign keys (LOGS fact table +
@@ -57,7 +57,12 @@ const WELL_KNOWN_TRACE_ID: &[&str] = &["trace_id"];
 const WELL_KNOWN_SPAN_ID: &[&str] = &["span_id"];
 const WELL_KNOWN_FLAGS: &[&str] = &["flags", "trace_flags"];
 
-const RESOURCE_PREFIX: &str = "_resource_";
+/// Default resource attribute prefix. Use `field_names::DEFAULT_RESOURCE_PREFIX`
+/// from the types crate; kept here as a local alias for readability.
+const RESOURCE_PREFIX: &str = "resource.attributes.";
+
+/// Legacy prefix for backwards compatibility with older batches.
+const LEGACY_RESOURCE_PREFIX: &str = "_resource_";
 
 // ---------------------------------------------------------------------------
 // Attribute type tags (stored in the `type` column of attrs tables)
@@ -118,7 +123,7 @@ pub fn attrs_schema() -> Schema {
 ///    Without this, `build_log_attrs` would see a StructArray, call
 ///    `str_value_at` which returns `""` for unknown types, and emit a NULL
 ///    attr row — silently dropping the field value.
-/// 2. Scans columns for `_resource_*` prefix, extracts unique resource
+/// 2. Scans columns for `resource.attributes.*` prefix, extracts unique resource
 ///    attribute sets, assigns `resource_id`, builds RESOURCE_ATTRS table.
 /// 3. Maps well-known columns to LOGS fact table fields.
 /// 4. Remaining columns become LOG_ATTRS rows (column-to-row pivot).
@@ -159,7 +164,11 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
     for (idx, field) in schema.fields().iter().enumerate() {
         let name = field.name().as_str();
 
-        if let Some(stripped) = name.strip_prefix(RESOURCE_PREFIX) {
+        // Check both current and legacy resource attribute prefixes.
+        if let Some(stripped) = name
+            .strip_prefix(RESOURCE_PREFIX)
+            .or_else(|| name.strip_prefix(LEGACY_RESOURCE_PREFIX))
+        {
             resource_cols.push((stripped.to_string(), idx));
             continue;
         }
@@ -324,7 +333,7 @@ impl TypedColumn {
 /// 1. Reads LOG_ATTRS: unpivots rows grouped by parent_id into columns,
 ///    preserving the original Arrow type (string, int, double, bool).
 /// 2. Reads RESOURCE_ATTRS: groups by parent_id, prefixes keys with
-///    `_resource_`, scatters to rows via resource_id from the LOGS table.
+///    `resource.attributes.`, scatters to rows via resource_id from the LOGS table.
 /// 3. Maps well-known LOGS fields back: time_unix_nano → `_timestamp`,
 ///    severity_text → `level`, body_str → `message`.
 /// 4. Combines into a single flat `RecordBatch`.
@@ -457,7 +466,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         str::to_string,                 // no prefix
     )?;
 
-    // --- Unpivot RESOURCE_ATTRS → _resource_* columns ---
+    // --- Unpivot RESOURCE_ATTRS → resource.attributes.* columns ---
     // Build resource_id → parent_id mapping: for each row, scatter resource
     // attrs via the LOGS table's resource_id column.
     unpivot_attrs_to_flat(
@@ -1492,7 +1501,7 @@ fn scatter_resource_attrs(
     resource_ids: &UInt32Array,
     num_rows: usize,
 ) {
-    // Find all _resource_* columns.
+    // Find all resource.attributes.* columns.
     let resource_col_indices: Vec<usize> = col_index
         .iter()
         .filter(|(name, _)| name.starts_with(RESOURCE_PREFIX))
@@ -1505,6 +1514,7 @@ fn scatter_resource_attrs(
 
     // For each resource column, build a map of resource_id → value from
     // the template rows, then scatter to all matching rows.
+    // Resource attrs are always strings (from resource.attributes.* flat columns).
     for &col_pos in &resource_col_indices {
         match &flat_cols[col_pos].1 {
             TypedColumn::Str(values) => {
@@ -1588,8 +1598,8 @@ mod tests {
             Field::new("_timestamp", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("message", DataType::Utf8, true),
-            Field::new("_resource_service_name", DataType::Utf8, true),
-            Field::new("_resource_k8s_pod", DataType::Utf8, true),
+            Field::new("resource.attributes.service_name", DataType::Utf8, true),
+            Field::new("resource.attributes.k8s_pod", DataType::Utf8, true),
             Field::new("host", DataType::Utf8, true),
             Field::new("status", DataType::Int64, true),
         ]));
@@ -1691,7 +1701,7 @@ mod tests {
 
         // _resource_service_name
         let rs_idx = rt_schema
-            .index_of("_resource_service_name")
+            .index_of("resource.attributes.service_name")
             .expect("resource_service_name col");
         let rs_arr = roundtrip
             .column(rs_idx)
@@ -1704,7 +1714,7 @@ mod tests {
 
         // _resource_k8s_pod
         let rp_idx = rt_schema
-            .index_of("_resource_k8s_pod")
+            .index_of("resource.attributes.k8s_pod")
             .expect("resource_k8s_pod col");
         let rp_arr = roundtrip
             .column(rp_idx)
@@ -1803,7 +1813,7 @@ mod tests {
     #[test]
     fn batch_with_only_resource_columns() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("_resource_service", DataType::Utf8, true),
+            Field::new("resource.attributes.service", DataType::Utf8, true),
             Field::new("_resource_env", DataType::Utf8, true),
         ]));
 
@@ -1824,7 +1834,7 @@ mod tests {
 
         let svc_idx = roundtrip
             .schema()
-            .index_of("_resource_service")
+            .index_of("resource.attributes.service")
             .expect("svc");
         let svc_arr = roundtrip
             .column(svc_idx)

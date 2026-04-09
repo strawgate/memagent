@@ -1012,24 +1012,6 @@ output:
     }
 
     #[test]
-    fn otlp_structured_ingress_is_disabled_when_keep_raw_is_required() {
-        let scan_config = ScanConfig {
-            keep_raw: true,
-            ..ScanConfig::default()
-        };
-        assert!(!input_build::otlp_uses_structured_ingress(&scan_config));
-    }
-
-    #[test]
-    fn otlp_structured_ingress_is_enabled_when_keep_raw_is_not_required() {
-        let scan_config = ScanConfig {
-            keep_raw: false,
-            ..ScanConfig::default()
-        };
-        assert!(input_build::otlp_uses_structured_ingress(&scan_config));
-    }
-
-    #[test]
     fn test_pipeline_with_processor() {
         use std::sync::atomic::Ordering;
 

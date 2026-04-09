@@ -302,7 +302,7 @@ mod tests {
             .expect("batch");
 
         let service = batch
-            .column_by_name("_resource_service_name")
+            .column_by_name("resource.attributes.service.name")
             .expect("resource service col")
             .as_any()
             .downcast_ref::<StringArray>()
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(service.value(1), "checkout");
 
         let ns = batch
-            .column_by_name("_resource_k8s_namespace")
+            .column_by_name("resource.attributes.k8s.namespace")
             .expect("resource namespace col")
             .as_any()
             .downcast_ref::<StringArray>()
@@ -338,7 +338,7 @@ mod tests {
         let batch = scanner.scan(Bytes::from(input.to_vec())).expect("batch");
 
         let service = batch
-            .column_by_name("_resource_service_name")
+            .column_by_name("resource.attributes.service.name")
             .expect("resource service col")
             .as_any()
             .downcast_ref::<arrow::array::StringViewArray>()
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(service.value(1), "checkout");
 
         let ns = batch
-            .column_by_name("_resource_k8s_namespace")
+            .column_by_name("resource.attributes.k8s.namespace")
             .expect("resource namespace col")
             .as_any()
             .downcast_ref::<arrow::array::StringViewArray>()
@@ -358,7 +358,7 @@ mod tests {
         // Verify that the original dotted key is stored in field metadata.
         let schema = batch.schema();
         let svc_field = schema
-            .field_with_name("_resource_service_name")
+            .field_with_name("resource.attributes.service.name")
             .expect("field exists");
         assert_eq!(
             svc_field

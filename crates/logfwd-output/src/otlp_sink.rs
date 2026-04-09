@@ -186,7 +186,7 @@ impl OtlpSink {
         };
 
         // Resolve column roles and downcast arrays once for the whole batch.
-        let columns = resolve_batch_columns(batch);
+        let columns = resolve_batch_columns(batch, field_names::DEFAULT_RESOURCE_PREFIX);
 
         // Phase 1: encode all LogRecords and assign each row to a resource group.
         let mut records_buf: Vec<u8> = Vec::with_capacity(num_rows * 128);
@@ -372,7 +372,7 @@ impl OtlpSink {
             batch
         };
 
-        let columns = resolve_batch_columns(batch);
+        let columns = resolve_batch_columns(batch, field_names::DEFAULT_RESOURCE_PREFIX);
         self.encoder_buf.reserve(num_rows * 128);
 
         for row in 0..num_rows {
@@ -723,9 +723,21 @@ struct BatchColumns<'a> {
     span_id_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the `flags` / `trace_flags` column (uint32, OTLP field 8).
     flags_col: Option<(usize, &'a PrimitiveArray<Int64Type>)>,
+    /// Severity number column (Int64, OTLP severity_number).
+    #[allow(dead_code)]
+    severity_num_col: Option<(usize, &'a PrimitiveArray<Int64Type>)>,
+    /// Observed timestamp column (Int64, nanoseconds).
+    #[allow(dead_code)]
+    observed_ts_col: Option<(usize, &'a dyn Array)>,
+    /// Scope name column.
+    #[allow(dead_code)]
+    scope_name_col: Option<(usize, OtlpStrCol<'a>)>,
+    /// Scope version column.
+    #[allow(dead_code)]
+    scope_version_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Non-special attribute columns: (field_name, pre-downcast array).
     attribute_cols: Vec<(String, AttrArray<'a>)>,
-    /// `_resource_*` columns promoted to OTLP Resource attributes.
+    /// Resource attribute columns promoted to OTLP Resource attributes.
     resource_cols: Vec<(String, AttrArray<'a>)>,
 }
 
@@ -739,7 +751,7 @@ fn resolve_otlp_str_col(col: &dyn Array) -> Option<OtlpStrCol<'_>> {
 }
 
 /// Scan the batch schema once and resolve column roles and downcast arrays.
-fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
+fn resolve_batch_columns<'a>(batch: &'a RecordBatch, resource_prefix: &str) -> BatchColumns<'a> {
     let schema = batch.schema();
     let mut timestamp_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut timestamp_num_col: Option<(usize, &dyn Array)> = None;
@@ -840,6 +852,11 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         }
     }
 
+    // --- Second pass: new well-known columns and attribute/resource classification ---
+    let mut severity_num_col: Option<(usize, &PrimitiveArray<Int64Type>)> = None;
+    let mut observed_ts_col: Option<(usize, &dyn Array)> = None;
+    let mut scope_name_col: Option<(usize, OtlpStrCol<'_>)> = None;
+    let mut scope_version_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut attribute_cols: Vec<(String, AttrArray<'_>)> = Vec::new();
     let mut resource_cols: Vec<(String, AttrArray<'_>)> = Vec::new();
     for (idx, field) in schema.fields().iter().enumerate() {
@@ -847,15 +864,60 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
             continue;
         }
         let field_name = field.name().as_str();
-        if field_name.starts_with("_resource_") {
-            // Prefer the original key stored in field metadata (reversible).
-            // Fall back to stripping the prefix for backwards-compatibility with
-            // batches that pre-date the metadata annotation.
-            let original_key = field
-                .metadata()
-                .get("logfwd.resource_key")
-                .cloned()
-                .unwrap_or_else(|| field_name.trim_start_matches("_resource_").to_string());
+
+        // Severity number — use directly instead of deriving from text.
+        if field_name == field_names::SEVERITY_NUMBER {
+            if severity_num_col.is_none() && matches!(field.data_type(), DataType::Int64) {
+                severity_num_col = Some((idx, batch.column(idx).as_primitive::<Int64Type>()));
+            }
+            continue;
+        }
+
+        // Observed timestamp.
+        if field_name == field_names::OBSERVED_TIMESTAMP {
+            if observed_ts_col.is_none()
+                && matches!(
+                    field.data_type(),
+                    DataType::Int64 | DataType::UInt64 | DataType::Timestamp(_, _)
+                )
+            {
+                observed_ts_col = Some((idx, batch.column(idx).as_ref()));
+            }
+            continue;
+        }
+
+        // Scope metadata.
+        if field_name == field_names::SCOPE_NAME {
+            if scope_name_col.is_none() {
+                scope_name_col =
+                    resolve_otlp_str_col(batch.column(idx).as_ref()).map(|arr| (idx, arr));
+            }
+            continue;
+        }
+        if field_name == field_names::SCOPE_VERSION {
+            if scope_version_col.is_none() {
+                scope_version_col =
+                    resolve_otlp_str_col(batch.column(idx).as_ref()).map(|arr| (idx, arr));
+            }
+            continue;
+        }
+
+        // Resource attributes — check configured prefix and legacy `_resource_` prefix.
+        let resource_key = field_name
+            .strip_prefix(resource_prefix)
+            .map(str::to_string)
+            .or_else(|| {
+                field_name
+                    .strip_prefix(field_names::LEGACY_RESOURCE_PREFIX)
+                    .map(|stripped| {
+                        field
+                            .metadata()
+                            .get("logfwd.resource_key")
+                            .cloned()
+                            .unwrap_or_else(|| stripped.to_string())
+                    })
+            });
+        if let Some(original_key) = resource_key {
             let resource_attr = match field.data_type() {
                 DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
                 DataType::Float64 => {
@@ -908,6 +970,10 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         trace_id_col,
         span_id_col,
         flags_col,
+        severity_num_col,
+        observed_ts_col,
+        scope_name_col,
+        scope_version_col,
         attribute_cols,
         resource_cols,
     }
@@ -2132,18 +2198,16 @@ mod tests {
         // Build fields with `logfwd.resource_key` metadata — the same way
         // `StreamingBuilder` produces them — so that the original OTLP keys
         // (containing dots) survive the round-trip through Arrow column names.
-        let svc_field = Field::new("_resource_service_name", DataType::Utf8, true).with_metadata(
-            std::collections::HashMap::from([(
+        let svc_field = Field::new("resource.attributes.service.name", DataType::Utf8, true)
+            .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "service.name".to_string(),
-            )]),
-        );
-        let ns_field = Field::new("_resource_k8s_namespace", DataType::Utf8, true).with_metadata(
-            std::collections::HashMap::from([(
+            )]));
+        let ns_field = Field::new("resource.attributes.k8s.namespace", DataType::Utf8, true)
+            .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "k8s.namespace".to_string(),
-            )]),
-        );
+            )]));
         let schema = Arc::new(Schema::new(vec![
             Field::new("message", DataType::Utf8, true),
             svc_field,
@@ -2257,7 +2321,7 @@ mod tests {
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("message", DataType::Utf8, true),
-            Field::new("_resource_service_name", DataType::Utf8, true),
+            Field::new("resource.attributes.service.name", DataType::Utf8, true),
             Field::new("host", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
@@ -2283,7 +2347,7 @@ mod tests {
         assert!(
             lr.attributes
                 .iter()
-                .all(|kv| kv.key != "_resource_service_name"),
+                .all(|kv| kv.key != "resource.attributes.service.name"),
             "resource columns must not be log record attrs"
         );
     }
@@ -2294,16 +2358,20 @@ mod tests {
         use opentelemetry_proto::tonic::common::v1::any_value::Value;
         use prost::Message;
 
-        let shard_field = Field::new("_resource_service_shard", DataType::Int64, true)
+        let shard_field = Field::new("resource.attributes.service.shard", DataType::Int64, true)
             .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "service.shard".to_string(),
             )]));
-        let enabled_field = Field::new("_resource_service_enabled", DataType::Boolean, true)
-            .with_metadata(std::collections::HashMap::from([(
-                "logfwd.resource_key".to_string(),
-                "service.enabled".to_string(),
-            )]));
+        let enabled_field = Field::new(
+            "resource.attributes.service.enabled",
+            DataType::Boolean,
+            true,
+        )
+        .with_metadata(std::collections::HashMap::from([(
+            "logfwd.resource_key".to_string(),
+            "service.enabled".to_string(),
+        )]));
         let schema = Arc::new(Schema::new(vec![
             Field::new("message", DataType::Utf8, true),
             shard_field,
@@ -2397,13 +2465,12 @@ mod tests {
         use opentelemetry_proto::tonic::common::v1::any_value::Value;
         use prost::Message;
 
-        let svc_field = Field::new("_resource_service_name", DataType::Utf8, true).with_metadata(
-            std::collections::HashMap::from([(
+        let svc_field = Field::new("resource.attributes.service.name", DataType::Utf8, true)
+            .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "service.name".to_string(),
-            )]),
-        );
-        let shard_field = Field::new("_resource_service_shard", DataType::Int64, true)
+            )]));
+        let shard_field = Field::new("resource.attributes.service.shard", DataType::Int64, true)
             .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "service.shard".to_string(),

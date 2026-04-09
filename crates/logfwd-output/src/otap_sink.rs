@@ -571,8 +571,8 @@ mod tests {
             Field::new("message", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("_timestamp", DataType::Utf8, true),
-            Field::new("_resource_host", DataType::Utf8, true),
-            Field::new("_resource_namespace", DataType::Utf8, true),
+            Field::new("resource.attributes.host", DataType::Utf8, true),
+            Field::new("resource.attributes.namespace", DataType::Utf8, true),
             Field::new("request_id", DataType::Utf8, true),
             Field::new("status", DataType::Int64, true),
         ]));
@@ -893,13 +893,13 @@ mod tests {
 
         // Check resource attributes are preserved.
         let host_idx = flat_schema
-            .index_of("_resource_host")
-            .expect("should have _resource_host column");
+            .index_of("resource.attributes.host")
+            .expect("should have resource.attributes.host column");
         let host_arr = flat
             .column(host_idx)
             .as_any()
             .downcast_ref::<StringArray>()
-            .expect("_resource_host should be StringArray");
+            .expect("resource.attributes.host should be StringArray");
         assert_eq!(host_arr.value(0), "host-a");
         assert_eq!(host_arr.value(1), "host-a");
         assert_eq!(host_arr.value(2), "host-b");

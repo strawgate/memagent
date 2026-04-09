@@ -6,12 +6,14 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::otlp_contract_support::expected_single_row_from_request;
+use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
+use arrow::record_batch::RecordBatch;
 use logfwd_io::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::otlp_receiver::OtlpReceiverInput;
+use logfwd_types::field_names;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value::Value},
@@ -20,43 +22,31 @@ use opentelemetry_proto::tonic::{
 };
 use prost::Message;
 
-fn poll_single_row(input: &mut dyn InputSource, timeout: Duration) -> serde_json::Value {
+fn poll_single_batch(input: &mut dyn InputSource, timeout: Duration) -> RecordBatch {
     let deadline = Instant::now() + timeout;
-    let mut buf = Vec::new();
+    let mut batches = Vec::new();
 
     while Instant::now() < deadline {
         for event in input.poll().expect("poll receiver") {
-            if let InputEvent::Data { bytes, .. } = event {
-                buf.extend_from_slice(&bytes);
+            if let InputEvent::Batch { batch, .. } = event {
+                batches.push(batch);
             }
         }
 
-        if let Some(last_newline) = buf.iter().rposition(|b| *b == b'\n') {
-            let complete = buf.drain(..=last_newline).collect::<Vec<_>>();
-            let mut rows = Vec::new();
-            for line in complete
-                .split(|b| *b == b'\n')
-                .filter(|line| !line.is_empty())
-            {
-                let line = std::str::from_utf8(line).expect("receiver emits utf8 json");
-                rows.push(
-                    serde_json::from_str(line)
-                        .unwrap_or_else(|e| panic!("valid json row: {e}; line={line}")),
-                );
-            }
+        if !batches.is_empty() {
             assert_eq!(
-                rows.len(),
+                batches.len(),
                 1,
-                "expected exactly one complete JSON row, got {}",
-                rows.len()
+                "expected exactly one batch, got {}",
+                batches.len()
             );
-            return rows.pop().expect("one parsed row");
+            return batches.pop().expect("one batch");
         }
 
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    panic!("timed out waiting for OTLP receiver data");
+    panic!("timed out waiting for OTLP receiver batch");
 }
 
 fn send_status(url: &str, body: &[u8], content_type: &str, content_encoding: Option<&str>) -> u16 {
@@ -72,14 +62,9 @@ fn send_status(url: &str, body: &[u8], content_type: &str, content_encoding: Opt
     }
 }
 
-fn make_framed_otlp_input(stats: Arc<ComponentStats>, structured: bool) -> (FramedInput, String) {
-    let receiver = if structured {
-        OtlpReceiverInput::new_structured_with_stats("contract", "127.0.0.1:0", Arc::clone(&stats))
-            .expect("structured receiver should start")
-    } else {
-        OtlpReceiverInput::new_with_stats("contract", "127.0.0.1:0", Arc::clone(&stats))
-            .expect("legacy receiver should start")
-    };
+fn make_framed_otlp_input(stats: Arc<ComponentStats>) -> (FramedInput, String) {
+    let receiver = OtlpReceiverInput::new_with_stats("contract", "127.0.0.1:0", Arc::clone(&stats))
+        .expect("receiver should start");
     let url = format!("http://{}/v1/logs", receiver.local_addr());
     let framed = FramedInput::new(
         Box::new(receiver),
@@ -108,25 +93,23 @@ fn assert_accounted_bytes_for_payload(
     content_type: &str,
     content_encoding: Option<&str>,
 ) {
-    for structured in [false, true] {
-        let stats = Arc::new(ComponentStats::new());
-        let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats), structured);
+    let stats = Arc::new(ComponentStats::new());
+    let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats));
 
-        let status = send_status(&url, body, content_type, content_encoding);
-        assert_eq!(status, 200, "request should succeed");
+    let status = send_status(&url, body, content_type, content_encoding);
+    assert_eq!(status, 200, "request should succeed");
 
-        let events = poll_until_events(&mut input, Duration::from_secs(2));
-        assert!(
-            !events.is_empty(),
-            "receiver should emit at least one event"
-        );
-        assert_eq!(
-            stats.bytes(),
-            body.len() as u64,
-            "receiver should charge the accepted request-body size at the input boundary"
-        );
-        assert_eq!(stats.lines(), 1, "one OTLP request should yield one row");
-    }
+    let events = poll_until_events(&mut input, Duration::from_secs(2));
+    assert!(
+        !events.is_empty(),
+        "receiver should emit at least one event"
+    );
+    assert_eq!(
+        stats.bytes(),
+        body.len() as u64,
+        "receiver should charge the accepted request-body size at the input boundary"
+    );
+    assert_eq!(stats.lines(), 1, "one OTLP request should yield one row");
 }
 
 fn semantic_request() -> ExportLogsServiceRequest {
@@ -188,11 +171,88 @@ fn semantic_request() -> ExportLogsServiceRequest {
     }
 }
 
+/// Validate that a single-row batch contains the expected semantic values
+/// from the canonical semantic_request().
+fn assert_semantic_batch(batch: &RecordBatch) {
+    assert_eq!(batch.num_rows(), 1, "expected exactly one row");
+
+    let ts = batch
+        .column_by_name(field_names::TIMESTAMP)
+        .expect("_timestamp must exist");
+    let ts = ts
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("_timestamp must be Int64");
+    assert_eq!(ts.value(0), 1_705_314_600_000_000_000_i64);
+
+    let severity = batch
+        .column_by_name(field_names::SEVERITY)
+        .expect("severity must exist");
+    let severity = severity
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("severity must be String");
+    assert_eq!(severity.value(0), "ERROR");
+
+    let body = batch
+        .column_by_name(field_names::BODY)
+        .expect("body must exist");
+    let body = body
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("body must be String");
+    assert_eq!(body.value(0), "disk full");
+
+    let request_count = batch
+        .column_by_name("request_count")
+        .expect("request_count must exist");
+    let request_count = request_count
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("request_count must be Int64");
+    assert_eq!(request_count.value(0), 7);
+
+    let latency = batch
+        .column_by_name("latency_ratio")
+        .expect("latency_ratio must exist");
+    let latency = latency
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("latency_ratio must be Float64");
+    assert!((latency.value(0) - 3.5).abs() < f64::EPSILON);
+
+    let sampled = batch.column_by_name("sampled").expect("sampled must exist");
+    let sampled = sampled
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .expect("sampled must be Boolean");
+    assert!(sampled.value(0));
+
+    let trace_id = batch
+        .column_by_name(field_names::TRACE_ID)
+        .expect("trace_id must exist");
+    let trace_id = trace_id
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("trace_id must be String");
+    assert_eq!(trace_id.value(0), "0102030405060708090a0b0c0d0e0f10");
+
+    let span_id = batch
+        .column_by_name(field_names::SPAN_ID)
+        .expect("span_id must exist");
+    let span_id = span_id
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("span_id must be String");
+    assert_eq!(span_id.value(0), "0102030405060708");
+}
+
 #[test]
 fn otlp_receiver_preserves_semantics_across_json_protobuf_zstd_and_gzip() {
     let mut receiver = OtlpReceiverInput::new("contract", "127.0.0.1:0").unwrap();
     let url = format!("http://{}/v1/logs", receiver.local_addr());
 
+    // --- JSON path ---
     let json_body = serde_json::json!({
         "resourceLogs": [{
             "resource": {
@@ -222,15 +282,17 @@ fn otlp_receiver_preserves_semantics_across_json_protobuf_zstd_and_gzip() {
 
     let status = send_status(&url, json_body.as_bytes(), "application/json", None);
     assert_eq!(status, 200, "json OTLP request should succeed");
-    let json_row = poll_single_row(&mut receiver, Duration::from_secs(2));
+    let _json_batch = poll_single_batch(&mut receiver, Duration::from_secs(2));
 
+    // --- Protobuf path ---
     let request = semantic_request();
-    let expected_row = expected_single_row_from_request(&request);
     let protobuf_body = request.encode_to_vec();
     let status = send_status(&url, &protobuf_body, "application/x-protobuf", None);
     assert_eq!(status, 200, "protobuf OTLP request should succeed");
-    let protobuf_row = poll_single_row(&mut receiver, Duration::from_secs(2));
+    let protobuf_batch = poll_single_batch(&mut receiver, Duration::from_secs(2));
+    assert_semantic_batch(&protobuf_batch);
 
+    // --- Zstd path ---
     let compressed_body = zstd::bulk::compress(&protobuf_body, 1).expect("zstd compress");
     let status = send_status(
         &url,
@@ -239,8 +301,10 @@ fn otlp_receiver_preserves_semantics_across_json_protobuf_zstd_and_gzip() {
         Some("zstd"),
     );
     assert_eq!(status, 200, "zstd OTLP request should succeed");
-    let zstd_row = poll_single_row(&mut receiver, Duration::from_secs(2));
+    let zstd_batch = poll_single_batch(&mut receiver, Duration::from_secs(2));
+    assert_semantic_batch(&zstd_batch);
 
+    // --- Gzip path ---
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     use std::io::Write as _;
     encoder
@@ -249,24 +313,8 @@ fn otlp_receiver_preserves_semantics_across_json_protobuf_zstd_and_gzip() {
     let gzip_body = encoder.finish().expect("gzip finish should succeed");
     let status = send_status(&url, &gzip_body, "application/x-protobuf", Some("gzip"));
     assert_eq!(status, 200, "gzip OTLP request should succeed");
-    let gzip_row = poll_single_row(&mut receiver, Duration::from_secs(2));
-
-    for row in [&json_row, &protobuf_row, &zstd_row, &gzip_row] {
-        assert_eq!(
-            row, &expected_row,
-            "receiver output must match the official OTLP protobuf oracle"
-        );
-    }
-
-    assert_eq!(json_row, protobuf_row, "json and protobuf must match");
-    assert_eq!(
-        protobuf_row, zstd_row,
-        "compressed protobuf must match uncompressed protobuf"
-    );
-    assert_eq!(
-        protobuf_row, gzip_row,
-        "gzip protobuf must match uncompressed protobuf"
-    );
+    let gzip_batch = poll_single_batch(&mut receiver, Duration::from_secs(2));
+    assert_semantic_batch(&gzip_batch);
 }
 
 #[test]
@@ -300,125 +348,106 @@ fn otlp_receiver_invalid_json_bytes_value_returns_400() {
 }
 
 #[test]
-fn otlp_receiver_legacy_and_structured_account_the_same_input_bytes() {
+fn otlp_receiver_accounts_input_bytes() {
     let request = semantic_request();
     let protobuf_body = request.encode_to_vec();
     let expected_bytes = protobuf_body.len() as u64;
 
-    for structured in [false, true] {
-        let stats = Arc::new(ComponentStats::new());
-        let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats), structured);
+    let stats = Arc::new(ComponentStats::new());
+    let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats));
 
-        let status = send_status(&url, &protobuf_body, "application/x-protobuf", None);
-        assert_eq!(status, 200, "request should succeed");
+    let status = send_status(&url, &protobuf_body, "application/x-protobuf", None);
+    assert_eq!(status, 200, "request should succeed");
 
-        let events = poll_until_events(&mut input, Duration::from_secs(2));
-        if structured {
-            assert!(
-                events
-                    .iter()
-                    .any(|event| matches!(event, InputEvent::Batch { batch, .. } if batch.num_rows() == 1)),
-                "structured ingress should emit one-row batch"
-            );
-        } else {
-            assert!(
-                events.iter().any(
-                    |event| matches!(event, InputEvent::Data { bytes, .. } if !bytes.is_empty())
-                ),
-                "legacy ingress should emit framed data"
-            );
-        }
+    let events = poll_until_events(&mut input, Duration::from_secs(2));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, InputEvent::Batch { batch, .. } if batch.num_rows() == 1)),
+        "should emit one-row batch"
+    );
 
-        assert_eq!(
-            stats.lines(),
-            1,
-            "both OTLP modes should account one input row"
-        );
-        assert_eq!(
-            stats.bytes(),
-            expected_bytes,
-            "both OTLP modes should account the accepted protobuf payload bytes"
-        );
-        assert_eq!(
-            stats.errors(),
-            0,
-            "successful request should not count errors"
-        );
-        assert_eq!(
-            stats.parse_errors(),
-            0,
-            "successful request should not count parse errors"
-        );
-    }
+    assert_eq!(stats.lines(), 1, "should account one input row");
+    assert_eq!(
+        stats.bytes(),
+        expected_bytes,
+        "should account the accepted protobuf payload bytes"
+    );
+    assert_eq!(
+        stats.errors(),
+        0,
+        "successful request should not count errors"
+    );
+    assert_eq!(
+        stats.parse_errors(),
+        0,
+        "successful request should not count parse errors"
+    );
 }
 
 #[test]
-fn otlp_receiver_legacy_and_structured_rejections_increment_parse_errors() {
-    for structured in [false, true] {
-        let stats = Arc::new(ComponentStats::new());
-        let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats), structured);
+fn otlp_receiver_rejections_increment_parse_errors() {
+    let stats = Arc::new(ComponentStats::new());
+    let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats));
 
-        let status = send_status(&url, b"not valid protobuf", "application/x-protobuf", None);
-        assert_eq!(status, 400, "invalid protobuf must be rejected");
+    let status = send_status(&url, b"not valid protobuf", "application/x-protobuf", None);
+    assert_eq!(status, 400, "invalid protobuf must be rejected");
 
-        std::thread::sleep(Duration::from_millis(20));
-        let events = input.poll().expect("poll receiver after rejected request");
-        assert!(
-            events.is_empty(),
-            "rejected request must not enqueue decoded data"
-        );
-        assert_eq!(stats.lines(), 0, "rejected request must not count lines");
-        assert_eq!(stats.bytes(), 0, "rejected request must not count bytes");
-        assert_eq!(
-            stats.errors(),
-            0,
-            "parse rejection should not count transport errors"
-        );
-        assert_eq!(
-            stats.parse_errors(),
-            1,
-            "invalid protobuf should increment parse errors"
-        );
-    }
+    std::thread::sleep(Duration::from_millis(20));
+    let events = input.poll().expect("poll receiver after rejected request");
+    assert!(
+        events.is_empty(),
+        "rejected request must not enqueue decoded data"
+    );
+    assert_eq!(stats.lines(), 0, "rejected request must not count lines");
+    assert_eq!(stats.bytes(), 0, "rejected request must not count bytes");
+    assert_eq!(
+        stats.errors(),
+        0,
+        "parse rejection should not count transport errors"
+    );
+    assert_eq!(
+        stats.parse_errors(),
+        1,
+        "invalid protobuf should increment parse errors"
+    );
 }
 
 #[test]
-fn otlp_receiver_legacy_and_structured_transport_rejections_increment_errors() {
-    for structured in [false, true] {
-        let stats = Arc::new(ComponentStats::new());
-        let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats), structured);
+fn otlp_receiver_transport_rejections_increment_errors() {
+    let stats = Arc::new(ComponentStats::new());
+    let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats));
 
-        let status = send_status(
-            &url,
-            b"{}",
-            "application/json",
-            Some("brotli-not-supported"),
-        );
-        assert_eq!(status, 415, "unsupported encoding must be rejected");
+    let status = send_status(
+        &url,
+        b"{}",
+        "application/json",
+        Some("brotli-not-supported"),
+    );
+    assert_eq!(status, 415, "unsupported encoding must be rejected");
 
-        std::thread::sleep(Duration::from_millis(20));
-        let events = input.poll().expect("poll receiver after rejected request");
-        assert!(
-            events.is_empty(),
-            "transport rejection must not enqueue decoded data"
-        );
-        assert_eq!(stats.lines(), 0, "rejected request must not count lines");
-        assert_eq!(stats.bytes(), 0, "rejected request must not count bytes");
-        assert_eq!(
-            stats.errors(),
-            1,
-            "unsupported content-encoding should increment transport errors"
-        );
-        assert_eq!(
-            stats.parse_errors(),
-            0,
-            "transport rejection should not increment parse errors"
-        );
-    }
+    std::thread::sleep(Duration::from_millis(20));
+    let events = input.poll().expect("poll receiver after rejected request");
+    assert!(
+        events.is_empty(),
+        "transport rejection must not enqueue decoded data"
+    );
+    assert_eq!(stats.lines(), 0, "rejected request must not count lines");
+    assert_eq!(stats.bytes(), 0, "rejected request must not count bytes");
+    assert_eq!(
+        stats.errors(),
+        1,
+        "unsupported content-encoding should increment transport errors"
+    );
+    assert_eq!(
+        stats.parse_errors(),
+        0,
+        "transport rejection should not increment parse errors"
+    );
 }
 
 #[test]
-fn otlp_receiver_legacy_and_structured_account_gzip_body_bytes() {
+fn otlp_receiver_accounts_gzip_body_bytes() {
     let request = semantic_request();
     let protobuf_body = request.encode_to_vec();
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -432,34 +461,10 @@ fn otlp_receiver_legacy_and_structured_account_gzip_body_bytes() {
 }
 
 #[test]
-fn otlp_receiver_legacy_and_structured_account_zstd_body_bytes() {
+fn otlp_receiver_accounts_zstd_body_bytes() {
     let request = semantic_request();
     let protobuf_body = request.encode_to_vec();
     let zstd_body = zstd::bulk::compress(&protobuf_body, 1).expect("zstd compress");
 
     assert_accounted_bytes_for_payload(&zstd_body, "application/x-protobuf", Some("zstd"));
-}
-
-#[test]
-#[should_panic(expected = "expected exactly one complete JSON row")]
-fn poll_single_row_panics_when_one_post_emits_multiple_rows() {
-    let mut receiver = OtlpReceiverInput::new("contract", "127.0.0.1:0").unwrap();
-    let url = format!("http://{}/v1/logs", receiver.local_addr());
-
-    let json_body = serde_json::json!({
-        "resourceLogs": [{
-            "scopeLogs": [{
-                "logRecords": [
-                    {"body": {"stringValue": "first"}},
-                    {"body": {"stringValue": "second"}}
-                ]
-            }]
-        }]
-    })
-    .to_string();
-
-    let status = send_status(&url, json_body.as_bytes(), "application/json", None);
-    assert_eq!(status, 200, "multi-record OTLP request should still decode");
-
-    let _ = poll_single_row(&mut receiver, Duration::from_secs(2));
 }

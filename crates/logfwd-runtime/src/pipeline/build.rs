@@ -14,7 +14,7 @@ use logfwd_io::diagnostics::PipelineMetrics;
 use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory};
 use logfwd_types::pipeline::{PipelineMachine, SourceId};
 
-use super::input_build::{build_input_state, otlp_uses_structured_ingress};
+use super::input_build::build_input_state;
 use super::{InputTransform, Pipeline};
 
 impl Pipeline {
@@ -237,7 +237,6 @@ impl Pipeline {
             if matches!(input_cfg.format, Some(Format::Raw)) {
                 scan_config.keep_raw = true;
             }
-            let otlp_structured_ingress = otlp_uses_structured_ingress(&scan_config);
             let scanner = logfwd_arrow::scanner::Scanner::new(scan_config);
 
             input_transforms.push(InputTransform {
@@ -246,12 +245,7 @@ impl Pipeline {
                 input_name: input_name.clone(),
             });
 
-            inputs.push(build_input_state(
-                &input_name,
-                &resolved_cfg,
-                input_stats,
-                otlp_structured_ingress,
-            )?);
+            inputs.push(build_input_state(&input_name, &resolved_cfg, input_stats)?);
         }
 
         // Restore previously saved file offsets by fingerprint (SourceId).

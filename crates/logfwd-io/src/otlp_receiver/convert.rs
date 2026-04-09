@@ -9,100 +9,6 @@ use opentelemetry_proto::tonic::common::v1::any_value::Value;
 
 use crate::InputError;
 
-/// Shared conversion: ExportLogsServiceRequest -> newline-delimited JSON bytes.
-pub(super) fn convert_request_to_json_lines(request: &ExportLogsServiceRequest) -> Vec<u8> {
-    let mut out = Vec::new();
-
-    for resource_logs in &request.resource_logs {
-        // Extract resource attributes (e.g., service.name).
-        let mut resource_attrs: Vec<(&str, String)> = Vec::new();
-        if let Some(ref resource) = resource_logs.resource {
-            for attr in &resource.attributes {
-                if let Some(ref value) = attr.value {
-                    if let Some(value) = any_value_to_string(value) {
-                        resource_attrs.push((&attr.key, value));
-                    }
-                }
-            }
-        }
-
-        for scope_logs in &resource_logs.scope_logs {
-            for record in &scope_logs.log_records {
-                out.push(b'{');
-
-                // timestamp: prefer time_unix_nano, fall back to observed_time_unix_nano
-                // when event time is unknown (fixes #1690).
-                let ts = if record.time_unix_nano > 0 {
-                    record.time_unix_nano
-                } else {
-                    record.observed_time_unix_nano
-                };
-                if ts > 0 {
-                    out.push(b'"');
-                    out.extend_from_slice(field_names::TIMESTAMP.as_bytes());
-                    out.extend_from_slice(b"\":");
-                    write_u64_to_buf(&mut out, ts);
-                    out.push(b',');
-                }
-
-                // severity
-                if !record.severity_text.is_empty() {
-                    write_json_string_field(&mut out, field_names::SEVERITY, &record.severity_text);
-                    out.push(b',');
-                }
-
-                // body
-                if let Some(ref body_val) = record.body {
-                    if let Some(body_str) = any_value_to_string(body_val) {
-                        write_json_string_field(&mut out, field_names::BODY, &body_str);
-                        out.push(b',');
-                    }
-                }
-
-                // resource attributes
-                for (key, value) in &resource_attrs {
-                    write_json_string_field(&mut out, key, value);
-                    out.push(b',');
-                }
-
-                // log record attributes
-                for attr in &record.attributes {
-                    if let Some(ref value) = attr.value {
-                        if write_json_any_value(&mut out, &attr.key, value) {
-                            out.push(b',');
-                        }
-                    }
-                }
-
-                // trace context (write hex directly to avoid allocation)
-                if !record.trace_id.is_empty() {
-                    out.push(b'"');
-                    out.extend_from_slice(field_names::TRACE_ID.as_bytes());
-                    out.extend_from_slice(b"\":\"");
-                    write_hex_to_buf(&mut out, &record.trace_id);
-                    out.extend_from_slice(b"\",");
-                }
-                if !record.span_id.is_empty() {
-                    out.push(b'"');
-                    out.extend_from_slice(field_names::SPAN_ID.as_bytes());
-                    out.extend_from_slice(b"\":\"");
-                    write_hex_to_buf(&mut out, &record.span_id);
-                    out.extend_from_slice(b"\",");
-                }
-
-                // Remove trailing comma.
-                if out.last() == Some(&b',') {
-                    out.pop();
-                }
-
-                out.extend_from_slice(b"}\n");
-            }
-        }
-    }
-
-    out
-}
-
 pub(super) fn convert_request_to_batch(
     request: &ExportLogsServiceRequest,
     resource_prefix: &str,
@@ -280,17 +186,6 @@ fn append_hex_field(
     builder.append_decoded_str_by_idx(idx, hex_buf);
 }
 
-pub(super) fn any_value_to_string(v: &AnyValue) -> Option<String> {
-    match &v.value {
-        Some(Value::StringValue(s)) => Some(s.clone()),
-        Some(Value::IntValue(i)) => Some(i.to_string()),
-        Some(Value::DoubleValue(d)) => Some(d.to_string()),
-        Some(Value::BoolValue(b)) => Some(b.to_string()),
-        Some(Value::BytesValue(b)) => Some(hex::encode(b)),
-        _ => None,
-    }
-}
-
 pub(super) fn parse_protojson_i64(value: &serde_json::Value) -> Option<i64> {
     if let Some(n) = value.as_i64() {
         return Some(n);
@@ -436,38 +331,6 @@ pub(super) fn decode_protojson_bytes(value: &str) -> Result<Vec<u8>, base64::Dec
         .or_else(|_| STANDARD_NO_PAD.decode(value))
         .or_else(|_| URL_SAFE.decode(value))
         .or_else(|_| URL_SAFE_NO_PAD.decode(value))
-}
-
-pub(super) fn write_json_any_value(out: &mut Vec<u8>, key: &str, v: &AnyValue) -> bool {
-    match &v.value {
-        Some(Value::IntValue(i)) => {
-            write_json_key(out, key);
-            write_i64_to_buf(out, *i);
-            true
-        }
-        Some(Value::DoubleValue(d)) => {
-            write_json_key(out, key);
-            write_f64_to_buf(out, *d);
-            true
-        }
-        Some(Value::BoolValue(b)) => {
-            write_json_key(out, key);
-            out.extend_from_slice(if *b { b"true" } else { b"false" });
-            true
-        }
-        Some(Value::StringValue(s)) => {
-            write_json_string_field(out, key, s);
-            true
-        }
-        Some(Value::BytesValue(bytes)) => {
-            write_json_key(out, key);
-            out.push(b'"');
-            write_hex_to_buf(out, bytes);
-            out.push(b'"');
-            true
-        }
-        _ => false,
-    }
 }
 
 /// Write i64 to buffer without allocation using itoa algorithm.

@@ -14,11 +14,10 @@ use crate::diagnostics::ComponentStats;
 use crate::receiver_http::{declared_content_length, read_limited_body};
 use logfwd_types::diagnostics::ComponentHealth;
 
-use super::OtlpServerState;
 use super::decode::{
-    MAX_BODY_SIZE, decode_otlp_logs_with_mode, decode_otlp_logs_with_mode_json, decompress_gzip,
-    decompress_zstd,
+    MAX_BODY_SIZE, decode_otlp_json, decode_otlp_protobuf, decompress_gzip, decompress_zstd,
 };
+use super::{OtlpServerState, ReceiverPayload};
 
 pub(super) fn record_error(stats: Option<&Arc<ComponentStats>>) {
     if let Some(stats) = stats {
@@ -116,24 +115,32 @@ pub(super) async fn handle_otlp_request(
     };
     let is_json = matches!(content_type.as_deref(), Some("application/json"));
 
-    let payload = if is_json {
-        decode_otlp_logs_with_mode_json(&body, state.mode, accounted_bytes)
+    let batch = if is_json {
+        decode_otlp_json(&body, &state.resource_prefix)
     } else {
-        decode_otlp_logs_with_mode(&body, state.mode, accounted_bytes)
+        decode_otlp_protobuf(&body, &state.resource_prefix)
     };
-    let payload = match payload {
-        Ok(payload) => payload,
+    let batch = match batch {
+        Ok(batch) => batch,
         Err(msg) => {
             record_parse_error(state.stats.as_ref());
             return (StatusCode::BAD_REQUEST, msg.to_string()).into_response();
         }
     };
 
-    let send_result = if payload.is_empty() {
-        Ok(())
-    } else {
-        state.tx.try_send(payload)
+    if batch.num_rows() == 0 {
+        state
+            .health
+            .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
+        return (StatusCode::OK, [(CONTENT_TYPE, "application/json")], "{}").into_response();
+    }
+
+    let payload = ReceiverPayload {
+        batch,
+        accounted_bytes,
     };
+
+    let send_result = state.tx.try_send(payload);
 
     match send_result {
         Ok(()) => {

@@ -14,11 +14,10 @@ use prost::Message;
 use crate::InputError;
 
 use super::convert::{
-    convert_request_to_batch, convert_request_to_json_lines, decode_protojson_bytes, hex,
-    parse_protojson_f64, parse_protojson_i64, parse_protojson_u64, write_f64_to_buf,
-    write_i64_to_buf, write_json_key, write_json_string_field, write_u64_to_buf,
+    convert_request_to_batch, decode_protojson_bytes, hex, parse_protojson_f64,
+    parse_protojson_i64, parse_protojson_u64, write_f64_to_buf, write_i64_to_buf, write_json_key,
+    write_json_string_field, write_u64_to_buf,
 };
-use super::{ReceiverMode, ReceiverPayload};
 
 /// Maximum request body size: 10 MB.
 pub(super) const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -53,10 +52,47 @@ pub(super) fn read_decompressed_body(
     }
 }
 
-/// Decode an ExportLogsServiceRequest from JSON body and produce
-/// newline-delimited JSON lines. Parses the OTLP JSON structure directly
-/// since the protobuf types don't derive serde traits.
-pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
+/// Decode an OTLP ExportLogsServiceRequest from protobuf and produce a
+/// structured Arrow RecordBatch.
+pub(super) fn decode_otlp_protobuf(
+    body: &[u8],
+    resource_prefix: &str,
+) -> Result<RecordBatch, InputError> {
+    if body.is_empty() {
+        return Ok(RecordBatch::new_empty(Arc::new(
+            arrow::datatypes::Schema::empty(),
+        )));
+    }
+
+    let request = ExportLogsServiceRequest::decode(body)
+        .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
+
+    convert_request_to_batch(&request, resource_prefix)
+}
+
+/// Decode an OTLP ExportLogsServiceRequest from JSON and produce a structured
+/// Arrow RecordBatch. Parses the OTLP JSON structure directly, converts to
+/// newline-delimited JSON lines, then scans into a batch.
+pub(super) fn decode_otlp_json(
+    body: &[u8],
+    resource_prefix: &str,
+) -> Result<RecordBatch, InputError> {
+    let json_lines = decode_otlp_logs_json(body)?;
+    if json_lines.is_empty() {
+        return Ok(RecordBatch::new_empty(Arc::new(
+            arrow::datatypes::Schema::empty(),
+        )));
+    }
+    let _ = resource_prefix; // TODO: thread resource_prefix through JSON decode
+    let mut scanner = Scanner::new(ScanConfig::default());
+    scanner
+        .scan(Bytes::from(json_lines))
+        .map_err(|e| InputError::Receiver(format!("structured OTLP JSON scan error: {e}")))
+}
+
+/// Parse an OTLP JSON ExportLogsServiceRequest and produce newline-delimited
+/// JSON lines. Used internally by [`decode_otlp_json`] to feed the scanner.
+fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
     if body.is_empty() {
         return Ok(Vec::new());
     }
@@ -67,9 +103,6 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
     let resource_logs = match root.get("resourceLogs").and_then(|v| v.as_array()) {
         Some(arr) => arr,
         None => {
-            // An object that parses as valid JSON but lacks `resourceLogs` is
-            // not a valid ExportLogsServiceRequest. Return 400 so the client
-            // knows its payload was rejected rather than silently discarding it.
             return Err(InputError::Receiver(
                 "missing required field 'resourceLogs' in OTLP JSON payload".to_string(),
             ));
@@ -188,27 +221,6 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
     Ok(out)
 }
 
-pub(super) fn decode_otlp_logs_with_mode_json(
-    body: &[u8],
-    mode: ReceiverMode,
-    accounted_bytes: u64,
-) -> Result<ReceiverPayload, InputError> {
-    match mode {
-        ReceiverMode::JsonLines => {
-            decode_otlp_logs_json(body).map(|lines| ReceiverPayload::JsonLines {
-                lines,
-                accounted_bytes,
-            })
-        }
-        ReceiverMode::StructuredBatch => {
-            decode_otlp_logs_json_to_batch(body).map(|batch| ReceiverPayload::Batch {
-                batch,
-                accounted_bytes,
-            })
-        }
-    }
-}
-
 /// Extract a scalar OTLP JSON AnyValue as an owned string.
 /// Returns `Ok(None)` when the value is not a supported scalar string representation.
 fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, InputError> {
@@ -280,63 +292,4 @@ fn write_json_any_value_field_from_json(
     }
 
     Ok(false)
-}
-
-/// Decode an ExportLogsServiceRequest protobuf and produce newline-delimited
-/// JSON. Each LogRecord becomes one JSON line with fields that the scanner
-/// can extract into Arrow columns.
-pub(super) fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, InputError> {
-    if body.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let request = ExportLogsServiceRequest::decode(body)
-        .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
-
-    Ok(convert_request_to_json_lines(&request))
-}
-
-pub(super) fn decode_otlp_logs_with_mode(
-    body: &[u8],
-    mode: ReceiverMode,
-    accounted_bytes: u64,
-) -> Result<ReceiverPayload, InputError> {
-    match mode {
-        ReceiverMode::JsonLines => decode_otlp_logs(body).map(|lines| ReceiverPayload::JsonLines {
-            lines,
-            accounted_bytes,
-        }),
-        ReceiverMode::StructuredBatch => {
-            decode_otlp_logs_to_batch(body).map(|batch| ReceiverPayload::Batch {
-                batch,
-                accounted_bytes,
-            })
-        }
-    }
-}
-
-pub(super) fn decode_otlp_logs_json_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
-    let json_lines = decode_otlp_logs_json(body)?;
-    if json_lines.is_empty() {
-        return Ok(RecordBatch::new_empty(Arc::new(
-            arrow::datatypes::Schema::empty(),
-        )));
-    }
-    let mut scanner = Scanner::new(ScanConfig::default());
-    scanner
-        .scan(Bytes::from(json_lines))
-        .map_err(|e| InputError::Receiver(format!("structured OTLP JSON scan error: {e}")))
-}
-
-pub(super) fn decode_otlp_logs_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
-    if body.is_empty() {
-        return Ok(RecordBatch::new_empty(Arc::new(
-            arrow::datatypes::Schema::empty(),
-        )));
-    }
-
-    let request = ExportLogsServiceRequest::decode(body)
-        .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
-
-    convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
 }

@@ -3,6 +3,7 @@
 //! Each test spins up a real receiver, sends data over the network, and
 //! verifies the data arrives through the `InputSource::poll()` interface.
 
+use arrow::array::Array;
 use std::io::Write;
 use std::net::{TcpStream, UdpSocket};
 use std::sync::Arc;
@@ -78,6 +79,91 @@ where
         backoff = (backoff * 2).min(max_backoff);
     }
     all
+}
+
+/// Poll `input` for Arrow batch events until at least one batch arrives or
+/// `timeout` elapses.  Returns all collected batches.
+fn poll_until_batches(
+    input: &mut dyn InputSource,
+    timeout: Duration,
+) -> Vec<arrow::record_batch::RecordBatch> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut backoff = Duration::from_millis(5);
+    let max_backoff = Duration::from_millis(200);
+    let mut batches = Vec::new();
+
+    while std::time::Instant::now() < deadline {
+        for event in input.poll().unwrap() {
+            if let InputEvent::Batch { batch, .. } = event {
+                batches.push(batch);
+            }
+        }
+        if !batches.is_empty() {
+            thread::sleep(backoff);
+            for event in input.poll().unwrap() {
+                if let InputEvent::Batch { batch, .. } = event {
+                    batches.push(batch);
+                }
+            }
+            return batches;
+        }
+        thread::sleep(backoff);
+        backoff = (backoff * 2).min(max_backoff);
+    }
+    batches
+}
+
+/// Like `poll_until_batches` but keeps polling until `predicate` is satisfied
+/// or `timeout` elapses.
+fn poll_batches_until<F>(
+    input: &mut dyn InputSource,
+    timeout: Duration,
+    predicate: F,
+) -> Vec<arrow::record_batch::RecordBatch>
+where
+    F: Fn(&[arrow::record_batch::RecordBatch]) -> bool,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    let mut backoff = Duration::from_millis(5);
+    let max_backoff = Duration::from_millis(200);
+    let mut batches = Vec::new();
+
+    while std::time::Instant::now() < deadline {
+        for event in input.poll().unwrap() {
+            if let InputEvent::Batch { batch, .. } = event {
+                batches.push(batch);
+            }
+        }
+        if predicate(&batches) {
+            return batches;
+        }
+        thread::sleep(backoff);
+        backoff = (backoff * 2).min(max_backoff);
+    }
+    batches
+}
+
+/// Helper: extract all string values from a column across batches.
+fn collect_string_column(
+    batches: &[arrow::record_batch::RecordBatch],
+    column_name: &str,
+) -> Vec<String> {
+    use arrow::array::StringArray;
+    let mut values = Vec::new();
+    for batch in batches {
+        if let Some(col) = batch.column_by_name(column_name) {
+            let arr = col
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("expected StringArray");
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    values.push(arr.value(i).to_string());
+                }
+            }
+        }
+    }
+    values
 }
 
 // ---------------------------------------------------------------------------
@@ -538,21 +624,26 @@ fn otlp_protobuf_roundtrip() {
         .expect("OTLP POST should succeed");
     assert_eq!(resp.status(), 200);
 
-    // Poll for the decoded JSON lines.
-    let data = poll_until_data(&mut input, Duration::from_secs(5));
-    let text = String::from_utf8_lossy(&data);
+    // Poll for the decoded batches.
+    let batches = poll_until_batches(&mut input, Duration::from_secs(5));
+    assert!(!batches.is_empty(), "expected at least one batch");
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total_rows, 1, "expected exactly one row");
 
+    let severities = collect_string_column(&batches, logfwd_types::field_names::SEVERITY);
     assert!(
-        text.contains("\"level\":\"INFO\""),
-        "expected level field, got: {text}"
+        severities.contains(&"INFO".to_string()),
+        "expected severity INFO, got: {severities:?}"
     );
+    let bodies = collect_string_column(&batches, logfwd_types::field_names::BODY);
     assert!(
-        text.contains("\"message\":\"test message\""),
-        "expected message field, got: {text}"
+        bodies.contains(&"test message".to_string()),
+        "expected body 'test message', got: {bodies:?}"
     );
+    let envs = collect_string_column(&batches, "env");
     assert!(
-        text.contains("\"env\":\"prod\""),
-        "expected env attribute, got: {text}"
+        envs.contains(&"prod".to_string()),
+        "expected env 'prod', got: {envs:?}"
     );
 }
 
@@ -605,20 +696,23 @@ fn otlp_gzip_protobuf_roundtrip() {
         .expect("OTLP POST should succeed");
     assert_eq!(resp.status(), 200);
 
-    let data = poll_until_data(&mut input, Duration::from_secs(5));
-    let text = String::from_utf8_lossy(&data);
+    let batches = poll_until_batches(&mut input, Duration::from_secs(5));
+    assert!(!batches.is_empty(), "expected at least one batch");
 
+    let severities = collect_string_column(&batches, logfwd_types::field_names::SEVERITY);
     assert!(
-        text.contains("\"level\":\"INFO\""),
-        "expected level field, got: {text}"
+        severities.contains(&"INFO".to_string()),
+        "expected severity INFO, got: {severities:?}"
     );
+    let bodies = collect_string_column(&batches, logfwd_types::field_names::BODY);
     assert!(
-        text.contains("\"message\":\"test gzip\""),
-        "expected message field, got: {text}"
+        bodies.contains(&"test gzip".to_string()),
+        "expected body 'test gzip', got: {bodies:?}"
     );
+    let envs = collect_string_column(&batches, "env");
     assert!(
-        text.contains("\"env\":\"prod\""),
-        "expected env attribute, got: {text}"
+        envs.contains(&"prod".to_string()),
+        "expected env 'prod', got: {envs:?}"
     );
 }
 
@@ -684,11 +778,12 @@ fn otlp_wrong_content_type() {
     );
 
     // Data should have been decoded successfully via protobuf path.
-    let data = poll_until_data(&mut input, Duration::from_secs(5));
-    let text = String::from_utf8_lossy(&data);
+    let batches = poll_until_batches(&mut input, Duration::from_secs(5));
+    assert!(!batches.is_empty(), "expected at least one batch");
+    let severities = collect_string_column(&batches, logfwd_types::field_names::SEVERITY);
     assert!(
-        text.contains("\"level\":\"WARN\""),
-        "expected decoded log record, got: {text}"
+        severities.contains(&"WARN".to_string()),
+        "expected severity WARN, got: {severities:?}"
     );
 }
 
@@ -738,18 +833,24 @@ fn otlp_concurrent_requests() {
         h.join().unwrap();
     }
 
-    // Poll for all the decoded JSON lines.
-    let data = poll_until(&mut input, Duration::from_secs(5), |d| {
-        let t = String::from_utf8_lossy(d);
-        (0..10).all(|i| t.contains(&format!("concurrent-{i}")))
+    // Poll for all the decoded batches.
+    let batches = poll_batches_until(&mut input, Duration::from_secs(5), |bs| {
+        let bodies = collect_string_column(bs, logfwd_types::field_names::BODY);
+        (0..10).all(|i| {
+            bodies
+                .iter()
+                .any(|b| b.contains(&format!("concurrent-{i}")))
+        })
     });
-    let text = String::from_utf8_lossy(&data);
+    let bodies = collect_string_column(&batches, logfwd_types::field_names::BODY);
 
     // Verify all 10 concurrent messages arrived.
     for i in 0..10 {
         assert!(
-            text.contains(&format!("concurrent-{i}")),
-            "missing concurrent-{i} in: {text}"
+            bodies
+                .iter()
+                .any(|b| b.contains(&format!("concurrent-{i}"))),
+            "missing concurrent-{i} in: {bodies:?}"
         );
     }
 }

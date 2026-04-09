@@ -70,7 +70,6 @@ pub(super) fn build_input_state(
     name: &str,
     cfg: &InputConfig,
     stats: Arc<ComponentStats>,
-    otlp_structured_ingress: bool,
 ) -> Result<InputState, String> {
     let (raw_source, format, buf_cap): (Box<dyn InputSource>, Format, usize) = match cfg.input_type
     {
@@ -200,19 +199,11 @@ pub(super) fn build_input_state(
                 .ok_or_else(|| format!("input '{name}': otlp input requires 'listen'"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Otlp, &format)?;
-            let source = if otlp_structured_ingress {
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_structured_with_stats(
-                    name,
-                    addr,
-                    Arc::clone(&stats),
-                )
-            } else {
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats(
-                    name,
-                    addr,
-                    Arc::clone(&stats),
-                )
-            }
+            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats(
+                name,
+                addr,
+                Arc::clone(&stats),
+            )
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
@@ -339,20 +330,6 @@ fn build_platform_sensor_beta_config(
     }
 }
 
-/// Returns whether OTLP input should use structured ingress mode.
-///
-/// Structured ingress preserves typed OTLP fields but does not synthesize the
-/// scanner-owned `_raw` column. We therefore keep legacy JSON-lines scanner mode
-/// whenever `ScanConfig.keep_raw` is enabled.
-pub(super) fn otlp_uses_structured_ingress(
-    scan_config: &logfwd_core::scan_config::ScanConfig,
-) -> bool {
-    // Structured OTLP ingress preserves typed log fields, but it does not yet
-    // synthesize scanner-owned `_raw`. Keep legacy JSON-lines -> scanner mode
-    // whenever the SQL plan requires `_raw` semantics.
-    !scan_config.keep_raw
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,7 +449,7 @@ mod tests {
                     tls: None,
                 };
                 let stats = pm.add_input("in", "test");
-                let err = match build_input_state("in", &cfg, stats, true) {
+                let err = match build_input_state("in", &cfg, stats) {
                     Ok(_) => panic!("CRI/auto must be rejected for UDP/TCP inputs"),
                     Err(err) => err,
                 };
@@ -484,20 +461,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn otlp_structured_ingress_tracks_keep_raw_flag() {
-        let mut scan = logfwd_core::scan_config::ScanConfig::default();
-        scan.keep_raw = false;
-        assert!(
-            otlp_uses_structured_ingress(&scan),
-            "keep_raw=false should prefer structured OTLP ingress"
-        );
-        scan.keep_raw = true;
-        assert!(
-            !otlp_uses_structured_ingress(&scan),
-            "keep_raw=true should force legacy scanner ingress"
-        );
     }
 }
