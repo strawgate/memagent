@@ -56,6 +56,9 @@ impl<T> RingBuffer<T> {
     }
 
     pub fn push(&self, item: T) {
+        if self.capacity == 0 {
+            return;
+        }
         if let Ok(mut buf) = self.inner.lock() {
             if buf.len() >= self.capacity {
                 buf.pop_front();
@@ -64,7 +67,7 @@ impl<T> RingBuffer<T> {
         }
     }
 
-    pub fn drain_snapshot(&self) -> Vec<T>
+    pub fn snapshot(&self) -> Vec<T>
     where
         T: Clone,
     {
@@ -96,6 +99,7 @@ pub struct MetricPoint {
 #[derive(Debug, Clone)]
 pub enum MetricValue {
     U64(u64),
+    #[allow(dead_code)] // used by serializer; callers coming in follow-up PRs
     F64(f64),
 }
 
@@ -116,6 +120,7 @@ pub struct LogPoint {
 pub enum Severity {
     Info = 9,
     Warn = 13,
+    #[allow(dead_code)] // used in tests; callers coming in follow-up PRs
     Error = 17,
 }
 
@@ -149,6 +154,7 @@ pub struct SpanPoint {
 #[derive(Debug, Clone)]
 pub struct TelemetryBuffers {
     pub metrics: RingBuffer<MetricPoint>,
+    #[allow(dead_code)] // read by traces endpoint; callers coming in follow-up PRs
     pub traces: RingBuffer<SpanPoint>,
     pub logs: RingBuffer<LogPoint>,
 }
@@ -212,7 +218,13 @@ pub fn metrics_to_otlp_json(points: &[MetricPoint]) -> String {
             let attrs = attrs_to_json(&p.attributes);
             let value = match p.value {
                 MetricValue::U64(v) => format!("\"asInt\":\"{v}\""),
-                MetricValue::F64(v) => format!("\"asDouble\":{v}"),
+                MetricValue::F64(v) => {
+                    if v.is_finite() {
+                        format!("\"asDouble\":{v}")
+                    } else {
+                        "\"asDouble\":null".to_string()
+                    }
+                }
             };
             data_points.push(format!(
                 "{{\"timeUnixNano\":\"{}\",{value},{attrs}}}",
@@ -229,10 +241,10 @@ pub fn metrics_to_otlp_json(points: &[MetricPoint]) -> String {
         ));
     }
 
+    let version = env!("CARGO_PKG_VERSION");
     format!(
-        "{{\"resourceMetrics\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"logfwd\"}}}}]}},\"scopeMetrics\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{}\"}},\"metrics\":[{}]}}]}}]}}",
-        env!("CARGO_PKG_VERSION"),
-        metrics_json.join(",")
+        "{{\"resourceMetrics\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"logfwd\"}}}},{{\"key\":\"service.version\",\"value\":{{\"stringValue\":\"{version}\"}}}}]}},\"scopeMetrics\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{version}\"}},\"metrics\":[{metrics}]}}]}}]}}",
+        metrics = metrics_json.join(",")
     )
 }
 
@@ -257,9 +269,9 @@ pub fn traces_to_otlp_json(spans: &[SpanPoint]) -> String {
 
         spans_json.push(format!(
             "{{\"traceId\":\"{}\",\"spanId\":\"{}\",\"parentSpanId\":\"{}\",\"name\":\"{}\",\"kind\":{},\"startTimeUnixNano\":\"{}\",\"endTimeUnixNano\":\"{}\",{attrs}{status}}}",
-            s.trace_id,
-            s.span_id,
-            s.parent_span_id,
+            json_escape(&s.trace_id),
+            json_escape(&s.span_id),
+            json_escape(&s.parent_span_id),
             json_escape(&s.name),
             s.kind,
             s.start_time_unix_nano,
@@ -267,10 +279,10 @@ pub fn traces_to_otlp_json(spans: &[SpanPoint]) -> String {
         ));
     }
 
+    let version = env!("CARGO_PKG_VERSION");
     format!(
-        "{{\"resourceSpans\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"logfwd\"}}}}]}},\"scopeSpans\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{}\"}},\"spans\":[{}]}}]}}]}}",
-        env!("CARGO_PKG_VERSION"),
-        spans_json.join(",")
+        "{{\"resourceSpans\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"logfwd\"}}}},{{\"key\":\"service.version\",\"value\":{{\"stringValue\":\"{version}\"}}}}]}},\"scopeSpans\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{version}\"}},\"spans\":[{spans}]}}]}}]}}",
+        spans = spans_json.join(",")
     )
 }
 
@@ -291,10 +303,10 @@ pub fn logs_to_otlp_json(logs: &[LogPoint]) -> String {
         ));
     }
 
+    let version = env!("CARGO_PKG_VERSION");
     format!(
-        "{{\"resourceLogs\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"logfwd\"}}}}]}},\"scopeLogs\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{}\"}},\"logRecords\":[{}]}}]}}]}}",
-        env!("CARGO_PKG_VERSION"),
-        logs_json.join(",")
+        "{{\"resourceLogs\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"logfwd\"}}}},{{\"key\":\"service.version\",\"value\":{{\"stringValue\":\"{version}\"}}}}]}},\"scopeLogs\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{version}\"}},\"logRecords\":[{logs}]}}]}}]}}",
+        logs = logs_json.join(",")
     )
 }
 
@@ -748,8 +760,15 @@ pub fn trace_span_to_span_point(span: &TraceSpan) -> SpanPoint {
 /// Uses a synthetic hex trace ID derived from the batch ID. The span's
 /// `end_time_unix_nano` is 0 to indicate it is still in progress.
 pub fn active_batch_to_span_point(id: u64, batch: &ActiveBatch, pipeline: &str) -> SpanPoint {
-    let trace_id = format!("{:032x}", id);
-    let span_id = format!("{:016x}", id);
+    // Mix pipeline name hash into IDs so different pipelines with the same
+    // batch ID don't collide.
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    pipeline.hash(&mut hasher);
+    let pipeline_hash = hasher.finish();
+
+    let trace_id = format!("{:016x}{:016x}", pipeline_hash, id);
+    let span_id = format!("{:016x}", id ^ pipeline_hash);
 
     let mut attrs = vec![
         ("pipeline".to_string(), pipeline.to_string()),
@@ -822,6 +841,13 @@ pub fn sample_stderr_logs(
 ) {
     let lines = stderr.get_logs();
     let now = now_nanos();
+
+    // If the ring buffer evicted lines, our last_count may exceed the current
+    // length.  Reset so we re-push everything visible.
+    if lines.len() < *last_count {
+        *last_count = 0;
+    }
+
     if lines.len() > *last_count {
         for line in &lines[*last_count..] {
             buf.push(LogPoint {
@@ -842,7 +868,7 @@ pub fn sample_stderr_logs(
 pub fn sample_health_transitions<S: std::hash::BuildHasher>(
     pipelines: &[Arc<PipelineMetrics>],
     buf: &RingBuffer<LogPoint>,
-    prev_health: &mut HashMap<(String, String), u8, S>,
+    prev_health: &mut HashMap<(String, String, String), u8, S>,
 ) {
     use crate::diagnostics::ComponentHealth;
     let now = now_nanos();
@@ -861,7 +887,7 @@ pub fn sample_health_transitions<S: std::hash::BuildHasher>(
             .collect();
 
         for (name, role, health_val) in components {
-            let key = (pm.name.clone(), name.to_string());
+            let key = (pm.name.clone(), role.to_string(), name.to_string());
             let prev = prev_health.entry(key).or_insert(health_val);
             if *prev != health_val {
                 let old_name = ComponentHealth::from_repr(*prev);
@@ -961,7 +987,7 @@ mod tests {
         buf.push(2);
         buf.push(3);
         buf.push(4); // evicts 1
-        let snapshot = buf.drain_snapshot();
+        let snapshot = buf.snapshot();
         assert_eq!(snapshot, vec![2, 3, 4]);
     }
 
@@ -1130,7 +1156,7 @@ mod tests {
         let buf = RingBuffer::new(1024);
         sample_pipeline_metrics(&[Arc::new(pm)], &buf);
 
-        let points = buf.drain_snapshot();
+        let points = buf.snapshot();
         assert!(
             !points.is_empty(),
             "sample_pipeline_metrics must produce points"
@@ -1188,7 +1214,7 @@ mod tests {
         };
 
         sample_all_metrics(&[Arc::new(pm)], Some(mem_fn), 10.0, &buffers);
-        let points = buffers.metrics.drain_snapshot();
+        let points = buffers.metrics.snapshot();
 
         // Memory stats should be present.
         assert!(
@@ -1241,7 +1267,7 @@ mod tests {
 
         let buffers = TelemetryBuffers::new();
         sample_all_metrics(&[Arc::new(pm)], None, 10.0, &buffers);
-        let points = buffers.metrics.drain_snapshot();
+        let points = buffers.metrics.snapshot();
 
         let health_points: Vec<_> = points
             .iter()
@@ -1282,7 +1308,7 @@ mod tests {
 
         let buffers = TelemetryBuffers::new();
         sample_all_metrics(&[Arc::new(pm)], None, uptime_secs, &buffers);
-        let points = buffers.metrics.drain_snapshot();
+        let points = buffers.metrics.snapshot();
 
         let bottleneck = points
             .iter()
@@ -1417,12 +1443,12 @@ mod tests {
 
         // First call: no transition (initializes baseline).
         sample_health_transitions(&[Arc::clone(&pm)], &buf, &mut prev);
-        assert!(buf.drain_snapshot().is_empty(), "no log on first sample");
+        assert!(buf.snapshot().is_empty(), "no log on first sample");
 
         // Now degrade the component via the shared Arc<ComponentStats>.
         inp.set_health(ComponentHealth::Degraded);
         sample_health_transitions(&[Arc::clone(&pm)], &buf, &mut prev);
-        let logs = buf.drain_snapshot();
+        let logs = buf.snapshot();
         assert_eq!(logs.len(), 1, "expected 1 health transition log");
         assert!(
             logs[0].body.contains("Healthy"),

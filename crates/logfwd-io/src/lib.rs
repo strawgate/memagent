@@ -26,5 +26,5 @@ pub mod span_exporter;
 pub mod stderr_capture;
 pub mod tail;
 pub mod tcp_input;
-pub mod telemetry_buffer;
+pub(crate) mod telemetry_buffer;
 pub mod udp_input;

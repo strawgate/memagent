@@ -1009,7 +1009,7 @@ impl DiagnosticsServer {
         &self,
         request: tiny_http::Request,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let points = self.telemetry.metrics.drain_snapshot();
+        let points = self.telemetry.metrics.snapshot();
         let body = crate::telemetry_buffer::metrics_to_otlp_json(&points);
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
@@ -1034,7 +1034,7 @@ impl DiagnosticsServer {
         &self,
         request: tiny_http::Request,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let logs = self.telemetry.logs.drain_snapshot();
+        let logs = self.telemetry.logs.snapshot();
         let body = crate::telemetry_buffer::logs_to_otlp_json(&logs);
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
