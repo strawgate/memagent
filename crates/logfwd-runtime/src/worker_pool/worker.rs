@@ -72,6 +72,7 @@ pub(super) async fn worker_task(
                         let output_span = tracing::info_span!(
                             parent: &span, "output",
                             worker_id = id,
+                            status_code = tracing::field::Empty,
                             send_ns   = tracing::field::Empty,
                             recv_ns   = tracing::field::Empty,
                             took_ms   = tracing::field::Empty,

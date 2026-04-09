@@ -613,14 +613,20 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use logfwd_io::diagnostics::ComponentHealth;
-    use logfwd_output::BatchMetadata;
     use logfwd_output::sink::{SendResult, Sink, SinkFactory};
-    use std::collections::VecDeque;
+    use logfwd_output::{BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory};
+    use std::collections::{BTreeMap, VecDeque};
+    use std::fmt;
     use std::future::pending;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use tiny_http::{Header, Response, Server, StatusCode};
+    use tracing::{Event, Id, Subscriber};
+    use tracing_subscriber::layer::{Context, Layer};
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::LookupSpan;
 
     /// A sink that counts calls and optionally simulates failures.
     struct CountingSink {
@@ -955,6 +961,187 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct CapturedSpan {
+        name: String,
+        fields: BTreeMap<String, String>,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct CapturedEvent {
+        fields: BTreeMap<String, String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct TraceCapture {
+        inner: Arc<TraceCaptureInner>,
+    }
+
+    #[derive(Default)]
+    struct TraceCaptureInner {
+        active_spans: Mutex<BTreeMap<String, CapturedSpan>>,
+        closed_spans: Mutex<Vec<CapturedSpan>>,
+        events: Mutex<Vec<CapturedEvent>>,
+    }
+
+    #[derive(Default)]
+    struct FieldCapture(BTreeMap<String, String>);
+
+    impl tracing::field::Visit for FieldCapture {
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+    }
+
+    impl TraceCapture {
+        fn closed_output_span(&self) -> Option<CapturedSpan> {
+            self.inner
+                .closed_spans
+                .lock()
+                .expect("closed span mutex poisoned")
+                .iter()
+                .rev()
+                .find(|span| span.name == "output")
+                .cloned()
+        }
+
+        fn contains_event_message(&self, needle: &str) -> bool {
+            self.inner
+                .events
+                .lock()
+                .expect("event mutex poisoned")
+                .iter()
+                .any(|event| event.fields.get("message").is_some_and(|msg| msg == needle))
+        }
+
+        fn contains_event_field(&self, key: &str, needle: &str) -> bool {
+            self.inner
+                .events
+                .lock()
+                .expect("event mutex poisoned")
+                .iter()
+                .any(|event| {
+                    event
+                        .fields
+                        .get(key)
+                        .is_some_and(|value| value.contains(needle))
+                })
+        }
+    }
+
+    impl<S> Layer<S> for TraceCapture
+    where
+        S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            id: &Id,
+            _ctx: Context<'_, S>,
+        ) {
+            let mut visitor = FieldCapture::default();
+            attrs.record(&mut visitor);
+            self.inner
+                .active_spans
+                .lock()
+                .expect("active span mutex poisoned")
+                .insert(
+                    format!("{id:?}"),
+                    CapturedSpan {
+                        name: attrs.metadata().name().to_string(),
+                        fields: visitor.0,
+                    },
+                );
+        }
+
+        fn on_record(&self, id: &Id, values: &tracing::span::Record<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = FieldCapture::default();
+            values.record(&mut visitor);
+            if let Some(span) = self
+                .inner
+                .active_spans
+                .lock()
+                .expect("active span mutex poisoned")
+                .get_mut(&format!("{id:?}"))
+            {
+                span.fields.extend(visitor.0);
+            }
+        }
+
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = FieldCapture::default();
+            event.record(&mut visitor);
+            self.inner
+                .events
+                .lock()
+                .expect("event mutex poisoned")
+                .push(CapturedEvent { fields: visitor.0 });
+        }
+
+        fn on_close(&self, id: Id, _ctx: Context<'_, S>) {
+            if let Some(span) = self
+                .inner
+                .active_spans
+                .lock()
+                .expect("active span mutex poisoned")
+                .remove(&format!("{id:?}"))
+            {
+                self.inner
+                    .closed_spans
+                    .lock()
+                    .expect("closed span mutex poisoned")
+                    .push(span);
+            }
+        }
+    }
+
+    fn start_elasticsearch_mock(
+        status: u16,
+        body: &'static str,
+        expected_requests: usize,
+    ) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+
+        let server = Server::http(addr).expect("server start failed");
+        let content_type =
+            Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+
+        std::thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let mut req = server.recv().expect("request");
+                let mut request_body = Vec::new();
+                req.as_reader()
+                    .read_to_end(&mut request_body)
+                    .expect("read request body");
+                let response = Response::from_string(body)
+                    .with_status_code(StatusCode(status))
+                    .with_header(content_type.clone());
+                req.respond(response).expect("respond");
+            }
+        });
+
+        format!("http://{addr}")
+    }
+
     #[tokio::test]
     async fn pool_spawns_worker_on_first_submit() {
         let calls = Arc::new(AtomicU32::new(0));
@@ -1177,6 +1364,142 @@ mod tests {
         assert_eq!(out_stats.health(), ComponentHealth::Failed);
 
         pool.drain(Duration::from_secs(5)).await;
+    }
+
+    #[test]
+    fn elasticsearch_400_records_status_code_and_batch_rejected_log() {
+        let capture = TraceCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        runtime.block_on(async {
+            let endpoint = start_elasticsearch_mock(
+                400,
+                r#"{"error":{"type":"mapper_parsing_exception","reason":"bad field"}}"#,
+                1,
+            );
+            let meter = logfwd_test_utils::test_meter();
+            let mut pm = PipelineMetrics::new("test", "", &meter);
+            let out_stats = pm.add_output("test_es", "elasticsearch");
+            let factory = Arc::new(
+                ElasticsearchSinkFactory::new(
+                    "test_es".to_string(),
+                    endpoint,
+                    "logs".to_string(),
+                    vec![],
+                    false,
+                    ElasticsearchRequestMode::Buffered,
+                    Arc::clone(&out_stats),
+                )
+                .expect("factory creation"),
+            );
+            let metrics = Arc::new(pm);
+            let mut pool =
+                OutputWorkerPool::new(factory, 1, Duration::from_secs(60), Arc::clone(&metrics));
+
+            pool.submit(empty_work_item()).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            let ack = pool.ack_rx_mut().try_recv().expect("expected ack item");
+            assert!(
+                matches!(ack.outcome, DeliveryOutcome::Rejected { .. }),
+                "expected rejected outcome, got {:?}",
+                ack.outcome
+            );
+
+            pool.drain(Duration::from_secs(5)).await;
+        });
+
+        let output_span = capture.closed_output_span().expect("closed output span");
+        assert_eq!(
+            output_span.fields.get("status_code"),
+            Some(&"400".to_string())
+        );
+        assert!(
+            output_span
+                .fields
+                .get("resp_bytes")
+                .and_then(|v| v.parse::<u64>().ok())
+                .is_some_and(|v| v > 0),
+            "expected response bytes on failed Elasticsearch request: {output_span:?}"
+        );
+        assert!(
+            capture.contains_event_message("worker_pool: batch rejected"),
+            "expected rejection log event"
+        );
+        assert!(
+            capture.contains_event_field("reason", "HTTP 400"),
+            "expected rejection reason to include HTTP 400"
+        );
+    }
+
+    #[test]
+    fn elasticsearch_503_records_status_code_and_retry_logs() {
+        let capture = TraceCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        runtime.block_on(async {
+            let endpoint = start_elasticsearch_mock(
+                503,
+                r#"{"error":{"type":"unavailable_shards_exception","reason":"busy"}}"#,
+                4,
+            );
+            let meter = logfwd_test_utils::test_meter();
+            let mut pm = PipelineMetrics::new("test", "", &meter);
+            let out_stats = pm.add_output("test_es", "elasticsearch");
+            let factory = Arc::new(
+                ElasticsearchSinkFactory::new(
+                    "test_es".to_string(),
+                    endpoint,
+                    "logs".to_string(),
+                    vec![],
+                    false,
+                    ElasticsearchRequestMode::Buffered,
+                    Arc::clone(&out_stats),
+                )
+                .expect("factory creation"),
+            );
+            let metrics = Arc::new(pm);
+            let mut pool =
+                OutputWorkerPool::new(factory, 1, Duration::from_secs(60), Arc::clone(&metrics));
+
+            pool.submit(empty_work_item()).await;
+            tokio::time::sleep(Duration::from_millis(2_000)).await;
+
+            let ack = pool.ack_rx_mut().try_recv().expect("expected ack item");
+            assert_eq!(ack.outcome, DeliveryOutcome::RetryExhausted);
+
+            pool.drain(Duration::from_secs(5)).await;
+        });
+
+        let output_span = capture.closed_output_span().expect("closed output span");
+        assert_eq!(
+            output_span.fields.get("status_code"),
+            Some(&"503".to_string())
+        );
+        assert!(
+            capture.contains_event_message("worker_pool: transient error, retrying with jitter"),
+            "expected retry log event"
+        );
+        assert!(
+            capture.contains_event_message("worker_pool: gave up after retries"),
+            "expected retry exhaustion log event"
+        );
+        assert!(
+            capture.contains_event_field("error", "503"),
+            "expected logged error to include HTTP 503 detail"
+        );
     }
 
     #[tokio::test]
