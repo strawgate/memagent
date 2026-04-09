@@ -9,7 +9,8 @@
 //! ```
 
 use std::any::Any;
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use arrow::array::{Array, AsArray, StringBuilder};
 use arrow::datatypes::DataType;
@@ -31,8 +32,12 @@ use regex::Regex;
 #[derive(Debug)]
 pub struct RegexpExtractUdf {
     signature: Signature,
-    /// Compiled regex cached after the first invocation (pattern is constant per SQL query).
-    compiled_regex: OnceLock<Regex>,
+    /// Per-pattern regex cache.  DataFusion shares the same `ScalarUDFImpl`
+    /// instance across all `regexp_extract(...)` expressions in a query, so a
+    /// single-slot `OnceLock` would permanently cache the first pattern seen and
+    /// silently apply it to all subsequent calls with different patterns.
+    /// Keying the cache by pattern string correctly handles multiple patterns.
+    regex_cache: Mutex<HashMap<String, Arc<Regex>>>,
 }
 
 impl Default for RegexpExtractUdf {
@@ -48,7 +53,7 @@ impl RegexpExtractUdf {
                 TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8, DataType::Int64]),
                 Volatility::Immutable,
             ),
-            compiled_regex: OnceLock::new(),
+            regex_cache: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -88,30 +93,36 @@ impl ScalarUDFImpl for RegexpExtractUdf {
                 let s = s.to_string();
                 s.trim_matches('"').trim_matches('\'').to_string()
             }
-            ColumnarValue::Array(arr) => {
-                let str_arr = arr.as_string::<i32>();
-                if str_arr.len() == 0 || str_arr.is_null(0) {
-                    return Ok(ColumnarValue::Scalar(
-                        datafusion::common::ScalarValue::Utf8(None),
-                    ));
-                }
-                str_arr.value(0).to_string()
+            ColumnarValue::Array(_) => {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    "regexp_extract() pattern argument must be a scalar string literal".to_string(),
+                ));
             }
         };
 
-        // Get or compile the regex (compiled once per UDF instance; pattern is constant per query).
-        let re = if let Some(re) = self.compiled_regex.get() {
-            re
-        } else {
-            let new_re = Regex::new(&pattern_str).map_err(|e| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "regexp_extract: invalid pattern '{}': {}",
-                    pattern_str, e
-                ))
+        // Get or compile the regex, keyed by pattern string.  Each distinct
+        // pattern gets its own cache entry so that multiple regexp_extract(...)
+        // calls with different patterns in the same SQL query each use the
+        // correct compiled regex.
+        let re: Arc<Regex> = {
+            let mut cache = self.regex_cache.lock().map_err(|_| {
+                datafusion::error::DataFusionError::Execution(
+                    "regexp_extract() internal cache lock poisoned".to_string(),
+                )
             })?;
-            // Racing threads may both compile; only the first set wins. Use whichever is stored.
-            let _ = self.compiled_regex.set(new_re);
-            self.compiled_regex.get().unwrap()
+            if let Some(cached) = cache.get(&pattern_str) {
+                Arc::clone(cached)
+            } else {
+                let compiled = Regex::new(&pattern_str).map_err(|e| {
+                    datafusion::error::DataFusionError::Execution(format!(
+                        "regexp_extract: invalid pattern '{}': {}",
+                        pattern_str, e
+                    ))
+                })?;
+                let arc = Arc::new(compiled);
+                cache.insert(pattern_str, Arc::clone(&arc));
+                arc
+            }
         };
 
         // Extract group index.
@@ -195,15 +206,22 @@ mod tests {
 
     /// Helper to run a SQL query with regexp_extract registered.
     async fn run_sql(batch: RecordBatch, sql: &str) -> RecordBatch {
+        let batches = run_sql_result(batch, sql).await.unwrap();
+        batches.into_iter().next().unwrap()
+    }
+
+    async fn run_sql_result(
+        batch: RecordBatch,
+        sql: &str,
+    ) -> datafusion::error::Result<Vec<RecordBatch>> {
         let ctx = SessionContext::new();
         ctx.register_udf(ScalarUDF::from(RegexpExtractUdf::new()));
         ctx.register_udf(ScalarUDF::from(crate::IntCastUdf::new()));
         let table =
             datafusion::datasource::MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         ctx.register_table("logs", Arc::new(table)).unwrap();
-        let df = ctx.sql(sql).await.unwrap();
-        let batches = df.collect().await.unwrap();
-        batches.into_iter().next().unwrap()
+        let df = ctx.sql(sql).await?;
+        df.collect().await
     }
 
     fn make_batch() -> RecordBatch {
@@ -335,5 +353,95 @@ mod tests {
                 "row {row}: expected NULL but got a non-null value (bug: matched against \"NULL\")"
             );
         }
+    }
+
+    /// Two regexp_extract calls with DIFFERENT patterns in the same query must
+    /// each use their own compiled regex.
+    ///
+    /// Regression test for OnceLock caching bug: because DataFusion shares the
+    /// same ScalarUDFImpl instance for all regexp_extract expressions in a query,
+    /// a shared OnceLock would cache the first pattern and apply it to all
+    /// subsequent calls — silently producing wrong results.
+    #[test]
+    fn test_two_different_patterns_in_same_query() {
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
+        let msgs: Arc<dyn Array> = Arc::new(StringArray::from(vec![
+            Some("error=TIMEOUT user=alice"),
+            Some("error=AUTH user=bob"),
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT \
+                regexp_extract(msg, 'error=(\\w+)', 1) AS err_code, \
+                regexp_extract(msg, 'user=(\\w+)', 1)  AS user_name \
+             FROM logs",
+        ));
+
+        let err = result
+            .column_by_name("err_code")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            err.value(0),
+            "TIMEOUT",
+            "err_code row 0 must match error= pattern"
+        );
+        assert_eq!(
+            err.value(1),
+            "AUTH",
+            "err_code row 1 must match error= pattern"
+        );
+
+        let user = result
+            .column_by_name("user_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            user.value(0),
+            "alice",
+            "user_name row 0 must match user= pattern"
+        );
+        assert_eq!(
+            user.value(1),
+            "bob",
+            "user_name row 1 must match user= pattern"
+        );
+    }
+
+    #[test]
+    fn test_regexp_extract_rejects_array_pattern_argument() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("msg", DataType::Utf8, true),
+            Field::new("pattern", DataType::Utf8, true),
+        ]));
+        let msg: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("status=200")]));
+        let pattern: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("status=(\\d+)")]));
+        let batch = RecordBatch::try_new(schema, vec![msg, pattern]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(run_sql_result(
+                batch,
+                "SELECT regexp_extract(msg, pattern, 1) AS status FROM logs",
+            ))
+            .expect_err("array pattern argument must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pattern argument must be a scalar string literal"),
+            "unexpected error: {msg}"
+        );
     }
 }

@@ -264,52 +264,59 @@ fn cloudtrail_event_type(
         _ => "AwsApiCall",
     }
 }
+
+struct IdentityInputs<'a> {
+    account_id: &'a str,
+    principal_name: &'a str,
+    role_name: &'a str,
+    session_name: &'a str,
+    principal_id: &'a str,
+    arn: Option<&'a str>,
+    optional_density: u8,
+    service_kind: CloudTrailServiceKind,
+}
+
+struct EventShapeInputs<'a> {
+    service_kind: CloudTrailServiceKind,
+    action: &'a CloudTrailActionSpec,
+    account_id: &'a str,
+    principal_name: &'a str,
+    role_name: &'a str,
+    session_name: &'a str,
+    region: &'a str,
+    event_index: usize,
+    optional_density: u8,
+}
+
 fn build_user_identity_json(
     rng: &mut fastrand::Rng,
     identity_kind: CloudTrailIdentityKind,
-    account_id: &str,
-    principal_name: &str,
-    role_name: &str,
-    session_name: &str,
-    principal_id: &str,
-    arn: Option<&str>,
-    optional_density: u8,
-    service_kind: CloudTrailServiceKind,
+    inputs: &IdentityInputs<'_>,
 ) -> String {
     let mut out = JsonObjectWriter::new(384);
     out.field_str("type", cloudtrail_identity_type(identity_kind));
-    out.field_str("principalId", principal_id);
-    out.field_str("accountId", account_id);
-    if let Some(arn) = arn {
+    out.field_str("principalId", inputs.principal_id);
+    out.field_str("accountId", inputs.account_id);
+    if let Some(arn) = inputs.arn {
         out.field_str("arn", arn);
-    } else if chance(rng, optional_density / 2) {
+    } else if chance(rng, inputs.optional_density / 2) {
         out.field_str("invokedBy", "cloudtrail.amazonaws.com");
     }
 
     match identity_kind {
         CloudTrailIdentityKind::Root => {}
         CloudTrailIdentityKind::IamUser => {
-            out.field_str("userName", principal_name);
-            if chance(rng, optional_density) {
+            out.field_str("userName", inputs.principal_name);
+            if chance(rng, inputs.optional_density) {
                 out.field_str("accessKeyId", &format!("AKIA{:08X}", rng.u32(..)));
             }
         }
         CloudTrailIdentityKind::AssumedRole | CloudTrailIdentityKind::FederatedUser => {
-            out.field_str("userName", principal_name);
-            if chance(rng, optional_density) {
+            out.field_str("userName", inputs.principal_name);
+            if chance(rng, inputs.optional_density) {
                 out.field_raw(
                     "sessionContext",
-                    &build_session_context_json(
-                        rng,
-                        account_id,
-                        principal_name,
-                        role_name,
-                        session_name,
-                        principal_id,
-                        arn,
-                        identity_kind,
-                        optional_density,
-                    ),
+                    &build_session_context_json(rng, identity_kind, inputs),
                 );
             }
         }
@@ -317,15 +324,15 @@ fn build_user_identity_json(
     }
 
     if matches!(
-        service_kind,
+        inputs.service_kind,
         CloudTrailServiceKind::Lambda | CloudTrailServiceKind::Kms
-    ) && chance(rng, optional_density / 2)
+    ) && chance(rng, inputs.optional_density / 2)
     {
-        out.field_str("sourceIdentity", principal_name);
+        out.field_str("sourceIdentity", inputs.principal_name);
     }
 
     if matches!(
-        service_kind,
+        inputs.service_kind,
         CloudTrailServiceKind::Sts | CloudTrailServiceKind::CloudTrail
     ) || matches!(identity_kind, CloudTrailIdentityKind::AwsService)
     {
@@ -337,32 +344,35 @@ fn build_user_identity_json(
 
 fn build_session_context_json(
     rng: &mut fastrand::Rng,
-    account_id: &str,
-    _principal_name: &str,
-    role_name: &str,
-    _session_name: &str,
-    principal_id: &str,
-    arn: Option<&str>,
     identity_kind: CloudTrailIdentityKind,
-    optional_density: u8,
+    inputs: &IdentityInputs<'_>,
 ) -> String {
     let mut out = JsonObjectWriter::new(320);
     out.field_raw(
         "sessionIssuer",
-        &build_session_issuer_json(identity_kind, account_id, role_name, principal_id, arn),
+        &build_session_issuer_json(
+            identity_kind,
+            inputs.account_id,
+            inputs.role_name,
+            inputs.principal_id,
+            inputs.arn,
+        ),
     );
     let mut attr = JsonObjectWriter::new(160);
     attr.field_str("creationDate", &cloudtrail_event_time(rng.usize(..60), rng));
     attr.field_str(
         "mfaAuthenticated",
-        if chance(rng, optional_density) {
+        if chance(rng, inputs.optional_density) {
             "true"
         } else {
             "false"
         },
     );
-    if chance(rng, optional_density / 2) {
+    if chance(rng, inputs.optional_density / 2) {
         attr.field_str("sessionCredentialFromConsole", "true");
+    }
+    if chance(rng, inputs.optional_density / 4) {
+        attr.field_str("sessionName", inputs.session_name);
     }
     out.field_raw("attributes", &attr.finish());
     out.finish()
@@ -422,24 +432,16 @@ fn cloudtrail_source_ip_seeded(idx: usize) -> String {
 
 fn build_request_parameters_json(
     rng: &mut fastrand::Rng,
-    service_kind: CloudTrailServiceKind,
-    action: &CloudTrailActionSpec,
-    account_id: &str,
-    principal_name: &str,
-    role_name: &str,
-    session_name: &str,
-    region: &str,
-    event_index: usize,
-    optional_density: u8,
+    inputs: &EventShapeInputs<'_>,
 ) -> Option<String> {
-    if action.read_only && !chance(rng, optional_density / 2) {
+    if inputs.action.read_only && !chance(rng, inputs.optional_density / 2) {
         return None;
     }
 
     let mut out = JsonObjectWriter::new(384);
-    match service_kind {
+    match inputs.service_kind {
         CloudTrailServiceKind::Ec2 => {
-            if action.event_name == "RunInstances" {
+            if inputs.action.event_name == "RunInstances" {
                 out.field_raw(
                     "instancesSet",
                     &format!(
@@ -452,25 +454,27 @@ fn build_request_parameters_json(
                 );
                 out.field_raw("minCount", "1");
                 out.field_raw("maxCount", "1");
-                out.field_str("keyName", &format!("cloudtrail-key-{event_index:04}"));
+                out.field_str("keyName", &format!("cloudtrail-key-{:04}", inputs.event_index));
             } else {
                 out.field_raw("instanceIds", &format!(r#"["i-{:08x}"]"#, rng.u32(..)));
-                out.field_bool("dryRun", chance(rng, optional_density / 2));
+                out.field_bool("dryRun", chance(rng, inputs.optional_density / 2));
             }
         }
         CloudTrailServiceKind::S3 => {
             out.field_str(
                 "bucketName",
-                &format!("audit-{account_id}-{principal_name}"),
+                &format!("audit-{}-{}", inputs.account_id, inputs.principal_name),
             );
             out.field_str(
                 "key",
                 &format!(
                     "cloudtrail/{region}/{event_index:04}/{}.json",
-                    action.event_name.to_lowercase()
+                    inputs.action.event_name.to_lowercase(),
+                    region = inputs.region,
+                    event_index = inputs.event_index
                 ),
             );
-            if action.data_event {
+            if inputs.action.data_event {
                 out.field_str(
                     "x-amz-server-side-encryption",
                     pick(rng, &["AES256", "aws:kms"]),
@@ -478,49 +482,58 @@ fn build_request_parameters_json(
             }
         }
         CloudTrailServiceKind::Iam => {
-            out.field_str("userName", principal_name);
-            if action.event_name.contains("Role") {
-                out.field_str("roleName", role_name);
+            out.field_str("userName", inputs.principal_name);
+            if inputs.action.event_name.contains("Role") {
+                out.field_str("roleName", inputs.role_name);
             }
             out.field_str("path", "/service/");
         }
         CloudTrailServiceKind::Sts => {
             out.field_str(
                 "roleArn",
-                &format!("arn:aws:iam::{account_id}:role/{role_name}"),
+                &format!("arn:aws:iam::{}:role/{}", inputs.account_id, inputs.role_name),
             );
-            out.field_str("roleSessionName", session_name);
+            out.field_str("roleSessionName", inputs.session_name);
             out.field_raw("durationSeconds", "3600");
         }
         CloudTrailServiceKind::Kms => {
             out.field_str(
                 "keyId",
-                &format!("arn:aws:kms:{region}:{account_id}:key/{:08x}", rng.u32(..)),
+                &format!(
+                    "arn:aws:kms:{}:{}:key/{:08x}",
+                    inputs.region,
+                    inputs.account_id,
+                    rng.u32(..)
+                ),
             );
             out.field_raw(
                 "encryptionContext",
                 &format!(
                     r#"{{"env":"{}","service":"{}"}}"#,
                     pick(rng, &["prod", "stage", "dev"]),
-                    action.resource_type
+                    inputs.action.resource_type
                 ),
             );
         }
         CloudTrailServiceKind::Lambda => {
             out.field_str(
                 "functionName",
-                &format!("cloudtrail-{principal_name}-{}", event_index % 16),
+                &format!(
+                    "cloudtrail-{}-{}",
+                    inputs.principal_name,
+                    inputs.event_index % 16
+                ),
             );
-            if action.event_name == "Invoke" {
+            if inputs.action.event_name == "Invoke" {
                 out.field_str("qualifier", "$LATEST");
             } else {
-                out.field_bool("publish", chance(rng, optional_density));
+                out.field_bool("publish", chance(rng, inputs.optional_density));
             }
         }
         CloudTrailServiceKind::Rds => {
             out.field_str(
                 "dBInstanceIdentifier",
-                &format!("audit-db-{}", event_index % 128),
+                &format!("audit-db-{}", inputs.event_index % 128),
             );
             out.field_str(
                 "dBInstanceClass",
@@ -532,14 +545,14 @@ fn build_request_parameters_json(
             );
         }
         CloudTrailServiceKind::CloudTrail => {
-            out.field_str("trailName", &format!("org-trail-{account_id}"));
-            if action.event_name == "LookupEvents" {
+            out.field_str("trailName", &format!("org-trail-{}", inputs.account_id));
+            if inputs.action.event_name == "LookupEvents" {
                 out.field_raw("maxResults", "50");
             }
         }
     }
 
-    if chance(rng, optional_density / 3) {
+    if chance(rng, inputs.optional_density / 3) {
         out.field_str("clientRequestToken", &cloudtrail_uuid_like(rng));
     }
 
@@ -547,23 +560,15 @@ fn build_request_parameters_json(
 }
 fn build_response_elements_json(
     rng: &mut fastrand::Rng,
-    service_kind: CloudTrailServiceKind,
-    action: &CloudTrailActionSpec,
-    account_id: &str,
-    principal_name: &str,
-    _role_name: &str,
-    _session_name: &str,
-    region: &str,
-    event_index: usize,
-    optional_density: u8,
+    inputs: &EventShapeInputs<'_>,
 ) -> Option<String> {
-    if action.read_only && !chance(rng, optional_density / 2) {
+    if inputs.action.read_only && !chance(rng, inputs.optional_density / 2) {
         return None;
     }
     let mut out = JsonObjectWriter::new(256);
-    match service_kind {
+    match inputs.service_kind {
         CloudTrailServiceKind::Ec2 => {
-            if action.event_name == "RunInstances" {
+            if inputs.action.event_name == "RunInstances" {
                 out.field_str("reservationId", &format!("r-{:08x}", rng.u32(..)));
                 out.field_raw(
                     "instancesSet",
@@ -573,18 +578,18 @@ fn build_response_elements_json(
                     ),
                 );
             } else {
-                out.field_bool("return", chance(rng, optional_density));
+                out.field_bool("return", chance(rng, inputs.optional_density));
             }
         }
         CloudTrailServiceKind::S3 => {
-            if action.data_event {
+            if inputs.action.data_event {
                 out.field_str(
                     "x-amz-version-id",
-                    &format!("{}-{:08x}", event_index, rng.u32(..)),
+                    &format!("{}-{:08x}", inputs.event_index, rng.u32(..)),
                 );
                 out.field_str("etag", &format!("\"{:08x}\"", rng.u32(..)));
             } else {
-                out.field_str("bucketRegion", region);
+                out.field_str("bucketRegion", inputs.region);
             }
         }
         CloudTrailServiceKind::Iam => {
@@ -592,7 +597,7 @@ fn build_response_elements_json(
                 "user",
                 &format!(
                     r#"{{"userName":"{}","arn":"arn:aws:iam::{}:user/{}"}}"#,
-                    principal_name, account_id, principal_name
+                    inputs.principal_name, inputs.account_id, inputs.principal_name
                 ),
             );
         }
@@ -609,7 +614,12 @@ fn build_response_elements_json(
         CloudTrailServiceKind::Kms => {
             out.field_str(
                 "keyId",
-                &format!("arn:aws:kms:{region}:{account_id}:key/{:08x}", rng.u32(..)),
+                &format!(
+                    "arn:aws:kms:{}:{}:key/{:08x}",
+                    inputs.region,
+                    inputs.account_id,
+                    rng.u32(..)
+                ),
             );
             out.field_str(
                 "encryptionAlgorithm",
@@ -619,14 +629,18 @@ fn build_response_elements_json(
         CloudTrailServiceKind::Lambda => {
             out.field_str(
                 "functionName",
-                &format!("cloudtrail-{principal_name}-{}", event_index % 16),
+                &format!(
+                    "cloudtrail-{}-{}",
+                    inputs.principal_name,
+                    inputs.event_index % 16
+                ),
             );
             out.field_str("responsePayload", "{\"status\":\"ok\"}");
         }
         CloudTrailServiceKind::Rds => {
             out.field_str(
                 "dBInstanceIdentifier",
-                &format!("audit-db-{}", event_index % 128),
+                &format!("audit-db-{}", inputs.event_index % 128),
             );
             out.field_str(
                 "dBInstanceStatus",
@@ -634,8 +648,8 @@ fn build_response_elements_json(
             );
         }
         CloudTrailServiceKind::CloudTrail => {
-            out.field_str("trailName", &format!("org-trail-{account_id}"));
-            out.field_bool("isLogging", chance(rng, optional_density));
+            out.field_str("trailName", &format!("org-trail-{}", inputs.account_id));
+            out.field_bool("isLogging", chance(rng, inputs.optional_density));
         }
     }
     Some(out.finish())

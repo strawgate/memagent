@@ -55,41 +55,39 @@ pub fn gen_cloudtrail_audit_with_profile(
             profile.optional_field_density,
         );
         let user_agent = cloudtrail_user_agent(&mut rng, service.kind, principal_slot);
-        let user_identity = build_user_identity_json(
-            &mut rng,
-            identity_kind,
+        let identity_inputs = IdentityInputs {
             account_id,
             principal_name,
             role_name,
             session_name,
             principal_id,
-            user_arn,
-            profile.optional_field_density,
-            service.kind,
-        );
-        let request_parameters = build_request_parameters_json(
+            arn: user_arn,
+            optional_density: profile.optional_field_density,
+            service_kind: service.kind,
+        };
+        let user_identity = build_user_identity_json(
             &mut rng,
-            service.kind,
+            identity_kind,
+            &identity_inputs,
+        );
+        let event_shape = EventShapeInputs {
+            service_kind: service.kind,
             action,
             account_id,
             principal_name,
             role_name,
             session_name,
             region,
-            i,
-            profile.optional_field_density,
+            event_index: i,
+            optional_density: profile.optional_field_density,
+        };
+        let request_parameters = build_request_parameters_json(
+            &mut rng,
+            &event_shape,
         );
         let response_elements = build_response_elements_json(
             &mut rng,
-            service.kind,
-            action,
-            account_id,
-            principal_name,
-            role_name,
-            session_name,
-            region,
-            i,
-            profile.optional_field_density,
+            &event_shape,
         );
         let resources = build_resources_json(
             &mut rng,
@@ -739,4 +737,3 @@ impl CloudTrailState {
         &self.shared_event_ids[idx % self.shared_event_ids.len()]
     }
 }
-

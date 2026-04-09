@@ -258,18 +258,34 @@ async fn coerce_json_string_on_integer_field() {
 // =========================================================================
 
 #[tokio::test]
-async fn null_raw_row_returns_null() {
+async fn null_raw_row_produces_null_not_error() {
+    // When _raw contains NULL rows, json() must return NULL for those rows
+    // without erroring the entire batch.  Previously, NULL rows were emitted
+    // as bare `\n` (empty lines); the scanner skipped them, causing a row-count
+    // mismatch error.  Fixed by emitting `{}\n` for NULL rows so the scanner
+    // produces a row with no fields (→ NULL for the requested key).
     let batch =
         make_raw_batch_nullable(&[Some(r#"{"status": 200}"#), None, Some(r#"{"status": 500}"#)]);
-    let result = query1("SELECT json(_raw, 'status') AS s FROM logs", batch).await;
-    let col = result
+    let ctx = make_ctx(batch);
+
+    let result = ctx
+        .sql("SELECT json(_raw, 'status') AS s FROM logs")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .expect("NULL _raw rows must not error");
+
+    let batch = result.into_iter().next().unwrap();
+    assert_eq!(batch.num_rows(), 3, "must have 3 rows");
+    let col = batch
         .column(0)
         .as_any()
         .downcast_ref::<StringArray>()
         .unwrap();
-    assert_eq!(col.value(0), "200");
-    assert!(col.is_null(1), "NULL _raw should yield NULL output");
-    assert_eq!(col.value(2), "500");
+    assert_eq!(col.value(0), "200", "row 0 must extract status");
+    assert!(col.is_null(1), "row 1 (null _raw) must produce null");
+    assert_eq!(col.value(2), "500", "row 2 must extract status");
 }
 
 #[tokio::test]
@@ -791,18 +807,28 @@ async fn mixed_valid_invalid_rows_no_nulls() {
 }
 
 #[tokio::test]
-async fn mixed_valid_invalid_null_rows_return_nulls() {
+async fn mixed_valid_invalid_null_rows_succeeds() {
+    // NULL _raw rows must produce NULL in the output without erroring the batch.
     let batch =
         make_raw_batch_nullable(&[Some(r#"{"status": 200}"#), None, Some(r#"{"status": 404}"#)]);
-    let result = query1("SELECT json_int(_raw, 'status') AS s FROM logs", batch).await;
-    let col = result
+    let ctx = make_ctx(batch);
+    let result = ctx
+        .sql("SELECT json_int(_raw, 'status') AS s FROM logs")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .expect("NULL _raw rows must not error");
+    let batch = result.into_iter().next().unwrap();
+    assert_eq!(batch.num_rows(), 3, "must have 3 rows");
+    let col = batch
         .column(0)
         .as_any()
         .downcast_ref::<Int64Array>()
         .unwrap();
-    assert_eq!(col.value(0), 200);
-    assert!(col.is_null(1), "NULL _raw should yield NULL output");
-    assert_eq!(col.value(2), 404);
+    assert_eq!(col.value(0), 200, "row 0 json_int status");
+    assert!(col.is_null(1), "row 1 (null _raw) must produce null");
+    assert_eq!(col.value(2), 404, "row 2 json_int status");
 }
 
 #[tokio::test]

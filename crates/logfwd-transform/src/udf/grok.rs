@@ -23,7 +23,8 @@
 //! URI, TIMESTAMP_ISO8601, DATE, TIME, LOGLEVEL, HOSTNAME, EMAILADDRESS.
 
 use std::any::Any;
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use arrow::array::{Array, ArrayRef, AsArray, StringBuilder, StructArray};
 use arrow::datatypes::{DataType, Field, Fields};
@@ -76,8 +77,12 @@ fn compile_grok(pattern: &str) -> Result<CompiledGrok, crate::TransformError> {
 #[derive(Debug)]
 pub struct GrokUdf {
     signature: Signature,
-    /// Compiled grok pattern cached after the first invocation (pattern is constant per SQL query).
-    compiled_grok: OnceLock<CompiledGrok>,
+    /// Per-pattern grok cache.  DataFusion shares the same `ScalarUDFImpl`
+    /// instance across all `grok(...)` expressions in a query, so a single-slot
+    /// `OnceLock` would cache the first pattern and silently apply it to all
+    /// calls with different patterns.  Keying by pattern string handles multiple
+    /// patterns correctly while still avoiding recompilation across batches.
+    grok_cache: Mutex<HashMap<String, Arc<CompiledGrok>>>,
 }
 
 impl Default for GrokUdf {
@@ -93,7 +98,7 @@ impl GrokUdf {
                 TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8]),
                 Volatility::Immutable,
             ),
-            compiled_grok: OnceLock::new(),
+            grok_cache: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -168,29 +173,33 @@ impl ScalarUDFImpl for GrokUdf {
                 let s = s.to_string();
                 s.trim_matches('"').trim_matches('\'').to_string()
             }
-            ColumnarValue::Array(arr) => {
-                let str_arr = arr.as_string::<i32>();
-                if str_arr.len() == 0 || str_arr.is_null(0) {
-                    return Ok(ColumnarValue::Scalar(
-                        datafusion::common::ScalarValue::Utf8(None),
-                    ));
-                }
-                str_arr.value(0).to_string()
+            ColumnarValue::Array(_) => {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    "grok() pattern argument must be a scalar string literal".to_string(),
+                ));
             }
         };
 
-        // Get or compile the grok pattern (compiled once per UDF instance; pattern is constant per query).
-        let compiled = if let Some(c) = self.compiled_grok.get() {
-            c
-        } else {
-            let new_compiled = compile_grok(&pattern_str)
-                .map_err(|e| datafusion::error::DataFusionError::Execution(format!("grok: {e}")))?;
-            // OnceLock::set may fail if another thread won the race, which is fine —
-            // we just use whichever value was stored first.
-            let _ = self.compiled_grok.set(new_compiled);
-            self.compiled_grok
-                .get()
-                .expect("OnceLock must be initialized: we just called set or another thread did")
+        // Get or compile the grok pattern, keyed by pattern string.  Each
+        // distinct pattern gets its own cache entry so that multiple grok(...)
+        // calls with different patterns in the same SQL query each use the
+        // correct compiled pattern.
+        let compiled: Arc<CompiledGrok> = {
+            let mut cache = self.grok_cache.lock().map_err(|_| {
+                datafusion::error::DataFusionError::Execution(
+                    "grok() internal cache lock poisoned".to_string(),
+                )
+            })?;
+            if let Some(cached) = cache.get(&pattern_str) {
+                Arc::clone(cached)
+            } else {
+                let new_compiled = compile_grok(&pattern_str).map_err(|e| {
+                    datafusion::error::DataFusionError::Execution(format!("grok: {e}"))
+                })?;
+                let arc = Arc::new(new_compiled);
+                cache.insert(pattern_str, Arc::clone(&arc));
+                arc
+            }
         };
 
         match input {
@@ -304,6 +313,14 @@ mod tests {
     use datafusion::prelude::*;
 
     async fn run_sql(batch: RecordBatch, sql: &str) -> RecordBatch {
+        let batches = run_sql_result(batch, sql).await.unwrap();
+        batches.into_iter().next().unwrap()
+    }
+
+    async fn run_sql_result(
+        batch: RecordBatch,
+        sql: &str,
+    ) -> datafusion::error::Result<Vec<RecordBatch>> {
         let ctx = SessionContext::new();
         ctx.register_udf(ScalarUDF::from(GrokUdf::new()));
         // Also register int() for composition tests
@@ -311,9 +328,8 @@ mod tests {
         let table =
             datafusion::datasource::MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         ctx.register_table("logs", Arc::new(table)).unwrap();
-        let df = ctx.sql(sql).await.unwrap();
-        let batches = df.collect().await.unwrap();
-        batches.into_iter().next().unwrap()
+        let df = ctx.sql(sql).await?;
+        df.collect().await
     }
 
     fn make_access_log_batch() -> RecordBatch {
@@ -476,5 +492,32 @@ mod tests {
                 method.value(row)
             );
         }
+    }
+
+    #[test]
+    fn test_grok_rejects_array_pattern_argument() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("pattern", DataType::Utf8, true),
+        ]));
+        let message: ArrayRef = Arc::new(StringArray::from(vec![Some("GET /ok 200 1ms")]));
+        let pattern: ArrayRef = Arc::new(StringArray::from(vec![Some("%{WORD:method}")]));
+        let batch = RecordBatch::try_new(schema, vec![message, pattern]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(run_sql_result(
+                batch,
+                "SELECT grok(message, pattern) AS parsed FROM logs",
+            ))
+            .expect_err("array pattern argument must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pattern argument must be a scalar string literal"),
+            "unexpected error: {msg}"
+        );
     }
 }

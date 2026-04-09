@@ -93,6 +93,27 @@ impl QueryAnalyzer {
                     collect_column_refs(selection, &mut referenced_columns);
                     where_clause = Some(selection.clone());
                 }
+
+                // Walk GROUP BY — columns may appear only here (not in SELECT or WHERE).
+                if let sqlast::GroupByExpr::Expressions(exprs, _) = &select.group_by {
+                    for e in exprs {
+                        collect_column_refs(e, &mut referenced_columns);
+                    }
+                }
+
+                // Walk HAVING — HAVING MAX(col) > N where col is not in SELECT.
+                if let Some(ref having) = select.having {
+                    collect_column_refs(having, &mut referenced_columns);
+                }
+            }
+
+            // Walk ORDER BY — columns may appear only here (not in SELECT or WHERE).
+            if let Some(ref order_by) = query.order_by {
+                if let sqlast::OrderByKind::Expressions(exprs) = &order_by.kind {
+                    for ob in exprs {
+                        collect_column_refs(&ob.expr, &mut referenced_columns);
+                    }
+                }
             }
         } else {
             return Err(TransformError::Sql(
@@ -339,31 +360,58 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
         SqlExpr::UnaryOp { expr, .. } => {
             collect_column_refs(expr, cols);
         }
-        SqlExpr::Function(func) => match &func.args {
-            sqlast::FunctionArguments::List(arg_list) => {
-                for arg in &arg_list.args {
-                    match arg {
-                        sqlast::FunctionArg::Unnamed(sqlast::FunctionArgExpr::Expr(e)) => {
-                            collect_column_refs(e, cols);
+        SqlExpr::Function(func) => {
+            match &func.args {
+                sqlast::FunctionArguments::List(arg_list) => {
+                    for arg in &arg_list.args {
+                        match arg {
+                            sqlast::FunctionArg::Unnamed(sqlast::FunctionArgExpr::Expr(e)) => {
+                                collect_column_refs(e, cols);
+                            }
+                            sqlast::FunctionArg::Named {
+                                arg: sqlast::FunctionArgExpr::Expr(e),
+                                ..
+                            } => {
+                                collect_column_refs(e, cols);
+                            }
+                            _ => {}
                         }
-                        sqlast::FunctionArg::Named {
-                            arg: sqlast::FunctionArgExpr::Expr(e),
-                            ..
-                        } => {
-                            collect_column_refs(e, cols);
-                        }
-                        _ => {}
                     }
                 }
+                sqlast::FunctionArguments::None => {}
+                sqlast::FunctionArguments::Subquery(_) => {}
             }
-            sqlast::FunctionArguments::None => {}
-            sqlast::FunctionArguments::Subquery(_) => {}
-        },
+            // Walk OVER clause: columns in PARTITION BY and ORDER BY are
+            // only referenced in func.over, not in func.args.
+            if let Some(sqlast::WindowType::WindowSpec(spec)) = &func.over {
+                for e in &spec.partition_by {
+                    collect_column_refs(e, cols);
+                }
+                for ob in &spec.order_by {
+                    collect_column_refs(&ob.expr, cols);
+                }
+            }
+        }
         SqlExpr::Nested(inner) => {
             collect_column_refs(inner, cols);
         }
-        SqlExpr::IsNull(e) | SqlExpr::IsNotNull(e) => {
+        SqlExpr::IsNull(e)
+        | SqlExpr::IsNotNull(e)
+        | SqlExpr::IsTrue(e)
+        | SqlExpr::IsNotTrue(e)
+        | SqlExpr::IsFalse(e)
+        | SqlExpr::IsNotFalse(e)
+        | SqlExpr::IsUnknown(e)
+        | SqlExpr::IsNotUnknown(e) => {
             collect_column_refs(e, cols);
+        }
+        SqlExpr::IsDistinctFrom(left, right) | SqlExpr::IsNotDistinctFrom(left, right) => {
+            collect_column_refs(left, cols);
+            collect_column_refs(right, cols);
+        }
+        SqlExpr::SimilarTo { expr, pattern, .. } => {
+            collect_column_refs(expr, cols);
+            collect_column_refs(pattern, cols);
         }
         SqlExpr::Between {
             expr, low, high, ..
@@ -401,6 +449,70 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
         SqlExpr::Like { expr, pattern, .. } | SqlExpr::ILike { expr, pattern, .. } => {
             collect_column_refs(expr, cols);
             collect_column_refs(pattern, cols);
+        }
+        SqlExpr::Trim {
+            expr, trim_what, ..
+        } => {
+            collect_column_refs(expr, cols);
+            if let Some(tw) = trim_what {
+                collect_column_refs(tw, cols);
+            }
+        }
+        SqlExpr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
+            collect_column_refs(expr, cols);
+            if let Some(f) = substring_from {
+                collect_column_refs(f, cols);
+            }
+            if let Some(f) = substring_for {
+                collect_column_refs(f, cols);
+            }
+        }
+        SqlExpr::Overlay {
+            expr,
+            overlay_what,
+            overlay_from,
+            overlay_for,
+        } => {
+            collect_column_refs(expr, cols);
+            collect_column_refs(overlay_what, cols);
+            collect_column_refs(overlay_from, cols);
+            if let Some(f) = overlay_for {
+                collect_column_refs(f, cols);
+            }
+        }
+        SqlExpr::Extract { expr, .. } => {
+            collect_column_refs(expr, cols);
+        }
+        SqlExpr::AtTimeZone {
+            timestamp,
+            time_zone,
+        } => {
+            collect_column_refs(timestamp, cols);
+            collect_column_refs(time_zone, cols);
+        }
+        SqlExpr::Ceil { expr, .. } | SqlExpr::Floor { expr, .. } => {
+            collect_column_refs(expr, cols);
+        }
+        SqlExpr::Position { expr, r#in } => {
+            collect_column_refs(expr, cols);
+            collect_column_refs(r#in, cols);
+        }
+        SqlExpr::InSubquery { expr, .. } => {
+            collect_column_refs(expr, cols);
+        }
+        SqlExpr::InUnnest {
+            expr, array_expr, ..
+        } => {
+            collect_column_refs(expr, cols);
+            collect_column_refs(array_expr, cols);
+        }
+        SqlExpr::Convert { expr, .. } | SqlExpr::Collate { expr, .. } => {
+            collect_column_refs(expr, cols);
         }
         // Literals, wildcards, etc. — no column refs.
         _ => {}
@@ -1903,5 +2015,322 @@ mod tests {
                 "keep_raw must be false for {sql:?} (no _raw reference)"
             );
         }
+    }
+
+    /// `collect_column_refs` must traverse `TRIM(col)` and add `col` to the
+    /// referenced column set so that `scan_config()` requests it from the
+    /// scanner.  Without this, the scanner never extracts the column, the batch
+    /// has no `col` column, and the SQL transform fails or silently returns NULL.
+    ///
+    /// Regression test: `SqlExpr::Trim { expr, .. }` was not handled in
+    /// `collect_column_refs` — it fell to the catch-all `_ => {}` arm.
+    #[test]
+    fn test_trim_col_in_select_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT TRIM(msg) AS msg FROM logs").unwrap();
+        assert!(
+            a.referenced_columns.contains("msg"),
+            "TRIM(msg) must add 'msg' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// Same as above but for WHERE clause.
+    #[test]
+    fn test_trim_col_in_where_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT level FROM logs WHERE TRIM(msg) = 'hello'").unwrap();
+        assert!(
+            a.referenced_columns.contains("msg"),
+            "TRIM(msg) in WHERE must add 'msg' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `SUBSTRING(col, ...)` must also register `col` in referenced_columns.
+    #[test]
+    fn test_substring_col_in_select_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT SUBSTRING(msg, 1, 4) AS prefix FROM logs").unwrap();
+        assert!(
+            a.referenced_columns.contains("msg"),
+            "SUBSTRING(msg, ...) must add 'msg' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `EXTRACT(YEAR FROM ts_col)` must register `ts_col` in referenced_columns.
+    #[test]
+    fn test_extract_col_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT EXTRACT(YEAR FROM event_time) AS yr FROM logs").unwrap();
+        assert!(
+            a.referenced_columns.contains("event_time"),
+            "EXTRACT(... FROM event_time) must add 'event_time' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `col AT TIME ZONE 'tz'` must register `col` in referenced_columns.
+    #[test]
+    fn test_at_time_zone_col_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT event_time AT TIME ZONE 'UTC' AS utc_time FROM logs")
+            .unwrap();
+        assert!(
+            a.referenced_columns.contains("event_time"),
+            "col AT TIME ZONE must add 'event_time' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// Columns referenced only in a window function's OVER clause (PARTITION BY
+    /// and ORDER BY) must appear in `referenced_columns`.
+    ///
+    /// Before the fix, `collect_column_refs` walked `func.args` but not
+    /// `func.over`, so `level` and `timestamp` were silently dropped from
+    /// `referenced_columns`.  The scanner would never extract those fields,
+    /// causing the window function to see NULLs instead of real values.
+    ///
+    /// Regression test for missing `func.over` traversal in
+    /// `collect_column_refs`.
+    #[test]
+    fn test_window_over_partition_order_cols_added_to_referenced_columns() {
+        let a = QueryAnalyzer::new(
+            "SELECT ROW_NUMBER() OVER (PARTITION BY level ORDER BY timestamp) AS rn FROM logs",
+        )
+        .unwrap();
+        assert!(
+            a.referenced_columns.contains("level"),
+            "PARTITION BY level must add 'level' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+        assert!(
+            a.referenced_columns.contains("timestamp"),
+            "ORDER BY timestamp must add 'timestamp' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// OVER clause with both a function arg AND window columns — all must be
+    /// collected.
+    #[test]
+    fn test_window_func_arg_and_over_cols_both_collected() {
+        let a = QueryAnalyzer::new(
+            "SELECT SUM(duration) OVER (PARTITION BY service ORDER BY ts) AS rolling FROM logs",
+        )
+        .unwrap();
+        assert!(
+            a.referenced_columns.contains("duration"),
+            "SUM(duration) must add 'duration' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+        assert!(
+            a.referenced_columns.contains("service"),
+            "PARTITION BY service must add 'service' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+        assert!(
+            a.referenced_columns.contains("ts"),
+            "ORDER BY ts must add 'ts' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `col IS TRUE` in WHERE must add `col` to referenced_columns.
+    ///
+    /// Before the fix, `SqlExpr::IsTrue` fell to the catch-all `_ => {}` arm,
+    /// so `is_error` was never added to `referenced_columns`.  The scanner
+    /// therefore never extracted `is_error`, the WHERE filter saw NULLs, and
+    /// all rows were silently dropped.
+    #[test]
+    fn test_is_true_col_in_where_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT message FROM logs WHERE is_error IS TRUE").unwrap();
+        assert!(
+            a.referenced_columns.contains("is_error"),
+            "col IS TRUE must add 'is_error' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `col IS FALSE` in WHERE must add `col` to referenced_columns.
+    #[test]
+    fn test_is_false_col_in_where_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT message FROM logs WHERE is_debug IS FALSE").unwrap();
+        assert!(
+            a.referenced_columns.contains("is_debug"),
+            "col IS FALSE must add 'is_debug' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `col IS DISTINCT FROM value` must add `col` to referenced_columns.
+    #[test]
+    fn test_is_distinct_from_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT message FROM logs WHERE status IS DISTINCT FROM 'ok'")
+            .unwrap();
+        assert!(
+            a.referenced_columns.contains("status"),
+            "col IS DISTINCT FROM must add 'status' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `col SIMILAR TO pattern` must add `col` to referenced_columns.
+    #[test]
+    fn test_similar_to_adds_to_referenced_columns() {
+        let a =
+            QueryAnalyzer::new("SELECT message FROM logs WHERE path SIMILAR TO '/api/%'").unwrap();
+        assert!(
+            a.referenced_columns.contains("path"),
+            "col SIMILAR TO must add 'path' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `CEIL(col)` in WHERE must add `col` to referenced_columns.
+    ///
+    /// Before the fix, `SqlExpr::Ceil { expr, .. }` fell to `_ => {}`.
+    #[test]
+    fn test_ceil_col_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT message FROM logs WHERE CEIL(duration) > 100").unwrap();
+        assert!(
+            a.referenced_columns.contains("duration"),
+            "CEIL(duration) must add 'duration' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `FLOOR(col)` in WHERE must add `col` to referenced_columns.
+    #[test]
+    fn test_floor_col_adds_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT message FROM logs WHERE FLOOR(duration) < 50").unwrap();
+        assert!(
+            a.referenced_columns.contains("duration"),
+            "FLOOR(duration) must add 'duration' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `POSITION(x IN col)` in WHERE must add `col` to referenced_columns.
+    #[test]
+    fn test_position_col_adds_to_referenced_columns() {
+        let a =
+            QueryAnalyzer::new("SELECT message FROM logs WHERE POSITION('error' IN message) > 0")
+                .unwrap();
+        assert!(
+            a.referenced_columns.contains("message"),
+            "POSITION(... IN message) must add 'message' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `x IN UNNEST(arr_col)` must collect both `x` and `arr_col`.
+    #[test]
+    fn test_in_unnest_collects_array_expr_column() {
+        let a = QueryAnalyzer::new("SELECT level FROM logs WHERE level IN UNNEST(levels)").unwrap();
+        assert!(
+            a.referenced_columns.contains("level"),
+            "InUnnest lhs must add 'level' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+        assert!(
+            a.referenced_columns.contains("levels"),
+            "InUnnest array_expr must add 'levels' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// `OVERLAY(str PLACING repl FROM start FOR len)` must collect all argument
+    /// expressions used by the OVERLAY AST node.
+    #[test]
+    fn test_overlay_collects_all_argument_columns() {
+        let a = QueryAnalyzer::new(
+            "SELECT OVERLAY(message PLACING replacement FROM start_pos FOR count_len) AS msg FROM logs",
+        )
+        .unwrap();
+        for col in ["message", "replacement", "start_pos", "count_len"] {
+            assert!(
+                a.referenced_columns.contains(col),
+                "OVERLAY argument {col:?} must be in referenced_columns, got {:?}",
+                a.referenced_columns
+            );
+        }
+    }
+
+    /// Columns that appear only in GROUP BY must be added to referenced_columns.
+    ///
+    /// Before the fix, `SELECT COUNT(*) AS cnt FROM logs GROUP BY level` would
+    /// not add `level` to referenced_columns because only SELECT and WHERE were
+    /// walked.  The scanner would then skip `level`, GROUP BY would operate on
+    /// all-NULLs, and all rows would land in one group — silently wrong.
+    #[test]
+    fn test_group_by_only_col_added_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT COUNT(*) AS cnt FROM logs GROUP BY level").unwrap();
+        assert!(
+            a.referenced_columns.contains("level"),
+            "GROUP BY level must add 'level' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// Columns that appear only in HAVING must be added to referenced_columns.
+    ///
+    /// `HAVING MAX(severity) > 3` where severity is not in SELECT would see
+    /// all-NULLs → `MAX(NULL) = NULL`, `NULL > 3 = false` → all groups filtered out.
+    #[test]
+    fn test_having_col_added_to_referenced_columns() {
+        let a = QueryAnalyzer::new(
+            "SELECT level, COUNT(*) AS cnt FROM logs GROUP BY level HAVING MAX(severity) > 3",
+        )
+        .unwrap();
+        assert!(
+            a.referenced_columns.contains("severity"),
+            "HAVING MAX(severity) must add 'severity' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// Columns that appear only in ORDER BY must be added to referenced_columns.
+    ///
+    /// `ORDER BY timestamp` where timestamp is not in SELECT would sort on
+    /// all-NULLs, producing arbitrary ordering with no error.
+    #[test]
+    fn test_order_by_only_col_added_to_referenced_columns() {
+        let a = QueryAnalyzer::new("SELECT message FROM logs ORDER BY timestamp").unwrap();
+        assert!(
+            a.referenced_columns.contains("timestamp"),
+            "ORDER BY timestamp must add 'timestamp' to referenced_columns, got {:?}",
+            a.referenced_columns
+        );
+    }
+
+    /// Regression for #1684: `SELECT _raw, level FROM logs WHERE level = 'ERROR'`
+    /// must produce `scan_config.keep_raw = true`.
+    ///
+    /// Before the fix, `keep_raw` was unconditionally `false` for non-SELECT-*
+    /// queries. The scanner therefore never called `append_raw`, `_raw` was absent
+    /// from the batch schema, and DataFusion raised "column _raw not found" on the
+    /// first batch, dropping all data.
+    #[test]
+    fn test_scan_config_keep_raw_true_when_raw_in_select_list() {
+        let a = QueryAnalyzer::new("SELECT _raw, level FROM logs WHERE level = 'ERROR'").unwrap();
+        let sc = a.scan_config();
+        assert!(
+            sc.keep_raw,
+            "scan_config.keep_raw must be true when _raw is in the SELECT list, got false"
+        );
+        assert!(
+            !sc.extract_all,
+            "scan_config.extract_all must be false for a selective query"
+        );
+    }
+
+    /// Selective query that does NOT mention `_raw` must leave keep_raw false
+    /// (no performance regression from the fix).
+    #[test]
+    fn test_scan_config_keep_raw_false_when_raw_not_referenced() {
+        let a =
+            QueryAnalyzer::new("SELECT level, message FROM logs WHERE level = 'ERROR'").unwrap();
+        let sc = a.scan_config();
+        assert!(
+            !sc.keep_raw,
+            "scan_config.keep_raw must be false when _raw is not referenced, got true"
+        );
     }
 }

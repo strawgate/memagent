@@ -20,7 +20,7 @@
 //!
 //! The flat column is computed as:
 //! ```text
-//! COALESCE(CAST(int AS Utf8), CAST(float AS Utf8), str, CAST(bool AS Utf8))
+//! COALESCE(CAST(int AS Utf8), CAST(float AS Utf8), CASE WHEN bool IS TRUE THEN 'true' WHEN bool IS FALSE THEN 'false' ELSE NULL END, str)
 //! ```
 //! so it is non-null whenever any typed child is non-null.
 //!
@@ -47,17 +47,17 @@ enum ConflictValueSource {
 fn pick_conflict_value_source(
     int_present: bool,
     float_present: bool,
-    str_present: bool,
     bool_present: bool,
+    str_present: bool,
 ) -> Option<ConflictValueSource> {
     if int_present {
         Some(ConflictValueSource::Int)
     } else if float_present {
         Some(ConflictValueSource::Float)
-    } else if str_present {
-        Some(ConflictValueSource::Str)
     } else if bool_present {
         Some(ConflictValueSource::Bool)
+    } else if str_present {
+        Some(ConflictValueSource::Str)
     } else {
         None
     }
@@ -156,8 +156,8 @@ pub fn normalize_conflict_columns(batch: RecordBatch) -> RecordBatch {
                 let merged = merge_to_utf8(
                     find_child("int"),
                     find_child("float"),
-                    find_child("str"),
                     find_child("bool"),
+                    find_child("str"),
                     batch.num_rows(),
                 );
 
@@ -182,17 +182,17 @@ pub fn normalize_conflict_columns(batch: RecordBatch) -> RecordBatch {
         .expect("normalize_conflict_columns: schema/array length mismatch — this is a bug")
 }
 
-/// Merge int, float, str, and bool variants into a single `Utf8` column via COALESCE.
+/// Merge int, float, bool, and str variants into a single `Utf8` column via COALESCE.
 ///
-/// Priority order: int (cast to str) > float (cast to str) > str > bool (cast to str).
+/// Priority order: int (cast to str) > float (cast to str) > bool ("true"/"false") > str.
 pub fn merge_to_utf8(
     int_col: Option<&dyn Array>,
     float_col: Option<&dyn Array>,
-    str_col: Option<&dyn Array>,
     bool_col: Option<&dyn Array>,
+    str_col: Option<&dyn Array>,
     num_rows: usize,
 ) -> Arc<dyn Array> {
-    use arrow::array::StringArray;
+    use arrow::array::{BooleanArray, StringArray};
     use arrow::compute;
 
     // Arrow always supports Int64 → Utf8 and Float64 → Utf8 (formats as decimal).
@@ -211,9 +211,6 @@ pub fn merge_to_utf8(
         compute::cast(c, &DataType::Utf8)
             .expect("Utf8/Utf8View → Utf8 cast is always supported by Arrow")
     });
-    let bool_s = bool_col.map(|c| {
-        compute::cast(c, &DataType::Utf8).expect("Boolean → Utf8 cast is always supported by Arrow")
-    });
 
     let int_arr = int_s
         .as_ref()
@@ -221,10 +218,8 @@ pub fn merge_to_utf8(
     let float_arr = float_s
         .as_ref()
         .and_then(|a| a.as_any().downcast_ref::<StringArray>());
+    let bool_arr = bool_col.and_then(|a| a.as_any().downcast_ref::<BooleanArray>());
     let str_arr = str_s
-        .as_ref()
-        .and_then(|a| a.as_any().downcast_ref::<StringArray>());
-    let bool_arr = bool_s
         .as_ref()
         .and_then(|a| a.as_any().downcast_ref::<StringArray>());
 
@@ -233,8 +228,8 @@ pub fn merge_to_utf8(
         match pick_conflict_value_source(
             int_arr.is_some_and(|a| !a.is_null(i)),
             float_arr.is_some_and(|a| !a.is_null(i)),
-            str_arr.is_some_and(|a| !a.is_null(i)),
             bool_arr.is_some_and(|a| !a.is_null(i)),
+            str_arr.is_some_and(|a| !a.is_null(i)),
         ) {
             Some(ConflictValueSource::Int) => {
                 builder.append_value(int_arr.expect("int presence was checked above").value(i));
@@ -244,11 +239,12 @@ pub fn merge_to_utf8(
                     .expect("float presence was checked above")
                     .value(i),
             ),
+            Some(ConflictValueSource::Bool) => {
+                let b = bool_arr.expect("bool presence was checked above").value(i);
+                builder.append_value(if b { "true" } else { "false" });
+            }
             Some(ConflictValueSource::Str) => {
                 builder.append_value(str_arr.expect("str presence was checked above").value(i));
-            }
-            Some(ConflictValueSource::Bool) => {
-                builder.append_value(bool_arr.expect("bool presence was checked above").value(i));
             }
             None => builder.append_null(),
         }
@@ -291,23 +287,23 @@ mod verification {
     fn verify_pick_conflict_value_source_precedence() {
         let int_present: bool = kani::any();
         let float_present: bool = kani::any();
-        let str_present: bool = kani::any();
         let bool_present: bool = kani::any();
+        let str_present: bool = kani::any();
 
         let expected = if int_present {
             Some(ConflictValueSource::Int)
         } else if float_present {
             Some(ConflictValueSource::Float)
-        } else if str_present {
-            Some(ConflictValueSource::Str)
         } else if bool_present {
             Some(ConflictValueSource::Bool)
+        } else if str_present {
+            Some(ConflictValueSource::Str)
         } else {
             None
         };
 
         assert_eq!(
-            pick_conflict_value_source(int_present, float_present, str_present, bool_present),
+            pick_conflict_value_source(int_present, float_present, bool_present, str_present),
             expected
         );
         kani::cover!(int_present, "int wins when present");
@@ -316,15 +312,15 @@ mod verification {
             "float wins when int is absent"
         );
         kani::cover!(
-            !int_present && !float_present && str_present,
-            "str wins next"
+            !int_present && !float_present && bool_present,
+            "bool wins next"
         );
         kani::cover!(
-            !int_present && !float_present && !str_present && bool_present,
-            "bool wins when it is the only populated child"
+            !int_present && !float_present && !bool_present && str_present,
+            "str wins when it is the only populated child"
         );
         kani::cover!(
-            !int_present && !float_present && !str_present && !bool_present,
+            !int_present && !float_present && !bool_present && !str_present,
             "all-null rows stay null"
         );
     }
@@ -423,14 +419,14 @@ mod tests {
         assert_eq!(result.num_rows(), 2);
     }
 
-    /// Struct{int=200,str=null} + Struct{int=null,str="OK"} → flat ["200","OK"].
+    /// Struct{int=200,str=null} + Struct{int=null,str="OK"} -> flat ["200","OK"].
     #[test]
     fn conflict_struct_normalizes_to_utf8() {
         let batch =
             make_conflict_struct_batch("status", vec![Some(200), None], vec![None, Some("OK")]);
         let normalized = normalize_conflict_columns(batch);
 
-        // The struct column must be replaced in-place — still 1 column.
+        // The struct column must be replaced in-place -- still 1 column.
         assert_eq!(normalized.num_columns(), 1);
 
         let status = normalized
@@ -511,7 +507,7 @@ mod tests {
     /// A struct whose children are NOT type-names must NOT be normalized.
     #[test]
     fn non_conflict_struct_not_touched() {
-        // Struct with child fields "x" and "y" — not type names.
+        // Struct with child fields "x" and "y" -- not type names.
         let x_arr: Arc<dyn Array> = Arc::new(Int64Array::from(vec![1i64, 2]));
         let y_arr: Arc<dyn Array> = Arc::new(StringArray::from(vec!["a", "b"]));
 
@@ -542,6 +538,91 @@ mod tests {
             matches!(result.schema().field(0).data_type(), DataType::Struct(_)),
             "non-conflict struct must not be normalized"
         );
+    }
+
+    /// Boolean values in a conflict struct must be preserved as "true"/"false".
+    ///
+    /// Regression test: `merge_to_utf8` previously ignored the `bool` child,
+    /// causing boolean values to be silently dropped (normalized to null).
+    #[test]
+    fn bool_child_preserved_as_string() {
+        use arrow::array::BooleanArray;
+
+        let bool_arr: Arc<dyn Array> =
+            Arc::new(BooleanArray::from(vec![Some(true), Some(false), None]));
+        let str_arr: Arc<dyn Array> = Arc::new(StringArray::from(vec![
+            None::<&str>,
+            None,
+            Some("fallback"),
+        ]));
+
+        let struct_fields = Fields::from(vec![
+            Field::new("bool", DataType::Boolean, true),
+            Field::new("str", DataType::Utf8, true),
+        ]);
+        let struct_arr = StructArray::new(
+            struct_fields.clone(),
+            vec![Arc::clone(&bool_arr), Arc::clone(&str_arr)],
+            None,
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "active",
+            DataType::Struct(struct_fields),
+            true,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(struct_arr) as Arc<dyn Array>]).unwrap();
+
+        let normalized = normalize_conflict_columns(batch);
+        let active = normalized.column_by_name("active").unwrap();
+        assert_eq!(*active.data_type(), DataType::Utf8);
+
+        let arr = active.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(arr.value(0), "true", "true bool must normalize to \"true\"");
+        assert_eq!(
+            arr.value(1),
+            "false",
+            "false bool must normalize to \"false\""
+        );
+        assert_eq!(arr.value(2), "fallback", "str fallback when bool is null");
+    }
+
+    /// bool takes lower priority than int (int wins when both non-null in same row).
+    #[test]
+    fn int_priority_over_bool() {
+        use arrow::array::BooleanArray;
+
+        let int_arr: Arc<dyn Array> = Arc::new(Int64Array::from(vec![Some(42i64), None]));
+        let bool_arr: Arc<dyn Array> = Arc::new(BooleanArray::from(vec![Some(true), Some(false)]));
+
+        let struct_fields = Fields::from(vec![
+            Field::new("int", DataType::Int64, true),
+            Field::new("bool", DataType::Boolean, true),
+        ]);
+        let struct_arr = StructArray::new(
+            struct_fields.clone(),
+            vec![Arc::clone(&int_arr), Arc::clone(&bool_arr)],
+            None,
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "x",
+            DataType::Struct(struct_fields),
+            true,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(struct_arr) as Arc<dyn Array>]).unwrap();
+
+        let normalized = normalize_conflict_columns(batch);
+        let x = normalized.column_by_name("x").unwrap();
+        let arr = x.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(
+            arr.value(0),
+            "42",
+            "int must win over bool when both non-null"
+        );
+        assert_eq!(arr.value(1), "false", "bool fills in when int is null");
     }
 
     /// Any metadata on the schema must be preserved after normalization.

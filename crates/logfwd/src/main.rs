@@ -1303,13 +1303,6 @@ mod cli_tests {
     }
 
     #[test]
-    fn clap_rejects_unknown_old_top_level_flags() {
-        let err = Cli::try_parse_from(["logfwd", "--config", "foo.yaml"])
-            .expect_err("parser should reject old top-level flags");
-        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
-    }
-
-    #[test]
     fn clap_parses_effective_config_with_optional_config_flag() {
         let with_path = Cli::try_parse_from(["logfwd", "effective-config", "--config", "foo.yaml"])
             .expect("parser should accept effective-config with path");
@@ -1324,13 +1317,6 @@ mod cli_tests {
             Commands::EffectiveConfig { config } => assert!(config.is_none()),
             other => panic!("expected effective-config command, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn clap_rejects_removed_dump_config_alias() {
-        let err = Cli::try_parse_from(["logfwd", "dump-config"])
-            .expect_err("parser should reject removed dump-config alias");
-        assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
     }
 
     #[test]

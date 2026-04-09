@@ -34,8 +34,11 @@ data source is required.
 | `generator.sequence.field` | string | No | unset | Output field name for a monotonic generated sequence in `record` rows. |
 | `generator.sequence.start` | integer | No | `1` | Initial value for the generated sequence. |
 | `generator.event_created_unix_nano_field` | string | No | unset | Adds a source-created nanosecond timestamp field to each `record` row. |
+| `generator.timestamp.start` | string | No | `2024-01-15T00:00:00Z` | Start timestamp for the `logs` profile. ISO8601 (`YYYY-MM-DDTHH:MM:SSZ`) or `"now"` for wall-clock time at startup. |
+| `generator.timestamp.step_ms` | integer | No | `1` | Milliseconds between events. Positive = forward, negative = backward. |
 
 ```yaml
+# Record profile (benchmarking)
 input:
   type: generator
   generator:
@@ -53,6 +56,33 @@ input:
     sequence:
       field: seq
     event_created_unix_nano_field: event_created_unix_nano
+```
+
+### Timestamp examples (`logs` profile)
+
+```yaml
+# Real-time simulation (timestamps start at now, +1ms per event)
+input:
+  type: generator
+  generator:
+    timestamp:
+      start: "now"
+
+# Backfill from now (timestamps go backward, 100ms apart)
+input:
+  type: generator
+  generator:
+    timestamp:
+      start: "now"
+      step_ms: -100
+
+# Fixed historical window (5-second intervals)
+input:
+  type: generator
+  generator:
+    timestamp:
+      start: "2023-06-01T12:00:00Z"
+      step_ms: 5000
 ```
 
 Use `generate-json <num_lines> <output_file>` on the CLI to write a fixed number of lines to a file instead.

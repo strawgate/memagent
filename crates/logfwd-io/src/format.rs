@@ -271,8 +271,22 @@ fn inject_cri_metadata(msg: &[u8], timestamp: &[u8], stream: &[u8], out: &mut Ve
         out.extend_from_slice(timestamp);
         out.extend_from_slice(b"\",\"_stream\":\"");
         out.extend_from_slice(stream);
-        out.extend_from_slice(b"\",");
-        out.extend_from_slice(&msg[1..]);
+        // Fixes #1658: if the message body after '{' is empty (just '}' possibly
+        // with leading whitespace), do NOT emit a trailing comma — the result
+        // would be invalid JSON.
+        let after_brace = &msg[1..];
+        let rest = after_brace
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .map_or(after_brace, |i| &after_brace[i..]);
+        if rest.starts_with(b"}") {
+            // Empty JSON object — close without a comma.
+            out.extend_from_slice(b"\"");
+            out.extend_from_slice(rest);
+        } else {
+            out.extend_from_slice(b"\",");
+            out.extend_from_slice(after_brace);
+        }
     } else {
         // Plain text: wrap as {"_timestamp":"...","_stream":"...","_raw":"<escaped>"}
         // so that message content is preserved and the scanner can ingest the record.
@@ -515,6 +529,51 @@ mod tests {
         );
     }
 
+    /// Regression for #1658: a CRI log line whose message is an empty JSON
+    /// object `{}` must NOT produce a trailing comma in the output.
+    ///
+    /// Before the fix, inject_cri_metadata emitted:
+    ///   `{"_timestamp":"T","_stream":"S",}` — invalid JSON (trailing comma).
+    #[test]
+    fn cri_empty_json_object_message_produces_valid_json() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let input = b"2024-01-15T10:30:00Z stdout F {}\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        let output_str = std::str::from_utf8(&out).expect("output must be valid UTF-8");
+        let trimmed = output_str.trim_end_matches('\n');
+        assert!(
+            serde_json::from_str::<serde_json::Value>(trimmed).is_ok(),
+            "empty JSON object message must produce valid JSON, got: {trimmed:?}"
+        );
+        // Must contain the injected metadata.
+        assert!(
+            trimmed.contains("\"_timestamp\":\"2024-01-15T10:30:00Z\""),
+            "output must contain _timestamp, got: {trimmed:?}"
+        );
+        assert!(
+            trimmed.contains("\"_stream\":\"stdout\""),
+            "output must contain _stream, got: {trimmed:?}"
+        );
+    }
+
+    /// Whitespace-only body `{ }` should also produce valid JSON (no trailing comma).
+    #[test]
+    fn cri_whitespace_json_object_message_produces_valid_json() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let input = b"2024-01-15T10:30:00Z stdout F { }\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        let output_str = std::str::from_utf8(&out).expect("output must be valid UTF-8");
+        let trimmed = output_str.trim_end_matches('\n');
+        assert!(
+            serde_json::from_str::<serde_json::Value>(trimmed).is_ok(),
+            "whitespace JSON object must produce valid JSON, got: {trimmed:?}"
+        );
+    }
+
     #[test]
     fn passthrough_json_valid_line_no_error() {
         // A valid JSON-object line must NOT increment parse_errors.
@@ -687,8 +746,16 @@ mod verification {
         let stream = b"S";
         let mut out = Vec::new();
         inject_cri_metadata(&msg, ts, stream, &mut out);
-        // Output must start with the timestamp+stream injection prefix.
-        assert!(out.starts_with(b"{\"_timestamp\":\"TS\",\"_stream\":\"S\","));
+        // Output must start with timestamp+stream. The next byte is:
+        // - ',' for non-empty JSON objects
+        // - '}' for empty object path (`{}` / `{ }`) from issue #1658 fix
+        let prefix = b"{\"_timestamp\":\"TS\",\"_stream\":\"S\"";
+        assert!(out.starts_with(prefix));
+        let next = out.get(prefix.len()).copied();
+        assert!(
+            matches!(next, Some(b',') | Some(b'}')),
+            "expected ',' or '}}' after injected _stream"
+        );
         kani::cover!(true, "JSON path metadata prefix verified");
     }
 

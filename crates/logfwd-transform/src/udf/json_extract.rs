@@ -75,10 +75,19 @@ fn is_conflict_struct_fields(fields: &arrow::datatypes::Fields) -> bool {
 
 /// Reconstruct an NDJSON buffer from `raw_array`, run the scanner for
 /// `field_name`, and return the resulting [`RecordBatch`].
+///
+/// NULL rows in `raw_array` are emitted as `{}\n` (an empty JSON object).
+/// The scanner parses `{}` as a row with no fields, so the requested field
+/// is absent and naturally produces NULL in the output — preserving the
+/// one-to-one row correspondence without a row-count mismatch.
 fn parse_raw(raw_array: &StringArray, field_name: &str) -> Result<RecordBatch, DataFusionError> {
     let mut buf = Vec::with_capacity(raw_array.len() * 128);
     for i in 0..raw_array.len() {
-        if !raw_array.is_null(i) {
+        if raw_array.is_null(i) {
+            // Emit an empty JSON object so the scanner produces a row with
+            // no fields; the requested field is absent → NULL in the output.
+            buf.extend_from_slice(b"{}");
+        } else {
             buf.extend_from_slice(raw_array.value(i).as_bytes());
         }
         buf.push(b'\n');
@@ -326,13 +335,13 @@ impl ScalarUDFImpl for JsonExtractUdf {
 
             let result: Arc<dyn Array> = match self.mode {
                 JsonExtractMode::Str => {
-                    // Coalesce all children to Utf8 (int > float > str priority).
+                    // Coalesce all children to Utf8 (int > float > bool > str priority).
                     use logfwd_arrow::conflict_schema::merge_to_utf8;
                     merge_to_utf8(
                         find_child("int"),
                         find_child("float"),
-                        find_child("str"),
                         find_child("bool"),
+                        find_child("str"),
                         result_rows,
                     )
                 }
@@ -549,6 +558,30 @@ mod tests {
         assert_eq!(col.value(1), "OK", "str row must be returned as-is");
     }
 
+    /// UDF-level regression: mixed bool/string rows for the same key must
+    /// coalesce with bool values preserved as "true"/"false" before string fallback.
+    #[tokio::test]
+    async fn test_json_str_on_bool_string_conflict_batch_coalesces() {
+        let batch = make_raw_batch(vec![
+            r#"{"active": true}"#,
+            r#"{"active": false}"#,
+            r#"{"active": "fallback"}"#,
+        ]);
+        let result = query("SELECT json(_raw, 'active') as active FROM logs", batch).await;
+        let col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "true", "bool true must stringify to 'true'");
+        assert_eq!(
+            col.value(1),
+            "false",
+            "bool false must stringify to 'false'"
+        );
+        assert_eq!(col.value(2), "fallback", "string row must remain unchanged");
+    }
+
     /// `json_float` on a field that is a quoted string must return NULL.
     #[tokio::test]
     async fn test_json_float_on_quoted_string_is_null() {
@@ -608,5 +641,85 @@ mod tests {
         assert_eq!(msg.value(2), "error");
         assert_eq!(status.value(2), 500);
         assert!((duration.value(2) - 2.25).abs() < 0.001);
+    }
+
+    /// `json(_raw, 'key')` must return NULL for rows where `_raw` itself is NULL,
+    /// without erroring the whole batch.
+    ///
+    /// Regression test: previously, NULL rows in `_raw` were emitted as bare `\n`
+    /// (empty lines).  The scanner skips empty lines, so the output had fewer rows
+    /// than the input, triggering a "scanner row count mismatch" error for the
+    /// entire batch.
+    #[tokio::test]
+    async fn test_json_null_raw_returns_null_not_error() {
+        // Build a nullable _raw column: row 0 has data, row 1 is NULL, row 2 has data.
+        let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("_raw", DataType::Utf8, true),
+        ]));
+        let raw: arrow::array::ArrayRef = Arc::new(StringArray::from(vec![
+            Some(r#"{"status": 200}"#),
+            None,
+            Some(r#"{"status": 404}"#),
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![raw]).unwrap();
+
+        let ctx = SessionContext::new();
+        ctx.register_udf(ScalarUDF::from(JsonExtractUdf::new(JsonExtractMode::Str)));
+        ctx.register_udf(ScalarUDF::from(JsonExtractUdf::new(JsonExtractMode::Int)));
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
+        ctx.register_table("logs", Arc::new(table)).unwrap();
+
+        // json() — must not error; null row must return null
+        let result = ctx
+            .sql("SELECT json(_raw, 'status') AS s FROM logs")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let result = result.into_iter().next().unwrap();
+        assert_eq!(result.num_rows(), 3, "output must have 3 rows");
+        let col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), "200", "row 0 must extract status");
+        assert!(col.is_null(1), "row 1 (null _raw) must produce null");
+        assert_eq!(col.value(2), "404", "row 2 must extract status");
+
+        // json_int() — same null row must not crash
+        let ctx2 = SessionContext::new();
+        ctx2.register_udf(ScalarUDF::from(JsonExtractUdf::new(JsonExtractMode::Int)));
+        let raw2: arrow::array::ArrayRef = Arc::new(StringArray::from(vec![
+            Some(r#"{"status": 200}"#),
+            None,
+            Some(r#"{"status": 404}"#),
+        ]));
+        let schema2 = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("_raw", DataType::Utf8, true),
+        ]));
+        let batch2 = RecordBatch::try_new(schema2, vec![raw2]).unwrap();
+        let table2 = MemTable::try_new(batch2.schema(), vec![vec![batch2]]).unwrap();
+        ctx2.register_table("logs", Arc::new(table2)).unwrap();
+        let result2 = ctx2
+            .sql("SELECT json_int(_raw, 'status') AS s FROM logs")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let result2 = result2.into_iter().next().unwrap();
+        let col2 = result2
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(col2.value(0), 200, "json_int row 0");
+        assert!(
+            col2.is_null(1),
+            "json_int row 1 (null _raw) must produce null"
+        );
+        assert_eq!(col2.value(2), 404, "json_int row 2");
     }
 }

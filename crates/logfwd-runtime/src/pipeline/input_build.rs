@@ -99,7 +99,8 @@ pub(super) fn build_input_state(
         InputType::Generator => {
             use logfwd_io::generator::{
                 GeneratorAttributeValue, GeneratorComplexity, GeneratorConfig,
-                GeneratorGeneratedField, GeneratorInput, GeneratorProfile,
+                GeneratorGeneratedField, GeneratorInput, GeneratorProfile, GeneratorTimestamp,
+                parse_iso8601_to_epoch_ms,
             };
             let generator_cfg = cfg.generator.as_ref();
             let config = GeneratorConfig {
@@ -158,6 +159,29 @@ pub(super) fn build_input_state(
                 }),
                 event_created_unix_nano_field: generator_cfg
                     .and_then(|c| c.event_created_unix_nano_field.clone()),
+                timestamp: match generator_cfg.and_then(|c| c.timestamp.as_ref()) {
+                    None => GeneratorTimestamp::default(),
+                    Some(ts) => {
+                        let start_epoch_ms = match ts.start.as_deref() {
+                            None => GeneratorTimestamp::default().start_epoch_ms,
+                            Some(s) if s.eq_ignore_ascii_case("now") => {
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_err(|_| {
+                                        format!("input '{name}': system clock is before Unix epoch, cannot resolve timestamp.start=\"now\"")
+                                    })?
+                                    .as_millis() as i64
+                            }
+                            Some(s) => parse_iso8601_to_epoch_ms(s).map_err(|e| {
+                                format!("input '{name}': invalid timestamp.start: {e}")
+                            })?,
+                        };
+                        GeneratorTimestamp {
+                            start_epoch_ms,
+                            step_ms: ts.step_ms.unwrap_or(1),
+                        }
+                    }
+                },
             };
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Generator, &format)?;
