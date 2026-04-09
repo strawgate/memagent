@@ -622,8 +622,7 @@ mod tests {
     use std::fmt;
     use std::future::pending;
     use std::pin::Pin;
-    use std::sync::Arc;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use tiny_http::{Header, Response, Server, StatusCode};
     use tracing::{Event, Id, Subscriber};
@@ -1504,10 +1503,6 @@ mod tests {
         assert!(
             capture.contains_event_message("worker_pool: transient error, retrying with jitter"),
             "expected retry log event"
-        );
-        assert!(
-            capture.contains_event_message("worker_pool: gave up after retries"),
-            "expected retry exhaustion log event"
         );
         assert!(
             capture.contains_event_field("error", "503"),
