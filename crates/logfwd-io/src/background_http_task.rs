@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use tokio::sync::oneshot;
@@ -8,26 +7,14 @@ use tokio::sync::oneshot;
 /// Drop signals shutdown and joins the thread to prevent leaked listeners
 /// and leaked thread ownership.
 pub(crate) struct BackgroundHttpTask {
-    shutdown: Option<ShutdownHandle>,
+    shutdown: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<()>>,
 }
 
-enum ShutdownHandle {
-    TinyHttp(Arc<tiny_http::Server>),
-    Axum(oneshot::Sender<()>),
-}
-
 impl BackgroundHttpTask {
-    pub(crate) fn new(server: Arc<tiny_http::Server>, handle: JoinHandle<()>) -> Self {
-        Self {
-            shutdown: Some(ShutdownHandle::TinyHttp(server)),
-            handle: Some(handle),
-        }
-    }
-
     pub(crate) fn new_axum(shutdown: oneshot::Sender<()>, handle: JoinHandle<()>) -> Self {
         Self {
-            shutdown: Some(ShutdownHandle::Axum(shutdown)),
+            shutdown: Some(shutdown),
             handle: Some(handle),
         }
     }
@@ -39,13 +26,8 @@ impl BackgroundHttpTask {
 
 impl Drop for BackgroundHttpTask {
     fn drop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            match shutdown {
-                ShutdownHandle::TinyHttp(server) => server.unblock(),
-                ShutdownHandle::Axum(tx) => {
-                    let _ = tx.send(());
-                }
-            }
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
         }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
