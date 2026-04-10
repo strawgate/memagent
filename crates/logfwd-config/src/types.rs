@@ -302,6 +302,9 @@ pub struct InputConfig {
     pub read_buf_size: Option<usize>,
     /// Maximum bytes read per file per poll (default: 262_144, minimum: 1).
     pub per_file_read_budget_bytes: Option<usize>,
+    /// Immediate repoll budget armed when a file poll hits read budget
+    /// (default: 8, set to 0 to disable adaptive fast repolls).
+    pub adaptive_fast_polls_max: Option<u8>,
     pub max_open_files: Option<usize>,
     pub glob_rescan_interval_ms: Option<u64>,
     #[serde(default)]

@@ -473,6 +473,18 @@ pub fn sample_pipeline_metrics(pipelines: &[Arc<PipelineMetrics>], buf: &RingBuf
             pm.flush_by_timeout.load(Ordering::Relaxed)
         );
         gauge!(
+            "logfwd.input.poll_cadence.fast_repolls",
+            "Idle polls that bypassed baseline sleep due to adaptive cadence",
+            "1",
+            pm.cadence_fast_repolls.load(Ordering::Relaxed)
+        );
+        gauge!(
+            "logfwd.input.poll_cadence.idle_sleeps",
+            "Idle polls that slept for baseline poll interval",
+            "1",
+            pm.cadence_idle_sleeps.load(Ordering::Relaxed)
+        );
+        gauge!(
             "logfwd.batch.dropped",
             "Dropped batches",
             "1",
@@ -1152,6 +1164,8 @@ mod tests {
         // Simulate some activity
         pm.batches_total.store(10, Ordering::Relaxed);
         pm.backpressure_stalls.store(3, Ordering::Relaxed);
+        pm.cadence_fast_repolls.store(5, Ordering::Relaxed);
+        pm.cadence_idle_sleeps.store(2, Ordering::Relaxed);
         pm.scan_nanos_total.store(500_000_000, Ordering::Relaxed);
 
         let buf = RingBuffer::new(1024);
@@ -1180,6 +1194,24 @@ mod tests {
             .expect("logfwd.backpressure.stalls must be sampled");
         match bp.value {
             MetricValue::U64(v) => assert_eq!(v, 3),
+            _ => panic!("expected U64"),
+        }
+
+        let fast_repolls = points
+            .iter()
+            .find(|p| p.name == "logfwd.input.poll_cadence.fast_repolls")
+            .expect("logfwd.input.poll_cadence.fast_repolls must be sampled");
+        match fast_repolls.value {
+            MetricValue::U64(v) => assert_eq!(v, 5),
+            _ => panic!("expected U64"),
+        }
+
+        let idle_sleeps = points
+            .iter()
+            .find(|p| p.name == "logfwd.input.poll_cadence.idle_sleeps")
+            .expect("logfwd.input.poll_cadence.idle_sleeps must be sampled");
+        match idle_sleeps.value {
+            MetricValue::U64(v) => assert_eq!(v, 2),
             _ => panic!("expected U64"),
         }
 

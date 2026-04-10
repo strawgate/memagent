@@ -49,6 +49,8 @@ pub(super) struct FileReader {
     pub(super) read_buf: Vec<u8>,
     pub(super) evicted_offsets: HashMap<PathBuf, EvictedFile>,
     pub(super) scratch_paths: Vec<PathBuf>,
+    pub(super) last_read_had_data: bool,
+    pub(super) last_read_hit_budget: bool,
     pub(super) config: TailConfig,
 }
 
@@ -252,15 +254,23 @@ impl FileReader {
 
     pub(super) fn read_all(&mut self, events: &mut Vec<TailEvent>) -> bool {
         let mut had_error = false;
+        self.last_read_had_data = false;
+        self.last_read_hit_budget = false;
         let mut paths = std::mem::take(&mut self.scratch_paths);
         paths.clear();
         paths.extend(self.files.keys().cloned());
         let eof_min_idle = self.eof_min_idle_duration();
+        let per_file_budget = self
+            .config
+            .per_file_read_budget_bytes
+            .clamp(1, Self::MAX_READ_PER_POLL);
 
         for path in &paths {
             let pre_read_source_id = self.source_id_for_path(path);
             match self.read_new_data(path) {
                 Ok(ReadResult::Data(data)) => {
+                    self.last_read_had_data = true;
+                    self.last_read_hit_budget |= data.len() >= per_file_budget;
                     if let Some(tailed) = self.files.get_mut(path) {
                         tailed.eof_state.on_data();
                     }
@@ -272,6 +282,8 @@ impl FileReader {
                     });
                 }
                 Ok(ReadResult::TruncatedThenData(data)) => {
+                    self.last_read_had_data = true;
+                    self.last_read_hit_budget |= data.len() >= per_file_budget;
                     events.push(TailEvent::Truncated {
                         path: path.clone(),
                         source_id: pre_read_source_id,
@@ -478,6 +490,8 @@ mod tests {
             read_buf: vec![0u8; 64],
             evicted_offsets: HashMap::new(),
             scratch_paths: Vec::new(),
+            last_read_had_data: false,
+            last_read_hit_budget: false,
             config: TailConfig {
                 poll_interval_ms: 0,
                 ..TailConfig::default()

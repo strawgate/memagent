@@ -70,6 +70,12 @@ pub(super) fn decode_otlp_protobuf(
     convert_request_to_batch(&request, resource_prefix)
 }
 
+/// Decode OTLP protobuf bytes into a structured Arrow RecordBatch using the
+/// default resource attribute prefix.
+pub(super) fn decode_otlp_logs_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
+    decode_otlp_protobuf(body, field_names::DEFAULT_RESOURCE_PREFIX)
+}
+
 /// Decode an OTLP ExportLogsServiceRequest from JSON and produce a structured
 /// Arrow RecordBatch. Parses the OTLP JSON structure directly, converts to
 /// newline-delimited JSON lines, then scans into a batch.

@@ -42,6 +42,8 @@ use logfwd_diagnostics::diagnostics::PipelineMetrics;
 #[cfg(not(feature = "turmoil"))]
 use logfwd_io::input::InputEvent;
 #[cfg(not(feature = "turmoil"))]
+use logfwd_io::poll_cadence::AdaptivePollController;
+#[cfg(not(feature = "turmoil"))]
 use logfwd_types::pipeline::SourceId;
 
 #[cfg(not(feature = "turmoil"))]
@@ -98,6 +100,8 @@ fn io_worker_loop(
 ) {
     let mut buffered_since: Option<Instant> = None;
     let mut last_bp_warn: Option<Instant> = None;
+    let mut adaptive_poll =
+        AdaptivePollController::new(input.source.get_cadence().adaptive_fast_polls_max);
 
     'io_loop: loop {
         if shutdown.is_cancelled() {
@@ -111,6 +115,7 @@ fn io_worker_loop(
         let events = match input.source.poll() {
             Ok(e) => e,
             Err(e) => {
+                adaptive_poll.reset_fast_polls();
                 input.stats.inc_errors();
                 input.stats.set_health(reduce_component_health(
                     input.stats.health(),
@@ -126,9 +131,16 @@ fn io_worker_loop(
             input.stats.health(),
             HealthTransitionEvent::Observed(input.source.health()),
         ));
+        let cadence = input.source.get_cadence();
+        adaptive_poll.observe_signal(cadence.signal);
 
         if events.is_empty() {
-            std::thread::sleep(poll_interval);
+            if adaptive_poll.should_fast_poll() {
+                metrics.inc_cadence_fast_repoll();
+            } else {
+                metrics.inc_cadence_idle_sleep();
+                std::thread::sleep(poll_interval);
+            }
         } else {
             for event in events {
                 match event {
@@ -489,7 +501,7 @@ impl InputPipelineManager {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "turmoil")))]
 mod tests {
     use super::*;
 
@@ -694,6 +706,95 @@ pipelines:
         assert_eq!(
             lines_in, 20,
             "expected 20 lines from both inputs, got {lines_in}"
+        );
+    }
+
+    /// End-to-end regression: file-tail read-budget signals should propagate
+    /// through framed input into the runtime adaptive cadence loop.
+    #[cfg(not(feature = "turmoil"))]
+    #[test]
+    fn split_pipeline_records_adaptive_fast_repolls() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("adaptive_fast_repolls.log");
+
+        let payload = "x".repeat(160);
+        let mut data = String::new();
+        for i in 0..40 {
+            data.push_str(&format!(
+                r#"{{"level":"INFO","seq":{},"msg":"{}"}}"#,
+                i, payload
+            ));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+  poll_interval_ms: 200
+  per_file_read_budget_bytes: 64
+  adaptive_fast_polls_max: 4
+output:
+  type: 'null'
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let meter = opentelemetry::global::meter("test");
+        let mut pipeline =
+            crate::pipeline::Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        let metrics = pipeline.metrics().clone();
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                let lines_in = metrics.transform_in.lines_total.load(Ordering::Relaxed);
+                let fast_repolls = metrics.cadence_fast_repolls.load(Ordering::Relaxed);
+                if lines_in >= 40 && fast_repolls > 0 {
+                    sd.cancel();
+                    return;
+                }
+                if Instant::now() > deadline {
+                    sd.cancel();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(
+            result.is_ok(),
+            "adaptive cadence pipeline should run cleanly: {result:?}"
+        );
+
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert!(
+            lines_in >= 40,
+            "expected to process test file rows, got {lines_in}"
+        );
+
+        let fast_repolls = pipeline
+            .metrics
+            .cadence_fast_repolls
+            .load(Ordering::Relaxed);
+        assert!(
+            fast_repolls > 0,
+            "expected adaptive cadence fast repolls to be recorded, got {fast_repolls}"
         );
     }
 

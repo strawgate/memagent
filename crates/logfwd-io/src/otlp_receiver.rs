@@ -12,6 +12,7 @@ mod server;
 mod tests;
 #[cfg(test)]
 use convert::*;
+use decode::decode_otlp_logs_to_batch;
 #[cfg(test)]
 use decode::*;
 
@@ -25,6 +26,7 @@ use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use logfwd_types::field_names;
 use tokio::sync::oneshot;
 
+use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::input::{InputEvent, InputSource};
 
@@ -273,4 +275,13 @@ impl InputSource for OtlpReceiverInput {
             stored
         }
     }
+}
+
+/// Decode OTLP protobuf bytes into a structured `RecordBatch`.
+///
+/// This performs receiver-side protobuf decode plus batch materialization
+/// without HTTP transport overhead. Resource attributes are materialized with
+/// [`logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX`].
+pub fn decode_protobuf_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
+    decode_otlp_logs_to_batch(body)
 }

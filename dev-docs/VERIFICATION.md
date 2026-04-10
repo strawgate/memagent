@@ -170,6 +170,20 @@ conditions (from the `kani` job in `.github/workflows/ci.yml`):
 A matching path change in a **draft** PR does not trigger the job; the PR must
 be marked ready for review first.
 
+### Verification guardrail checks
+
+The CI `Verification guardrail` job runs these lightweight anti-drift checks:
+
+- `scripts/verify_kani_boundary_contract.py` — validates non-core Kani seam policy
+- `scripts/verify_tlc_matrix_contract.py` — validates TLC matrix coverage for expected non-coverage/non-thorough `tla/*.cfg` models
+- `scripts/verify_proptest_regressions.py` — validates persisted proptest regression-file policy and approved `failure_persistence: None` usage
+
+Run them locally:
+
+```bash
+just verification-guardrail
+```
+
 ### Proof quality requirements
 
 Every Kani proof MUST:
@@ -302,6 +316,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-io/tail/verification.rs` | File tailer pure reducers for EOF emission + error backoff (`eof_model_transition`, `backoff_transition`) | Kani (7 proofs: EOF at-most-once thresholding, reset semantics, two-poll/repeat cycle, backoff cap/reset/monotonicity) + proptest (state reducer invariants in `tail/state.rs`) + **TLA+** (`tla/TailLifecycle.tla`) |
 | `logfwd-io/segment.rs` | Checkpoint segment envelope read/write/recovery (`LCHK` header/footer, checksum, replay plan) | Unit tests for panic/OOM/silent-mask hardening (unsupported-version, permission-denied I/O surfacing, write/read size-bound parity, recovery error semantics) |
 | `logfwd/pipeline/checkpoint_policy.rs` | Typed delivery outcome -> checkpoint disposition mapping (`Ack`, `Reject`, `Hold`) | Kani exhaustive (3 proofs) + unit tests + proptest sequence invariants (monotonicity + no-advance-on-reject/hold) |
+| `logfwd/pipeline/checkpoint_io.rs` | Final checkpoint flush retry window (`MAX_ATTEMPTS`, retry/no-retry boundary, stop-on-success behavior) | Unit tests + proptest retry-window equivalence checks (`attempt < max_attempts - 1`) + async retry behavior tests |
 | `logfwd/worker_pool/health.rs` | Pool idle-phase insertion + worker-slot aggregation policy | Kani exhaustive (3 proofs) + unit tests + proptest aggregation checks |
 | `logfwd/worker_pool.rs` | MRU dispatch decision + typed delivery outcome helpers | Kani (8 dispatch/outcome proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
 | `logfwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |

@@ -17,6 +17,8 @@ pub mod otap_receiver;
 pub mod otlp_receiver;
 /// Platform sensor inputs and Arrow-native control/sample event emission.
 pub mod platform_sensor;
+/// Adaptive polling primitives shared by file-tail and runtime input loops.
+pub mod poll_cadence;
 pub(crate) mod polling_input_health;
 pub(crate) mod receiver_health;
 pub(crate) mod receiver_http;

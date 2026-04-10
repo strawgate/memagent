@@ -215,6 +215,8 @@ mod tests {
             read_buf: vec![0u8; 128],
             evicted_offsets: HashMap::new(),
             scratch_paths: Vec::new(),
+            last_read_had_data: false,
+            last_read_hit_budget: false,
             config: TailConfig {
                 start_from_end: true,
                 poll_interval_ms: 10,

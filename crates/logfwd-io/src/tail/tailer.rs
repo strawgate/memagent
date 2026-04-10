@@ -7,6 +7,7 @@ use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::pipeline::SourceId;
 
+use crate::poll_cadence::{AdaptivePollController, PollCadenceSignal};
 use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
 
 use super::discovery::FileDiscovery;
@@ -47,6 +48,8 @@ pub struct TailConfig {
     pub glob_rescan_interval_ms: u64,
     pub max_open_files: usize,
     pub per_file_read_budget_bytes: usize,
+    /// Maximum number of consecutive immediate repolls after a budget-saturated read.
+    pub adaptive_fast_polls_max: u8,
 }
 
 impl Default for TailConfig {
@@ -59,6 +62,7 @@ impl Default for TailConfig {
             glob_rescan_interval_ms: 5000,
             max_open_files: 1024,
             per_file_read_budget_bytes: 256 * 1024,
+            adaptive_fast_polls_max: 8,
         }
     }
 }
@@ -71,6 +75,8 @@ pub struct FileTailer {
     last_poll: Instant,
     pub(super) consecutive_error_polls: u32,
     pub(super) error_backoff_until: Option<Instant>,
+    adaptive_poll: AdaptivePollController,
+    last_poll_signal: PollCadenceSignal,
     health: ComponentHealth,
     stats: std::sync::Arc<ComponentStats>,
 }
@@ -100,6 +106,7 @@ impl FileTailer {
         stats: std::sync::Arc<ComponentStats>,
     ) -> io::Result<Self> {
         let (tx, rx) = crossbeam_channel::unbounded();
+        let adaptive_fast_polls_max = config.adaptive_fast_polls_max;
 
         let mut watcher = notify::recommended_watcher(move |res| {
             let _ = tx.send(res);
@@ -132,12 +139,16 @@ impl FileTailer {
                 read_buf: vec![0u8; config.read_buf_size],
                 evicted_offsets: HashMap::new(),
                 scratch_paths: Vec::new(),
+                last_read_had_data: false,
+                last_read_hit_budget: false,
                 config: config.clone(),
             },
             config,
             last_poll: Instant::now(),
             consecutive_error_polls: 0,
             error_backoff_until: None,
+            adaptive_poll: AdaptivePollController::new(adaptive_fast_polls_max),
+            last_poll_signal: PollCadenceSignal::default(),
             health: ComponentHealth::Healthy,
             stats,
         };
@@ -199,6 +210,7 @@ impl FileTailer {
         if let Some(until) = self.error_backoff_until
             && Instant::now() < until
         {
+            self.last_poll_signal = PollCadenceSignal::default();
             if had_error {
                 self.update_error_backoff(true);
             }
@@ -209,10 +221,14 @@ impl FileTailer {
         let glob_rescan_due = self.config.glob_rescan_interval_ms > 0
             && self.discovery.last_glob_rescan.elapsed()
                 >= Duration::from_millis(self.config.glob_rescan_interval_ms);
-        let should_poll =
-            something_changed || self.last_poll.elapsed() >= poll_interval || glob_rescan_due;
+        let adaptive_fast_poll = self.adaptive_poll.should_fast_poll();
+        let should_poll = something_changed
+            || self.last_poll.elapsed() >= poll_interval
+            || glob_rescan_due
+            || adaptive_fast_poll;
 
         if !should_poll {
+            self.last_poll_signal = PollCadenceSignal::default();
             if had_error {
                 self.update_error_backoff(true);
             }
@@ -230,6 +246,12 @@ impl FileTailer {
         had_error |= self
             .discovery
             .cleanup_deleted(&mut self.reader, &mut events);
+
+        self.last_poll_signal = PollCadenceSignal {
+            had_data: self.reader.last_read_had_data,
+            hit_read_budget: self.reader.last_read_hit_budget,
+        };
+        self.adaptive_poll.observe_signal(self.last_poll_signal);
 
         self.reader.evict_lru(self.config.max_open_files);
         self.update_error_backoff(had_error);
@@ -286,6 +308,27 @@ impl FileTailer {
 
     pub fn source_id_for_path(&self, path: &Path) -> Option<SourceId> {
         self.reader.source_id_for_path(path)
+    }
+
+    /// Source feedback from the last poll, used to decide whether the next poll should fast-path.
+    pub fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
+        self.last_poll_signal
+    }
+
+    /// Maximum number of immediate repolls allowed after a budget-saturated read.
+    pub fn get_adaptive_fast_polls_max(&self) -> u8 {
+        self.config.adaptive_fast_polls_max
+    }
+
+    #[cfg(test)]
+    pub(super) fn force_poll_due(&mut self) {
+        let elapsed_ms = self.config.poll_interval_ms.max(1);
+        self.last_poll = Instant::now() - Duration::from_millis(elapsed_ms);
+    }
+
+    #[cfg(test)]
+    pub(super) fn adaptive_fast_polls_remaining(&self) -> u8 {
+        self.adaptive_poll.get_fast_polls_remaining()
     }
 
     pub fn file_offsets(&self) -> Vec<(SourceId, ByteOffset)> {

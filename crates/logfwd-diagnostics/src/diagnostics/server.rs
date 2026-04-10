@@ -958,7 +958,7 @@ impl DiagnosticsServer {
             };
 
             pipelines_json.push(format!(
-                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","health":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"dropped_batches_total":{},"scan_errors_total":{},"parse_errors_total":{},"last_batch_time_ns":"{}","batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{},"bottleneck":{{"stage":"{}","reason":"{}"}}}}"#,
+                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","health":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"cadence_fast_repolls":{},"cadence_idle_sleeps":{},"dropped_batches_total":{},"scan_errors_total":{},"parse_errors_total":{},"last_batch_time_ns":"{}","batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{},"bottleneck":{{"stage":"{}","reason":"{}"}}}}"#,
                 esc(&pm.name),
                 inputs_json.join(","),
                 esc(&pm.transform_sql),
@@ -972,6 +972,8 @@ impl DiagnosticsServer {
                 avg_rows,
                 pm.flush_by_size.load(Ordering::Relaxed),
                 pm.flush_by_timeout.load(Ordering::Relaxed),
+                pm.cadence_fast_repolls.load(Ordering::Relaxed),
+                pm.cadence_idle_sleeps.load(Ordering::Relaxed),
                 pm.dropped_batches_total.load(Ordering::Relaxed),
                 pm.scan_errors_total.load(Ordering::Relaxed),
                 pm.parse_errors_total.load(Ordering::Relaxed),
@@ -1175,6 +1177,8 @@ mod tests {
         pm.batch_rows_total.store(4500, Ordering::Relaxed);
         pm.flush_by_size.store(30, Ordering::Relaxed);
         pm.flush_by_timeout.store(20, Ordering::Relaxed);
+        pm.cadence_fast_repolls.store(11, Ordering::Relaxed);
+        pm.cadence_idle_sleeps.store(44, Ordering::Relaxed);
         pm.dropped_batches_total.store(5, Ordering::Relaxed);
         pm.scan_errors_total.store(2, Ordering::Relaxed);
         pm.parse_errors_total.store(4, Ordering::Relaxed);
@@ -1435,6 +1439,16 @@ output:
         assert!(body.contains(r#""avg_rows":90.0"#), "body: {}", body);
         assert!(body.contains(r#""flush_by_size":30"#), "body: {}", body);
         assert!(body.contains(r#""flush_by_timeout":20"#), "body: {}", body);
+        assert!(
+            body.contains(r#""cadence_fast_repolls":11"#),
+            "body: {}",
+            body
+        );
+        assert!(
+            body.contains(r#""cadence_idle_sleeps":44"#),
+            "body: {}",
+            body
+        );
         assert!(
             body.contains(r#""dropped_batches_total":5"#),
             "body: {}",

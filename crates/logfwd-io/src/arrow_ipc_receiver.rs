@@ -31,6 +31,7 @@ use tokio::sync::oneshot;
 
 use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
+use crate::input::{InputEvent, InputSource};
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
 use crate::receiver_http::{declared_content_length, read_limited_body};
 
@@ -46,7 +47,7 @@ const CHANNEL_BOUND: usize = 256;
 /// can contain a single IPC stream with one or more batches.
 pub struct ArrowIpcReceiver {
     name: String,
-    rx: Option<mpsc::Receiver<RecordBatch>>,
+    rx: Option<mpsc::Receiver<DecodedBatch>>,
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
     background_task: BackgroundHttpTask,
@@ -56,9 +57,15 @@ pub struct ArrowIpcReceiver {
 
 #[derive(Clone)]
 struct ArrowIpcServerState {
-    tx: mpsc::SyncSender<RecordBatch>,
+    tx: mpsc::SyncSender<DecodedBatch>,
     shutdown: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
+}
+
+#[derive(Debug)]
+struct DecodedBatch {
+    batch: RecordBatch,
+    accounted_bytes: u64,
 }
 
 impl ArrowIpcReceiver {
@@ -158,8 +165,8 @@ impl ArrowIpcReceiver {
             return Vec::new();
         };
         let mut batches = Vec::new();
-        while let Ok(batch) = rx.try_recv() {
-            batches.push(batch);
+        while let Ok(decoded) = rx.try_recv() {
+            batches.push(decoded.batch);
         }
         batches
     }
@@ -170,6 +177,7 @@ impl ArrowIpcReceiver {
             return Err(io::Error::other("Arrow IPC receiver: already closed"));
         };
         rx.recv()
+            .map(|decoded| decoded.batch)
             .map_err(|_| io::Error::other("Arrow IPC receiver: channel disconnected"))
     }
 
@@ -178,14 +186,16 @@ impl ArrowIpcReceiver {
         let Some(rx) = self.rx.as_ref() else {
             return Err(io::Error::other("Arrow IPC receiver: already closed"));
         };
-        rx.recv_timeout(timeout).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => {
-                io::Error::new(io::ErrorKind::TimedOut, "Arrow IPC receiver: timed out")
-            }
-            mpsc::RecvTimeoutError::Disconnected => {
-                io::Error::other("Arrow IPC receiver: channel disconnected")
-            }
-        })
+        rx.recv_timeout(timeout)
+            .map_err(|e| match e {
+                mpsc::RecvTimeoutError::Timeout => {
+                    io::Error::new(io::ErrorKind::TimedOut, "Arrow IPC receiver: timed out")
+                }
+                mpsc::RecvTimeoutError::Disconnected => {
+                    io::Error::other("Arrow IPC receiver: channel disconnected")
+                }
+            })
+            .map(|decoded| decoded.batch)
     }
 
     /// Return the name of this receiver.
@@ -279,6 +289,7 @@ async fn handle_arrow_ipc_request(
             return (status, message).into_response();
         }
     };
+    let raw_body_len = body.len() as u64;
 
     let is_zstd = content_encoding.as_deref() == Some("zstd")
         || content_type.as_deref() == Some("application/vnd.apache.arrow.stream+zstd");
@@ -309,12 +320,31 @@ async fn handle_arrow_ipc_request(
 
     let mut send_error: Option<StatusCode> = None;
     let mut sent_rows = false;
+    let total_batch_count = batches.iter().filter(|batch| batch.num_rows() > 0).count() as u64;
+    let per_batch_accounted_bytes = if total_batch_count == 0 {
+        0
+    } else {
+        raw_body_len / total_batch_count
+    };
+    let mut emitted_count = 0_u64;
     for batch in batches {
         if batch.num_rows() == 0 {
             continue;
         }
         sent_rows = true;
-        match state.tx.try_send(batch) {
+        emitted_count = emitted_count.saturating_add(1);
+        let accounted_bytes = if emitted_count == total_batch_count {
+            raw_body_len.saturating_sub(
+                per_batch_accounted_bytes.saturating_mul(total_batch_count.saturating_sub(1)),
+            )
+        } else {
+            per_batch_accounted_bytes
+        };
+        let payload = DecodedBatch {
+            batch,
+            accounted_bytes,
+        };
+        match state.tx.try_send(payload) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
                 send_error = Some(StatusCode::TOO_MANY_REQUESTS);
@@ -391,6 +421,31 @@ impl Drop for ArrowIpcReceiver {
             reduce_receiver_health(current, ReceiverHealthEvent::ShutdownCompleted).as_repr(),
             Ordering::Relaxed,
         );
+    }
+}
+
+impl InputSource for ArrowIpcReceiver {
+    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        let Some(rx) = self.rx.as_ref() else {
+            return Ok(vec![]);
+        };
+        let mut events = Vec::new();
+        while let Ok(decoded) = rx.try_recv() {
+            events.push(InputEvent::Batch {
+                batch: decoded.batch,
+                source_id: None,
+                accounted_bytes: decoded.accounted_bytes,
+            });
+        }
+        Ok(events)
+    }
+
+    fn name(&self) -> &str {
+        ArrowIpcReceiver::name(self)
+    }
+
+    fn health(&self) -> ComponentHealth {
+        ArrowIpcReceiver::health(self)
     }
 }
 
@@ -501,6 +556,37 @@ mod tests {
         assert_eq!(received.num_columns(), 2);
         assert_eq!(received.schema(), batch.schema());
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
+    }
+
+    #[test]
+    fn poll_emits_batch_event_with_accounted_bytes() {
+        let mut receiver = ArrowIpcReceiver::new_with_capacity("test-poll", "127.0.0.1:0", 16)
+            .expect("bind should succeed");
+        let addr = receiver.local_addr();
+
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_batch(&batch);
+        let url = format!("http://{addr}/v1/arrow");
+        let response = ureq::post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .send(&ipc_bytes)
+            .expect("POST should succeed");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let events = receiver.poll().expect("poll should succeed");
+        assert_eq!(events.len(), 1, "poll should emit one batch event");
+        match &events[0] {
+            InputEvent::Batch {
+                batch,
+                source_id,
+                accounted_bytes,
+            } => {
+                assert_eq!(batch.num_rows(), 2);
+                assert_eq!(*source_id, None);
+                assert_eq!(*accounted_bytes, ipc_bytes.len() as u64);
+            }
+            _ => panic!("expected InputEvent::Batch"),
+        }
     }
 
     #[test]

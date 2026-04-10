@@ -11,7 +11,9 @@
 
 use crate::filter_hints::FilterHints;
 use crate::format::FormatDecoder;
-use crate::input::{InputEvent, InputSource};
+use crate::input::{InputCadence, InputEvent, InputSource};
+#[cfg(test)]
+use crate::poll_cadence::PollCadenceSignal;
 use crate::tail::ByteOffset;
 use logfwd_core::checkpoint_tracker::CheckpointTracker;
 use logfwd_core::cri::json_escape_bytes;
@@ -393,6 +395,10 @@ impl InputSource for FramedInput {
         self.inner.apply_hints(hints);
     }
 
+    fn get_cadence(&self) -> InputCadence {
+        self.inner.get_cadence()
+    }
+
     /// Return checkpoint offsets from the Kani-proven CheckpointTracker.
     ///
     /// Each per-source tracker maintains the relationship between the file
@@ -492,6 +498,8 @@ mod tests {
         offsets: Vec<(SourceId, ByteOffset)>,
         source_paths: Vec<(SourceId, std::path::PathBuf)>,
         health: ComponentHealth,
+        cadence_signal: PollCadenceSignal,
+        cadence_max: u8,
     }
 
     impl MockSource {
@@ -502,6 +510,8 @@ mod tests {
                 offsets: vec![],
                 source_paths: vec![],
                 health: ComponentHealth::Healthy,
+                cadence_signal: PollCadenceSignal::default(),
+                cadence_max: 0,
             }
         }
 
@@ -553,6 +563,12 @@ mod tests {
             self.health = health;
             self
         }
+
+        fn with_cadence(mut self, signal: PollCadenceSignal, max: u8) -> Self {
+            self.cadence_signal = signal;
+            self.cadence_max = max;
+            self
+        }
     }
 
     impl InputSource for MockSource {
@@ -574,6 +590,13 @@ mod tests {
 
         fn source_paths(&self) -> Vec<(SourceId, std::path::PathBuf)> {
             self.source_paths.clone()
+        }
+
+        fn get_cadence(&self) -> InputCadence {
+            InputCadence {
+                signal: self.cadence_signal,
+                adaptive_fast_polls_max: self.cadence_max,
+            }
         }
     }
 
@@ -626,6 +649,35 @@ mod tests {
         );
 
         assert_eq!(framed.health(), ComponentHealth::Degraded);
+    }
+
+    #[test]
+    fn framed_input_forwards_cadence_snapshot() {
+        let stats = make_stats();
+        let source = MockSource::new(vec![]).with_cadence(
+            PollCadenceSignal {
+                had_data: true,
+                hit_read_budget: true,
+            },
+            7,
+        );
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            stats,
+        );
+
+        let _ = framed.poll().expect("framed poll should succeed");
+        assert_eq!(
+            framed.get_cadence(),
+            InputCadence {
+                signal: PollCadenceSignal {
+                    had_data: true,
+                    hit_read_budget: true,
+                },
+                adaptive_fast_polls_max: 7,
+            }
+        );
     }
 
     #[test]

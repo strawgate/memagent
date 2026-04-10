@@ -6,7 +6,17 @@ use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 
 use crate::filter_hints::FilterHints;
+use crate::poll_cadence::PollCadenceSignal;
 use crate::tail::{ByteOffset, FileTailer, TailConfig, TailEvent};
+
+/// Snapshot of source-driven cadence hints consumed by runtime poll loops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputCadence {
+    /// Last poll feedback (data/no-data and read-budget saturation).
+    pub signal: PollCadenceSignal,
+    /// Maximum immediate repolls allowed after a budget-saturated read.
+    pub adaptive_fast_polls_max: u8,
+}
 
 /// Events produced by an input source.
 pub enum InputEvent {
@@ -70,6 +80,30 @@ pub trait InputSource: Send {
     /// pushdown use these to skip data early (e.g., XDP severity filtering).
     /// Default implementation ignores hints — correct but slower.
     fn apply_hints(&mut self, _hints: &FilterHints) {}
+
+    /// Source-specific polling feedback for adaptive cadence decisions.
+    ///
+    /// Default: no payload and no read-budget saturation signal.
+    fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
+        PollCadenceSignal::default()
+    }
+
+    /// Upper bound for immediate repolls after a budget-saturated read.
+    ///
+    /// Default: disabled (0), so non-file inputs keep existing cadence.
+    fn get_adaptive_fast_polls_max(&self) -> u8 {
+        0
+    }
+
+    /// Snapshot cadence hints in one call to minimize forwarding surface for wrappers.
+    ///
+    /// Default implementation composes existing cadence hooks for compatibility.
+    fn get_cadence(&self) -> InputCadence {
+        InputCadence {
+            signal: self.get_poll_cadence_signal(),
+            adaptive_fast_polls_max: self.get_adaptive_fast_polls_max(),
+        }
+    }
 
     /// Return checkpoint data for all active sources.
     ///
@@ -179,5 +213,13 @@ impl InputSource for FileInput {
         if let Err(e) = self.tailer.set_offset_by_source(source_id, offset) {
             tracing::warn!(source_id = source_id.0, error = %e, "failed to restore offset");
         }
+    }
+
+    fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
+        self.tailer.get_poll_cadence_signal()
+    }
+
+    fn get_adaptive_fast_polls_max(&self) -> u8 {
+        self.tailer.get_adaptive_fast_polls_max()
     }
 }

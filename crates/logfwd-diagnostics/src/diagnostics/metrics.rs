@@ -28,6 +28,10 @@ pub struct PipelineMetrics {
     pub batch_rows_total: AtomicU64,
     pub flush_by_size: AtomicU64,
     pub flush_by_timeout: AtomicU64,
+    /// Number of immediate repolls performed instead of sleeping between polls.
+    pub cadence_fast_repolls: AtomicU64,
+    /// Number of baseline poll-interval sleeps taken on idle input polls.
+    pub cadence_idle_sleeps: AtomicU64,
     /// Batches that were dropped due to scan, transform, or output errors.
     pub dropped_batches_total: AtomicU64,
     /// Batches that failed the scan stage specifically.
@@ -60,6 +64,8 @@ pub struct PipelineMetrics {
     otel_batch_rows: Counter<u64>,
     otel_flush_by_size: Counter<u64>,
     otel_flush_by_timeout: Counter<u64>,
+    otel_cadence_fast_repolls: Counter<u64>,
+    otel_cadence_idle_sleeps: Counter<u64>,
     otel_dropped_batches: Counter<u64>,
     otel_scan_errors: Counter<u64>,
     otel_parse_errors: Counter<u64>,
@@ -98,6 +104,8 @@ impl PipelineMetrics {
             batch_rows_total: AtomicU64::new(0),
             flush_by_size: AtomicU64::new(0),
             flush_by_timeout: AtomicU64::new(0),
+            cadence_fast_repolls: AtomicU64::new(0),
+            cadence_idle_sleeps: AtomicU64::new(0),
             dropped_batches_total: AtomicU64::new(0),
             scan_errors_total: AtomicU64::new(0),
             parse_errors_total: AtomicU64::new(0),
@@ -116,6 +124,12 @@ impl PipelineMetrics {
             otel_batch_rows: meter.u64_counter("logfwd_batch_rows").build(),
             otel_flush_by_size: meter.u64_counter("logfwd_flush_by_size").build(),
             otel_flush_by_timeout: meter.u64_counter("logfwd_flush_by_timeout").build(),
+            otel_cadence_fast_repolls: meter
+                .u64_counter("logfwd_input_cadence_fast_repolls")
+                .build(),
+            otel_cadence_idle_sleeps: meter
+                .u64_counter("logfwd_input_cadence_idle_sleeps")
+                .build(),
             otel_dropped_batches: meter.u64_counter("logfwd_dropped_batches").build(),
             otel_scan_errors: meter.u64_counter("logfwd_scan_errors").build(),
             otel_parse_errors: meter.u64_counter("logfwd_parse_errors").build(),
@@ -218,6 +232,18 @@ impl PipelineMetrics {
     pub fn inc_flush_by_timeout(&self) {
         self.flush_by_timeout.fetch_add(1, Ordering::Relaxed);
         self.otel_flush_by_timeout.add(1, &self.otel_attrs);
+    }
+
+    /// Record one immediate adaptive repoll (sleep bypass).
+    pub fn inc_cadence_fast_repoll(&self) {
+        self.cadence_fast_repolls.fetch_add(1, Ordering::Relaxed);
+        self.otel_cadence_fast_repolls.add(1, &self.otel_attrs);
+    }
+
+    /// Record one idle poll that slept for the baseline poll interval.
+    pub fn inc_cadence_idle_sleep(&self) {
+        self.cadence_idle_sleeps.fetch_add(1, Ordering::Relaxed);
+        self.otel_cadence_idle_sleeps.add(1, &self.otel_attrs);
     }
 
     pub fn record_batch(&self, rows: u64, scan_ns: u64, transform_ns: u64, output_ns: u64) {

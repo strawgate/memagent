@@ -556,7 +556,7 @@ pub(super) fn write_f64_to_buf(out: &mut Vec<u8>, d: f64) {
         out.extend_from_slice(b"null");
         return;
     }
-    // Use ryu for optimal float formatting (available in std)
+    // Use the standard formatter here; non-finite values are handled above.
     let _ = write!(out, "{}", d);
 }
 

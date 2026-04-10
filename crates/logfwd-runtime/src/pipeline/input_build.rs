@@ -39,7 +39,7 @@ fn make_format(
 
 fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> Result<(), String> {
     match input_type {
-        InputType::Generator | InputType::Otlp => {
+        InputType::Generator | InputType::Otlp | InputType::ArrowIpc => {
             if !matches!(format, Format::Json) {
                 return Err(format!(
                     "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
@@ -85,6 +85,9 @@ pub(super) fn build_input_state(
             };
             if let Some(interval) = cfg.glob_rescan_interval_ms {
                 tail_config.glob_rescan_interval_ms = interval;
+            }
+            if let Some(max) = cfg.adaptive_fast_polls_max {
+                tail_config.adaptive_fast_polls_max = max;
             }
             let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
             let source = if is_glob {
@@ -217,6 +220,17 @@ pub(super) fn build_input_state(
                     resource_prefix,
                 )
                 .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
+            (Box::new(source), format, 4 * 1024 * 1024)
+        }
+        InputType::ArrowIpc => {
+            let addr = cfg
+                .listen
+                .as_ref()
+                .ok_or_else(|| format!("input '{name}': arrow_ipc input requires 'listen'"))?;
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            validate_input_format(name, InputType::ArrowIpc, &format)?;
+            let source = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiver::new(name, addr)
+                .map_err(|e| format!("input '{name}': failed to start Arrow IPC receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputType::Http => {
@@ -389,8 +403,8 @@ mod tests {
     }
 
     #[test]
-    fn generator_and_otlp_require_json_format() {
-        for input_type in [InputType::Generator, InputType::Otlp] {
+    fn generator_otlp_and_arrow_ipc_require_json_format() {
+        for input_type in [InputType::Generator, InputType::Otlp, InputType::ArrowIpc] {
             assert!(validate_input_format("in", input_type.clone(), &Format::Json).is_ok());
             let err = validate_input_format("in", input_type, &Format::Raw)
                 .expect_err("non-json format must be rejected");
@@ -423,6 +437,7 @@ mod tests {
             poll_interval_ms: None,
             read_buf_size: None,
             per_file_read_budget_bytes: None,
+            adaptive_fast_polls_max: None,
             max_open_files: None,
             glob_rescan_interval_ms: None,
             generator: None,
@@ -460,6 +475,7 @@ mod tests {
             poll_interval_ms: None,
             read_buf_size: None,
             per_file_read_budget_bytes: None,
+            adaptive_fast_polls_max: None,
             max_open_files: None,
             glob_rescan_interval_ms: None,
             generator: None,
@@ -474,7 +490,13 @@ mod tests {
         // error. A more involved test requires exposing or inspecting the internal
         // file tailer state, but here we at least verify it parses and maps defaults
         // cleanly for a valid file input configuration.
-        assert!(build_input_state("test_in", &cfg_defaults, Arc::clone(&stats)).is_ok());
+        let state = build_input_state("test_in", &cfg_defaults, Arc::clone(&stats))
+            .expect("default file input should build");
+        assert_eq!(
+            state.source.get_cadence().adaptive_fast_polls_max,
+            8,
+            "default adaptive_fast_polls_max should come from TailConfig default"
+        );
 
         // Explicit tuning overrides
         let cfg_overrides = InputConfig {
@@ -487,6 +509,7 @@ mod tests {
             poll_interval_ms: Some(123),
             read_buf_size: Some(456),
             per_file_read_budget_bytes: Some(789),
+            adaptive_fast_polls_max: Some(11),
             max_open_files: Some(10),
             glob_rescan_interval_ms: None,
             generator: None,
@@ -496,7 +519,13 @@ mod tests {
             tls: None,
         };
 
-        assert!(build_input_state("test_in", &cfg_overrides, Arc::clone(&stats)).is_ok());
+        let state = build_input_state("test_in", &cfg_overrides, Arc::clone(&stats))
+            .expect("overridden file input should build");
+        assert_eq!(
+            state.source.get_cadence().adaptive_fast_polls_max,
+            11,
+            "adaptive_fast_polls_max override should be forwarded"
+        );
     }
 
     #[test]
@@ -518,6 +547,7 @@ mod tests {
                     poll_interval_ms: None,
                     read_buf_size: None,
                     per_file_read_budget_bytes: None,
+                    adaptive_fast_polls_max: None,
                     max_open_files: None,
                     glob_rescan_interval_ms: None,
                     generator: None,
