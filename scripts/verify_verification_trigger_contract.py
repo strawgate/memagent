@@ -63,32 +63,56 @@ def _strip_yaml_value(value: str) -> str:
 
 
 def extract_paths_filter_entries(ci_text: str, filter_name: str) -> set[str]:
-    lines = ci_text.splitlines()
-    filters_start = None
-    filters_indent = None
+    changes_block = extract_job_block(ci_text, "changes")
+    filters_block: list[str] | None = None
 
-    for idx, line in enumerate(lines):
-        if line.strip() == "filters: |":
-            filters_start = idx + 1
-            filters_indent = len(line) - len(line.lstrip(" "))
-            break
-
-    if filters_start is None or filters_indent is None:
-        raise ValueError("ci.yml missing dorny/paths-filter literal filters block")
-
-    block: list[str] = []
-    for line in lines[filters_start:]:
+    for idx, line in enumerate(changes_block):
         stripped = line.strip()
-        indent = len(line) - len(line.lstrip(" "))
-        if stripped and indent <= filters_indent:
-            break
-        block.append(line)
+        if not (
+            "uses:" in stripped and "dorny/paths-filter@" in stripped
+        ):
+            continue
+
+        step_indent = len(line) - len(line.lstrip(" "))
+        step_lines = [line]
+        for next_line in changes_block[idx + 1 :]:
+            next_stripped = next_line.strip()
+            next_indent = len(next_line) - len(next_line.lstrip(" "))
+            if next_stripped and next_indent <= step_indent:
+                break
+            step_lines.append(next_line)
+
+        filters_start = None
+        filters_indent = None
+        for step_idx, step_line in enumerate(step_lines):
+            if step_line.strip() == "filters: |":
+                filters_start = step_idx + 1
+                filters_indent = len(step_line) - len(step_line.lstrip(" "))
+                break
+
+        if filters_start is None or filters_indent is None:
+            continue
+
+        block: list[str] = []
+        for block_line in step_lines[filters_start:]:
+            block_stripped = block_line.strip()
+            block_indent = len(block_line) - len(block_line.lstrip(" "))
+            if block_stripped and block_indent <= filters_indent:
+                break
+            block.append(block_line)
+        filters_block = block
+        break
+
+    if filters_block is None:
+        raise ValueError(
+            "ci.yml missing dorny/paths-filter filters block under the changes job"
+        )
 
     entries: set[str] = set()
     in_filter = False
     filter_indent = None
 
-    for line in block:
+    for line in filters_block:
         stripped = line.strip()
         indent = len(line) - len(line.lstrip(" "))
         if not stripped:
@@ -300,6 +324,27 @@ jobs:
 """
         entries = extract_paths_filter_entries(ci_text, "kani_required")
         self.assertEqual(entries, {"crates/logfwd-core/**", "Cargo.toml"})
+
+    def test_extract_paths_filter_entries_uses_changes_job_block(self) -> None:
+        ci_text = """
+jobs:
+  unrelated:
+    steps:
+      - uses: some/other-action@v1
+        with:
+          filters: |
+            kani_required:
+              - 'docs/**'
+  changes:
+    steps:
+      - uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            kani_required:
+              - 'crates/logfwd-core/**'
+"""
+        entries = extract_paths_filter_entries(ci_text, "kani_required")
+        self.assertEqual(entries, {"crates/logfwd-core/**"})
 
     def test_extract_kani_args_crates(self) -> None:
         ci_text = """
