@@ -283,7 +283,7 @@ fn extract_cri_messages(
                 if starts_with_json_object(line) {
                     out.extend_from_slice(line);
                     out.push(b'\n');
-                } else {
+                } else if let Some(line) = normalize_plain_text_fallback(line) {
                     write_plain_text_fallback(line, plain_text_field_name, out);
                 }
             } else if !line.is_empty() {
@@ -299,6 +299,15 @@ fn starts_with_json_object(line: &[u8]) -> bool {
         .iter()
         .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'));
     first_nonws.is_some_and(|idx| line[idx] == b'{')
+}
+
+fn normalize_plain_text_fallback(line: &[u8]) -> Option<&[u8]> {
+    let line = if line.last() == Some(&b'\r') {
+        &line[..line.len().saturating_sub(1)]
+    } else {
+        line
+    };
+    (!line.is_empty()).then_some(line)
 }
 
 fn write_plain_text_fallback(line: &[u8], plain_text_field_name: &str, out: &mut Vec<u8>) {
@@ -484,6 +493,16 @@ mod tests {
         let stats = make_stats();
         let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
         let input = b"not a cri line\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(out, b"{\"body\":\"not a cri line\"}\n");
+    }
+
+    #[test]
+    fn auto_wraps_plain_text_for_non_cri_crlf_without_carriage_return() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
+        let input = b"not a cri line\r\n\r\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
         assert_eq!(out, b"{\"body\":\"not a cri line\"}\n");

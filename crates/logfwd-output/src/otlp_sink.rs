@@ -838,7 +838,6 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
                     // Canonical body wins when both canonical and alias columns exist.
                     if body_col.is_none() || name == field_names::BODY {
                         body_col = Some((idx, arr));
-                        excluded.push(idx);
                     }
                 }
             }
@@ -847,7 +846,6 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
                     && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
                 {
                     body_col = Some((idx, arr));
-                    excluded.push(idx);
                 }
             }
             "_raw" => {
@@ -855,6 +853,9 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
             }
             _ => {}
         }
+    }
+    if let Some((idx, _)) = body_col {
+        excluded.push(idx);
     }
 
     let mut attribute_cols: Vec<(String, AttrArray<'_>)> = Vec::new();
@@ -2227,6 +2228,48 @@ mod tests {
             attrs.iter().all(|kv| kv.key != "_raw"),
             "_raw should remain internal-only"
         );
+    }
+
+    #[test]
+    fn otlp_encoder_keeps_unselected_body_alias_as_attribute() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("alias-body")])),
+                Arc::new(StringArray::from(vec![Some("canonical-body")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink().with_message_field("message".to_string());
+        sink.encode_batch(&batch, &make_metadata());
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let record = &request.resource_logs[0].scope_logs[0].log_records[0];
+        let body = record.body.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        let message_attr = record.attributes.iter().find(|kv| kv.key == "message");
+        let message_attr =
+            message_attr
+                .and_then(|kv| kv.value.as_ref())
+                .and_then(|v| match &v.value {
+                    Some(Value::StringValue(s)) => Some(s.as_str()),
+                    _ => None,
+                });
+
+        assert_eq!(body, Some("canonical-body"));
+        assert_eq!(message_attr, Some("alias-body"));
     }
 
     /// Roundtrip with multiple rows to verify repeated LogRecord encoding.
