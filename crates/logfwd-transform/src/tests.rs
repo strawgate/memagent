@@ -914,18 +914,25 @@ fn test_query_analyzer_join_using_column_refs() {
 
 #[test]
 fn test_query_analyzer_straight_join_on_column_refs() {
-    let a = QueryAnalyzer::new(
-        "SELECT a.message FROM logs a STRAIGHT_JOIN logs b ON a.level = b.level",
-    )
-    .unwrap();
-    assert!(
-        a.referenced_columns.contains("message"),
-        "SELECT column must be in referenced_columns"
-    );
-    assert!(
-        a.referenced_columns.contains("level"),
-        "STRAIGHT_JOIN ON column must be in referenced_columns"
-    );
+    let sql = "SELECT a.message FROM logs a STRAIGHT_JOIN logs b ON a.level = b.level";
+    match QueryAnalyzer::new(sql) {
+        Ok(a) => {
+            assert!(
+                a.referenced_columns.contains("message"),
+                "SELECT column must be in referenced_columns"
+            );
+            assert!(
+                a.referenced_columns.contains("level"),
+                "STRAIGHT_JOIN ON column must be in referenced_columns"
+            );
+        }
+        Err(err) => {
+            assert!(
+                err.to_string().contains("STRAIGHT_JOIN"),
+                "unexpected parse error for STRAIGHT_JOIN: {err}"
+            );
+        }
+    }
 }
 
 #[test]

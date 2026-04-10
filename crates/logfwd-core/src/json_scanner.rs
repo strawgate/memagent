@@ -1097,6 +1097,10 @@ mod tests {
     }
 
     proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            .. ProptestConfig::default()
+        })]
         /// CRLF normalization invariant: scanning a JSON object with CRLF line endings
         /// must yield the same field values as scanning the same object with LF endings,
         /// and neither captured line values nor any field value must contain a bare \r.
