@@ -37,10 +37,10 @@ pub const fn reduce_output_health(
         OutputHealthEvent::StartupRequested => match current {
             ComponentHealth::Healthy
             | ComponentHealth::Degraded
+            | ComponentHealth::Starting
             | ComponentHealth::Stopping
             | ComponentHealth::Stopped
             | ComponentHealth::Failed => current,
-            _ => ComponentHealth::Starting,
         },
         OutputHealthEvent::StartupSucceeded => match current {
             ComponentHealth::Degraded => ComponentHealth::Degraded,
@@ -93,7 +93,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{aggregate_fanout_health, reduce_output_health, OutputHealthEvent};
+    use super::{OutputHealthEvent, aggregate_fanout_health, reduce_output_health};
     use logfwd_types::diagnostics::ComponentHealth;
     use proptest::prelude::*;
 
@@ -276,7 +276,7 @@ mod tests {
 
 #[cfg(kani)]
 mod verification {
-    use super::{aggregate_fanout_health, reduce_output_health, OutputHealthEvent};
+    use super::{OutputHealthEvent, aggregate_fanout_health, reduce_output_health};
     use logfwd_types::diagnostics::ComponentHealth;
 
     #[kani::proof]
