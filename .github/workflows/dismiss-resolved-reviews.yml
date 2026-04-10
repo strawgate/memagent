@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [synchronize]
   pull_request_review:
-    types: [submitted, edited, dismissed]
+    types: [submitted, edited]
   pull_request_review_comment:
     types: [created, edited, deleted]
   workflow_dispatch:
@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   dismiss-resolved-reviews:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     steps:
       - name: Dismiss stale change requests whose review threads are all resolved
