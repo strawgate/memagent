@@ -169,6 +169,7 @@ The CI `Verification guardrail` job runs these lightweight anti-drift checks:
 - `scripts/verify_kani_boundary_contract.py` — validates non-core Kani seam policy
 - `scripts/verify_tlc_matrix_contract.py` — validates TLC matrix coverage for expected non-coverage/non-thorough `tla/*.cfg` models
 - `scripts/verify_proptest_regressions.py` — validates persisted proptest regression-file policy and approved `failure_persistence: None` usage
+- `scripts/verify_verification_trigger_contract.py` — validates CI path filters, Kani crate scopes, and guardrail wiring stay aligned
 
 Run them locally:
 

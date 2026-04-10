@@ -158,8 +158,12 @@ tlc-matrix-contract:
 proptest-regressions:
     python3 scripts/verify_proptest_regressions.py
 
+# Validate CI/just verification trigger contracts stay in sync.
+verification-trigger-contract:
+    python3 scripts/verify_verification_trigger_contract.py
+
 # Run all lightweight verification guardrails enforced in CI.
-verification-guardrail: kani-boundary tlc-matrix-contract proptest-regressions
+verification-guardrail: kani-boundary tlc-matrix-contract proptest-regressions verification-trigger-contract
 
 # Download tla2tools.jar to .tools/ if missing.
 tla-setup:
