@@ -19,6 +19,7 @@ Optional but recommended:
 | [Docker](https://www.docker.com) | Local services (`docker-compose.dev.yml`) | docker.com |
 | [sccache](https://github.com/mozilla/sccache) | Compile caching | `cargo install sccache --locked` |
 | [OpenJDK](https://openjdk.org) | Run TLC model checks (`just tlc-tail`) | `brew install openjdk` (macOS) |
+| Miri nightly components | Local UB checks (`just miri`) | `just miri-setup` |
 
 All tool versions are declared in `mise.toml`. If you have [mise](https://mise.jdx.dev) installed, `mise install` sets everything up automatically. Otherwise, install the tools listed above manually.
 
@@ -74,6 +75,8 @@ just test                    # tests (default-members only, ~30s)
 just test-all                # tests (full workspace, ~3min)
 just lint                    # fmt + clippy + toml
 just lint-all                # full: fmt + clippy + toml + deny + kani-boundary
+just miri-setup              # install nightly Miri components locally
+just miri                    # Miri checks for logfwd-core and logfwd-types
 just tlc-tail                # run TailLifecycle TLA+ model check
 just build                   # release logfwd binary (includes DataFusion SQL)
 just build-dev-lite          # dev-only fast binary (no DataFusion SQL)
