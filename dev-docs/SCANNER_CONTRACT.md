@@ -63,17 +63,19 @@ Each JSON field `<name>` produces columns based on observed types:
 | Integer (only)  | `<name>`    | `Int64`     |
 | Float (only)    | `<name>`    | `Float64`   |
 | String (only)   | `<name>`    | `Utf8` / `Utf8View` |
-| Boolean (only)  | `<name>`    | `Utf8` / `Utf8View` (`"true"` / `"false"`) |
+| Boolean (only)  | `<name>`    | `Boolean` |
 
 **Multiple types (conflict):** a single `StructArray` column with typed children.
 
 | Observed types  | Column name | Arrow type  |
 |-----------------|-------------|-------------|
 | Integer + String | `<name>`   | `Struct { int: Int64, str: Utf8View }` |
+| Boolean + String | `<name>`   | `Struct { bool: Boolean, str: Utf8View }` |
 | All three       | `<name>`   | `Struct { int: Int64, float: Float64, str: Utf8View }` |
+| All four        | `<name>`   | `Struct { int: Int64, float: Float64, bool: Boolean, str: Utf8View }` |
 
 Conflict structs are detected by `is_conflict_struct()` (child fields named
-from `{"int", "float", "str"}`). They only appear when a field has
+from `{"int", "float", "str", "bool"}`). They only appear when a field has
 multiple types across rows within the same batch.
 
 | Special column  | Description       | Arrow type  |

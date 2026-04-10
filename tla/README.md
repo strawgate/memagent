@@ -208,6 +208,18 @@ all CPU workers have exited). Neither is a precondition for `CpuWorkerStop`.
 
 ## Relationship to Kani proofs and proptest
 
+Use TLA+, Kani, and proptest as a layered verification stack:
+
+| Layer | Tool | File | Scope |
+|-------|------|------|-------|
+| Design | TLA+ (this dir) | `tla/*.tla` | Temporal logic, liveness, protocol invariants |
+| Implementation | Kani | `pipeline/batch.rs`, `pipeline/lifecycle.rs` | Memory safety, overflow, type transitions |
+| Property-based | proptest | `pipeline.rs` tests | State sequence correctness under arbitrary inputs |
+
+TLA+ proves the **design** is correct (ordering, drainability, eventual stop).
+Kani proves bounded implementation properties (no panic/overflow in pure logic).
+proptest stresses larger input/state spaces and integration behavior.
+
 ## PipelineBatch.tla
 
 Models multi-source batch accumulation, flush, checkpoint merge behavior, and
@@ -220,14 +232,6 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/Pip
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.coverage.cfg
 ```
-
-| Layer | Tool | File | Scope |
-|-------|------|------|-------|
-| Design | TLA+ (this dir) | `tla/*.tla` | Temporal logic, liveness, protocol invariants |
-| Implementation | Kani | `pipeline/batch.rs`, `pipeline/lifecycle.rs` | Memory safety, overflow, type transitions |
-| Property-based | proptest | `pipeline.rs` tests | State sequence correctness under arbitrary inputs |
-
-TLA+ proves the **design** is correct — no race conditions, correct ordering, drain is eventually possible. Kani proves the **Rust implementation** doesn't panic or overflow. They are complementary: a design bug is caught here; an implementation bug is caught by Kani.
 
 ---
 
