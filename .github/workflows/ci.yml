@@ -38,6 +38,8 @@ jobs:
       core: ${{ steps.filter.outputs.core }}
       kani_required: ${{ steps.filter.outputs.kani_required }}
       tla: ${{ steps.filter.outputs.tla }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      miri: ${{ steps.filter.outputs.miri }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@61f87a10cd2c304679af17bb73ef192addf33c1c
@@ -49,9 +51,12 @@ jobs:
             kani_required:
               - 'crates/logfwd-core/**'
               - 'crates/logfwd-arrow/**'
+              - 'crates/logfwd-types/**'
               - 'crates/logfwd-io/**'
               - 'crates/logfwd-output/**'
+              - 'crates/logfwd-runtime/**'
               - 'crates/logfwd-diagnostics/**'
+              - 'crates/logfwd/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'dev-docs/verification/kani-boundary-contract.toml'
@@ -61,12 +66,30 @@ jobs:
               - 'tla/**'
               - 'crates/logfwd-core/src/pipeline/**'
               - 'crates/logfwd-runtime/src/pipeline.rs'
+              - 'crates/logfwd-types/src/pipeline/**'
+              - 'crates/logfwd/src/pipeline/**'
+              - 'crates/logfwd/src/worker_pool/**'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'dashboard/**'
+              - '.github/actions/build-dashboard/**'
+              - '.github/workflows/ci.yml'
+            miri:
+              - 'crates/logfwd-core/**'
+              - 'crates/logfwd-types/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
 
   # -------------------------------------------------------------------------
   # Frontend checks — format, lint, typecheck in one job (single npm install)
   # -------------------------------------------------------------------------
   frontend-checks:
-    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.frontend == 'true')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -97,7 +120,11 @@ jobs:
   # Frontend tests — vitest with coverage
   # -------------------------------------------------------------------------
   frontend-test:
-    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.frontend == 'true')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -178,7 +205,7 @@ jobs:
             | tar xz -C /tmp && mv /tmp/cargo-deny-*/cargo-deny /usr/local/bin/
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Rustdoc warnings check
         env:
@@ -238,7 +265,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests
-        run: cargo nextest run --profile ci
+        run: cargo nextest run --workspace --profile ci
 
   test-macos:
     name: Test (macOS)
@@ -256,7 +283,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests
-        run: cargo nextest run --profile ci
+        run: cargo nextest run --workspace --profile ci
 
   # -------------------------------------------------------------------------
   # Build check — aarch64 cross-compile only (release check removed:
@@ -286,9 +313,35 @@ jobs:
           sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Check
-        run: cargo check --target aarch64-unknown-linux-gnu
+        run: cargo check --workspace --target aarch64-unknown-linux-gnu
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+  # -------------------------------------------------------------------------
+  # logfwd-core no_std contract
+  # -------------------------------------------------------------------------
+  core-no-std:
+    name: logfwd-core no_std
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.core == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv6m-none-eabi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: core-no-std
+
+      - name: Build logfwd-core for thumbv6m-none-eabi
+        run: cargo build -p logfwd-core --target thumbv6m-none-eabi
 
   # -------------------------------------------------------------------------
   # Kani formal verification — single job running all proofs.
@@ -317,11 +370,52 @@ jobs:
           args: >-
             -p logfwd-core
             -p logfwd-arrow
+            -p logfwd-types
             -p logfwd-io
             -p logfwd-output
+            -p logfwd-runtime
+            -p logfwd-diagnostics
+            -p logfwd
             -Z function-contracts -Z mem-predicates -Z stubbing
         env:
           RUSTC_WRAPPER: ""
+
+  # -------------------------------------------------------------------------
+  # Miri — UB-oriented execution for proof-heavy pure crates.
+  # -------------------------------------------------------------------------
+  miri:
+    name: Miri
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.miri == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: miri
+
+      - name: Set up Miri
+        run: cargo miri setup
+        env:
+          RUSTC_WRAPPER: ""
+
+      - name: Run Miri test suite
+        run: |
+          cargo miri test -p logfwd-core --lib
+          cargo miri test -p logfwd-types --lib
+        env:
+          RUSTC_WRAPPER: ""
+          MIRIFLAGS: "-Zmiri-strict-provenance"
 
   # -------------------------------------------------------------------------
   # Turmoil deterministic simulation
@@ -423,6 +517,83 @@ jobs:
         run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC ${{ matrix.tla_file }} -config ${{ matrix.config }} -workers auto
 
   # -------------------------------------------------------------------------
+  # TLC reachability / vacuity guards — coverage configs are expected to
+  # produce witness traces via invariant violations, so they need a dedicated
+  # harness rather than the normal "exit 0 means success" flow.
+  # -------------------------------------------------------------------------
+  tlc-coverage:
+    name: "TLA+ ${{ matrix.spec }} (coverage)"
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - spec: PipelineMachine
+            tla_file: tla/MCPipelineMachine.tla
+            config: tla/PipelineMachine.coverage.cfg
+          - spec: ShutdownProtocol
+            tla_file: tla/MCShutdownProtocol.tla
+            config: tla/ShutdownProtocol.coverage.cfg
+          - spec: PipelineBatch
+            tla_file: tla/MCPipelineBatch.tla
+            config: tla/PipelineBatch.coverage.cfg
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download tla2tools.jar
+        run: |
+          mkdir -p /tmp/tla
+          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
+
+      - name: "TLC coverage: ${{ matrix.spec }}"
+        run: |
+          python3 scripts/verify_tla_coverage.py \
+            --jar /tmp/tla/tla2tools.jar \
+            --tla-file ${{ matrix.tla_file }} \
+            --config ${{ matrix.config }}
+
+  # -------------------------------------------------------------------------
+  # Thorough TLC safety model — deeper pre-merge sweep for the main lifecycle spec.
+  # -------------------------------------------------------------------------
+  tlc-thorough:
+    name: "TLA+ PipelineMachine (thorough)"
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download tla2tools.jar
+        run: |
+          mkdir -p /tmp/tla
+          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
+
+      - name: "TLC: PipelineMachine — thorough"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg -workers auto
+
+  # -------------------------------------------------------------------------
   # Coverage — workspace code coverage via llvm-cov
   # -------------------------------------------------------------------------
   coverage:
@@ -486,7 +657,22 @@ jobs:
   conclusion:
     name: CI conclusion
     if: ${{ !cancelled() }}
-    needs: [verification-guardrail, lint, test-linux, build-check]
+    needs:
+      - frontend-checks
+      - frontend-test
+      - verification-guardrail
+      - lint
+      - test-linux
+      - test-macos
+      - build-check
+      - core-no-std
+      - kani
+      - miri
+      - turmoil
+      - loom
+      - tlc
+      - tlc-coverage
+      - tlc-thorough
     runs-on: ubuntu-latest
     steps:
       - run: |

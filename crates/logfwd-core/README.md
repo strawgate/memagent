@@ -10,7 +10,7 @@ Proven pure-logic kernel. Scanner, parsers, pipeline state machine, OTLP encodin
 | `#![forbid(unsafe_code)]` | Compiler. Cannot be overridden with `#[allow]`. |
 | Only deps: memchr + wide | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
-| Every public fn has a proof | CI proof coverage script |
+| Proof-bearing core modules stay Kani-covered | CI Kani job + `dev-docs/VERIFICATION.md` inventory |
 | No IO, no threads, no async | Structural (`no_std` removes the APIs) |
 
 ## Key modules
@@ -25,5 +25,5 @@ Proven pure-logic kernel. Scanner, parsers, pipeline state machine, OTLP encodin
 
 ## Verification
 
-Every public function must have a Kani proof or proptest. See `dev-docs/VERIFICATION.md`.
+Critical proof-bearing public APIs must stay covered by Kani or proptest. See `dev-docs/VERIFICATION.md`.
 Kani proofs live in `#[cfg(kani)] mod verification {}` at the bottom of each file.

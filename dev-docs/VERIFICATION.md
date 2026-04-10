@@ -118,6 +118,8 @@ cargo kani --harness verify_my_fn      # Specific harness
 cargo kani -p logfwd-core --tests      # Kani + unit tests
 cargo build -p logfwd-core \
   --target thumbv6m-none-eabi          # Verify no_std compliance
+cargo +nightly miri test -p logfwd-core --lib
+cargo +nightly miri test -p logfwd-types --lib
 ```
 
 ### Non-core pure seam boundary contract
@@ -142,9 +144,10 @@ just kani-boundary
 
 CI runs this check in the dedicated `Verification guardrail` job, and the
 required `CI conclusion` status depends on that guardrail passing. CI also runs
-`cargo kani` for the required production crates (`logfwd-core`, `logfwd-arrow`,
-`logfwd-io`, `logfwd-output`) under the following conditions (from the `kani`
-job in `.github/workflows/ci.yml`):
+`cargo kani` for the required proof-bearing crates (`logfwd-core`,
+`logfwd-arrow`, `logfwd-types`, `logfwd-io`, `logfwd-output`,
+`logfwd-runtime`, `logfwd-diagnostics`, and `logfwd`) under the following
+conditions (from the `kani` job in `.github/workflows/ci.yml`):
 
 - **any push** to the repository, OR
 - a pull request carrying the **`ci:full` label**, OR
@@ -152,9 +155,14 @@ job in `.github/workflows/ci.yml`):
   `kani_required == 'true'` — i.e. at least one changed file matches one of:
   - `crates/logfwd-core/**`
   - `crates/logfwd-arrow/**`
+  - `crates/logfwd-types/**`
   - `crates/logfwd-io/**`
   - `crates/logfwd-output/**`
+  - `crates/logfwd-runtime/**`
   - `crates/logfwd-diagnostics/**`
+  - `crates/logfwd/**`
+  - `Cargo.toml`
+  - `Cargo.lock`
   - `dev-docs/verification/kani-boundary-contract.toml`
   - `scripts/verify_kani_boundary_contract.py`
   - `.github/workflows/ci.yml`
@@ -255,7 +263,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `#![forbid(unsafe_code)]` | Compiler. Cannot be overridden with `#[allow]`. |
 | Only deps: memchr + wide | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
-| Every public fn has a proof | CI proof coverage script |
+| Proof-bearing core modules stay Kani-covered | CI Kani job + per-module verification inventory below |
 | No IO, threads, async | Structural (no_std removes the APIs) |
 
 ---

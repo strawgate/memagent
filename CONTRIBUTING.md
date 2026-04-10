@@ -127,7 +127,7 @@ Use `component:` prefixed labels to identify the affected subsystem. The full li
 |-------|---------|
 | `production` | Required for production readiness — blocks GA |
 | `copilot` | Assigned to GitHub Copilot for automated fix |
-| `ci:full` | PR label: run all CI jobs (Kani, TLA+, Miri, macOS, etc.) |
+| `ci:full` | PR label: run the slow lanes too (macOS, Miri, deeper TLA/TLC sweeps, and any other optional CI jobs gated by the label) |
 | `DO NOT MERGE` | PR label: prototype or blocked, must not be merged |
 | `benchmark` | Nightly benchmark results (automated) |
 

@@ -10,7 +10,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | `#![forbid(unsafe_code)]` | Compiler. Cannot be overridden with `#[allow]`. |
 | Only deps: memchr + wide | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
-| Every public fn has a proof | CI proof coverage script |
+| Proof-bearing core modules stay Kani-covered | CI Kani job + `dev-docs/VERIFICATION.md` inventory |
 | No IO, no threads, no async | Structural (no_std removes the APIs) |
 
 ## logfwd-arrow
