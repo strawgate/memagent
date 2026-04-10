@@ -133,6 +133,34 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct CompatibleSplitProcessor;
+
+    impl Processor for CompatibleSplitProcessor {
+        fn process(
+            &mut self,
+            _batch: RecordBatch,
+            _meta: &BatchMetadata,
+        ) -> Result<SmallVec<[RecordBatch; 1]>, ProcessorError> {
+            Ok(smallvec::smallvec![
+                int_batch("x", &[1]),
+                int_batch("x", &[2]),
+            ])
+        }
+
+        fn flush(&mut self) -> SmallVec<[RecordBatch; 1]> {
+            SmallVec::new()
+        }
+
+        fn name(&self) -> &'static str {
+            "compatible-split"
+        }
+
+        fn is_stateful(&self) -> bool {
+            false
+        }
+    }
+
+    #[derive(Debug)]
     struct FailingProcessor {
         error: ProcessorError,
     }
@@ -270,6 +298,19 @@ mod tests {
                 );
             }
             _ => panic!("expected reject result"),
+        }
+    }
+
+    #[test]
+    fn compatible_multi_batch_outputs_forward_with_summed_rows() {
+        let mut processors: Vec<Box<dyn Processor>> = vec![Box::new(CompatibleSplitProcessor)];
+        let out = run_processor_stage(&mut processors, int_batch("x", &[1, 2]), &test_meta());
+        match out {
+            ProcessorStageResult::Forward { batch, output_rows } => {
+                assert_eq!(output_rows, 2);
+                assert_eq!(batch.num_rows(), 2);
+            }
+            _ => panic!("expected forward result"),
         }
     }
 }
