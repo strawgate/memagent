@@ -696,6 +696,7 @@ fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn resolve_blast_output_config(args: &BlastArgs) -> Result<logfwd_config::OutputConfig, CliError> {
     let destination = args
         .destination
@@ -709,6 +710,7 @@ fn resolve_blast_output_config(args: &BlastArgs) -> Result<logfwd_config::Output
     .map_err(CliError::Config)
 }
 
+#[cfg(test)]
 fn render_devour_yaml(args: &DevourArgs, listen: &str) -> String {
     logfwd_runtime::generated_cli::render_devour_yaml(
         args.mode.spec(),
@@ -717,6 +719,7 @@ fn render_devour_yaml(args: &DevourArgs, listen: &str) -> String {
     )
 }
 
+#[cfg(test)]
 fn yaml_quote(value: &str) -> String {
     logfwd_runtime::generated_cli::yaml_quote(value)
 }
