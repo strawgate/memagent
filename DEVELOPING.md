@@ -1,51 +1,5 @@
 # Developing logfwd
 
-## Prerequisites
-
-| Tool | Version | Install |
-|------|---------|---------|
-| [Rust](https://rustup.rs) | Latest stable (managed by `rust-toolchain.toml`) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| [just](https://just.systems) | 1.40+ | `cargo install just` or `brew install just` |
-| [cargo-nextest](https://nexte.st) | 0.9+ | `cargo install cargo-nextest` |
-
-Optional but recommended:
-
-| Tool | Purpose | Install |
-|------|---------|---------|
-| [mise](https://mise.jdx.dev) | Manages all tool versions from `mise.toml` | [mise.jdx.dev](https://mise.jdx.dev/getting-started.html) |
-| [taplo](https://taplo.tamasfe.dev) | TOML linting (`just toml-check`) | `cargo install taplo-cli` |
-| [cargo-deny](https://embarkstudios.github.io/cargo-deny/) | License/advisory audit (`just deny`) | `cargo install cargo-deny` |
-| [Node.js](https://nodejs.org) 22+ | Dashboard build (`just dashboard`) | via mise, nvm, or nodejs.org |
-| [Docker](https://www.docker.com) | Local services (`docker-compose.dev.yml`) | docker.com |
-| [sccache](https://github.com/mozilla/sccache) | Compile caching | `cargo install sccache --locked` |
-
-All tool versions are declared in `mise.toml`. If you have [mise](https://mise.jdx.dev) installed, `mise install` sets everything up automatically. Otherwise, install the tools listed above manually.
-
-## Setup
-
-```bash
-git clone https://github.com/strawgate/memagent.git && cd memagent
-just setup     # install tools, fetch deps, set up git hooks
-just doctor    # verify everything is installed
-just ci        # fast lint + test (~30s)
-```
-
-`just setup` is idempotent — safe to re-run at any time.
-
-### Local services (optional)
-
-Some benchmarks and examples need Elasticsearch or an OTLP receiver:
-
-```bash
-docker compose -f docker-compose.dev.yml up -d   # start services
-docker compose -f docker-compose.dev.yml down     # stop
-```
-
-| Service | URL | Used by |
-|---------|-----|---------|
-| Elasticsearch | `http://localhost:9200` | `just bench-es`, `examples/elasticsearch/` |
-| OTLP blackhole | `http://localhost:4318` | OTLP end-to-end tests |
-
 ## Workspace layout
 
 ```
@@ -71,8 +25,6 @@ just ci                      # lint + test (fast — skips datafusion)
 just ci-all                  # full workspace including datafusion
 just test                    # tests (default-members only, ~30s)
 just test-all                # tests (full workspace, ~3min)
-just test-ebpf               # tests for crates/logfwd-ebpf-proto
-just check-ebpf-pipe-capture # Linux-only compile-check for aya userspace loader prototype
 just lint                    # fmt + clippy + toml
 just lint-all                # full: fmt + clippy + toml + deny + kani-boundary
 just build                   # release logfwd binary (includes DataFusion SQL)
@@ -85,16 +37,6 @@ just fuzz scanner 300        # fuzz a target for 300s (nightly)
 > (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip
 > them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just
 > targets when you need the full build. CI always uses `--workspace`.
-
-## eBPF capability checks in GitHub Actions
-
-Workflow: `.github/workflows/ebpf-capabilities.yml`
-
-- Runs `cargo test -p logfwd-ebpf-proto --all-targets`.
-- Runs `cargo check --manifest-path crates/logfwd-ebpf-proto/pipe-capture/Cargo.toml`.
-- Executes `scripts/ci-ebpf-capabilities.sh` on `ubuntu-latest` and uploads probe artifacts.
-
-The probe is a visibility tool (what hosted runners allow right now), not a hard gate on specific kernel features. Use the artifact summary to decide which eBPF paths can run in GitHub-hosted CI versus requiring self-hosted runners.
 
 ## DataFusion in Dev vs Release
 

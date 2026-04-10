@@ -231,7 +231,7 @@ fn arrow_json_parse(data: &[u8]) -> arrow::record_batch::RecordBatch {
 fn sonic_rs_parse(data: &[u8], ndjson: &mut Vec<u8>) -> arrow::record_batch::RecordBatch {
     // Use sonic-rs to produce NDJSON, then feed through Scanner::scan_detached.
     // This gives a fair comparison: sonic-rs parses, Scanner builds Arrow arrays.
-    use sonic_rs::{JsonContainerTrait, JsonNumberTrait, JsonValueTrait};
+    use sonic_rs::JsonValueTrait;
 
     ndjson.clear();
     for line in data.split(|&b| b == b'\n') {

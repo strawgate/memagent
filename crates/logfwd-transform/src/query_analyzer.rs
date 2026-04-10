@@ -46,66 +46,13 @@ impl QueryAnalyzer {
         let mut where_clause = None;
 
         if let Statement::Query(query) = stmt {
-            if let SetExpr::Select(select) = query.body.as_ref() {
-                for item in &select.projection {
-                    match item {
-                        SelectItem::Wildcard(opts) => {
-                            uses_select_star = true;
-                            extract_except_fields(opts, &mut except_fields);
-                        }
-                        SelectItem::QualifiedWildcard(_, opts) => {
-                            uses_select_star = true;
-                            extract_except_fields(opts, &mut except_fields);
-                        }
-                        SelectItem::UnnamedExpr(expr) => {
-                            collect_column_refs(expr, &mut referenced_columns);
-                        }
-                        SelectItem::ExprWithAlias { expr, .. } => {
-                            collect_column_refs(expr, &mut referenced_columns);
-                        }
-                    }
-                }
-
-                // Walk WHERE clause for column references.
-                if let Some(ref selection) = select.selection {
-                    collect_column_refs(selection, &mut referenced_columns);
-                    where_clause = Some(selection.clone());
-                }
-
-                // Walk GROUP BY — columns may appear only here (not in SELECT or WHERE).
-                if let sqlast::GroupByExpr::Expressions(exprs, _) = &select.group_by {
-                    for e in exprs {
-                        collect_column_refs(e, &mut referenced_columns);
-                    }
-                }
-
-                // Walk HAVING — HAVING MAX(col) > N where col is not in SELECT.
-                if let Some(ref having) = select.having {
-                    collect_column_refs(having, &mut referenced_columns);
-                }
-
-                // Walk WINDOW named definitions — PARTITION BY / ORDER BY
-                // columns may only appear in named window specs.
-                for sqlast::NamedWindowDefinition(_, named_expr) in &select.named_window {
-                    if let sqlast::NamedWindowExpr::WindowSpec(spec) = named_expr {
-                        for e in &spec.partition_by {
-                            collect_column_refs(e, &mut referenced_columns);
-                        }
-                        for ob in &spec.order_by {
-                            collect_column_refs(&ob.expr, &mut referenced_columns);
-                        }
-                    }
-                }
-            }
-
-            // Walk ORDER BY — columns may appear only here (not in SELECT or WHERE).
-            if let Some(ref order_by) = query.order_by
-                && let sqlast::OrderByKind::Expressions(exprs) = &order_by.kind
-            {
-                for ob in exprs {
-                    collect_column_refs(&ob.expr, &mut referenced_columns);
-                }
-            }
+            walk_query(
+                query,
+                &mut referenced_columns,
+                &mut uses_select_star,
+                &mut except_fields,
+                &mut where_clause,
+            );
         } else {
             return Err(TransformError::Sql(
                 "Only SELECT statements are supported".to_string(),
@@ -199,6 +146,134 @@ impl QueryAnalyzer {
         };
 
         hints
+    }
+}
+
+/// Recursively walk a Query wrapper (ORDER BY + body).
+fn walk_query(
+    query: &sqlast::Query,
+    referenced_columns: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+    where_clause: &mut Option<SqlExpr>,
+) {
+    // Walk ORDER BY — columns may appear only here.
+    if let Some(ref order_by) = query.order_by
+        && let sqlast::OrderByKind::Expressions(exprs) = &order_by.kind
+    {
+        for ob in exprs {
+            collect_column_refs(&ob.expr, referenced_columns);
+        }
+    }
+
+    walk_set_expr(
+        query.body.as_ref(),
+        referenced_columns,
+        uses_select_star,
+        except_fields,
+        where_clause,
+    );
+}
+
+/// Recursively walk a `SetExpr`, collecting column refs from SELECT, WHERE,
+/// GROUP BY, HAVING, FROM/JOIN, and WINDOW clauses. For `SetOperation`
+/// (UNION/INTERSECT/EXCEPT) both branches are walked.
+fn walk_set_expr(
+    set_expr: &SetExpr,
+    referenced_columns: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+    where_clause: &mut Option<SqlExpr>,
+) {
+    match set_expr {
+        SetExpr::Select(select) => {
+            for item in &select.projection {
+                match item {
+                    SelectItem::Wildcard(opts) => {
+                        *uses_select_star = true;
+                        extract_except_fields(opts, except_fields);
+                    }
+                    SelectItem::QualifiedWildcard(_, opts) => {
+                        *uses_select_star = true;
+                        extract_except_fields(opts, except_fields);
+                    }
+                    SelectItem::UnnamedExpr(expr) => {
+                        collect_column_refs(expr, referenced_columns);
+                    }
+                    SelectItem::ExprWithAlias { expr, .. } => {
+                        collect_column_refs(expr, referenced_columns);
+                    }
+                }
+            }
+
+            if let Some(ref selection) = select.selection {
+                collect_column_refs(selection, referenced_columns);
+                *where_clause = Some(selection.clone());
+            }
+
+            if let sqlast::GroupByExpr::Expressions(exprs, _) = &select.group_by {
+                for e in exprs {
+                    collect_column_refs(e, referenced_columns);
+                }
+            }
+
+            if let Some(ref having) = select.having {
+                collect_column_refs(having, referenced_columns);
+            }
+
+            for table_with_joins in &select.from {
+                walk_table_with_joins(
+                    table_with_joins,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
+            }
+
+            for sqlast::NamedWindowDefinition(_, named_expr) in &select.named_window {
+                if let sqlast::NamedWindowExpr::WindowSpec(spec) = named_expr {
+                    for e in &spec.partition_by {
+                        collect_column_refs(e, referenced_columns);
+                    }
+                    for ob in &spec.order_by {
+                        collect_column_refs(&ob.expr, referenced_columns);
+                    }
+                }
+            }
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            // Set-operation branches can each have independent WHERE clauses.
+            // We intentionally avoid extracting filter hints from compound
+            // queries to prevent pushing one branch's predicate to all input.
+            let mut left_where = None;
+            walk_set_expr(
+                left,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+                &mut left_where,
+            );
+            let mut right_where = None;
+            walk_set_expr(
+                right,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+                &mut right_where,
+            );
+            *where_clause = None;
+        }
+        SetExpr::Query(query) => {
+            walk_query(
+                query,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+                where_clause,
+            );
+        }
+        // Values, Table, etc. — no column refs to extract.
+        _ => {}
     }
 }
 
@@ -333,6 +408,205 @@ fn extract_except_fields(opts: &WildcardAdditionalOptions, out: &mut Vec<String>
     }
 }
 
+fn walk_table_factor(
+    factor: &sqlast::TableFactor,
+    referenced_columns: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+) {
+    match factor {
+        sqlast::TableFactor::Table { args, .. } => {
+            if let Some(args) = args {
+                collect_function_args(&args.args, referenced_columns);
+            }
+        }
+        sqlast::TableFactor::Derived { subquery, .. } => {
+            let mut nested_where = None;
+            walk_query(
+                subquery,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+                &mut nested_where,
+            );
+        }
+        sqlast::TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => {
+            walk_table_with_joins(
+                table_with_joins,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+            );
+        }
+        sqlast::TableFactor::TableFunction { expr, .. } => {
+            collect_column_refs(expr, referenced_columns);
+        }
+        sqlast::TableFactor::Function { args, .. } => {
+            collect_function_args(args, referenced_columns);
+        }
+        sqlast::TableFactor::UNNEST { array_exprs, .. } => {
+            for expr in array_exprs {
+                collect_column_refs(expr, referenced_columns);
+            }
+        }
+        sqlast::TableFactor::Pivot {
+            table,
+            aggregate_functions,
+            value_column,
+            value_source,
+            default_on_null,
+            ..
+        } => {
+            walk_table_factor(table, referenced_columns, uses_select_star, except_fields);
+            for agg in aggregate_functions {
+                collect_column_refs(&agg.expr, referenced_columns);
+            }
+            for col in value_column {
+                referenced_columns.insert(col.value.clone());
+            }
+            match value_source {
+                sqlast::PivotValueSource::List(values) => {
+                    for value in values {
+                        collect_column_refs(&value.expr, referenced_columns);
+                    }
+                }
+                sqlast::PivotValueSource::Any(order_by) => {
+                    for ob in order_by {
+                        collect_column_refs(&ob.expr, referenced_columns);
+                    }
+                }
+                sqlast::PivotValueSource::Subquery(query) => {
+                    let mut nested_where = None;
+                    walk_query(
+                        query,
+                        referenced_columns,
+                        uses_select_star,
+                        except_fields,
+                        &mut nested_where,
+                    );
+                }
+            }
+            if let Some(expr) = default_on_null {
+                collect_column_refs(expr, referenced_columns);
+            }
+        }
+        sqlast::TableFactor::Unpivot { table, columns, .. } => {
+            walk_table_factor(table, referenced_columns, uses_select_star, except_fields);
+            for col in columns {
+                referenced_columns.insert(col.value.clone());
+            }
+        }
+        sqlast::TableFactor::JsonTable { json_expr, .. }
+        | sqlast::TableFactor::OpenJsonTable { json_expr, .. } => {
+            collect_column_refs(json_expr, referenced_columns);
+        }
+        _ => {}
+    }
+}
+
+fn walk_table_with_joins(
+    table_with_joins: &sqlast::TableWithJoins,
+    referenced_columns: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+) {
+    walk_table_factor(
+        &table_with_joins.relation,
+        referenced_columns,
+        uses_select_star,
+        except_fields,
+    );
+    for join in &table_with_joins.joins {
+        walk_table_factor(
+            &join.relation,
+            referenced_columns,
+            uses_select_star,
+            except_fields,
+        );
+        if let sqlast::JoinOperator::AsOf {
+            match_condition, ..
+        } = &join.join_operator
+        {
+            collect_column_refs(match_condition, referenced_columns);
+        }
+
+        if let Some(constraint) = extract_join_constraint(&join.join_operator) {
+            collect_join_constraint_columns(constraint, referenced_columns);
+        }
+    }
+}
+
+/// Extract the `JoinConstraint` from any `JoinOperator` variant that carries one.
+fn extract_join_constraint(op: &sqlast::JoinOperator) -> Option<&sqlast::JoinConstraint> {
+    use sqlast::JoinOperator as J;
+    match op {
+        J::Join(c)
+        | J::Inner(c)
+        | J::Left(c)
+        | J::LeftOuter(c)
+        | J::Right(c)
+        | J::RightOuter(c)
+        | J::FullOuter(c)
+        | J::Semi(c)
+        | J::LeftSemi(c)
+        | J::RightSemi(c)
+        | J::Anti(c)
+        | J::LeftAnti(c)
+        | J::RightAnti(c)
+        | J::AsOf { constraint: c, .. } => Some(c),
+        J::CrossJoin | J::CrossApply | J::OuterApply => None,
+    }
+}
+
+/// Collect column references from a `JoinConstraint`.
+fn collect_join_constraint_columns(
+    constraint: &sqlast::JoinConstraint,
+    cols: &mut HashSet<String>,
+) {
+    match constraint {
+        sqlast::JoinConstraint::On(expr) => {
+            collect_column_refs(expr, cols);
+        }
+        sqlast::JoinConstraint::Using(using_cols) => {
+            for obj_name in using_cols {
+                if let Some(part) = obj_name.0.last()
+                    && let Some(ident) = part.as_ident()
+                {
+                    cols.insert(ident.value.clone());
+                }
+            }
+        }
+        sqlast::JoinConstraint::Natural | sqlast::JoinConstraint::None => {}
+    }
+}
+
+fn collect_function_arg_refs(arg: &sqlast::FunctionArg, cols: &mut HashSet<String>) {
+    match arg {
+        sqlast::FunctionArg::Unnamed(sqlast::FunctionArgExpr::Expr(e))
+        | sqlast::FunctionArg::Named {
+            arg: sqlast::FunctionArgExpr::Expr(e),
+            ..
+        } => {
+            collect_column_refs(e, cols);
+        }
+        sqlast::FunctionArg::ExprNamed { name, arg, .. } => {
+            collect_column_refs(name, cols);
+            if let sqlast::FunctionArgExpr::Expr(e) = arg {
+                collect_column_refs(e, cols);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_function_args(args: &[sqlast::FunctionArg], cols: &mut HashSet<String>) {
+    for arg in args {
+        collect_function_arg_refs(arg, cols);
+    }
+}
+
 /// Recursively collect column name references from a SQL expression.
 fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
     match expr {
@@ -356,18 +630,7 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             match &func.args {
                 sqlast::FunctionArguments::List(arg_list) => {
                     for arg in &arg_list.args {
-                        match arg {
-                            sqlast::FunctionArg::Unnamed(sqlast::FunctionArgExpr::Expr(e)) => {
-                                collect_column_refs(e, cols);
-                            }
-                            sqlast::FunctionArg::Named {
-                                arg: sqlast::FunctionArgExpr::Expr(e),
-                                ..
-                            } => {
-                                collect_column_refs(e, cols);
-                            }
-                            _ => {}
-                        }
+                        collect_function_arg_refs(arg, cols);
                     }
                 }
                 sqlast::FunctionArguments::None => {}
@@ -443,19 +706,11 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             collect_column_refs(pattern, cols);
         }
         SqlExpr::Trim {
-            expr,
-            trim_what,
-            trim_characters,
-            ..
+            expr, trim_what, ..
         } => {
             collect_column_refs(expr, cols);
             if let Some(tw) = trim_what {
                 collect_column_refs(tw, cols);
-            }
-            if let Some(chars) = trim_characters {
-                for c in chars {
-                    collect_column_refs(c, cols);
-                }
             }
         }
         SqlExpr::Substring {

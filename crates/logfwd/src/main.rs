@@ -411,8 +411,9 @@ fn cmd_effective_config(config_path: Option<&str>) -> Result<(), CliError> {
         |err| eprintln!("  {}error{}: {err}", red(), reset()),
     )?;
 
+    let redacted_yaml = logfwd_io::diagnostics::redact_config_yaml(&effective_yaml);
     eprintln!("{}# validated from {config_path}{}", dim(), reset());
-    print!("{effective_yaml}");
+    print!("{redacted_yaml}");
     Ok(())
 }
 
@@ -706,10 +707,10 @@ fn discover_config() -> Option<std::path::PathBuf> {
                 .ok()
                 .map(|h| PathBuf::from(h).join(".config"))
         });
-    if let Some(xdg) = xdg_base.map(|b| b.join("logfwd/config.yaml"))
-        && xdg.is_file()
-    {
-        return Some(xdg);
+    if let Some(xdg) = xdg_base.map(|b| b.join("logfwd/config.yaml")) {
+        if xdg.is_file() {
+            return Some(xdg);
+        }
     }
 
     // 4. System config

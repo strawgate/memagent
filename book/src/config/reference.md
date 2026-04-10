@@ -91,6 +91,9 @@ Tail one or more log files that match a glob pattern.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `path` | string | Yes | Glob pattern, e.g. `/var/log/pods/**/*.log`. |
+| `poll_interval_ms` | integer | No | How often to poll the file when tailing, in milliseconds (default: 50). |
+| `read_buf_size` | integer | No | Buffer size for file reads in bytes (default: 262144, max: 4194304). |
+| `per_file_read_budget_bytes` | integer | No | Maximum bytes read per file per poll (default: 262144). |
 
 ```yaml
 input:

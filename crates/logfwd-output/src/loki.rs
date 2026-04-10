@@ -293,6 +293,32 @@ impl LokiSink {
                             parse_timestamp_nanos(col.as_string::<i64>().value(row).as_bytes())
                                 .unwrap_or(metadata.observed_time_ns)
                         }
+                        DataType::Timestamp(unit, _) => {
+                            use arrow::datatypes::{
+                                TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+                                TimestampNanosecondType, TimestampSecondType,
+                            };
+                            let raw_ns = match unit {
+                                TimeUnit::Nanosecond => {
+                                    Some(col.as_primitive::<TimestampNanosecondType>().value(row))
+                                }
+                                TimeUnit::Microsecond => col
+                                    .as_primitive::<TimestampMicrosecondType>()
+                                    .value(row)
+                                    .checked_mul(1_000),
+                                TimeUnit::Millisecond => col
+                                    .as_primitive::<TimestampMillisecondType>()
+                                    .value(row)
+                                    .checked_mul(1_000_000),
+                                TimeUnit::Second => col
+                                    .as_primitive::<TimestampSecondType>()
+                                    .value(row)
+                                    .checked_mul(1_000_000_000),
+                            };
+                            raw_ns
+                                .and_then(|ns| u64::try_from(ns).ok())
+                                .unwrap_or(metadata.observed_time_ns)
+                        }
                         _ => metadata.observed_time_ns,
                     }
                 }
@@ -1348,6 +1374,228 @@ mod tests {
             entries[1].0, metadata.observed_time_ns,
             "Null timestamp should fall back to observed_time_ns"
         );
+    }
+    /// Regression: Loki sink must read Arrow Timestamp(Nanosecond) columns
+    /// and use the actual timestamp value, not fall back to observed_time_ns.
+    /// Before the fix, the `DataType::Timestamp` arm was missing entirely and
+    /// hit the `_ => metadata.observed_time_ns` default.
+    #[test]
+    fn test_arrow_timestamp_nanosecond_column_used_as_loki_ts() {
+        use arrow::array::TimestampNanosecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let expected_ns: i64 = 1_705_314_600_000_000_000;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                field_names::TIMESTAMP_UNDERSCORE,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![expected_ns])),
+                Arc::new(arrow::array::StringArray::from(vec!["hello"])),
+            ],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].0, expected_ns as u64,
+            "Timestamp(Nanosecond) value ({expected_ns}) must be used, not observed_time_ns ({})",
+            metadata.observed_time_ns
+        );
+    }
+
+    #[test]
+    fn test_arrow_timestamp_microsecond_column_used_as_loki_ts() {
+        use arrow::array::TimestampMicrosecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let raw_us: i64 = 1_705_314_600_000_000;
+        let expected_ns: u64 = (raw_us * 1_000) as u64;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampMicrosecondArray::from(vec![raw_us]))],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, expected_ns);
+    }
+
+    #[test]
+    fn test_arrow_timestamp_millisecond_column_used_as_loki_ts() {
+        use arrow::array::TimestampMillisecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let raw_ms: i64 = 1_705_314_600_000;
+        let expected_ns: u64 = (raw_ms * 1_000_000) as u64;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampMillisecondArray::from(vec![raw_ms]))],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, expected_ns);
+    }
+
+    #[test]
+    fn test_arrow_timestamp_second_column_used_as_loki_ts() {
+        use arrow::array::TimestampSecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let raw_s: i64 = 1_705_314_600;
+        let expected_ns: u64 = (raw_s * 1_000_000_000) as u64;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Timestamp(TimeUnit::Second, None),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampSecondArray::from(vec![raw_s]))],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, expected_ns);
+    }
+
+    #[test]
+    fn test_arrow_timestamp_negative_or_overflow_falls_back_to_observed_time() {
+        use arrow::array::TimestampSecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Timestamp(TimeUnit::Second, None),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampSecondArray::from(vec![-1, i64::MAX]))],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 42,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let mut entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        entries.sort_by_key(|(ts, _)| *ts);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, metadata.observed_time_ns);
+        assert_eq!(entries[1].0, metadata.observed_time_ns);
     }
 }
 

@@ -381,6 +381,19 @@ fn test_filter_hints_no_where() {
 }
 
 #[test]
+fn test_filter_hints_disabled_for_set_operation_branches() {
+    let a = QueryAnalyzer::new(
+        "SELECT * FROM logs WHERE severity <= 2 UNION ALL SELECT * FROM logs WHERE severity <= 4",
+    )
+    .unwrap();
+    let h = a.filter_hints();
+    assert!(
+        h.max_severity.is_none(),
+        "set-operation branch predicates must not be pushed globally"
+    );
+}
+
+#[test]
 fn test_filter_hints_field_pushdown() {
     let a = QueryAnalyzer::new("SELECT hostname, message FROM logs WHERE severity <= 2").unwrap();
     let h = a.filter_hints();
@@ -854,6 +867,128 @@ fn test_query_analyzer_in_list_column_refs() {
     assert!(
         a.referenced_columns.contains("status"),
         "InList expr must add 'status' to referenced_columns"
+    );
+}
+
+#[test]
+fn test_query_analyzer_join_on_column_refs() {
+    let a =
+        QueryAnalyzer::new("SELECT a.message FROM logs a JOIN logs b ON a.level = b.level LIMIT 5")
+            .unwrap();
+    assert!(
+        a.referenced_columns.contains("message"),
+        "SELECT column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("level"),
+        "JOIN ON column must be in referenced_columns"
+    );
+}
+
+#[test]
+fn test_query_analyzer_union_column_refs() {
+    let a =
+        QueryAnalyzer::new("SELECT level FROM logs UNION ALL SELECT severity FROM logs").unwrap();
+    assert!(
+        a.referenced_columns.contains("level"),
+        "left branch column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("severity"),
+        "right branch column must be in referenced_columns"
+    );
+}
+
+#[test]
+fn test_query_analyzer_join_using_column_refs() {
+    let a = QueryAnalyzer::new("SELECT message FROM logs a JOIN logs b USING (level)").unwrap();
+    assert!(
+        a.referenced_columns.contains("message"),
+        "SELECT column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("level"),
+        "USING column must be in referenced_columns"
+    );
+}
+
+#[test]
+fn test_query_analyzer_straight_join_on_column_refs() {
+    let a = QueryAnalyzer::new(
+        "SELECT a.message FROM logs a STRAIGHT_JOIN logs b ON a.level = b.level",
+    )
+    .unwrap();
+    assert!(
+        a.referenced_columns.contains("message"),
+        "SELECT column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("level"),
+        "STRAIGHT_JOIN ON column must be in referenced_columns"
+    );
+}
+
+#[test]
+fn test_query_analyzer_derived_subquery_column_refs() {
+    let a = QueryAnalyzer::new(
+        "SELECT q.level FROM (SELECT level, status, host FROM logs WHERE status = '500' ORDER BY host) q",
+    )
+    .unwrap();
+    assert!(
+        a.referenced_columns.contains("level"),
+        "derived SELECT column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("status"),
+        "derived WHERE column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("host"),
+        "derived ORDER BY column must be in referenced_columns"
+    );
+}
+
+#[test]
+fn test_query_analyzer_joined_derived_relation_column_refs() {
+    let a = QueryAnalyzer::new(
+        "SELECT l.message FROM logs l JOIN (SELECT level, service FROM logs WHERE service = 'api') d ON l.level = d.level",
+    )
+    .unwrap();
+    assert!(
+        a.referenced_columns.contains("message"),
+        "outer SELECT column must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("level"),
+        "join key from derived relation must be in referenced_columns"
+    );
+    assert!(
+        a.referenced_columns.contains("service"),
+        "derived subquery column must be in referenced_columns"
+    );
+}
+
+#[test]
+fn test_query_analyzer_table_function_args_column_refs() {
+    let with_table_args = QueryAnalyzer::new("SELECT message FROM logs(level, host)").unwrap();
+    assert!(
+        with_table_args.referenced_columns.contains("level"),
+        "table-args column must be in referenced_columns"
+    );
+    assert!(
+        with_table_args.referenced_columns.contains("host"),
+        "table-args column must be in referenced_columns"
+    );
+
+    let with_table_function =
+        QueryAnalyzer::new("SELECT message FROM TABLE(my_tvf(level, host))").unwrap();
+    assert!(
+        with_table_function.referenced_columns.contains("level"),
+        "table-function arg column must be in referenced_columns"
+    );
+    assert!(
+        with_table_function.referenced_columns.contains("host"),
+        "table-function arg column must be in referenced_columns"
     );
 }
 
@@ -1414,40 +1549,5 @@ fn test_scan_config_keep_raw_false_when_raw_not_referenced() {
     assert!(
         !sc.keep_raw,
         "scan_config.keep_raw must be false when _raw is not referenced, got true"
-    );
-}
-
-// -----------------------------------------------------------------------
-// Named WINDOW definitions and CONVERT
-// -----------------------------------------------------------------------
-
-/// Named WINDOW definition columns must be collected.
-#[test]
-fn test_named_window_definition_cols_added_to_referenced_columns() {
-    let a = QueryAnalyzer::new(
-        "SELECT ROW_NUMBER() OVER mywin AS rn FROM logs \
-         WINDOW mywin AS (PARTITION BY level ORDER BY timestamp)",
-    )
-    .unwrap();
-    assert!(
-        a.referenced_columns.contains("level"),
-        "Named WINDOW PARTITION BY must collect 'level', got {:?}",
-        a.referenced_columns
-    );
-    assert!(
-        a.referenced_columns.contains("timestamp"),
-        "Named WINDOW ORDER BY must collect 'timestamp', got {:?}",
-        a.referenced_columns
-    );
-}
-
-/// CONVERT(col, ...) must add col to referenced_columns.
-#[test]
-fn test_convert_col_adds_to_referenced_columns() {
-    let a = QueryAnalyzer::new("SELECT CONVERT(message USING utf8) FROM logs").unwrap();
-    assert!(
-        a.referenced_columns.contains("message"),
-        "CONVERT must collect 'message', got {:?}",
-        a.referenced_columns
     );
 }

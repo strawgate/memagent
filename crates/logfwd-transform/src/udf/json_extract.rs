@@ -170,20 +170,6 @@ pub struct JsonExtractUdf {
     signature: Signature,
 }
 
-impl std::hash::Hash for JsonExtractUdf {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name().hash(state);
-    }
-}
-
-impl PartialEq for JsonExtractUdf {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
-}
-
-impl Eq for JsonExtractUdf {}
-
 impl JsonExtractUdf {
     pub fn new(mode: JsonExtractMode) -> Self {
         // Accept Utf8, Utf8View, and LargeUtf8 as the first argument.

@@ -199,31 +199,36 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
 
     // --- Resource deduplication ---
     // Build a map of unique resource attribute sets → resource_id.
-    // Key: sorted string of all resource attribute values for one row.
-    let mut resource_id_map: HashMap<Vec<String>, u32> = HashMap::new();
+    // Key preserves NULL vs empty-string distinctions for each attribute.
+    let mut resource_id_map: HashMap<Vec<Option<String>>, u32> = HashMap::new();
     let mut row_resource_ids: Vec<u32> = Vec::with_capacity(num_rows);
-    let mut resource_sets: Vec<(u32, Vec<(String, String)>)> = Vec::new();
+    let mut resource_template_rows: Vec<usize> = Vec::new();
 
     for row in 0..num_rows {
-        let mut key_parts: Vec<String> = Vec::with_capacity(resource_cols.len());
-        let mut attrs: Vec<(String, String)> = Vec::with_capacity(resource_cols.len());
+        let mut key_parts: Vec<Option<String>> = Vec::with_capacity(resource_cols.len());
 
         for (attr_key, col_idx) in &resource_cols {
-            let val = str_value_at(batch.column(*col_idx).as_ref(), row);
-            key_parts.push(format!("{attr_key}={val}"));
-            attrs.push((attr_key.clone(), val));
+            let arr = batch.column(*col_idx);
+            let val = if arr.is_null(row) {
+                None
+            } else {
+                Some(str_value_at(arr.as_ref(), row))
+            };
+            let _ = attr_key; // key order is fixed by `resource_cols`.
+            key_parts.push(val);
         }
 
         let next_id = resource_id_map.len() as u32;
         let rid = *resource_id_map.entry(key_parts).or_insert_with(|| {
-            resource_sets.push((next_id, attrs));
+            resource_template_rows.push(row);
             next_id
         });
         row_resource_ids.push(rid);
     }
 
     // --- Build RESOURCE_ATTRS table ---
-    let resource_attrs_batch = build_attrs_table(&resource_sets)?;
+    let resource_attrs_batch =
+        build_resource_attrs_table(batch, &resource_cols, &resource_template_rows)?;
 
     // --- Build SCOPE_ATTRS table ---
     // Single scope: scope_id=0, name="logfwd".
@@ -411,10 +416,10 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         for row in 0..num_rows {
             if !sev_arr.is_null(row) {
                 let val = str_from_array(sev_arr.as_ref(), row);
-                if !val.is_empty()
-                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
-                {
-                    v[row] = Some(val);
+                if !val.is_empty() {
+                    if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
+                        v[row] = Some(val);
+                    }
                 }
             }
         }
@@ -433,10 +438,10 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         for row in 0..num_rows {
             if !body_arr.is_null(row) {
                 let val = str_from_array(body_arr.as_ref(), row);
-                if !val.is_empty()
-                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
-                {
-                    v[row] = Some(val);
+                if !val.is_empty() {
+                    if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
+                        v[row] = Some(val);
+                    }
                 }
             }
         }
@@ -536,6 +541,30 @@ fn str_value_at(arr: &dyn Array, row: usize) -> String {
             .downcast_ref::<BooleanArray>()
             .map(|a| a.value(row).to_string())
             .unwrap_or_default(),
+        DataType::Binary => arr
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .map(|a| {
+                let mut hex = String::with_capacity(a.value(row).len() * 2);
+                for b in a.value(row) {
+                    use std::fmt::Write as _;
+                    let _ = write!(&mut hex, "{b:02x}");
+                }
+                hex
+            })
+            .unwrap_or_default(),
+        DataType::LargeBinary => arr
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .map(|a| {
+                let mut hex = String::with_capacity(a.value(row).len() * 2);
+                for b in a.value(row) {
+                    use std::fmt::Write as _;
+                    let _ = write!(&mut hex, "{b:02x}");
+                }
+                hex
+            })
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -571,16 +600,20 @@ fn attr_type_for(dt: &DataType) -> u8 {
     }
 }
 
-/// Build an attrs dimension table from deduplicated resource attribute sets.
-fn build_attrs_table(sets: &[(u32, Vec<(String, String)>)]) -> Result<RecordBatch, ArrowError> {
+/// Build RESOURCE_ATTRS from deduplicated resource template rows.
+fn build_resource_attrs_table(
+    batch: &RecordBatch,
+    resource_cols: &[(String, usize)],
+    template_rows: &[usize],
+) -> Result<RecordBatch, ArrowError> {
     let schema = Arc::new(attrs_schema());
 
-    if sets.is_empty() {
+    if template_rows.is_empty() || resource_cols.is_empty() {
         return Ok(RecordBatch::new_empty(schema));
     }
 
-    // Count total rows.
-    let total: usize = sets.iter().map(|(_, attrs)| attrs.len()).sum();
+    // Upper bound: every resource row has every resource attr.
+    let total: usize = template_rows.len() * resource_cols.len();
     if total == 0 {
         return Ok(RecordBatch::new_empty(schema));
     }
@@ -588,38 +621,117 @@ fn build_attrs_table(sets: &[(u32, Vec<(String, String)>)]) -> Result<RecordBatc
     let mut parent_ids = Vec::with_capacity(total);
     let mut keys = Vec::with_capacity(total);
     let mut types = Vec::with_capacity(total);
-    let mut str_vals: Vec<Option<&str>> = Vec::with_capacity(total);
+    let mut str_vals: Vec<Option<String>> = Vec::with_capacity(total);
     let mut int_vals: Vec<Option<i64>> = Vec::with_capacity(total);
     let mut double_vals: Vec<Option<f64>> = Vec::with_capacity(total);
     let mut bool_vals: Vec<Option<bool>> = Vec::with_capacity(total);
-    let mut bytes_vals: Vec<Option<&[u8]>> = Vec::with_capacity(total);
+    let mut bytes_vals: Vec<Option<Vec<u8>>> = Vec::with_capacity(total);
 
-    for (pid, attrs) in sets {
-        for (key, val) in attrs {
-            parent_ids.push(*pid);
-            keys.push(key.as_str());
-            types.push(ATTR_TYPE_STR);
-            str_vals.push(if val.is_empty() {
-                None
-            } else {
-                Some(val.as_str())
-            });
-            int_vals.push(None);
-            double_vals.push(None);
-            bool_vals.push(None);
-            bytes_vals.push(None);
+    for (pid, &row) in template_rows.iter().enumerate() {
+        for (key, col_idx) in resource_cols {
+            let arr = batch.column(*col_idx).as_ref();
+            if arr.is_null(row) {
+                continue;
+            }
+
+            parent_ids.push(pid as u32);
+            keys.push(key.clone());
+
+            match attr_type_for(arr.data_type()) {
+                ATTR_TYPE_INT => {
+                    let value = arr
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .map(|a| a.value(row))
+                        .ok_or_else(|| {
+                            ArrowError::SchemaError("resource attr int not Int64".to_string())
+                        })?;
+                    types.push(ATTR_TYPE_INT);
+                    int_vals.push(Some(value));
+                    str_vals.push(None);
+                    double_vals.push(None);
+                    bool_vals.push(None);
+                    bytes_vals.push(None);
+                }
+                ATTR_TYPE_DOUBLE => {
+                    let value = arr
+                        .as_any()
+                        .downcast_ref::<Float64Array>()
+                        .map(|a| a.value(row))
+                        .ok_or_else(|| {
+                            ArrowError::SchemaError("resource attr double not Float64".to_string())
+                        })?;
+                    types.push(ATTR_TYPE_DOUBLE);
+                    double_vals.push(Some(value));
+                    str_vals.push(None);
+                    int_vals.push(None);
+                    bool_vals.push(None);
+                    bytes_vals.push(None);
+                }
+                ATTR_TYPE_BOOL => {
+                    let value = arr
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .map(|a| a.value(row))
+                        .ok_or_else(|| {
+                            ArrowError::SchemaError("resource attr bool not Boolean".to_string())
+                        })?;
+                    types.push(ATTR_TYPE_BOOL);
+                    bool_vals.push(Some(value));
+                    str_vals.push(None);
+                    int_vals.push(None);
+                    double_vals.push(None);
+                    bytes_vals.push(None);
+                }
+                ATTR_TYPE_BYTES => {
+                    let bytes = match arr.data_type() {
+                        DataType::Binary => arr
+                            .as_any()
+                            .downcast_ref::<BinaryArray>()
+                            .map(|a| a.value(row).to_vec()),
+                        DataType::LargeBinary => arr
+                            .as_any()
+                            .downcast_ref::<LargeBinaryArray>()
+                            .map(|a| a.value(row).to_vec()),
+                        _ => None,
+                    }
+                    .ok_or_else(|| {
+                        ArrowError::SchemaError(
+                            "resource attr bytes not Binary/LargeBinary".to_string(),
+                        )
+                    })?;
+                    types.push(ATTR_TYPE_BYTES);
+                    bytes_vals.push(Some(bytes));
+                    str_vals.push(None);
+                    int_vals.push(None);
+                    double_vals.push(None);
+                    bool_vals.push(None);
+                }
+                _ => {
+                    types.push(ATTR_TYPE_STR);
+                    str_vals.push(Some(str_value_at(arr, row)));
+                    int_vals.push(None);
+                    double_vals.push(None);
+                    bool_vals.push(None);
+                    bytes_vals.push(None);
+                }
+            }
         }
     }
 
+    let bytes_refs: Vec<Option<&[u8]>> = bytes_vals.iter().map(|v| v.as_deref()).collect();
+
     let columns: Vec<ArrayRef> = vec![
         Arc::new(UInt32Array::from(parent_ids)),
-        Arc::new(StringArray::from(keys)),
+        Arc::new(StringArray::from(
+            keys.into_iter().map(Some).collect::<Vec<_>>(),
+        )),
         Arc::new(UInt8Array::from(types)),
         Arc::new(StringArray::from(str_vals)),
         Arc::new(Int64Array::from(int_vals)),
         Arc::new(Float64Array::from(double_vals)),
         Arc::new(BooleanArray::from(bool_vals)),
-        Arc::new(BinaryArray::from(bytes_vals)),
+        Arc::new(BinaryArray::from(bytes_refs)),
     ];
 
     RecordBatch::try_new(schema, columns)
@@ -1275,6 +1387,16 @@ fn unpivot_attrs_to_flat(
         .downcast_ref::<BooleanArray>()
         .ok_or_else(|| ArrowError::SchemaError("bool not Boolean".to_string()))?;
 
+    let bytes_arr = attrs_batch
+        .column(
+            a_schema
+                .index_of("bytes")
+                .map_err(|e| ArrowError::SchemaError(format!("missing bytes: {e}")))?,
+        )
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .ok_or_else(|| ArrowError::SchemaError("bytes not Binary".to_string()))?;
+
     for row in 0..attrs_batch.num_rows() {
         let parent_id = parent_id_arr.value(row);
         let target_row = row_for(parent_id);
@@ -1305,33 +1427,52 @@ fn unpivot_attrs_to_flat(
         // Write the typed value into the column.
         match type_tag {
             ATTR_TYPE_INT => {
-                if !int_arr.is_null(row)
-                    && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
-                {
-                    v[target_row] = Some(int_arr.value(row));
+                if !int_arr.is_null(row) {
+                    if let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1 {
+                        v[target_row] = Some(int_arr.value(row));
+                    }
                 }
             }
             ATTR_TYPE_DOUBLE => {
-                if !double_arr.is_null(row)
-                    && let TypedColumn::Double(ref mut v) = flat_cols[col_pos].1
-                {
-                    v[target_row] = Some(double_arr.value(row));
+                if !double_arr.is_null(row) {
+                    if let TypedColumn::Double(ref mut v) = flat_cols[col_pos].1 {
+                        v[target_row] = Some(double_arr.value(row));
+                    }
                 }
             }
             ATTR_TYPE_BOOL => {
-                if !bool_arr.is_null(row)
-                    && let TypedColumn::Bool(ref mut v) = flat_cols[col_pos].1
-                {
-                    v[target_row] = Some(bool_arr.value(row));
+                if !bool_arr.is_null(row) {
+                    if let TypedColumn::Bool(ref mut v) = flat_cols[col_pos].1 {
+                        v[target_row] = Some(bool_arr.value(row));
+                    }
                 }
             }
-            _ => {
-                // ATTR_TYPE_STR or ATTR_TYPE_BYTES — read from str column.
+            ATTR_TYPE_BYTES => {
+                // Bytes are stored in the binary column; hex-encode for flat schema.
+                if !bytes_arr.is_null(row)
+                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+                {
+                    let bytes = bytes_arr.value(row);
+                    let mut hex = String::with_capacity(bytes.len() * 2);
+                    for byte in bytes {
+                        use std::fmt::Write;
+                        let _ = write!(&mut hex, "{byte:02x}");
+                    }
+                    v[target_row] = Some(hex);
+                }
+            }
+            ATTR_TYPE_STR => {
                 if !str_arr.is_null(row)
                     && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
                 {
                     v[target_row] = Some(str_arr.value(row).to_string());
                 }
+            }
+            _ => {
+                return Err(ArrowError::SchemaError(format!(
+                    "unknown attr type tag {type_tag} for key '{}'",
+                    key_arr.value(row)
+                )));
             }
         }
     }
@@ -1364,37 +1505,72 @@ fn scatter_resource_attrs(
 
     // For each resource column, build a map of resource_id → value from
     // the template rows, then scatter to all matching rows.
-    // Resource attrs are always strings (from _resource_* flat columns).
     for &col_pos in &resource_col_indices {
-        // Phase 1: collect distinct resource_id → value.
-        let rid_to_val: HashMap<u32, Option<String>> = {
-            let values = match &flat_cols[col_pos].1 {
-                TypedColumn::Str(v) => v,
-                _ => continue,
-            };
-            let mut map: HashMap<u32, Option<String>> = HashMap::new();
-            for row in 0..num_rows {
-                let rid = resource_ids.value(row);
-                if let std::collections::hash_map::Entry::Vacant(e) = map.entry(rid) {
-                    let rid_row = rid as usize;
-                    if rid_row < num_rows {
-                        e.insert(values[rid_row].clone());
+        match &flat_cols[col_pos].1 {
+            TypedColumn::Str(values) => {
+                let rid_to_val = collect_resource_template_values(values, resource_ids, num_rows);
+                if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        let rid = resource_ids.value(row);
+                        if let Some(val) = rid_to_val.get(&rid) {
+                            *slot = val.clone();
+                        }
                     }
                 }
             }
-            map
-        };
-
-        // Phase 2: scatter to all rows.
-        if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
-            for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
-                let rid = resource_ids.value(row);
-                if let Some(val) = rid_to_val.get(&rid) {
-                    *slot = val.clone();
+            TypedColumn::Int(values) => {
+                let rid_to_val = collect_resource_template_values(values, resource_ids, num_rows);
+                if let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        let rid = resource_ids.value(row);
+                        if let Some(val) = rid_to_val.get(&rid) {
+                            *slot = *val;
+                        }
+                    }
+                }
+            }
+            TypedColumn::Double(values) => {
+                let rid_to_val = collect_resource_template_values(values, resource_ids, num_rows);
+                if let TypedColumn::Double(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        let rid = resource_ids.value(row);
+                        if let Some(val) = rid_to_val.get(&rid) {
+                            *slot = *val;
+                        }
+                    }
+                }
+            }
+            TypedColumn::Bool(values) => {
+                let rid_to_val = collect_resource_template_values(values, resource_ids, num_rows);
+                if let TypedColumn::Bool(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        let rid = resource_ids.value(row);
+                        if let Some(val) = rid_to_val.get(&rid) {
+                            *slot = *val;
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+fn collect_resource_template_values<T: Clone>(
+    values: &[Option<T>],
+    resource_ids: &UInt32Array,
+    num_rows: usize,
+) -> HashMap<u32, Option<T>> {
+    let mut map: HashMap<u32, Option<T>> = HashMap::new();
+    for row in 0..num_rows {
+        let rid = resource_ids.value(row);
+        if let std::collections::hash_map::Entry::Vacant(e) = map.entry(rid) {
+            let rid_row = rid as usize;
+            if rid_row < num_rows {
+                e.insert(values[rid_row].clone());
+            }
+        }
+    }
+    map
 }
 
 // ---------------------------------------------------------------------------
@@ -1742,6 +1918,32 @@ mod tests {
     }
 
     #[test]
+    fn resource_dedup_distinguishes_null_and_empty_values() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("_resource_svc", DataType::Utf8, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec![None, Some(""), Some("")])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let rid_arr = star
+            .logs
+            .column(1)
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("resource_id");
+        assert_ne!(
+            rid_arr.value(0),
+            rid_arr.value(1),
+            "NULL and empty-string resource attrs must dedupe separately"
+        );
+        assert_eq!(rid_arr.value(1), rid_arr.value(2));
+    }
+
+    #[test]
     fn severity_mapping() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("level", DataType::Utf8, true),
@@ -1872,6 +2074,103 @@ mod tests {
             }
         }
         assert!(found, "status attr not found in log_attrs");
+    }
+
+    #[test]
+    fn binary_attrs_roundtrip_as_hex_strings() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("payload", DataType::Binary, true),
+        ]));
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec![Some("row-0"), Some("row-1")])),
+            Arc::new(BinaryArray::from(vec![
+                Some(&[0x00_u8, 0x0f_u8, 0xff_u8][..]),
+                Some(&[0xab_u8, 0xcd_u8][..]),
+            ])),
+        ];
+
+        let batch = RecordBatch::try_new(schema, columns).expect("valid batch");
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+
+        let payload_idx = roundtrip.schema().index_of("payload").expect("payload col");
+        let payload_arr = roundtrip
+            .column(payload_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("payload string");
+
+        assert_eq!(payload_arr.value(0), "000fff");
+        assert_eq!(payload_arr.value(1), "abcd");
+    }
+
+    #[test]
+    fn binary_resource_attrs_roundtrip_as_hex_strings() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("_resource_payload", DataType::Binary, true),
+        ]));
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec![
+                Some("row-0"),
+                Some("row-1"),
+                Some("row-2"),
+            ])),
+            Arc::new(BinaryArray::from(vec![
+                Some(&[0xde_u8, 0xad_u8, 0xbe_u8, 0xef_u8][..]),
+                Some(&[0xde_u8, 0xad_u8, 0xbe_u8, 0xef_u8][..]),
+                Some(&[0x01_u8, 0x02_u8][..]),
+            ])),
+        ];
+
+        let batch = RecordBatch::try_new(schema, columns).expect("valid batch");
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+
+        let payload_idx = roundtrip
+            .schema()
+            .index_of("_resource_payload")
+            .expect("_resource_payload col");
+        let payload_arr = roundtrip
+            .column(payload_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("_resource_payload string");
+
+        assert_eq!(payload_arr.value(0), "deadbeef");
+        assert_eq!(payload_arr.value(1), "deadbeef");
+        assert_eq!(payload_arr.value(2), "0102");
+    }
+
+    #[test]
+    fn typed_resource_attrs_scatter_for_duplicate_resource_ids() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("_resource_retry_count", DataType::Int64, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int64Array::from(vec![Some(5), Some(5), Some(9)])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+
+        let idx = roundtrip
+            .schema()
+            .index_of("_resource_retry_count")
+            .expect("_resource_retry_count");
+        let arr = roundtrip
+            .column(idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int64");
+        assert_eq!(arr.value(0), 5);
+        assert_eq!(arr.value(1), 5);
+        assert_eq!(arr.value(2), 9);
     }
 
     #[test]

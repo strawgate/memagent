@@ -13,20 +13,6 @@ pub(crate) struct IntCastUdf {
     signature: Signature,
 }
 
-impl std::hash::Hash for IntCastUdf {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name().hash(state);
-    }
-}
-
-impl PartialEq for IntCastUdf {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
-}
-
-impl Eq for IntCastUdf {}
-
 impl IntCastUdf {
     pub(crate) fn new() -> Self {
         Self {
@@ -83,20 +69,6 @@ impl ScalarUDFImpl for IntCastUdf {
 pub(crate) struct FloatCastUdf {
     signature: Signature,
 }
-
-impl std::hash::Hash for FloatCastUdf {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name().hash(state);
-    }
-}
-
-impl PartialEq for FloatCastUdf {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
-}
-
-impl Eq for FloatCastUdf {}
 
 impl FloatCastUdf {
     pub(crate) fn new() -> Self {

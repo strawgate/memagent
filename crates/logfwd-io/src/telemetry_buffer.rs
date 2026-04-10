@@ -928,7 +928,8 @@ fn attrs_to_json(attrs: &[(&str, String)]) -> String {
         .iter()
         .map(|(k, v)| {
             format!(
-                "{{\"key\":\"{k}\",\"value\":{{\"stringValue\":\"{}\"}}}}",
+                "{{\"key\":\"{}\",\"value\":{{\"stringValue\":\"{}\"}}}}",
+                json_escape(k),
                 json_escape(v)
             )
         })
@@ -1561,5 +1562,21 @@ mod tests {
             "severityNumber must be integer"
         );
         assert_eq!(lr["severityNumber"], 17); // ERROR
+    }
+
+    /// Regression: attrs_to_json must properly escape keys containing quotes.
+    /// Before the fix, unescaped quotes in keys would produce invalid JSON.
+    #[test]
+    fn attrs_to_json_key_with_quote_produces_valid_json() {
+        let attrs = vec![("key\"with\"quotes", "normal_value".to_string())];
+        let json_fragment = attrs_to_json(&attrs);
+        // Wrap in braces to make it parseable as a JSON object.
+        let json = format!("{{{json_fragment}}}");
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("attrs_to_json with quoted key must produce valid JSON");
+        let arr = parsed["attributes"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["key"], "key\"with\"quotes");
+        assert_eq!(arr[0]["value"]["stringValue"], "normal_value");
     }
 }

@@ -8,29 +8,46 @@ use url::Url;
 impl Config {
     /// Validate the loaded configuration.
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
-        if let Some(ep) = &self.server.traces_endpoint
-            && let Err(msg) = validate_endpoint_url(ep)
-        {
-            return Err(ConfigError::Validation(format!(
-                "server.traces_endpoint: {msg}"
-            )));
+        if let Some(ep) = &self.server.traces_endpoint {
+            if let Err(msg) = validate_endpoint_url(ep) {
+                return Err(ConfigError::Validation(format!(
+                    "server.traces_endpoint: {msg}"
+                )));
+            }
         }
 
         // Validate server.diagnostics bind address at config time so that
         // `validate` catches typos before the server tries to bind at runtime.
-        if let Some(addr) = &self.server.diagnostics
-            && let Err(msg) = validate_bind_addr(addr)
-        {
-            return Err(ConfigError::Validation(format!(
-                "server.diagnostics: {msg}"
-            )));
+        if let Some(addr) = &self.server.diagnostics {
+            if let Err(msg) = validate_bind_addr(addr) {
+                return Err(ConfigError::Validation(format!(
+                    "server.diagnostics: {msg}"
+                )));
+            }
         }
 
         // Validate server.log_level is a recognised level (#481).
-        if let Some(level) = &self.server.log_level
-            && let Err(msg) = validate_log_level(level)
-        {
-            return Err(ConfigError::Validation(format!("server.log_level: {msg}")));
+        if let Some(level) = &self.server.log_level {
+            if let Err(msg) = validate_log_level(level) {
+                return Err(ConfigError::Validation(format!("server.log_level: {msg}")));
+            }
+        }
+
+        // Validate storage.data_dir is either absent/non-existent or an existing directory.
+        if let Some(ref dir) = self.storage.data_dir {
+            let path = Path::new(dir);
+            if path.exists() {
+                let md = path.metadata().map_err(|e| {
+                    ConfigError::Validation(format!(
+                        "storage.data_dir '{dir}' metadata lookup failed: {e}"
+                    ))
+                })?;
+                if !md.is_dir() {
+                    return Err(ConfigError::Validation(format!(
+                        "storage.data_dir '{dir}' exists but is not a directory"
+                    )));
+                }
+            }
         }
 
         if self.pipelines.is_empty() {
@@ -60,12 +77,12 @@ impl Config {
                     "pipeline '{name}': batch_target_bytes must be greater than 0"
                 )));
             }
-            if let Some(sql) = &pipe.transform
-                && sql.trim().is_empty()
-            {
-                return Err(ConfigError::Validation(format!(
-                    "pipeline '{name}': transform SQL cannot be empty"
-                )));
+            if let Some(sql) = &pipe.transform {
+                if sql.trim().is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{name}': transform SQL cannot be empty"
+                    )));
+                }
             }
             if pipe.inputs.is_empty() {
                 return Err(ConfigError::Validation(format!(
@@ -90,31 +107,48 @@ impl Config {
                     )));
                 }
                 match input.input_type {
-                    InputType::File => match &input.path {
-                        None => {
+                    InputType::File => {
+                        match &input.path {
+                            None => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': file input requires 'path'"
+                                )));
+                            }
+                            Some(p) if p.trim().is_empty() => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': file input 'path' must not be empty"
+                                )));
+                            }
+                            _ => {}
+                        }
+                        if input.poll_interval_ms == Some(0) {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': file input requires 'path'"
+                                "pipeline '{name}' input '{label}': 'poll_interval_ms' must be at least 1"
                             )));
                         }
-                        Some(p) if p.trim().is_empty() => {
+                        if input.read_buf_size == Some(0) {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': file input 'path' must not be empty"
+                                "pipeline '{name}' input '{label}': 'read_buf_size' must be at least 1"
                             )));
                         }
-                        _ => {}
-                    },
+                        if input.per_file_read_budget_bytes == Some(0) {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' must be at least 1"
+                            )));
+                        }
+                    }
                     InputType::Udp | InputType::Tcp => {
                         if input.listen.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': udp/tcp input requires 'listen'"
                             )));
                         }
-                        if let Some(addr) = &input.listen
-                            && let Err(msg) = validate_bind_addr(addr)
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': {msg}"
-                            )));
+                        if let Some(addr) = &input.listen {
+                            if let Err(msg) = validate_bind_addr(addr) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': {msg}"
+                                )));
+                            }
                         }
                         if let Some(tls) = &input.tls {
                             if matches!(input.input_type, InputType::Udp) {
@@ -160,12 +194,12 @@ impl Config {
                                 input.input_type
                             )));
                         }
-                        if let Some(addr) = &input.listen
-                            && let Err(msg) = validate_bind_addr(addr)
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': {msg}"
-                            )));
+                        if let Some(addr) = &input.listen {
+                            if let Err(msg) = validate_bind_addr(addr) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': {msg}"
+                                )));
+                            }
                         }
                     }
                     InputType::Generator
@@ -230,6 +264,21 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for tcp/udp inputs"
                             )));
                         }
+                        if input.poll_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'poll_interval_ms' is not supported for tcp/udp inputs"
+                            )));
+                        }
+                        if input.read_buf_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'read_buf_size' is not supported for tcp/udp inputs"
+                            )));
+                        }
+                        if input.per_file_read_budget_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for tcp/udp inputs"
+                            )));
+                        }
                         if input.sensor.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
@@ -267,6 +316,21 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for otlp inputs"
                             )));
                         }
+                        if input.poll_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'poll_interval_ms' is not supported for otlp inputs"
+                            )));
+                        }
+                        if input.read_buf_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'read_buf_size' is not supported for otlp inputs"
+                            )));
+                        }
+                        if input.per_file_read_budget_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for otlp inputs"
+                            )));
+                        }
                         if input.sensor.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
@@ -297,6 +361,21 @@ impl Config {
                         if input.glob_rescan_interval_ms.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for http inputs"
+                            )));
+                        }
+                        if input.poll_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'poll_interval_ms' is not supported for http inputs"
+                            )));
+                        }
+                        if input.read_buf_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'read_buf_size' is not supported for http inputs"
+                            )));
+                        }
+                        if input.per_file_read_budget_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for http inputs"
                             )));
                         }
                         if input.sensor.is_some() {
@@ -355,6 +434,21 @@ impl Config {
                         if input.glob_rescan_interval_ms.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for generator inputs"
+                            )));
+                        }
+                        if input.poll_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'poll_interval_ms' is not supported for generator inputs"
+                            )));
+                        }
+                        if input.read_buf_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'read_buf_size' is not supported for generator inputs"
+                            )));
+                        }
+                        if input.per_file_read_budget_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for generator inputs"
                             )));
                         }
                         if input.sensor.is_some() {
@@ -442,13 +536,14 @@ impl Config {
                                         "pipeline '{name}' input '{label}': generator.timestamp.step_ms must not be zero"
                                     )));
                                 }
-                                if let Some(start) = &ts.start
-                                    && !start.eq_ignore_ascii_case("now")
-                                    && let Err(e) = validate_iso8601_timestamp(start)
-                                {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': generator.timestamp.start: {e}"
-                                    )));
+                                if let Some(start) = &ts.start {
+                                    if !start.eq_ignore_ascii_case("now") {
+                                        if let Err(e) = validate_iso8601_timestamp(start) {
+                                            return Err(ConfigError::Validation(format!(
+                                                "pipeline '{name}' input '{label}': generator.timestamp.start: {e}"
+                                            )));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -464,6 +559,24 @@ impl Config {
                         if input.listen.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'listen' is not supported for {} inputs",
+                                input.input_type
+                            )));
+                        }
+                        if input.poll_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'poll_interval_ms' is not supported for {} inputs",
+                                input.input_type
+                            )));
+                        }
+                        if input.read_buf_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'read_buf_size' is not supported for {} inputs",
+                                input.input_type
+                            )));
+                        }
+                        if input.per_file_read_budget_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for {} inputs",
                                 input.input_type
                             )));
                         }
@@ -582,12 +695,12 @@ impl Config {
                 }
 
                 // Reject whitespace-only per-input SQL (mirrors pipeline-level check).
-                if let Some(sql) = &input.sql
-                    && sql.trim().is_empty()
-                {
-                    return Err(ConfigError::Validation(format!(
-                        "pipeline '{name}' input '{label}': per-input sql cannot be empty"
-                    )));
+                if let Some(sql) = &input.sql {
+                    if sql.trim().is_empty() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' input '{label}': per-input sql cannot be empty"
+                        )));
+                    }
                 }
             }
 
@@ -629,6 +742,19 @@ impl Config {
                             {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' output '{label}': elasticsearch 'index' must not be empty"
+                                )));
+                            }
+                            if let Some(idx) = &output.index
+                                && let Some(bad) = es_illegal_index_char(idx)
+                            {
+                                let reason =
+                                    if matches!(bad, '-' | '_' | '+') && idx.starts_with(bad) {
+                                        format!("has illegal prefix '{bad}'")
+                                    } else {
+                                        format!("contains illegal character '{bad}'")
+                                    };
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': elasticsearch index '{idx}' {reason}"
                                 )));
                             }
                             if let Some(mode) = output.request_mode.as_deref()
@@ -691,12 +817,12 @@ impl Config {
                                 output.output_type,
                             )));
                         }
-                        if let Some(ep) = &output.endpoint
-                            && let Err(msg) = validate_host_port(ep)
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': {msg}",
-                            )));
+                        if let Some(ep) = &output.endpoint {
+                            if let Err(msg) = validate_host_port(ep) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': {msg}",
+                                )));
+                            }
                         }
                     }
                     // Http and Parquet are not yet implemented — already
@@ -714,6 +840,14 @@ impl Config {
                 if output.output_type == OutputType::Loki && output.compression.is_some() {
                     return Err(ConfigError::Validation(format!(
                         "pipeline '{name}' output '{label}': 'compression' is not supported for loki outputs"
+                    )));
+                }
+                if output.output_type == OutputType::ArrowIpc
+                    && let Some(c) = output.compression.as_deref()
+                    && c != "zstd"
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{name}' output '{label}': arrow_ipc output only supports 'zstd' compression, not '{c}'"
                     )));
                 }
                 if output.output_type != OutputType::Otlp && output.protocol.is_some() {
@@ -857,23 +991,25 @@ impl Config {
 
             // Guard against feedback loops: reject configs where a file output
             // path matches a file input path in the same pipeline (#1596).
-            let file_input_paths: Vec<std::path::PathBuf> = pipe
+            // Collect file input paths (exact) and glob patterns separately.
+            let mut exact_input_paths: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+            let mut glob_input_patterns: Vec<String> = Vec::new();
+
+            for input in pipe
                 .inputs
                 .iter()
                 .filter(|i| i.input_type == InputType::File)
-                .filter_map(|i| i.path.as_deref())
-                .filter(|p| !p.contains('*') && !p.contains('?'))
-                .map(std::path::PathBuf::from)
-                .collect();
-
-            let normalized_file_inputs: Vec<(std::path::PathBuf, std::path::PathBuf)> =
-                file_input_paths
-                    .into_iter()
-                    .map(|p| {
-                        let norm = normalize_path_for_compare(&p);
-                        (p, norm)
-                    })
-                    .collect();
+            {
+                if let Some(p) = input.path.as_deref() {
+                    if p.contains('*') || p.contains('?') || p.contains('[') {
+                        glob_input_patterns.push(p.to_string());
+                    } else {
+                        let pb = std::path::PathBuf::from(p);
+                        let norm = normalize_path_for_compare(&pb);
+                        exact_input_paths.push((pb, norm));
+                    }
+                }
+            }
 
             for (j, output) in pipe.outputs.iter().enumerate() {
                 let out_label = output
@@ -889,13 +1025,26 @@ impl Config {
                 };
                 let out_pb = std::path::PathBuf::from(out_path);
                 let out_norm = normalize_path_for_compare(&out_pb);
-                for (in_pb, in_norm) in &normalized_file_inputs {
+
+                // Check exact input path match.
+                for (in_pb, in_norm) in &exact_input_paths {
                     if out_norm == *in_norm {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{out_label}': output path '{}' is the same \
                              as file input path '{}' — this creates an unbounded feedback loop",
                             out_path,
                             in_pb.display(),
+                        )));
+                    }
+                }
+
+                // Check if the output path could match any glob input pattern.
+                for glob_pattern in &glob_input_patterns {
+                    if is_glob_match_possible(glob_pattern, out_path) {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{out_label}': output path '{out_path}' \
+                             could match file input glob '{glob_pattern}' — this creates an \
+                             unbounded feedback loop",
                         )));
                     }
                 }
@@ -1200,10 +1349,49 @@ mod validate_host_port_tests {
     }
 }
 
+/// Redact userinfo (username:password) from a URL for safe inclusion in error
+/// messages.  Replaces `scheme://user:pass@host` with `scheme://***@host`.
+const REDACTED_URL_USERINFO: &str = "***redacted***";
+
+/// Redact userinfo (username:password) from a URL for safe inclusion in error
+/// messages.
+fn redact_url(endpoint: &str) -> String {
+    // Try to parse; if that fails, just redact anything between :// and @.
+    if let Ok(mut parsed) = Url::parse(endpoint) {
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            let _ = parsed.set_username(REDACTED_URL_USERINFO);
+            let _ = parsed.set_password(None);
+        }
+        parsed.to_string()
+    } else if let Some(scheme_end) = endpoint.find("://") {
+        let after_scheme = &endpoint[scheme_end + 3..];
+        if let Some(at) = after_scheme.find('@') {
+            format!(
+                "{}://{}@{}",
+                &endpoint[..scheme_end],
+                REDACTED_URL_USERINFO,
+                &after_scheme[at + 1..]
+            )
+        } else {
+            endpoint.to_string()
+        }
+    } else if let Some(at) = endpoint.rfind('@') {
+        // Last-resort redaction for malformed URLs: hide authority userinfo.
+        let authority_start = endpoint.find("://").map_or(0, |idx| idx + 3);
+        let prefix = &endpoint[..authority_start];
+        let suffix = &endpoint[at + 1..];
+        format!("{prefix}{REDACTED_URL_USERINFO}@{suffix}")
+    } else {
+        endpoint.to_string()
+    }
+}
+
 /// Validate that an endpoint URL has a recognised scheme and a non-empty host.
 fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
+    let safe = redact_url(endpoint);
+
     let parsed =
-        Url::parse(endpoint).map_err(|_| format!("endpoint '{endpoint}' is not a valid URL"))?;
+        Url::parse(endpoint).map_err(|_| format!("endpoint '{safe}' is not a valid URL"))?;
 
     let rest = if endpoint
         .get(..8)
@@ -1217,24 +1405,137 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
         &endpoint[7..]
     } else {
         return Err(format!(
-            "endpoint '{endpoint}' has no recognised scheme; expected 'http://' or 'https://'"
+            "endpoint '{safe}' has no recognised scheme; expected 'http://' or 'https://'"
         ));
     };
 
     // Reject malformed authority forms like `http:///bulk` or `https://?x=1`.
     if rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#') {
-        return Err(format!(
-            "endpoint '{endpoint}' has no host after the scheme"
-        ));
+        return Err(format!("endpoint '{safe}' has no host after the scheme"));
     }
 
     if parsed.host_str().is_none_or(str::is_empty) {
-        return Err(format!(
-            "endpoint '{endpoint}' has no host after the scheme"
-        ));
+        return Err(format!("endpoint '{safe}' has no host after the scheme"));
     }
 
     Ok(())
+}
+
+/// Check if a file path could match a glob pattern by comparing the directory
+/// prefix. A glob like `/var/log/*.log` has prefix `/var/log/` and would match
+/// any output file in that directory with a `.log` extension.
+fn is_glob_match_possible(glob_pattern: &str, file_path: &str) -> bool {
+    let glob_path = Path::new(glob_pattern);
+    let file = Path::new(file_path);
+
+    let glob_dir = glob_path.parent().map(normalize_path_for_compare);
+    let file_dir = file.parent().map(normalize_path_for_compare);
+
+    let same_directory = matches!((&glob_dir, &file_dir), (Some(g), Some(f)) if g == f);
+    let recursive_double_star = glob_pattern.contains("**");
+    let recursive_root_match = if recursive_double_star {
+        let prefix = glob_pattern
+            .split("**")
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(std::path::MAIN_SEPARATOR);
+        if prefix.is_empty() {
+            false
+        } else {
+            let normalized_prefix = normalize_path_lexically(Path::new(prefix));
+            let normalized_file = normalize_path_lexically(file);
+            normalized_file.starts_with(&normalized_prefix)
+        }
+    } else {
+        false
+    };
+    let recursive_prefix_match = if recursive_double_star {
+        if let (Some(g), Some(f)) = (&glob_dir, &file_dir) {
+            let mut prefix = std::path::PathBuf::new();
+            let mut saw_recursive = false;
+            for component in g.components() {
+                if component.as_os_str() == "**" {
+                    saw_recursive = true;
+                    break;
+                }
+                prefix.push(component.as_os_str());
+            }
+            saw_recursive && f.starts_with(prefix)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let directory_wildcard_prefix_match = {
+        let raw_glob_dir = glob_path.parent().and_then(|p| p.to_str()).unwrap_or("");
+        if raw_glob_dir.contains(['*', '?', '[']) {
+            let prefix = raw_glob_dir
+                .split(|c| ['*', '?', '['].contains(&c))
+                .next()
+                .unwrap_or("")
+                .trim_end_matches(std::path::MAIN_SEPARATOR);
+            if prefix.is_empty() {
+                true
+            } else {
+                let normalized_prefix = normalize_path_lexically(Path::new(prefix));
+                let normalized_file = normalize_path_lexically(file);
+                normalized_file
+                    .to_string_lossy()
+                    .starts_with(normalized_prefix.to_string_lossy().as_ref())
+            }
+        } else {
+            false
+        }
+    };
+
+    // If the file is in the same directory as the glob (or the glob uses a
+    // recursive `**` prefix that includes the file directory), it could match.
+    if same_directory
+        || recursive_prefix_match
+        || recursive_root_match
+        || directory_wildcard_prefix_match
+    {
+        // Also check filename pattern if the glob has a simple `*.ext` form.
+        if let Some(glob_name) = glob_path.file_name().and_then(|n| n.to_str())
+            && let Some(file_name) = file.file_name().and_then(|n| n.to_str())
+        {
+            if let Some(ext) = glob_name.strip_prefix('*') {
+                if ext.contains(['*', '?', '[']) {
+                    return true;
+                }
+                return file_name.ends_with(ext);
+            }
+
+            // Literal filename (no wildcard chars) must match exactly.
+            if !glob_name.contains(['*', '?', '[']) {
+                return glob_name == file_name;
+            }
+
+            // Pattern contains wildcard syntax we don't parse here —
+            // conservatively report a possible match.
+            return true;
+        }
+        return true;
+    }
+    false
+}
+
+/// Return the first illegal character in an Elasticsearch index name, or None.
+/// ES rejects: uppercase, `*`, `?`, `"`, `<`, `>`, `|`, ` `, `,`, `#`, `:`, `\`, `/`.
+fn es_illegal_index_char(index: &str) -> Option<char> {
+    if let Some(c) = index.chars().next()
+        && matches!(c, '-' | '_' | '+')
+    {
+        return Some(c);
+    }
+    index.chars().find(|c| {
+        c.is_ascii_uppercase()
+            || matches!(
+                c,
+                '*' | '?' | '"' | '<' | '>' | '|' | ' ' | ',' | '#' | ':' | '\\' | '/'
+            )
+    })
 }
 
 #[cfg(test)]
@@ -1259,10 +1560,20 @@ mod validate_endpoint_url_tests {
             );
         }
     }
+
+    #[test]
+    fn endpoint_url_redacts_userinfo_for_malformed_urls() {
+        let err = validate_endpoint_url("https://user:secret@/bulk").expect_err("must fail");
+        assert!(
+            err.contains("***redacted***") && !err.contains("secret"),
+            "malformed endpoint errors must redact userinfo: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
 mod feedback_loop_tests {
+    use super::is_glob_match_possible;
     use crate::types::Config;
 
     #[test]
@@ -1321,6 +1632,78 @@ pipelines:
             msg.contains("feedback loop") || msg.contains("same as file input"),
             "expected normalized-path feedback-loop rejection, got: {msg}"
         );
+    }
+
+    #[test]
+    fn glob_could_match_literal_filename_requires_exact_name() {
+        assert!(is_glob_match_possible(
+            "/var/log/access.log",
+            "/var/log/access.log"
+        ));
+        assert!(!is_glob_match_possible(
+            "/var/log/access.log",
+            "/var/log/other.log"
+        ));
+    }
+
+    #[test]
+    fn glob_could_match_wildcard_suffix_pattern() {
+        assert!(is_glob_match_possible(
+            "/var/log/*.log",
+            "/var/log/access.log"
+        ));
+        assert!(!is_glob_match_possible(
+            "/var/log/*.log",
+            "/var/log/access.txt"
+        ));
+    }
+
+    #[test]
+    fn glob_could_match_rejects_different_directory() {
+        assert!(!is_glob_match_possible("/var/log/*.log", "/tmp/access.log"));
+    }
+
+    #[test]
+    fn glob_could_match_nested_wildcards_are_conservative() {
+        assert!(is_glob_match_possible(
+            "/var/log/*test*.log",
+            "/var/log/mytest_file.log"
+        ));
+    }
+
+    #[test]
+    fn glob_could_match_recursive_double_star_matches_nested_directories() {
+        assert!(is_glob_match_possible(
+            "/var/log/**/access.log",
+            "/var/log/subdir/access.log"
+        ));
+        assert!(!is_glob_match_possible(
+            "/var/log/**/access.log",
+            "/var/log/subdir/error.log"
+        ));
+    }
+
+    #[test]
+    fn glob_could_match_recursive_double_star_directory_only_pattern() {
+        assert!(is_glob_match_possible(
+            "/var/log/**",
+            "/var/log/subdir/app.log"
+        ));
+        assert!(is_glob_match_possible("/var/log/**", "/var/log/app.log"));
+        assert!(!is_glob_match_possible("/var/log/**", "/srv/log/app.log"));
+    }
+
+    #[test]
+    fn glob_could_match_directory_wildcards_are_conservative() {
+        assert!(is_glob_match_possible("/var/*/app.log", "/var/log/app.log"));
+        assert!(is_glob_match_possible(
+            "/var/log[12]/*.log",
+            "/var/log1/a.log"
+        ));
+        assert!(!is_glob_match_possible(
+            "/var/*/app.log",
+            "/srv/log/app.log"
+        ));
     }
 }
 
@@ -1391,6 +1774,26 @@ pipelines:
         assert!(
             err.to_string().contains("index") && err.to_string().contains("must not be empty"),
             "whitespace-only index must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn elasticsearch_index_prefix_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        index: "_bad-index"
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("has illegal prefix '_'"),
+            "expected prefix rejection: {err}"
         );
     }
 }

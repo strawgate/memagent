@@ -246,6 +246,39 @@ output:
     }
 
     #[test]
+    fn validation_storage_data_dir_existing_non_directory_rejected() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time must be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "logfwd-config-storage-non-dir-{}-{unique}.tmp",
+            std::process::id()
+        ));
+        fs::write(&path, b"not-a-directory").expect("write temp file");
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: stdout
+storage:
+  data_dir: {}
+"#,
+            path.display()
+        );
+
+        let err = Config::load_str(&yaml).expect_err("non-directory storage.data_dir must fail");
+        assert!(
+            err.to_string().contains("exists but is not a directory"),
+            "expected non-directory storage.data_dir rejection, got: {err}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn validation_udp_requires_listen() {
         let yaml = r"
 input:
@@ -612,6 +645,53 @@ pipelines:
     }
 
     #[test]
+    fn file_input_accepts_tuning_knobs() {
+        let yaml = r"
+input:
+  type: file
+  path: /tmp/test.log
+  poll_interval_ms: 100
+  read_buf_size: 1048576
+  per_file_read_budget_bytes: 2097152
+output:
+  type: stdout
+";
+        let cfg = Config::load_str(yaml).unwrap();
+        let pipe = &cfg.pipelines["default"];
+        let input = &pipe.inputs[0];
+        assert_eq!(input.poll_interval_ms, Some(100));
+        assert_eq!(input.read_buf_size, Some(1048576));
+        assert_eq!(input.per_file_read_budget_bytes, Some(2097152));
+    }
+
+    #[test]
+    fn file_input_rejects_zero_tuning_knobs() {
+        let cases = [
+            ("poll_interval_ms", 0),
+            ("read_buf_size", 0),
+            ("per_file_read_budget_bytes", 0),
+        ];
+
+        for (field, value) in cases {
+            let yaml = format!(
+                r#"
+input:
+  type: file
+  path: /tmp/test.log
+  {field}: {value}
+output:
+  type: stdout
+"#
+            );
+            let err = Config::load_str(&yaml).unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("'{field}' must be at least 1")),
+                "expected error about positive {field}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn sensor_rejects_format_configuration() {
         let yaml = r"
 input:
@@ -626,6 +706,42 @@ output:
                 .contains("sensor inputs do not support 'format'"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn non_file_input_rejects_tuning_knobs() {
+        let inputs = [
+            ("http", "listen: 0.0.0.0:8080"),
+            ("tcp", "listen: 0.0.0.0:8080"),
+            ("generator", ""),
+            ("otlp", "listen: 0.0.0.0:4318"),
+        ];
+        let fields = [
+            "poll_interval_ms: 100",
+            "read_buf_size: 1024",
+            "per_file_read_budget_bytes: 1024",
+        ];
+
+        for (in_type, extra) in inputs {
+            for field in fields {
+                let yaml = format!(
+                    r#"
+input:
+  type: {in_type}
+  {extra}
+  {field}
+output:
+  type: stdout
+"#
+                );
+                let err = Config::load_str(&yaml).unwrap_err().to_string();
+                let field_name = field.split(':').next().unwrap();
+                assert!(
+                    err.contains(&format!("'{field_name}' is not supported for")),
+                    "expected error about {field_name} not supported for {in_type}, got: {err}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2550,6 +2666,30 @@ pipelines:
         assert!(
             err.to_string().contains("path") && err.to_string().contains("empty"),
             "whitespace-only path must be rejected for geo_database: {err}"
+        );
+    }
+
+    /// Regression: arrow_ipc output with `compression: gzip` must be rejected.
+    /// Only `zstd` is supported. Before the fix, gzip was silently accepted
+    /// and would fail at runtime.
+    #[test]
+    fn arrow_ipc_output_rejects_gzip_compression() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: arrow_ipc
+        endpoint: http://localhost:4317
+        compression: gzip
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("arrow_ipc output only supports 'zstd'") && msg.contains("'gzip'"),
+            "expected arrow_ipc-specific gzip rejection, got: {msg}"
         );
     }
 
