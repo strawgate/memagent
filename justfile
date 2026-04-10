@@ -160,7 +160,7 @@ tla-setup:
         exit 0
     fi
     mkdir -p "$(dirname "$JAR")"
-    URL="${TLA2TOOLS_URL:-https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar}"
+    URL="${TLA2TOOLS_URL:-https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar}"
     echo "Downloading tla2tools.jar from $URL"
     TMP="${JAR}.tmp.$$"
     curl -fsSL "$URL" -o "$TMP"
@@ -208,8 +208,8 @@ ci: lint test
 # Compatibility alias used by pre-commit hooks.
 check: ci
 
-# Full CI — everything including datafusion (run before pushing)
-ci-all: lint-all test-all
+# Full CI — everything including datafusion and TLA+ tail verification (run before pushing)
+ci-all: lint-all test-all tlc-tail
 
 # Check TOML formatting (Cargo.toml, etc.)
 toml-check:

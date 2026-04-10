@@ -400,6 +400,10 @@ jobs:
             tla_file: tla/MCPipelineBatch.tla
             config: tla/PipelineBatch.liveness.cfg
             property: liveness
+          - spec: TailLifecycle
+            tla_file: tla/MCTailLifecycle.tla
+            config: tla/TailLifecycle.cfg
+            property: safety
     steps:
       - uses: actions/checkout@v6
 
