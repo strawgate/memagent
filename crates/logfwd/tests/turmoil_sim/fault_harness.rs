@@ -25,7 +25,11 @@ const DEFAULT_TICK_MS: u64 = 1;
 const DEFAULT_BATCH_TIMEOUT_MS: u64 = 20;
 const DEFAULT_TCP_PORT: u16 = 9137;
 
-/// Network fault operations the scenario can inject into the simulation.
+/// A network fault operation the scenario can inject into the simulation.
+///
+/// `Partition` isolates the pipeline host from the server host for the
+/// configured step, and `Repair` restores connectivity so later steps can
+/// observe the recovered path.
 #[derive(Clone, Debug)]
 pub enum NetworkFaultAction {
     /// Partition the pipeline and server hosts.
@@ -35,6 +39,10 @@ pub enum NetworkFaultAction {
 }
 
 /// A network fault scheduled for a particular turmoil simulation step.
+///
+/// The `step` is the deterministic turmoil tick at which the fault is
+/// applied. Use [`NetworkFaultAction::Partition`] to cut connectivity and
+/// [`NetworkFaultAction::Repair`] to restore it.
 #[derive(Clone, Debug)]
 pub struct NetworkFault {
     step: usize,
@@ -43,12 +51,19 @@ pub struct NetworkFault {
 
 impl NetworkFault {
     /// Create a fault that should fire at the given simulation step.
+    ///
+    /// Steps are the turmoil simulation ticks produced by the harness, so a
+    /// lower `step` fires earlier in the same run.
     pub fn at_step(step: usize, action: NetworkFaultAction) -> Self {
         Self { step, action }
     }
 }
 
 /// Sink selection for the fault scenario.
+///
+/// The harness uses this to choose between a scripted sink, the real TCP
+/// sink path, or a lightweight counting sink when only delivery accounting
+/// matters.
 #[derive(Clone, Debug)]
 pub enum SinkMode {
     /// Use the scripted, traceable sink implementation.
@@ -60,6 +75,9 @@ pub enum SinkMode {
 }
 
 /// Configurable turmoil scenario used by the verification harness.
+///
+/// A scenario bundles input shape, sink mode, checkpoint behavior, network
+/// faults, and simulation timing into one reusable verification run.
 #[derive(Clone, Debug)]
 pub struct FaultScenario {
     name: String,
@@ -404,6 +422,10 @@ fn generate_json_lines(n: usize) -> Vec<Vec<u8>> {
 }
 
 /// Captured results from a single fault-scenario run.
+///
+/// The outcome stores the runtime effects observed by the harness so tests
+/// can make post-run assertions about delivery counts, checkpoint behavior,
+/// panic paths, and TCP server activity.
 pub struct TestOutcome {
     scenario_name: String,
     seed: u64,
@@ -477,6 +499,10 @@ enum Invariant {
 }
 
 /// Builder-style collection of invariants to assert against a `TestOutcome`.
+///
+/// Each invariant is evaluated after the scenario completes; combine the
+/// builder methods to express the postconditions a particular fault run must
+/// satisfy.
 #[derive(Clone, Debug, Default)]
 pub struct InvariantSet {
     invariants: Vec<Invariant>,

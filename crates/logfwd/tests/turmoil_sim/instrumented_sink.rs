@@ -73,6 +73,9 @@ impl InstrumentedSink {
     }
 
     /// Attach a trace recorder that receives sink result events.
+    ///
+    /// The recorder is cloned into the sink and records `SinkResult` events
+    /// in the same order `send_batch` processes them.
     pub fn with_trace_recorder(mut self, trace: TraceRecorder) -> Self {
         self.trace = Some(trace);
         self
@@ -126,6 +129,9 @@ impl InstrumentedSinkFactory {
     }
 
     /// Attach a trace recorder that receives sink result events.
+    ///
+    /// Each created sink clones the recorder and emits `SinkResult` events in
+    /// call order, so the factory can share one trace stream across workers.
     pub fn with_trace_recorder(mut self, trace: TraceRecorder) -> Self {
         self.trace = Some(trace);
         self

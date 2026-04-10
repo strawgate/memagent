@@ -42,11 +42,11 @@ Write a TLA+ spec when:
 | Property | Type | Description |
 |----------|------|-------------|
 | `DrainCompleteness` | Safety | `stop()` only reachable when all in-flight batches are resolved |
-| `QuiescenceHasNoSilentStrandedWork` | Safety | `Stopped` never leaves sent batches without terminal outcome |
-| `CheckpointOrderingInvariant` | Safety | `committed[s]=n` implies every sent batch `<= n` is terminalized and none are in-flight |
+| `QuiescenceHasNoSilentStrandedWork` | Safety | `Stopped` never leaves sent batches without a terminal `acked`/`rejected`/`abandoned` outcome |
+| `CheckpointOrderingInvariant` | Safety | `committed[s]=n` implies every sent batch `<= n` is terminalized via `acked`/`rejected`/`abandoned` and none are in-flight |
 | `CommittedMonotonic` | Safety | Checkpoint never goes backwards |
 | `NoCreateAfterDrain` | Safety | No new batches after `begin_drain` |
-| `NoDoubleComplete` | Safety | In-flight batches are disjoint from `acked`, `rejected`, and `abandoned` |
+| `NoDoubleComplete` | Safety | In-flight batches are disjoint from `acked`, `rejected`, and `abandoned` terminal sets |
 | `EventualDrain` | Liveness | Every started drain eventually reaches Stopped |
 | `NoBatchLeftBehind` | Liveness | Every in-flight batch eventually terminalizes (`ack`/`reject`/`abandon`) |
 | `StoppedIsStable` | Liveness | Once Stopped, stays Stopped |

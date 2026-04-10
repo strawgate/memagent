@@ -1827,20 +1827,17 @@ mod tests {
     #[cfg(feature = "loom-tests")]
     #[test]
     fn loom_worker_removal_vs_late_event_model_never_resurrects_slot() {
-        use std::collections::BTreeMap;
-
         struct LoomState {
-            worker_slots: BTreeMap<usize, ComponentHealth>,
-            idle_health: ComponentHealth,
+            worker_present: bool,
+            slot_gen: u64,
+            slot_health: ComponentHealth,
         }
 
         loom::model(|| {
-            let worker_id = 1usize;
-            let mut worker_slots = BTreeMap::new();
-            worker_slots.insert(worker_id, ComponentHealth::Starting);
             let state = loom::sync::Arc::new(loom::sync::Mutex::new(LoomState {
-                worker_slots,
-                idle_health: ComponentHealth::Healthy,
+                worker_present: true,
+                slot_gen: 0,
+                slot_health: ComponentHealth::Starting,
             }));
 
             let remove_state = loom::sync::Arc::clone(&state);
@@ -1848,36 +1845,57 @@ mod tests {
                 let mut state = remove_state
                     .lock()
                     .expect("loom mutex poisoned while removing worker");
-                state.worker_slots.remove(&worker_id);
+                state.slot_gen += 1;
+                state.worker_present = false;
             });
 
             let event_state = loom::sync::Arc::clone(&state);
             let event = loom::thread::spawn(move || {
+                let observed_gen = {
+                    let state = event_state
+                        .lock()
+                        .expect("loom mutex poisoned while observing worker slot");
+                    state.slot_gen
+                };
                 let mut state = event_state
                     .lock()
                     .expect("loom mutex poisoned while applying event");
-                if let Some(current) = state.worker_slots.get(&worker_id).copied() {
-                    state.worker_slots.insert(
-                        worker_id,
-                        reduce_worker_slot_health(current, OutputHealthEvent::FatalFailure),
+                if state.worker_present && observed_gen == state.slot_gen {
+                    state.slot_health = reduce_worker_slot_health(
+                        state.slot_health,
+                        OutputHealthEvent::FatalFailure,
                     );
+                    true
+                } else {
+                    false
                 }
             });
 
             remove.join().expect("remove thread should not panic");
-            event.join().expect("event thread should not panic");
+            let event_applied = event.join().expect("event thread should not panic");
 
             let state = state
                 .lock()
                 .expect("loom mutex poisoned while validating state");
             assert!(
-                state.worker_slots.get(&worker_id).is_none(),
+                !state.worker_present,
                 "late events must not resurrect removed worker state"
             );
             assert_eq!(
-                state.idle_health,
-                ComponentHealth::Healthy,
-                "worker removal must preserve pool idle phase in this seam model"
+                state.slot_gen, 1,
+                "worker removal must advance the slot generation"
+            );
+            let expected_health = if event_applied {
+                reduce_worker_slot_health(
+                    ComponentHealth::Starting,
+                    OutputHealthEvent::FatalFailure,
+                )
+            } else {
+                ComponentHealth::Starting
+            };
+            assert_eq!(
+                state.slot_health, expected_health,
+                "stale events must not mutate the resurrectable slot state"
             );
         });
     }

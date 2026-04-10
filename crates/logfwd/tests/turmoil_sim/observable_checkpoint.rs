@@ -129,6 +129,9 @@ impl ObservableCheckpointStore {
     }
 
     /// Attach a trace recorder that receives checkpoint events.
+    ///
+    /// The recorder is moved into the store and emits `CheckpointUpdate` and
+    /// `CheckpointFlush` events as the pipeline updates and flushes state.
     pub fn with_trace_recorder(mut self, trace: TraceRecorder) -> Self {
         self.trace = Some(trace);
         self
