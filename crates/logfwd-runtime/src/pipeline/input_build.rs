@@ -490,7 +490,13 @@ mod tests {
         // error. A more involved test requires exposing or inspecting the internal
         // file tailer state, but here we at least verify it parses and maps defaults
         // cleanly for a valid file input configuration.
-        assert!(build_input_state("test_in", &cfg_defaults, Arc::clone(&stats)).is_ok());
+        let state = build_input_state("test_in", &cfg_defaults, Arc::clone(&stats))
+            .expect("default file input should build");
+        assert_eq!(
+            state.source.get_cadence().adaptive_fast_polls_max,
+            8,
+            "default adaptive_fast_polls_max should come from TailConfig default"
+        );
 
         // Explicit tuning overrides
         let cfg_overrides = InputConfig {
@@ -513,7 +519,13 @@ mod tests {
             tls: None,
         };
 
-        assert!(build_input_state("test_in", &cfg_overrides, Arc::clone(&stats)).is_ok());
+        let state = build_input_state("test_in", &cfg_overrides, Arc::clone(&stats))
+            .expect("overridden file input should build");
+        assert_eq!(
+            state.source.get_cadence().adaptive_fast_polls_max,
+            11,
+            "adaptive_fast_polls_max override should be forwarded"
+        );
     }
 
     #[test]

@@ -11,7 +11,8 @@
 
 use crate::filter_hints::FilterHints;
 use crate::format::FormatDecoder;
-use crate::input::{InputEvent, InputSource};
+use crate::input::{InputCadence, InputEvent, InputSource};
+#[cfg(test)]
 use crate::poll_cadence::PollCadenceSignal;
 use crate::tail::ByteOffset;
 use logfwd_core::checkpoint_tracker::CheckpointTracker;
@@ -394,12 +395,8 @@ impl InputSource for FramedInput {
         self.inner.apply_hints(hints);
     }
 
-    fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
-        self.inner.get_poll_cadence_signal()
-    }
-
-    fn get_adaptive_fast_polls_max(&self) -> u8 {
-        self.inner.get_adaptive_fast_polls_max()
+    fn get_cadence(&self) -> InputCadence {
+        self.inner.get_cadence()
     }
 
     /// Return checkpoint offsets from the Kani-proven CheckpointTracker.
@@ -595,12 +592,11 @@ mod tests {
             self.source_paths.clone()
         }
 
-        fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
-            self.cadence_signal
-        }
-
-        fn get_adaptive_fast_polls_max(&self) -> u8 {
-            self.cadence_max
+        fn get_cadence(&self) -> InputCadence {
+            InputCadence {
+                signal: self.cadence_signal,
+                adaptive_fast_polls_max: self.cadence_max,
+            }
         }
     }
 
@@ -656,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn framed_input_forwards_cadence_hooks() {
+    fn framed_input_forwards_cadence_snapshot() {
         let stats = make_stats();
         let source = MockSource::new(vec![]).with_cadence(
             PollCadenceSignal {
@@ -673,13 +669,15 @@ mod tests {
 
         let _ = framed.poll().expect("framed poll should succeed");
         assert_eq!(
-            framed.get_poll_cadence_signal(),
-            PollCadenceSignal {
-                had_data: true,
-                hit_read_budget: true,
+            framed.get_cadence(),
+            InputCadence {
+                signal: PollCadenceSignal {
+                    had_data: true,
+                    hit_read_budget: true,
+                },
+                adaptive_fast_polls_max: 7,
             }
         );
-        assert_eq!(framed.get_adaptive_fast_polls_max(), 7);
     }
 
     #[test]

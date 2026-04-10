@@ -9,6 +9,13 @@ use crate::filter_hints::FilterHints;
 use crate::poll_cadence::PollCadenceSignal;
 use crate::tail::{ByteOffset, FileTailer, TailConfig, TailEvent};
 
+/// Snapshot of source-driven cadence hints consumed by runtime poll loops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputCadence {
+    pub signal: PollCadenceSignal,
+    pub adaptive_fast_polls_max: u8,
+}
+
 /// Events produced by an input source.
 pub enum InputEvent {
     /// New data read from the source.
@@ -84,6 +91,16 @@ pub trait InputSource: Send {
     /// Default: disabled (0), so non-file inputs keep existing cadence.
     fn get_adaptive_fast_polls_max(&self) -> u8 {
         0
+    }
+
+    /// Snapshot cadence hints in one call to minimize forwarding surface for wrappers.
+    ///
+    /// Default implementation composes existing cadence hooks for compatibility.
+    fn get_cadence(&self) -> InputCadence {
+        InputCadence {
+            signal: self.get_poll_cadence_signal(),
+            adaptive_fast_polls_max: self.get_adaptive_fast_polls_max(),
+        }
     }
 
     /// Return checkpoint data for all active sources.
@@ -196,11 +213,10 @@ impl InputSource for FileInput {
         }
     }
 
-    fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
-        self.tailer.get_poll_cadence_signal()
-    }
-
-    fn get_adaptive_fast_polls_max(&self) -> u8 {
-        self.tailer.get_adaptive_fast_polls_max()
+    fn get_cadence(&self) -> InputCadence {
+        InputCadence {
+            signal: self.tailer.get_poll_cadence_signal(),
+            adaptive_fast_polls_max: self.tailer.get_adaptive_fast_polls_max(),
+        }
     }
 }

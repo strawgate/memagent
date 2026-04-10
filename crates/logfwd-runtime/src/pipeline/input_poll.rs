@@ -47,7 +47,8 @@ pub(super) async fn async_input_poll_loop(
     input_index: usize,
 ) {
     let mut buffered_since: Option<tokio::time::Instant> = None;
-    let mut adaptive_poll = AdaptivePollController::new(input.source.get_adaptive_fast_polls_max());
+    let mut adaptive_poll =
+        AdaptivePollController::new(input.source.get_cadence().adaptive_fast_polls_max);
     'poll_loop: loop {
         if shutdown.is_cancelled() {
             input.stats.set_health(reduce_component_health(
@@ -76,7 +77,8 @@ pub(super) async fn async_input_poll_loop(
             input.stats.health(),
             HealthTransitionEvent::Observed(input.source.health()),
         ));
-        adaptive_poll.observe(input.source.get_poll_cadence_signal());
+        let cadence = input.source.get_cadence();
+        adaptive_poll.observe(cadence.signal);
 
         if events.is_empty() {
             if adaptive_poll.should_fast_poll() {
