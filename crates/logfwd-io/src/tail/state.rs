@@ -1,12 +1,18 @@
 use std::time::{Duration, Instant};
 
+/// Number of consecutive idle polls required before EOF can be emitted.
 pub(super) const EOF_IDLE_POLLS_BEFORE_EMIT: u8 = 2;
+/// Initial delay used for exponential error backoff.
 pub(super) const INITIAL_BACKOFF_MS: u64 = 100;
+/// Upper bound for exponential error backoff.
 pub(super) const MAX_BACKOFF_MS: u64 = 5000;
 
+/// Pure EOF reducer state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct EofModelState {
+    /// Whether EOF has already been emitted for the current idle streak.
     pub(super) emitted: bool,
+    /// Number of consecutive idle polls observed.
     pub(super) idle_polls: u8,
 }
 
@@ -41,11 +47,13 @@ pub(super) struct EofState {
 }
 
 impl EofState {
+    /// Reset EOF state when new data arrives.
     pub(super) fn on_data(&mut self) {
         self.model = EofModelState::default();
         self.idle_since = None;
     }
 
+    /// Advance EOF state for an idle poll and return whether EOF should emit.
     pub(super) fn on_no_data(&mut self, now: Instant, min_idle: Duration) -> bool {
         let idle_since = self.idle_since.get_or_insert(now);
         let idle_window_elapsed = now.duration_since(*idle_since) >= min_idle;
@@ -55,6 +63,7 @@ impl EofState {
     }
 }
 
+/// Compute the bounded exponential backoff delay for a given error streak.
 pub(super) fn backoff_delay_ms(consecutive_error_polls: u32) -> u64 {
     let exponent = consecutive_error_polls.saturating_sub(1).min(6);
     let multiplier = 1u64 << exponent;
@@ -147,7 +156,7 @@ mod tests {
                 let (next, delay) = backoff_transition(consecutive, had_error);
                 if had_error {
                     let d = delay.expect("error transition must set delay");
-                    prop_assert!(d >= last_delay || last_delay == 5000);
+                    prop_assert!(d >= last_delay);
                     prop_assert!(d <= MAX_BACKOFF_MS);
                     last_delay = d;
                 } else {

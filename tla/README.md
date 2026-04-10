@@ -223,8 +223,7 @@ Models the pure tail reducer behavior extracted in `crates/logfwd-io/src/tail/st
 ### Run
 
 ```bash
-cd tla/
-java -cp /path/to/tla2tools.jar tlc2.TLC MCTailLifecycle.tla -config TailLifecycle.cfg
+just tlc-tail
 ```
 
 ---

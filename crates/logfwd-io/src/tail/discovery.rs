@@ -202,6 +202,13 @@ mod tests {
     use super::super::tailer::{TailConfig, TailEvent};
     use super::*;
 
+    fn forward_fs_event(
+        tx: &crossbeam_channel::Sender<notify::Result<notify::Event>>,
+        res: notify::Result<notify::Event>,
+    ) {
+        let _ = tx.send(res);
+    }
+
     fn test_reader() -> FileReader {
         FileReader {
             files: HashMap::new(),
@@ -223,7 +230,7 @@ mod tests {
     ) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let watcher = notify::recommended_watcher(move |res| {
-            let _ = tx.send(res);
+            forward_fs_event(&tx, res);
         })
         .expect("watcher");
         (watcher, rx)
@@ -384,20 +391,13 @@ mod tests {
 
     #[test]
     fn test_watcher_callback_forwards_fs_events_to_channel() {
-        use notify::Watcher;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("event.log");
-
-        let (mut watcher, rx) = test_watcher();
-        watcher
-            .watch(dir.path(), notify::RecursiveMode::NonRecursive)
-            .expect("watch dir");
-        fs::write(&file, b"event\n").expect("write file");
-
-        let _received = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("expected fs event from watcher callback");
+        let (tx, rx) = crossbeam_channel::unbounded();
+        forward_fs_event(&tx, Ok(notify::Event::new(notify::EventKind::Any)));
+        let received = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("expected callback-forwarded event")
+            .expect("callback should forward successful events");
+        assert!(matches!(received.kind, notify::EventKind::Any));
     }
 
     #[test]

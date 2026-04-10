@@ -72,6 +72,7 @@ pub(super) fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
     }
 
     let mut builder = globset::GlobSetBuilder::new();
+    let mut valid_patterns = Vec::new();
     for pattern in patterns {
         match globset::GlobBuilder::new(pattern)
             .literal_separator(true)
@@ -79,18 +80,25 @@ pub(super) fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
         {
             Ok(g) => {
                 builder.add(g);
+                valid_patterns.push(*pattern);
             }
             Err(e) => {
                 tracing::warn!(pattern, error = %e, "tail.invalid_glob_pattern");
             }
         }
     }
+    if valid_patterns.is_empty() {
+        return Vec::new();
+    }
     let Some(glob_set) = build_glob_set(builder) else {
         return Vec::new();
     };
+    if glob_set.is_empty() {
+        return Vec::new();
+    }
 
     let mut roots: Vec<(PathBuf, Option<usize>)> = Vec::new();
-    for pattern in patterns {
+    for pattern in valid_patterns {
         let root = glob_root(pattern);
         let depth = glob_max_depth(pattern);
         if let Some(existing) = roots.iter_mut().find(|(r, _)| r == &root) {

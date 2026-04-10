@@ -16,6 +16,100 @@ export TOKIO_WORKER_THREADS := env("JOBS", "2")
 export RAYON_NUM_THREADS := env("JOBS", "2")
 default: ci
 
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+
+# One-command bootstrap: install toolchain, dev tools, git hooks, and fetch deps.
+# Run this after cloning the repo. Safe to re-run — idempotent.
+setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> Checking Rust toolchain (rust-toolchain.toml)"
+    if command -v rustup &>/dev/null; then
+        rustup show active-toolchain
+    else
+        echo "ERROR: rustup not found — install from https://rustup.rs" >&2
+        exit 1
+    fi
+    echo ""
+    echo "==> Installing dev tools"
+    if command -v mise &>/dev/null; then
+        echo "    mise detected — running mise install"
+        mise install
+    else
+        echo "    mise not found — falling back to cargo install"
+        just install-tools
+    fi
+    echo ""
+    echo "==> Fetching Cargo dependencies"
+    cargo fetch
+    echo ""
+    echo "==> Installing git hooks"
+    just install-hooks
+    echo ""
+    echo "==> Building diagnostics dashboard (Node.js)"
+    if command -v node &>/dev/null; then
+        just dashboard
+    else
+        echo "    SKIP: node not found — dashboard build requires Node.js 22+"
+        echo "    The dashboard is optional for most Rust development."
+    fi
+    echo ""
+    echo "==> Setup complete. Run 'just doctor' to verify, or 'just ci' to test."
+
+# Verify that all required dev tools are installed and report versions.
+doctor:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    MISSING_REQUIRED=0; MISSING_OPTIONAL=0
+    check() {
+        local name="$1" cmd="$2" required="${3:-true}"
+        if command -v "$cmd" &>/dev/null; then
+            ver=$("$cmd" --version 2>/dev/null | head -1)
+            printf "  %-18s %s\n" "✓ $name" "$ver"
+        elif [ "$required" = "true" ]; then
+            printf "  %-18s %s\n" "✗ $name" "MISSING (required)"
+            MISSING_REQUIRED=1
+        else
+            printf "  %-18s %s\n" "- $name" "not found (optional)"
+            MISSING_OPTIONAL=1
+        fi
+    }
+    echo "logfwd development environment"
+    echo "==============================="
+    echo ""
+    echo "Required:"
+    check "rustc"     rustc
+    check "cargo"     cargo
+    check "rustfmt"   rustfmt
+    check "clippy"    cargo-clippy
+    check "just"      just
+    check "nextest"   cargo-nextest
+    echo ""
+    echo "Recommended:"
+    check "taplo"     taplo     false
+    check "cargo-deny" cargo-deny false
+    check "cargo-machete" cargo-machete false
+    echo ""
+    echo "Optional:"
+    check "node"      node      false
+    check "npm"       npm       false
+    check "docker"    docker    false
+    check "mise"      mise      false
+    check "sccache"   sccache   false
+    check "java"      java      false
+    check "kani"      cargo-kani false
+    echo ""
+    if [ "$MISSING_REQUIRED" -ne 0 ]; then
+        echo "Some required tools are missing. Run: just setup"
+        exit 1
+    elif [ "$MISSING_OPTIONAL" -ne 0 ]; then
+        echo "All required tools present. Some optional tools missing — see mise.toml."
+    else
+        echo "All tools present."
+    fi
+
 # Format all Rust code
 fmt:
     cargo fmt
@@ -47,14 +141,60 @@ kani:
 
 # Run the required Kani crate set enforced by CI guardrails.
 kani-required:
-    RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
-    RUSTC_WRAPPER="" cargo kani -p logfwd-arrow -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
-    RUSTC_WRAPPER="" cargo kani -p logfwd-io -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
-    RUSTC_WRAPPER="" cargo kani -p logfwd-output -Z function-contracts -Z mem-predicates -Z stubbing -j $CARGO_BUILD_JOBS
+    RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-arrow -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-io -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-output -Z function-contracts -Z mem-predicates -Z stubbing
 
 # Validate the non-core Kani boundary contract.
 kani-boundary:
     python3 scripts/verify_kani_boundary_contract.py
+
+# Download tla2tools.jar to .tools/ if missing.
+tla-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    JAR="{{justfile_directory()}}/.tools/tla2tools.jar"
+    if [[ -f "$JAR" ]]; then
+        echo "tla2tools.jar already present at $JAR"
+        exit 0
+    fi
+    mkdir -p "$(dirname "$JAR")"
+    URL="${TLA2TOOLS_URL:-https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar}"
+    echo "Downloading tla2tools.jar from $URL"
+    TMP="${JAR}.tmp.$$"
+    curl -fsSL "$URL" -o "$TMP"
+    mv "$TMP" "$JAR"
+    echo "Installed $JAR"
+
+# Run TLC with a given model and cfg from tla/.
+tlc model config:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just tla-setup
+    JAR="{{justfile_directory()}}/.tools/tla2tools.jar"
+    JAVA_BIN="${JAVA_BIN:-}"
+    if [[ -n "$JAVA_BIN" ]] && ! "$JAVA_BIN" -version >/dev/null 2>&1; then
+        JAVA_BIN=""
+    fi
+    if [[ -z "$JAVA_BIN" ]]; then
+        for candidate in /opt/homebrew/opt/openjdk/bin/java /usr/local/opt/openjdk/bin/java java; do
+            if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -version >/dev/null 2>&1; then
+                JAVA_BIN="$candidate"
+                break
+            fi
+        done
+    fi
+    if [[ -z "$JAVA_BIN" ]]; then
+        echo "Java runtime not found. Install OpenJDK (e.g. 'brew install openjdk') or set JAVA_BIN."
+        exit 1
+    fi
+    cd "{{justfile_directory()}}/tla"
+    "$JAVA_BIN" -XX:+UseParallelGC -cp "$JAR" tlc2.TLC "{{model}}" -config "{{config}}"
+
+# Tail reducer state machine model.
+tlc-tail:
+    just tlc MCTailLifecycle.tla TailLifecycle.cfg
 
 # Lint — fast (default-members, skips datafusion)
 lint: fmt-check clippy toml-check

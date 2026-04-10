@@ -20,6 +20,9 @@ VARIABLES
 
 vars == <<eofEmitted, idlePolls, consecutiveErrors, backoffMs, lastAction>>
 
+Min(a, b) ==
+    IF a < b THEN a ELSE b
+
 IncIdle(i) ==
     IF i < MaxIdle THEN i + 1 ELSE MaxIdle
 

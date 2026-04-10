@@ -1,5 +1,8 @@
 #![cfg(kani)]
 
+#[cfg(kani)]
+const _KANI_CFG_GUARD: () = ();
+
 use super::state::{
     EOF_IDLE_POLLS_BEFORE_EMIT, EofModelState, MAX_BACKOFF_MS, backoff_delay_ms,
     backoff_transition, eof_model_transition,
