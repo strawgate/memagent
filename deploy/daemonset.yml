@@ -29,7 +29,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: logfwd
-          image: ghcr.io/strawgate/logfwd:latest
+          image: ghcr.io/strawgate/memagent:latest
           imagePullPolicy: IfNotPresent
           args:
             - "run"

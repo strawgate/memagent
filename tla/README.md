@@ -4,6 +4,19 @@ Formal models for the logfwd pipeline design. These specs capture
 properties that Kani (bounded model checker) cannot express — temporal
 logic, liveness, and protocol-level design invariants.
 
+## Contributor Quickstart (CI parity)
+
+Run these TLC commands locally for parity with CI coverage:
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
+```
+
 ## PipelineMachine.tla
 
 Models `PipelineMachine<S, C>` from
@@ -72,7 +85,7 @@ tla/
 **Model 1 — Safety (normal + ForceStop paths):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
 # Sources={"s1","s2"}, MaxBatchesPerSource=3, symmetry on Sources
 # ~50K states, < 30s. Checks all INVARIANTS + temporal action properties.
 ```
@@ -80,7 +93,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 **Model 2 — Liveness (smaller constants, no SYMMETRY):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg
 # Sources={"s1","s2"}, MaxBatchesPerSource=2 — liveness needs small constants
 # ~5K states, < 5 min. Checks EventualDrain, NoBatchLeftBehind, StoppedIsStable
 ```
@@ -96,7 +109,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 **Model 3 — Coverage / reachability (vacuity guards):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.coverage.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.coverage.cfg
 # TLC will report INVARIANT VIOLATIONS for BeginDrainReachable, StopReachable,
 # AckOccurs, RejectOccurs, CheckpointAdvances, ForcedReachable, AbandonOccurs —
 # each violation is a witness
@@ -112,6 +125,12 @@ This is the TLA+ equivalent of `kani::cover!()`. If you add a new invariant, add
 a corresponding reachability assertion to verify its precondition is not vacuously
 impossible.
 
+**Model 4 — Thorough safety sweep (optional, slower):**
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg
+```
+
 **Sabotage test** — verify no invariant is vacuously true:
 temporarily replace an invariant's consequent with `FALSE`. TLC must find a
 counterexample. If it reports "No error found," the precondition is unreachable
@@ -121,11 +140,10 @@ and the invariant was trivially satisfied.
 
 ```bash
 # CLI (requires tla2tools.jar)
-cd tla/
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
 
 # With coverage stats (verify every action fires):
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg -coverage 1
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg -coverage 1
 
 # Via TLA+ Toolbox:
 # File -> Open Spec -> MCPipelineMachine.tla
@@ -190,13 +208,30 @@ all CPU workers have exited). Neither is a precondition for `CpuWorkerStop`.
 
 ## Relationship to Kani proofs and proptest
 
+Use TLA+, Kani, and proptest as a layered verification stack:
+
 | Layer | Tool | File | Scope |
 |-------|------|------|-------|
 | Design | TLA+ (this dir) | `tla/*.tla` | Temporal logic, liveness, protocol invariants |
 | Implementation | Kani | `pipeline/batch.rs`, `pipeline/lifecycle.rs` | Memory safety, overflow, type transitions |
 | Property-based | proptest | `pipeline.rs` tests | State sequence correctness under arbitrary inputs |
 
-TLA+ proves the **design** is correct — no race conditions, correct ordering, drain is eventually possible. Kani proves the **Rust implementation** doesn't panic or overflow. They are complementary: a design bug is caught here; an implementation bug is caught by Kani.
+TLA+ proves the **design** is correct (ordering, drainability, eventual stop).
+Kani proves bounded implementation properties (no panic/overflow in pure logic).
+proptest stresses larger input/state spaces and integration behavior.
+
+## PipelineBatch.tla
+
+Models multi-source batch accumulation, flush, checkpoint merge behavior, and
+ack/reject handling at the batching seam.
+
+Run:
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.coverage.cfg
+```
 
 ---
 

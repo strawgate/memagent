@@ -240,6 +240,12 @@ For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.m
 
 ## Documentation
 
+**Contributors (first stop)**
+
+- Start at [dev-docs/README.md](dev-docs/README.md) for task routing and canonical engineering docs.
+- Use [CONTRIBUTING.md](CONTRIBUTING.md) for PR workflow and checks.
+- Use [DEVELOPING.md](DEVELOPING.md) for build/test/profiling loops.
+
 **Start here by goal**
 
 - Not sure where to begin: [Choose the Right Guide](book/src/getting-started/which-guide.md)
@@ -263,6 +269,7 @@ For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.m
 
 | Guide | Description |
 |-------|-------------|
+| [dev-docs/README.md](dev-docs/README.md) | Canonical developer-doc start page and task routing |
 | [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute — PR process, pre-commit checks |
 | [Architecture](dev-docs/ARCHITECTURE.md) | Pipeline data flow, SIMD stages, crate map |

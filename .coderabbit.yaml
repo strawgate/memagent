@@ -32,13 +32,13 @@ reviews:
           no speculative traits, no sentinel values where Option applies; (6) all new
           public items have /// doc comments describing behavior, not just the name.
           Fail if any of the above are violated in changed code.
-          Full guidance: docs/ci/high-quality-rust-practices.md
+          Full guidance: dev-docs/review-guides/high-quality-rust-practices.md
 
       - name: Formal Verification Coverage
         mode: error
         instructions: >-
           Fail if required verification is absent, of insufficient quality, or
-          VERIFICATION.md is not updated. Full guidance: docs/ci/formal-verification-coverage.md
+          VERIFICATION.md is not updated. Full guidance: dev-docs/review-guides/formal-verification-coverage.md
 
 
           KANI — WHEN REQUIRED. Every new non-exempt public function in logfwd-core needs
@@ -127,7 +127,7 @@ reviews:
           done with PR number; SCANNER_CONTRACT.md updated if parsing guarantees change;
           all new public items have /// doc comments matching CONFIG_REFERENCE.md where
           applicable.
-          Full guidance: docs/ci/documentation-thoroughly-updated.md
+          Full guidance: dev-docs/review-guides/documentation-thoroughly-updated.md
 
       - name: Crate Boundary and Dependency Integrity
         mode: error
@@ -140,7 +140,7 @@ reviews:
           and approved license; (5) new crates include all five checklist items
           (CRATE_RULES.md section, AGENTS.md, workspace member, CI check, ARCHITECTURE.md entry).
           Fail if any boundary is violated.
-          Full guidance: docs/ci/crate-boundary-and-dependency-integrity.md
+          Full guidance: dev-docs/review-guides/crate-boundary-and-dependency-integrity.md
 
       - name: Maintainer Fitness
         mode: warning
@@ -153,4 +153,4 @@ reviews:
           suffix semantics change without an ADR and COLUMN_NAMING.md update; (6) any
           CI job is red; (7) the PR description omits risk surface, test/proof coverage,
           or known limitations.
-          Full guidance: docs/ci/maintainer-fitness.md
+          Full guidance: dev-docs/review-guides/maintainer-fitness.md

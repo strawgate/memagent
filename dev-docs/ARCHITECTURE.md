@@ -56,6 +56,8 @@ Disk → FileReader (Vec<u8>) → InputEvent::Data { bytes: Vec<u8> }
   rotation detection, deleted-file cleanup, LRU eviction.
 - **FileReader**: open file descriptors, `Vec<u8>` read buffer, byte reading.
 
+File-discovery reliability notes: `dev-docs/references/file-discovery.md`.
+
 > **Note:** logfwd-io (tailer, InputEvent, FramedInput) still uses `Vec<u8>`.
 > Only `pipeline.rs` uses `BytesMut`/`Bytes`. The Bytes boundary is at the
 > `input_poll_loop` → `ChannelMsg` transition.

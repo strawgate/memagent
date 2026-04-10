@@ -23,6 +23,8 @@ For unsafe code, use Kani and proptest both.
 
 TLA+ proves protocol-level properties that bounded model checkers cannot express: liveness,
 fairness, and ordering invariants that hold across infinite behaviors.
+Canonical property definitions and TLC model commands live in `tla/README.md`.
+This section defines policy and trigger conditions for when TLA+ updates are required.
 
 ### When to write a TLA+ spec
 
@@ -31,6 +33,11 @@ Write a TLA+ spec when:
 - A state machine has multiple cooperating actors where Kani can only check one step at a time
 - You need to prove a drain or shutdown protocol terminates under all interleavings
 - The question is "is the design correct?" not "is the implementation correct?"
+
+Update existing TLA+ specs when:
+- State-transition rules change (`create/send/ack/reject/abandon`, drain/shutdown, checkpoint advance)
+- Liveness assumptions or fairness conditions change
+- A new terminal outcome or protocol phase is added
 
 ### What's in `tla/`
 
@@ -80,6 +87,17 @@ Three models:
 Kani is a bounded model checker for Rust. `kani::any()` is a universal quantifier, not
 random — the SAT solver considers ALL possible values simultaneously.
 
+### Kani quick path (10 minutes)
+
+1. Assume Kani is required for any changed pure/bounded `logfwd-core` logic.
+2. For new public `logfwd-core` functions, add or update a Kani proof.
+3. Put harnesses in `#[cfg(kani)] mod verification` in the same file.
+4. Use `verify_<function>_<property>` naming and add `kani::cover!`.
+5. Add unwind bounds for loops.
+6. Run targeted harness, then run `just kani`.
+7. Run `just kani-boundary` when touching non-core pure seam boundaries.
+8. If Kani is infeasible, extract a pure reducer seam or document a bounded exemption with proptest/TLA+ coverage.
+
 ### When Kani proofs are required
 
 Add Kani proofs when implementing or modifying:
@@ -101,9 +119,10 @@ Add Kani proofs when implementing or modifying:
 5. **State machines** — Protocol state transitions (P/F flags, pipeline lifecycle)
    - MUST prove state invariants hold across all transitions
 
-Kani is NOT required for: I/O operations, async runtime logic, complex state machines
-> 8-10 transitions (use proptest), heap-heavy `Vec`/`HashMap` code (use proptest + Miri),
-simple getters/setters.
+Kani is not required for: I/O operations, async runtime logic, and heap-heavy
+`Vec`/`HashMap` code (use proptest + Miri), plus trivial getters/setters.
+For complex state machines, extract pure single-step reducers when possible and
+prove those with Kani; cover multi-step temporal behavior with proptest/TLA+.
 
 If a review tool or human review finds a state-machine bug in mixed async/runtime code,
 do not stop at patching the shell. Extract the transition policy into a local pure
@@ -278,7 +297,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `#![forbid(unsafe_code)]` | Compiler. Cannot be overridden with `#[allow]`. |
 | Only deps: memchr + wide | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
-| Proof-bearing core modules stay Kani-covered | CI Kani job + per-module verification inventory below |
+| Every public fn has a proof | Required policy + review checks + CI Kani job with per-module inventory below |
 | No IO, threads, async | Structural (no_std removes the APIs) |
 
 ---
@@ -357,9 +376,9 @@ BatchTicket `#[must_use]` + consume-on-transition, AckReceipt `#[must_use]`.
 1. Write the function. Pure logic only — no IO, no allocation-heavy patterns, no panics.
 
 2. Choose verification tier:
-   - Can Kani verify ALL inputs? (small fixed-width types) → Tier 1
-   - Can Kani verify bounded inputs? (byte slices ≤256) → Tier 2
-   - Neither? → Tier 3 (proptest)
+   - New public `logfwd-core` function: Kani proof required (Tier 1 or Tier 2).
+   - If Kani is infeasible in current shape: extract a pure seam and prove it,
+     or document an explicit exemption with proptest/TLA+ coverage.
 
 3. Write the proof:
 

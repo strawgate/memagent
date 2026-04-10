@@ -19,7 +19,7 @@ docker run -d \
   -v /var/log:/var/log:ro \
   -v ./config.yaml:/etc/logfwd/config.yaml:ro \
   -p 9090:9090 \
-  ghcr.io/strawgate/logfwd:latest \
+  ghcr.io/strawgate/memagent:latest \
   run --config /etc/logfwd/config.yaml
 ```
 
@@ -51,7 +51,7 @@ docker run -d \
   -v /var/log:/var/log:ro \
   -v ./config.last-known-good.yaml:/etc/logfwd/config.yaml:ro \
   -p 9090:9090 \
-  ghcr.io/strawgate/logfwd:<known-good-tag> \
+  ghcr.io/strawgate/memagent:<known-good-tag> \
   run --config /etc/logfwd/config.yaml
 ```
 

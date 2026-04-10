@@ -1,6 +1,7 @@
 # Agent Guide — logfwd
 
 > A Rust log forwarder: tails files, parses JSON/CRI with portable SIMD, transforms with SQL (DataFusion), ships to OTLP collectors. Single static binary, ~15 MB.
+> Humans: start with `dev-docs/README.md` for the fastest contributor path. This file is optimized for coding agents.
 
 ## Prerequisites
 
@@ -88,6 +89,7 @@ The workspace `default-members` excludes `logfwd-transform` (datafusion) and `lo
 │   └── logfwd-proto-build/      ← Protobuf build scripts
 │
 ├── dev-docs/                    ← Developer documentation
+│   ├── README.md                ← Developer-doc start page and task routing
 │   ├── ARCHITECTURE.md          ← Pipeline data flow, scanner stages, crate map, buffer lifecycle
 │   ├── DESIGN.md                ← Vision, target architecture, architecture decision records
 │   ├── VERIFICATION.md          ← TLA+, Kani, proptest: when to use each, proof requirements
@@ -172,6 +174,14 @@ Full details: `dev-docs/CODE_STYLE.md`.
 - SIMD backends **require** proptest (SIMD output ≡ scalar output).
 - State-machine changes **require** updating TLA+ specs + Kani/proptest.
 
+Kani quick path:
+1. Add/adjust proof harness in `#[cfg(kani)] mod verification`.
+2. Use `verify_<function>_<property>` naming and add `kani::cover!`.
+3. Run targeted harness.
+4. Run `just kani`.
+5. Run `just kani-boundary` when touching non-core seam contract areas.
+6. Update `dev-docs/VERIFICATION.md` when requirements/status changed.
+
 Full details: `dev-docs/VERIFICATION.md`.
 
 ## Change map — what must change together
@@ -206,6 +216,7 @@ Component labels use `component:` prefix (e.g., `component:processor/scanner`). 
 
 ## Navigation tips
 
+- **Start developer docs quickly:** `dev-docs/README.md` — canonical map and task routing.
 - **Find a crate's purpose:** `crates/<name>/` — each has a `Cargo.toml` and many have an `AGENTS.md` with crate-specific rules.
 - **Find how data flows:** `dev-docs/ARCHITECTURE.md` — full pipeline diagram and buffer lifecycle.
 - **Find what SQL UDFs exist:** `crates/logfwd-transform/src/udf/` — `int()`, `float()`, `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()`.

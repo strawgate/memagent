@@ -63,13 +63,16 @@ Each JSON field `<name>` produces columns based on observed types:
 | Integer (only)  | `<name>`    | `Int64`     |
 | Float (only)    | `<name>`    | `Float64`   |
 | String (only)   | `<name>`    | `Utf8` / `Utf8View` |
+| Boolean (only)  | `<name>`    | `Boolean` |
 
 **Multiple types (conflict):** a single `StructArray` column with typed children.
 
 | Observed types  | Column name | Arrow type  |
 |-----------------|-------------|-------------|
 | Integer + String | `<name>`   | `Struct { int: Int64, str: Utf8View }` |
+| Boolean + String | `<name>`   | `Struct { bool: Boolean, str: Utf8View }` |
 | All three       | `<name>`   | `Struct { int: Int64, float: Float64, str: Utf8View }` |
+| All four        | `<name>`   | `Struct { int: Int64, float: Float64, bool: Boolean, str: Utf8View }` |
 
 Conflict structs are detected by `is_conflict_struct()` (child fields named
 from `{"int", "float", "str", "bool"}`). They only appear when a field has
@@ -121,8 +124,9 @@ fields.
   stored as `Float64`.
 - A value without either is first tried as `Int64` via `parse_int_fast`.  On
   overflow (value does not fit in `i64`) it falls back to `Float64`.
-- `true` and `false` are stored as the strings `"true"` / `"false"` in a
-  `_str` column.
+- `true` and `false` are stored in a native `Boolean` column for boolean-only
+  fields, or in the `bool: Boolean` child of conflict structs for mixed-type
+  fields.
 - `null` JSON values produce a null entry in the appropriate column.
 
 ### Batch reuse

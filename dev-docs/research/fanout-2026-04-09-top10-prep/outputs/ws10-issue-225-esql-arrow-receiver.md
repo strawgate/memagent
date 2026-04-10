@@ -1,7 +1,8 @@
 # WS10 #225 — Elasticsearch ES|QL Arrow Receiver MVP path
 
-Date: 2026-04-09  
-Scope: prototype + implementation planning, aligned to existing receiver/runtime architecture
+> **Status:** Completed
+> **Date:** 2026-04-09
+> **Context:** Fanout workstream output for issue #225 Arrow receiver MVP implementation plan.
 
 ## TL;DR
 

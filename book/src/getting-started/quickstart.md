@@ -1,6 +1,6 @@
 # Quick Start
 
-Get a working logfwd pipeline in 60 seconds, then build on it.
+Get a working logfwd pipeline in about 10 minutes, then build on it.
 
 ## Prerequisites
 

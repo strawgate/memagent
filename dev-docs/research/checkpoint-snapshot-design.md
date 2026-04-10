@@ -1,7 +1,7 @@
 # Checkpoint Snapshot Design: #584 + #585
 
 > **Status:** Active
-> **Date:** 2026-04-01 (v2 — incorporates adversarial review)
+> **Date:** 2026-04-01
 > **Context:** Phase 5c design for flowing checkpoint metadata through the pipeline for at-least-once delivery.
 
 ## Problem
