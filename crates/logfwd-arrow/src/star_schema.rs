@@ -1744,22 +1744,61 @@ fn scatter_scope_attrs(
     }
 
     for &col_pos in &scope_col_indices {
-        let sid_to_val: HashMap<u32, Option<String>> = {
-            let values = match &flat_cols[col_pos].1 {
-                TypedColumn::Str(v) => v,
-                _ => continue,
-            };
-            collect_template_values_by_id(values, scope_ids, num_rows)
-        };
-
-        if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
-            for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
-                if slot.is_some() {
-                    continue;
+        match &flat_cols[col_pos].1 {
+            TypedColumn::Str(values) => {
+                let sid_to_val = collect_template_values_by_id(values, scope_ids, num_rows);
+                if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let sid = scope_ids.value(row);
+                        if let Some(val) = sid_to_val.get(&sid) {
+                            *slot = val.clone();
+                        }
+                    }
                 }
-                let sid = scope_ids.value(row);
-                if let Some(val) = sid_to_val.get(&sid) {
-                    *slot = val.clone();
+            }
+            TypedColumn::Int(values) => {
+                let sid_to_val = collect_template_values_by_id(values, scope_ids, num_rows);
+                if let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let sid = scope_ids.value(row);
+                        if let Some(val) = sid_to_val.get(&sid) {
+                            *slot = *val;
+                        }
+                    }
+                }
+            }
+            TypedColumn::Double(values) => {
+                let sid_to_val = collect_template_values_by_id(values, scope_ids, num_rows);
+                if let TypedColumn::Double(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let sid = scope_ids.value(row);
+                        if let Some(val) = sid_to_val.get(&sid) {
+                            *slot = *val;
+                        }
+                    }
+                }
+            }
+            TypedColumn::Bool(values) => {
+                let sid_to_val = collect_template_values_by_id(values, scope_ids, num_rows);
+                if let TypedColumn::Bool(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let sid = scope_ids.value(row);
+                        if let Some(val) = sid_to_val.get(&sid) {
+                            *slot = *val;
+                        }
+                    }
                 }
             }
         }
@@ -1776,7 +1815,7 @@ fn collect_template_values_by_id<T: Clone>(
         let id = ids.value(row);
         if let std::collections::hash_map::Entry::Vacant(e) = map.entry(id) {
             let template_row = id as usize;
-            if template_row < num_rows {
+            if template_row < values.len() {
                 e.insert(values[template_row].clone());
             }
         }
@@ -2063,6 +2102,70 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_preserves_typed_scope_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("scope.name", DataType::Utf8, true),
+            Field::new("scope.enabled", DataType::Boolean, true),
+            Field::new("scope.rank", DataType::Int64, true),
+            Field::new("scope.ratio", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("one"), Some("two")])),
+                Arc::new(StringArray::from(vec![Some("otel"), Some("otel")])),
+                Arc::new(BooleanArray::from(vec![Some(true), Some(true)])),
+                Arc::new(Int64Array::from(vec![Some(7), Some(7)])),
+                Arc::new(Float64Array::from(vec![Some(0.25), Some(0.25)])),
+            ],
+        )
+        .expect("valid batch");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+
+        let scope_enabled = roundtrip
+            .column(
+                roundtrip
+                    .schema()
+                    .index_of("scope.enabled")
+                    .expect("scope.enabled idx"),
+            )
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("scope.enabled bool");
+        assert_eq!(scope_enabled.value(0), true);
+        assert_eq!(scope_enabled.value(1), true);
+
+        let scope_rank = roundtrip
+            .column(
+                roundtrip
+                    .schema()
+                    .index_of("scope.rank")
+                    .expect("scope.rank idx"),
+            )
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("scope.rank i64");
+        assert_eq!(scope_rank.value(0), 7);
+        assert_eq!(scope_rank.value(1), 7);
+
+        let scope_ratio = roundtrip
+            .column(
+                roundtrip
+                    .schema()
+                    .index_of("scope.ratio")
+                    .expect("scope.ratio idx"),
+            )
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("scope.ratio f64");
+        assert_eq!(scope_ratio.value(0), 0.25);
+        assert_eq!(scope_ratio.value(1), 0.25);
+    }
+
+    #[test]
     fn empty_batch_produces_empty_star() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "message",
@@ -2089,6 +2192,17 @@ mod tests {
         let collected = collect_template_values_by_id(&values, &ids, 3);
 
         assert_eq!(collected.get(&2), Some(&Some("otel".to_string())));
+    }
+
+    #[test]
+    fn collect_template_values_skips_template_ids_outside_column_len() {
+        let values = vec![Some("otel".to_string())];
+        let ids = UInt32Array::from(vec![0u32, 1]);
+
+        let collected = collect_template_values_by_id(&values, &ids, 2);
+
+        assert_eq!(collected.get(&0), Some(&Some("otel".to_string())));
+        assert!(!collected.contains_key(&1));
     }
 
     #[test]
