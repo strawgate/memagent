@@ -361,6 +361,7 @@ impl FaultScenario {
         let mut network_faults = self.network_faults.clone();
         network_faults.sort_by_key(|f| f.step);
 
+        let mut applied_network_fault_steps = Vec::new();
         let run_outcome = catch_unwind(AssertUnwindSafe(|| {
             if network_faults.is_empty() {
                 sim.run()
@@ -371,16 +372,20 @@ impl FaultScenario {
                     if fault.step != 0 {
                         break;
                     }
+                    applied_network_fault_steps.push(fault.step);
                     apply_network_fault(&mut sim, fault);
                     faults.next();
                 }
                 while faults.peek().is_some() {
-                    sim.step()?;
+                    if sim.step()? {
+                        return Ok(());
+                    }
                     step += 1;
                     while let Some(fault) = faults.peek() {
                         if fault.step != step {
                             break;
                         }
+                        applied_network_fault_steps.push(fault.step);
                         apply_network_fault(&mut sim, fault);
                         faults.next();
                     }
@@ -402,6 +407,7 @@ impl FaultScenario {
             send_calls: call_counter.load(Ordering::Relaxed),
             panicked,
             sim_error,
+            applied_network_fault_steps,
             checkpoint: checkpoint_handle,
             tcp_server: tcp_server_handle,
         }
@@ -433,6 +439,7 @@ pub struct TestOutcome {
     send_calls: u64,
     panicked: bool,
     sim_error: Option<String>,
+    applied_network_fault_steps: Vec<usize>,
     checkpoint: Option<CheckpointHandle>,
     tcp_server: Option<TcpServerHandle>,
 }
@@ -664,5 +671,31 @@ impl InvariantSet {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{FaultScenario, InvariantSet, NetworkFault, NetworkFaultAction};
+
+    #[test]
+    fn late_faults_are_not_injected_after_sim_completion() {
+        let outcome = FaultScenario::builder("late-faults-skip-after-completion")
+            .with_seed(20260416)
+            .with_turmoil_tcp_sink()
+            .with_line_count(0)
+            .with_shutdown_after(Duration::from_millis(5))
+            .with_network_fault(NetworkFault::at_step(0, NetworkFaultAction::Partition))
+            .with_network_fault(NetworkFault::at_step(10_000, NetworkFaultAction::Repair))
+            .run();
+
+        InvariantSet::new().no_sim_error().verify(&outcome);
+        assert_eq!(
+            outcome.applied_network_fault_steps,
+            vec![0],
+            "late faults must not be injected after Turmoil reports completion"
+        );
     }
 }
