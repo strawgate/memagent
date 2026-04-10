@@ -17,9 +17,9 @@ cargo run -p logfwd-bench --release --bin cloudtrail_profile -- --lines 20000
 # Run the allocation-only FramedInput report (dhat-backed, slower)
 just bench-framed-input-alloc -- --lines 200000
 
-# Run destination load from the main CLI wrappers
-cargo run -p logfwd --release -- blast --destination otlp --endpoint http://localhost:4318/v1/logs --duration-secs 15
-cargo run -p logfwd --release -- devour --mode elasticsearch_bulk --listen 127.0.0.1:9200
+# Run destination load from the main CLI wrappers (use two terminals)
+just bench-devour-otlp
+just bench-blast-otlp
 
 # Run all Criterion benchmarks (Tier 1 + 2, includes file_io, batch_formation)
 just bench-full

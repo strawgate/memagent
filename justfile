@@ -400,6 +400,14 @@ bench-rate *ARGS:
 bench-memory *ARGS:
     cargo run -p logfwd-bench --release --bin memory-profile -- {{ARGS}}
 
+# Start a local OTLP blackhole receiver using main CLI devour wrapper.
+bench-devour-otlp listen="127.0.0.1:4318":
+    cargo run -p logfwd --release -- devour --mode otlp --listen {{listen}}
+
+# Blast generated OTLP data to a receiver endpoint using main CLI blast wrapper.
+bench-blast-otlp endpoint="http://127.0.0.1:4318/v1/logs" duration="15":
+    cargo run -p logfwd --release -- blast --destination otlp --endpoint {{endpoint}} --duration-secs {{duration}}
+
 # Install development tools
 install-tools:
     cargo install taplo-cli cargo-deny cargo-audit cargo-nextest
