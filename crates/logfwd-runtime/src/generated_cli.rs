@@ -68,7 +68,12 @@ pub fn resolve_blast_output_config(
 
     if matches!(
         output_type,
-        OutputType::Otlp | OutputType::Elasticsearch | OutputType::Loki | OutputType::ArrowIpc
+        OutputType::Otlp
+            | OutputType::Elasticsearch
+            | OutputType::Loki
+            | OutputType::ArrowIpc
+            | OutputType::Tcp
+            | OutputType::Udp
     ) {
         let endpoint =
             endpoint.ok_or_else(|| "blast requires --endpoint for this destination".to_owned())?;

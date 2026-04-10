@@ -7,7 +7,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use std::env;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -587,6 +587,8 @@ async fn cmd_devour(args: DevourArgs) -> Result<(), CliError> {
 
     logfwd_config::validate_host_port(&listen)
         .map_err(|e| CliError::Config(format!("invalid listen address: {e}")))?;
+    logfwd_config::validate_host_port(&args.diagnostics_addr)
+        .map_err(|e| CliError::Config(format!("invalid diagnostics address: {e}")))?;
 
     if args.duration_secs == Some(0) {
         return Err(CliError::Config(
@@ -1903,6 +1905,38 @@ mod cli_tests {
         assert!(
             err.to_string()
                 .contains("only supported for otlp, elasticsearch, loki, and arrow_ipc"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_blast_output_config_preserves_tcp_endpoint() {
+        let mut args = blast_args_for_validation();
+        args.destination = Some(BlastDestination::Tcp);
+        args.endpoint = Some("127.0.0.1:15140".to_owned());
+
+        let output_cfg =
+            resolve_blast_output_config(&args).expect("tcp destination should preserve endpoint");
+        assert_eq!(output_cfg.endpoint.as_deref(), Some("127.0.0.1:15140"));
+    }
+
+    #[test]
+    fn cmd_devour_rejects_invalid_diagnostics_addr() {
+        let args = DevourArgs {
+            mode: DevourMode::Otlp,
+            listen: Some("127.0.0.1:4318".to_owned()),
+            duration_secs: None,
+            diagnostics_addr: "http://127.0.0.1:9191".to_owned(),
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_devour(args))
+            .expect_err("invalid diagnostics addr should fail");
+        assert!(
+            err.to_string().contains("invalid diagnostics address"),
             "unexpected error: {err}"
         );
     }
