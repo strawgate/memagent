@@ -28,7 +28,7 @@ logfwd-transform    RecordBatch → RecordBatch via DataFusion SQL.
                     UDFs, enrichment tables, JOINs.
 
 logfwd-output       Consumes RecordBatch, sends externally.
-                    OTLP, Arrow IPC, Parquet, ClickHouse, JSON lines.
+                    OTLP, Arrow IPC, JSON lines. Parquet/ClickHouse are planned.
 
 logfwd-runtime      Async runtime shell. Pipeline orchestration,
                     worker pool, processor chain, diagnostics wiring.
@@ -54,7 +54,7 @@ star-to-flat / flat-to-star conversion at the boundary.
 
 ## Performance target
 
-1M+ events/sec end-to-end. Key bottleneck is HTTP output — the async pipeline overlaps IO
+1M+ events/sec end-to-end. Key bottleneck is output transport throughput — the async pipeline overlaps IO
 with CPU. SIMD structural scanning runs at 3.0 GiB/s (9 structural characters, NEON,
 ~760KB NDJSON, 2026-03-30 benchmark).
 
@@ -78,7 +78,7 @@ unanimously recommended this over std + clippy.
 `default-features = false`.  
 **Benefit:** Impossible to accidentally add IO to the proven core.
 
-### FieldSink trait boundary (zero-allocation parsing)
+### ScanBuilder trait boundary (zero-allocation parsing)
 
 Generic trait (serde Visitor pattern), not `Vec<ParsedField>`. Data flows directly from
 parser into builder via monomorphization — no intermediate allocation. This is how serde

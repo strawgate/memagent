@@ -1,10 +1,14 @@
 # Contributing to logfwd
 
-## Before You Start
+## First 20 Minutes
 
-1. Read `AGENTS.md` for project context and architecture decisions
-2. Read `DEVELOPING.md` for build commands and crate structure
-3. Read the source code you plan to modify, including its tests
+1. Open `dev-docs/README.md` and choose the task route.
+2. Run `just ci` to verify a clean fast baseline.
+3. Run the smallest crate-local loop for your change (for example `cargo test -p logfwd-core`).
+4. Read only the canonical docs for your change type:
+   - config/schema: `dev-docs/CHANGE_MAP.md`
+   - scanner/core logic: `dev-docs/SCANNER_CONTRACT.md` + `dev-docs/VERIFICATION.md`
+   - runtime/pipeline: `dev-docs/ARCHITECTURE.md`
 
 ## Pre-Commit Checklist
 
@@ -32,11 +36,14 @@ just ci
 
 ## Pre-Push Checklist
 
-Before pushing to a branch or creating a PR, you **MUST** ensure the full CI suite passes locally:
+Before pushing to a branch or creating a PR, run the fast CI tier locally and use full CI when your changes touch cross-workspace behavior:
 
 ```bash
-# Full CI suite (format + clippy + TOML + deny + test)
+# Fast tier (default-members, good for most PRs)
 just ci
+
+# Full workspace parity (slower, includes datafusion and extended lint/test)
+just ci-all
 
 # If you changed benchmarked code, verify no regression:
 just bench
@@ -68,10 +75,13 @@ Always use `just` recipes instead of bare `cargo` for linting. CI runs
 match CI exactly.
 
 ```bash
-just ci           # Full CI: lint + test — run this before pushing
-just test         # Run all tests
-just lint         # Format + clippy + TOML + deny
-just clippy       # Clippy with -D warnings (same as CI)
+just ci           # Fast CI gate (default-members)
+just ci-all       # Full workspace CI parity
+just test         # Default-members tests
+just test-all     # Full workspace tests
+just lint         # Fast lint gate
+just lint-all     # Full lint gate
+just clippy       # Clippy with -D warnings (same as CI default tier)
 just fmt          # Format code
 just bench        # Criterion benchmarks
 just kani         # Run Kani proofs (requires: cargo install --locked kani-verifier && cargo kani setup)
@@ -153,5 +163,6 @@ Work-unit issues (`work-unit` label) are scheduling tickets that bundle small, l
 ## Getting Help
 
 - File an issue at https://github.com/strawgate/memagent/issues
-- Read `dev-docs/references/` for library-specific guides
-- Read `dev-docs/research/` for design research
+- Read `dev-docs/README.md` for architecture/constraint entrypoints
+- Read `dev-docs/references/README.md` for concise library-specific notes
+- Read `dev-docs/research/README.md` for active investigations

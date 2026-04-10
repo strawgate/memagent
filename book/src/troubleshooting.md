@@ -25,11 +25,11 @@ kubectl -n collectors logs -f daemonset/logfwd
 
 | Symptom | First check | Expected output | If not expected |
 |---|---|---|---|
-| No logs arrive at destination | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].inputs'` | `lines_total` increasing | Fix file path/mount permissions |
-| Logs read, but nothing forwarded | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].transform'` | `lines_in > 0` and `lines_out > 0` | Transform filter dropping all rows |
+| No logs arrive at destination | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines | .[0].inputs // (to_entries[0].value.inputs)'` | `lines_total` increasing | Fix file path/mount permissions |
+| Logs read, but nothing forwarded | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines | .[0].transform // (to_entries[0].value.transform)'` | `lines_in > 0` and `lines_out > 0` | Transform filter dropping all rows |
 | Frequent OTLP send errors | Check runtime logs for `error sending` | No repeated connection/auth errors | Fix endpoint/protocol/connectivity |
 | Startup/config errors | `logfwd validate --config config.yaml` | `configuration valid` (or no error output) | Fix required fields / YAML syntax |
-| Throughput unexpectedly low | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].stage_seconds'` | `output` not dominating total | Network/collector bottleneck |
+| Throughput unexpectedly low | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines | .[0].stage_seconds // (to_entries[0].value.stage_seconds)'` | `output` not dominating total | Network/collector bottleneck |
 
 ## Scenario 1: No logs arrive at destination
 
@@ -37,10 +37,10 @@ kubectl -n collectors logs -f daemonset/logfwd
 
 ```bash
 # 1) Are inputs being read?
-curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].inputs'
+curl -s http://localhost:9090/admin/v1/status | jq '.pipelines | .[0].inputs // (to_entries[0].value.inputs)'
 
 # 2) Are output counters increasing?
-curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].outputs'
+curl -s http://localhost:9090/admin/v1/status | jq '.pipelines | .[0].outputs // (to_entries[0].value.outputs)'
 ```
 
 ### Expected
@@ -66,7 +66,7 @@ Run the two checks again and confirm both input and output counters increase.
 ### Checks
 
 ```bash
-curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].transform'
+curl -s http://localhost:9090/admin/v1/status | jq '.pipelines | .[0].transform // (to_entries[0].value.transform)'
 ```
 
 ### Expected
@@ -134,7 +134,7 @@ No validation errors.
 ### Common causes and fixes
 
 - Missing `input.path` for `file` input.
-- Missing `endpoint` for `otlp`/`http`/`elasticsearch`/`loki` outputs.
+- Missing `endpoint` for `otlp`/`elasticsearch`/`loki` outputs.
 - Mixing simple layout (`input`/`output`) with `pipelines` map in one file.
 - YAML scalar mistakes in SQL.
 
@@ -160,7 +160,7 @@ logfwd dry-run --config config.yaml
 ### Checks
 
 ```bash
-curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].stage_seconds'
+curl -s http://localhost:9090/admin/v1/status | jq '.pipelines | .[0].stage_seconds // (to_entries[0].value.stage_seconds)'
 ```
 
 ### Expected

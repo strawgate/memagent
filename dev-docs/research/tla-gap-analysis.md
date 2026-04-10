@@ -3,8 +3,6 @@
 > **Status:** Active
 > **Date:** 2026-04-03
 > **Context:** Gap analysis of FileCheckpoint TLA+ spec against actual code, with CRITICAL findings.
-
-Date: 2026-04-03
 Auditor: Claude Opus 4.6 (1M context)
 Scope: What the spec does NOT model but SHOULD, informed by the actual
 code in `tail.rs`, `framed.rs`, and `pipeline.rs`.

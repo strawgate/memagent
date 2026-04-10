@@ -1,5 +1,20 @@
 # Developing logfwd
 
+## Fast Start
+
+If you are new, do this first:
+
+```bash
+just ci
+cargo test -p logfwd-core
+```
+
+Then read only the section needed for your task:
+- crate map: `Workspace layout`
+- command semantics: `Build, test, lint, bench, fuzz`
+- performance profiling: `Local CPU profiling (macOS)`
+- historical gotchas: `Things that will bite you`
+
 ## Prerequisites
 
 | Tool | Version | Install |

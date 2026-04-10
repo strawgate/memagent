@@ -1,8 +1,8 @@
 # Turmoil Concurrency Bugs Investigation Report
 
-**Date:** April 2026  
-**Scope:** Nightly Turmoil simulation test failures  
-**Status:** Bugs identified, fixes planned
+> **Status:** Active
+> **Date:** 2026-04-01
+> **Context:** Concurrency bug analysis for nightly Turmoil simulation failures in pipeline orchestration.
 
 ---
 

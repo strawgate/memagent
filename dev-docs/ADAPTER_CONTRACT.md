@@ -38,7 +38,7 @@ one regression test per incident.
 
 ## How To Read This Doc
 
-Each guarantee names:
+Most guarantees name:
 
 - the boundary it applies to
 - the current behavior or intended invariant

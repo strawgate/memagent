@@ -4,6 +4,19 @@ Formal models for the logfwd pipeline design. These specs capture
 properties that Kani (bounded model checker) cannot express — temporal
 logic, liveness, and protocol-level design invariants.
 
+## Contributor Quickstart (CI parity)
+
+Run these TLC commands locally for parity with CI coverage:
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
+```
+
 ## PipelineMachine.tla
 
 Models `PipelineMachine<S, C>` from
@@ -112,6 +125,12 @@ This is the TLA+ equivalent of `kani::cover!()`. If you add a new invariant, add
 a corresponding reachability assertion to verify its precondition is not vacuously
 impossible.
 
+**Model 4 — Thorough safety sweep (optional, slower):**
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.thorough.cfg
+```
+
 **Sabotage test** — verify no invariant is vacuously true:
 temporarily replace an invariant's consequent with `FALSE`. TLC must find a
 counterexample. If it reports "No error found," the precondition is unreachable
@@ -189,6 +208,19 @@ all CPU workers have exited). Neither is a precondition for `CpuWorkerStop`.
 ---
 
 ## Relationship to Kani proofs and proptest
+
+## PipelineBatch.tla
+
+Models multi-source batch accumulation, flush, checkpoint merge behavior, and
+ack/reject handling at the batching seam.
+
+Run:
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineBatch.tla -config PipelineBatch.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineBatch.tla -config PipelineBatch.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineBatch.tla -config PipelineBatch.coverage.cfg
+```
 
 | Layer | Tool | File | Scope |
 |-------|------|------|-------|

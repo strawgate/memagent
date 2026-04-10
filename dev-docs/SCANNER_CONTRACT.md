@@ -63,6 +63,7 @@ Each JSON field `<name>` produces columns based on observed types:
 | Integer (only)  | `<name>`    | `Int64`     |
 | Float (only)    | `<name>`    | `Float64`   |
 | String (only)   | `<name>`    | `Utf8` / `Utf8View` |
+| Boolean (only)  | `<name>`    | `Utf8` / `Utf8View` (`"true"` / `"false"`) |
 
 **Multiple types (conflict):** a single `StructArray` column with typed children.
 
@@ -72,7 +73,7 @@ Each JSON field `<name>` produces columns based on observed types:
 | All three       | `<name>`   | `Struct { int: Int64, float: Float64, str: Utf8View }` |
 
 Conflict structs are detected by `is_conflict_struct()` (child fields named
-from `{"int", "float", "str", "bool"}`). They only appear when a field has
+from `{"int", "float", "str"}`). They only appear when a field has
 multiple types across rows within the same batch.
 
 | Special column  | Description       | Arrow type  |
@@ -121,8 +122,8 @@ fields.
   stored as `Float64`.
 - A value without either is first tried as `Int64` via `parse_int_fast`.  On
   overflow (value does not fit in `i64`) it falls back to `Float64`.
-- `true` and `false` are stored as the strings `"true"` / `"false"` in a
-  `_str` column.
+- `true` and `false` are stored as the strings `"true"` / `"false"` in the
+  field's string column.
 - `null` JSON values produce a null entry in the appropriate column.
 
 ### Batch reuse

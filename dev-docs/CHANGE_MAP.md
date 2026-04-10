@@ -7,7 +7,7 @@ It tells you which files usually need to change together so behavior, docs, and 
 
 When you add, rename, or remove config fields:
 
-- Runtime parsing and validation code in the `logfwd` binary crate.
+- Config schema and validation in `logfwd-config` (and bootstrap wiring in `logfwd` when needed).
 - User-facing config reference in `book/src/config/reference.md`.
 - Related task pages that show examples (`book/src/getting-started/`, `book/src/deployment/`).
 - Validation and negative tests for invalid configs.

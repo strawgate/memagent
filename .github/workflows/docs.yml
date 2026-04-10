@@ -3,9 +3,14 @@ name: Deploy Docs
 on:
   pull_request:
     paths:
+      - "crates/**"
+      - "tla/**"
       - "book/**"
       - "dev-docs/**"
       - "docs/**"
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
+      - "DEVELOPING.md"
       - "README.md"
       - "scripts/docs/**"
       - ".github/workflows/docs.yml"
@@ -60,6 +65,12 @@ jobs:
 
       - name: Validate required operational doc sections
         run: python3 scripts/docs/validate_operational_sections.py
+
+      - name: Validate research metadata headers
+        run: python3 scripts/docs/validate_research_metadata.py
+
+      - name: Validate root markdown allowlist
+        run: python3 scripts/docs/validate_root_doc_allowlist.py
 
       - name: Report stale operational docs
         run: python3 scripts/docs/report_stale_docs.py

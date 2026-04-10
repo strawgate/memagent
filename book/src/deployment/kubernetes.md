@@ -1,71 +1,7 @@
-# Deployment Guide
+# Kubernetes Deployment
 
-This guide covers running logfwd in production environments.
-
----
-
-## Docker — standalone container
-
-### Build the image
-
-```bash
-docker build -t logfwd:latest .
-```
-
-The multi-stage `Dockerfile` at the repository root compiles a statically-linked
-release binary and copies it into a minimal `debian:bookworm-slim` image.
-
-### Run with a config file
-
-Create `config.yaml`:
-
-```yaml
-input:
-  type: file
-  path: /var/log/app/*.log
-  format: json
-
-output:
-  type: otlp
-  endpoint: otel-collector:4317
-  protocol: grpc
-
-server:
-  diagnostics: 0.0.0.0:9090
-```
-
-Run the container, mounting the log directory and config:
-
-```bash
-docker run -d \
-  --name logfwd \
-  -v /var/log:/var/log:ro \
-  -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  -p 9090:9090 \
-  logfwd:latest \
-  run --config /etc/logfwd/config.yaml
-```
-
-### Environment variable substitution
-
-Pass secrets and environment-specific values via environment variables instead of
-baking them into the config file:
-
-```yaml
-output:
-  type: otlp
-  endpoint: ${OTEL_ENDPOINT}
-```
-
-```bash
-docker run -d \
-  -e OTEL_ENDPOINT=otel-collector:4317 \
-  -v /var/log:/var/log:ro \
-  -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  logfwd:latest run --config /etc/logfwd/config.yaml
-```
-
----
+This page is the Kubernetes-specific production deployment guide for logfwd.
+For standalone container usage, see [Docker deployment](./docker.md).
 
 ## Production safe defaults
 
@@ -80,7 +16,7 @@ Use these defaults unless you have measured reasons to change them:
 
 These defaults prioritize stability and debuggability over premature optimization.
 
-## Kubernetes — DaemonSet
+## DaemonSet
 
 A DaemonSet is the recommended way to deploy logfwd in a Kubernetes cluster. Each
 node runs one logfwd pod that reads container logs from `/var/log` on the host.
@@ -153,7 +89,7 @@ spec:
         - operator: Exists  # run on all nodes including control-plane
       containers:
         - name: logfwd
-          image: logfwd:latest
+          image: ghcr.io/strawgate/memagent:latest
           imagePullPolicy: IfNotPresent
           args:
             - run
@@ -161,7 +97,7 @@ spec:
             - /etc/logfwd/config.yaml
           env:
             - name: OTEL_ENDPOINT
-              value: otel-collector.monitoring.svc.cluster.local:4317
+              value: https://otel-collector.monitoring.svc.cluster.local:4317
           ports:
             - name: diagnostics
               containerPort: 9090
@@ -307,7 +243,7 @@ Point logfwd at the collector:
 ```yaml
 output:
   type: otlp
-  endpoint: otel-collector:4317
+  endpoint: https://otel-collector:4317
   protocol: grpc
   compression: zstd
 ```
