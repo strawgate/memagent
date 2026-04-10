@@ -771,6 +771,14 @@ impl Config {
                         "pipeline '{name}' output '{label}': 'compression' is not supported for loki outputs"
                     )));
                 }
+                if output.output_type == OutputType::ArrowIpc
+                    && let Some(c) = output.compression.as_deref()
+                    && c != "zstd"
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{name}' output '{label}': arrow_ipc output only supports 'zstd' compression, not '{c}'"
+                    )));
+                }
                 if output.output_type != OutputType::Otlp && output.protocol.is_some() {
                     return Err(ConfigError::Validation(format!(
                         "pipeline '{name}' output '{label}': 'protocol' is only supported for otlp outputs"

@@ -2,6 +2,8 @@
 //!
 //! Spark-compatible regex extraction. Returns the capture group at the given
 //! index (1-based), or the full match if index is 0. Returns NULL on no match.
+//! `string` and `pattern` accept Utf8, Utf8View, or LargeUtf8 expressions;
+//! `pattern` must still be a scalar literal at runtime.
 //!
 //! ```sql
 //! SELECT regexp_extract(message_str, 'status=(\d+)', 1) AS status FROM logs
@@ -24,11 +26,10 @@ use regex::Regex;
 
 /// UDF: regexp_extract(string, pattern, group_index) -> Utf8
 ///
-/// - `string`: the input column (Utf8)
-/// - `pattern`: regex pattern with capture groups (Utf8 literal)
-/// - `group_index`: 0 for full match, 1+ for capture groups (Int64)
-///
-/// Returns NULL when the pattern doesn't match or the group index is out of range.
+/// SQL shape: `regexp_extract(<text>, <regex-literal>, <group-index>)`.
+/// `<text>` and `<regex-literal>` may be Utf8, Utf8View, or LargeUtf8
+/// expressions; `<group-index>` is Int64 (`0` = full match, `1+` = capture).
+/// Returns NULL when the pattern does not match or the group index is out of range.
 #[derive(Debug)]
 pub struct RegexpExtractUdf {
     signature: Signature,
@@ -50,7 +51,41 @@ impl RegexpExtractUdf {
     pub fn new() -> Self {
         Self {
             signature: Signature::new(
-                TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8, DataType::Int64]),
+                TypeSignature::OneOf(vec![
+                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8, DataType::Int64]),
+                    TypeSignature::Exact(vec![DataType::Utf8View, DataType::Utf8, DataType::Int64]),
+                    TypeSignature::Exact(vec![
+                        DataType::LargeUtf8,
+                        DataType::Utf8,
+                        DataType::Int64,
+                    ]),
+                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8View, DataType::Int64]),
+                    TypeSignature::Exact(vec![
+                        DataType::Utf8View,
+                        DataType::Utf8View,
+                        DataType::Int64,
+                    ]),
+                    TypeSignature::Exact(vec![
+                        DataType::LargeUtf8,
+                        DataType::Utf8View,
+                        DataType::Int64,
+                    ]),
+                    TypeSignature::Exact(vec![
+                        DataType::Utf8,
+                        DataType::LargeUtf8,
+                        DataType::Int64,
+                    ]),
+                    TypeSignature::Exact(vec![
+                        DataType::Utf8View,
+                        DataType::LargeUtf8,
+                        DataType::Int64,
+                    ]),
+                    TypeSignature::Exact(vec![
+                        DataType::LargeUtf8,
+                        DataType::LargeUtf8,
+                        DataType::Int64,
+                    ]),
+                ]),
                 Volatility::Immutable,
             ),
             regex_cache: Mutex::new(HashMap::new()),
@@ -88,7 +123,11 @@ impl ScalarUDFImpl for RegexpExtractUdf {
 
         // Extract the pattern string (must be a constant/scalar).
         let pattern_str = match pattern {
-            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(s))) => s.clone(),
+            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(s)))
+            | ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8View(Some(s)))
+            | ColumnarValue::Scalar(datafusion::common::ScalarValue::LargeUtf8(Some(s))) => {
+                s.clone()
+            }
             ColumnarValue::Scalar(s) => {
                 let s = s.to_string();
                 s.trim_matches('"').trim_matches('\'').to_string()
@@ -146,22 +185,62 @@ impl ScalarUDFImpl for RegexpExtractUdf {
 
         match input {
             ColumnarValue::Array(array) => {
-                let str_array = array.as_string::<i32>();
-                let mut builder =
-                    StringBuilder::with_capacity(str_array.len(), str_array.len() * 32);
+                let num_rows = array.len();
+                let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 32);
 
-                for i in 0..str_array.len() {
-                    if str_array.is_null(i) {
-                        builder.append_null();
-                        continue;
+                match array.data_type() {
+                    DataType::Utf8 => {
+                        let strings = array.as_string::<i32>();
+                        for i in 0..num_rows {
+                            if strings.is_null(i) {
+                                builder.append_null();
+                                continue;
+                            }
+                            match re.captures(strings.value(i)) {
+                                Some(caps) => match caps.get(idx) {
+                                    Some(m) => builder.append_value(m.as_str()),
+                                    None => builder.append_null(),
+                                },
+                                None => builder.append_null(),
+                            }
+                        }
                     }
-                    let val = str_array.value(i);
-                    match re.captures(val) {
-                        Some(caps) => match caps.get(idx) {
-                            Some(m) => builder.append_value(m.as_str()),
-                            None => builder.append_null(),
-                        },
-                        None => builder.append_null(),
+                    DataType::Utf8View => {
+                        let strings = array.as_string_view();
+                        for i in 0..num_rows {
+                            if strings.is_null(i) {
+                                builder.append_null();
+                                continue;
+                            }
+                            match re.captures(strings.value(i)) {
+                                Some(caps) => match caps.get(idx) {
+                                    Some(m) => builder.append_value(m.as_str()),
+                                    None => builder.append_null(),
+                                },
+                                None => builder.append_null(),
+                            }
+                        }
+                    }
+                    DataType::LargeUtf8 => {
+                        let strings = array.as_string::<i64>();
+                        for i in 0..num_rows {
+                            if strings.is_null(i) {
+                                builder.append_null();
+                                continue;
+                            }
+                            match re.captures(strings.value(i)) {
+                                Some(caps) => match caps.get(idx) {
+                                    Some(m) => builder.append_value(m.as_str()),
+                                    None => builder.append_null(),
+                                },
+                                None => builder.append_null(),
+                            }
+                        }
+                    }
+                    other => {
+                        return Err(datafusion::error::DataFusionError::Execution(format!(
+                            "regexp_extract() input must be Utf8/Utf8View/LargeUtf8, got {other:?}"
+                        )));
                     }
                 }
 
@@ -416,6 +495,81 @@ mod tests {
             "bob",
             "user_name row 1 must match user= pattern"
         );
+    }
+
+    /// Regression: regexp_extract() must accept Utf8View input columns.
+    /// Before the fix, Utf8View was not in the signature and would cause a
+    /// type-mismatch error at planning time.
+    #[test]
+    fn test_regexp_extract_utf8view_input() {
+        use arrow::array::StringViewArray;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "msg",
+            DataType::Utf8View,
+            true,
+        )]));
+        let msgs: Arc<dyn Array> = Arc::new(StringViewArray::from(vec![
+            Some("status=200 user=alice"),
+            Some("status=500 user=bob"),
+            None,
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT regexp_extract(msg, 'status=(\\d+)', 1) AS status FROM logs",
+        ));
+
+        let status = result
+            .column_by_name("status")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(status.value(0), "200");
+        assert_eq!(status.value(1), "500");
+        assert!(status.is_null(2));
+    }
+
+    #[test]
+    fn test_regexp_extract_largeutf8_input() {
+        use arrow::array::LargeStringArray;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "msg",
+            DataType::LargeUtf8,
+            true,
+        )]));
+        let msgs: Arc<dyn Array> = Arc::new(LargeStringArray::from(vec![
+            Some("status=201 user=carol"),
+            Some("status=404 user=dave"),
+            None,
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT regexp_extract(msg, 'status=(\\d+)', 1) AS status FROM logs",
+        ));
+
+        let status = result
+            .column_by_name("status")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(status.value(0), "201");
+        assert_eq!(status.value(1), "404");
+        assert!(status.is_null(2));
     }
 
     #[test]

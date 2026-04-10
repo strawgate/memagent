@@ -1,4 +1,4 @@
-//! UDF: geo_lookup(ip: Utf8) -> Struct{country_code, country_name, city, region, latitude, longitude, asn, org}
+//! UDF: geo_lookup(ip: Utf8|Utf8View|LargeUtf8) -> Struct{country_code, country_name, city, region, latitude, longitude, asn, org}
 //!
 //! Enriches log records with geographic location data based on IP addresses.
 //! Wraps a pluggable [`GeoDatabase`] backend — use [`MmdbDatabase`] for
@@ -55,7 +55,7 @@ fn geo_result_type() -> DataType {
 // GeoLookupUdf
 // ---------------------------------------------------------------------------
 
-/// UDF: geo_lookup(ip: Utf8) -> Struct{country_code, country_name, city, region, latitude, longitude, asn, org}
+/// UDF: geo_lookup(ip: Utf8|Utf8View|LargeUtf8) -> Struct{country_code, country_name, city, region, latitude, longitude, asn, org}
 ///
 /// Calls the underlying [`GeoDatabase`] for each row. Returns a struct with all
 /// NULL fields for IPs that cannot be resolved (private ranges, malformed, absent
@@ -76,7 +76,11 @@ impl GeoLookupUdf {
     pub fn new(db: Arc<dyn GeoDatabase>) -> Self {
         Self {
             signature: Signature::new(
-                TypeSignature::Exact(vec![DataType::Utf8]),
+                TypeSignature::OneOf(vec![
+                    TypeSignature::Exact(vec![DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
+                ]),
                 Volatility::Immutable,
             ),
             db,
@@ -112,8 +116,7 @@ impl ScalarUDFImpl for GeoLookupUdf {
 
         match input {
             ColumnarValue::Array(array) => {
-                let str_array = array.as_string::<i32>();
-                let num_rows = str_array.len();
+                let num_rows = array.len();
 
                 // One builder per struct field.
                 let mut country_code = StringBuilder::with_capacity(num_rows, num_rows * 4);
@@ -125,23 +128,75 @@ impl ScalarUDFImpl for GeoLookupUdf {
                 let mut asn = Int64Builder::with_capacity(num_rows);
                 let mut org = StringBuilder::with_capacity(num_rows, num_rows * 16);
 
-                for row in 0..num_rows {
-                    let result = if str_array.is_null(row) {
-                        None
-                    } else {
-                        self.db.lookup(str_array.value(row))
-                    };
-                    append_result(
-                        result.as_ref(),
-                        &mut country_code,
-                        &mut country_name,
-                        &mut city,
-                        &mut region,
-                        &mut latitude,
-                        &mut longitude,
-                        &mut asn,
-                        &mut org,
-                    );
+                match array.data_type() {
+                    DataType::Utf8 => {
+                        let strings = array.as_string::<i32>();
+                        for row in 0..num_rows {
+                            let result = if strings.is_null(row) {
+                                None
+                            } else {
+                                self.db.lookup(strings.value(row))
+                            };
+                            append_result(
+                                result.as_ref(),
+                                &mut country_code,
+                                &mut country_name,
+                                &mut city,
+                                &mut region,
+                                &mut latitude,
+                                &mut longitude,
+                                &mut asn,
+                                &mut org,
+                            );
+                        }
+                    }
+                    DataType::Utf8View => {
+                        let strings = array.as_string_view();
+                        for row in 0..num_rows {
+                            let result = if strings.is_null(row) {
+                                None
+                            } else {
+                                self.db.lookup(strings.value(row))
+                            };
+                            append_result(
+                                result.as_ref(),
+                                &mut country_code,
+                                &mut country_name,
+                                &mut city,
+                                &mut region,
+                                &mut latitude,
+                                &mut longitude,
+                                &mut asn,
+                                &mut org,
+                            );
+                        }
+                    }
+                    DataType::LargeUtf8 => {
+                        let strings = array.as_string::<i64>();
+                        for row in 0..num_rows {
+                            let result = if strings.is_null(row) {
+                                None
+                            } else {
+                                self.db.lookup(strings.value(row))
+                            };
+                            append_result(
+                                result.as_ref(),
+                                &mut country_code,
+                                &mut country_name,
+                                &mut city,
+                                &mut region,
+                                &mut latitude,
+                                &mut longitude,
+                                &mut asn,
+                                &mut org,
+                            );
+                        }
+                    }
+                    other => {
+                        return Err(datafusion::error::DataFusionError::Execution(format!(
+                            "geo_lookup() input must be Utf8/Utf8View/LargeUtf8, got {other:?}"
+                        )));
+                    }
                 }
 
                 let struct_array = build_struct_array(
@@ -160,7 +215,9 @@ impl ScalarUDFImpl for GeoLookupUdf {
             ColumnarValue::Scalar(scalar) => {
                 // Single-value path: look up once, return a scalar struct.
                 let ip_str = match scalar {
-                    datafusion::common::ScalarValue::Utf8(Some(s)) => Some(s.as_str()),
+                    datafusion::common::ScalarValue::Utf8(Some(s))
+                    | datafusion::common::ScalarValue::Utf8View(Some(s))
+                    | datafusion::common::ScalarValue::LargeUtf8(Some(s)) => Some(s.as_str()),
                     _ => None,
                 };
                 let result = ip_str.and_then(|ip| self.db.lookup(ip));
@@ -666,6 +723,85 @@ mod tests {
         let cc = s.column_by_name("country_code").unwrap().as_string::<i32>();
         assert!(cc.is_null(0));
         assert!(cc.is_null(1));
+    }
+
+    /// Regression: geo_lookup() must accept Utf8View input columns.
+    /// Before the fix, the signature only included Utf8 and the UDF would
+    /// reject Utf8View arrays (e.g. from Parquet readers or certain transforms).
+    #[test]
+    fn geo_lookup_utf8view_input() {
+        use arrow::array::StringViewArray;
+
+        let db = make_db();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "ip",
+            DataType::Utf8View,
+            true,
+        )]));
+        let arr: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("1.2.3.4"),
+            Some("5.6.7.8"),
+            None,
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![arr]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            db,
+            "SELECT get_field(geo_lookup(ip), 'country_code') AS cc FROM logs",
+        ));
+
+        let cc = result
+            .column_by_name("cc")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(cc.value(0), "US");
+        assert_eq!(cc.value(1), "DE");
+        assert!(cc.is_null(2));
+    }
+
+    #[test]
+    fn geo_lookup_largeutf8_input() {
+        use arrow::array::LargeStringArray;
+
+        let db = make_db();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "ip",
+            DataType::LargeUtf8,
+            true,
+        )]));
+        let arr: ArrayRef = Arc::new(LargeStringArray::from(vec![
+            Some("1.2.3.4"),
+            Some("5.6.7.8"),
+            None,
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![arr]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            db,
+            "SELECT get_field(geo_lookup(ip), 'country_code') AS cc FROM logs",
+        ));
+
+        let cc = result
+            .column_by_name("cc")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(cc.value(0), "US");
+        assert_eq!(cc.value(1), "DE");
+        assert!(cc.is_null(2));
     }
 
     #[test]
