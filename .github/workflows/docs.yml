@@ -49,7 +49,7 @@ jobs:
       - name: Link check (book + docs + README)
         uses: lycheeverse/lychee-action@v2
         with:
-          lycheeVersion: latest
+          lycheeVersion: v0.23.0
           args: >-
             --no-progress
             --accept 200,429
