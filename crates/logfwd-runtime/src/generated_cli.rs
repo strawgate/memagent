@@ -69,6 +69,7 @@ pub fn resolve_blast_output_config(
     if matches!(
         output_type,
         OutputType::Otlp
+            | OutputType::Http
             | OutputType::Elasticsearch
             | OutputType::Loki
             | OutputType::ArrowIpc
@@ -226,4 +227,34 @@ pub fn yaml_quote(value: &str) -> String {
     }
     escaped.push('"');
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_blast_output_config_http_requires_endpoint() {
+        let err = resolve_blast_output_config(OutputType::Http, None, None, &[])
+            .expect_err("http blast destination should require endpoint");
+        assert!(
+            err.contains("blast requires --endpoint"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_blast_output_config_http_preserves_endpoint() {
+        let cfg = resolve_blast_output_config(
+            OutputType::Http,
+            Some("http://127.0.0.1:8080/ingest"),
+            None,
+            &[],
+        )
+        .expect("http blast destination should preserve endpoint");
+        assert_eq!(
+            cfg.endpoint.as_deref(),
+            Some("http://127.0.0.1:8080/ingest")
+        );
+    }
 }
