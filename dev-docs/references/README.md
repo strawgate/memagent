@@ -4,7 +4,9 @@ Repo-scoped quick references for external libraries used by logfwd.
 
 ## Principles
 
-- Keep these short and implementation-focused.
+- Make depth proportional to topic complexity.
+- Keep simple topics short and implementation-focused.
+- Keep complex topics in-depth when that improves agent and reviewer decision quality.
 - Document only patterns used in this repository.
 - Link to upstream docs for generic tutorials.
 - If a section does not change repo decisions, remove it.

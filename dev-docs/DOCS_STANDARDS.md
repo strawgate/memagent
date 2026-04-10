@@ -57,11 +57,14 @@ Pruning policy:
 
 ## Reference Notes (`dev-docs/references/`)
 
-Reference notes are repo-scoped cheat sheets, not generic tutorials.
+Reference notes are repo-scoped guidance, not generic tutorials.
+Depth should be proportional to topic complexity and risk.
 
-- Keep them short and implementation-specific.
+- Simple/low-risk topics should stay short and implementation-specific.
+- Complex/high-risk topics (for example Kani, TLA+, scanner invariants) should be in-depth.
+- Deep references should be layered: quick orientation first, then detailed patterns, failure modes, and review checklists.
 - Link upstream docs for general education.
-- Remove sections that do not affect repository decisions.
+- Keep all sections tied to repository decisions and implementation behavior.
 
 ## Root Markdown Allowlist
 

@@ -1,59 +1,81 @@
-# Kani Verification (Repo-Scoped)
+# Kani Verification (Repo-Scoped Deep Reference)
 
-Minimal guide for writing and reviewing Kani proofs in logfwd.
+This reference is intentionally deep.
+Kani proofs in this repository are a high-complexity, high-leverage area, and
+agents need enough detail to make good proof design choices without re-research.
 
-## What Kani Is Used For Here
+Use this doc for proof authoring and review in `logfwd-*` crates.
 
-Use Kani for bounded, pure, deterministic logic.
+## Kani In The Verification Stack
 
-Primary targets in this repo:
+Use `dev-docs/VERIFICATION.md` as policy source-of-truth. Use this file for
+practical Kani execution details.
 
-- Parsers and framers in `logfwd-core`.
-- Bitmask/structural logic.
-- Encoding size/math invariants.
-- Pure state transitions.
+| Property shape | Primary tool | Why |
+|---|---|---|
+| Pure bounded logic, parser safety, arithmetic invariants | Kani | Exhaustive symbolic exploration inside bounds |
+| Temporal/liveness/ordering over many interleavings | TLA+ | Kani is step-bounded, not temporal |
+| Heap-heavy / async / IO-intensive behavior | proptest (+ Miri) | Kani scales poorly on unbounded heap and async shells |
 
-Do not use Kani for async orchestration or IO-heavy code.
+## Mental Model (Read First)
 
-## Mandatory Conventions
+1. `kani::any()` is universal quantification, not sampling.
+   - A passing proof means all values in the bounded domain satisfy assertions.
+2. Loops are bounded by unwind depth.
+   - Use `#[kani::unwind(N)]` when loops exist.
+3. `kani::assume()` shrinks the explored domain.
+   - Over-constraining can make proofs vacuous.
+4. Kani auto-checks memory-safety classes (panic/overflow/oob/etc) in harnesses,
+   but behavioral correctness still needs explicit assertions and meaningful oracles.
+
+## Repository Policy (Kani-Specific)
+
+Follow these defaults unless `dev-docs/VERIFICATION.md` says otherwise:
 
 - Put harnesses in `#[cfg(kani)] mod verification` in the same file.
-- Name harnesses `verify_<fn>_<property>`.
-- Add unwind bounds for loops (`#[kani::unwind(N)]`).
-- Add `kani::cover!` for at least one non-trivial path (use 2+ covers when harnesses rely on `kani::assume()` to guard against vacuity).
-- Keep assumptions narrow and explicit.
+- Name harnesses `verify_<function>_<property>`.
+- Add `#[kani::unwind(N)]` on looped harnesses.
+- Add `kani::cover!` in non-trivial harnesses.
+- If using `kani::assume()`, add 2+ `kani::cover!()` guards for vacuity checks.
+- Prefer `kani::any_where()` over broad `any()` plus many detached `assume()` calls.
 
-## Proof Types We Require
+Proofs are typically required for:
+- Parser/framer primitives in `logfwd-core`
+- Bitmask/structural operations
+- Encoding math and bounds-sensitive format logic
+- Pure state transitions
 
-- No panic: parser/encoder does not panic for bounded symbolic input.
-- Oracle equivalence: output matches a simpler reference implementation.
-- Invariant preservation: transition keeps invariant true.
+Not a Kani-first target:
+- Async orchestration shells
+- IO and network side effects
+- Unbounded heap-heavy workflows
 
-## Common Failure Modes
+## Commands (Local + CI Parity)
 
-- Vacuous proofs from over-constrained `assume`.
-- Oracle that reuses production logic (not independent).
-- Missing unwind on loops.
-- Proving only shape, not behavior.
-
-## Fast Workflow
-
-```bash
-just kani
-RUSTC_WRAPPER="" cargo kani -p logfwd-core --harness verify_my_harness -Z function-contracts -Z mem-predicates -Z stubbing
-RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
-```
-
-## CI-Parity Commands
+Fast path:
 
 ```bash
 just kani
 just kani-boundary
 ```
 
-Use raw `cargo kani` only for targeted iteration; always finish with `just` recipes.
+Focused iteration:
 
-## Copy/Paste Harness Templates
+```bash
+RUSTC_WRAPPER="" cargo kani -p logfwd-core --harness verify_my_harness -Z function-contracts -Z mem-predicates -Z stubbing
+RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
+```
+
+Guardrail and contract checks:
+
+```bash
+python3 scripts/verify_kani_boundary_contract.py
+just verification-guardrail
+```
+
+## Proof Patterns Used In This Repo
+
+### 1) Crash-freedom + reachability
 
 ```rust
 #[cfg(kani)]
@@ -69,13 +91,14 @@ mod verification {
 }
 ```
 
+### 2) Oracle equivalence (preferred for parser/math primitives)
+
 ```rust
 #[cfg(kani)]
 mod verification {
     use super::*;
 
     fn oracle(input: &[u8]) -> u64 {
-        // simple independent reference implementation
         input.iter().map(|b| *b as u64).sum()
     }
 
@@ -87,6 +110,8 @@ mod verification {
     }
 }
 ```
+
+### 3) State transition invariants
 
 ```rust
 #[cfg(kani)]
@@ -103,25 +128,67 @@ mod verification {
 }
 ```
 
-## Review Checklist
+### 4) Symbolic ordering/permutation exploration
 
-- Is this function in the Kani-required set from `dev-docs/VERIFICATION.md`?
-- Is the property meaningful (not tautological)?
-- Is there evidence the interesting path is reachable (`cover!`)?
-- If proof changed behavior expectations, was `VERIFICATION.md` updated?
+For order-sensitive logic, model operation ordering symbolically with
+`any_where()` rather than hardcoding one sequence.
+
+Repository examples:
+- `crates/logfwd-types/src/pipeline/lifecycle.rs`
+
+### 5) Compositional contracts (`proof_for_contract` + `stub_verified`)
+
+Use contracts to keep deep call chains tractable.
+
+Repository examples:
+- `crates/logfwd-core/src/structural.rs`
+- `crates/logfwd-core/src/otlp.rs`
+
+Workflow:
+1. Add `#[cfg_attr(kani, kani::requires(...))]` / `ensures(...)` contracts.
+2. Add `#[kani::proof_for_contract(fn_name)]` harnesses.
+3. In higher-level harnesses, use `#[kani::stub_verified(fn_name)]`.
+
+This reduces solver state explosion by replacing re-proving callees with their
+already-verified contracts.
+
+## Solver And Bound Tuning
+
+- Start with default solver.
+- Add `#[kani::solver(kissat)]` when harnesses become slow.
+- Keep unwind bounds realistic and explicit; too high inflates solve time,
+  too low yields inconclusive behavior.
+- Prefer proving smaller pure components compositionally over one monolith.
 
 ## Failure Triage
 
-- `kani::cover!` UNSAT: assumptions are over-constrained; relax constraints.
-- Timeout/slow solve: reduce bounds or add solver annotation.
-- Loop-related failure: adjust `#[kani::unwind(N)]` to realistic bound.
-- Oracle mismatch: verify oracle independence from production implementation.
+- `cover!` unsat:
+  - assumptions are over-constrained; relax domain.
+- Timeout/very slow solve:
+  - lower input width, split proof, add contracts/stubs, try `kissat`.
+- Loop-related failure:
+  - revisit `#[kani::unwind(N)]` and loop assumptions.
+- Oracle mismatch:
+  - validate oracle independence from production implementation.
+- Proof passes but seems weak:
+  - add branch-specific assertions and additional covers.
 
-## Canonical Docs
+## Review Checklist (Kani PRs)
 
-- Policy and required coverage: `dev-docs/VERIFICATION.md`
+- Is Kani required for this changed logic per `dev-docs/VERIFICATION.md`?
+- Is the property behavioral (not tautological)?
+- Are assumptions minimal and visible?
+- Do covers demonstrate interesting-path reachability?
+- Are unwind bounds justified?
+- If contracts/stubs are used, are there corresponding `proof_for_contract` harnesses?
+- If behavior/invariants changed, were docs and guardrails updated?
+
+## Repo Pointers
+
+- Policy and coverage rules: `dev-docs/VERIFICATION.md`
 - Crate constraints: `dev-docs/CRATE_RULES.md`
-- Boundary contract checks: `dev-docs/verification/kani-boundary-contract.toml`
+- Boundary contract source: `dev-docs/verification/kani-boundary-contract.toml`
+- Boundary validator: `scripts/verify_kani_boundary_contract.py`
 
 ## Upstream
 
