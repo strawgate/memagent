@@ -491,6 +491,7 @@ impl InputSource for GeneratorInput {
 
         let expected_batches = events_to_emit.div_ceil(self.config.batch_size as u64) as usize;
         let mut out_events = Vec::with_capacity(expected_batches);
+        let out_capacity = self.buf.capacity().max(self.config.batch_size * 512);
         let mut remaining = events_to_emit;
         while remaining > 0 {
             let chunk = remaining.min(self.config.batch_size as u64) as usize;
@@ -498,9 +499,10 @@ impl InputSource for GeneratorInput {
             if self.buf.is_empty() {
                 break;
             }
-            // Move emitted bytes out while keeping the generator hot buffer
-            // allocated for subsequent batches in this poll.
-            let out = self.buf.split_off(0);
+            // Transfer batch ownership without copying, while keeping a
+            // full-capacity hot buffer for the next generator write.
+            let mut out = Vec::with_capacity(out_capacity);
+            std::mem::swap(&mut self.buf, &mut out);
             let accounted_bytes = out.len() as u64;
             out_events.push(InputEvent::Data {
                 bytes: out,
