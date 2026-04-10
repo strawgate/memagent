@@ -838,7 +838,9 @@ mod tests {
         let emitted_rows: usize = second
             .iter()
             .map(|event| match event {
-                InputEvent::Data { bytes, .. } => bytes.iter().filter(|byte| **byte == b'\n').count(),
+                InputEvent::Data { bytes, .. } => {
+                    bytes.iter().filter(|byte| **byte == b'\n').count()
+                }
                 _ => 0,
             })
             .sum();
