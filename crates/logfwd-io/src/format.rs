@@ -866,7 +866,7 @@ mod verification {
         let ts = b"TS";
         let stream = b"S";
         let mut out = Vec::new();
-        inject_cri_metadata(&msg, ts, stream, &mut out);
+        inject_cri_metadata(&msg, ts, stream, "body", &mut out);
         // Output must start with timestamp+stream. The next byte is:
         // - ',' for non-empty JSON objects
         // - '}' for empty object path (`{}` / `{ }`) from issue #1658 fix

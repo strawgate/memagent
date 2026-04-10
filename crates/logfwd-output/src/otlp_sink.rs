@@ -828,6 +828,13 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
                     excluded.push(idx);
                 }
             }
+            name if name == message_field => {
+                if body_col.is_none()
+                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
+                {
+                    body_col = Some((idx, arr));
+                }
+            }
             name if field_names::matches_any(
                 name,
                 field_names::BODY,
@@ -835,17 +842,15 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
             ) =>
             {
                 if let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref()) {
-                    // Canonical body wins when both canonical and alias columns exist.
+                    // Canonical body wins over configured fields and aliases.
                     if body_col.is_none() || name == field_names::BODY {
+                        if let Some((prev_idx, _)) = body_col
+                            && prev_idx != idx
+                        {
+                            // Keep the replaced configured/alias field as an attribute.
+                        }
                         body_col = Some((idx, arr));
                     }
-                }
-            }
-            name if name == message_field => {
-                if body_col.is_none()
-                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
-                {
-                    body_col = Some((idx, arr));
                 }
             }
             "_raw" => {

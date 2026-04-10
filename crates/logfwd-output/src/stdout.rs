@@ -548,10 +548,10 @@ mod tests {
         assert_eq!(output, "line one\nline two\n");
     }
 
-    /// A batch *without* a `body` column should fall back to JSON output so
-    /// existing behaviour is preserved.
+    /// A batch without canonical `body` should still render text when a
+    /// supported alias is present.
     #[test]
-    fn text_format_without_raw_column_falls_back_to_json() {
+    fn text_format_message_alias_writes_text_lines() {
         let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
         let msg = StringArray::from(vec![Some("hello"), Some("world")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(msg)]).unwrap();
@@ -566,13 +566,7 @@ mod tests {
             .unwrap();
 
         let output = String::from_utf8(out).unwrap();
-        let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(lines.len(), 2, "expected two JSON lines, got: {output:?}");
-        // Each line must be valid JSON containing the msg field.
-        let row0: serde_json::Value = serde_json::from_str(lines[0]).expect("row 0 is valid JSON");
-        let row1: serde_json::Value = serde_json::from_str(lines[1]).expect("row 1 is valid JSON");
-        assert_eq!(row0["msg"], "hello");
-        assert_eq!(row1["msg"], "world");
+        assert_eq!(output, "hello\nworld\n");
     }
 
     #[test]
