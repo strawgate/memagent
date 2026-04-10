@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import sys
+import tempfile
+import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     import tomllib
@@ -21,6 +24,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "dev-docs" / "verification" / "kani-boundary-contract.toml"
 VALID_STATUSES = {"required", "recommended", "exempt"}
+
+
+def has_kani_cfg(text: str) -> bool:
+    return "#![cfg(kani)]" in text or "#[cfg(kani)]" in text
 
 
 def load_contract() -> list[dict[str, object]]:
@@ -41,7 +48,7 @@ def rust_files_with_kani() -> set[str]:
         if rel.startswith("crates/logfwd-core/"):
             continue
         text = path.read_text(encoding="utf-8")
-        if "#[cfg(kani)]" in text or "#[kani::proof]" in text:
+        if has_kani_cfg(text) or "#[kani::proof]" in text:
             result.add(rel)
     return result
 
@@ -81,15 +88,15 @@ def validate() -> list[str]:
             continue
 
         text = file_path.read_text(encoding="utf-8")
-        has_kani_cfg = "#![cfg(kani)]" in text or "#[cfg(kani)]" in text
+        has_kani_cfg_marker = has_kani_cfg(text)
         has_kani_proof = "#[kani::proof]" in text
 
         if status == "required":
-            if not has_kani_cfg:
+            if not has_kani_cfg_marker:
                 errors.append(f"{path}: required seam is missing #[cfg(kani)]")
             if not has_kani_proof:
                 errors.append(f"{path}: required seam is missing #[kani::proof]")
-        elif status == "exempt" and (has_kani_cfg or has_kani_proof):
+        elif status == "exempt" and (has_kani_cfg_marker or has_kani_proof):
             errors.append(f"{path}: exempt seam unexpectedly contains Kani proofs")
 
     missing = sorted(proof_files - seen)
@@ -116,6 +123,21 @@ def main() -> int:
 
     print("Kani boundary contract OK")
     return 0
+
+
+class VerifyKaniBoundaryContractTests(unittest.TestCase):
+    def test_rust_files_with_kani_detects_inner_cfg_only_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            kani_file = root / "crates" / "logfwd-io" / "src" / "tail" / "verification.rs"
+            kani_file.parent.mkdir(parents=True, exist_ok=True)
+            kani_file.write_text("#![cfg(kani)]\n", encoding="utf-8")
+
+            with mock.patch.object(sys.modules[__name__], "ROOT", root):
+                self.assertEqual(
+                    rust_files_with_kani(),
+                    {"crates/logfwd-io/src/tail/verification.rs"},
+                )
 
 
 if __name__ == "__main__":
