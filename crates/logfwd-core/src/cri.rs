@@ -417,6 +417,19 @@ mod tests {
     use alloc::format;
     use proptest::prelude::*;
 
+    fn miri_aware_proptest_config() -> proptest::test_runner::Config {
+        #[cfg(miri)]
+        {
+            let mut cfg = proptest::test_runner::Config::default();
+            cfg.failure_persistence = None;
+            cfg
+        }
+        #[cfg(not(miri))]
+        {
+            proptest::test_runner::Config::default()
+        }
+    }
+
     #[test]
     fn test_parse_full_line() {
         let line =
@@ -610,10 +623,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig {
-            failure_persistence: None,
-            .. ProptestConfig::default()
-        })]
+        #![proptest_config(miri_aware_proptest_config())]
         #[test]
         fn proptest_stream_token_validation(stream in "[a-z]{1,8}") {
             let line = format!("2024-01-15T10:30:00Z {stream} F msg");

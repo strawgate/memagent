@@ -1313,6 +1313,19 @@ mod proptests {
     use proptest::prelude::*;
     use proptest::test_runner::Config as ProptestConfig;
 
+    fn miri_aware_proptest_config() -> ProptestConfig {
+        #[cfg(miri)]
+        {
+            let mut cfg = ProptestConfig::default();
+            cfg.failure_persistence = None;
+            cfg
+        }
+        #[cfg(not(miri))]
+        {
+            ProptestConfig::default()
+        }
+    }
+
     #[derive(Debug, Clone)]
     enum Action {
         Create { source: u32, checkpoint: u64 },
@@ -1331,10 +1344,7 @@ mod proptests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig {
-            failure_persistence: None,
-            .. ProptestConfig::default()
-        })]
+        #![proptest_config(miri_aware_proptest_config())]
         /// Random event sequences: in-flight count is always consistent.
         #[test]
         fn in_flight_consistent(actions in proptest::collection::vec(action_strategy(), 1..50)) {

@@ -32,7 +32,7 @@ def iter_regression_files() -> list[Path]:
 def has_failure_persistence_none(text: str) -> bool:
     return (
         re.search(
-            r"failure_persistence\s*:\s*(?:None|(?:[A-Za-z_]\w*::)*FailurePersistence::None)",
+            r"failure_persistence\s*(?::|=)\s*(?:None|(?:[A-Za-z_]\w*::)*FailurePersistence::None)",
             text,
         )
         is not None
