@@ -1,10 +1,10 @@
 #[cfg(feature = "turmoil")]
+use std::net::SocketAddr;
+#[cfg(feature = "turmoil")]
 use std::sync::Arc;
 #[cfg(feature = "turmoil")]
 use std::time::Duration;
 
-#[cfg(feature = "turmoil")]
-use arrow::record_batch::RecordBatch;
 #[cfg(feature = "turmoil")]
 use logfwd_io::diagnostics::PipelineMetrics;
 #[cfg(feature = "turmoil")]
@@ -38,6 +38,7 @@ pub(super) async fn async_input_poll_loop(
     input_index: usize,
 ) {
     let mut buffered_since: Option<tokio::time::Instant> = None;
+    let mut buffered_sender: Option<SocketAddr> = None;
     'poll_loop: loop {
         if shutdown.is_cancelled() {
             input.stats.set_health(reduce_component_health(
@@ -71,7 +72,16 @@ pub(super) async fn async_input_poll_loop(
         } else {
             for event in events {
                 match event {
-                    InputEvent::Data { bytes, .. } => {
+                    InputEvent::Data {
+                        bytes, sender_addr, ..
+                    } => {
+                        if input.buf.is_empty() {
+                            buffered_sender = sender_addr;
+                        } else if buffered_sender != sender_addr {
+                            // Mixed senders in one buffered chunk — clear sender
+                            // attribution to avoid lying in traces.
+                            buffered_sender = None;
+                        }
                         input.buf.extend_from_slice(&bytes);
                     }
                     InputEvent::Batch { batch, .. } => {
@@ -81,6 +91,7 @@ pub(super) async fn async_input_poll_loop(
                                 &mut transform,
                                 &metrics,
                                 input_index,
+                                buffered_sender,
                             )
                             .await
                             {
@@ -89,6 +100,7 @@ pub(super) async fn async_input_poll_loop(
                                 }
                             }
                             buffered_since = None;
+                            buffered_sender = None;
                         }
 
                         if let Some(msg) = transform_direct_batch_for_send(
@@ -96,6 +108,7 @@ pub(super) async fn async_input_poll_loop(
                             &mut transform,
                             &metrics,
                             input_index,
+                            None,
                             batch,
                         )
                         .await
@@ -125,21 +138,34 @@ pub(super) async fn async_input_poll_loop(
         let should_send =
             input.buf.len() >= batch_target_bytes || (!input.buf.is_empty() && timeout_elapsed);
         if should_send {
-            if let Some(msg) =
-                scan_and_transform_for_send(&mut input, &mut transform, &metrics, input_index).await
+            if let Some(msg) = scan_and_transform_for_send(
+                &mut input,
+                &mut transform,
+                &metrics,
+                input_index,
+                buffered_sender,
+            )
+            .await
             {
                 if tx.send(msg).await.is_err() {
                     break;
                 }
             }
             buffered_since = None;
+            buffered_sender = None;
         }
     }
 
     // Drain remaining buffered data.
     if !input.buf.is_empty() {
-        if let Some(msg) =
-            scan_and_transform_for_send(&mut input, &mut transform, &metrics, input_index).await
+        if let Some(msg) = scan_and_transform_for_send(
+            &mut input,
+            &mut transform,
+            &metrics,
+            input_index,
+            buffered_sender,
+        )
+        .await
         {
             if let Err(e) = tx.send(msg).await {
                 tracing::warn!(

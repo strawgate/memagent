@@ -1,5 +1,7 @@
 #[cfg(feature = "turmoil")]
 use std::collections::HashMap;
+#[cfg(feature = "turmoil")]
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 #[cfg(feature = "turmoil")]
@@ -190,6 +192,7 @@ pub(super) async fn scan_and_transform_for_send(
     transform: &mut InputTransform,
     metrics: &PipelineMetrics,
     input_index: usize,
+    sender_addr: Option<SocketAddr>,
 ) -> Option<ChannelMsg> {
     let data = input.buf.split().freeze();
     let checkpoints: HashMap<SourceId, ByteOffset> =
@@ -235,7 +238,7 @@ pub(super) async fn scan_and_transform_for_send(
         input_index,
         scan_ns,
         transform_ns,
-        sender_addr: None,
+        sender_addr,
     })
 }
 
@@ -245,6 +248,7 @@ pub(super) async fn transform_direct_batch_for_send(
     transform: &mut InputTransform,
     metrics: &PipelineMetrics,
     input_index: usize,
+    sender_addr: Option<SocketAddr>,
     batch: RecordBatch,
 ) -> Option<ChannelMsg> {
     let checkpoints: HashMap<SourceId, ByteOffset> =
@@ -279,6 +283,6 @@ pub(super) async fn transform_direct_batch_for_send(
         input_index,
         scan_ns: 0,
         transform_ns,
-        sender_addr: None,
+        sender_addr,
     })
 }

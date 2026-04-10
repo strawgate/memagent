@@ -67,6 +67,8 @@ pub(crate) struct IoChunk {
     pub checkpoints: Vec<(SourceId, ByteOffset)>,
     pub queued_at: tokio::time::Instant,
     pub input_index: usize,
+    /// Sender socket address for a UDP-attributed chunk; `None` when the
+    /// buffered bytes came from mixed senders or from a non-UDP source.
     pub sender_addr: Option<std::net::SocketAddr>,
 }
 
@@ -509,8 +511,6 @@ impl InputPipelineManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // --- InputPipelineManager integration tests ---
     // These test the full split pipeline via from_config + run, so they
     // don't need direct access to private types.

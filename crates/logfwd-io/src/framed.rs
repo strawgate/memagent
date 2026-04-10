@@ -20,6 +20,7 @@ use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 use std::collections::HashMap;
 use std::io;
+use std::io::Write as _;
 use std::sync::Arc;
 
 /// Maximum remainder buffer size before discarding (prevents OOM on
@@ -253,14 +254,10 @@ impl InputSource for FramedInput {
                             self.spare_buf = std::mem::replace(&mut self.out_buf, with_source);
                         }
                     }
-                    if inject_source_path && let Some(sender_addr) = sender_addr {
+                    if let Some(sender_addr) = sender_addr {
                         let mut with_sender = std::mem::take(&mut self.spare_buf);
                         with_sender.clear();
-                        inject_sender_metadata(
-                            &self.out_buf,
-                            sender_addr.to_string().as_bytes(),
-                            &mut with_sender,
-                        );
+                        inject_sender_metadata(&self.out_buf, sender_addr, &mut with_sender);
                         self.out_buf.clear();
                         self.spare_buf = std::mem::replace(&mut self.out_buf, with_sender);
                     }
@@ -462,8 +459,37 @@ fn inject_source_path_metadata(chunk: &[u8], source_path: &std::path::Path, out:
     inject_json_metadata(chunk, b"_source_path", source_path_bytes.as_bytes(), out);
 }
 
-fn inject_sender_metadata(chunk: &[u8], sender: &[u8], out: &mut Vec<u8>) {
-    inject_json_metadata(chunk, b"_sender", sender, out);
+fn inject_sender_metadata(chunk: &[u8], sender: std::net::SocketAddr, out: &mut Vec<u8>) {
+    let mut pos = 0;
+    while pos < chunk.len() {
+        let eol = memchr::memchr(b'\n', &chunk[pos..]).map_or(chunk.len(), |o| pos + o);
+        let line = &chunk[pos..eol];
+        let first_nonws = line
+            .iter()
+            .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'));
+        if let Some(obj_start) = first_nonws.filter(|&idx| line[idx] == b'{') {
+            let after_open = &line[obj_start + 1..];
+            let is_empty_obj = after_open
+                .iter()
+                .position(|&b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+                .is_some_and(|i| after_open[i] == b'}');
+            out.extend_from_slice(&line[..obj_start]);
+            out.extend_from_slice(b"{\"_sender\":\"");
+            out.write_fmt(format_args!("{sender}"))
+                .expect("write sender metadata");
+            out.push(b'"');
+            if !is_empty_obj {
+                out.push(b',');
+            }
+            out.extend_from_slice(after_open);
+        } else {
+            out.extend_from_slice(line);
+        }
+        if eol < chunk.len() {
+            out.push(b'\n');
+        }
+        pos = eol + 1;
+    }
 }
 
 fn inject_json_metadata(chunk: &[u8], key: &[u8], value: &[u8], out: &mut Vec<u8>) {
@@ -1523,6 +1549,28 @@ mod tests {
             out,
             b"{\"_sender\":\"127.0.0.1:9100\",\"_source_path\":\"/var/log/pods/ns_pod_uid/c/sender.log\",\"msg\":\"hello\"}\n"
         );
+    }
+
+    #[test]
+    fn raw_passthrough_injects_sender_metadata_without_source_path_support() {
+        let stats = make_stats();
+        let sid = SourceId(13);
+        let sender_addr: std::net::SocketAddr = "127.0.0.1:9101".parse().unwrap();
+        let source = MockSource::new(vec![vec![InputEvent::Data {
+            bytes: b"{\"msg\":\"hello\"}\n".to_vec(),
+            source_id: Some(sid),
+            accounted_bytes: 0,
+            sender_addr: Some(sender_addr),
+        }]]);
+
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            stats,
+        );
+
+        let out = collect_data(framed.poll().unwrap());
+        assert_eq!(out, b"{\"_sender\":\"127.0.0.1:9101\",\"msg\":\"hello\"}\n");
     }
 
     #[test]

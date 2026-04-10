@@ -128,6 +128,8 @@ Listen for log lines on a UDP socket.
 
 `udp` treats each datagram as one or more newline-delimited records. TLS is
 not supported for UDP inputs (DTLS is not implemented).
+When the selected format can inject JSON metadata, emitted rows may also
+include `_sender` with the datagram source address.
 
 ```yaml
 input:
@@ -458,6 +460,7 @@ Special columns added by the scanner / input format layer:
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream` | string | CRI stream name (`stdout` / `stderr`). |
 | `_source_path` | string | Canonical file path for file-backed rows (JSON and CRI file inputs). |
+| `_sender` | string | UDP peer address (`ip:port`) for sender-attributed rows when the format can inject JSON metadata. |
 
 ### Built-in UDFs
 

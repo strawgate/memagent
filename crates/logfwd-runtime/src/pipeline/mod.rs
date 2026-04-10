@@ -91,6 +91,9 @@ pub(crate) struct ChannelMsg {
     pub input_index: usize,
     pub scan_ns: u64,
     pub transform_ns: u64,
+    /// Sender socket address for batches that can be attributed to exactly
+    /// one peer. `None` for non-network inputs, mixed-sender buffers, or when
+    /// sender attribution is unavailable.
     pub sender_addr: Option<std::net::SocketAddr>,
 }
 

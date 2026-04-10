@@ -1,7 +1,5 @@
 //! UDP input source. Listens on a UDP socket and produces one InputEvent
-//! per received datagram (or batch of datagrams).
-
-use std::collections::BTreeMap;
+//! per received datagram.
 use std::io;
 use std::net::UdpSocket;
 use std::sync::Arc;
@@ -99,10 +97,7 @@ impl UdpInput {
 impl InputSource for UdpInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
         let mut under_pressure = false;
-
-        // Accumulate by sender so each emitted Data event retains deterministic
-        // sender attribution without per-datagram allocations.
-        let mut by_sender: BTreeMap<std::net::SocketAddr, (Vec<u8>, u64)> = BTreeMap::new();
+        let mut events = Vec::new();
 
         // Drain all available datagrams in one poll cycle.
         loop {
@@ -113,16 +108,19 @@ impl InputSource for UdpInput {
                 }
                 Ok((n, sender_addr)) => {
                     let data = &self.buf[..n];
-                    let (out, source_bytes) = by_sender
-                        .entry(sender_addr)
-                        .or_insert_with(|| (Vec::with_capacity(4096), 0));
-                    *source_bytes = source_bytes.saturating_add(n as u64);
-                    out.extend_from_slice(data);
+                    let mut bytes = Vec::with_capacity(n + 1);
+                    bytes.extend_from_slice(data);
                     // Ensure newline termination so the scanner always sees
                     // complete lines, even if the sender omitted a trailing LF.
                     if !data.ends_with(b"\n") {
-                        out.push(b'\n');
+                        bytes.push(b'\n');
                     }
+                    events.push(InputEvent::Data {
+                        bytes,
+                        source_id: None,
+                        accounted_bytes: n as u64,
+                        sender_addr: Some(sender_addr),
+                    });
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 // ECONNREFUSED can arrive on a connected UDP socket (ICMP
@@ -152,19 +150,7 @@ impl InputSource for UdpInput {
             },
         );
 
-        if by_sender.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        Ok(by_sender
-            .into_iter()
-            .map(|(sender_addr, (bytes, accounted_bytes))| InputEvent::Data {
-                bytes,
-                source_id: None,
-                accounted_bytes,
-                sender_addr: Some(sender_addr),
-            })
-            .collect())
+        Ok(events)
     }
 
     fn name(&self) -> &str {
@@ -181,6 +167,16 @@ mod tests {
     use super::*;
     use std::net::UdpSocket as StdSocket;
 
+    fn collect_data(events: Vec<InputEvent>) -> Vec<u8> {
+        let mut out = Vec::new();
+        for event in events {
+            if let InputEvent::Data { bytes, .. } = event {
+                out.extend_from_slice(&bytes);
+            }
+        }
+        out
+    }
+
     #[test]
     fn receives_datagrams() {
         let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
@@ -194,12 +190,8 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let events = input.poll().unwrap();
-        assert_eq!(events.len(), 1);
-        if let InputEvent::Data { bytes, .. } = &events[0] {
-            let text = String::from_utf8_lossy(bytes);
-            assert!(text.contains("hello world"), "got: {text}");
-            assert!(text.contains("second line"), "got: {text}");
-        }
+        assert_eq!(events.len(), 2);
+        assert_eq!(collect_data(events), b"hello world\nsecond line\n");
     }
 
     #[test]
@@ -259,26 +251,57 @@ mod tests {
         let sender1_addr = sender1.local_addr().unwrap();
         let sender2_addr = sender2.local_addr().unwrap();
 
-        sender1.send_to(b"one\n", addr).unwrap();
-        sender2.send_to(b"two\n", addr).unwrap();
+        let (first_sender, first_addr, first_payload, second_sender, second_addr, second_payload) =
+            if sender1_addr > sender2_addr {
+                (
+                    &sender1,
+                    sender1_addr,
+                    b"one\n",
+                    &sender2,
+                    sender2_addr,
+                    b"two\n",
+                )
+            } else {
+                (
+                    &sender2,
+                    sender2_addr,
+                    b"two\n",
+                    &sender1,
+                    sender1_addr,
+                    b"one\n",
+                )
+            };
+        first_sender.send_to(first_payload, addr).unwrap();
+        second_sender.send_to(second_payload, addr).unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let events = input.poll().unwrap();
         assert_eq!(events.len(), 2);
 
-        let mut seen = std::collections::BTreeSet::new();
-        for event in events {
-            if let InputEvent::Data {
-                sender_addr: Some(sender),
+        match &events[0] {
+            InputEvent::Data {
+                bytes,
+                sender_addr: Some(actual_sender),
                 ..
-            } = event
-            {
-                seen.insert(sender);
+            } => {
+                assert_eq!(*actual_sender, first_addr);
+                assert_eq!(bytes, first_payload);
             }
+            _ => panic!("expected first InputEvent::Data variant"),
         }
-        assert!(seen.contains(&sender1_addr));
-        assert!(seen.contains(&sender2_addr));
+
+        match &events[1] {
+            InputEvent::Data {
+                bytes,
+                sender_addr: Some(actual_sender),
+                ..
+            } => {
+                assert_eq!(*actual_sender, second_addr);
+                assert_eq!(bytes, second_payload);
+            }
+            _ => panic!("expected second InputEvent::Data variant"),
+        }
     }
 
     #[test]
