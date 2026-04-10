@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn sensor_inputs_reject_format_configuration() {
-        let mut pm = logfwd_io::diagnostics::PipelineMetrics::new(
+        let mut pm = logfwd_diagnostics::diagnostics::PipelineMetrics::new(
             "p",
             "SELECT 1",
             &logfwd_test_utils::test_meter(),
