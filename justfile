@@ -278,6 +278,16 @@ test-extended:
     cargo nextest run --profile ci --run-ignored ignored-only
     cargo test -p logfwd --features turmoil --test turmoil_sim
 
+# Focused runtime trace contract validation (turmoil simulation).
+trace-validate:
+    cargo test -p logfwd --features turmoil --test turmoil_sim trace_validation
+
+# TLA reachability/vacuity coverage models (expects invariant violations as witnesses).
+tla-coverage jar="/tmp/tla/tla2tools.jar":
+    python3 scripts/run_tlc_coverage.py --jar {{jar}} --tla-file tla/MCPipelineMachine.tla --config tla/PipelineMachine.coverage.cfg
+    python3 scripts/run_tlc_coverage.py --jar {{jar}} --tla-file tla/MCShutdownProtocol.tla --config tla/ShutdownProtocol.coverage.cfg
+    python3 scripts/run_tlc_coverage.py --jar {{jar}} --tla-file tla/MCPipelineBatch.tla --config tla/PipelineBatch.coverage.cfg
+
 # Build release binary (full package, includes DataFusion SQL)
 build:
     cargo build --release -p logfwd
