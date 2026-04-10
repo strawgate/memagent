@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::future::Future;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -66,8 +66,7 @@ impl StdoutSink {
     ) -> Self {
         let color = format == StdoutFormat::Console
             && std::env::var_os("NO_COLOR").is_none()
-            // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
-            && unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 };
+            && io::stdout().is_terminal();
         StdoutSink {
             name,
             format,

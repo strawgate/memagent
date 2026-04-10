@@ -22,8 +22,7 @@ pub use types::{
     GeneratorProfileConfig, GeneratorSequenceConfig, GeoDatabaseConfig, GeoDatabaseFormat,
     HostInfoConfig, HttpInputConfig, HttpMethodConfig, InputConfig, InputType,
     JsonlEnrichmentConfig, K8sPathConfig, OutputConfig, OutputType, PipelineConfig,
-    PlatformSensorBetaInputConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
-    TlsInputConfig,
+    PlatformSensorInputConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig, TlsInputConfig,
 };
 pub use validate::validate_host_port;
 
@@ -677,12 +676,28 @@ pipelines:
             ("otlp", "listen: 0.0.0.0:4317"),
             ("http", "listen: 0.0.0.0:8080"),
             ("generator", ""),
-            ("linux_sensor_beta", ""),
-            ("macos_sensor_beta", ""),
-            ("windows_sensor_beta", ""),
+            ("linux_ebpf_sensor", ""),
+            ("macos_es_sensor", ""),
+            ("windows_ebpf_sensor", ""),
         ] {
             let yaml = format!("input:\n  type: {itype}\n  {extra}\noutput:\n  type: stdout\n");
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));
+        }
+    }
+
+    #[test]
+    fn sensor_aliases_remain_supported_for_back_compat() {
+        for itype in [
+            "linux_sensor_beta",
+            "macos_sensor_beta",
+            "windows_sensor_beta",
+        ] {
+            let yaml = format!(
+                "input:\n  type: {itype}\n  sensor_beta:\n    poll_interval_ms: 1000\noutput:\n  type: stdout\n"
+            );
+            Config::load_str(&yaml).unwrap_or_else(|e| {
+                panic!("legacy alias should remain supported for {itype}: {e}")
+            });
         }
     }
 
@@ -734,6 +749,23 @@ output:
     }
 
     #[test]
+    fn sensor_rejects_format_configuration() {
+        let yaml = r"
+input:
+  type: linux_ebpf_sensor
+  format: raw
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor inputs do not support 'format'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn non_file_input_rejects_tuning_knobs() {
         let inputs = [
             ("http", "listen: 0.0.0.0:8080"),
@@ -770,12 +802,12 @@ output:
     }
 
     #[test]
-    fn file_input_rejects_sensor_beta_block() {
+    fn file_input_rejects_sensor_block() {
         let yaml = r"
 input:
   type: file
   path: /tmp/x.log
-  sensor_beta:
+  sensor:
     poll_interval_ms: 1000
 output:
   type: stdout
@@ -783,16 +815,16 @@ output:
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
-                .contains("'sensor_beta' settings are only supported for *_sensor_beta inputs")
+                .contains("'sensor' settings are only supported for sensor inputs")
         );
     }
 
     #[test]
-    fn sensor_beta_rejects_zero_poll_interval() {
+    fn sensor_rejects_zero_poll_interval() {
         let yaml = r"
 input:
-  type: linux_sensor_beta
-  sensor_beta:
+  type: linux_ebpf_sensor
+  sensor:
     poll_interval_ms: 0
 output:
   type: stdout
@@ -800,7 +832,58 @@ output:
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
-                .contains("sensor_beta.poll_interval_ms must be at least 1")
+                .contains("sensor.poll_interval_ms must be at least 1")
+        );
+    }
+
+    #[test]
+    fn sensor_rejects_zero_control_reload_interval() {
+        let yaml = r"
+input:
+  type: linux_ebpf_sensor
+  sensor:
+    control_reload_interval_ms: 0
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor.control_reload_interval_ms must be at least 1")
+        );
+    }
+
+    #[test]
+    fn sensor_rejects_empty_control_path() {
+        let yaml = r#"
+input:
+  type: linux_ebpf_sensor
+  sensor:
+    control_path: "   "
+output:
+  type: stdout
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor.control_path must not be empty")
+        );
+    }
+
+    #[test]
+    fn sensor_rejects_unknown_enabled_family() {
+        let yaml = r"
+input:
+  type: linux_ebpf_sensor
+  sensor:
+    enabled_families: [process, made_up_family]
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown sensor family 'made_up_family'")
         );
     }
 

@@ -35,12 +35,19 @@ pub enum InputType {
     Otlp,
     Http,
     Generator,
-    /// Linux beta sensor input (eBPF-oriented runtime path).
-    LinuxSensorBeta,
-    /// macOS beta sensor input (EndpointSecurity-oriented runtime path).
-    MacosSensorBeta,
-    /// Windows beta sensor input (eBPF/ETW hybrid-oriented runtime path).
-    WindowsSensorBeta,
+    /// Linux eBPF sensor input.
+    #[serde(rename = "linux_ebpf_sensor", alias = "linux_sensor_beta")]
+    LinuxEbpfSensor,
+    /// macOS EndpointSecurity sensor input.
+    #[serde(
+        rename = "macos_es_sensor",
+        alias = "macos_sensor_beta",
+        alias = "macos_endpointsecurity_sensor"
+    )]
+    MacosEsSensor,
+    /// Windows eBPF sensor input.
+    #[serde(rename = "windows_ebpf_sensor", alias = "windows_sensor_beta")]
+    WindowsEbpfSensor,
     ArrowIpc,
 }
 
@@ -53,9 +60,9 @@ impl fmt::Display for InputType {
             InputType::Otlp => f.write_str("otlp"),
             InputType::Http => f.write_str("http"),
             InputType::Generator => f.write_str("generator"),
-            InputType::LinuxSensorBeta => f.write_str("linux_sensor_beta"),
-            InputType::MacosSensorBeta => f.write_str("macos_sensor_beta"),
-            InputType::WindowsSensorBeta => f.write_str("windows_sensor_beta"),
+            InputType::LinuxEbpfSensor => f.write_str("linux_ebpf_sensor"),
+            InputType::MacosEsSensor => f.write_str("macos_es_sensor"),
+            InputType::WindowsEbpfSensor => f.write_str("windows_ebpf_sensor"),
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
         }
     }
@@ -245,14 +252,26 @@ pub struct GeneratorInputConfig {
     pub timestamp: Option<GeneratorTimestampConfig>,
 }
 
-/// Platform beta sensor configuration.
+/// Platform sensor configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct PlatformSensorBetaInputConfig {
-    /// Sensor heartbeat cadence. Defaults to 10_000 when omitted.
+pub struct PlatformSensorInputConfig {
+    /// Sensor sample cadence. Defaults to 10_000 when omitted.
     pub poll_interval_ms: Option<u64>,
-    /// Emit periodic heartbeat rows while the sensor is idle. Defaults to true.
+    /// Deprecated no-op retained for backward compatibility.
+    ///
+    /// Sensor inputs are Arrow-native and do not emit heartbeat rows.
     pub emit_heartbeat: Option<bool>,
+    /// Optional path to a JSON control file for runtime sensor tuning.
+    pub control_path: Option<String>,
+    /// How often to check `control_path` for updates. Defaults to 1_000 when omitted.
+    pub control_reload_interval_ms: Option<u64>,
+    /// Optional explicit enabled families for this platform.
+    ///
+    /// `None` means "use platform defaults". `Some([])` means "disable all".
+    pub enabled_families: Option<Vec<String>>,
+    /// Emit periodic per-family sample rows. Defaults to true.
+    pub emit_signal_rows: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -287,8 +306,8 @@ pub struct InputConfig {
     pub glob_rescan_interval_ms: Option<u64>,
     #[serde(default)]
     pub generator: Option<GeneratorInputConfig>,
-    #[serde(default)]
-    pub sensor_beta: Option<PlatformSensorBetaInputConfig>,
+    #[serde(default, alias = "sensor_beta")]
+    pub sensor: Option<PlatformSensorInputConfig>,
     #[serde(default)]
     pub http: Option<HttpInputConfig>,
     pub sql: Option<String>,

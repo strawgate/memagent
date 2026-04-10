@@ -402,9 +402,9 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputType::Http => format!("http  {}", i.listen.as_deref().unwrap_or(":8080")),
         InputType::ArrowIpc => "arrow_ipc".to_string(),
         InputType::Generator => "generator".to_string(),
-        InputType::LinuxSensorBeta => "linux_sensor_beta".to_string(),
-        InputType::MacosSensorBeta => "macos_sensor_beta".to_string(),
-        InputType::WindowsSensorBeta => "windows_sensor_beta".to_string(),
+        InputType::LinuxEbpfSensor => "linux_ebpf_sensor".to_string(),
+        InputType::MacosEsSensor => "macos_es_sensor".to_string(),
+        InputType::WindowsEbpfSensor => "windows_ebpf_sensor".to_string(),
         _ => "unknown".to_string(),
     }
 }

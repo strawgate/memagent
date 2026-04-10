@@ -108,8 +108,7 @@ impl From<logfwd_runtime::bootstrap::RuntimeError> for CliError {
 // ---------------------------------------------------------------------------
 
 fn use_color() -> bool {
-    // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
-    env::var_os("NO_COLOR").is_none() && unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
+    env::var_os("NO_COLOR").is_none() && io::stderr().is_terminal()
 }
 
 fn use_json_logs_for_stderr(is_terminal: bool) -> bool {
@@ -1305,14 +1304,25 @@ fn validate_pipeline_read_only(
             .name
             .clone()
             .unwrap_or_else(|| format!("input_{i}"));
-        let format = input_cfg
-            .format
-            .clone()
-            .unwrap_or(match input_cfg.input_type {
-                InputType::File => Format::Auto,
-                _ => Format::Json,
-            });
-        validate_input_format_read_only(&input_name, input_cfg.input_type.clone(), &format)?;
+        if matches!(
+            input_cfg.input_type,
+            InputType::LinuxEbpfSensor | InputType::MacosEsSensor | InputType::WindowsEbpfSensor
+        ) {
+            if input_cfg.format.is_some() {
+                return Err(format!(
+                    "input '{input_name}': sensor inputs do not support 'format' (Arrow-native input)"
+                ));
+            }
+        } else {
+            let format = input_cfg
+                .format
+                .clone()
+                .unwrap_or(match input_cfg.input_type {
+                    InputType::File => Format::Auto,
+                    _ => Format::Json,
+                });
+            validate_input_format_read_only(&input_name, input_cfg.input_type.clone(), &format)?;
+        }
 
         let input_sql = input_cfg.sql.as_deref().unwrap_or(pipeline_sql);
         let mut transform = SqlTransform::new(input_sql).map_err(|e| e.to_string())?;
@@ -1346,11 +1356,7 @@ fn validate_input_format_read_only(
             format,
             Format::Cri | Format::Auto | Format::Json | Format::Raw
         ),
-        InputType::Generator
-        | InputType::Otlp
-        | InputType::LinuxSensorBeta
-        | InputType::MacosSensorBeta
-        | InputType::WindowsSensorBeta => matches!(format, Format::Json),
+        InputType::Generator | InputType::Otlp => matches!(format, Format::Json),
         InputType::Http => matches!(format, Format::Json | Format::Raw),
         InputType::Udp | InputType::Tcp => matches!(format, Format::Json | Format::Raw),
         InputType::ArrowIpc => false,
@@ -2043,6 +2049,39 @@ output:
         let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
         let result = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(matches!(result, Err(CliError::Config(_))));
+    }
+
+    #[test]
+    fn validate_pipelines_read_only_rejects_sensor_format() {
+        let yaml = r#"
+input:
+  type: linux_ebpf_sensor
+  format: raw
+output:
+  type: null
+"#;
+        let err = logfwd_config::Config::load_str(yaml)
+            .expect_err("sensor format should fail config validation");
+        assert!(
+            err.to_string()
+                .contains("sensor inputs do not support 'format'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_pipelines_read_only_accepts_arrow_native_sensor() {
+        let yaml = r#"
+input:
+  type: linux_ebpf_sensor
+  sensor:
+    poll_interval_ms: 1000
+output:
+  type: null
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        validate_pipelines_read_only(&config, None, |_name| {}, |_err| {})
+            .expect("sensor input without format should validate");
     }
     #[test]
     fn read_wizard_line_rejects_eof() {

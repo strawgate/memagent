@@ -30,11 +30,11 @@ transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
-  endpoint: https://otel-collector:4318/v1/logs
+  endpoint: http://otel-collector:4318/v1/logs
   compression: zstd
 
 server:
-  diagnostics: 127.0.0.1:9090
+  diagnostics: 0.0.0.0:9090
   log_level: info
 ```
 
@@ -51,7 +51,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
-        endpoint: https://otel-collector:4318/v1/logs
+        endpoint: http://otel-collector:4318/v1/logs
 
   debug:
     inputs:
@@ -63,7 +63,7 @@ pipelines:
         format: json
 
 server:
-  diagnostics: 127.0.0.1:9090
+  diagnostics: 0.0.0.0:9090
 ```
 
 The two layouts cannot be mixed: specifying both `input`/`output` at the top level and
@@ -126,9 +126,6 @@ Listen for log lines on a UDP socket.
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:514`. |
 
-`udp` treats each datagram as one or more newline-delimited records. TLS is
-not supported for UDP inputs (DTLS is not implemented).
-
 ```yaml
 input:
   type: udp
@@ -143,13 +140,6 @@ Accept log lines on a TCP socket.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:5140`. |
-
-TCP framing uses RFC 6587 octet-counting when a valid `<len><space>` prefix is
-present, and falls back to legacy newline framing otherwise. Oversized frames
-(`> 1 MiB`) are discarded.
-
-TLS is not supported for TCP inputs (mTLS is not implemented); any `tls:`
-block under a `tcp` input is rejected at config validation time.
 
 ```yaml
 input:
@@ -202,49 +192,65 @@ input:
     response_body: '{"ok":true}'
 ```
 
-### `linux_sensor_beta` input
+### `linux_ebpf_sensor` input
 
-Linux beta sensor lane for early platform-native ingestion development.
+Linux eBPF sensor input for platform-native ingestion. This input is
+Arrow-native and does not support `format`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
-| `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
+| `sensor.poll_interval_ms` | integer | No | Periodic sample cadence in milliseconds. Must be `>= 1`. Defaults to `10000`. |
+| `sensor.control_path` | string | No | Optional JSON control-plane file path for runtime reload. |
+| `sensor.control_reload_interval_ms` | integer | No | Reload check interval in milliseconds. Must be `>= 1`. Defaults to `1000`. |
+| `sensor.enabled_families` | array[string] | No | Optional enabled signal families for this target (`process,file,network,dns,authz` on Linux). Omit to use defaults; set `[]` to disable all families. |
+| `sensor.emit_signal_rows` | boolean | No | Emit periodic per-family sample rows. Defaults to `true`. |
 
 ```yaml
 input:
-  type: linux_sensor_beta
-  sensor_beta:
+  type: linux_ebpf_sensor
+  sensor:
     poll_interval_ms: 2000
 ```
 
-### `macos_sensor_beta` input
+### `macos_es_sensor` input
 
-macOS beta sensor lane for EndpointSecurity-oriented adapter bring-up.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
-| `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
-
-```yaml
-input:
-  type: macos_sensor_beta
-```
-
-### `windows_sensor_beta` input
-
-Windows beta sensor lane for eBPF/ETW hybrid adapter bring-up.
+macOS EndpointSecurity sensor input. This input is Arrow-native and does not
+support `format`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `sensor_beta.poll_interval_ms` | integer | No | Heartbeat cadence in milliseconds. Defaults to `10000`. |
-| `sensor_beta.emit_heartbeat` | boolean | No | Emit periodic heartbeat rows while idle. Defaults to `true`. |
+| `sensor.poll_interval_ms` | integer | No | Periodic sample cadence in milliseconds. Must be `>= 1`. Defaults to `10000`. |
+| `sensor.control_path` | string | No | Optional JSON control-plane file path for runtime reload. |
+| `sensor.control_reload_interval_ms` | integer | No | Reload check interval in milliseconds. Must be `>= 1`. Defaults to `1000`. |
+| `sensor.enabled_families` | array[string] | No | Optional enabled signal families (`process,file,network,dns,module,authz` on macOS). Omit to use defaults; set `[]` to disable all families. |
+| `sensor.emit_signal_rows` | boolean | No | Emit periodic per-family sample rows. Defaults to `true`. |
 
 ```yaml
 input:
-  type: windows_sensor_beta
+  type: macos_es_sensor
 ```
+
+### `windows_ebpf_sensor` input
+
+Windows eBPF sensor input. This input is Arrow-native and does not support
+`format`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sensor.poll_interval_ms` | integer | No | Periodic sample cadence in milliseconds. Must be `>= 1`. Defaults to `10000`. |
+| `sensor.control_path` | string | No | Optional JSON control-plane file path for runtime reload. |
+| `sensor.control_reload_interval_ms` | integer | No | Reload check interval in milliseconds. Must be `>= 1`. Defaults to `1000`. |
+| `sensor.enabled_families` | array[string] | No | Optional enabled signal families (`process,file,network,dns,module,registry,authz` on Windows). Omit to use defaults; set `[]` to disable all families. |
+| `sensor.emit_signal_rows` | boolean | No | Emit periodic per-family sample rows. Defaults to `true`. |
+
+```yaml
+input:
+  type: windows_ebpf_sensor
+```
+
+Compatibility note: legacy names `linux_sensor_beta`, `macos_sensor_beta`,
+`windows_sensor_beta`, plus the legacy `sensor_beta:` block, are still
+accepted as aliases for backward compatibility.
 
 ### `arrow_ipc` input *(not yet supported)*
 
@@ -262,10 +268,9 @@ config validation currently rejects it.
 | `udp` | Implemented | Receive log lines over UDP. |
 | `tcp` | Implemented | Accept log lines over TCP. |
 | `otlp` | Implemented | Receive OTLP logs over a bound listen address. |
-| `http` | Implemented | Receive newline-delimited payloads via HTTP `POST`. |
-| `linux_sensor_beta` | Beta | Linux platform sensor beta lane (heartbeat/control events while integration is in progress). |
-| `macos_sensor_beta` | Beta | macOS platform sensor beta lane (heartbeat/control events while integration is in progress). |
-| `windows_sensor_beta` | Beta | Windows platform sensor beta lane (heartbeat/control events while integration is in progress). |
+| `linux_ebpf_sensor` | Implemented | Linux eBPF sensor input (Arrow-native control + signal rows). |
+| `macos_es_sensor` | Implemented | macOS EndpointSecurity sensor input (Arrow-native control + signal rows). |
+| `windows_ebpf_sensor` | Implemented | Windows eBPF sensor input (Arrow-native control + signal rows). |
 | `arrow_ipc` | Not yet supported | Reserved for future Arrow IPC ingest. |
 
 ---
@@ -273,6 +278,8 @@ config validation currently rejects it.
 ## Formats
 
 The `format` field controls how raw bytes from the input are parsed into log records.
+`linux_ebpf_sensor`, `macos_es_sensor`, and `windows_ebpf_sensor` are
+Arrow-native and reject `format`.
 
 | Value | Description |
 |-------|-------------|
@@ -296,27 +303,20 @@ Each pipeline requires at least one output.
 | `type` | string | Yes | Output type. See [Output types](#output-types). |
 | `name` | string | No | Friendly name shown in diagnostics. |
 
-For URL-based outputs (`otlp`, `elasticsearch`, `loki`, `arrow_ipc`, and `http`),
-endpoints must be valid `http://` or `https://` URLs. Embedded credentials
-(`https://user:pass@host/...`) are rejected; use `output.auth` instead. For
-transport safety, non-loopback endpoints must use `https://`. Plain `http://`
-is only accepted for loopback targets (`localhost`, `127.0.0.1`, `[::1]`) for
-local development.
-
 ### `otlp` output
 
 Send log records as OTLP protobuf to an OpenTelemetry collector.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `endpoint` | string | Yes | — | Full collector URL, e.g. `https://otel-collector:4317` (gRPC) or `https://otel-collector:4318/v1/logs` (HTTP). |
+| `endpoint` | string | Yes | — | Full collector URL, e.g. `http://otel-collector:4317` (gRPC) or `http://otel-collector:4318/v1/logs` (HTTP). |
 | `protocol` | string | No | `http` | `http` or `grpc`. |
 | `compression` | string | No | none | `zstd`, `gzip`, or `none` for the request body. |
 
 ```yaml
 output:
   type: otlp
-  endpoint: https://otel-collector:4317
+  endpoint: http://otel-collector:4317
   protocol: grpc
   compression: zstd
 ```
@@ -329,13 +329,13 @@ lands.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `endpoint` | string | Yes | Full URL, e.g. `https://ingest.example.com/logs`. |
+| `endpoint` | string | Yes | Full URL, e.g. `http://ingest.example.com/logs`. |
 | `compression` | string | No | Reserved for future use. |
 
 ```yaml
 output:
   type: http
-  endpoint: https://ingest.example.com/logs
+  endpoint: http://ingest.example.com/logs
 ```
 
 ### `stdout` output
@@ -461,7 +461,9 @@ Special columns added by the scanner / input format layer:
 | `body` | string | Original input line (when input line capture is enabled, e.g. `line_field: body`, or when a non-JSON CRI line is wrapped for scanner safety). |
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream` | string | CRI stream name (`stdout` / `stderr`). |
-| `_source_path` | string | Canonical file path for file-backed rows (JSON and CRI file inputs). |
+
+File-backed source-path metadata is not yet exposed as a SQL column. Track that
+gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
 
 ### Built-in UDFs
 
@@ -511,13 +513,10 @@ enrichment:
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
 
-Join file-backed logs on `_source_path`:
-
-```sql
-SELECT l.*, k.namespace, k.pod_name, k.container_name
-FROM logs l
-LEFT JOIN k8s k ON starts_with(l._source_path, k.log_path_prefix)
-```
+This enrichment table is ready to expose path-derived metadata, but file-backed
+inputs do not yet inject a source-path column into the `logs` table. The join
+shown in older docs is therefore not wired end to end today. Track that runtime
+gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
 
 Columns exposed by `k8s`:
 
@@ -566,14 +565,14 @@ The optional `server` block controls the diagnostics server and observability se
 |-------|------|---------|-------------|
 | `diagnostics` | string | none | `host:port` to listen for HTTP diagnostics. See [Diagnostics API](#diagnostics-api). |
 | `log_level` | string | `info` | Log verbosity. One of `error`, `warn`, `info`, `debug`, `trace`. |
-| `metrics_endpoint` | string | none | OTLP endpoint for periodic metrics push, e.g. `https://otel-collector:4318`. |
+| `metrics_endpoint` | string | none | OTLP endpoint for periodic metrics push, e.g. `http://otel-collector:4318`. |
 | `metrics_interval_secs` | integer | `60` | Push interval for OTLP metrics in seconds. |
 
 ```yaml
 server:
-  diagnostics: 127.0.0.1:9090
+  diagnostics: 0.0.0.0:9090
   log_level: info
-  metrics_endpoint: https://otel-collector:4318
+  metrics_endpoint: http://otel-collector:4318
   metrics_interval_secs: 30
 ```
 
@@ -590,7 +589,7 @@ When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitori
 | `/ready` | GET | Readiness probe. Returns 200 OK when required components are initialized and in a ready health state; returns 503 while components are still starting, stopping, stopped, failed, or otherwise not ready. |
 | `/admin/v1/status` | GET | Canonical rich status payload with live/ready state, component health, and per-pipeline counters. |
 | `/admin/v1/stats` | GET | Aggregate process stats (uptime, RSS, CPU, aggregate line counts). |
-| `/admin/v1/config` | GET | Currently loaded YAML configuration and its file path (disabled by default; see note below). |
+| `/admin/v1/config` | GET | Currently loaded YAML configuration and its file path. |
 | `/admin/v1/logs` | GET | Recent log lines from logfwd's own stderr (ring buffer). |
 | `/admin/v1/history` | GET | Time-series data (1-hour window) for dashboard charts. |
 | `/admin/v1/traces` | GET | Recent batch processing spans for detailed latency analysis. |
@@ -599,14 +598,6 @@ For input diagnostics, `bytes_total` reflects source payload bytes accepted at
 the input boundary. For structured receivers such as OTLP, this is the
 accepted request-body size as received on the wire, not the in-memory Arrow
 batch footprint or the post-decompression payload size.
-
-Security note:
-
-- Bind diagnostics to loopback unless you intentionally need remote access (for
-  example: `127.0.0.1:9090`).
-- `GET /admin/v1/config` is disabled by default because configs may contain
-  secrets. To enable it for short-lived local debugging, set
-  `LOGFWD_UNSAFE_EXPOSE_CONFIG=1` (or `true`) before starting logfwd.
 
 ---
 
@@ -681,7 +672,7 @@ enrichment:
       cluster: ${CLUSTER_NAME}
 
 server:
-  diagnostics: 127.0.0.1:9090
+  diagnostics: 0.0.0.0:9090
   log_level: info
   metrics_endpoint: ${OTEL_ENDPOINT}
   metrics_interval_secs: 60

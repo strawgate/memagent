@@ -208,9 +208,9 @@ impl Config {
                         }
                     }
                     InputType::Generator
-                    | InputType::LinuxSensorBeta
-                    | InputType::MacosSensorBeta
-                    | InputType::WindowsSensorBeta
+                    | InputType::LinuxEbpfSensor
+                    | InputType::MacosEsSensor
+                    | InputType::WindowsEbpfSensor
                     | InputType::ArrowIpc => {}
                 }
 
@@ -237,9 +237,9 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'tls' is not supported for file inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
+                        if input.sensor.is_some() {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
+                                "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                             )));
                         }
                     }
@@ -284,9 +284,9 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for tcp/udp inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
+                        if input.sensor.is_some() {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
+                                "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                             )));
                         }
                     }
@@ -348,9 +348,9 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for otlp inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
+                        if input.sensor.is_some() {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
+                                "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                             )));
                         }
                     }
@@ -395,9 +395,9 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for http inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
+                        if input.sensor.is_some() {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
+                                "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                             )));
                         }
                         if let Some(http) = &input.http {
@@ -473,9 +473,9 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for generator inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
+                        if input.sensor.is_some() {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
+                                "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                             )));
                         }
                         if input.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
@@ -570,9 +570,9 @@ impl Config {
                             }
                         }
                     }
-                    InputType::LinuxSensorBeta
-                    | InputType::MacosSensorBeta
-                    | InputType::WindowsSensorBeta => {
+                    InputType::LinuxEbpfSensor
+                    | InputType::MacosEsSensor
+                    | InputType::WindowsEbpfSensor => {
                         if input.generator.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
@@ -631,15 +631,56 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
                             )));
                         }
+                        if input.format.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': sensor inputs do not support 'format' (Arrow-native input)"
+                            )));
+                        }
+                        if input.sensor.as_ref().and_then(|cfg| cfg.poll_interval_ms) == Some(0) {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': sensor.poll_interval_ms must be at least 1"
+                            )));
+                        }
                         if input
-                            .sensor_beta
+                            .sensor
                             .as_ref()
-                            .and_then(|cfg| cfg.poll_interval_ms)
+                            .and_then(|cfg| cfg.control_reload_interval_ms)
                             == Some(0)
                         {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': sensor_beta.poll_interval_ms must be at least 1"
+                                "pipeline '{name}' input '{label}': sensor.control_reload_interval_ms must be at least 1"
                             )));
+                        }
+                        if input
+                            .sensor
+                            .as_ref()
+                            .and_then(|cfg| cfg.control_path.as_deref())
+                            .is_some_and(|path| path.trim().is_empty())
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': sensor.control_path must not be empty"
+                            )));
+                        }
+                        if let Some(families) = input
+                            .sensor
+                            .as_ref()
+                            .and_then(|cfg| cfg.enabled_families.as_ref())
+                        {
+                            for family in families {
+                                let normalized = family.trim();
+                                if normalized.is_empty() {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': sensor.enabled_families entries must not be empty"
+                                    )));
+                                }
+                                if !is_sensor_family_supported(&input.input_type, normalized) {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': unknown sensor family '{normalized}' for {} input (supported: {})",
+                                        input.input_type,
+                                        sensor_supported_families_csv(&input.input_type)
+                                    )));
+                                }
+                            }
                         }
                     }
                     InputType::ArrowIpc => {
@@ -653,9 +694,9 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
                             )));
                         }
-                        if input.sensor_beta.is_some() {
+                        if input.sensor.is_some() {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': 'sensor_beta' settings are only supported for *_sensor_beta inputs"
+                                "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                             )));
                         }
                     }
@@ -1073,6 +1114,30 @@ fn normalize_path_lexically(path: &Path) -> std::path::PathBuf {
     } else {
         out
     }
+}
+
+fn sensor_supported_families(input_type: &InputType) -> &'static [&'static str] {
+    match input_type {
+        InputType::LinuxEbpfSensor => &["process", "file", "network", "dns", "authz"],
+        InputType::MacosEsSensor => &["process", "file", "network", "dns", "module", "authz"],
+        InputType::WindowsEbpfSensor => &[
+            "process", "file", "network", "dns", "module", "registry", "authz",
+        ],
+        _ => &[],
+    }
+}
+
+fn sensor_supported_families_csv(input_type: &InputType) -> &'static str {
+    match input_type {
+        InputType::LinuxEbpfSensor => "process,file,network,dns,authz",
+        InputType::MacosEsSensor => "process,file,network,dns,module,authz",
+        InputType::WindowsEbpfSensor => "process,file,network,dns,module,registry,authz",
+        _ => "",
+    }
+}
+
+fn is_sensor_family_supported(input_type: &InputType, name: &str) -> bool {
+    sensor_supported_families(input_type).contains(&name)
 }
 
 /// Validate that a bind address is a parseable `host:port` socket address.

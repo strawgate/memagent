@@ -142,7 +142,7 @@ transform: SELECT level, message, status FROM logs WHERE status >= 400
 
 output:
   type: otlp
-  endpoint: https://otel-collector:4318/v1/logs
+  endpoint: http://otel-collector:4318/v1/logs
   compression: zstd
 ```
 
@@ -158,7 +158,7 @@ pipelines:
     transform: SELECT * FROM logs WHERE level = 'ERROR'
     outputs:
       - type: otlp
-        endpoint: https://otel-collector:4318/v1/logs
+        endpoint: http://otel-collector:4318/v1/logs
 
   debug:
     inputs:
@@ -174,24 +174,24 @@ See the [Configuration Reference](book/src/config/reference.md) for all YAML fie
 
 ### Platform Sensor Betas
 
-`logfwd` includes explicit beta input lanes for all three major host platforms:
+`logfwd` now includes explicit beta input lanes for all three major host platforms:
 
 - `linux_sensor_beta`
 - `macos_sensor_beta`
 - `windows_sensor_beta`
 
-These inputs are platform-gated and currently emit sensor-control heartbeat rows while
+These inputs are platform-gated and emit Arrow-native sensor control/signal batches while
 deeper native sensor integrations are being brought online.
 
 ```yaml
 input:
   type: linux_sensor_beta
+  format: raw
   sensor_beta:
     poll_interval_ms: 2000
     emit_heartbeat: true
 output:
   type: stdout
-  format: json
 ```
 
 See [Configuration Reference](book/src/config/reference.md#input-types) for full status/details.
