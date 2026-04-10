@@ -1,5 +1,18 @@
 // API response types from logfwd diagnostics server
 
+
+export type MetricId =
+  | "lps"
+  | "bps"
+  | "obps"
+  | "err"
+  | "cpu"
+  | "mem"
+  | "lat"
+  | "inflight"
+  | "batches"
+  | "stalls";
+
 export interface ComponentData {
   name: string;
   type: string;
@@ -71,6 +84,7 @@ export interface ComponentHealthSnapshot extends StatusSnapshot {
 }
 
 export interface StatusResponse {
+  contract_version: string;
   live: StatusSnapshot & {
     status: "live";
   };
@@ -88,6 +102,20 @@ export interface StatusResponse {
       active: number;
     };
   };
+}
+
+export interface LiveResponse {
+  contract_version: string;
+  status: "live";
+  uptime_seconds: number;
+  version: string;
+}
+
+export interface ReadyResponse {
+  contract_version: string;
+  status: "ready" | "not_ready";
+  reason: string;
+  observed_at_unix_ns: string;
 }
 
 export interface StatsResponse {
@@ -156,12 +184,26 @@ export interface TraceRecord {
   flush_reason: string;
   errors: number;
   status: "ok" | "error" | "unset";
-  /** True while the batch is still executing (scan/transform/output in progress). */
-  in_progress?: boolean;
-  /** Current stage when in_progress: "scan" | "transform" | "output" */
-  stage?: string;
-  /** Unix ns when the current in-progress stage started. */
-  stage_start_unix_ns?: string;
+  /**
+   * Explicit trace lifecycle state used by TraceExplorer rendering.
+   *
+   * State contract:
+   * - "scan_in_progress": scanner is executing (lifecycle_state_start_unix_ns required)
+   * - "transform_in_progress": SQL transform is executing (lifecycle_state_start_unix_ns required)
+   * - "queued_for_output": scan+transform are done and waiting for output worker assignment
+   *   (lifecycle_state_start_unix_ns required; worker_id should be -1)
+   * - "output_in_progress": output is executing on an assigned worker
+   *   (lifecycle_state_start_unix_ns + output_start_unix_ns required)
+   * - "completed": terminal state for both success and error outcomes
+   */
+  lifecycle_state:
+    | "scan_in_progress"
+    | "transform_in_progress"
+    | "queued_for_output"
+    | "output_in_progress"
+    | "completed";
+  /** Unix ns when the current lifecycle state started (required for in-progress states). */
+  lifecycle_state_start_unix_ns?: string;
 }
 
 export interface TracesResponse {

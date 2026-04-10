@@ -28,6 +28,7 @@ function makeTr(overrides: Partial<TraceRecord> = {}): TraceRecord {
     errors: 0,
     status: "ok",
     worker_id: 0,
+    lifecycle_state: "completed",
     ...overrides,
   };
 }
@@ -49,9 +50,9 @@ describe("computeStats", () => {
 
   it("returns null when only in-progress traces exist", () => {
     const traces = [
-      makeTr({ in_progress: true }),
-      makeTr({ in_progress: true }),
-      makeTr({ in_progress: true }),
+      makeTr({ lifecycle_state: "scan_in_progress" }),
+      makeTr({ lifecycle_state: "scan_in_progress" }),
+      makeTr({ lifecycle_state: "scan_in_progress" }),
     ];
     expect(computeStats(traces)).toBeNull();
   });
@@ -59,8 +60,8 @@ describe("computeStats", () => {
   it("returns null when only one completed trace and rest are in-progress", () => {
     const traces = [
       makeTr(), // completed
-      makeTr({ in_progress: true }),
-      makeTr({ in_progress: true }),
+      makeTr({ lifecycle_state: "scan_in_progress" }),
+      makeTr({ lifecycle_state: "scan_in_progress" }),
     ];
     expect(computeStats(traces)).toBeNull();
   });
@@ -69,7 +70,7 @@ describe("computeStats", () => {
     // two completed traces 1 s apart → window = 1 s → 120 batches/min
     const t1 = makeTr({ start_unix_ns: 0 });
     const t2 = makeTr({ start_unix_ns: 1_000_000_000 }); // 1 second later
-    const tInProgress = makeTr({ in_progress: true, start_unix_ns: 999_999_999_999 });
+    const tInProgress = makeTr({ lifecycle_state: "scan_in_progress", start_unix_ns: 999_999_999_999 });
     const stats = computeStats([t1, t2, tInProgress]);
     expect(stats).not.toBeNull();
     // window is determined only by completed traces
@@ -196,7 +197,7 @@ describe("computeStats", () => {
       const traces = [
         makeTr({ errors: 1, start_unix_ns: 0 }),
         makeTr({ errors: 0, start_unix_ns: 1_000_000_000 }),
-        makeTr({ errors: 99, in_progress: true }), // excluded
+        makeTr({ errors: 99, lifecycle_state: "scan_in_progress" }), // excluded
       ];
       const stats = computeStats(traces)!;
       expect(stats.errors).toBe(1);
@@ -255,14 +256,14 @@ describe("buildLanes", () => {
 
   describe("pending traces", () => {
     it("collects in-progress output batches with no worker (worker_id < 0) as pending", () => {
-      const pending = makeTr({ worker_id: -1, in_progress: true, stage: "output" });
+      const pending = makeTr({ worker_id: -1, lifecycle_state: "queued_for_output" });
       const { pendingTraces } = buildLanes([pending]);
       expect(pendingTraces).toHaveLength(1);
       expect(pendingTraces[0]).toBe(pending);
     });
 
     it("does not add pending traces to any worker lane", () => {
-      const pending = makeTr({ worker_id: -1, in_progress: true, stage: "output" });
+      const pending = makeTr({ worker_id: -1, lifecycle_state: "queued_for_output" });
       const { lanes } = buildLanes([pending]);
       // only scan lane, no worker lanes
       expect(lanes).toHaveLength(1);
@@ -270,7 +271,7 @@ describe("buildLanes", () => {
 
     it("ignores in-progress traces not in output stage for pending", () => {
       // worker_id < 0 but stage = "scan" — not pending, not in any worker lane
-      const scanning = makeTr({ worker_id: -1, in_progress: true, stage: "scan" });
+      const scanning = makeTr({ worker_id: -1, lifecycle_state: "scan_in_progress" });
       const { pendingTraces, lanes } = buildLanes([scanning]);
       expect(pendingTraces).toHaveLength(0);
       expect(lanes).toHaveLength(1); // only scan lane
@@ -278,7 +279,7 @@ describe("buildLanes", () => {
 
     it("completed traces with worker_id < 0 are not added to pending or worker lanes", () => {
       // worker_id = -1 but not in_progress → neither pending nor worker lane
-      const done = makeTr({ worker_id: -1, in_progress: false });
+      const done = makeTr({ worker_id: -1, lifecycle_state: "completed" });
       const { pendingTraces, lanes } = buildLanes([done]);
       expect(pendingTraces).toHaveLength(0);
       expect(lanes).toHaveLength(1); // scan lane only
@@ -287,7 +288,7 @@ describe("buildLanes", () => {
     it("mixes worker and pending traces correctly", () => {
       const w0 = makeTr({ worker_id: 0 });
       const w1 = makeTr({ worker_id: 1 });
-      const p = makeTr({ worker_id: -1, in_progress: true, stage: "output" });
+      const p = makeTr({ worker_id: -1, lifecycle_state: "queued_for_output" });
       const { lanes, pendingTraces } = buildLanes([w0, w1, p]);
 
       expect(pendingTraces).toHaveLength(1);

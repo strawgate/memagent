@@ -101,6 +101,7 @@ pub struct FaultScenario {
     shutdown_after: Duration,
     checkpoint_flush_interval: Option<Duration>,
     arm_checkpoint_crash_after: Option<Duration>,
+    crash_on_nth_flush: Option<u64>,
     network_faults: Vec<NetworkFault>,
     fail_rate: Option<f64>,
     typed_contract: Option<TypedInvariantBundle>,
@@ -121,6 +122,7 @@ impl FaultScenario {
             shutdown_after: Duration::from_secs(5),
             checkpoint_flush_interval: None,
             arm_checkpoint_crash_after: None,
+            crash_on_nth_flush: None,
             network_faults: Vec::new(),
             fail_rate: None,
             typed_contract: None,
@@ -178,6 +180,12 @@ impl FaultScenario {
     /// Arm a simulated checkpoint crash after the given delay.
     pub fn with_checkpoint_crash_after(mut self, crash_after: Duration) -> Self {
         self.arm_checkpoint_crash_after = Some(crash_after);
+        self
+    }
+
+    /// Crash deterministically on the Nth checkpoint flush (1-indexed).
+    pub fn with_checkpoint_crash_on_nth_flush(mut self, n: u64) -> Self {
+        self.crash_on_nth_flush = Some(n);
         self
     }
 
@@ -261,6 +269,9 @@ impl FaultScenario {
 
                     if let Some((store, handle)) = maybe_checkpoint {
                         pipeline = pipeline.with_checkpoint_store(Box::new(store));
+                        if let Some(n) = scenario.crash_on_nth_flush {
+                            handle.crash_on_nth_flush(n);
+                        }
                         if let Some(crash_after) = scenario.arm_checkpoint_crash_after {
                             tokio::spawn(async move {
                                 tokio::time::sleep(crash_after).await;
@@ -311,6 +322,9 @@ impl FaultScenario {
 
                     if let Some((store, handle)) = maybe_checkpoint {
                         pipeline = pipeline.with_checkpoint_store(Box::new(store));
+                        if let Some(n) = scenario.crash_on_nth_flush {
+                            handle.crash_on_nth_flush(n);
+                        }
                         if let Some(crash_after) = scenario.arm_checkpoint_crash_after {
                             tokio::spawn(async move {
                                 tokio::time::sleep(crash_after).await;
@@ -359,6 +373,9 @@ impl FaultScenario {
 
                     if let Some((store, handle)) = maybe_checkpoint {
                         pipeline = pipeline.with_checkpoint_store(Box::new(store));
+                        if let Some(n) = scenario.crash_on_nth_flush {
+                            handle.crash_on_nth_flush(n);
+                        }
                         if let Some(crash_after) = scenario.arm_checkpoint_crash_after {
                             tokio::spawn(async move {
                                 tokio::time::sleep(crash_after).await;
@@ -562,9 +579,16 @@ enum Invariant {
         source_id: u64,
     },
     CheckpointCrashCountGe(u64),
+    CheckpointFlushCountGe(u64),
     CheckpointUpdatesGe {
         source_id: u64,
         min: usize,
+    },
+    CheckpointDurableAbsent {
+        source_id: u64,
+    },
+    CheckpointDurableNotAheadOfUpdates {
+        source_id: u64,
     },
     ServerReceivedGe(u64),
     ServerConnectionsGe(u64),
@@ -622,10 +646,30 @@ impl InvariantSet {
         self
     }
 
+    /// Require that at least `min` checkpoint flushes succeeded.
+    pub fn checkpoint_flush_count_ge(mut self, min: u64) -> Self {
+        self.invariants.push(Invariant::CheckpointFlushCountGe(min));
+        self
+    }
+
     /// Require a minimum number of checkpoint updates for a source.
     pub fn checkpoint_updates_ge(mut self, source_id: u64, min: usize) -> Self {
         self.invariants
             .push(Invariant::CheckpointUpdatesGe { source_id, min });
+        self
+    }
+
+    /// Require that durable checkpoint is absent for a source.
+    pub fn checkpoint_durable_absent(mut self, source_id: u64) -> Self {
+        self.invariants
+            .push(Invariant::CheckpointDurableAbsent { source_id });
+        self
+    }
+
+    /// Require durable checkpoint to never exceed update history.
+    pub fn checkpoint_durable_not_ahead_of_updates(mut self, source_id: u64) -> Self {
+        self.invariants
+            .push(Invariant::CheckpointDurableNotAheadOfUpdates { source_id });
         self
     }
 
@@ -714,6 +758,19 @@ impl InvariantSet {
                         outcome.replay_hint()
                     );
                 }
+                Invariant::CheckpointFlushCountGe(minimum) => {
+                    let checkpoint = outcome
+                        .checkpoint()
+                        .expect("checkpoint invariant requested without checkpoint handle");
+                    assert!(
+                        checkpoint.flush_count() >= *minimum,
+                        "scenario '{}' expected flush_count >= {}, got {} ({})",
+                        outcome.scenario_name,
+                        minimum,
+                        checkpoint.flush_count(),
+                        outcome.replay_hint()
+                    );
+                }
                 Invariant::CheckpointUpdatesGe { source_id, min } => {
                     let checkpoint = outcome
                         .checkpoint()
@@ -727,6 +784,24 @@ impl InvariantSet {
                         checkpoint.update_count(*source_id),
                         outcome.replay_hint()
                     );
+                }
+                Invariant::CheckpointDurableAbsent { source_id } => {
+                    let checkpoint = outcome
+                        .checkpoint()
+                        .expect("checkpoint invariant requested without checkpoint handle");
+                    assert!(
+                        checkpoint.durable_offset(*source_id).is_none(),
+                        "scenario '{}' expected durable checkpoint to be absent for source {} ({})",
+                        outcome.scenario_name,
+                        source_id,
+                        outcome.replay_hint()
+                    );
+                }
+                Invariant::CheckpointDurableNotAheadOfUpdates { source_id } => {
+                    let checkpoint = outcome
+                        .checkpoint()
+                        .expect("checkpoint invariant requested without checkpoint handle");
+                    checkpoint.assert_durable_not_ahead_of_updates(*source_id);
                 }
                 Invariant::ServerReceivedGe(minimum) => {
                     let received = outcome

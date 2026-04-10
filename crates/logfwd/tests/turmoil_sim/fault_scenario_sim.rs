@@ -31,6 +31,51 @@ fn checkpoint_crash_scenario_keeps_delivery_and_monotonic_updates() {
 }
 
 #[test]
+fn pre_durability_flush_failure_never_persists_checkpoint_and_still_terminalizes() {
+    let outcome = FaultScenario::builder("pre-durability-flush-failure")
+        .with_seed(20260417)
+        .with_line_count(20)
+        .with_counting_sink()
+        .with_batch_timeout(Duration::from_millis(10))
+        .with_checkpoint_flush_interval(Duration::from_millis(50))
+        .with_checkpoint_crash_on_nth_flush(1)
+        .with_shutdown_after(Duration::from_secs(3))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .delivered_eq(20)
+        .checkpoint_crash_count_ge(1)
+        .checkpoint_updates_ge(1, 1)
+        .checkpoint_monotonic(1)
+        .checkpoint_durable_absent(1)
+        .verify(&outcome);
+}
+
+#[test]
+fn post_durability_flush_failure_preserves_valid_checkpoint_progress_and_terminalization() {
+    let outcome = FaultScenario::builder("post-durability-flush-failure")
+        .with_seed(20260418)
+        .with_line_count(40)
+        .with_counting_sink()
+        .with_batch_timeout(Duration::from_millis(10))
+        .with_checkpoint_flush_interval(Duration::from_millis(50))
+        .with_checkpoint_crash_after(Duration::from_millis(220))
+        .with_shutdown_after(Duration::from_secs(5))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .delivered_eq(40)
+        .checkpoint_crash_count_ge(1)
+        .checkpoint_flush_count_ge(1)
+        .checkpoint_updates_ge(1, 1)
+        .checkpoint_monotonic(1)
+        .checkpoint_durable_not_ahead_of_updates(1)
+        .verify(&outcome);
+}
+
+#[test]
 fn retry_exhaustion_scenario_tracks_send_attempts() {
     let outcome = FaultScenario::builder("retry-exhaustion")
         .with_seed(20260411)

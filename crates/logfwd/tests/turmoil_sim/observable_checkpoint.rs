@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use logfwd_io::checkpoint::{CheckpointStore, SourceCheckpoint};
@@ -35,6 +35,7 @@ pub struct CheckpointState {
 pub struct CheckpointHandle {
     state: Arc<Mutex<CheckpointState>>,
     crash_armed: Arc<AtomicBool>,
+    crash_on_flush_number: Arc<AtomicU64>,
 }
 
 #[allow(dead_code)]
@@ -58,6 +59,14 @@ impl CheckpointHandle {
     /// Arm a crash — next flush() will fail and lose pending data.
     pub fn arm_crash(&self) {
         self.crash_armed.store(true, Ordering::SeqCst);
+    }
+
+    /// Crash exactly on the Nth `flush` call (1-indexed).
+    ///
+    /// Setting `n = 1` simulates a failure before any checkpoint durability
+    /// boundary is crossed.
+    pub fn crash_on_nth_flush(&self, n: u64) {
+        self.crash_on_flush_number.store(n, Ordering::SeqCst);
     }
 
     /// Verify that offsets for a given source never decrease in update history.
@@ -100,6 +109,33 @@ impl CheckpointHandle {
             .filter(|e| e.source_id == source_id)
             .count()
     }
+
+    /// Return the greatest checkpoint update offset seen for a source.
+    pub fn max_update_offset(&self, source_id: u64) -> Option<u64> {
+        let s = self.state.lock().unwrap();
+        s.update_history
+            .iter()
+            .filter(|e| e.source_id == source_id)
+            .map(|e| e.offset)
+            .max()
+    }
+
+    /// Assert durable offset, if present, does not exceed update history.
+    pub fn assert_durable_not_ahead_of_updates(&self, source_id: u64) {
+        if let Some(durable) = self.durable_offset(source_id) {
+            let Some(max_update) = self.max_update_offset(source_id) else {
+                panic!(
+                    "durable checkpoint exists for source {source_id} ({durable}) \
+                     but update history is empty"
+                );
+            };
+            assert!(
+                durable <= max_update,
+                "durable checkpoint for source {source_id} is {durable}, \
+                 expected <= max update {max_update}"
+            );
+        }
+    }
 }
 
 /// A `CheckpointStore` with Arc-shared inner state for post-test inspection.
@@ -107,6 +143,7 @@ pub struct ObservableCheckpointStore {
     state: Arc<Mutex<CheckpointState>>,
     pending: BTreeMap<u64, SourceCheckpoint>,
     crash_armed: Arc<AtomicBool>,
+    crash_on_flush_number: Arc<AtomicU64>,
     trace: Option<TraceRecorder>,
 }
 
@@ -115,14 +152,17 @@ impl ObservableCheckpointStore {
     pub fn new() -> (Self, CheckpointHandle) {
         let state = Arc::new(Mutex::new(CheckpointState::default()));
         let crash_armed = Arc::new(AtomicBool::new(false));
+        let crash_on_flush_number = Arc::new(AtomicU64::new(0));
         let handle = CheckpointHandle {
             state: state.clone(),
             crash_armed: crash_armed.clone(),
+            crash_on_flush_number: crash_on_flush_number.clone(),
         };
         let store = Self {
             state,
             pending: BTreeMap::new(),
             crash_armed,
+            crash_on_flush_number,
             trace: None,
         };
         (store, handle)
@@ -156,7 +196,16 @@ impl CheckpointStore for ObservableCheckpointStore {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if self.crash_armed.swap(false, Ordering::SeqCst) {
+        let next_flush_count = {
+            let s = self.state.lock().unwrap();
+            s.flush_count + s.crash_count + 1
+        };
+        let crash_on_n = self.crash_on_flush_number.load(Ordering::SeqCst);
+        let crash_on_count = crash_on_n > 0 && next_flush_count == crash_on_n;
+        if self.crash_armed.swap(false, Ordering::SeqCst) || crash_on_count {
+            if crash_on_count {
+                self.crash_on_flush_number.store(0, Ordering::SeqCst);
+            }
             self.pending.clear();
             let mut s = self.state.lock().unwrap();
             s.crash_count += 1;

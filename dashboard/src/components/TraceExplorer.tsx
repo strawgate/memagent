@@ -42,8 +42,8 @@ function fmtMs(ms: number): string {
 }
 
 export function computeStats(traces: TraceRecord[]) {
-  // Only use completed (non-in-progress) traces for timing stats
-  const done = traces.filter((t) => !t.in_progress);
+  // Only use terminal traces for timing stats.
+  const done = traces.filter((t) => t.lifecycle_state === "completed");
   if (done.length < 2) return null;
   let totalNs = 0,
     scanNs = 0,
@@ -115,7 +115,7 @@ export function buildLanes(traces: TraceRecord[]): LanesResult {
     if (t.worker_id >= 0) {
       if (!byWorker.has(t.worker_id)) byWorker.set(t.worker_id, []);
       byWorker.get(t.worker_id)?.push(t);
-    } else if (t.in_progress && t.stage === "output") {
+    } else if (t.lifecycle_state === "queued_for_output") {
       pendingTraces.push(t);
     }
   }
@@ -210,10 +210,15 @@ export function layoutSwimlane(
   const minMs = nowMs - windowMs;
   const chartRight = LABEL_W + W;
   const toXRaw = (ms: number) => LABEL_W + ((ms - minMs) / windowMs) * W;
+  const isInProgress = (t: TraceRecord) => t.lifecycle_state !== "completed";
+  const isScanLive = (t: TraceRecord) =>
+    t.lifecycle_state === "scan_in_progress" || t.lifecycle_state === "transform_in_progress";
+  const isOutputLive = (t: TraceRecord) => t.lifecycle_state === "output_in_progress";
+  const isQueuedForOutput = (t: TraceRecord) => t.lifecycle_state === "queued_for_output";
 
   const sizeFrac = (t: TraceRecord) => {
     if (t.bytes_in > 0) return 0.5 + 0.5 * (t.bytes_in / maxBytesIn);
-    return t.in_progress ? 1.0 : 0.75;
+    return isInProgress(t) ? 1.0 : 0.75;
   };
 
   const bars: BarSpec[] = [];
@@ -230,14 +235,14 @@ export function layoutSwimlane(
       let xfmMs = Number(t.transform_ns) / 1e6;
       let outMs = Number(t.output_ns) / 1e6;
 
-      if (t.in_progress && t.stage && Number(t.stage_start_unix_ns)) {
-        const stageStartMs = Number(t.stage_start_unix_ns) / 1e6;
+      if (isInProgress(t) && Number(t.lifecycle_state_start_unix_ns)) {
+        const stageStartMs = Number(t.lifecycle_state_start_unix_ns) / 1e6;
         // Clamp: stageStart must be in the past and not older than 60s (stale guard)
         if (stageStartMs > 0 && stageStartMs <= nowMs && nowMs - stageStartMs < 60_000) {
           const live = Math.max(1, nowMs - stageStartMs);
-          if (t.stage === "scan") scanMs = live;
-          else if (t.stage === "transform") xfmMs = live;
-          else if (t.stage === "output") outMs = live;
+          if (t.lifecycle_state === "scan_in_progress") scanMs = live;
+          else if (t.lifecycle_state === "transform_in_progress") xfmMs = live;
+          else if (t.lifecycle_state === "output_in_progress") outMs = live;
         }
       }
 
@@ -247,9 +252,9 @@ export function layoutSwimlane(
         // Clamp to nowMs: server/client clock skew or stale xfmMs on a live scan batch
         // can push barEndMs past the right edge, producing a bar glued to the right wall.
         const barEndMs = Math.min(startMs + scanMs + xfmMs, nowMs);
-        if (!t.in_progress && nowMs - barEndMs < 300) continue;
+        if (!isInProgress(t) && nowMs - barEndMs < 300) continue;
 
-        const isLive = t.in_progress && (t.stage === "scan" || t.stage === "transform");
+        const isLive = isScanLive(t);
         const x0raw = toXRaw(startMs);
         const x1raw = toXRaw(barEndMs);
         if (x1raw < LABEL_W || x0raw > chartRight) continue;
@@ -282,8 +287,8 @@ export function layoutSwimlane(
             if (ex <= sx) return;
             segments.push({ x: sx, w: ex - sx, color, alpha: baseAlpha, pulse });
           };
-          addSeg(scanMs, C.scan, t.stage === "scan");
-          addSeg(xfmMs, C.transform, t.stage === "transform");
+          addSeg(scanMs, C.scan, t.lifecycle_state === "scan_in_progress");
+          addSeg(xfmMs, C.transform, t.lifecycle_state === "transform_in_progress");
         }
 
         bars.push({
@@ -302,9 +307,9 @@ export function layoutSwimlane(
         const sendMs = Number(t.send_ns ?? 0) / 1e6;
         const recvMs = Number(t.recv_ns ?? 0) / 1e6;
 
-        const workerAssigned = t.in_progress
-          ? (t.worker_id ?? -1) >= 0 && (Number(t.output_start_unix_ns) ?? 0) > 0
-          : true;
+        const workerAssigned = isQueuedForOutput(t)
+          ? false
+          : (t.worker_id ?? -1) >= 0 && (Number(t.output_start_unix_ns) ?? 0) > 0;
         const outStartMs =
           (Number(t.output_start_unix_ns) ?? 0) > 0
             ? Number(t.output_start_unix_ns)! / 1e6
@@ -316,8 +321,8 @@ export function layoutSwimlane(
         // animation alpha is applied in drawSwimlane via fadeAlpha/drawInFrac.
         // TODO: thread firstSeen into layoutSwimlane if animation needs testing.
         let barEndMs: number;
-        if (t.in_progress && !workerAssigned) {
-          const stageStartMs = (Number(t.stage_start_unix_ns) ?? 0) / 1e6;
+        if (isQueuedForOutput(t) && !workerAssigned) {
+          const stageStartMs = (Number(t.lifecycle_state_start_unix_ns) ?? 0) / 1e6;
           barEndMs =
             stageStartMs > 0
               ? Math.max(startMs + scanMs + xfmMs + 1, nowMs)
@@ -341,7 +346,7 @@ export function layoutSwimlane(
 
         const segments: SegSpec[] = [];
 
-        if (t.in_progress && !workerAssigned) {
+        if (isQueuedForOutput(t) && !workerAssigned) {
           // Queued: scan ghost → xfm ghost → growing gray queue wait
           let curMs = startMs;
           const addSeg = (dur: number, color: string, alpha: number, pulse: boolean) => {
@@ -416,7 +421,7 @@ export function layoutSwimlane(
             addSeg(sendMs, C.send, 1.0);
             addSeg(recvMs, C.recv, 1.0);
           } else {
-            addSeg(outMs, C.output, 1.0, t.in_progress && t.stage === "output");
+            addSeg(outMs, C.output, 1.0, isOutputLive(t));
           }
         }
 
@@ -515,7 +520,7 @@ function drawSwimlane(
       ctx.fillStyle = "rgba(100,116,139,0.6)";
       ctx.fillText("SCAN", LABEL_W - 4, y + h / 2);
     } else {
-      const hasActive = lane.traces.some((t) => t.in_progress);
+      const hasActive = lane.traces.some((t) => t.lifecycle_state !== "completed");
       ctx.fillStyle = hasActive
         ? `rgba(148,163,184,${0.45 + 0.3 * Math.abs(Math.sin(nowMs / 800))})`
         : "rgba(148,163,184,0.22)";
