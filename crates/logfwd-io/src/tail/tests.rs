@@ -1910,6 +1910,11 @@ fn test_directory_path_does_not_fail_construction() {
         tailer.is_ok(),
         "directory entries should warn and continue rather than failing construction"
     );
+    assert_eq!(
+        tailer.unwrap().num_files(),
+        0,
+        "directory path must not be tracked as a tailed file"
+    );
 }
 
 #[test]
