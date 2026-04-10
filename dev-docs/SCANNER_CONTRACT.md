@@ -77,7 +77,7 @@ multiple types across rows within the same batch.
 
 | Special column  | Description       | Arrow type  |
 |-----------------|-------------------|-------------|
-| `body` (default) | Original raw line | `Utf8`      |
+| `body` (default) | Original raw line | `Utf8` / `Utf8View` |
 
 The line-capture column is only present when `ScanConfig::line_field_name` is set.
 

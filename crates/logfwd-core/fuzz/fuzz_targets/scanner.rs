@@ -33,6 +33,19 @@ fuzz_target!(|data: &[u8]| {
     };
     validate_batch(&batch, "extract_all");
 
+    // Extract-all mode with line capture name collision against a parsed field.
+    let config_collision = ScanConfig {
+        wanted_fields: vec![],
+        extract_all: true,
+        line_field_name: Some("level".to_string()),
+        validate_utf8: false,
+    };
+    let mut scanner_collision = Scanner::new(config_collision);
+    if let Ok(batch_collision) = scanner_collision.scan_detached(bytes::Bytes::copy_from_slice(data))
+    {
+        validate_batch(&batch_collision, "extract_all_line_collision");
+    }
+
     // Field pushdown mode.
     let config2 = ScanConfig {
         wanted_fields: vec![

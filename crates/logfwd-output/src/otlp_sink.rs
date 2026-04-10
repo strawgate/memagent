@@ -797,27 +797,6 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
                     excluded.push(idx);
                 }
             }
-            name if name == message_field => {
-                if body_col.is_none()
-                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
-                {
-                    body_col = Some((idx, arr));
-                    excluded.push(idx);
-                }
-            }
-            name if field_names::matches_any(
-                name,
-                field_names::BODY,
-                field_names::BODY_VARIANTS,
-            ) =>
-            {
-                if body_col.is_none()
-                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
-                {
-                    body_col = Some((idx, arr));
-                    excluded.push(idx);
-                }
-            }
             field_names::TRACE_ID => {
                 if trace_id_col.is_none()
                     && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
@@ -842,6 +821,28 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
             {
                 if flags_col.is_none() && matches!(field.data_type(), DataType::Int64) {
                     flags_col = Some((idx, batch.column(idx).as_primitive::<Int64Type>()));
+                    excluded.push(idx);
+                }
+            }
+            name if field_names::matches_any(
+                name,
+                field_names::BODY,
+                field_names::BODY_VARIANTS,
+            ) =>
+            {
+                if let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref()) {
+                    // Canonical body wins when both canonical and alias columns exist.
+                    if body_col.is_none() || name == field_names::BODY {
+                        body_col = Some((idx, arr));
+                        excluded.push(idx);
+                    }
+                }
+            }
+            name if name == message_field => {
+                if body_col.is_none()
+                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
+                {
+                    body_col = Some((idx, arr));
                     excluded.push(idx);
                 }
             }
@@ -1636,6 +1637,87 @@ mod tests {
     }
 
     #[test]
+    fn configured_message_field_does_not_shadow_trace_id() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("trace_id", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("canonical-body")])),
+                Arc::new(StringArray::from(vec![Some(
+                    "0102030405060708090a0b0c0d0e0f10",
+                )])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = make_sink().with_message_field("trace_id".to_string());
+        sink.encode_batch(&batch, &make_metadata());
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+
+        let body = lr.body.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(body, Some("canonical-body"));
+        assert_eq!(
+            lr.trace_id,
+            vec![
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                0x0f, 0x10
+            ],
+            "trace_id should remain encoded in dedicated OTLP field"
+        );
+    }
+
+    #[test]
+    fn configured_message_field_does_not_shadow_span_id() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("canonical-body")])),
+                Arc::new(StringArray::from(vec![Some("0102030405060708")])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = make_sink().with_message_field("span_id".to_string());
+        sink.encode_batch(&batch, &make_metadata());
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+
+        let body = lr.body.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(body, Some("canonical-body"));
+        assert_eq!(
+            lr.span_id,
+            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            "span_id should remain encoded in dedicated OTLP field"
+        );
+    }
+
+    #[test]
     fn invalid_trace_id_hex_is_silently_ignored() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "trace_id",
@@ -2024,7 +2106,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_message_field_controls_otlp_body_source() {
+    fn otlp_body_prefers_canonical_body_over_configured_alias() {
         use opentelemetry_proto::tonic::{
             collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
         };
@@ -2106,8 +2188,8 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(handwritten_bodies, vec!["message-body", ""]);
-        assert_eq!(generated_bodies, vec!["message-body", ""]);
+        assert_eq!(handwritten_bodies, vec!["raw-first", "raw-fallback"]);
+        assert_eq!(generated_bodies, vec!["raw-first", "raw-fallback"]);
     }
 
     /// Roundtrip with multiple rows to verify repeated LogRecord encoding.

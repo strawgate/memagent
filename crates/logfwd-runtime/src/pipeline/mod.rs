@@ -2706,7 +2706,24 @@ mod format_integration_tests {
         let mut scanner = Scanner::new(config);
         let batch = scanner.scan_detached(Bytes::from(input.to_vec())).unwrap();
         assert_eq!(batch.num_rows(), 2);
-        assert!(batch.schema().field_with_name("body").is_ok());
+        let body_col = batch
+            .column_by_name("body")
+            .expect("raw format should emit body column");
+        if let Some(arr) = body_col
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+        {
+            assert_eq!(arr.value(0), "plain text line 1");
+            assert_eq!(arr.value(1), "plain text line 2");
+        } else if let Some(arr) = body_col
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+        {
+            assert_eq!(arr.value(0), "plain text line 1");
+            assert_eq!(arr.value(1), "plain text line 2");
+        } else {
+            panic!("body column must be StringArray or StringViewArray");
+        }
     }
 
     /// CRI format: message extracted, timestamp/stream/flag stripped.

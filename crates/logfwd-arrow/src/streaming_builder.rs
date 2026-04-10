@@ -506,7 +506,10 @@ impl StreamingBuilder {
             BuilderState::InRow,
             "append_line called outside of a row"
         );
-        if self.line_field_name.is_some() && !self.line_written_this_row {
+        if self.line_field_name.is_some()
+            && !self.line_written_this_row
+            && std::str::from_utf8(line).is_ok()
+        {
             let offset = self.offset_of(line);
             self.line_views.push((offset, line.len() as u32));
             self.line_written_this_row = true;
@@ -549,9 +552,7 @@ impl StreamingBuilder {
 
         // Detect duplicate output column names before building the schema.
         let mut emitted_names = std::collections::HashSet::new();
-        if let Some(line_field_name) = self.line_field_name.as_ref()
-            && !self.line_views.is_empty()
-        {
+        if let Some(line_field_name) = self.line_field_name.as_ref() {
             emitted_names.insert(line_field_name.clone());
         }
         let mut reserve_name = |name: &str| -> Result<(), ArrowError> {
@@ -569,8 +570,7 @@ impl StreamingBuilder {
             // Use from_utf8_lossy so that fuzz inputs with arbitrary bytes are
             // handled gracefully instead of triggering undefined behaviour.
             let name = String::from_utf8_lossy(&fc.name);
-            if !self.line_views.is_empty() && self.line_field_name.as_deref() == Some(name.as_ref())
-            {
+            if self.line_field_name.as_deref() == Some(name.as_ref()) {
                 // Line capture owns this output column name for this batch.
                 // Keep scanner semantics as "line wins" when names collide.
                 continue;
@@ -765,23 +765,22 @@ impl StreamingBuilder {
                     num_rows
                 )));
             }
-            if !self.line_views.is_empty() {
-                let mut builder = StringViewBuilder::new();
+            let mut builder = StringViewBuilder::new();
+            if num_rows > 0 {
                 let block = builder.append_block(line_arrow_buf);
-
                 for row in 0..num_rows {
                     let (offset, len) = self.line_views[row];
                     builder
                         .try_append_view(block, offset, len)
                         .expect("line view offset/len must be within buffer");
                 }
-                let line_field_name = self
-                    .line_field_name
-                    .as_deref()
-                    .expect("line_field_name must be set when capture is enabled");
-                schema_fields.push(Field::new(line_field_name, DataType::Utf8View, true));
-                arrays.push(Arc::new(builder.finish()) as ArrayRef);
             }
+            let line_field_name = self
+                .line_field_name
+                .as_deref()
+                .expect("line_field_name must be set when capture is enabled");
+            schema_fields.push(Field::new(line_field_name, DataType::Utf8View, true));
+            arrays.push(Arc::new(builder.finish()) as ArrayRef);
         }
 
         // Emit _resource_* columns unconditionally (even for empty batches) so
@@ -837,9 +836,7 @@ impl StreamingBuilder {
         let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.num_active);
 
         let mut emitted_names = std::collections::HashSet::new();
-        if let Some(line_field_name) = self.line_field_name.as_ref()
-            && !self.line_views.is_empty()
-        {
+        if let Some(line_field_name) = self.line_field_name.as_ref() {
             emitted_names.insert(line_field_name.clone());
         }
         let mut reserve_name = |name: &str| -> Result<(), ArrowError> {
@@ -854,8 +851,7 @@ impl StreamingBuilder {
 
         for fc in &self.fields[..self.num_active] {
             let name = String::from_utf8_lossy(&fc.name);
-            if !self.line_views.is_empty() && self.line_field_name.as_deref() == Some(name.as_ref())
-            {
+            if self.line_field_name.as_deref() == Some(name.as_ref()) {
                 // Line capture owns this output column name for this batch.
                 // Keep scanner semantics as "line wins" when names collide.
                 continue;
@@ -1033,24 +1029,21 @@ impl StreamingBuilder {
                     num_rows
                 )));
             }
-            if !self.line_views.is_empty() {
-                let total_bytes: usize = self.line_views.iter().map(|&(_, l)| l as usize).sum();
-                let mut builder = arrow::array::StringBuilder::with_capacity(num_rows, total_bytes);
-                for row in 0..num_rows {
-                    let (offset, len) = self.line_views[row];
-                    // Line views always reference the original buffer (not decoded_buf).
-                    let s =
-                        std::str::from_utf8(&self.buf[offset as usize..(offset + len) as usize])
-                            .unwrap_or("");
-                    builder.append_value(s);
-                }
-                let line_field_name = self
-                    .line_field_name
-                    .as_deref()
-                    .expect("line_field_name must be set when capture is enabled");
-                schema_fields.push(Field::new(line_field_name, DataType::Utf8, true));
-                arrays.push(Arc::new(builder.finish()) as ArrayRef);
+            let total_bytes: usize = self.line_views.iter().map(|&(_, l)| l as usize).sum();
+            let mut builder = arrow::array::StringBuilder::with_capacity(num_rows, total_bytes);
+            for row in 0..num_rows {
+                let (offset, len) = self.line_views[row];
+                // Line views always reference the original buffer (not decoded_buf).
+                let s = std::str::from_utf8(&self.buf[offset as usize..(offset + len) as usize])
+                    .unwrap_or("");
+                builder.append_value(s);
             }
+            let line_field_name = self
+                .line_field_name
+                .as_deref()
+                .expect("line_field_name must be set when capture is enabled");
+            schema_fields.push(Field::new(line_field_name, DataType::Utf8, true));
+            arrays.push(Arc::new(builder.finish()) as ArrayRef);
         }
 
         // Emit _resource_* columns unconditionally (even for empty batches) so
@@ -1414,6 +1407,25 @@ mod tests {
         assert!(
             err.contains("cardinality mismatch"),
             "error should mention cardinality mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_append_line_rejects_invalid_utf8_and_reports_cardinality_error() {
+        let buf = bytes::Bytes::from(vec![0xff, b'\n']);
+        let mut b = StreamingBuilder::new(Some("body".to_string()));
+        b.begin_batch(buf.clone());
+        b.begin_row();
+        b.append_line(&buf[0..1]); // invalid UTF-8, should be ignored
+        b.end_row();
+
+        let err = b
+            .finish_batch()
+            .expect_err("invalid UTF-8 line capture should fail cardinality check")
+            .to_string();
+        assert!(
+            err.contains("cardinality mismatch"),
+            "expected cardinality mismatch error, got: {err}"
         );
     }
 
@@ -2239,6 +2251,29 @@ mod tests {
         b.begin_batch(buf);
         let batch = b.finish_batch_detached().unwrap();
         assert_eq!(batch.num_rows(), 0);
+    }
+
+    #[test]
+    fn test_line_capture_column_exists_on_empty_batch_in_both_finish_paths() {
+        let mut view_builder = StreamingBuilder::new(Some("body".to_string()));
+        view_builder.begin_batch(bytes::Bytes::from_static(b""));
+        let view_batch = view_builder.finish_batch().expect("finish view batch");
+        assert_eq!(view_batch.num_rows(), 0);
+        assert!(
+            view_batch.column_by_name("body").is_some(),
+            "line capture column should exist on empty view batch"
+        );
+
+        let mut detached_builder = StreamingBuilder::new(Some("body".to_string()));
+        detached_builder.begin_batch(bytes::Bytes::from_static(b""));
+        let detached_batch = detached_builder
+            .finish_batch_detached()
+            .expect("finish detached batch");
+        assert_eq!(detached_batch.num_rows(), 0);
+        assert!(
+            detached_batch.column_by_name("body").is_some(),
+            "line capture column should exist on empty detached batch"
+        );
     }
 
     #[test]

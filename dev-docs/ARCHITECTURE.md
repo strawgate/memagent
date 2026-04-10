@@ -75,7 +75,8 @@ with per-source remainder tracking. It handles three formats:
 - **Cri**: Kubernetes container log format. Parses timestamp,
   stream, flags, message. Reassembles P (partial) lines into complete
   messages. Injects `_timestamp` and `_stream` as JSON fields.
-- **Text**: Wraps each line as `{"message":"<escaped>"}`.
+- **Text/Raw**: Passes lines through verbatim. Line capture into `body` is
+  controlled by scanner `line_field_name`.
 
 **NewlineFramer** (`logfwd-core/src/framer.rs`): fixed-size
 output (4096 lines, 64KB stack), no heap, Kani-proven. It returns byte

@@ -187,17 +187,21 @@ fn bench_ceiling_by_scan_config(c: &mut Criterion) {
 
     // extract_all with line_capture off
     group.throughput(Throughput::Elements(n as u64));
-    group.bench_with_input(BenchmarkId::new("lines", "no_raw"), &buf, |b, buf| {
-        let mut scanner = Scanner::new(config_no_raw());
-        let mut sink = NullSink;
-        b.iter(|| {
-            let batch = scanner
-                .scan_detached(buf.clone())
-                .expect("scan should not fail");
-            sink.send_batch(&batch, &meta).unwrap();
-            std::hint::black_box(());
-        });
-    });
+    group.bench_with_input(
+        BenchmarkId::new("lines", "line_capture_off"),
+        &buf,
+        |b, buf| {
+            let mut scanner = Scanner::new(config_no_raw());
+            let mut sink = NullSink;
+            b.iter(|| {
+                let batch = scanner
+                    .scan_detached(buf.clone())
+                    .expect("scan should not fail");
+                sink.send_batch(&batch, &meta).unwrap();
+                std::hint::black_box(());
+            });
+        },
+    );
 
     group.finish();
 }

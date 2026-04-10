@@ -148,15 +148,15 @@ This design:
 - Uses dictionary encoding for efficiency (same pod name on every row
   from one source costs ~one entry)
 - Output sinks exclude `_resource_*` columns from the payload (same
-  pattern as `message`)
+  pattern as `body`)
 
 ## Column naming conventions
 
 | Column | Purpose | Example |
 |--------|---------|---------|
-| `{field}` | Bare name, native Arrow type | `message` (Utf8View), `status` (Int64) |
+| `{field}` | Bare name, native Arrow type | `body` (Utf8View), `status` (Int64) |
 | `{field}` (conflict) | StructArray with typed children | `status: Struct { int: Int64, str: Utf8View }` |
-| `message` | Original input line (optional) | `message` |
+| `body` | Original input line (optional) | `body` |
 | `_timestamp` | CRI timestamp (RFC 3339 string) | `_timestamp` |
 | `_stream` | CRI stream name | `_stream` |
 | `_resource_*` | Source/resource metadata | `_resource_k8s_pod_name` |

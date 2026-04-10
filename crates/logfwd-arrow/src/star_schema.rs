@@ -172,8 +172,11 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
             severity_col = Some(idx);
             continue;
         }
-        if body_col.is_none() && WELL_KNOWN_BODY.contains(&name) {
-            body_col = Some(idx);
+        if WELL_KNOWN_BODY.contains(&name) {
+            // Prefer canonical `body` when both canonical and alias columns exist.
+            if body_col.is_none() || name == "body" {
+                body_col = Some(idx);
+            }
             continue;
         }
         if trace_id_col.is_none() && WELL_KNOWN_TRACE_ID.contains(&name) {
@@ -186,11 +189,6 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
         }
         if flags_col.is_none() && WELL_KNOWN_FLAGS.contains(&name) {
             flags_col = Some(idx);
-            continue;
-        }
-
-        // Skip body — internal only, not part of OTAP.
-        if name == "body" {
             continue;
         }
 
@@ -1798,6 +1796,33 @@ mod tests {
             .expect("str");
         assert_eq!(msg_arr.value(0), "hello");
         assert_eq!(msg_arr.value(1), "world");
+    }
+
+    #[test]
+    fn flat_to_star_prefers_canonical_body_over_message_alias() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["alias-value"])),
+            Arc::new(StringArray::from(vec!["canonical-value"])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let body_idx = star.logs.schema().index_of("body_str").expect("body_str");
+        let body_arr = star
+            .logs
+            .column(body_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("body_str should be Utf8");
+        assert_eq!(
+            body_arr.value(0),
+            "canonical-value",
+            "canonical body should win over alias columns"
+        );
     }
 
     #[test]

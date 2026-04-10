@@ -36,6 +36,10 @@ impl FileSink {
         Self::with_message_field(name, format, field_names::BODY.to_string(), file, stats)
     }
 
+    /// Create a file sink with a custom text/console message field fallback.
+    ///
+    /// The serializer prefers canonical `body` when present, then this
+    /// configured field, then legacy aliases.
     pub fn with_message_field(
         name: String,
         format: StdoutFormat,
@@ -122,6 +126,7 @@ impl FileSinkFactory {
         Self::with_message_field(name, path, format, field_names::BODY.to_string(), stats)
     }
 
+    /// Create a file sink factory with a custom text/console message field fallback.
     pub fn with_message_field(
         name: String,
         path: String,
