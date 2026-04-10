@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use logfwd_types::diagnostics::ComponentHealth;
+use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::pipeline::SourceId;
 
 use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
@@ -70,6 +71,7 @@ pub struct FileTailer {
     pub(super) consecutive_error_polls: u32,
     pub(super) error_backoff_until: Option<Instant>,
     health: ComponentHealth,
+    stats: std::sync::Arc<ComponentStats>,
 }
 
 fn watch_parent_for(path: &Path) -> Option<PathBuf> {
@@ -82,7 +84,20 @@ fn watch_parent_for(path: &Path) -> Option<PathBuf> {
 }
 
 impl FileTailer {
-    pub fn new(paths: &[PathBuf], config: TailConfig) -> io::Result<Self> {
+    /// Create a tailer for explicit file paths.
+    ///
+    /// The provided `paths` are watched immediately. `TailConfig` controls the
+    /// polling cadence, read buffer sizing, glob rescans, and related tailing
+    /// behavior. The shared `ComponentStats` handle is updated with file
+    /// transport diagnostics for this tailer.
+    ///
+    /// Returns an error when the underlying file watcher or initial file setup
+    /// cannot be created.
+    pub fn new(
+        paths: &[PathBuf],
+        config: TailConfig,
+        stats: std::sync::Arc<ComponentStats>,
+    ) -> io::Result<Self> {
         let (tx, rx) = crossbeam_channel::unbounded();
 
         let mut watcher = notify::recommended_watcher(move |res| {
@@ -123,6 +138,7 @@ impl FileTailer {
             consecutive_error_polls: 0,
             error_backoff_until: None,
             health: ComponentHealth::Healthy,
+            stats,
         };
 
         for path in paths {
@@ -141,7 +157,21 @@ impl FileTailer {
         Ok(tailer)
     }
 
-    pub fn new_with_globs(patterns: &[&str], config: TailConfig) -> io::Result<Self> {
+    /// Create a tailer for glob patterns.
+    ///
+    /// The provided `patterns` are expanded immediately and then watched for
+    /// future matches. `TailConfig` controls the polling cadence, read buffer
+    /// sizing, glob rescans, and related tailing behavior. The shared
+    /// `ComponentStats` handle is updated with file transport diagnostics for
+    /// this tailer.
+    ///
+    /// Returns an error when the underlying file watcher or initial file setup
+    /// cannot be created.
+    pub fn new_with_globs(
+        patterns: &[&str],
+        config: TailConfig,
+        stats: std::sync::Arc<ComponentStats>,
+    ) -> io::Result<Self> {
         let initial_paths: Vec<PathBuf> = expand_glob_patterns(patterns);
 
         if initial_paths.is_empty() {
@@ -153,7 +183,7 @@ impl FileTailer {
             }
         }
 
-        let mut tailer = Self::new(&initial_paths, config)?;
+        let mut tailer = Self::new(&initial_paths, config, stats)?;
         tailer.discovery.glob_patterns = patterns.iter().map(ToString::to_string).collect();
         Ok(tailer)
     }
@@ -216,6 +246,10 @@ impl FileTailer {
 
         if had_error {
             self.consecutive_error_polls = self.consecutive_error_polls.saturating_add(1);
+            self.stats.file_error_polls.store(
+                self.consecutive_error_polls,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             let exponent = self.consecutive_error_polls.saturating_sub(1).min(6);
             let multiplier = 1u64 << exponent;
             let backoff_ms = INITIAL_BACKOFF_MS
@@ -233,6 +267,9 @@ impl FileTailer {
             );
         } else {
             self.consecutive_error_polls = 0;
+            self.stats
+                .file_error_polls
+                .store(0, std::sync::atomic::Ordering::Relaxed);
             self.error_backoff_until = None;
             self.health =
                 reduce_polling_input_health(self.health, PollingInputHealthEvent::PollHealthy);

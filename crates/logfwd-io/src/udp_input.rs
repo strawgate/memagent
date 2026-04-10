@@ -31,11 +31,16 @@ pub struct UdpInput {
     drops_detected: Arc<AtomicU64>,
     /// Coarse control-plane health derived from the most recent poll cycle.
     health: ComponentHealth,
+    stats: Arc<logfwd_types::diagnostics::ComponentStats>,
 }
 
 impl UdpInput {
     /// Bind to `addr` (e.g. "0.0.0.0:514" for syslog).
-    pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        addr: &str,
+        stats: Arc<logfwd_types::diagnostics::ComponentStats>,
+    ) -> io::Result<Self> {
         let parsed_addr: std::net::SocketAddr = addr.parse().map_err(io::Error::other)?;
         let domain = if parsed_addr.is_ipv4() {
             Domain::IPV4
@@ -60,6 +65,8 @@ impl UdpInput {
 
         let socket: UdpSocket = sock2.into();
 
+        stats.udp_recv_buf.store(actual_recv_buf, Ordering::Relaxed);
+
         Ok(Self {
             name: name.into(),
             socket,
@@ -67,6 +74,7 @@ impl UdpInput {
             actual_recv_buf,
             drops_detected: Arc::new(AtomicU64::new(0)),
             health: ComponentHealth::Healthy,
+            stats,
         })
     }
 
@@ -143,6 +151,11 @@ impl InputSource for UdpInput {
             }
         }
 
+        self.stats.udp_drops.store(
+            self.drops_detected.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+
         self.health = reduce_polling_input_health(
             self.health,
             if under_pressure {
@@ -181,7 +194,12 @@ mod tests {
 
     #[test]
     fn receives_datagrams() {
-        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         let sender = StdSocket::bind("127.0.0.1:0").unwrap();
@@ -202,7 +220,12 @@ mod tests {
 
     #[test]
     fn adds_trailing_newline_to_bare_datagram() {
-        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         let sender = StdSocket::bind("127.0.0.1:0").unwrap();
@@ -220,7 +243,12 @@ mod tests {
 
     #[test]
     fn accounted_bytes_excludes_synthetic_trailing_newline() {
-        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         let sender = StdSocket::bind("127.0.0.1:0").unwrap();
@@ -246,7 +274,12 @@ mod tests {
 
     #[test]
     fn handles_multi_line_datagram() {
-        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         let sender = StdSocket::bind("127.0.0.1:0").unwrap();
@@ -264,21 +297,36 @@ mod tests {
 
     #[test]
     fn empty_when_no_data() {
-        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let events = input.poll().unwrap();
         assert!(events.is_empty());
     }
 
     #[test]
     fn buffer_is_max_udp_payload_size() {
-        let input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         assert_eq!(input.buf.len(), 65507);
     }
 
     #[test]
     fn udp_recv_buffer_size() {
         // Verify SO_RCVBUF was actually applied by reading it back.
-        let input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let actual = input.recv_buffer_size();
         // The OS may double the requested value (Linux does this) or cap it,
         // but it should be at least something reasonable (> 64 KB).
@@ -292,7 +340,12 @@ mod tests {
     fn udp_high_volume() {
         // Send 1000 datagrams in batches with pauses to avoid overwhelming
         // the kernel receive buffer on resource-constrained CI.
-        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         let sender = StdSocket::bind("127.0.0.1:0").unwrap();
@@ -340,7 +393,12 @@ mod tests {
     #[test]
     fn udp_empty_datagram() {
         // Sending a 0-byte datagram must not panic.
-        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         let addr = input.local_addr().unwrap();
 
         let sender = StdSocket::bind("127.0.0.1:0").unwrap();
@@ -368,7 +426,12 @@ mod tests {
 
     #[test]
     fn udp_socket_is_nonblocking() {
-        let input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         // Verify by attempting a recv on an empty socket — it should return
         // WouldBlock immediately, not block.
         let result = input.socket.recv(&mut [0u8; 1]);
@@ -385,13 +448,23 @@ mod tests {
 
     #[test]
     fn drops_detected_starts_at_zero() {
-        let input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         assert_eq!(input.drops_detected(), 0);
     }
 
     #[test]
     fn udp_health_recovers_after_clean_poll() {
-        let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
         input.health = ComponentHealth::Degraded;
 
         let events = input.poll().unwrap();

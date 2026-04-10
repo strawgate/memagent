@@ -92,9 +92,19 @@ pub(super) fn build_input_state(
             }
             let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
             let source = if is_glob {
-                FileInput::new_with_globs(name.to_string(), &[path.as_str()], tail_config)
+                FileInput::new_with_globs(
+                    name.to_string(),
+                    &[path.as_str()],
+                    tail_config,
+                    Arc::clone(&stats),
+                )
             } else {
-                FileInput::new(name.to_string(), &[PathBuf::from(path)], tail_config)
+                FileInput::new(
+                    name.to_string(),
+                    &[PathBuf::from(path)],
+                    tail_config,
+                    Arc::clone(&stats),
+                )
             }
             .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
             validate_input_format(name, InputType::File, &format)?;
@@ -262,7 +272,7 @@ pub(super) fn build_input_state(
                     "input '{name}': CRI/auto format is not supported for UDP inputs (CRI is a file-based container log format)"
                 ));
             }
-            let source = logfwd_io::udp_input::UdpInput::new(name, addr)
+            let source = logfwd_io::udp_input::UdpInput::new(name, addr, Arc::clone(&stats))
                 .map_err(|e| format!("input '{name}': failed to bind UDP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Udp, &format)?;
@@ -278,7 +288,7 @@ pub(super) fn build_input_state(
                     "input '{name}': CRI/auto format is not supported for TCP inputs (CRI is a file-based container log format)"
                 ));
             }
-            let source = logfwd_io::tcp_input::TcpInput::new(name, addr)
+            let source = logfwd_io::tcp_input::TcpInput::new(name, addr, Arc::clone(&stats))
                 .map_err(|e| format!("input '{name}': failed to bind TCP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Tcp, &format)?;

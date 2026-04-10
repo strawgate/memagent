@@ -31,6 +31,14 @@ server:
 | `logfwd_stage_seconds_total` | Time per stage (scan, transform, output) |
 | `logfwd_flush_reason_total` | Flush triggers (size vs timeout) |
 
+## Transport Observability
+
+The `/admin/v1/status` endpoint includes a `transport` object inside each input's JSON representation containing specific metrics for that transport type:
+
+* **File:** exposes `consecutive_error_polls`, representing the current file-tail pressure and backoff state.
+* **TCP:** exposes `accepted_connections` (total accepted) and `active_connections` (currently connected clients) indicators.
+* **UDP:** exposes `drops_detected` (datagrams dropped due to kernel buffer overflows) and `recv_buffer_size` (actual kernel receive buffer size applied) indicators.
+
 ## OTLP metrics push
 
 ```yaml
