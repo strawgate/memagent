@@ -25,6 +25,7 @@ REQUIRED_KANI_FILTER_PATTERNS = {
     "crates/logfwd-arrow/**",
     "crates/logfwd-io/**",
     "crates/logfwd-output/**",
+    "crates/logfwd-diagnostics/**",
     "Cargo.toml",
     "Cargo.lock",
     "dev-docs/verification/kani-boundary-contract.toml",
