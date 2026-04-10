@@ -780,29 +780,29 @@ mod verification {
         }
     }
 
-    /// Prove the configurable plain-text field wrapper entrypoint never panics.
+    /// Prove configurable plain-text field dispatch remains correct.
     ///
-    /// The symbolic parse/escape behavior is covered by the dedicated
-    /// parse/escape harnesses below; keep this one minimal so the full Kani
-    /// suite remains within CI time budgets.
+    /// We intentionally avoid the full chunk parser path here because Kani's
+    /// model of `memchr` + allocation internals makes that harness dominate CI
+    /// runtime. Parser semantics and escaping behavior are covered by the
+    /// dedicated proofs below; this harness focuses on field-name dispatch.
     #[kani::proof]
     #[kani::unwind(4)]
     #[kani::solver(kissat)]
     fn verify_process_cri_to_buf_with_plain_text_field_no_panic() {
-        let chunk = b"";
+        let msg = b"plain";
+        let use_body: bool = kani::any();
+        let field_name = if use_body { "body" } else { SHORT_FIELD_NAME };
+
         let mut out = Vec::new();
-        let mut reassembler = CriReassembler::new(64);
-        let (count, errors) = process_cri_to_buf_with_plain_text_field(
-            chunk,
-            &mut reassembler,
-            None,
-            "body",
-            &mut out,
-        );
-        // Empty input means no lines parsed and no errors recorded.
-        assert!(out.is_empty());
-        assert_eq!(errors, 0);
-        assert_eq!(count, 0);
+        write_json_line_for_plain_text_field(msg, None, field_name, &mut out);
+
+        // Stable wrapper shape and trailing newline are contractual.
+        if use_body {
+            assert_bytes_eq(&out, b"{\"body\":\"plain\"}\n");
+        } else {
+            assert_bytes_eq(&out, b"{\"b\":\"plain\"}\n");
+        }
     }
 
     /// Prove parse_cri_line rejects known invalid stream tokens.
@@ -967,74 +967,108 @@ mod verification {
         }
     }
 
-    /// Prove the prefix injector strips a trailing comma for empty objects.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_prefix_injection() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{}", Some(b"a,"), SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{a}\n");
+    fn assert_single_byte_json_escape(b: u8, escaped: &[u8]) {
+        match b {
+            b'"' => assert_bytes_eq(escaped, b"\\\""),
+            b'\\' => assert_bytes_eq(escaped, b"\\\\"),
+            0x08 => assert_bytes_eq(escaped, b"\\b"),
+            b'\t' => assert_bytes_eq(escaped, b"\\t"),
+            b'\n' => assert_bytes_eq(escaped, b"\\n"),
+            0x0C => assert_bytes_eq(escaped, b"\\f"),
+            b'\r' => assert_bytes_eq(escaped, b"\\r"),
+            0x00..=0x1F | 0x7F => {
+                assert_eq!(escaped.len(), 6);
+                assert_eq!(escaped[0], b'\\');
+                assert_eq!(escaped[1], b'u');
+                assert_eq!(escaped[2], b'0');
+                assert_eq!(escaped[3], b'0');
+                let hi = (b >> 4) & 0x0F;
+                let lo = b & 0x0F;
+                let expected_hi = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
+                let expected_lo = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
+                assert_eq!(escaped[4], expected_hi);
+                assert_eq!(escaped[5], expected_lo);
+            }
+            _ => {
+                assert_eq!(escaped.len(), 1);
+                assert_eq!(escaped[0], b);
+            }
+        }
     }
 
-    /// Prove comma stripping also works when the prefix ends in whitespace.
+    /// Prove exact escaping semantics for all single-byte inputs.
     #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_prefix_injection_ws_stripped() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{}", Some(b", "), SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{ }\n");
+    fn verify_json_escape_bytes_single_byte_semantics() {
+        let b: u8 = kani::any();
+        let mut out = Vec::with_capacity(8);
+        json_escape_bytes(&[b], &mut out);
+        assert_single_byte_json_escape(b, &out);
+
+        kani::cover!(b == b'"', "quote escape reachable");
+        kani::cover!(b == b'\\', "backslash escape reachable");
+        kani::cover!(b < 0x20, "unicode-control escape reachable");
+        kani::cover!(b == b'X', "non-escaped byte reachable");
     }
 
-    /// Prove non-empty JSON gets the prefix injected without comma stripping.
+    /// Prove no-prefix dispatch semantics:
+    /// JSON-like input passes through; plain text is wrapped and escaped.
     #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_prefix_injection_non_empty_json() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{x", Some(b"ab"), SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{abx\n");
+    fn verify_write_json_line_no_prefix_dispatch_and_escape() {
+        let b: u8 = kani::any();
+        let msg = [b];
+        let mut out = Vec::with_capacity(32);
+
+        write_json_line_with_plain_text_field(&msg, None, SHORT_FIELD_NAME, &mut out);
+        assert_eq!(out[out.len() - 1], b'\n');
+
+        if b == b'{' {
+            assert_eq!(out.len(), 2);
+            assert_eq!(out[0], b'{');
+        } else {
+            assert_bytes_eq(&out[..6], b"{\"b\":\"");
+            assert_eq!(out[out.len() - 3], b'"');
+            assert_eq!(out[out.len() - 2], b'}');
+            assert_eq!(out[out.len() - 1], b'\n');
+
+            let escaped = &out[6..out.len() - 3];
+            assert_single_byte_json_escape(b, escaped);
+        }
+
+        kani::cover!(b == b'{', "json pass-through path reachable");
+        kani::cover!(b != b'{', "wrapped plain-text path reachable");
     }
 
-    /// Prove JSON messages pass through unchanged when no prefix is present.
+    /// Prove empty-object prefix injection strips a trailing comma while
+    /// preserving trailing whitespace.
     #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_no_prefix() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{}", None, SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{}\n");
+    fn verify_write_json_line_prefix_empty_object_strips_comma() {
+        let ws: u8 = kani::any_where(|v: &u8| matches!(*v, b' ' | b'\t' | b'\r' | b'\n'));
+        let msg = [b'{', ws, b'}'];
+        let prefix = [b'k', b',', ws];
+        let mut out = Vec::with_capacity(16);
+
+        write_json_line_with_plain_text_field(&msg, Some(&prefix), SHORT_FIELD_NAME, &mut out);
+
+        assert_eq!(out.len(), 6);
+        assert_eq!(out[0], b'{');
+        assert_eq!(out[1], b'k');
+        assert_eq!(out[2], ws);
+        assert_eq!(out[3], ws);
+        assert_eq!(out[4], b'}');
+        assert_eq!(out[5], b'\n');
+
+        kani::cover!(ws == b' ', "space branch reachable");
+        kani::cover!(ws == b'\t', "tab branch reachable");
+        kani::cover!(ws == b'\r', "carriage-return branch reachable");
+        kani::cover!(ws == b'\n', "newline branch reachable");
     }
 
-    /// Prove quote escaping for plain-text messages.
+    /// Prove non-empty JSON payloads keep the full prefix unchanged.
     #[kani::proof]
-    #[kani::unwind(16)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_no_prefix_quote_escape() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"\"", None, SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{\"b\":\"\\\"\"}\n");
-    }
-
-    /// Prove backslash escaping for plain-text messages.
-    #[kani::proof]
-    #[kani::unwind(16)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_no_prefix_backslash_escape() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"\\", None, SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{\"b\":\"\\\\\"}\n");
-    }
-
-    /// Prove control characters use \\u00XX escaping.
-    #[kani::proof]
-    #[kani::unwind(20)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_no_prefix_control_escape() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(&[0x1F], None, SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{\"b\":\"\\u001f\"}\n");
+    fn verify_write_json_line_prefix_non_empty_keeps_comma() {
+        let mut out = Vec::with_capacity(16);
+        write_json_line_with_plain_text_field(b"{a}", Some(b"k,"), SHORT_FIELD_NAME, &mut out);
+        assert_bytes_eq(&out, b"{k,a}\n");
     }
 
     /// Prove the public wrapper uses "body" for non-JSON messages.
