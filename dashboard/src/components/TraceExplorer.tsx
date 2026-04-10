@@ -112,9 +112,10 @@ export function buildLanes(traces: TraceRecord[]): LanesResult {
   const byWorker = new Map<number, TraceRecord[]>();
 
   for (const t of traces) {
-    if (t.worker_id >= 0) {
-      if (!byWorker.has(t.worker_id)) byWorker.set(t.worker_id, []);
-      byWorker.get(t.worker_id)?.push(t);
+    const wid = t.worker_id ?? -1;
+    if (wid >= 0) {
+      if (!byWorker.has(wid)) byWorker.set(wid, []);
+      byWorker.get(wid)?.push(t);
     } else if (t.lifecycle_state === "queued_for_output") {
       pendingTraces.push(t);
     }
@@ -793,9 +794,9 @@ function DetailPanel({ t }: { t: TraceRecord }) {
         <span>
           e2e <b>{fmtNs(e2e)}</b>
         </span>
-        {t.worker_id >= 0 && (
+        {(t.worker_id ?? -1) >= 0 && (
           <span>
-            worker <b>{t.worker_id}</b>
+            worker <b>{t.worker_id ?? -1}</b>
           </span>
         )}
         {(t.retries ?? 0) > 0 && (

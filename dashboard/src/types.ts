@@ -164,8 +164,8 @@ export interface TraceRecord {
   bytes_in: number;
   /** Time data waited in channel before processing, nanoseconds. */
   queue_wait_ns: string;
-  /** Worker that processed this batch (-1 if unknown). */
-  worker_id: number;
+  /** Worker that processed this batch (`null`/`-1` if unassigned or unknown). */
+  worker_id: number | null;
   /** Nanoseconds from request send start to response headers received. */
   send_ns?: string;
   /** Nanoseconds from response headers to body fully read. */
@@ -191,7 +191,7 @@ export interface TraceRecord {
    * - "scan_in_progress": scanner is executing (lifecycle_state_start_unix_ns required)
    * - "transform_in_progress": SQL transform is executing (lifecycle_state_start_unix_ns required)
    * - "queued_for_output": scan+transform are done and waiting for output worker assignment
-   *   (lifecycle_state_start_unix_ns required; worker_id should be -1)
+   *   (lifecycle_state_start_unix_ns required; worker_id is typically null)
    * - "output_in_progress": output is executing on an assigned worker
    *   (lifecycle_state_start_unix_ns + output_start_unix_ns required)
    * - "completed": terminal state for both success and error outcomes

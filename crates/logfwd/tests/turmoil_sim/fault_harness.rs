@@ -246,6 +246,7 @@ impl FaultScenario {
                 let scenario = self.clone();
                 let maybe_checkpoint = if scenario.checkpoint_flush_interval.is_some()
                     || scenario.arm_checkpoint_crash_after.is_some()
+                    || scenario.crash_on_nth_flush.is_some()
                 {
                     let (store, handle) = ObservableCheckpointStore::new();
                     checkpoint_handle = Some(handle.clone());
@@ -300,6 +301,7 @@ impl FaultScenario {
                 let scenario = self.clone();
                 let maybe_checkpoint = if scenario.checkpoint_flush_interval.is_some()
                     || scenario.arm_checkpoint_crash_after.is_some()
+                    || scenario.crash_on_nth_flush.is_some()
                 {
                     let (store, handle) = ObservableCheckpointStore::new();
                     checkpoint_handle = Some(handle.clone());
@@ -351,6 +353,7 @@ impl FaultScenario {
 
                 let maybe_checkpoint = if scenario.checkpoint_flush_interval.is_some()
                     || scenario.arm_checkpoint_crash_after.is_some()
+                    || scenario.crash_on_nth_flush.is_some()
                 {
                     let (store, handle) = ObservableCheckpointStore::new();
                     checkpoint_handle = Some(handle.clone());
