@@ -19,13 +19,17 @@ Do not duplicate canonical facts across surfaces.
 - Root entrypoint: `README.md`
 - Developer entrypoint: `dev-docs/README.md`
 - Research index: `dev-docs/research/README.md`
+- References index: `dev-docs/references/README.md`
 - User-book navigation: `book/src/SUMMARY.md`
 
 If you add or remove docs, update the corresponding index in the same PR.
 
-## Living Docs vs Research
+## Documentation Categories
 
-### Living docs (`dev-docs/*.md`, excluding subdirs)
+The repository uses three documentation categories: living docs, research docs,
+and reference notes.
+
+### Living docs (`dev-docs/*.md`, excluding subdirs: `research/`, `references/`, `review-guides/`, `verification/`)
 
 - Represent current behavior and current policy.
 - Must be updated in the same PR as behavior/policy changes.
@@ -55,7 +59,7 @@ Pruning policy:
 - Prefer one synthesis doc over many per-workstream artifacts.
 - Rely on git history for removed artifacts.
 
-## Reference Notes (`dev-docs/references/`)
+### Reference notes (`dev-docs/references/`)
 
 Reference notes are repo-scoped guidance, not generic tutorials.
 Depth should be proportional to topic complexity and risk.

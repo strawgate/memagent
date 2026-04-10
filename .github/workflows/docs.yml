@@ -18,6 +18,7 @@ on:
       - "dev-docs/**"
       - "bench/dashboard/**"
       - "crates/**"
+      - "tla/**"
       - "docs/**"
       - "*.md"
       - "scripts/docs/**"

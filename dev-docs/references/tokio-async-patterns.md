@@ -31,7 +31,8 @@ Operational patterns used in `logfwd-runtime` and pipeline shells.
 
 ## Change Checklist
 
-- If lifecycle semantics changed: update `dev-docs/ARCHITECTURE.md` and `dev-docs/VERIFICATION.md`.
+- If lifecycle semantics changed: update `dev-docs/ARCHITECTURE.md`, `dev-docs/VERIFICATION.md`,
+  relevant TLA+ specs in `tla/`, and the affected Kani/proptest state-machine coverage.
 - If checkpoint behavior changed: update `dev-docs/ADAPTER_CONTRACT.md` and related tests.
 - If cancellation behavior changed: update TLA+ specs (`tla/`), state-machine coverage, Kani proof harnesses, proptest suites, and related docs.
 

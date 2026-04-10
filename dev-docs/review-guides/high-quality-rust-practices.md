@@ -15,9 +15,9 @@ Reject new production-path code that introduces:
 
 For reader → framer → scanner → builders → OTLP encoder → compress paths:
 
-- No avoidable allocations in per-line/per-record loops.
-- No accidental copies where borrowing/views are expected.
-- No new formatting/string construction in tight loops.
+- Avoid per-line/per-record allocations when a borrowed or reused buffer works.
+- Prefer borrowing/views over accidental copies in hot paths.
+- Keep formatting/string construction out of tight loops.
 - Benchmarks provided when performance risk is non-trivial.
 
 ## API and Type Quality
@@ -34,5 +34,5 @@ For reader → framer → scanner → builders → OTLP encoder → compress pat
 
 ## Canonical References
 
-- `dev-docs/CODE_STYLE.md`
-- `dev-docs/VERIFICATION.md`
+- [`dev-docs/CODE_STYLE.md`](../CODE_STYLE.md)
+- [`dev-docs/VERIFICATION.md`](../VERIFICATION.md)

@@ -18,7 +18,7 @@ ALLOWED = {
 
 def main() -> int:
     root = Path(".")
-    found = {p.name for p in root.glob("*.md") if p.is_file()}
+    found = {p.name for p in root.glob("*.md") if p.is_file() or p.is_symlink()}
     disallowed = sorted(found - ALLOWED)
     failures: list[str] = []
 
@@ -33,6 +33,8 @@ def main() -> int:
             failures.append("- CLAUDE.md must point to AGENTS.md")
     elif claude.exists():
         failures.append("- CLAUDE.md must be a symlink to AGENTS.md")
+    else:
+        failures.append("- CLAUDE.md must exist as a symlink to AGENTS.md")
 
     if failures:
         print("\n".join(failures))

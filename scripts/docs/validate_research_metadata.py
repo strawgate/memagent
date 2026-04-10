@@ -18,7 +18,6 @@ def validate_file(path: Path) -> list[str]:
 
     if not lines or not lines[0].startswith("# "):
         failures.append(f"{path}: first line must be markdown title")
-        return failures
 
     head = "\n".join(lines[:14])
     status_match = re.search(r"^> \*\*Status:\*\*\s*(.+)$", head, flags=re.MULTILINE)
@@ -65,7 +64,7 @@ def main() -> int:
 
     checked_files = 0
     for path in files:
-        if path.name == "README.md":
+        if path == ROOT / "README.md":
             continue
         checked_files += 1
         failures.extend(validate_file(path))

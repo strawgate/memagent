@@ -83,6 +83,7 @@ mod verification {
     use super::*;
 
     #[kani::proof]
+    #[kani::unwind(N)] // Choose N from the maximum loop iterations (+1 or +2 margin)
     fn verify_my_fn_no_panic() {
         let input: [u8; 16] = kani::any();
         let _ = my_fn(&input);
@@ -103,6 +104,7 @@ mod verification {
     }
 
     #[kani::proof]
+    #[kani::unwind(N)] // Choose N from the maximum loop iterations (+1 or +2 margin)
     fn verify_my_fn_matches_oracle() {
         let input: [u8; 16] = kani::any();
         assert_eq!(my_fn(&input), oracle(&input));
@@ -119,6 +121,7 @@ mod verification {
     use super::*;
 
     #[kani::proof]
+    #[kani::unwind(N)] // Choose N from the maximum loop iterations (+1 or +2 margin)
     fn verify_transition_preserves_invariant() {
         let state = State::arbitrary();
         let next = step(state);
@@ -155,7 +158,8 @@ already-verified contracts.
 ## Solver And Bound Tuning
 
 - Start with default solver.
-- Add `#[kani::solver(kissat)]` when harnesses become slow.
+- If a harness is consistently above ~10s, add `#[kani::solver(kissat)]` with a short
+  inline comment explaining why the override is needed.
 - Keep unwind bounds realistic and explicit; too high inflates solve time,
   too low yields inconclusive behavior.
 - Prefer proving smaller pure components compositionally over one monolith.
