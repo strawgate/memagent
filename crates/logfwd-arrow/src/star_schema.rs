@@ -2498,13 +2498,13 @@ mod tests {
 
         let payload_idx = roundtrip
             .schema()
-            .index_of("_resource_payload")
-            .expect("_resource_payload col");
+            .index_of("resource.attributes.payload")
+            .expect("resource.attributes.payload col");
         let payload_arr = roundtrip
             .column(payload_idx)
             .as_any()
             .downcast_ref::<StringArray>()
-            .expect("_resource_payload string");
+            .expect("resource.attributes.payload string");
 
         assert_eq!(payload_arr.value(0), "deadbeef");
         assert_eq!(payload_arr.value(1), "deadbeef");
@@ -2527,8 +2527,8 @@ mod tests {
 
         let idx = roundtrip
             .schema()
-            .index_of("_resource_retry_count")
-            .expect("_resource_retry_count");
+            .index_of("resource.attributes.retry_count")
+            .expect("resource.attributes.retry_count");
         let arr = roundtrip
             .column(idx)
             .as_any()
