@@ -151,6 +151,9 @@ jobs:
       - name: TOML check
         run: taplo check
 
+      - name: Workspace inheritance guardrail
+        run: python3 scripts/check_workspace_inherited_default_features.py
+
       - name: Typos
         uses: crate-ci/typos@v1
 

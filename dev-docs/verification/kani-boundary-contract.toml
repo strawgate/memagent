@@ -127,6 +127,12 @@ reason = "The typed delivery outcome -> checkpoint disposition compatibility map
 issue = 1314
 
 [[seams]]
+path = "crates/logfwd-runtime/src/pipeline/checkpoint_io.rs"
+status = "recommended"
+reason = "Final checkpoint flush retry-window policy is an isolated local seam and should remain explicitly verified."
+issue = 1314
+
+[[seams]]
 path = "crates/logfwd-runtime/src/worker_pool/health.rs"
 status = "required"
 reason = "Pool-level health insertion and aggregation policy is isolated here and should remain Kani-covered."

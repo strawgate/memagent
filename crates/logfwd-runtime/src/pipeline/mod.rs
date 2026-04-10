@@ -11,6 +11,7 @@ mod health;
 mod input_build;
 pub(crate) mod input_pipeline;
 mod input_poll;
+mod processor_stage;
 mod submit;
 
 use self::checkpoint_io::flush_checkpoint_with_retry;

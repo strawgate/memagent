@@ -252,10 +252,19 @@ Compatibility note: legacy names `linux_sensor_beta`, `macos_sensor_beta`,
 `windows_sensor_beta`, plus the legacy `sensor_beta:` block, are still
 accepted as aliases for backward compatibility.
 
-### `arrow_ipc` input *(not yet supported)*
+### `arrow_ipc` input
 
-Reserved for future Arrow IPC ingest. Config parsing recognizes the type, but
-config validation currently rejects it.
+Receive Arrow IPC stream payloads over HTTP `POST` and forward decoded
+`RecordBatch` values directly into the pipeline (scanner bypass).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:4319`. |
+
+Behavior:
+- Route is fixed to `POST /v1/arrow` for MVP.
+- Accepts `application/vnd.apache.arrow.stream` and `application/vnd.apache.arrow.stream+zstd`.
+- Also accepts `Content-Encoding: zstd` on Arrow stream payloads.
 
 ---
 
@@ -268,10 +277,11 @@ config validation currently rejects it.
 | `udp` | Implemented | Receive log lines over UDP. |
 | `tcp` | Implemented | Accept log lines over TCP. |
 | `otlp` | Implemented | Receive OTLP logs over a bound listen address. |
+| `http` | Implemented | Receive newline-delimited payloads via HTTP `POST`. |
 | `linux_ebpf_sensor` | Implemented | Linux eBPF sensor input (Arrow-native control + signal rows). |
 | `macos_es_sensor` | Implemented | macOS EndpointSecurity sensor input (Arrow-native control + signal rows). |
 | `windows_ebpf_sensor` | Implemented | Windows eBPF sensor input (Arrow-native control + signal rows). |
-| `arrow_ipc` | Not yet supported | Reserved for future Arrow IPC ingest. |
+| `arrow_ipc` | Implemented | Receive Arrow IPC stream batches via HTTP `POST /v1/arrow`. |
 
 ---
 

@@ -2,6 +2,11 @@ use std::time::Duration;
 
 use logfwd_io::checkpoint::CheckpointStore;
 
+#[must_use]
+const fn should_retry_flush(attempt: u32, max_attempts: u32) -> bool {
+    attempt < max_attempts.saturating_sub(1)
+}
+
 /// Flush checkpoint store with bounded retry (3 attempts, 100ms between).
 ///
 /// The final shutdown flush is the last chance to persist checkpoint progress.
@@ -24,7 +29,7 @@ pub(super) async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore)
                 return;
             }
             Err(e) => {
-                if attempt + 1 < MAX_ATTEMPTS {
+                if should_retry_flush(attempt, MAX_ATTEMPTS) {
                     tracing::warn!(
                         attempt,
                         error = %e,
@@ -41,5 +46,130 @@ pub(super) async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore)
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use logfwd_io::checkpoint::{CheckpointStore, SourceCheckpoint};
+    use proptest::prelude::*;
+
+    use super::{flush_checkpoint_with_retry, should_retry_flush};
+
+    struct SequenceCheckpointStore {
+        outcomes: Vec<io::Result<()>>,
+        calls: usize,
+    }
+
+    impl SequenceCheckpointStore {
+        fn new(outcomes: Vec<io::Result<()>>) -> Self {
+            Self { outcomes, calls: 0 }
+        }
+    }
+
+    impl CheckpointStore for SequenceCheckpointStore {
+        fn update(&mut self, _checkpoint: SourceCheckpoint) {}
+
+        fn flush(&mut self) -> io::Result<()> {
+            let idx = self.calls;
+            self.calls += 1;
+            match self.outcomes.get(idx) {
+                Some(Ok(())) => Ok(()),
+                Some(Err(err)) => Err(io::Error::new(err.kind(), err.to_string())),
+                None => Err(io::Error::other("unexpected flush call")),
+            }
+        }
+
+        fn load(&self, _source_id: u64) -> Option<SourceCheckpoint> {
+            None
+        }
+
+        fn load_all(&self) -> Vec<SourceCheckpoint> {
+            Vec::new()
+        }
+    }
+
+    struct AlwaysFailCheckpointStore {
+        calls: Arc<AtomicU32>,
+    }
+
+    impl AlwaysFailCheckpointStore {
+        fn new() -> (Self, Arc<AtomicU32>) {
+            let calls = Arc::new(AtomicU32::new(0));
+            (
+                Self {
+                    calls: Arc::clone(&calls),
+                },
+                calls,
+            )
+        }
+    }
+
+    impl CheckpointStore for AlwaysFailCheckpointStore {
+        fn update(&mut self, _checkpoint: SourceCheckpoint) {}
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Err(io::Error::other("flush failed"))
+        }
+
+        fn load(&self, _source_id: u64) -> Option<SourceCheckpoint> {
+            None
+        }
+
+        fn load_all(&self) -> Vec<SourceCheckpoint> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn retry_decision_matches_attempt_window() {
+        assert!(should_retry_flush(0, 3));
+        assert!(should_retry_flush(1, 3));
+        assert!(!should_retry_flush(2, 3));
+    }
+
+    #[test]
+    fn retry_decision_is_false_for_zero_max_attempts() {
+        assert!(!should_retry_flush(0, 0));
+    }
+
+    proptest! {
+        #[test]
+        fn retry_decision_equivalent_to_next_attempt_check(
+            attempt in 0u32..32,
+            max_attempts in 0u32..32,
+        ) {
+            let expected = max_attempts > 0 && attempt.saturating_add(1) < max_attempts;
+            prop_assert_eq!(should_retry_flush(attempt, max_attempts), expected);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn flush_stops_after_first_success() {
+        let mut store = SequenceCheckpointStore::new(vec![
+            Err(io::Error::other("first failure")),
+            Ok(()),
+            Err(io::Error::other("must not be observed")),
+        ]);
+
+        flush_checkpoint_with_retry(&mut store).await;
+        assert_eq!(store.calls, 2, "flush should stop after first success");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn flush_retries_up_to_max_attempts() {
+        let (mut store, calls) = AlwaysFailCheckpointStore::new();
+
+        flush_checkpoint_with_retry(&mut store).await;
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            3,
+            "flush should execute exactly three attempts"
+        );
     }
 }

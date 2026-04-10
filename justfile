@@ -197,10 +197,10 @@ tlc-tail:
     just tlc MCTailLifecycle.tla TailLifecycle.cfg
 
 # Lint — fast (default-members, skips datafusion)
-lint: fmt-check clippy toml-check
+lint: fmt-check clippy toml-check workspace-inheritance-guard
 
 # Lint — full workspace (CI uses this)
-lint-all: fmt-check kani-boundary clippy-all toml-check deny
+lint-all: fmt-check kani-boundary clippy-all toml-check workspace-inheritance-guard deny
 
 # Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test
@@ -214,6 +214,10 @@ ci-all: lint-all test-all tlc-tail
 # Check TOML formatting (Cargo.toml, etc.)
 toml-check:
     taplo check
+
+# Guardrail: inherited dependencies must not override default-features locally.
+workspace-inheritance-guard:
+    python3 scripts/check_workspace_inherited_default_features.py
 
 # Format TOML files
 toml-fmt:

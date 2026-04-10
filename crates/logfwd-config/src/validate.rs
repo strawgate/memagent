@@ -101,11 +101,6 @@ impl Config {
                     .as_deref()
                     .map_or_else(|| format!("#{i}"), String::from);
 
-                if input.input_type == InputType::ArrowIpc {
-                    return Err(ConfigError::Validation(format!(
-                        "pipeline '{name}' input '{label}': arrow_ipc input type is not yet supported"
-                    )));
-                }
                 if input.input_type != InputType::Otlp && input.resource_prefix.is_some() {
                     return Err(ConfigError::Validation(format!(
                         "pipeline '{name}' input '{label}': 'resource_prefix' is only supported for otlp inputs"
@@ -192,7 +187,7 @@ impl Config {
                             }
                         }
                     }
-                    InputType::Otlp | InputType::Http => {
+                    InputType::Otlp | InputType::Http | InputType::ArrowIpc => {
                         if input.listen.is_none() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'listen' is required for {} inputs",
@@ -210,8 +205,7 @@ impl Config {
                     InputType::Generator
                     | InputType::LinuxEbpfSensor
                     | InputType::MacosEsSensor
-                    | InputType::WindowsEbpfSensor
-                    | InputType::ArrowIpc => {}
+                    | InputType::WindowsEbpfSensor => {}
                 }
 
                 // Reject fields that don't apply to this input type.
@@ -684,6 +678,11 @@ impl Config {
                         }
                     }
                     InputType::ArrowIpc => {
+                        if input.tls.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'tls' is not supported for arrow_ipc inputs"
+                            )));
+                        }
                         if input.generator.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
@@ -692,6 +691,21 @@ impl Config {
                         if input.http.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
+                            )));
+                        }
+                        if input.path.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'path' is not supported for arrow_ipc inputs"
+                            )));
+                        }
+                        if input.max_open_files.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'max_open_files' is not supported for arrow_ipc inputs"
+                            )));
+                        }
+                        if input.glob_rescan_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for arrow_ipc inputs"
                             )));
                         }
                         if input.sensor.is_some() {

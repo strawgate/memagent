@@ -362,10 +362,7 @@ output:
     }
 
     #[test]
-    fn validation_arrow_ipc_not_supported() {
-        // arrow_ipc is always rejected as "not yet supported" regardless of
-        // whether 'listen' is specified — the 'listen' check must not fire
-        // first and give a misleading error.
+    fn validation_arrow_ipc_requires_listen() {
         let yaml = r"
 input:
   type: arrow_ipc
@@ -374,10 +371,7 @@ output:
 ";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
-        assert!(
-            msg.contains("not yet supported"),
-            "expected 'not yet supported' in error: {msg}"
-        );
+        assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
     }
 
     #[test]
@@ -2390,7 +2384,7 @@ pipelines:
     }
 
     #[test]
-    fn arrow_ipc_input_rejected() {
+    fn arrow_ipc_input_valid_with_listen() {
         let yaml = r#"
 pipelines:
   test:
@@ -2400,11 +2394,7 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("not yet supported"),
-            "expected arrow_ipc rejection: {err}"
-        );
+        Config::load_str(yaml).expect("arrow_ipc input should validate when listen is provided");
     }
 
     // -----------------------------------------------------------------------

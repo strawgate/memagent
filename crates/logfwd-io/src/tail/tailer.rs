@@ -47,6 +47,7 @@ pub struct TailConfig {
     pub glob_rescan_interval_ms: u64,
     pub max_open_files: usize,
     pub per_file_read_budget_bytes: usize,
+    pub adaptive_fast_polls_max: u8,
 }
 
 impl Default for TailConfig {
@@ -59,6 +60,7 @@ impl Default for TailConfig {
             glob_rescan_interval_ms: 5000,
             max_open_files: 1024,
             per_file_read_budget_bytes: 256 * 1024,
+            adaptive_fast_polls_max: 8,
         }
     }
 }
@@ -71,6 +73,7 @@ pub struct FileTailer {
     last_poll: Instant,
     pub(super) consecutive_error_polls: u32,
     pub(super) error_backoff_until: Option<Instant>,
+    pub(super) adaptive_fast_polls_remaining: u8,
     health: ComponentHealth,
     stats: std::sync::Arc<ComponentStats>,
 }
@@ -132,12 +135,15 @@ impl FileTailer {
                 read_buf: vec![0u8; config.read_buf_size],
                 evicted_offsets: HashMap::new(),
                 scratch_paths: Vec::new(),
+                last_read_had_data: false,
+                last_read_hit_budget: false,
                 config: config.clone(),
             },
             config,
             last_poll: Instant::now(),
             consecutive_error_polls: 0,
             error_backoff_until: None,
+            adaptive_fast_polls_remaining: 0,
             health: ComponentHealth::Healthy,
             stats,
         };
@@ -209,8 +215,11 @@ impl FileTailer {
         let glob_rescan_due = self.config.glob_rescan_interval_ms > 0
             && self.discovery.last_glob_rescan.elapsed()
                 >= Duration::from_millis(self.config.glob_rescan_interval_ms);
-        let should_poll =
-            something_changed || self.last_poll.elapsed() >= poll_interval || glob_rescan_due;
+        let adaptive_fast_poll = self.adaptive_fast_polls_remaining > 0;
+        let should_poll = something_changed
+            || self.last_poll.elapsed() >= poll_interval
+            || glob_rescan_due
+            || adaptive_fast_poll;
 
         if !should_poll {
             if had_error {
@@ -230,6 +239,15 @@ impl FileTailer {
         had_error |= self
             .discovery
             .cleanup_deleted(&mut self.reader, &mut events);
+
+        if self.reader.last_read_hit_budget {
+            self.adaptive_fast_polls_remaining = self.config.adaptive_fast_polls_max;
+        } else if self.reader.last_read_had_data {
+            self.adaptive_fast_polls_remaining =
+                self.adaptive_fast_polls_remaining.saturating_sub(1);
+        } else {
+            self.adaptive_fast_polls_remaining = 0;
+        }
 
         self.reader.evict_lru(self.config.max_open_files);
         self.update_error_backoff(had_error);
@@ -286,6 +304,12 @@ impl FileTailer {
 
     pub fn source_id_for_path(&self, path: &Path) -> Option<SourceId> {
         self.reader.source_id_for_path(path)
+    }
+
+    #[cfg(test)]
+    pub(super) fn force_poll_due(&mut self) {
+        let elapsed_ms = self.config.poll_interval_ms.max(1);
+        self.last_poll = Instant::now() - Duration::from_millis(elapsed_ms);
     }
 
     pub fn file_offsets(&self) -> Vec<(SourceId, ByteOffset)> {

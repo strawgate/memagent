@@ -12,6 +12,7 @@ use logfwd_output::BatchMetadata;
 #[cfg(feature = "turmoil")]
 use logfwd_types::pipeline::SourceId;
 
+use super::processor_stage::{ProcessorStageResult, run_processor_stage};
 #[cfg(feature = "turmoil")]
 use super::scan_maybe_blocking;
 use super::{ChannelMsg, Pipeline, now_nanos};
@@ -73,75 +74,34 @@ impl Pipeline {
             self.metrics.finish_active_batch(batch_id);
             return;
         }
-        // Run through processor chain.
         let metadata = BatchMetadata {
             resource_attrs: Arc::clone(&self.resource_attrs),
             observed_time_ns: now_nanos(),
         };
-        let results = if self.processors.is_empty() {
-            smallvec::smallvec![batch]
-        } else {
-            match crate::processor::run_chain(&mut self.processors, batch, &metadata) {
-                Ok(batches) => batches,
-                Err(crate::processor::ProcessorError::Transient(e)) => {
-                    tracing::warn!(error = %e, "transient processor error, holding batch");
-                    self.ack_all_tickets(
-                        sending,
-                        super::checkpoint_policy::TicketDisposition::Hold,
-                    );
-                    self.metrics.finish_active_batch(batch_id);
-                    return;
-                }
-                Err(crate::processor::ProcessorError::Permanent(e)) => {
-                    tracing::error!(error = %e, "permanent processor error, dropping batch");
-                    self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Ack); // ack but don't forward
-                    self.metrics.finish_active_batch(batch_id);
-                    return;
-                }
-                Err(crate::processor::ProcessorError::Fatal(e)) => {
-                    tracing::error!(error = %e, "fatal processor error, holding batch");
-                    self.ack_all_tickets(
-                        sending,
-                        super::checkpoint_policy::TicketDisposition::Hold,
-                    );
-                    self.metrics.finish_active_batch(batch_id);
-                    return;
-                }
+        let (result, total_rows) = match run_processor_stage(&mut self.processors, batch, &metadata)
+        {
+            ProcessorStageResult::Forward { batch, output_rows } => (batch, output_rows),
+            ProcessorStageResult::Hold { reason } => {
+                tracing::warn!(reason = %reason, "processor stage requested hold");
+                self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Hold);
+                self.metrics.finish_active_batch(batch_id);
+                return;
+            }
+            ProcessorStageResult::AckDrop { reason } => {
+                tracing::info!(reason = %reason, "processor stage dropped batch");
+                self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Ack);
+                self.metrics.record_batch(0, scan_ns, transform_ns, 0);
+                self.metrics.finish_active_batch(batch_id);
+                return;
+            }
+            ProcessorStageResult::Reject { reason } => {
+                tracing::error!(reason = %reason, "processor stage rejected batch");
+                self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Reject);
+                self.metrics.finish_active_batch(batch_id);
+                return;
             }
         };
-
-        let total_rows: u64 = results.iter().map(|b| b.num_rows() as u64).sum();
         self.metrics.transform_out.inc_lines(total_rows);
-
-        // Handle post-processor zero-row results.
-        if total_rows == 0 {
-            self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Ack);
-            self.metrics.record_batch(0, scan_ns, transform_ns, 0);
-            self.metrics.finish_active_batch(batch_id);
-            return;
-        }
-
-        // Concatenate multiple processor outputs into a single batch
-        // (matches flush_batch_from behavior — one ticket set per submission).
-        let result = if results.len() == 1 {
-            results.into_iter().next().expect("checked len == 1")
-        } else {
-            match arrow::compute::concat_batches(&results[0].schema(), results.iter()) {
-                Ok(batch) => batch,
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        "processor chain returned incompatible schemas; rejecting batch"
-                    );
-                    self.ack_all_tickets(
-                        sending,
-                        super::checkpoint_policy::TicketDisposition::Reject,
-                    );
-                    self.metrics.finish_active_batch(batch_id);
-                    return;
-                }
-            }
-        };
 
         let input_rows = num_rows as u64;
         let out_rows = result.num_rows() as u64;

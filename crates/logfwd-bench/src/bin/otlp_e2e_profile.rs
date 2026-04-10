@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use logfwd_bench::{generators, make_otlp_sink};
 use logfwd_io::input::{InputEvent, InputSource};
-use logfwd_io::otlp_receiver::OtlpReceiverInput;
+use logfwd_io::otlp_receiver::{decode_protobuf_to_batch, OtlpReceiverInput};
 use logfwd_output::Compression;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
@@ -27,6 +27,7 @@ impl HttpPoster {
             .expect("tokio runtime");
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(max_idle_per_host.max(1))
+            .no_proxy()
             .build()
             .expect("reqwest client");
         Self { rt, client }
@@ -90,6 +91,7 @@ struct Case {
 #[derive(Default)]
 struct Totals {
     receiver: Duration,
+    receiver_direct: Duration,
     encode_manual: Duration,
     encode_generated: Duration,
 }
@@ -174,12 +176,20 @@ fn run_case(case: &Case, iterations: usize, timeout: Duration, concurrency: usiz
         totals.encode_generated += t3.elapsed();
     }
 
+    totals.receiver_direct = run_receiver_direct(&request_body, case.rows, iterations);
+
     let sink_only = run_sink_only(&warmup_batch, &metadata, iterations);
     let sink_total_rows = warmup_batch.num_rows().saturating_mul(iterations);
 
     println!(
         "{} [c={}]  rows={}  body={:.2} MiB",
         case.name, concurrency, case.rows, request_mb
+    );
+    print_stage_block(
+        "receiver-direct",
+        case.rows * iterations,
+        totals.receiver_direct,
+        None,
     );
     print_stage_block(
         "e2e manual",
@@ -207,6 +217,16 @@ fn run_case(case: &Case, iterations: usize, timeout: Duration, concurrency: usiz
         None,
     );
     println!();
+}
+
+fn run_receiver_direct(request_body: &[u8], expected_rows: usize, iterations: usize) -> Duration {
+    let t0 = Instant::now();
+    for _ in 0..iterations {
+        let direct_batch =
+            decode_protobuf_to_batch(request_body).expect("receiver direct decode must succeed");
+        assert_eq!(direct_batch.num_rows(), expected_rows);
+    }
+    t0.elapsed()
 }
 
 fn warm_up(

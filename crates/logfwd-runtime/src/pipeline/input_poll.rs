@@ -4,9 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "turmoil")]
-use arrow::record_batch::RecordBatch;
-#[cfg(feature = "turmoil")]
-use logfwd_diagnostics::diagnostics::PipelineMetrics;
+use logfwd_io::diagnostics::PipelineMetrics;
 #[cfg(feature = "turmoil")]
 use logfwd_io::input::InputEvent;
 #[cfg(feature = "turmoil")]
@@ -18,6 +16,15 @@ use super::health::{HealthTransitionEvent, reduce_component_health};
 use super::submit::{scan_and_transform_for_send, transform_direct_batch_for_send};
 #[cfg(feature = "turmoil")]
 use super::{ChannelMsg, InputState, InputTransform};
+
+#[inline]
+const fn should_flush_buffer(
+    buffered_len: usize,
+    batch_target_bytes: usize,
+    timeout_elapsed: bool,
+) -> bool {
+    buffered_len >= batch_target_bytes || (buffered_len > 0 && timeout_elapsed)
+}
 
 /// Async input loop for simulation testing.
 ///
@@ -122,8 +129,7 @@ pub(super) async fn async_input_poll_loop(
         }
 
         let timeout_elapsed = buffered_since.is_some_and(|t| t.elapsed() >= batch_timeout);
-        let should_send =
-            input.buf.len() >= batch_target_bytes || (!input.buf.is_empty() && timeout_elapsed);
+        let should_send = should_flush_buffer(input.buf.len(), batch_target_bytes, timeout_elapsed);
         if should_send {
             if let Some(msg) =
                 scan_and_transform_for_send(&mut input, &mut transform, &metrics, input_index).await
@@ -154,4 +160,43 @@ pub(super) async fn async_input_poll_loop(
         input.stats.health(),
         HealthTransitionEvent::ShutdownCompleted,
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_flush_buffer;
+    use proptest::prelude::*;
+
+    #[test]
+    fn never_flushes_empty_buffer() {
+        assert!(!should_flush_buffer(0, 1024, false));
+        assert!(!should_flush_buffer(0, 1024, true));
+    }
+
+    #[test]
+    fn flushes_when_target_reached_even_without_timeout() {
+        assert!(should_flush_buffer(1024, 1024, false));
+        assert!(should_flush_buffer(2048, 1024, false));
+    }
+
+    #[test]
+    fn flushes_non_empty_buffer_on_timeout() {
+        assert!(should_flush_buffer(1, 1024, true));
+        assert!(should_flush_buffer(1023, 1024, true));
+    }
+
+    proptest! {
+        #[test]
+        fn flush_decision_matches_policy(
+            buffered_len in 0usize..2048,
+            batch_target_bytes in 1usize..2048,
+            timeout_elapsed in any::<bool>()
+        ) {
+            let expected = buffered_len >= batch_target_bytes || (buffered_len > 0 && timeout_elapsed);
+            prop_assert_eq!(
+                should_flush_buffer(buffered_len, batch_target_bytes, timeout_elapsed),
+                expected
+            );
+        }
+    }
 }

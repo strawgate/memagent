@@ -39,7 +39,7 @@ fn make_format(
 
 fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> Result<(), String> {
     match input_type {
-        InputType::Generator | InputType::Otlp => {
+        InputType::Generator | InputType::Otlp | InputType::ArrowIpc => {
             if !matches!(format, Format::Json) {
                 return Err(format!(
                     "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
@@ -219,6 +219,17 @@ pub(super) fn build_input_state(
                 .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
+        InputType::ArrowIpc => {
+            let addr = cfg
+                .listen
+                .as_ref()
+                .ok_or_else(|| format!("input '{name}': arrow_ipc input requires 'listen'"))?;
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            validate_input_format(name, InputType::ArrowIpc, &format)?;
+            let source = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiver::new(name, addr)
+                .map_err(|e| format!("input '{name}': failed to start Arrow IPC receiver: {e}"))?;
+            (Box::new(source), format, 4 * 1024 * 1024)
+        }
         InputType::Http => {
             let addr = cfg
                 .listen
@@ -389,8 +400,8 @@ mod tests {
     }
 
     #[test]
-    fn generator_and_otlp_require_json_format() {
-        for input_type in [InputType::Generator, InputType::Otlp] {
+    fn generator_otlp_and_arrow_ipc_require_json_format() {
+        for input_type in [InputType::Generator, InputType::Otlp, InputType::ArrowIpc] {
             assert!(validate_input_format("in", input_type.clone(), &Format::Json).is_ok());
             let err = validate_input_format("in", input_type, &Format::Raw)
                 .expect_err("non-json format must be rejected");
