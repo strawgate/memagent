@@ -6,6 +6,7 @@ build
 /actionlint
 .claude/worktrees/
 .worktrees/
+.tools/
 book/book/
 .DS_Store
 crates/logfwd-io/src/dashboard-dist/

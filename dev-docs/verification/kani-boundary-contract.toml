@@ -81,7 +81,7 @@ issue = 1484
 [[seams]]
 path = "crates/logfwd-io/src/tail/verification.rs"
 status = "required"
-reason = "The EOF emission state machine is a local proof seam despite living in an IO crate."
+reason = "Pure tail reducers (`eof_model_transition`, `backoff_transition`) are local proof seams despite living in an IO crate."
 issue = 1314
 
 [[seams]]
