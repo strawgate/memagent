@@ -65,6 +65,9 @@ impl EofState {
 
 /// Compute the bounded exponential backoff delay for a given error streak.
 pub(super) fn backoff_delay_ms(consecutive_error_polls: u32) -> u64 {
+    if consecutive_error_polls == 0 {
+        return 0;
+    }
     let exponent = consecutive_error_polls.saturating_sub(1).min(6);
     let multiplier = 1u64 << exponent;
     INITIAL_BACKOFF_MS
@@ -115,6 +118,7 @@ mod tests {
 
     #[test]
     fn backoff_doubles_until_cap() {
+        assert_eq!(backoff_delay_ms(0), 0);
         assert_eq!(backoff_delay_ms(1), 100);
         assert_eq!(backoff_delay_ms(2), 200);
         assert_eq!(backoff_delay_ms(3), 400);
