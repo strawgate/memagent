@@ -94,6 +94,10 @@ def _collect_step_lines(job_block: list[str], idx: int) -> list[str]:
     return step_lines
 
 
+def _is_yaml_block_scalar_header(line: str, key: str) -> bool:
+    return bool(re.match(rf"^{re.escape(key)}:\s*[|>][-+]?\s*$", line.strip()))
+
+
 def extract_job_block(ci_text: str, job_name: str) -> list[str]:
     lines = ci_text.splitlines()
     jobs_start = None
@@ -150,7 +154,7 @@ def extract_paths_filter_entries(ci_text: str, filter_name: str) -> set[str]:
         filters_start = None
         filters_indent = None
         for step_idx, step_line in enumerate(step_lines):
-            if step_line.strip() == "filters: |":
+            if _is_yaml_block_scalar_header(step_line, "filters"):
                 filters_start = step_idx + 1
                 filters_indent = len(step_line) - len(step_line.lstrip(" "))
                 break
@@ -278,7 +282,7 @@ def extract_just_kani_required_crates(just_text: str) -> set[str]:
     lines = just_text.splitlines()
     start = None
     for idx, line in enumerate(lines):
-        if line.strip() == "kani-required:":
+        if re.match(r"^kani-required:\s*(.*)$", line):
             start = idx + 1
             break
     if start is None:
@@ -442,6 +446,23 @@ jobs:
         entries = extract_paths_filter_entries(ci_text, "kani_required")
         self.assertEqual(entries, {"crates/logfwd-core/**"})
 
+    def test_extract_paths_filter_entries_accepts_yaml_block_scalar_variants(self) -> None:
+        for block_style in ("|", "|-", ">", ">-"):
+            with self.subTest(block_style=block_style):
+                ci_text = f"""
+jobs:
+  changes:
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: {block_style}
+            kani_required:
+              - 'crates/logfwd-core/**'
+"""
+                entries = extract_paths_filter_entries(ci_text, "kani_required")
+                self.assertEqual(entries, {"crates/logfwd-core/**"})
+
     def test_extract_kani_args_crates(self) -> None:
         ci_text = """
 jobs:
@@ -471,6 +492,17 @@ jobs:
             -p logfwd-core
 """
         self.assertEqual(extract_kani_args_crates(ci_text), {"logfwd-core"})
+
+    def test_extract_just_kani_required_crates_accepts_recipe_dependencies(self) -> None:
+        just_text = """
+kani-required: prep-cache
+    cargo kani -p logfwd-core
+    cargo kani -p logfwd-io
+"""
+        self.assertEqual(
+            extract_just_kani_required_crates(just_text),
+            {"logfwd-core", "logfwd-io"},
+        )
 
     def test_extract_job_block_scopes_to_jobs_section(self) -> None:
         ci_text = """
