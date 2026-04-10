@@ -2164,7 +2164,7 @@ fn test_adaptive_fast_poll_drains_bulk_without_waiting_for_poll_interval() {
         .sum();
     assert_eq!(first_bytes, 64 * 1024);
     assert!(
-        tailer.adaptive_fast_polls_remaining > 0,
+        tailer.adaptive_fast_polls_remaining() > 0,
         "budget saturation should arm adaptive fast polls"
     );
 
@@ -2215,7 +2215,8 @@ fn test_adaptive_fast_poll_stays_idle_for_small_live_tail_updates() {
         .sum();
     assert!(first_bytes > 0);
     assert_eq!(
-        tailer.adaptive_fast_polls_remaining, 0,
+        tailer.adaptive_fast_polls_remaining(),
+        0,
         "small reads must not arm adaptive fast polling"
     );
 

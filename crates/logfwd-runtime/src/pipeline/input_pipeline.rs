@@ -42,6 +42,8 @@ use logfwd_diagnostics::diagnostics::PipelineMetrics;
 #[cfg(not(feature = "turmoil"))]
 use logfwd_io::input::InputEvent;
 #[cfg(not(feature = "turmoil"))]
+use logfwd_io::poll_cadence::AdaptivePollController;
+#[cfg(not(feature = "turmoil"))]
 use logfwd_types::pipeline::SourceId;
 
 #[cfg(not(feature = "turmoil"))]
@@ -98,6 +100,7 @@ fn io_worker_loop(
 ) {
     let mut buffered_since: Option<Instant> = None;
     let mut last_bp_warn: Option<Instant> = None;
+    let mut adaptive_poll = AdaptivePollController::new(input.source.adaptive_fast_polls_max());
 
     'io_loop: loop {
         if shutdown.is_cancelled() {
@@ -111,6 +114,7 @@ fn io_worker_loop(
         let events = match input.source.poll() {
             Ok(e) => e,
             Err(e) => {
+                adaptive_poll.clear();
                 input.stats.inc_errors();
                 input.stats.set_health(reduce_component_health(
                     input.stats.health(),
@@ -126,8 +130,9 @@ fn io_worker_loop(
             input.stats.health(),
             HealthTransitionEvent::Observed(input.source.health()),
         ));
+        adaptive_poll.observe(input.source.poll_cadence_signal());
 
-        if events.is_empty() {
+        if events.is_empty() && !adaptive_poll.should_fast_poll() {
             std::thread::sleep(poll_interval);
         } else {
             for event in events {
@@ -489,7 +494,7 @@ impl InputPipelineManager {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "turmoil")))]
 mod tests {
     use super::*;
 

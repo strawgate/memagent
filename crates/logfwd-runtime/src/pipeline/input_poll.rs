@@ -8,6 +8,8 @@ use logfwd_io::diagnostics::PipelineMetrics;
 #[cfg(feature = "turmoil")]
 use logfwd_io::input::InputEvent;
 #[cfg(feature = "turmoil")]
+use logfwd_io::poll_cadence::AdaptivePollController;
+#[cfg(feature = "turmoil")]
 use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "turmoil")]
@@ -45,6 +47,7 @@ pub(super) async fn async_input_poll_loop(
     input_index: usize,
 ) {
     let mut buffered_since: Option<tokio::time::Instant> = None;
+    let mut adaptive_poll = AdaptivePollController::new(input.source.adaptive_fast_polls_max());
     'poll_loop: loop {
         if shutdown.is_cancelled() {
             input.stats.set_health(reduce_component_health(
@@ -57,6 +60,7 @@ pub(super) async fn async_input_poll_loop(
         let events = match input.source.poll() {
             Ok(e) => e,
             Err(e) => {
+                adaptive_poll.clear();
                 input.stats.inc_errors();
                 input.stats.set_health(reduce_component_health(
                     input.stats.health(),
@@ -72,8 +76,9 @@ pub(super) async fn async_input_poll_loop(
             input.stats.health(),
             HealthTransitionEvent::Observed(input.source.health()),
         ));
+        adaptive_poll.observe(input.source.poll_cadence_signal());
 
-        if events.is_empty() {
+        if events.is_empty() && !adaptive_poll.should_fast_poll() {
             tokio::time::sleep(poll_interval).await;
         } else {
             for event in events {

@@ -7,6 +7,7 @@ use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::pipeline::SourceId;
 
+use crate::poll_cadence::{AdaptivePollController, PollCadenceSignal};
 use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
 
 use super::discovery::FileDiscovery;
@@ -73,7 +74,8 @@ pub struct FileTailer {
     last_poll: Instant,
     pub(super) consecutive_error_polls: u32,
     pub(super) error_backoff_until: Option<Instant>,
-    pub(super) adaptive_fast_polls_remaining: u8,
+    adaptive_poll: AdaptivePollController,
+    last_poll_signal: PollCadenceSignal,
     health: ComponentHealth,
     stats: std::sync::Arc<ComponentStats>,
 }
@@ -103,6 +105,7 @@ impl FileTailer {
         stats: std::sync::Arc<ComponentStats>,
     ) -> io::Result<Self> {
         let (tx, rx) = crossbeam_channel::unbounded();
+        let adaptive_fast_polls_max = config.adaptive_fast_polls_max;
 
         let mut watcher = notify::recommended_watcher(move |res| {
             let _ = tx.send(res);
@@ -143,7 +146,8 @@ impl FileTailer {
             last_poll: Instant::now(),
             consecutive_error_polls: 0,
             error_backoff_until: None,
-            adaptive_fast_polls_remaining: 0,
+            adaptive_poll: AdaptivePollController::new(adaptive_fast_polls_max),
+            last_poll_signal: PollCadenceSignal::default(),
             health: ComponentHealth::Healthy,
             stats,
         };
@@ -205,6 +209,7 @@ impl FileTailer {
         if let Some(until) = self.error_backoff_until
             && Instant::now() < until
         {
+            self.last_poll_signal = PollCadenceSignal::default();
             if had_error {
                 self.update_error_backoff(true);
             }
@@ -215,13 +220,14 @@ impl FileTailer {
         let glob_rescan_due = self.config.glob_rescan_interval_ms > 0
             && self.discovery.last_glob_rescan.elapsed()
                 >= Duration::from_millis(self.config.glob_rescan_interval_ms);
-        let adaptive_fast_poll = self.adaptive_fast_polls_remaining > 0;
+        let adaptive_fast_poll = self.adaptive_poll.should_fast_poll();
         let should_poll = something_changed
             || self.last_poll.elapsed() >= poll_interval
             || glob_rescan_due
             || adaptive_fast_poll;
 
         if !should_poll {
+            self.last_poll_signal = PollCadenceSignal::default();
             if had_error {
                 self.update_error_backoff(true);
             }
@@ -240,14 +246,11 @@ impl FileTailer {
             .discovery
             .cleanup_deleted(&mut self.reader, &mut events);
 
-        if self.reader.last_read_hit_budget {
-            self.adaptive_fast_polls_remaining = self.config.adaptive_fast_polls_max;
-        } else if self.reader.last_read_had_data {
-            self.adaptive_fast_polls_remaining =
-                self.adaptive_fast_polls_remaining.saturating_sub(1);
-        } else {
-            self.adaptive_fast_polls_remaining = 0;
-        }
+        self.last_poll_signal = PollCadenceSignal {
+            had_data: self.reader.last_read_had_data,
+            hit_read_budget: self.reader.last_read_hit_budget,
+        };
+        self.adaptive_poll.observe(self.last_poll_signal);
 
         self.reader.evict_lru(self.config.max_open_files);
         self.update_error_backoff(had_error);
@@ -306,10 +309,23 @@ impl FileTailer {
         self.reader.source_id_for_path(path)
     }
 
+    pub fn poll_cadence_signal(&self) -> PollCadenceSignal {
+        self.last_poll_signal
+    }
+
+    pub fn adaptive_fast_polls_max(&self) -> u8 {
+        self.config.adaptive_fast_polls_max
+    }
+
     #[cfg(test)]
     pub(super) fn force_poll_due(&mut self) {
         let elapsed_ms = self.config.poll_interval_ms.max(1);
         self.last_poll = Instant::now() - Duration::from_millis(elapsed_ms);
+    }
+
+    #[cfg(test)]
+    pub(super) fn adaptive_fast_polls_remaining(&self) -> u8 {
+        self.adaptive_poll.fast_polls_remaining()
     }
 
     pub fn file_offsets(&self) -> Vec<(SourceId, ByteOffset)> {

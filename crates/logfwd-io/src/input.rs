@@ -6,6 +6,7 @@ use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 
 use crate::filter_hints::FilterHints;
+use crate::poll_cadence::PollCadenceSignal;
 use crate::tail::{ByteOffset, FileTailer, TailConfig, TailEvent};
 
 /// Events produced by an input source.
@@ -70,6 +71,20 @@ pub trait InputSource: Send {
     /// pushdown use these to skip data early (e.g., XDP severity filtering).
     /// Default implementation ignores hints — correct but slower.
     fn apply_hints(&mut self, _hints: &FilterHints) {}
+
+    /// Source-specific polling feedback for adaptive cadence decisions.
+    ///
+    /// Default: no payload and no read-budget saturation signal.
+    fn poll_cadence_signal(&self) -> PollCadenceSignal {
+        PollCadenceSignal::default()
+    }
+
+    /// Upper bound for immediate repolls after a budget-saturated read.
+    ///
+    /// Default: disabled (0), so non-file inputs keep existing cadence.
+    fn adaptive_fast_polls_max(&self) -> u8 {
+        0
+    }
 
     /// Return checkpoint data for all active sources.
     ///
@@ -179,5 +194,13 @@ impl InputSource for FileInput {
         if let Err(e) = self.tailer.set_offset_by_source(source_id, offset) {
             tracing::warn!(source_id = source_id.0, error = %e, "failed to restore offset");
         }
+    }
+
+    fn poll_cadence_signal(&self) -> PollCadenceSignal {
+        self.tailer.poll_cadence_signal()
+    }
+
+    fn adaptive_fast_polls_max(&self) -> u8 {
+        self.tailer.adaptive_fast_polls_max()
     }
 }
