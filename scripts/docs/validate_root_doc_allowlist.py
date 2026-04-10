@@ -29,7 +29,9 @@ def main() -> int:
 
     claude = root / "CLAUDE.md"
     if claude.is_symlink():
-        if claude.readlink() != Path("AGENTS.md"):
+        expected = (root / "AGENTS.md").resolve(strict=False)
+        resolved_target = (claude.parent / claude.readlink()).resolve(strict=False)
+        if resolved_target != expected:
             failures.append("- CLAUDE.md must point to AGENTS.md")
     elif claude.exists():
         failures.append("- CLAUDE.md must be a symlink to AGENTS.md")
