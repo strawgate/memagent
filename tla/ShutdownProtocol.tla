@@ -401,6 +401,13 @@ NoStopBeforeJoin ==
 NormalStopImpliesPoolDrained ==
     (machine_stopped /\ ~forced) => pool_drained
 
+\* Shutdown stage flags must reflect underlying worker/channel state.
+DrainFlagsConsistent ==
+    /\ workers_joined =>
+        (cpu_workers_stopped /\ io_channels_drained /\ pipeline_channel_drained)
+    /\ pool_drained =>
+        (workers_joined /\ pool_acked = pool_pending)
+
 \* Conservation: items produced by each I/O worker = items in its io channel
 \* + items its CPU worker has forwarded.  Non-tautological: catches duplication
 \* or loss in the io -> cpu path.
@@ -447,6 +454,8 @@ ShutdownReachable == ~shutdown_signaled
 IoChannelsDrainedReachable == ~io_channels_drained
 CpuWorkersStoppedReachable == ~cpu_workers_stopped
 PipelineChannelDrainedReachable == ~pipeline_channel_drained
+WorkersJoinedReachable == ~workers_joined
+PoolDrainedReachable == ~pool_drained
 NormalStopReachable == ~(machine_stopped /\ ~forced)
 ForceStopReachable == ~(machine_stopped /\ forced)
 
