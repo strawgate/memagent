@@ -265,8 +265,13 @@ mod tests {
 mod proptests {
     use super::*;
     use proptest::prelude::*;
+    use proptest::test_runner::Config as ProptestConfig;
 
     proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            .. ProptestConfig::default()
+        })]
         /// Output never exceeds max_message_size for any sequence of P and F feeds.
         ///
         /// Extends the Kani proofs (fixed depth P+F, P+P+F) to arbitrary-length

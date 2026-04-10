@@ -614,6 +614,7 @@ mod kani_proofs {
 mod proptest_builder_state {
     use super::BuilderState;
     use proptest::prelude::*;
+    use proptest::test_runner::Config as ProptestConfig;
 
     /// Simulate a state transition (same logic as Kani proofs).
     fn transition(state: BuilderState, op: u8) -> Option<BuilderState> {
@@ -631,6 +632,10 @@ mod proptest_builder_state {
     // Generate a random valid operation sequence that ends with
     // `finish_batch`, then verify the final state is `Idle`.
     proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            .. ProptestConfig::default()
+        })]
         #[test]
         fn random_valid_sequence_ends_idle(ops in prop::collection::vec(0u8..6, 1..50)) {
             let mut state = BuilderState::Idle;

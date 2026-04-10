@@ -505,8 +505,13 @@ pub fn find_structural_chars(block: &[u8; 64]) -> RawBlockMasks {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use proptest::test_runner::Config as ProptestConfig;
 
     proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            .. ProptestConfig::default()
+        })]
         #[test]
         fn simd_eq_scalar(
             block in (any::<[u8; 32]>(), any::<[u8; 32]>()).prop_map(|(a, b)| {
