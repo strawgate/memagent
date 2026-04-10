@@ -38,7 +38,7 @@ def is_section_header(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
         return False
-    if len(line) != len(line.lstrip(" ")):
+    if len(line) != len(line.lstrip()):
         return False
     return stripped in KNOWN_CFG_SECTIONS and SECTION_RE.match(stripped) is not None
 

@@ -32,10 +32,10 @@ jobs:
   # -------------------------------------------------------------------------
   changes:
     name: Detect changed paths
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     outputs:
       core: ${{ steps.filter.outputs.core }}
+      core_no_std: ${{ steps.filter.outputs.core_no_std }}
       kani_required: ${{ steps.filter.outputs.kani_required }}
       tla: ${{ steps.filter.outputs.tla }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -48,6 +48,11 @@ jobs:
           filters: |
             core:
               - 'crates/logfwd-core/**'
+            core_no_std:
+              - 'crates/logfwd-core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
             kani_required:
               - 'crates/logfwd-core/**'
               - 'crates/logfwd-arrow/**'
@@ -65,14 +70,16 @@ jobs:
             tla:
               - 'tla/**'
               - 'crates/logfwd-core/src/pipeline/**'
-              - 'crates/logfwd-runtime/src/pipeline.rs'
+              - 'crates/logfwd-runtime/src/pipeline/**'
               - 'crates/logfwd-types/src/pipeline/**'
               - 'crates/logfwd/src/pipeline/**'
               - 'crates/logfwd/src/worker_pool/**'
+              - 'scripts/verify_tla_coverage.py'
               - '.github/workflows/ci.yml'
             frontend:
               - 'dashboard/**'
               - '.github/actions/build-dashboard/**'
+              - '.github/workflows/ci.yml'
             miri:
               - 'crates/logfwd-core/**'
               - 'crates/logfwd-types/**'
@@ -332,7 +339,7 @@ jobs:
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.core == 'true')
+      (github.event.pull_request.draft == false && needs.changes.outputs.core_no_std == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

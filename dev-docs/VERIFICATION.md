@@ -118,8 +118,8 @@ cargo kani --harness verify_my_fn      # Specific harness
 cargo kani -p logfwd-core --tests      # Kani + unit tests
 cargo build -p logfwd-core \
   --target thumbv6m-none-eabi          # Verify no_std compliance
-cargo +nightly miri test -p logfwd-core --lib
-cargo +nightly miri test -p logfwd-types --lib
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-core --lib
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-types --lib
 ```
 
 ### Non-core pure seam boundary contract
