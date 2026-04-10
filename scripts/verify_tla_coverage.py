@@ -17,6 +17,30 @@ import tempfile
 from typing import Sequence
 
 SECTION_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+KNOWN_CFG_SECTIONS = {
+    "SPECIFICATION",
+    "INIT",
+    "NEXT",
+    "CONSTANTS",
+    "CONSTRAINTS",
+    "ACTION_CONSTRAINTS",
+    "INVARIANTS",
+    "PROPERTIES",
+    "SYMMETRY",
+    "VIEW",
+    "CHECK_DEADLOCK",
+    "POSTCONDITION",
+    "ALIAS",
+}
+
+
+def is_section_header(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if len(line) != len(line.lstrip(" ")):
+        return False
+    return stripped in KNOWN_CFG_SECTIONS and SECTION_RE.match(stripped) is not None
 
 
 def split_cfg_sections(lines: Sequence[str]) -> tuple[list[str], list[str], list[str]]:
@@ -26,7 +50,7 @@ def split_cfg_sections(lines: Sequence[str]) -> tuple[list[str], list[str], list
         if raw.strip() == "INVARIANTS":
             start = idx
             continue
-        if start is not None and idx > start and SECTION_RE.match(raw.strip()):
+        if start is not None and idx > start and is_section_header(raw):
             end = idx
             break
     if start is None:
@@ -56,33 +80,35 @@ def run_one(jar: pathlib.Path, tla_file: pathlib.Path, cfg_lines: Sequence[str],
         fh.write("\n")
         tmp_cfg = pathlib.Path(fh.name)
 
-    cmd = [
-        "java",
-        "-cp",
-        str(jar),
-        "tlc2.TLC",
-        str(tla_file),
-        "-config",
-        str(tmp_cfg),
-        "-workers",
-        "auto",
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    output = proc.stdout + proc.stderr
-    lowered = output.lower()
+    try:
+        cmd = [
+            "java",
+            "-cp",
+            str(jar),
+            "tlc2.TLC",
+            str(tla_file),
+            "-config",
+            str(tmp_cfg),
+            "-workers",
+            "auto",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        output = proc.stdout + proc.stderr
+        lowered = output.lower()
 
-    if proc.returncode == 0:
-        raise RuntimeError(
-            f"coverage invariant {invariant} did not produce a witness violation; TLC exited 0"
-        )
-    if invariant.lower() not in lowered or "violat" not in lowered:
-        snippet = "\n".join(output.splitlines()[-20:])
-        raise RuntimeError(
-            f"coverage invariant {invariant} failed for an unexpected reason\n{snippet}"
-        )
+        if proc.returncode == 0:
+            raise RuntimeError(
+                f"coverage invariant {invariant} did not produce a witness violation; TLC exited 0"
+            )
+        if invariant.lower() not in lowered or "violat" not in lowered:
+            snippet = "\n".join(output.splitlines()[-20:])
+            raise RuntimeError(
+                f"coverage invariant {invariant} failed for an unexpected reason\n{snippet}"
+            )
 
-    print(f"ok: {invariant}")
-    tmp_cfg.unlink(missing_ok=True)
+        print(f"ok: {invariant}")
+    finally:
+        tmp_cfg.unlink(missing_ok=True)
 
 
 def main() -> int:

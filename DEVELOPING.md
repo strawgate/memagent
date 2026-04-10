@@ -85,8 +85,9 @@ just fuzz scanner 300        # fuzz a target for 300s (nightly)
 > (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip
 > them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just
 > targets when you need the full build. CI always uses `--workspace`.
-> Adding the `ci:full` PR label also enables the slower verification lanes
-> (`miri`, macOS tests, and the deeper TLA/TLC sweeps).
+> Adding the `ci:full` PR label includes the slower verification lanes in
+> subsequent CI runs (for example, after pushing a commit or rerunning CI):
+> `miri`, macOS tests, and the deeper TLA/TLC sweeps.
 
 ## DataFusion in Dev vs Release
 

@@ -656,8 +656,9 @@ jobs:
   # -------------------------------------------------------------------------
   conclusion:
     name: CI conclusion
-    if: ${{ !cancelled() }}
+    if: ${{ always() && !cancelled() }}
     needs:
+      - changes
       - frontend-checks
       - frontend-test
       - verification-guardrail
