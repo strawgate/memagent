@@ -29,6 +29,11 @@ If Arrow schema or builder behavior changes:
 - String view/buffer lifetime assumptions.
 - Mid-batch field appearance and null backfill behavior.
 
+## Correctness Gotchas
+
+- `concat_batches` is positional; schema/column ordering mismatches can silently corrupt interpretation.
+- `Utf8` vs `Utf8View` transitions must be explicit at boundaries to avoid lifetime and compatibility bugs.
+
 ## Canonical Docs
 
 - Scanner contract: `dev-docs/SCANNER_CONTRACT.md`

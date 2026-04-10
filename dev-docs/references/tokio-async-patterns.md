@@ -20,6 +20,15 @@ Operational patterns used in `logfwd-runtime` and pipeline shells.
 - Implicit checkpoint advancement on ambiguous outcomes.
 - Embedding business invariants directly in async select loops.
 
+## Critical Gotchas
+
+- Do not create nested runtimes or call `block_on` from runtime worker paths.
+- In `tokio::select!`, ensure fairness assumptions are explicit; avoid starvation-prone loops.
+- Timer branches in `select!` must be reset intentionally after state changes.
+- `spawn_blocking` is for bounded CPU/offload only; avoid hiding core protocol transitions there.
+- Bridge points (`blocking_send`/`blocking_recv`) should stay at explicit boundaries (thread handoff), not deep inside async logic.
+- Cancellation must not silently drop checkpoint/delivery outcomes; propagate terminal state explicitly.
+
 ## Change Checklist
 
 - If lifecycle semantics changed: update `dev-docs/ARCHITECTURE.md` and `dev-docs/VERIFICATION.md`.

@@ -47,6 +47,7 @@ If proofs/tests change coverage expectations, update:
 
 ```bash
 just kani
+just kani-boundary
 just test
 # For TLA+-touching changes, run matching TLC models from tla/README.md
 ```

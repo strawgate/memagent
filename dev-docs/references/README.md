@@ -16,3 +16,5 @@ Repo-scoped quick references for external libraries used by logfwd.
 - [arrow.md](arrow.md)
 - [tokio-async-patterns.md](tokio-async-patterns.md)
 - [opentelemetry-otlp.md](opentelemetry-otlp.md)
+- [file-discovery.md](file-discovery.md)
+- [turmoil-simulation.md](turmoil-simulation.md)

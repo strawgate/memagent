@@ -85,7 +85,7 @@ tla/
 **Model 1 — Safety (normal + ForceStop paths):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
 # Sources={"s1","s2"}, MaxBatchesPerSource=3, symmetry on Sources
 # ~50K states, < 30s. Checks all INVARIANTS + temporal action properties.
 ```
@@ -93,7 +93,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 **Model 2 — Liveness (smaller constants, no SYMMETRY):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg
 # Sources={"s1","s2"}, MaxBatchesPerSource=2 — liveness needs small constants
 # ~5K states, < 5 min. Checks EventualDrain, NoBatchLeftBehind, StoppedIsStable
 ```
@@ -109,7 +109,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 **Model 3 — Coverage / reachability (vacuity guards):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.coverage.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.coverage.cfg
 # TLC will report INVARIANT VIOLATIONS for BeginDrainReachable, StopReachable,
 # AckOccurs, RejectOccurs, CheckpointAdvances, ForcedReachable, AbandonOccurs —
 # each violation is a witness
@@ -128,7 +128,7 @@ impossible.
 **Model 4 — Thorough safety sweep (optional, slower):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.thorough.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg
 ```
 
 **Sabotage test** — verify no invariant is vacuously true:
@@ -140,11 +140,10 @@ and the invariant was trivially satisfied.
 
 ```bash
 # CLI (requires tla2tools.jar)
-cd tla/
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
 
 # With coverage stats (verify every action fires):
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg -coverage 1
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg -coverage 1
 
 # Via TLA+ Toolbox:
 # File -> Open Spec -> MCPipelineMachine.tla
@@ -217,9 +216,9 @@ ack/reject handling at the batching seam.
 Run:
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineBatch.tla -config PipelineBatch.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineBatch.tla -config PipelineBatch.liveness.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineBatch.tla -config PipelineBatch.coverage.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.coverage.cfg
 ```
 
 | Layer | Tool | File | Scope |

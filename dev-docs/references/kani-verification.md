@@ -39,9 +39,9 @@ Do not use Kani for async orchestration or IO-heavy code.
 ## Fast Workflow
 
 ```bash
-cargo kani -p logfwd-core --harness verify_my_harness
-cargo kani -p logfwd-core
 just kani
+RUSTC_WRAPPER="" cargo kani -p logfwd-core --harness verify_my_harness -Z function-contracts -Z mem-predicates -Z stubbing
+RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
 ```
 
 ## CI-Parity Commands
