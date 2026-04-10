@@ -1,5 +1,5 @@
 use super::*;
-use arrow::array::{Array, BooleanArray, Int64Array, StringArray};
+use arrow::array::{Array, BooleanArray, Int64Array, StringArray, StringViewArray};
 use arrow::datatypes::DataType;
 use logfwd_types::field_names;
 use opentelemetry_proto::tonic::{
@@ -11,6 +11,24 @@ use opentelemetry_proto::tonic::{
 use proptest::prelude::*;
 use prost::Message;
 use std::time::{Duration, Instant};
+
+fn string_value_at(col: &dyn Array, row: usize) -> String {
+    match col.data_type() {
+        DataType::Utf8 => col
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("Utf8 string array")
+            .value(row)
+            .to_string(),
+        DataType::Utf8View => col
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .expect("Utf8View string array")
+            .value(row)
+            .to_string(),
+        other => panic!("expected string column, got {other}"),
+    }
+}
 
 fn make_test_request() -> Vec<u8> {
     let request = ExportLogsServiceRequest {
@@ -261,30 +279,19 @@ fn structured_values_are_serialized_deterministically() {
 
     let body = batch
         .column_by_name(field_names::BODY)
-        .expect("body column must exist")
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("body must be Utf8");
-    assert_eq!(body.value(0), "[\"hello\",2]");
+        .expect("body column must exist");
+    assert_eq!(string_value_at(body.as_ref(), 0), "[\"hello\",2]");
 
-    let ctx = batch
-        .column_by_name("ctx")
-        .expect("ctx column must exist")
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("ctx must be Utf8");
+    let ctx = batch.column_by_name("ctx").expect("ctx column must exist");
     assert_eq!(
-        ctx.value(0),
+        string_value_at(ctx.as_ref(), 0),
         "[{\"k\":\"b\",\"v\":\"two\"},{\"k\":\"a\",\"v\":1},{\"k\":\"a\",\"v\":3}]"
     );
 
     let labels = batch
         .column_by_name("resource.attributes.resource.labels")
-        .expect("resource labels column must exist")
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("resource labels must be Utf8");
-    assert_eq!(labels.value(0), "[true,\"x\"]");
+        .expect("resource labels column must exist");
+    assert_eq!(string_value_at(labels.as_ref(), 0), "[true,\"x\"]");
 }
 
 #[test]
@@ -893,6 +900,71 @@ fn json_path_uses_observed_time_when_event_time_is_zero() {
         1_705_314_700_000_000_000_i64,
         "JSON path must fall back to observedTimeUnixNano when timeUnixNano==0"
     );
+}
+
+#[test]
+fn json_path_structured_values_match_protobuf_shape() {
+    let batch = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "resource.labels",
+                        "value": {
+                            "arrayValue": {
+                                "values": [
+                                    { "boolValue": true },
+                                    { "stringValue": "x" }
+                                ]
+                            }
+                        }
+                    }]
+                },
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "body": {
+                            "arrayValue": {
+                                "values": [
+                                    { "stringValue": "hello" },
+                                    { "intValue": "2" }
+                                ]
+                            }
+                        },
+                        "attributes": [{
+                            "key": "ctx",
+                            "value": {
+                                "kvlistValue": {
+                                    "values": [
+                                        { "key": "b", "value": { "stringValue": "two" } },
+                                        { "key": "a", "value": { "intValue": "1" } },
+                                        { "key": "a", "value": { "intValue": "3" } }
+                                    ]
+                                }
+                            }
+                        }]
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    )
+    .expect("structured OTLP JSON decode succeeds");
+
+    let body = batch
+        .column_by_name(field_names::BODY)
+        .expect("body column must exist");
+    assert_eq!(string_value_at(body.as_ref(), 0), "[\"hello\",2]");
+
+    let ctx = batch.column_by_name("ctx").expect("ctx column must exist");
+    assert_eq!(
+        string_value_at(ctx.as_ref(), 0),
+        "[{\"k\":\"b\",\"v\":\"two\"},{\"k\":\"a\",\"v\":1},{\"k\":\"a\",\"v\":3}]"
+    );
+
+    let labels = batch
+        .column_by_name("resource.attributes.resource.labels")
+        .expect("resource labels column must exist");
+    assert_eq!(string_value_at(labels.as_ref(), 0), "[true,\"x\"]");
 }
 
 #[test]

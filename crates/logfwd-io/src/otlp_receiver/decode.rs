@@ -315,10 +315,92 @@ fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, Inp
     }
     // Structured types: serialize as JSON strings to match the protobuf decode path.
     if let Some(arr) = v.get("arrayValue") {
-        return Ok(Some(serde_json::to_string(arr).unwrap_or_default()));
+        return Ok(Some(json_any_array_to_string(arr)?));
     }
     if let Some(kvlist) = v.get("kvlistValue") {
-        return Ok(Some(serde_json::to_string(kvlist).unwrap_or_default()));
+        return Ok(Some(json_any_kvlist_to_string(kvlist)?));
+    }
+    Ok(None)
+}
+
+fn json_any_array_to_string(array_value: &serde_json::Value) -> Result<String, InputError> {
+    let values = array_value
+        .get("values")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| InputError::Receiver("invalid OTLP JSON arrayValue".into()))?;
+
+    let mut out = Vec::with_capacity(values.len());
+    for item in values {
+        out.push(json_any_value_to_json_literal(item)?.unwrap_or(serde_json::Value::Null));
+    }
+
+    serde_json::to_string(&out)
+        .map_err(|e| InputError::Receiver(format!("invalid OTLP JSON arrayValue: {e}")))
+}
+
+fn json_any_kvlist_to_string(kvlist_value: &serde_json::Value) -> Result<String, InputError> {
+    let values = kvlist_value
+        .get("values")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| InputError::Receiver("invalid OTLP JSON kvlistValue".into()))?;
+
+    let mut out = Vec::with_capacity(values.len());
+    for entry in values {
+        let key = entry
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| InputError::Receiver("invalid OTLP JSON kvlistValue entry".into()))?;
+        let value = entry
+            .get("value")
+            .map(json_any_value_to_json_literal)
+            .transpose()?
+            .flatten()
+            .unwrap_or(serde_json::Value::Null);
+        out.push(serde_json::json!({ "k": key, "v": value }));
+    }
+
+    serde_json::to_string(&out)
+        .map_err(|e| InputError::Receiver(format!("invalid OTLP JSON kvlistValue: {e}")))
+}
+
+fn json_any_value_to_json_literal(
+    v: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, InputError> {
+    if let Some(s) = v.get("stringValue").and_then(|v| v.as_str()) {
+        return Ok(Some(serde_json::Value::String(s.to_string())));
+    }
+    if let Some(i) = v.get("intValue") {
+        let parsed = parse_protojson_i64(i)
+            .ok_or_else(|| InputError::Receiver("invalid OTLP JSON intValue".into()))?;
+        return Ok(Some(serde_json::Value::Number(parsed.into())));
+    }
+    if let Some(dv) = v.get("doubleValue") {
+        let parsed = parse_protojson_f64(dv)
+            .ok_or_else(|| InputError::Receiver("invalid OTLP JSON doubleValue".into()))?;
+        return Ok(Some(match serde_json::Number::from_f64(parsed) {
+            Some(number) => serde_json::Value::Number(number),
+            None => serde_json::Value::String(parsed.to_string()),
+        }));
+    }
+    if let Some(b) = v.get("boolValue").and_then(serde_json::Value::as_bool) {
+        return Ok(Some(serde_json::Value::Bool(b)));
+    }
+    if let Some(bytes) = v.get("bytesValue").and_then(|v| v.as_str()) {
+        let decoded = decode_protojson_bytes(bytes)
+            .map_err(|e| InputError::Receiver(format!("invalid OTLP JSON bytesValue: {e}")))?;
+        return Ok(Some(serde_json::Value::String(hex::encode(&decoded))));
+    }
+    if let Some(arr) = v.get("arrayValue") {
+        return Ok(Some(
+            serde_json::from_str(&json_any_array_to_string(arr)?)
+                .map_err(|e| InputError::Receiver(format!("invalid OTLP JSON arrayValue: {e}")))?,
+        ));
+    }
+    if let Some(kvlist) = v.get("kvlistValue") {
+        return Ok(Some(
+            serde_json::from_str(&json_any_kvlist_to_string(kvlist)?)
+                .map_err(|e| InputError::Receiver(format!("invalid OTLP JSON kvlistValue: {e}")))?,
+        ));
     }
     Ok(None)
 }
