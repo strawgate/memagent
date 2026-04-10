@@ -48,6 +48,7 @@ pub struct TailConfig {
     pub glob_rescan_interval_ms: u64,
     pub max_open_files: usize,
     pub per_file_read_budget_bytes: usize,
+    /// Maximum number of consecutive immediate repolls after a budget-saturated read.
     pub adaptive_fast_polls_max: u8,
 }
 
@@ -309,11 +310,13 @@ impl FileTailer {
         self.reader.source_id_for_path(path)
     }
 
-    pub fn poll_cadence_signal(&self) -> PollCadenceSignal {
+    /// Source feedback from the last poll, used to decide whether the next poll should fast-path.
+    pub fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
         self.last_poll_signal
     }
 
-    pub fn adaptive_fast_polls_max(&self) -> u8 {
+    /// Maximum number of immediate repolls allowed after a budget-saturated read.
+    pub fn get_adaptive_fast_polls_max(&self) -> u8 {
         self.config.adaptive_fast_polls_max
     }
 

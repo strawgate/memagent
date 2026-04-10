@@ -75,14 +75,14 @@ pub trait InputSource: Send {
     /// Source-specific polling feedback for adaptive cadence decisions.
     ///
     /// Default: no payload and no read-budget saturation signal.
-    fn poll_cadence_signal(&self) -> PollCadenceSignal {
+    fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
         PollCadenceSignal::default()
     }
 
     /// Upper bound for immediate repolls after a budget-saturated read.
     ///
     /// Default: disabled (0), so non-file inputs keep existing cadence.
-    fn adaptive_fast_polls_max(&self) -> u8 {
+    fn get_adaptive_fast_polls_max(&self) -> u8 {
         0
     }
 
@@ -196,11 +196,11 @@ impl InputSource for FileInput {
         }
     }
 
-    fn poll_cadence_signal(&self) -> PollCadenceSignal {
-        self.tailer.poll_cadence_signal()
+    fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
+        self.tailer.get_poll_cadence_signal()
     }
 
-    fn adaptive_fast_polls_max(&self) -> u8 {
-        self.tailer.adaptive_fast_polls_max()
+    fn get_adaptive_fast_polls_max(&self) -> u8 {
+        self.tailer.get_adaptive_fast_polls_max()
     }
 }

@@ -10,17 +10,21 @@ pub(super) enum ProcessorStageResult {
         batch: RecordBatch,
         output_rows: u64,
     },
-    /// Processor reported a transient/fatal error; keep checkpoints queued.
+    /// Processor reported a transient error; keep checkpoints queued.
     Hold { reason: String },
     /// Processor reported a permanent error; drop batch and advance checkpoints.
     AckDrop { reason: String },
+    /// Processor emitted no rows; acknowledge without treating it as a drop.
+    ZeroRow { reason: String },
+    /// Processor reported a fatal error; shut down the pipeline and keep checkpoints queued.
+    Fatal { reason: String },
     /// Processor outputs could not be merged into one batch.
     Reject { reason: String },
 }
 
 /// Run the processor chain and normalize outputs into one submission batch.
 ///
-/// This seam keeps processor semantics (retry/drop/reject) out of the async
+/// This seam keeps processor semantics (retry/drop/shutdown/reject) out of the async
 /// submission shell so future processor work can evolve in a pure reducer.
 pub(super) fn run_processor_stage(
     processors: &mut [Box<dyn Processor>],
@@ -39,14 +43,14 @@ pub(super) fn run_processor_stage(
                 return ProcessorStageResult::AckDrop { reason: e };
             }
             Err(crate::processor::ProcessorError::Fatal(e)) => {
-                return ProcessorStageResult::Hold { reason: e };
+                return ProcessorStageResult::Fatal { reason: e };
             }
         }
     };
 
     let output_rows: u64 = results.iter().map(|b| b.num_rows() as u64).sum();
     if output_rows == 0 {
-        return ProcessorStageResult::AckDrop {
+        return ProcessorStageResult::ZeroRow {
             reason: "processor chain emitted zero rows".to_string(),
         };
     }
@@ -107,10 +111,11 @@ mod tests {
             batch: RecordBatch,
             _meta: &BatchMetadata,
         ) -> Result<SmallVec<[RecordBatch; 1]>, ProcessorError> {
-            let row_count = batch.num_rows() as i32;
+            let row_count = batch.num_rows();
+            let string_values = vec!["left"; row_count.max(2)];
             Ok(smallvec::smallvec![
                 int_batch("a", &[1, 2]),
-                string_batch("a", &["left", "right"]).slice(0, row_count as usize),
+                string_batch("a", &string_values).slice(0, row_count),
             ])
         }
 
@@ -199,6 +204,57 @@ mod tests {
                 assert!(reason.contains("bad batch"));
             }
             _ => panic!("expected ack-drop result"),
+        }
+    }
+
+    #[test]
+    fn empty_processor_output_maps_to_zero_row() {
+        #[derive(Debug)]
+        struct EmptyProcessor;
+
+        impl Processor for EmptyProcessor {
+            fn process(
+                &mut self,
+                _batch: RecordBatch,
+                _meta: &BatchMetadata,
+            ) -> Result<SmallVec<[RecordBatch; 1]>, ProcessorError> {
+                Ok(SmallVec::new())
+            }
+
+            fn flush(&mut self) -> SmallVec<[RecordBatch; 1]> {
+                SmallVec::new()
+            }
+
+            fn name(&self) -> &'static str {
+                "empty"
+            }
+
+            fn is_stateful(&self) -> bool {
+                false
+            }
+        }
+
+        let mut processors: Vec<Box<dyn Processor>> = vec![Box::new(EmptyProcessor)];
+        let out = run_processor_stage(&mut processors, int_batch("x", &[1]), &test_meta());
+        match out {
+            ProcessorStageResult::ZeroRow { reason } => {
+                assert!(reason.contains("zero rows"));
+            }
+            _ => panic!("expected zero-row result"),
+        }
+    }
+
+    #[test]
+    fn fatal_processor_error_maps_to_fatal() {
+        let mut processors: Vec<Box<dyn Processor>> = vec![Box::new(FailingProcessor {
+            error: ProcessorError::Fatal("shutdown".to_string()),
+        })];
+        let out = run_processor_stage(&mut processors, int_batch("x", &[1]), &test_meta());
+        match out {
+            ProcessorStageResult::Fatal { reason } => {
+                assert!(reason.contains("shutdown"));
+            }
+            _ => panic!("expected fatal result"),
         }
     }
 

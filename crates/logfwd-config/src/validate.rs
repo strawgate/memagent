@@ -364,6 +364,11 @@ impl Config {
                                 "pipeline '{name}' input '{label}': 'tls' is not supported for arrow_ipc inputs"
                             )));
                         }
+                        if input.format.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'format' is not supported for arrow_ipc inputs"
+                            )));
+                        }
                         if input.http.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
@@ -387,6 +392,21 @@ impl Config {
                         if input.glob_rescan_interval_ms.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for arrow_ipc inputs"
+                            )));
+                        }
+                        if input.poll_interval_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'poll_interval_ms' is not supported for arrow_ipc inputs"
+                            )));
+                        }
+                        if input.read_buf_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'read_buf_size' is not supported for arrow_ipc inputs"
+                            )));
+                        }
+                        if input.per_file_read_budget_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for arrow_ipc inputs"
                             )));
                         }
                         if input.adaptive_fast_polls_max.is_some() {

@@ -100,7 +100,7 @@ fn io_worker_loop(
 ) {
     let mut buffered_since: Option<Instant> = None;
     let mut last_bp_warn: Option<Instant> = None;
-    let mut adaptive_poll = AdaptivePollController::new(input.source.adaptive_fast_polls_max());
+    let mut adaptive_poll = AdaptivePollController::new(input.source.get_adaptive_fast_polls_max());
 
     'io_loop: loop {
         if shutdown.is_cancelled() {
@@ -130,7 +130,7 @@ fn io_worker_loop(
             input.stats.health(),
             HealthTransitionEvent::Observed(input.source.health()),
         ));
-        adaptive_poll.observe(input.source.poll_cadence_signal());
+        adaptive_poll.observe(input.source.get_poll_cadence_signal());
 
         if events.is_empty() {
             if adaptive_poll.should_fast_poll() {

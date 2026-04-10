@@ -668,6 +668,7 @@ pipelines:
             ("udp", "listen: 0.0.0.0:514"),
             ("tcp", "listen: 0.0.0.0:514"),
             ("otlp", "listen: 0.0.0.0:4317"),
+            ("arrow_ipc", "listen: 0.0.0.0:4319"),
             ("http", "listen: 0.0.0.0:8080"),
             ("generator", ""),
             ("linux_ebpf_sensor", ""),
@@ -766,6 +767,7 @@ output:
             ("tcp", "listen: 0.0.0.0:8080"),
             ("generator", ""),
             ("otlp", "listen: 0.0.0.0:4318"),
+            ("arrow_ipc", "listen: 0.0.0.0:4319"),
         ];
         let fields = [
             "poll_interval_ms: 100",
@@ -810,6 +812,23 @@ output:
         assert!(
             err.to_string()
                 .contains("'sensor' settings are only supported for sensor inputs")
+        );
+    }
+
+    #[test]
+    fn arrow_ipc_rejects_format_override() {
+        let yaml = r#"
+input:
+  type: arrow_ipc
+  listen: 0.0.0.0:4319
+  format: raw
+output:
+  type: stdout
+"#;
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("'format' is not supported for arrow_ipc inputs"),
+            "expected arrow_ipc format rejection, got: {err}"
         );
     }
 

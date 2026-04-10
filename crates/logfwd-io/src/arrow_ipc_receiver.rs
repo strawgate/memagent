@@ -289,6 +289,7 @@ async fn handle_arrow_ipc_request(
             return (status, message).into_response();
         }
     };
+    let raw_body_len = body.len() as u64;
 
     let is_zstd = content_encoding.as_deref() == Some("zstd")
         || content_type.as_deref() == Some("application/vnd.apache.arrow.stream+zstd");
@@ -323,7 +324,7 @@ async fn handle_arrow_ipc_request(
     let per_batch_accounted_bytes = if total_batch_count == 0 {
         0
     } else {
-        (body.len() as u64) / total_batch_count
+        raw_body_len / total_batch_count
     };
     let mut emitted_count = 0_u64;
     for batch in batches {
@@ -333,7 +334,7 @@ async fn handle_arrow_ipc_request(
         sent_rows = true;
         emitted_count = emitted_count.saturating_add(1);
         let accounted_bytes = if emitted_count == total_batch_count {
-            (body.len() as u64).saturating_sub(
+            raw_body_len.saturating_sub(
                 per_batch_accounted_bytes.saturating_mul(total_batch_count.saturating_sub(1)),
             )
         } else {

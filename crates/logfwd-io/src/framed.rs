@@ -394,12 +394,12 @@ impl InputSource for FramedInput {
         self.inner.apply_hints(hints);
     }
 
-    fn poll_cadence_signal(&self) -> PollCadenceSignal {
-        self.inner.poll_cadence_signal()
+    fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
+        self.inner.get_poll_cadence_signal()
     }
 
-    fn adaptive_fast_polls_max(&self) -> u8 {
-        self.inner.adaptive_fast_polls_max()
+    fn get_adaptive_fast_polls_max(&self) -> u8 {
+        self.inner.get_adaptive_fast_polls_max()
     }
 
     /// Return checkpoint offsets from the Kani-proven CheckpointTracker.
@@ -595,11 +595,11 @@ mod tests {
             self.source_paths.clone()
         }
 
-        fn poll_cadence_signal(&self) -> PollCadenceSignal {
+        fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
             self.cadence_signal
         }
 
-        fn adaptive_fast_polls_max(&self) -> u8 {
+        fn get_adaptive_fast_polls_max(&self) -> u8 {
             self.cadence_max
         }
     }
@@ -673,13 +673,13 @@ mod tests {
 
         let _ = framed.poll().expect("framed poll should succeed");
         assert_eq!(
-            framed.poll_cadence_signal(),
+            framed.get_poll_cadence_signal(),
             PollCadenceSignal {
                 had_data: true,
                 hit_read_budget: true,
             }
         );
-        assert_eq!(framed.adaptive_fast_polls_max(), 7);
+        assert_eq!(framed.get_adaptive_fast_polls_max(), 7);
     }
 
     #[test]

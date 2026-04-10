@@ -463,7 +463,9 @@ impl Pipeline {
 
                 msg = rx.recv() => {
                     if let Some(msg) = msg {
-                        self.submit_batch(msg).await;
+                        if self.submit_batch(msg, shutdown).await {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -510,7 +512,9 @@ impl Pipeline {
         // This prevents deadlock during shutdown if a producer is blocked in
         // `blocking_send` while the bounded channel is full.
         while let Some(msg) = rx.recv().await {
-            self.submit_batch(msg).await;
+            if self.submit_batch(msg, shutdown).await {
+                break;
+            }
         }
 
         // All sender clones have now been dropped, so input threads/tasks can

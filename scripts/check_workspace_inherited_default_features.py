@@ -20,9 +20,15 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 def find_cargo_tomls(repo_root: Path) -> list[Path]:
-    manifests = [repo_root / "Cargo.toml"]
-    manifests.extend(sorted((repo_root / "crates").glob("*/Cargo.toml")))
-    return [path for path in manifests if path.exists()]
+    manifests: list[Path] = []
+    for path in sorted(repo_root.rglob("Cargo.toml")):
+        if not path.is_file():
+            continue
+        rel_parts = path.relative_to(repo_root).parts
+        if "target" in rel_parts:
+            continue
+        manifests.append(path)
+    return manifests
 
 
 def iter_dependency_tables(doc: dict) -> list[tuple[str, dict]]:

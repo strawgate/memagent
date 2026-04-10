@@ -197,10 +197,10 @@ tlc-tail:
     just tlc MCTailLifecycle.tla TailLifecycle.cfg
 
 # Lint — fast (default-members, skips datafusion)
-lint: fmt-check clippy toml-check workspace-inheritance-guard
+lint: fmt-check workspace-inheritance-guard clippy toml-check
 
 # Lint — full workspace (CI uses this)
-lint-all: fmt-check kani-boundary clippy-all toml-check workspace-inheritance-guard deny
+lint-all: fmt-check kani-boundary workspace-inheritance-guard clippy-all toml-check deny
 
 # Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test

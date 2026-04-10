@@ -11,6 +11,7 @@ use logfwd_io::tail::ByteOffset;
 use logfwd_output::BatchMetadata;
 #[cfg(feature = "turmoil")]
 use logfwd_types::pipeline::SourceId;
+use tokio_util::sync::CancellationToken;
 
 use super::processor_stage::{ProcessorStageResult, run_processor_stage};
 #[cfg(feature = "turmoil")]
@@ -31,7 +32,11 @@ impl Pipeline {
     /// 2. Transition to Sending (must ack or reject after this point)
     /// 3. Run processor chain (reject on error)
     /// 4. Concatenate outputs, submit to pool
-    pub(super) async fn submit_batch(&mut self, msg: ChannelMsg) {
+    pub(super) async fn submit_batch(
+        &mut self,
+        msg: ChannelMsg,
+        shutdown: &CancellationToken,
+    ) -> bool {
         let ChannelMsg {
             batch,
             checkpoints,
@@ -72,7 +77,7 @@ impl Pipeline {
             self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Ack);
             self.metrics.record_batch(0, scan_ns, transform_ns, 0);
             self.metrics.finish_active_batch(batch_id);
-            return;
+            return false;
         }
         let metadata = BatchMetadata {
             resource_attrs: Arc::clone(&self.resource_attrs),
@@ -85,20 +90,35 @@ impl Pipeline {
                 tracing::warn!(reason = %reason, "processor stage requested hold");
                 self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Hold);
                 self.metrics.finish_active_batch(batch_id);
-                return;
+                return false;
             }
             ProcessorStageResult::AckDrop { reason } => {
                 tracing::info!(reason = %reason, "processor stage dropped batch");
                 self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Ack);
+                self.metrics.inc_dropped_batch();
                 self.metrics.record_batch(0, scan_ns, transform_ns, 0);
                 self.metrics.finish_active_batch(batch_id);
-                return;
+                return false;
+            }
+            ProcessorStageResult::ZeroRow { reason } => {
+                tracing::debug!(reason = %reason, "processor stage emitted zero rows");
+                self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Ack);
+                self.metrics.record_batch(0, scan_ns, transform_ns, 0);
+                self.metrics.finish_active_batch(batch_id);
+                return false;
+            }
+            ProcessorStageResult::Fatal { reason } => {
+                tracing::error!(reason = %reason, "processor stage requested shutdown");
+                self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Hold);
+                self.metrics.finish_active_batch(batch_id);
+                shutdown.cancel();
+                return true;
             }
             ProcessorStageResult::Reject { reason } => {
                 tracing::error!(reason = %reason, "processor stage rejected batch");
                 self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Reject);
                 self.metrics.finish_active_batch(batch_id);
-                return;
+                return false;
             }
         };
         self.metrics.transform_out.inc_lines(total_rows);
@@ -133,6 +153,7 @@ impl Pipeline {
                 span: batch_span,
             })
             .await;
+        false
     }
 }
 
