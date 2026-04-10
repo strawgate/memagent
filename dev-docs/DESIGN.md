@@ -271,7 +271,7 @@ from the checkpoint's buffer instead of re-reading from the source.
   `CheckpointStore::flush()` call
 - On crash: replay from the input source checkpoint, which is guaranteed to be ≤ the
   checkpoint buffer's starting point
-- File inputs: the file IS the raw persistence; checkpoint step stores the filtered output
+- File inputs: the file is the source-of-truth persistence; checkpoint step stores filtered output
 - Network inputs: checkpoint step IS the only persistence
 
 **Segment format:**

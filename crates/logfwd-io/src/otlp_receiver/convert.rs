@@ -9,124 +9,44 @@ use opentelemetry_proto::tonic::common::v1::any_value::Value;
 
 use crate::InputError;
 
-/// Shared conversion: ExportLogsServiceRequest -> newline-delimited JSON bytes.
-pub(super) fn convert_request_to_json_lines(request: &ExportLogsServiceRequest) -> Vec<u8> {
-    let mut out = Vec::new();
-
-    for resource_logs in &request.resource_logs {
-        // Extract resource attributes (e.g., service.name).
-        let mut resource_attrs: Vec<(&str, String)> = Vec::new();
-        if let Some(ref resource) = resource_logs.resource {
-            for attr in &resource.attributes {
-                if let Some(ref value) = attr.value {
-                    if let Some(value) = any_value_to_string(value) {
-                        resource_attrs.push((&attr.key, value));
-                    }
-                }
-            }
-        }
-
-        for scope_logs in &resource_logs.scope_logs {
-            for record in &scope_logs.log_records {
-                out.push(b'{');
-
-                // timestamp: prefer time_unix_nano, fall back to observed_time_unix_nano
-                // when event time is unknown (fixes #1690).
-                let ts = if record.time_unix_nano > 0 {
-                    record.time_unix_nano
-                } else {
-                    record.observed_time_unix_nano
-                };
-                if ts > 0 {
-                    out.push(b'"');
-                    out.extend_from_slice(field_names::TIMESTAMP.as_bytes());
-                    out.extend_from_slice(b"\":");
-                    write_u64_to_buf(&mut out, ts);
-                    out.push(b',');
-                }
-
-                // severity
-                if !record.severity_text.is_empty() {
-                    write_json_string_field(&mut out, field_names::SEVERITY, &record.severity_text);
-                    out.push(b',');
-                }
-
-                // body
-                if let Some(ref body_val) = record.body {
-                    if let Some(body_str) = any_value_to_string(body_val) {
-                        write_json_string_field(&mut out, field_names::BODY, &body_str);
-                        out.push(b',');
-                    }
-                }
-
-                // resource attributes
-                for (key, value) in &resource_attrs {
-                    write_json_string_field(&mut out, key, value);
-                    out.push(b',');
-                }
-
-                // log record attributes
-                for attr in &record.attributes {
-                    if let Some(ref value) = attr.value {
-                        if write_json_any_value(&mut out, &attr.key, value) {
-                            out.push(b',');
-                        }
-                    }
-                }
-
-                // trace context (write hex directly to avoid allocation)
-                if !record.trace_id.is_empty() {
-                    out.push(b'"');
-                    out.extend_from_slice(field_names::TRACE_ID.as_bytes());
-                    out.extend_from_slice(b"\":\"");
-                    write_hex_to_buf(&mut out, &record.trace_id);
-                    out.extend_from_slice(b"\",");
-                }
-                if !record.span_id.is_empty() {
-                    out.push(b'"');
-                    out.extend_from_slice(field_names::SPAN_ID.as_bytes());
-                    out.extend_from_slice(b"\":\"");
-                    write_hex_to_buf(&mut out, &record.span_id);
-                    out.extend_from_slice(b"\",");
-                }
-
-                // Remove trailing comma.
-                if out.last() == Some(&b',') {
-                    out.pop();
-                }
-
-                out.extend_from_slice(b"}\n");
-            }
-        }
-    }
-
-    out
-}
-
 pub(super) fn convert_request_to_batch(
     request: &ExportLogsServiceRequest,
+    resource_prefix: &str,
 ) -> Result<RecordBatch, InputError> {
-    let mut builder = StreamingBuilder::new(false);
+    let mut builder = StreamingBuilder::new(None);
     builder.begin_batch(Bytes::new());
 
     let timestamp_idx = builder.resolve_field(field_names::TIMESTAMP.as_bytes());
+    let observed_ts_idx = builder.resolve_field(field_names::OBSERVED_TIMESTAMP.as_bytes());
     let severity_idx = builder.resolve_field(field_names::SEVERITY.as_bytes());
+    let severity_num_idx = builder.resolve_field(field_names::SEVERITY_NUMBER.as_bytes());
     let body_idx = builder.resolve_field(field_names::BODY.as_bytes());
     let trace_id_idx = builder.resolve_field(field_names::TRACE_ID.as_bytes());
     let span_id_idx = builder.resolve_field(field_names::SPAN_ID.as_bytes());
+    let flags_idx = builder.resolve_field(field_names::FLAGS.as_bytes());
+    let scope_name_idx = builder.resolve_field(field_names::SCOPE_NAME.as_bytes());
+    let scope_version_idx = builder.resolve_field(field_names::SCOPE_VERSION.as_bytes());
     let mut hex_buf = Vec::with_capacity(64);
+    let mut json_buf = Vec::with_capacity(256);
 
     for resource_logs in &request.resource_logs {
-        let mut resource_attrs = Vec::new();
+        // Resolve resource attribute fields once per ResourceLogs.
+        let mut resource_attr_fields: Vec<(usize, &AnyValue)> = Vec::new();
         if let Some(ref resource) = resource_logs.resource {
             for attr in &resource.attributes {
                 if let Some(ref value) = attr.value {
-                    resource_attrs.push((&attr.key, value));
+                    let key = format!("{resource_prefix}{}", attr.key);
+                    let field_idx = builder.resolve_field(key.as_bytes());
+                    resource_attr_fields.push((field_idx, value));
                 }
             }
         }
 
         for scope_logs in &resource_logs.scope_logs {
+            // Extract scope metadata once per ScopeLogs.
+            let scope_name = scope_logs.scope.as_ref().map(|s| s.name.as_str());
+            let scope_version = scope_logs.scope.as_ref().map(|s| s.version.as_str());
+
             for record in &scope_logs.log_records {
                 builder.begin_row();
 
@@ -143,30 +63,81 @@ pub(super) fn convert_request_to_batch(
                     }
                 }
 
+                // observed_time_unix_nano — always written separately.
+                if let Ok(obs_ts) = i64::try_from(record.observed_time_unix_nano)
+                    && obs_ts > 0
+                {
+                    builder.append_i64_value_by_idx(observed_ts_idx, obs_ts);
+                }
+
+                // severity_text
                 if !record.severity_text.is_empty() {
                     builder
                         .append_decoded_str_by_idx(severity_idx, record.severity_text.as_bytes());
                 }
 
+                // severity_number
+                if record.severity_number > 0 {
+                    builder
+                        .append_i64_value_by_idx(severity_num_idx, record.severity_number as i64);
+                }
+
+                // body
                 if let Some(ref body_val) = record.body {
-                    append_any_value_as_string(&mut builder, body_idx, body_val, &mut hex_buf);
+                    append_any_value_as_string(
+                        &mut builder,
+                        body_idx,
+                        body_val,
+                        &mut hex_buf,
+                        &mut json_buf,
+                    );
                 }
 
-                for attr in &record.attributes {
-                    if let Some(ref value) = attr.value {
-                        append_attribute_value(&mut builder, &attr.key, value, &mut hex_buf);
-                    }
-                }
-
-                for (key, value) in &resource_attrs {
-                    append_attribute_value(&mut builder, key, value, &mut hex_buf);
-                }
-
+                // trace context and scope metadata are canonical protocol fields;
+                // write them before free-form attributes so collisions do not
+                // shadow protocol values.
                 if !record.trace_id.is_empty() {
                     append_hex_field(&mut builder, trace_id_idx, &record.trace_id, &mut hex_buf);
                 }
                 if !record.span_id.is_empty() {
                     append_hex_field(&mut builder, span_id_idx, &record.span_id, &mut hex_buf);
+                }
+                if record.flags > 0 {
+                    builder.append_i64_value_by_idx(flags_idx, record.flags as i64);
+                }
+                if let Some(name) = scope_name
+                    && !name.is_empty()
+                {
+                    builder.append_decoded_str_by_idx(scope_name_idx, name.as_bytes());
+                }
+                if let Some(version) = scope_version
+                    && !version.is_empty()
+                {
+                    builder.append_decoded_str_by_idx(scope_version_idx, version.as_bytes());
+                }
+
+                // log record attributes
+                for attr in &record.attributes {
+                    if let Some(ref value) = attr.value {
+                        append_attribute_value(
+                            &mut builder,
+                            &attr.key,
+                            value,
+                            &mut hex_buf,
+                            &mut json_buf,
+                        );
+                    }
+                }
+
+                // resource attributes (prefixed, pre-resolved per ResourceLogs)
+                for (field_idx, value) in &resource_attr_fields {
+                    append_attribute_value_by_idx(
+                        &mut builder,
+                        *field_idx,
+                        value,
+                        &mut hex_buf,
+                        &mut json_buf,
+                    );
                 }
 
                 builder.end_row();
@@ -184,14 +155,30 @@ fn append_attribute_value(
     key: &str,
     value: &AnyValue,
     hex_buf: &mut Vec<u8>,
+    json_buf: &mut Vec<u8>,
 ) {
     let idx = builder.resolve_field(key.as_bytes());
+    append_attribute_value_by_idx(builder, idx, value, hex_buf, json_buf);
+}
+
+fn append_attribute_value_by_idx(
+    builder: &mut StreamingBuilder,
+    idx: usize,
+    value: &AnyValue,
+    hex_buf: &mut Vec<u8>,
+    json_buf: &mut Vec<u8>,
+) {
     match &value.value {
         Some(Value::IntValue(v)) => builder.append_i64_value_by_idx(idx, *v),
         Some(Value::DoubleValue(v)) => builder.append_f64_value_by_idx(idx, *v),
         Some(Value::BoolValue(v)) => builder.append_bool_by_idx(idx, *v),
         Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
+        Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_)) => {
+            if write_any_value_to_json_buf(value, json_buf) {
+                builder.append_decoded_str_by_idx(idx, json_buf);
+            }
+        }
         _ => {}
     }
 }
@@ -201,6 +188,7 @@ fn append_any_value_as_string(
     idx: usize,
     value: &AnyValue,
     hex_buf: &mut Vec<u8>,
+    json_buf: &mut Vec<u8>,
 ) {
     match &value.value {
         Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
@@ -216,8 +204,123 @@ fn append_any_value_as_string(
             builder.append_decoded_str_by_idx(idx, if *v { b"true" } else { b"false" });
         }
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
+        Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_)) => {
+            if write_any_value_to_json_buf(value, json_buf) {
+                builder.append_decoded_str_by_idx(idx, json_buf);
+            }
+        }
         _ => {}
     }
+}
+
+fn write_any_value_to_json_buf(value: &AnyValue, out: &mut Vec<u8>) -> bool {
+    out.clear();
+    write_any_value_json(value, out)
+}
+
+fn write_any_value_json(value: &AnyValue, out: &mut Vec<u8>) -> bool {
+    match &value.value {
+        Some(Value::StringValue(v)) => {
+            write_json_escaped_string(out, v);
+            true
+        }
+        Some(Value::IntValue(v)) => {
+            let value = v.to_string();
+            out.extend_from_slice(value.as_bytes());
+            true
+        }
+        Some(Value::DoubleValue(v)) => {
+            if v.is_finite() {
+                let value = v.to_string();
+                out.extend_from_slice(value.as_bytes());
+                true
+            } else {
+                // Preserve non-finite values as strings.
+                write_json_escaped_string(out, &v.to_string());
+                true
+            }
+        }
+        Some(Value::BoolValue(v)) => {
+            out.extend_from_slice(if *v { b"true" } else { b"false" });
+            true
+        }
+        Some(Value::BytesValue(v)) => {
+            out.push(b'"');
+            write_hex_to_buf(out, v);
+            out.push(b'"');
+            true
+        }
+        Some(Value::ArrayValue(arr)) => {
+            out.push(b'[');
+            for (idx, item) in arr.values.iter().enumerate() {
+                if idx > 0 {
+                    out.push(b',');
+                }
+                if !write_any_value_json(item, out) {
+                    out.extend_from_slice(b"null");
+                }
+            }
+            out.push(b']');
+            true
+        }
+        Some(Value::KvlistValue(kvs)) => {
+            // Preserve duplicate keys and input order.
+            out.push(b'[');
+            for (idx, kv) in kvs.values.iter().enumerate() {
+                if idx > 0 {
+                    out.push(b',');
+                }
+                out.push(b'{');
+                out.extend_from_slice(b"\"k\":");
+                write_json_escaped_string(out, &kv.key);
+                out.extend_from_slice(b",\"v\":");
+                if let Some(value) = kv.value.as_ref() {
+                    if !write_any_value_json(value, out) {
+                        out.extend_from_slice(b"null");
+                    }
+                } else {
+                    out.extend_from_slice(b"null");
+                }
+                out.push(b'}');
+            }
+            out.push(b']');
+            true
+        }
+        None => false,
+    }
+}
+
+fn write_json_escaped_string(out: &mut Vec<u8>, value: &str) {
+    out.push(b'"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.extend_from_slice(b"\\\""),
+            '\\' => out.extend_from_slice(b"\\\\"),
+            '\u{08}' => out.extend_from_slice(b"\\b"),
+            '\u{0C}' => out.extend_from_slice(b"\\f"),
+            '\n' => out.extend_from_slice(b"\\n"),
+            '\r' => out.extend_from_slice(b"\\r"),
+            '\t' => out.extend_from_slice(b"\\t"),
+            c if c <= '\u{1F}' => {
+                write_control_escape(out, c as u32);
+            }
+            c => {
+                let mut buf = [0u8; 4];
+                let encoded = c.encode_utf8(&mut buf);
+                out.extend_from_slice(encoded.as_bytes());
+            }
+        }
+    }
+    out.push(b'"');
+}
+
+fn write_control_escape(out: &mut Vec<u8>, code: u32) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.extend_from_slice(b"\\u");
+    out.push(HEX[((code >> 12) & 0x0f) as usize]);
+    out.push(HEX[((code >> 8) & 0x0f) as usize]);
+    out.push(HEX[((code >> 4) & 0x0f) as usize]);
+    out.push(HEX[(code & 0x0f) as usize]);
 }
 
 fn append_hex_field(
@@ -230,17 +333,6 @@ fn append_hex_field(
     hex_buf.reserve(value.len() * 2);
     write_hex_to_buf(hex_buf, value);
     builder.append_decoded_str_by_idx(idx, hex_buf);
-}
-
-pub(super) fn any_value_to_string(v: &AnyValue) -> Option<String> {
-    match &v.value {
-        Some(Value::StringValue(s)) => Some(s.clone()),
-        Some(Value::IntValue(i)) => Some(i.to_string()),
-        Some(Value::DoubleValue(d)) => Some(d.to_string()),
-        Some(Value::BoolValue(b)) => Some(b.to_string()),
-        Some(Value::BytesValue(b)) => Some(hex::encode(b)),
-        _ => None,
-    }
 }
 
 pub(super) fn parse_protojson_i64(value: &serde_json::Value) -> Option<i64> {
@@ -388,38 +480,6 @@ pub(super) fn decode_protojson_bytes(value: &str) -> Result<Vec<u8>, base64::Dec
         .or_else(|_| STANDARD_NO_PAD.decode(value))
         .or_else(|_| URL_SAFE.decode(value))
         .or_else(|_| URL_SAFE_NO_PAD.decode(value))
-}
-
-pub(super) fn write_json_any_value(out: &mut Vec<u8>, key: &str, v: &AnyValue) -> bool {
-    match &v.value {
-        Some(Value::IntValue(i)) => {
-            write_json_key(out, key);
-            write_i64_to_buf(out, *i);
-            true
-        }
-        Some(Value::DoubleValue(d)) => {
-            write_json_key(out, key);
-            write_f64_to_buf(out, *d);
-            true
-        }
-        Some(Value::BoolValue(b)) => {
-            write_json_key(out, key);
-            out.extend_from_slice(if *b { b"true" } else { b"false" });
-            true
-        }
-        Some(Value::StringValue(s)) => {
-            write_json_string_field(out, key, s);
-            true
-        }
-        Some(Value::BytesValue(bytes)) => {
-            write_json_key(out, key);
-            out.push(b'"');
-            write_hex_to_buf(out, bytes);
-            out.push(b'"');
-            true
-        }
-        _ => false,
-    }
 }
 
 /// Write i64 to buffer without allocation using itoa algorithm.
@@ -601,7 +661,6 @@ mod verification {
 }
 
 /// Minimal hex encoding (avoid adding the `hex` crate).
-/// Only used in any_value_to_string for BytesValue (rare case).
 pub(super) mod hex {
     pub fn encode(bytes: &[u8]) -> String {
         const HEX_TABLE: &[u8; 16] = b"0123456789abcdef";

@@ -57,12 +57,15 @@ BatchIds == 1..MaxBatchesPerSource
 VARIABLES
     phase,       \* Pipeline phase: "Running" | "Draining" | "Stopped"
     created,     \* [Sources -> SUBSET BatchIds] — assigned via create_batch
+    sent,        \* [Sources -> SUBSET BatchIds] — entered machine via begin_send
     in_flight,   \* [Sources -> SUBSET BatchIds] — after begin_send, before apply_ack
-    acked,       \* [Sources -> SUBSET BatchIds] — after apply_ack (ack or reject)
+    acked,       \* [Sources -> SUBSET BatchIds] — terminal success outcome
+    rejected,    \* [Sources -> SUBSET BatchIds] — terminal permanent-reject outcome
+    abandoned,   \* [Sources -> SUBSET BatchIds] — terminal crash/force-stop outcome
     committed,   \* [Sources -> Nat]  — highest committed batch sequence (0 = none)
     forced       \* BOOLEAN — TRUE if ForceStop was used (data loss accepted)
 
-vars == <<phase, created, in_flight, acked, committed, forced>>
+vars == <<phase, created, sent, in_flight, acked, rejected, abandoned, committed, forced>>
 
 (* ---------------------------------------------------------------------------
  * Helper operators
@@ -84,10 +87,11 @@ SetMax(S) == CHOOSE n \in S : \A m \in S : n >= m
 \*
 \* SetMax safety: eligible always contains 0 (vacuously: no ever_sent batch
 \* has ID ≤ 0), so the set is never empty.
-NewCommitted(new_acked_s, new_in_flight_s) ==
-    LET ever_sent == new_acked_s \cup new_in_flight_s
+NewCommitted(new_acked_s, new_rejected_s, new_in_flight_s) ==
+    LET terminal_for_commit == new_acked_s \cup new_rejected_s
+        ever_sent == terminal_for_commit \cup new_in_flight_s
         eligible  == {n \in (ever_sent \cup {0}) :
-                        \A b \in ever_sent : b <= n => b \in new_acked_s}
+                        \A b \in ever_sent : b <= n => b \in terminal_for_commit}
     IN SetMax(eligible)
 
 (* ---------------------------------------------------------------------------
@@ -99,9 +103,19 @@ TypeOK ==
     /\ forced \in BOOLEAN
     /\ \A s \in Sources :
         /\ created[s]   \subseteq BatchIds
+        /\ sent[s]      \subseteq created[s]
+        /\ in_flight[s] \subseteq sent[s]
+        /\ acked[s]     \subseteq sent[s]
+        /\ rejected[s]  \subseteq sent[s]
+        /\ abandoned[s] \subseteq sent[s]
         /\ in_flight[s] \subseteq created[s]
         /\ acked[s]     \subseteq created[s]
-        /\ in_flight[s] \cap acked[s] = {}
+        /\ rejected[s]  \subseteq created[s]
+        /\ abandoned[s] \subseteq created[s]
+        /\ in_flight[s] \cap (acked[s] \cup rejected[s] \cup abandoned[s]) = {}
+        /\ acked[s] \cap rejected[s] = {}
+        /\ acked[s] \cap abandoned[s] = {}
+        /\ rejected[s] \cap abandoned[s] = {}
         /\ committed[s] \in 0..MaxBatchesPerSource
 
 (* ---------------------------------------------------------------------------
@@ -111,8 +125,11 @@ TypeOK ==
 Init ==
     /\ phase      = "Running"
     /\ created    = [s \in Sources |-> {}]
+    /\ sent       = [s \in Sources |-> {}]
     /\ in_flight  = [s \in Sources |-> {}]
     /\ acked      = [s \in Sources |-> {}]
+    /\ rejected   = [s \in Sources |-> {}]
+    /\ abandoned  = [s \in Sources |-> {}]
     /\ committed  = [s \in Sources |-> 0]
     /\ forced     = FALSE
 
@@ -127,7 +144,7 @@ CreateBatch(s) ==
     /\ phase = "Running"
     /\ next_id \in BatchIds
     /\ created'   = [created   EXCEPT ![s] = created[s] \cup {next_id}]
-    /\ UNCHANGED <<phase, in_flight, acked, committed, forced>>
+    /\ UNCHANGED <<phase, sent, in_flight, acked, rejected, abandoned, committed, forced>>
 
 \* begin_send: machine takes ownership of batch b for source s.
 \* A Queued ticket dropped before begin_send has no machine state — safe.
@@ -140,18 +157,21 @@ BeginSend(s, b) ==
     /\ b \in created[s]
     /\ b \notin in_flight[s]
     /\ b \notin acked[s]
+    /\ b \notin rejected[s]
+    /\ b \notin abandoned[s]
+    /\ b \notin sent[s]
     \* In Rust, Queued tickets are consumed by begin_send or dropped.
     \* Once dropped, the ticket is gone — you cannot send a batch whose
     \* ticket was dropped. This means sends are monotonic: you cannot send
     \* batch b if any batch with a higher ID was already sent or acked.
-    /\ \A other \in (in_flight[s] \cup acked[s]) : b >= other
+    /\ \A other \in (in_flight[s] \cup acked[s] \cup rejected[s] \cup abandoned[s]) : b >= other
+    /\ sent'      = [sent      EXCEPT ![s] = sent[s] \cup {b}]
     /\ in_flight' = [in_flight EXCEPT ![s] = in_flight[s] \cup {b}]
-    /\ UNCHANGED <<phase, created, acked, committed, forced>>
+    /\ UNCHANGED <<phase, created, acked, rejected, abandoned, committed, forced>>
 
-\* apply_ack (ack OR reject): batch leaves in_flight, checkpoint may advance.
+\* apply_ack / apply_reject: batch leaves in_flight, checkpoint may advance.
 \*
-\* Reject note: RejectBatch has the same state transition as AckBatch.
-\* This is intentionally reserved for explicit permanent rejects only.
+\* Reject note: RejectBatch is intentionally reserved for explicit permanent rejects only.
 \* Permanently-undeliverable data must not block checkpoint progress
 \* (would stall drain indefinitely). At-least-once is weakened to
 \* at-most-once only for rejected batches.
@@ -167,19 +187,29 @@ AckBatch(s, b) ==
     /\ b \in in_flight[s]
     /\ LET new_in_flight_s == in_flight[s] \ {b}
            new_acked_s     == acked[s] \cup {b}
+           new_rejected_s  == rejected[s]
        IN
        /\ in_flight' = [in_flight EXCEPT ![s] = new_in_flight_s]
        /\ acked'     = [acked     EXCEPT ![s] = new_acked_s]
-       /\ committed' = [committed EXCEPT ![s] = NewCommitted(new_acked_s, new_in_flight_s)]
-    /\ UNCHANGED <<phase, created, forced>>
+       /\ committed' = [committed EXCEPT ![s] = NewCommitted(new_acked_s, new_rejected_s, new_in_flight_s)]
+    /\ UNCHANGED <<phase, created, sent, rejected, abandoned, forced>>
 
-RejectBatch(s, b) == AckBatch(s, b)
+RejectBatch(s, b) ==
+    /\ b \in in_flight[s]
+    /\ LET new_in_flight_s == in_flight[s] \ {b}
+           new_acked_s     == acked[s]
+           new_rejected_s  == rejected[s] \cup {b}
+       IN
+       /\ in_flight' = [in_flight EXCEPT ![s] = new_in_flight_s]
+       /\ rejected'  = [rejected  EXCEPT ![s] = new_rejected_s]
+       /\ committed' = [committed EXCEPT ![s] = NewCommitted(new_acked_s, new_rejected_s, new_in_flight_s)]
+    /\ UNCHANGED <<phase, created, sent, acked, abandoned, forced>>
 
 \* begin_drain: closes pipeline to new batches.
 BeginDrain ==
     /\ phase = "Running"
     /\ phase' = "Draining"
-    /\ UNCHANGED <<created, in_flight, acked, committed, forced>>
+    /\ UNCHANGED <<created, sent, in_flight, acked, rejected, abandoned, committed, forced>>
 
 \* stop: THE DRAIN GUARANTEE.
 \* Rust: PipelineMachine<Draining, C>::stop() returns Err(self) if not drained.
@@ -198,7 +228,7 @@ Stop ==
     /\ phase = "Draining"
     /\ \A s \in Sources : in_flight[s] = {}    \* THE DRAIN GUARD (≡ is_drained())
     /\ phase' = "Stopped"
-    /\ UNCHANGED <<created, in_flight, acked, committed, forced>>
+    /\ UNCHANGED <<created, sent, in_flight, acked, rejected, abandoned, committed, forced>>
 
 \* force_stop: emergency shutdown when grace period expires.
 \* Discards in-flight state. Every production system has an equivalent:
@@ -207,8 +237,8 @@ Stop ==
 \*   OTel: context.WithTimeout cancellation
 \*
 \* ForceStop is always in Next (production reality: the kill switch always exists).
-\* The `forced` flag records that it fired so DrainCompleteness can be conditioned on
-\* ~forced. All other invariants hold regardless.
+\* The `forced` flag records that the hard-failure policy path was taken.
+\* ForceStop explicitly terminalizes each in-flight batch as abandoned.
 \*
 \* NOTE: WF(ForceStop) is intentionally NOT in Fairness. ForceStop is an escape
 \* hatch, not a scheduled event. Without WF, liveness checks (EventualDrain,
@@ -218,7 +248,9 @@ ForceStop ==
     /\ phase = "Draining"
     /\ phase' = "Stopped"
     /\ forced' = TRUE
-    /\ UNCHANGED <<created, in_flight, acked, committed>>
+    /\ abandoned' = [s \in Sources |-> abandoned[s] \cup in_flight[s]]
+    /\ in_flight' = [s \in Sources |-> {}]
+    /\ UNCHANGED <<created, sent, acked, rejected, committed>>
 
 (* ---------------------------------------------------------------------------
  * Next-state relation
@@ -230,6 +262,8 @@ Next ==
           b \in BatchIds        : BeginSend(s, b)
     \/ \E s \in Sources,
           b \in BatchIds        : AckBatch(s, b)
+    \/ \E s \in Sources,
+          b \in BatchIds        : RejectBatch(s, b)
     \/ BeginDrain
     \/ Stop
     \/ ForceStop
@@ -241,8 +275,9 @@ Next ==
  * Fairness:
  * WF_vars(a) = if action a is continuously enabled, it eventually fires.
  *
- * WF(AckBatch): once a batch is Sending, it stays there until acked.
- *   Correct because the Sending state is stable until apply_ack is called.
+ * WF(AckBatch/RejectBatch): once a batch is Sending, it stays there until
+ *   it receives an explicit terminal outcome (ack/reject/abandon).
+ *   Correct because the Sending state is stable until a terminalizing action is called.
  *   The downstream sink always eventually responds (retry budget is finite).
  *
  * WF(BeginDrain): the drain signal is sticky (CancellationToken semantics).
@@ -259,7 +294,9 @@ Next ==
 Fairness ==
     /\ WF_vars(BeginDrain)
     /\ WF_vars(Stop)
-    /\ \A s \in Sources, b \in BatchIds : WF_vars(AckBatch(s, b))
+    /\ \A s \in Sources, b \in BatchIds :
+        /\ WF_vars(AckBatch(s, b))
+        /\ WF_vars(RejectBatch(s, b))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -268,16 +305,28 @@ Spec == Init /\ [][Next]_vars /\ Fairness
  * Checked exhaustively over all reachable states. No fairness needed.
  * ===========================================================================*)
 
-\* Basic disjointness: a batch cannot be both in_flight and acked.
+\* Basic disjointness across all terminal outcomes.
 NoDoubleComplete ==
-    \A s \in Sources : in_flight[s] \cap acked[s] = {}
+    \A s \in Sources :
+        /\ in_flight[s] \cap acked[s] = {}
+        /\ in_flight[s] \cap rejected[s] = {}
+        /\ in_flight[s] \cap abandoned[s] = {}
+        /\ acked[s] \cap rejected[s] = {}
+        /\ acked[s] \cap abandoned[s] = {}
+        /\ rejected[s] \cap abandoned[s] = {}
 
-\* THE DRAIN GUARANTEE: normal-path Stop implies in_flight is empty for all sources.
-\* Conditioned on ~forced: ForceStop intentionally bypasses this guarantee (data
-\* loss accepted in exchange for liveness). The `forced` flag records which path
-\* was taken so this invariant can be checked unconditionally in all configs.
+\* THE DRAIN GUARANTEE: Stopped implies no remaining in-flight work.
+\* ForceStop preserves this by explicitly moving in-flight work to abandoned.
 DrainCompleteness ==
-    (phase = "Stopped" /\ ~forced) => \A s \in Sources : in_flight[s] = {}
+    phase = "Stopped" => \A s \in Sources : in_flight[s] = {}
+
+\* Crash-aware terminalization: every sent batch is explicit at quiescence.
+\* This prevents silent "stranded in limbo" work after either normal Stop or ForceStop.
+QuiescenceHasNoSilentStrandedWork ==
+    phase = "Stopped" =>
+        \A s \in Sources :
+            LET terminal_s == acked[s] \cup rejected[s] \cup abandoned[s]
+            IN sent[s] = terminal_s
 
 \* in_flight cannot grow once drain begins.
 \* This is what makes WF(Stop) sufficient — once in_flight[s] = {} is reached
@@ -317,15 +366,16 @@ CommittedMonotonic ==
 CheckpointOrderingInvariant ==
     \A s \in Sources :
         LET n        == committed[s]
-            ever_sent_s == in_flight[s] \cup acked[s]
+            committed_terminal_s == acked[s] \cup rejected[s]
+            ever_sent_s == sent[s]
         IN n > 0 =>
             \A i \in ever_sent_s :
                 i <= n =>
-                    /\ i \in acked[s]
+                    /\ i \in committed_terminal_s
                     /\ i \notin in_flight[s]
 
 \* committed[s] never exceeds the highest created batch ID.
-\* (It can exceed Cardinality(acked[s]) when some batch IDs were created
+\* (It can exceed Cardinality(acked[s] \cup rejected[s]) when some batch IDs were created
 \* but never sent — skipped batches don't block checkpoint advancement.)
 CommittedNeverAheadOfCreated ==
     \A s \in Sources : committed[s] <= Cardinality(created[s])
@@ -334,8 +384,29 @@ CommittedNeverAheadOfCreated ==
 InFlightImpliesCreated ==
     \A s \in Sources : in_flight[s] \subseteq created[s]
 
+SentImpliesCreated ==
+    \A s \in Sources : sent[s] \subseteq created[s]
+
+InFlightImpliesSent ==
+    \A s \in Sources : in_flight[s] \subseteq sent[s]
+
 AckedImpliesCreated ==
     \A s \in Sources : acked[s] \subseteq created[s]
+
+AckedImpliesSent ==
+    \A s \in Sources : acked[s] \subseteq sent[s]
+
+RejectedImpliesCreated ==
+    \A s \in Sources : rejected[s] \subseteq created[s]
+
+RejectedImpliesSent ==
+    \A s \in Sources : rejected[s] \subseteq sent[s]
+
+AbandonedImpliesCreated ==
+    \A s \in Sources : abandoned[s] \subseteq created[s]
+
+AbandonedImpliesSent ==
+    \A s \in Sources : abandoned[s] \subseteq sent[s]
 
 (* ===========================================================================
  * LIVENESS PROPERTIES (hold under Fairness; ForceStop always in Next but
@@ -359,7 +430,10 @@ StoppedIsStable == <>[](phase = "Stopped")
 \* Every batch that enters in_flight eventually leaves it.
 NoBatchLeftBehind ==
     \A s \in Sources, b \in BatchIds :
-        (b \in in_flight[s]) ~> (b \notin in_flight[s])
+        (b \in in_flight[s]) ~>
+            (\/ b \in acked[s]
+             \/ b \in rejected[s]
+             \/ b \in abandoned[s])
 
 \* Every created batch is eventually committed or the machine is Stopped.
 \* (Drain + stop must eventually account for all data.)
@@ -367,7 +441,10 @@ AllCreatedBatchesEventuallyAccountedFor ==
     \A s \in Sources :
         \A b \in BatchIds :
             (b \in created[s]) ~>
-                (\/ committed[s] >= b
+                (\/ b \in acked[s]
+                 \/ b \in rejected[s]
+                 \/ b \in abandoned[s]
+                 \/ committed[s] >= b
                  \/ phase = "Stopped")
 
 (* ===========================================================================
@@ -398,11 +475,17 @@ StopReachable == ~(phase = "Stopped")
 \* At least one batch is acked (AckBatch fires at least once).
 AckOccurs == ~(\E s \in Sources : acked[s] /= {})
 
+\* At least one permanent reject occurs (explicit ack vs reject distinction).
+RejectOccurs == ~(\E s \in Sources : rejected[s] /= {})
+
 \* The committed checkpoint advances at least once (ordering logic is exercised).
 CheckpointAdvances == ~(\E s \in Sources : committed[s] > 0)
 
 \* ForceStop is reachable (the kill-switch path is exercised).
 ForcedReachable == ~(forced = TRUE)
+
+\* At least one in-flight batch is explicitly abandoned by ForceStop.
+AbandonOccurs == ~(\E s \in Sources : abandoned[s] /= {})
 
 \* At least one batch is created (CreateBatch fires).
 \* Covers NoBatchLeftBehind and AllCreatedBatchesEventuallyAccountedFor

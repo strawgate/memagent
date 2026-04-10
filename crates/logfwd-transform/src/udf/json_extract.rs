@@ -1,9 +1,9 @@
 //! UDFs for extracting fields from raw JSON strings using our zero-copy scanner.
 //!
 //! ```sql
-//! SELECT json(_raw, 'status') as status FROM logs
-//! SELECT json_int(_raw, 'status') as status FROM logs WHERE json_int(_raw, 'status') > 400
-//! SELECT json_float(_raw, 'duration') as dur FROM logs
+//! SELECT json(body, 'status') as status FROM logs
+//! SELECT json_int(body, 'status') as status FROM logs WHERE json_int(body, 'status') > 400
+//! SELECT json_float(body, 'duration') as dur FROM logs
 //! ```
 //!
 //! A single parameterised struct [`JsonExtractUdf`] covers all three functions.
@@ -31,11 +31,11 @@ use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 /// Selects which json extraction variant to expose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonExtractMode {
-    /// `json(_raw, 'key')` -> Utf8
+    /// `json(body, 'key')` -> Utf8
     Str,
-    /// `json_int(_raw, 'key')` -> Int64
+    /// `json_int(body, 'key')` -> Int64
     Int,
-    /// `json_float(_raw, 'key')` -> Float64
+    /// `json_float(body, 'key')` -> Float64
     Float,
 }
 
@@ -99,7 +99,7 @@ fn parse_raw(raw_array: &StringArray, field_name: &str) -> Result<RecordBatch, D
             aliases: vec![],
         }],
         extract_all: false,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: false,
     };
 
@@ -148,7 +148,7 @@ fn coerce_to_string_array(arr: &dyn Array) -> Result<StringArray, DataFusionErro
         ) as _
     } else {
         arrow::compute::cast(arr, &DataType::Utf8)
-            .map_err(|e| DataFusionError::Execution(format!("Failed to cast _raw to Utf8: {e}")))?
+            .map_err(|e| DataFusionError::Execution(format!("Failed to cast body to Utf8: {e}")))?
     };
     Ok(coerced
         .as_any()
@@ -393,7 +393,7 @@ mod tests {
 
     fn make_raw_batch(lines: Vec<&str>) -> RecordBatch {
         let schema = Arc::new(arrow::datatypes::Schema::new(vec![
-            arrow::datatypes::Field::new("_raw", DataType::Utf8, false),
+            arrow::datatypes::Field::new("body", DataType::Utf8, false),
         ]));
         RecordBatch::try_new(
             schema,
@@ -404,7 +404,7 @@ mod tests {
 
     fn make_nullable_raw_batch(lines: Vec<Option<&str>>) -> RecordBatch {
         let schema = Arc::new(arrow::datatypes::Schema::new(vec![
-            arrow::datatypes::Field::new("_raw", DataType::Utf8, true),
+            arrow::datatypes::Field::new("body", DataType::Utf8, true),
         ]));
         RecordBatch::try_new(
             schema,
@@ -431,7 +431,7 @@ mod tests {
             r#"{"status": 200, "level": "INFO"}"#,
             r#"{"status": 404, "level": "WARN"}"#,
         ]);
-        let result = query("SELECT json(_raw, 'level') as level FROM logs", batch).await;
+        let result = query("SELECT json(body, 'level') as level FROM logs", batch).await;
         let col = result
             .column(0)
             .as_any()
@@ -448,7 +448,7 @@ mod tests {
             r#"{"status": 500}"#,
             r#"{"status": "OK"}"#,
         ]);
-        let result = query("SELECT json_int(_raw, 'status') as s FROM logs", batch).await;
+        let result = query("SELECT json_int(body, 'status') as s FROM logs", batch).await;
         let col = result
             .column(0)
             .as_any()
@@ -462,7 +462,7 @@ mod tests {
     #[tokio::test]
     async fn test_json_extract_float() {
         let batch = make_raw_batch(vec![r#"{"duration": 1.5}"#, r#"{"duration": "fast"}"#]);
-        let result = query("SELECT json_float(_raw, 'duration') as d FROM logs", batch).await;
+        let result = query("SELECT json_float(body, 'duration') as d FROM logs", batch).await;
         let col = result
             .column(0)
             .as_any()
@@ -480,7 +480,7 @@ mod tests {
             r#"{"status": 301, "msg": "redirect"}"#,
         ]);
         let result = query(
-            "SELECT json(_raw, 'msg') as msg FROM logs WHERE json_int(_raw, 'status') > 400",
+            "SELECT json(body, 'msg') as msg FROM logs WHERE json_int(body, 'status') > 400",
             batch,
         )
         .await;
@@ -496,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn test_json_missing_key_returns_null() {
         let batch = make_raw_batch(vec![r#"{"status": 200}"#, r#"{"level": "INFO"}"#]);
-        let result = query("SELECT json(_raw, 'status') as s FROM logs", batch).await;
+        let result = query("SELECT json(body, 'status') as s FROM logs", batch).await;
         let col = result
             .column(0)
             .as_any()
@@ -512,7 +512,7 @@ mod tests {
             r#"{"status": 200, "level": "INFO"}"#,
             r#"{"status": 500, "level": "ERROR"}"#,
         ]);
-        let result = query("SELECT _raw FROM logs", batch).await;
+        let result = query("SELECT body FROM logs", batch).await;
         assert_eq!(result.num_rows(), 2);
         let col = result
             .column(0)
@@ -530,7 +530,7 @@ mod tests {
     #[tokio::test]
     async fn test_json_int_on_quoted_string_is_null() {
         let batch = make_raw_batch(vec![r#"{"status": "200"}"#]);
-        let result = query("SELECT json_int(_raw, 'status') as s FROM logs", batch).await;
+        let result = query("SELECT json_int(body, 'status') as s FROM logs", batch).await;
         let col = result
             .column(0)
             .as_any()
@@ -542,13 +542,13 @@ mod tests {
         );
     }
 
-    /// `json(_raw, 'status')` on a batch where some rows have `{"status": 200}`
+    /// `json(body, 'status')` on a batch where some rows have `{"status": 200}`
     /// and others have `{"status": "OK"}` must coalesce all variants row-by-row
     /// and return `["200", "OK"]` — not `[null, "OK"]`.
     #[tokio::test]
     async fn test_json_str_on_conflict_batch_coalesces() {
         let batch = make_raw_batch(vec![r#"{"status": 200}"#, r#"{"status": "OK"}"#]);
-        let result = query("SELECT json(_raw, 'status') as s FROM logs", batch).await;
+        let result = query("SELECT json(body, 'status') as s FROM logs", batch).await;
         let col = result
             .column(0)
             .as_any()
@@ -567,7 +567,7 @@ mod tests {
             r#"{"active": false}"#,
             r#"{"active": "fallback"}"#,
         ]);
-        let result = query("SELECT json(_raw, 'active') as active FROM logs", batch).await;
+        let result = query("SELECT json(body, 'active') as active FROM logs", batch).await;
         let col = result
             .column(0)
             .as_any()
@@ -586,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn test_json_float_on_quoted_string_is_null() {
         let batch = make_raw_batch(vec![r#"{"duration": "1.5"}"#]);
-        let result = query("SELECT json_float(_raw, 'duration') as d FROM logs", batch).await;
+        let result = query("SELECT json_float(body, 'duration') as d FROM logs", batch).await;
         let col = result
             .column(0)
             .as_any()
@@ -607,9 +607,9 @@ mod tests {
         ]);
         let result = query(
             "SELECT \
-                json(_raw, 'msg') AS msg, \
-                json_int(_raw, 'status') AS status, \
-                json_float(_raw, 'duration') AS duration \
+                json(body, 'msg') AS msg, \
+                json_int(body, 'status') AS status, \
+                json_float(body, 'duration') AS duration \
              FROM logs",
             batch,
         )
@@ -643,18 +643,18 @@ mod tests {
         assert!((duration.value(2) - 2.25).abs() < 0.001);
     }
 
-    /// `json(_raw, 'key')` must return NULL for rows where `_raw` itself is NULL,
+    /// `json(body, 'key')` must return NULL for rows where `body` itself is NULL,
     /// without erroring the whole batch.
     ///
-    /// Regression test: previously, NULL rows in `_raw` were emitted as bare `\n`
+    /// Regression test: previously, NULL rows in `body` were emitted as bare `\n`
     /// (empty lines).  The scanner skips empty lines, so the output had fewer rows
     /// than the input, triggering a "scanner row count mismatch" error for the
     /// entire batch.
     #[tokio::test]
-    async fn test_json_null_raw_returns_null_not_error() {
-        // Build a nullable _raw column: row 0 has data, row 1 is NULL, row 2 has data.
+    async fn test_json_null_body_returns_null_not_error() {
+        // Build a nullable body column: row 0 has data, row 1 is NULL, row 2 has data.
         let schema = Arc::new(arrow::datatypes::Schema::new(vec![
-            arrow::datatypes::Field::new("_raw", DataType::Utf8, true),
+            arrow::datatypes::Field::new("body", DataType::Utf8, true),
         ]));
         let raw: arrow::array::ArrayRef = Arc::new(StringArray::from(vec![
             Some(r#"{"status": 200}"#),
@@ -671,7 +671,7 @@ mod tests {
 
         // json() — must not error; null row must return null
         let result = ctx
-            .sql("SELECT json(_raw, 'status') AS s FROM logs")
+            .sql("SELECT json(body, 'status') AS s FROM logs")
             .await
             .unwrap()
             .collect()
@@ -685,7 +685,7 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(col.value(0), "200", "row 0 must extract status");
-        assert!(col.is_null(1), "row 1 (null _raw) must produce null");
+        assert!(col.is_null(1), "row 1 (null body) must produce null");
         assert_eq!(col.value(2), "404", "row 2 must extract status");
 
         // json_int() — same null row must not crash
@@ -697,13 +697,13 @@ mod tests {
             Some(r#"{"status": 404}"#),
         ]));
         let schema2 = Arc::new(arrow::datatypes::Schema::new(vec![
-            arrow::datatypes::Field::new("_raw", DataType::Utf8, true),
+            arrow::datatypes::Field::new("body", DataType::Utf8, true),
         ]));
         let batch2 = RecordBatch::try_new(schema2, vec![raw2]).unwrap();
         let table2 = MemTable::try_new(batch2.schema(), vec![vec![batch2]]).unwrap();
         ctx2.register_table("logs", Arc::new(table2)).unwrap();
         let result2 = ctx2
-            .sql("SELECT json_int(_raw, 'status') AS s FROM logs")
+            .sql("SELECT json_int(body, 'status') AS s FROM logs")
             .await
             .unwrap()
             .collect()
@@ -718,7 +718,7 @@ mod tests {
         assert_eq!(col2.value(0), 200, "json_int row 0");
         assert!(
             col2.is_null(1),
-            "json_int row 1 (null _raw) must produce null"
+            "json_int row 1 (null body) must produce null"
         );
         assert_eq!(col2.value(2), 404, "json_int row 2");
     }

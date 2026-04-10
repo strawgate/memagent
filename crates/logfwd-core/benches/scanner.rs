@@ -186,7 +186,7 @@ fn pushdown_config() -> ScanConfig {
             },
         ],
         extract_all: false,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: false,
     }
 }
@@ -195,7 +195,7 @@ fn select_star() -> ScanConfig {
     ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: false,
     }
 }

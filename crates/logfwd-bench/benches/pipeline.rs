@@ -59,7 +59,7 @@ fn bench_scanner(c: &mut Criterion) {
                     },
                 ],
                 extract_all: false,
-                keep_raw: false,
+                line_field_name: None,
                 validate_utf8: false,
             };
             let mut scanner = Scanner::new(config);

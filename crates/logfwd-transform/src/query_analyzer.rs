@@ -75,35 +75,20 @@ impl QueryAnalyzer {
     /// there are no `__int`/`__str`/`__float` suffixed names in SQL.
     /// `strip_type_suffix` is a no-op and is kept only for call-site symmetry.
     pub fn scan_config(&self) -> ScanConfig {
-        // Enable keep_raw only when the query explicitly references the `_raw`
-        // column.  For `SELECT *` we deliberately do NOT force keep_raw: the
-        // pipeline already enables it for `format: raw` inputs (where every
-        // line must be captured), and for `format: json` / `format: cri`
-        // inputs the raw bytes are redundant — forcing keep_raw on `SELECT *`
-        // doubles memory use (documented at ~65 % overhead) without any
-        // user opt-in.
-        let keep_raw = self.referenced_columns.contains("_raw");
-
         if self.uses_select_star {
             ScanConfig {
                 wanted_fields: vec![],
                 extract_all: true,
-                keep_raw,
+                line_field_name: None,
                 validate_utf8: false,
             }
         } else {
             use logfwd_core::scan_config::FieldSpec;
             use std::collections::HashSet;
-            // `_raw` is not a JSON field but a special scanner-provided column.
-            // When it is referenced in the SQL (e.g. `json(_raw, 'key')`), the
-            // scanner must include it in the output batch.  Strip it from the
-            // `wanted_fields` list (it is not a JSON key) and enable `keep_raw`
-            // instead (#1627).  `keep_raw` is already computed above.
             let mut seen = HashSet::new();
             let wanted: Vec<FieldSpec> = self
                 .referenced_columns
                 .iter()
-                .filter(|name| *name != "_raw") // _raw is not a JSON key
                 .map(|name| strip_type_suffix(name))
                 .filter(|name| seen.insert(name.clone()))
                 .map(|name| FieldSpec {
@@ -114,7 +99,7 @@ impl QueryAnalyzer {
             ScanConfig {
                 wanted_fields: wanted,
                 extract_all: false,
-                keep_raw,
+                line_field_name: None,
                 validate_utf8: false,
             }
         }
@@ -139,7 +124,6 @@ impl QueryAnalyzer {
             Some(
                 self.referenced_columns
                     .iter()
-                    .filter(|name| name.as_str() != "_raw")
                     .map(|c| strip_type_suffix(c))
                     .collect(),
             )

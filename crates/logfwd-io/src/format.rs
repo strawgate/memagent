@@ -16,7 +16,7 @@ use std::sync::Arc;
 /// - `PassthroughJson`: lines are expected to be JSON objects; non-JSON lines
 ///   are still forwarded but counted as `parse_errors`
 /// - `Cri`: parse CRI container log format, extract message body
-/// - `Auto`: try CRI, fall through to passthrough on parse failure
+/// - `Auto`: try CRI, preserve JSON fallback, wrap plain-text fallback
 #[non_exhaustive]
 pub enum FormatDecoder {
     Passthrough {
@@ -27,10 +27,12 @@ pub enum FormatDecoder {
     },
     Cri {
         aggregators: [CriReassembler; 2],
+        plain_text_field_name: String,
         stats: Arc<ComponentStats>,
     },
     Auto {
         aggregators: [CriReassembler; 2],
+        plain_text_field_name: String,
         stats: Arc<ComponentStats>,
     },
 }
@@ -81,16 +83,45 @@ impl FormatDecoder {
 
     /// Create a CRI format processor with the given max message size.
     pub fn cri(max_message_size: usize, stats: Arc<ComponentStats>) -> Self {
+        Self::cri_with_plain_text_field(max_message_size, "body".to_string(), stats)
+    }
+
+    /// Create a CRI format processor with a configurable plain-text field name.
+    ///
+    /// Non-JSON CRI messages are wrapped into this field.
+    pub fn cri_with_plain_text_field(
+        max_message_size: usize,
+        plain_text_field_name: String,
+        stats: Arc<ComponentStats>,
+    ) -> Self {
         Self::Cri {
             aggregators: new_stream_aggregators(max_message_size),
+            plain_text_field_name,
             stats,
         }
     }
 
-    /// Create an Auto format processor (tries CRI, falls through to passthrough).
+    /// Create an Auto format processor.
+    ///
+    /// CRI lines are decoded with `_timestamp` / `_stream` metadata. Non-CRI
+    /// JSON object lines pass through unchanged. Non-CRI plain-text lines are
+    /// wrapped into the configured plain-text field.
     pub fn auto(max_message_size: usize, stats: Arc<ComponentStats>) -> Self {
+        Self::auto_with_plain_text_field(max_message_size, "body".to_string(), stats)
+    }
+
+    /// Create an Auto format processor with a configurable plain-text field name.
+    ///
+    /// When a CRI line parses but message content is plain text, it is wrapped
+    /// into this field.
+    pub fn auto_with_plain_text_field(
+        max_message_size: usize,
+        plain_text_field_name: String,
+        stats: Arc<ComponentStats>,
+    ) -> Self {
         Self::Auto {
             aggregators: new_stream_aggregators(max_message_size),
+            plain_text_field_name,
             stats,
         }
     }
@@ -107,12 +138,22 @@ impl FormatDecoder {
             Self::PassthroughJson { stats } => Self::PassthroughJson {
                 stats: Arc::clone(stats),
             },
-            Self::Cri { aggregators, stats } => Self::Cri {
+            Self::Cri {
+                aggregators,
+                plain_text_field_name,
+                stats,
+            } => Self::Cri {
                 aggregators: new_stream_aggregators(aggregators[0].max_message_size()),
+                plain_text_field_name: plain_text_field_name.clone(),
                 stats: Arc::clone(stats),
             },
-            Self::Auto { aggregators, stats } => Self::Auto {
+            Self::Auto {
+                aggregators,
+                plain_text_field_name,
+                stats,
+            } => Self::Auto {
                 aggregators: new_stream_aggregators(aggregators[0].max_message_size()),
+                plain_text_field_name: plain_text_field_name.clone(),
                 stats: Arc::clone(stats),
             },
         }
@@ -131,11 +172,19 @@ impl FormatDecoder {
                 count_json_parse_errors(chunk, stats);
                 out.extend_from_slice(chunk);
             }
-            Self::Cri { aggregators, stats } => {
-                extract_cri_messages(chunk, out, aggregators, stats, false);
+            Self::Cri {
+                aggregators,
+                plain_text_field_name,
+                stats,
+            } => {
+                extract_cri_messages(chunk, out, aggregators, plain_text_field_name, stats, false);
             }
-            Self::Auto { aggregators, stats } => {
-                extract_cri_messages(chunk, out, aggregators, stats, true);
+            Self::Auto {
+                aggregators,
+                plain_text_field_name,
+                stats,
+            } => {
+                extract_cri_messages(chunk, out, aggregators, plain_text_field_name, stats, true);
             }
         }
     }
@@ -195,6 +244,7 @@ fn extract_cri_messages(
     input: &[u8],
     out: &mut Vec<u8>,
     aggregators: &mut [CriReassembler; 2],
+    plain_text_field_name: &str,
     stats: &ComponentStats,
     passthrough_on_fail: bool,
 ) {
@@ -207,7 +257,7 @@ fn extract_cri_messages(
             let max_message_size = aggregator.max_message_size();
             match aggregator.feed(cri.message, cri.is_full) {
                 AggregateResult::Complete(msg) => {
-                    inject_cri_metadata(msg, cri.timestamp, cri.stream, out);
+                    inject_cri_metadata(msg, cri.timestamp, cri.stream, plain_text_field_name, out);
                     aggregator.reset();
                 }
                 AggregateResult::Truncated(msg) => {
@@ -221,7 +271,7 @@ fn extract_cri_messages(
                          max_message_size; output is truncated"
                     );
                     stats.inc_parse_errors(1);
-                    inject_cri_metadata(msg, cri.timestamp, cri.stream, out);
+                    inject_cri_metadata(msg, cri.timestamp, cri.stream, plain_text_field_name, out);
                     aggregator.reset();
                 }
                 AggregateResult::Pending => {}
@@ -230,14 +280,42 @@ fn extract_cri_messages(
             // Break any pending CRI aggregation at parse/fallback boundaries.
             reset_stream_aggregators(aggregators);
             if !line.is_empty() && passthrough_on_fail {
-                out.extend_from_slice(line);
-                out.push(b'\n');
+                if starts_with_json_object(line) {
+                    out.extend_from_slice(line);
+                    out.push(b'\n');
+                } else if let Some(line) = normalize_plain_text_fallback(line) {
+                    write_plain_text_fallback(line, plain_text_field_name, out);
+                }
             } else if !line.is_empty() {
                 stats.inc_parse_errors(1);
             }
         }
         pos = eol + 1;
     }
+}
+
+fn starts_with_json_object(line: &[u8]) -> bool {
+    let first_nonws = line
+        .iter()
+        .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'));
+    first_nonws.is_some_and(|idx| line[idx] == b'{')
+}
+
+fn normalize_plain_text_fallback(line: &[u8]) -> Option<&[u8]> {
+    let line = if line.last() == Some(&b'\r') {
+        &line[..line.len().saturating_sub(1)]
+    } else {
+        line
+    };
+    (!line.is_empty()).then_some(line)
+}
+
+fn write_plain_text_fallback(line: &[u8], plain_text_field_name: &str, out: &mut Vec<u8>) {
+    out.extend_from_slice(b"{\"");
+    json_escape_bytes(plain_text_field_name.as_bytes(), out);
+    out.extend_from_slice(b"\":\"");
+    json_escape_bytes(line, out);
+    out.extend_from_slice(b"\"}\n");
 }
 
 /// Inject `_timestamp` and `_stream` CRI metadata into a JSON message and
@@ -247,7 +325,7 @@ fn extract_cri_messages(
 ///   `{"_timestamp":"<ts>","_stream":"<stream>",<rest of msg>}\n`
 ///
 /// Otherwise wraps the plain-text message so no content is lost:
-///   `{"_timestamp":"<ts>","_stream":"<stream>","_raw":"<json-escaped msg>"}\n`
+///   `{"_timestamp":"<ts>","_stream":"<stream>","<plain_text_field_name>":"<json-escaped msg>"}\n`
 ///
 /// # Safety invariants
 ///
@@ -264,7 +342,13 @@ fn extract_cri_messages(
 /// with the broader pipeline philosophy: the scanner validates the final
 /// output rather than the format layer.
 #[inline]
-fn inject_cri_metadata(msg: &[u8], timestamp: &[u8], stream: &[u8], out: &mut Vec<u8>) {
+fn inject_cri_metadata(
+    msg: &[u8],
+    timestamp: &[u8],
+    stream: &[u8],
+    plain_text_field_name: &str,
+    out: &mut Vec<u8>,
+) {
     if msg.first() == Some(&b'{') {
         out.push(b'{');
         out.extend_from_slice(b"\"_timestamp\":\"");
@@ -288,13 +372,15 @@ fn inject_cri_metadata(msg: &[u8], timestamp: &[u8], stream: &[u8], out: &mut Ve
             out.extend_from_slice(after_brace);
         }
     } else {
-        // Plain text: wrap as {"_timestamp":"...","_stream":"...","_raw":"<escaped>"}
+        // Plain text: wrap as {"_timestamp":"...","_stream":"...","<field>":"<escaped>"}
         // so that message content is preserved and the scanner can ingest the record.
         out.extend_from_slice(b"{\"_timestamp\":\"");
         out.extend_from_slice(timestamp);
         out.extend_from_slice(b"\",\"_stream\":\"");
         out.extend_from_slice(stream);
-        out.extend_from_slice(b"\",\"_raw\":\"");
+        out.extend_from_slice(b"\",\"");
+        json_escape_bytes(plain_text_field_name.as_bytes(), out);
+        out.extend_from_slice(b"\":\"");
         json_escape_bytes(msg, out);
         out.extend_from_slice(b"\"}");
     }
@@ -342,11 +428,11 @@ mod tests {
         proc.process_lines(b"2024-01-15T10:30:00Z stdout P hello \n", &mut out);
         assert!(out.is_empty(), "partial should not emit");
 
-        // Full line completes the message — plain text → wrapped as _raw
+        // Full line completes the message — plain text is wrapped into the configured field.
         proc.process_lines(b"2024-01-15T10:30:00Z stdout F world\n", &mut out);
         assert_eq!(
             out,
-            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"hello world\"}\n"
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"body\":\"hello world\"}\n"
         );
     }
 
@@ -362,10 +448,10 @@ mod tests {
 
         let mut expected = Vec::new();
         expected.extend_from_slice(
-            b"{\"_timestamp\":\"2024-01-15T10:30:01Z\",\"_stream\":\"stderr\",\"_raw\":\"err\"}\n",
+            b"{\"_timestamp\":\"2024-01-15T10:30:01Z\",\"_stream\":\"stderr\",\"body\":\"err\"}\n",
         );
         expected.extend_from_slice(
-            b"{\"_timestamp\":\"2024-01-15T10:30:02Z\",\"_stream\":\"stdout\",\"_raw\":\"out-done\"}\n",
+            b"{\"_timestamp\":\"2024-01-15T10:30:02Z\",\"_stream\":\"stdout\",\"body\":\"out-done\"}\n",
         );
         assert_eq!(out, expected);
         assert_eq!(
@@ -393,13 +479,33 @@ mod tests {
     }
 
     #[test]
-    fn auto_passthrough_for_non_cri() {
+    fn auto_passthrough_for_non_cri_json() {
         let stats = make_stats();
         let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
         let input = b"{\"msg\":\"plain json\"}\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
         assert_eq!(out, b"{\"msg\":\"plain json\"}\n");
+    }
+
+    #[test]
+    fn auto_wraps_plain_text_for_non_cri() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
+        let input = b"not a cri line\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(out, b"{\"body\":\"not a cri line\"}\n");
+    }
+
+    #[test]
+    fn auto_wraps_plain_text_for_non_cri_crlf_without_carriage_return() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
+        let input = b"not a cri line\r\n\r\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(out, b"{\"body\":\"not a cri line\"}\n");
     }
 
     #[test]
@@ -423,13 +529,13 @@ mod tests {
 
         proc.process_lines(b"2024-01-15T10:30:00Z stdout P hello \n", &mut out);
         proc.process_lines(b"not a cri line\n", &mut out);
-        // "world" is plain text → wrapped as _raw
+        // "world" is plain text — wrapped into the configured field.
         proc.process_lines(b"2024-01-15T10:30:00Z stdout F world\n", &mut out);
 
         let mut expected = Vec::new();
-        expected.extend_from_slice(b"not a cri line\n");
+        expected.extend_from_slice(b"{\"body\":\"not a cri line\"}\n");
         expected.extend_from_slice(
-            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"world\"}\n",
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"body\":\"world\"}\n",
         );
         assert_eq!(out, expected);
     }
@@ -447,11 +553,11 @@ mod tests {
         // Reset (simulating rotation)
         proc.reset();
 
-        // Next full line should not contain the old partial — plain text → wrapped as _raw
+        // Next full line should not contain the old partial — wrapped into configured field.
         proc.process_lines(b"2024-01-15T10:30:00Z stdout F world\n", &mut out);
         assert_eq!(
             out,
-            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"world\"}\n"
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"body\":\"world\"}\n"
         );
     }
 
@@ -500,9 +606,9 @@ mod tests {
     }
 
     #[test]
-    fn cri_non_json_message_wrapped_as_raw() {
+    fn cri_non_json_message_wrapped_as_body() {
         // Non-JSON CRI messages (plain text) must be wrapped as
-        // {"_timestamp":"...","_stream":"...","_raw":"<text>"} so that message
+        // {"_timestamp":"...","_stream":"...","body":"<text>"} so that message
         // content is not silently lost when the scanner sees a non-JSON line.
         let stats = make_stats();
         let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
@@ -511,7 +617,21 @@ mod tests {
         proc.process_lines(input, &mut out);
         assert_eq!(
             out,
-            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"plain text message\"}\n"
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"body\":\"plain text message\"}\n"
+        );
+    }
+
+    #[test]
+    fn cri_non_json_message_uses_configured_plain_text_field() {
+        let stats = make_stats();
+        let mut proc =
+            FormatDecoder::cri_with_plain_text_field(2 * 1024 * 1024, "payload".to_string(), stats);
+        let input = b"2024-01-15T10:30:00Z stdout F plain text message\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"payload\":\"plain text message\"}\n"
         );
     }
 
@@ -525,7 +645,7 @@ mod tests {
         proc.process_lines(input, &mut out);
         assert_eq!(
             out,
-            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"_raw\":\"say \\\"hello\\\"\"}\n"
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"body\":\"say \\\"hello\\\"\"}\n"
         );
     }
 
@@ -699,7 +819,8 @@ mod verification {
     /// inject_cri_metadata always produces a non-empty output ending with '\n'.
     ///
     /// This holds for both JSON messages (starts with '{') and plain-text
-    /// messages (wraps as _raw).  The trailing newline is required so that the
+    /// messages (wraps into a `body` JSON field). The trailing newline is
+    /// required so that the
     /// downstream scanner can split on line boundaries.
     #[kani::proof]
     #[kani::unwind(6)]
@@ -708,7 +829,7 @@ mod verification {
         let ts = b"TS";
         let stream = b"S";
         let mut out = Vec::new();
-        inject_cri_metadata(&msg, ts, stream, &mut out);
+        inject_cri_metadata(&msg, ts, stream, "body", &mut out);
         assert!(!out.is_empty(), "output must be non-empty");
         assert_eq!(*out.last().unwrap(), b'\n', "output must end with newline");
         kani::cover!(msg[0] == b'{', "JSON message path exercised");
@@ -717,7 +838,7 @@ mod verification {
 
     /// inject_cri_metadata always produces output starting with '{'.
     ///
-    /// Both the JSON injection path and the _raw wrapper path open with '{'
+    /// Both the JSON injection path and the plain-text wrapper path open with '{'
     /// so the downstream scanner always sees a well-formed JSON object start.
     #[kani::proof]
     #[kani::unwind(6)]
@@ -726,7 +847,7 @@ mod verification {
         let ts = b"TS";
         let stream = b"S";
         let mut out = Vec::new();
-        inject_cri_metadata(&msg, ts, stream, &mut out);
+        inject_cri_metadata(&msg, ts, stream, "body", &mut out);
         assert_eq!(out[0], b'{', "output must start with '{'");
         kani::cover!(msg[0] == b'{', "JSON path exercised");
         kani::cover!(msg[0] != b'{', "plain text path exercised");
@@ -745,7 +866,7 @@ mod verification {
         let ts = b"TS";
         let stream = b"S";
         let mut out = Vec::new();
-        inject_cri_metadata(&msg, ts, stream, &mut out);
+        inject_cri_metadata(&msg, ts, stream, "body", &mut out);
         // Output must start with timestamp+stream. The next byte is:
         // - ',' for non-empty JSON objects
         // - '}' for empty object path (`{}` / `{ }`) from issue #1658 fix
@@ -760,22 +881,22 @@ mod verification {
     }
 
     /// For non-JSON messages (not starting with '{'), inject_cri_metadata wraps
-    /// the content in a {"_raw":"..."} object so no message content is lost.
+    /// the content in a {"body":"..."} object so no message content is lost.
     ///
     /// This is the Auto-mode fallthrough path: when CRI parsing succeeds but
     /// the message body is not a JSON object, the plain text is preserved in
-    /// the _raw field rather than being silently discarded.
+    /// the `body` field rather than being silently discarded.
     #[kani::proof]
     #[kani::unwind(6)]
-    fn verify_inject_non_json_msg_uses_raw_key() {
+    fn verify_inject_non_json_msg_uses_body_key() {
         let msg: [u8; 4] = kani::any();
         kani::assume(msg[0] != b'{');
         let ts = b"TS";
         let stream = b"S";
         let mut out = Vec::new();
-        inject_cri_metadata(&msg, ts, stream, &mut out);
-        // Output must start with the _raw wrapper prefix (no message content is lost).
-        assert!(out.starts_with(b"{\"_timestamp\":\"TS\",\"_stream\":\"S\",\"_raw\":\""));
-        kani::cover!(true, "plain text path _raw wrapper verified");
+        inject_cri_metadata(&msg, ts, stream, "body", &mut out);
+        // Output must start with the body wrapper prefix (no content is lost).
+        assert!(out.starts_with(b"{\"_timestamp\":\"TS\",\"_stream\":\"S\",\"body\":\""));
+        kani::cover!(true, "plain text path body wrapper verified");
     }
 }

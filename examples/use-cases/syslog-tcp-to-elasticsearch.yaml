@@ -13,7 +13,7 @@ transform: |
 output:
   type: elasticsearch
   endpoint: https://elasticsearch:9200
-  index: syslog-%Y.%m.%d
+  index: syslog
 
 # Optional: diagnostics
 # server:

@@ -85,7 +85,7 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
 
         // Extract line boundaries (consumed, not stored).
         // Strip a trailing \r so that Windows CRLF line endings do not leak
-        // into the _raw field or confuse the JSON parser.
+        // into captured line fields or confuse the JSON parser.
         let mut nl = processed.newline;
         while nl != 0 {
             let bit_pos = nl.trailing_zeros() as usize;
@@ -145,8 +145,8 @@ fn scan_line<B: ScanBuilder>(
     scratch: &mut alloc::vec::Vec<u8>,
 ) {
     builder.begin_row();
-    if config.keep_raw {
-        builder.append_raw(&buf[start..end]);
+    if config.captures_line() {
+        builder.append_line(&buf[start..end]);
     }
 
     // Find the opening '{' using bitmasks
@@ -595,20 +595,20 @@ mod tests {
     /// Minimal ScanBuilder for testing — captures fields as strings.
     struct TestBuilder {
         rows: Vec<Vec<(String, String)>>,
-        raws: Vec<Option<String>>,
+        lines: Vec<Option<String>>,
         current_row: Vec<(String, String)>,
         field_names: Vec<String>,
-        current_raw: Option<String>,
+        current_line: Option<String>,
     }
 
     impl TestBuilder {
         fn new() -> Self {
             Self {
                 rows: Vec::new(),
-                raws: Vec::new(),
+                lines: Vec::new(),
                 current_row: Vec::new(),
                 field_names: Vec::new(),
-                current_raw: None,
+                current_line: None,
             }
         }
     }
@@ -616,11 +616,11 @@ mod tests {
     impl ScanBuilder for TestBuilder {
         fn begin_row(&mut self) {
             self.current_row.clear();
-            self.current_raw = None;
+            self.current_line = None;
         }
         fn end_row(&mut self) {
             self.rows.push(self.current_row.clone());
-            self.raws.push(self.current_raw.take());
+            self.lines.push(self.current_line.take());
         }
         fn resolve_field(&mut self, name: &[u8]) -> usize {
             let name_str = core::str::from_utf8(name).unwrap().to_string();
@@ -656,8 +656,8 @@ mod tests {
             let name = self.field_names[idx].clone();
             self.current_row.push((name, "null".to_string()));
         }
-        fn append_raw(&mut self, val: &[u8]) {
-            self.current_raw = Some(String::from_utf8_lossy(val).to_string());
+        fn append_line(&mut self, val: &[u8]) {
+            self.current_line = Some(String::from_utf8_lossy(val).to_string());
         }
     }
 
@@ -944,7 +944,7 @@ mod tests {
     fn raw_non_json_lines() {
         let buf = b"plain text line 1\nplain text line 2\n";
         let config = ScanConfig {
-            keep_raw: true,
+            line_field_name: Some("message".to_string()),
             ..ScanConfig::default()
         };
         let mut builder = TestBuilder::new();
@@ -954,10 +954,10 @@ mod tests {
     }
 
     #[test]
-    fn keep_raw_with_json() {
+    fn captures_line_with_json() {
         let buf = br#"{"a":"b"}"#;
         let config = ScanConfig {
-            keep_raw: true,
+            line_field_name: Some("message".to_string()),
             ..ScanConfig::default()
         };
         let mut builder = TestBuilder::new();
@@ -965,21 +965,21 @@ mod tests {
 
         assert_eq!(builder.rows.len(), 1);
         assert!(builder.rows[0].iter().any(|(k, v)| k == "a" && v == "b"));
-        assert_eq!(builder.raws[0].as_deref(), Some(r#"{"a":"b"}"#));
+        assert_eq!(builder.lines[0].as_deref(), Some(r#"{"a":"b"}"#));
     }
 
     #[test]
-    fn keep_raw_non_json_captures_content() {
+    fn captures_line_non_json_content() {
         let buf = b"hello world\n";
         let config = ScanConfig {
-            keep_raw: true,
+            line_field_name: Some("message".to_string()),
             ..ScanConfig::default()
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
 
         assert_eq!(builder.rows.len(), 1);
-        assert_eq!(builder.raws[0].as_deref(), Some("hello world"));
+        assert_eq!(builder.lines[0].as_deref(), Some("hello world"));
     }
 
     #[test]
@@ -1099,7 +1099,7 @@ mod tests {
     proptest! {
         /// CRLF normalization invariant: scanning a JSON object with CRLF line endings
         /// must yield the same field values as scanning the same object with LF endings,
-        /// and neither _raw nor any field value must contain a bare \r.
+        /// and neither captured line values nor any field value must contain a bare \r.
         ///
         /// The strategy pads the JSON to probe near 64-byte SIMD block edges.
         #[test]
@@ -1134,8 +1134,8 @@ mod tests {
                 "CRLF and LF must produce identical field values"
             );
 
-            // _raw (if captured) must not contain a bare \r.
-            for raw in crlf_builder.raws.iter().flatten() {
+            // Captured lines (if enabled) must not contain a bare \r.
+            for raw in crlf_builder.lines.iter().flatten() {
                 prop_assert!(
                     !raw.contains('\r'),
                     "raw value must not contain bare \\r after CRLF normalization: {raw:?}"
@@ -1165,13 +1165,13 @@ mod tests {
         }
     }
 
-    /// CRLF line endings must not leak \r into extracted field values or _raw.
+    /// CRLF line endings must not leak \r into extracted field values or captured line fields.
     ///
     /// When the input uses Windows-style CRLF (\r\n) line endings, the scanner
-    /// must strip the \r before storing _raw and before passing the line to the
-    /// JSON parser. Without this fix, _raw contains a trailing \r character.
+    /// must strip the \r before storing captured line values and before passing
+    /// the line to the JSON parser.
     #[test]
-    fn crlf_stripped_from_raw_and_fields() {
+    fn crlf_stripped_from_line_capture_and_fields() {
         // Two JSON lines with CRLF line endings.
         let buf =
             b"{\"level\":\"INFO\",\"msg\":\"hello\"}\r\n{\"level\":\"WARN\",\"msg\":\"world\"}\r\n";
@@ -1180,7 +1180,7 @@ mod tests {
         let config = ScanConfig {
             wanted_fields: alloc::vec![],
             extract_all: true,
-            keep_raw: true,
+            line_field_name: Some("body".to_string()),
             validate_utf8: false,
         };
 
@@ -1199,16 +1199,19 @@ mod tests {
             }
         }
 
-        // _raw must NOT contain a trailing \r.
-        for (i, raw) in builder.raws.iter().enumerate() {
+        // Captured line values must NOT contain a trailing \r.
+        for (i, raw) in builder.lines.iter().enumerate() {
             let raw = raw
                 .as_ref()
-                .unwrap_or_else(|| panic!("row {i} has no _raw"));
+                .unwrap_or_else(|| panic!("row {i} has no captured line"));
             assert!(
                 !raw.ends_with('\r'),
-                "row {i} _raw has trailing \\r: {raw:?}"
+                "row {i} captured line has trailing \\r: {raw:?}"
             );
-            assert!(!raw.contains('\r'), "row {i} _raw contains \\r: {raw:?}");
+            assert!(
+                !raw.contains('\r'),
+                "row {i} captured line contains \\r: {raw:?}"
+            );
         }
 
         // Verify correct field values were extracted.
@@ -1235,7 +1238,7 @@ mod tests {
         let config = ScanConfig {
             wanted_fields: alloc::vec![],
             extract_all: true,
-            keep_raw: false,
+            line_field_name: None,
             validate_utf8: false,
         };
         let mut builder = TestBuilder::new();
@@ -1251,47 +1254,47 @@ mod tests {
 
     /// Unterminated trailing CR after a newline must not emit a spurious empty row.
     #[test]
-    fn trailing_cr_after_newline_no_spurious_empty_row_keep_raw() {
+    fn trailing_cr_after_newline_no_spurious_empty_row_with_line_capture() {
         let buf = b"{\"x\":\"1\"}\n\r";
         let config = ScanConfig {
             wanted_fields: alloc::vec![],
             extract_all: true,
-            keep_raw: true,
+            line_field_name: Some("body".to_string()),
             validate_utf8: false,
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
 
         assert_eq!(builder.rows.len(), 1, "expected only the JSON row");
-        assert_eq!(builder.raws.len(), 1, "expected one _raw value");
-        assert_eq!(builder.raws[0].as_deref(), Some("{\"x\":\"1\"}"));
+        assert_eq!(builder.lines.len(), 1, "expected one captured line");
+        assert_eq!(builder.lines[0].as_deref(), Some("{\"x\":\"1\"}"));
     }
 
     /// A buffer containing only `\r` is effectively empty after CRLF normalisation.
     #[test]
-    fn lone_carriage_return_emits_no_rows_even_with_keep_raw() {
+    fn lone_carriage_return_emits_no_rows_even_with_line_capture() {
         let buf = b"\r";
         let config = ScanConfig {
             wanted_fields: alloc::vec![],
             extract_all: true,
-            keep_raw: true,
+            line_field_name: Some("body".to_string()),
             validate_utf8: false,
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
         assert!(builder.rows.is_empty());
-        assert!(builder.raws.is_empty());
+        assert!(builder.lines.is_empty());
     }
 
-    /// A bare LF empty line is skipped even with keep_raw=true.
+    /// A bare LF empty line is skipped even when line capture is enabled.
     /// Empty lines never produce rows — there is no content to capture.
     #[test]
-    fn empty_lf_line_skipped_even_with_keep_raw() {
+    fn empty_lf_line_skipped_even_with_line_capture() {
         let buf = b"\n{\"x\":\"1\"}\n\n";
         let config = ScanConfig {
             wanted_fields: alloc::vec![],
             extract_all: true,
-            keep_raw: true,
+            line_field_name: Some("body".to_string()),
             validate_utf8: false,
         };
         let mut builder = TestBuilder::new();
@@ -1302,8 +1305,8 @@ mod tests {
             1,
             "only the JSON row, empty lines skipped"
         );
-        assert_eq!(builder.raws.len(), 1, "one _raw for the JSON row");
-        assert_eq!(builder.raws[0].as_deref(), Some("{\"x\":\"1\"}"));
+        assert_eq!(builder.lines.len(), 1, "one captured line for the JSON row");
+        assert_eq!(builder.lines[0].as_deref(), Some("{\"x\":\"1\"}"));
     }
 }
 

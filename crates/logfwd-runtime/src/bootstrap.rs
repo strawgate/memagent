@@ -51,6 +51,8 @@ pub struct RunOptions<'a> {
     pub use_color: bool,
     /// Whether stderr logs should be emitted as JSON instead of text.
     pub json_logs_for_stderr: bool,
+    /// Optional auto-shutdown duration for benchmarking helpers.
+    pub auto_shutdown_after: Option<Duration>,
 }
 
 pub async fn run_pipelines(
@@ -146,6 +148,14 @@ pub async fn run_pipelines(
 
         shutdown_for_signal.cancel();
     });
+
+    if let Some(duration) = options.auto_shutdown_after {
+        let shutdown_for_timer = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(duration).await;
+            shutdown_for_timer.cancel();
+        });
+    }
 
     let meter_provider = build_meter_provider(&config, use_color)?;
     let meter = meter_provider.meter("logfwd");
@@ -392,9 +402,9 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputType::Http => format!("http  {}", i.listen.as_deref().unwrap_or(":8080")),
         InputType::ArrowIpc => "arrow_ipc".to_string(),
         InputType::Generator => "generator".to_string(),
-        InputType::LinuxSensorBeta => "linux_sensor_beta".to_string(),
-        InputType::MacosSensorBeta => "macos_sensor_beta".to_string(),
-        InputType::WindowsSensorBeta => "windows_sensor_beta".to_string(),
+        InputType::LinuxEbpfSensor => "linux_ebpf_sensor".to_string(),
+        InputType::MacosEsSensor => "macos_es_sensor".to_string(),
+        InputType::WindowsEbpfSensor => "windows_ebpf_sensor".to_string(),
         _ => "unknown".to_string(),
     }
 }

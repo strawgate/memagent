@@ -14,11 +14,10 @@ use prost::Message;
 use crate::InputError;
 
 use super::convert::{
-    convert_request_to_batch, convert_request_to_json_lines, decode_protojson_bytes, hex,
-    parse_protojson_f64, parse_protojson_i64, parse_protojson_u64, write_f64_to_buf,
-    write_i64_to_buf, write_json_key, write_json_string_field, write_u64_to_buf,
+    convert_request_to_batch, decode_protojson_bytes, hex, parse_protojson_f64,
+    parse_protojson_i64, parse_protojson_u64, write_f64_to_buf, write_i64_to_buf, write_json_key,
+    write_json_string_field, write_u64_to_buf,
 };
-use super::{ReceiverMode, ReceiverPayload};
 
 /// Maximum request body size: 10 MB.
 pub(super) const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -53,10 +52,46 @@ pub(super) fn read_decompressed_body(
     }
 }
 
-/// Decode an ExportLogsServiceRequest from JSON body and produce
-/// newline-delimited JSON lines. Parses the OTLP JSON structure directly
-/// since the protobuf types don't derive serde traits.
-pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
+/// Decode an OTLP ExportLogsServiceRequest from protobuf and produce a
+/// structured Arrow RecordBatch.
+pub(super) fn decode_otlp_protobuf(
+    body: &[u8],
+    resource_prefix: &str,
+) -> Result<RecordBatch, InputError> {
+    if body.is_empty() {
+        return Ok(RecordBatch::new_empty(Arc::new(
+            arrow::datatypes::Schema::empty(),
+        )));
+    }
+
+    let request = ExportLogsServiceRequest::decode(body)
+        .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
+
+    convert_request_to_batch(&request, resource_prefix)
+}
+
+/// Decode an OTLP ExportLogsServiceRequest from JSON and produce a structured
+/// Arrow RecordBatch. Parses the OTLP JSON structure directly, converts to
+/// newline-delimited JSON lines, then scans into a batch.
+pub(super) fn decode_otlp_json(
+    body: &[u8],
+    resource_prefix: &str,
+) -> Result<RecordBatch, InputError> {
+    let json_lines = decode_otlp_logs_json(body, resource_prefix)?;
+    if json_lines.is_empty() {
+        return Ok(RecordBatch::new_empty(Arc::new(
+            arrow::datatypes::Schema::empty(),
+        )));
+    }
+    let mut scanner = Scanner::new(ScanConfig::default());
+    scanner
+        .scan(Bytes::from(json_lines))
+        .map_err(|e| InputError::Receiver(format!("structured OTLP JSON scan error: {e}")))
+}
+
+/// Parse an OTLP JSON ExportLogsServiceRequest and produce newline-delimited
+/// JSON lines. Used internally by [`decode_otlp_json`] to feed the scanner.
+fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, InputError> {
     if body.is_empty() {
         return Ok(Vec::new());
     }
@@ -67,9 +102,6 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
     let resource_logs = match root.get("resourceLogs").and_then(|v| v.as_array()) {
         Some(arr) => arr,
         None => {
-            // An object that parses as valid JSON but lacks `resourceLogs` is
-            // not a valid ExportLogsServiceRequest. Return 400 so the client
-            // knows its payload was rejected rather than silently discarding it.
             return Err(InputError::Receiver(
                 "missing required field 'resourceLogs' in OTLP JSON payload".to_string(),
             ));
@@ -80,7 +112,7 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
 
     for rl in resource_logs {
         // Collect resource attributes.
-        let mut resource_attrs: Vec<(&str, String)> = Vec::new();
+        let mut resource_attrs: Vec<(String, String)> = Vec::new();
         if let Some(attrs) = rl
             .get("resource")
             .and_then(|r| r.get("attributes"))
@@ -94,7 +126,7 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
                     continue;
                 };
                 if let Some(value) = json_any_value_to_string(value)? {
-                    resource_attrs.push((key, value));
+                    resource_attrs.push((format!("{resource_prefix}{key}"), value));
                 }
             }
         }
@@ -105,6 +137,15 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
         };
 
         for sl in scope_logs {
+            let scope_name = sl
+                .get("scope")
+                .and_then(|scope| scope.get("name"))
+                .and_then(|name| name.as_str());
+            let scope_version = sl
+                .get("scope")
+                .and_then(|scope| scope.get("version"))
+                .and_then(|version| version.as_str());
+
             let records = match sl.get("logRecords").and_then(|v| v.as_array()) {
                 Some(arr) => arr,
                 None => continue,
@@ -125,7 +166,11 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
                 }
                 if ts_val == 0 {
                     if let Some(obs) = record.get("observedTimeUnixNano") {
-                        ts_val = parse_protojson_u64(obs).unwrap_or(0);
+                        ts_val = parse_protojson_u64(obs).ok_or_else(|| {
+                            InputError::Receiver(
+                                "invalid OTLP JSON observedTimeUnixNano: not a valid uint64".into(),
+                            )
+                        })?;
                     }
                 }
                 if ts_val > 0 {
@@ -134,9 +179,35 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
                     out.push(b',');
                 }
 
-                if let Some(sev) = record.get("severityText").and_then(|v| v.as_str()) {
-                    if !sev.is_empty() {
-                        write_json_string_field(&mut out, field_names::SEVERITY, sev);
+                if let Some(obs) = record.get("observedTimeUnixNano") {
+                    let obs_val = parse_protojson_u64(obs).ok_or_else(|| {
+                        InputError::Receiver(
+                            "invalid OTLP JSON observedTimeUnixNano: not a valid uint64".into(),
+                        )
+                    })?;
+                    if obs_val > 0 {
+                        write_json_key(&mut out, field_names::OBSERVED_TIMESTAMP);
+                        write_u64_to_buf(&mut out, obs_val);
+                        out.push(b',');
+                    }
+                }
+
+                if let Some(sev) = record.get("severityText").and_then(|v| v.as_str())
+                    && !sev.is_empty()
+                {
+                    write_json_string_field(&mut out, field_names::SEVERITY, sev);
+                    out.push(b',');
+                }
+
+                if let Some(sev_num) = record.get("severityNumber") {
+                    let severity_number = parse_protojson_i64(sev_num).ok_or_else(|| {
+                        InputError::Receiver(
+                            "invalid OTLP JSON severityNumber: not a valid int64".into(),
+                        )
+                    })?;
+                    if severity_number > 0 {
+                        write_json_key(&mut out, field_names::SEVERITY_NUMBER);
+                        write_i64_to_buf(&mut out, severity_number);
                         out.push(b',');
                     }
                 }
@@ -177,6 +248,30 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
                     }
                 }
 
+                if let Some(flags) = record.get("flags") {
+                    let parsed_flags = parse_protojson_i64(flags).ok_or_else(|| {
+                        InputError::Receiver("invalid OTLP JSON flags: not a valid int64".into())
+                    })?;
+                    if parsed_flags > 0 {
+                        write_json_key(&mut out, field_names::FLAGS);
+                        write_i64_to_buf(&mut out, parsed_flags);
+                        out.push(b',');
+                    }
+                }
+
+                if let Some(name) = scope_name
+                    && !name.is_empty()
+                {
+                    write_json_string_field(&mut out, field_names::SCOPE_NAME, name);
+                    out.push(b',');
+                }
+                if let Some(version) = scope_version
+                    && !version.is_empty()
+                {
+                    write_json_string_field(&mut out, field_names::SCOPE_VERSION, version);
+                    out.push(b',');
+                }
+
                 if out.last() == Some(&b',') {
                     out.pop();
                 }
@@ -186,27 +281,6 @@ pub(super) fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> 
     }
 
     Ok(out)
-}
-
-pub(super) fn decode_otlp_logs_with_mode_json(
-    body: &[u8],
-    mode: ReceiverMode,
-    accounted_bytes: u64,
-) -> Result<ReceiverPayload, InputError> {
-    match mode {
-        ReceiverMode::JsonLines => {
-            decode_otlp_logs_json(body).map(|lines| ReceiverPayload::JsonLines {
-                lines,
-                accounted_bytes,
-            })
-        }
-        ReceiverMode::StructuredBatch => {
-            decode_otlp_logs_json_to_batch(body).map(|batch| ReceiverPayload::Batch {
-                batch,
-                accounted_bytes,
-            })
-        }
-    }
 }
 
 /// Extract a scalar OTLP JSON AnyValue as an owned string.
@@ -280,63 +354,4 @@ fn write_json_any_value_field_from_json(
     }
 
     Ok(false)
-}
-
-/// Decode an ExportLogsServiceRequest protobuf and produce newline-delimited
-/// JSON. Each LogRecord becomes one JSON line with fields that the scanner
-/// can extract into Arrow columns.
-pub(super) fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, InputError> {
-    if body.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let request = ExportLogsServiceRequest::decode(body)
-        .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
-
-    Ok(convert_request_to_json_lines(&request))
-}
-
-pub(super) fn decode_otlp_logs_with_mode(
-    body: &[u8],
-    mode: ReceiverMode,
-    accounted_bytes: u64,
-) -> Result<ReceiverPayload, InputError> {
-    match mode {
-        ReceiverMode::JsonLines => decode_otlp_logs(body).map(|lines| ReceiverPayload::JsonLines {
-            lines,
-            accounted_bytes,
-        }),
-        ReceiverMode::StructuredBatch => {
-            decode_otlp_logs_to_batch(body).map(|batch| ReceiverPayload::Batch {
-                batch,
-                accounted_bytes,
-            })
-        }
-    }
-}
-
-pub(super) fn decode_otlp_logs_json_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
-    let json_lines = decode_otlp_logs_json(body)?;
-    if json_lines.is_empty() {
-        return Ok(RecordBatch::new_empty(Arc::new(
-            arrow::datatypes::Schema::empty(),
-        )));
-    }
-    let mut scanner = Scanner::new(ScanConfig::default());
-    scanner
-        .scan(Bytes::from(json_lines))
-        .map_err(|e| InputError::Receiver(format!("structured OTLP JSON scan error: {e}")))
-}
-
-pub(super) fn decode_otlp_logs_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
-    if body.is_empty() {
-        return Ok(RecordBatch::new_empty(Arc::new(
-            arrow::datatypes::Schema::empty(),
-        )));
-    }
-
-    let request = ExportLogsServiceRequest::decode(body)
-        .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
-
-    convert_request_to_batch(&request)
 }

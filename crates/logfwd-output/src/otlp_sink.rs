@@ -58,6 +58,7 @@ pub struct OtlpSink {
     protocol: OtlpProtocol,
     compression: Compression,
     headers: Vec<(String, String)>,
+    message_field: String,
     pub(crate) encoder_buf: Vec<u8>,
     compress_buf: Vec<u8>,
     grpc_buf: Vec<u8>,
@@ -77,8 +78,11 @@ enum ResourceValueRef<'a> {
 /// Per-row resource key: one optional borrowed/scalar value per `_resource_*` column.
 type ResourceKey<'a> = Vec<Option<ResourceValueRef<'a>>>;
 
-/// Per-group state: the resource key and byte-range spans of encoded log records.
-type ResourceGroup<'a> = (ResourceKey<'a>, Vec<(usize, usize)>);
+/// Per-group scope key (name, version).
+type ScopeKey<'a> = (Option<&'a str>, Option<&'a str>);
+
+/// Per-group state: resource key + scope key + byte-range spans of encoded log records.
+type ResourceGroup<'a> = (ResourceKey<'a>, ScopeKey<'a>, Vec<(usize, usize)>);
 
 impl OtlpSink {
     pub fn new(
@@ -113,6 +117,7 @@ impl OtlpSink {
             protocol,
             compression,
             headers,
+            message_field: field_names::BODY.to_string(),
             encoder_buf: Vec::with_capacity(64 * 1024),
             compress_buf: Vec::with_capacity(64 * 1024),
             grpc_buf: Vec::with_capacity(64 * 1024),
@@ -120,6 +125,16 @@ impl OtlpSink {
             client,
             stats,
         })
+    }
+
+    /// Override the source column used for OTLP `LogRecord.body`.
+    ///
+    /// The default is the canonical `body` field. Use this builder when a
+    /// pipeline stores the primary log message under a different string column.
+    #[inline]
+    pub fn with_message_field(mut self, message_field: String) -> Self {
+        self.message_field = message_field;
+        self
     }
 
     /// Encode a full ExportLogsServiceRequest from a RecordBatch.
@@ -186,44 +201,77 @@ impl OtlpSink {
         };
 
         // Resolve column roles and downcast arrays once for the whole batch.
-        let columns = resolve_batch_columns(batch);
+        let resource_prefix = resource_prefix_from_batch(batch);
+        let columns = resolve_batch_columns(batch, self.message_field.as_str(), &resource_prefix);
 
         // Phase 1: encode all LogRecords and assign each row to a resource group.
         let mut records_buf: Vec<u8> = Vec::with_capacity(num_rows * 128);
         let mut grouped_ranges: Vec<ResourceGroup<'_>> = Vec::new();
-        let mut group_index_by_key: std::collections::HashMap<ResourceKey<'_>, usize> =
-            std::collections::HashMap::new();
+        let mut group_index_by_key: std::collections::HashMap<
+            (ResourceKey<'_>, ScopeKey<'_>),
+            usize,
+        > = std::collections::HashMap::new();
 
         for row in 0..num_rows {
             let mut key: ResourceKey<'_> = Vec::with_capacity(columns.resource_cols.len());
             for (_, attr) in &columns.resource_cols {
                 key.push(attr.value_ref(row));
             }
-            let group_idx = if let Some(existing) = group_index_by_key.get(&key).copied() {
+            let scope_name = columns.scope_name_col.as_ref().and_then(|(_, arr)| {
+                if arr.is_null(row) {
+                    None
+                } else {
+                    Some(arr.value(row))
+                }
+            });
+            let scope_version = columns.scope_version_col.as_ref().and_then(|(_, arr)| {
+                if arr.is_null(row) {
+                    None
+                } else {
+                    Some(arr.value(row))
+                }
+            });
+            let scope_key = (scope_name, scope_version);
+
+            let group_idx = if let Some(existing) =
+                group_index_by_key.get(&(key.clone(), scope_key)).copied()
+            {
                 existing
             } else {
                 let idx = grouped_ranges.len();
-                group_index_by_key.insert(key.clone(), idx);
-                grouped_ranges.push((key, Vec::new()));
+                group_index_by_key.insert((key.clone(), scope_key), idx);
+                grouped_ranges.push((key, scope_key, Vec::new()));
                 idx
             };
 
             let start = records_buf.len();
             encode_row(&columns, row, metadata, &mut records_buf);
-            grouped_ranges[group_idx].1.push((start, records_buf.len()));
+            grouped_ranges[group_idx].2.push((start, records_buf.len()));
         }
 
         // Phase 2: compute sizes bottom-up per resource group.
-        let instrumentation_scope_inner_size =
-            bytes_field_size(otlp::INSTRUMENTATION_SCOPE_NAME, SCOPE_NAME.len())
-                + bytes_field_size(otlp::INSTRUMENTATION_SCOPE_VERSION, SCOPE_VERSION.len());
-
         let mut grouped_resource_msgs: Vec<Vec<u8>> = Vec::with_capacity(grouped_ranges.len());
         let mut grouped_resource_inner_sizes: Vec<usize> = Vec::with_capacity(grouped_ranges.len());
         let mut grouped_scope_inner_sizes: Vec<usize> = Vec::with_capacity(grouped_ranges.len());
+        let mut grouped_scope_values: Vec<(Vec<u8>, Vec<u8>)> =
+            Vec::with_capacity(grouped_ranges.len());
         let mut request_size = 0usize;
 
-        for (key, record_ranges) in &grouped_ranges {
+        for (key, scope_key, record_ranges) in &grouped_ranges {
+            let scope_name = scope_key
+                .0
+                .unwrap_or_else(|| std::str::from_utf8(SCOPE_NAME).unwrap_or("logfwd"));
+            let scope_version = scope_key
+                .1
+                .unwrap_or_else(|| std::str::from_utf8(SCOPE_VERSION).unwrap_or(""));
+            let scope_name_bytes = scope_name.as_bytes().to_vec();
+            let scope_version_bytes = scope_version.as_bytes().to_vec();
+            let instrumentation_scope_inner_size =
+                bytes_field_size(otlp::INSTRUMENTATION_SCOPE_NAME, scope_name_bytes.len())
+                    + bytes_field_size(
+                        otlp::INSTRUMENTATION_SCOPE_VERSION,
+                        scope_version_bytes.len(),
+                    );
             let mut scope_logs_inner_size =
                 bytes_field_size(otlp::SCOPE_LOGS_SCOPE, instrumentation_scope_inner_size);
             for &(start, end) in record_ranges {
@@ -283,11 +331,16 @@ impl OtlpSink {
             grouped_resource_msgs.push(resource_msg);
             grouped_resource_inner_sizes.push(resource_inner_size);
             grouped_scope_inner_sizes.push(scope_logs_inner_size);
+            grouped_scope_values.push((scope_name_bytes, scope_version_bytes));
         }
 
         // Phase 3: write final protobuf with one ResourceLogs per group.
         self.encoder_buf.reserve(request_size + 16);
-        for (group_idx, (_key, record_ranges)) in grouped_ranges.iter().enumerate() {
+        for (group_idx, (_key, _scope_key, record_ranges)) in grouped_ranges.iter().enumerate() {
+            let (scope_name, scope_version) = &grouped_scope_values[group_idx];
+            let instrumentation_scope_inner_size =
+                bytes_field_size(otlp::INSTRUMENTATION_SCOPE_NAME, scope_name.len())
+                    + bytes_field_size(otlp::INSTRUMENTATION_SCOPE_VERSION, scope_version.len());
             encode_tag(
                 &mut self.encoder_buf,
                 otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
@@ -329,12 +382,12 @@ impl OtlpSink {
             encode_bytes_field(
                 &mut self.encoder_buf,
                 otlp::INSTRUMENTATION_SCOPE_NAME,
-                SCOPE_NAME,
+                scope_name,
             );
             encode_bytes_field(
                 &mut self.encoder_buf,
                 otlp::INSTRUMENTATION_SCOPE_VERSION,
-                SCOPE_VERSION,
+                scope_version,
             );
 
             for &(start, end) in record_ranges {
@@ -372,7 +425,8 @@ impl OtlpSink {
             batch
         };
 
-        let columns = resolve_batch_columns(batch);
+        let resource_prefix = resource_prefix_from_batch(batch);
+        let columns = resolve_batch_columns(batch, self.message_field.as_str(), &resource_prefix);
         self.encoder_buf.reserve(num_rows * 128);
 
         for row in 0..num_rows {
@@ -598,6 +652,7 @@ pub struct OtlpSinkFactory {
     protocol: OtlpProtocol,
     compression: Compression,
     headers: Vec<(String, String)>,
+    message_field: String,
     client: reqwest::Client,
     stats: Arc<ComponentStats>,
 }
@@ -610,6 +665,7 @@ impl OtlpSinkFactory {
         protocol: OtlpProtocol,
         compression: Compression,
         headers: Vec<(String, String)>,
+        message_field: String,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
         let client = reqwest::Client::builder()
@@ -623,6 +679,7 @@ impl OtlpSinkFactory {
             protocol,
             compression,
             headers,
+            message_field,
             client,
             stats,
         })
@@ -631,7 +688,7 @@ impl OtlpSinkFactory {
 
 impl super::sink::SinkFactory for OtlpSinkFactory {
     fn create(&self) -> io::Result<Box<dyn super::sink::Sink>> {
-        Ok(Box::new(OtlpSink::new(
+        let sink = OtlpSink::new(
             self.name.clone(),
             self.endpoint.clone(),
             self.protocol,
@@ -639,7 +696,9 @@ impl super::sink::SinkFactory for OtlpSinkFactory {
             self.headers.clone(),
             self.client.clone(),
             Arc::clone(&self.stats),
-        )?))
+        )?
+        .with_message_field(self.message_field.clone());
+        Ok(Box::new(sink))
     }
 
     fn name(&self) -> &str {
@@ -714,18 +773,23 @@ struct BatchColumns<'a> {
     level_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the primary message/body column.
     body_col: Option<(usize, OtlpStrCol<'a>)>,
-    /// Downcast array for the `_raw` column, used as a per-row body
-    /// fallback when `body_col` is null for that row.
-    raw_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the `trace_id` column (32 hex chars → 16-byte OTLP field 9).
     trace_id_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the `span_id` column (16 hex chars → 8-byte OTLP field 10).
     span_id_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the `flags` / `trace_flags` column (uint32, OTLP field 8).
     flags_col: Option<(usize, &'a PrimitiveArray<Int64Type>)>,
+    /// Severity number column (Int64, OTLP severity_number).
+    severity_num_col: Option<(usize, &'a PrimitiveArray<Int64Type>)>,
+    /// Observed timestamp column (Int64, nanoseconds).
+    observed_ts_col: Option<(usize, &'a dyn Array)>,
+    /// Scope name column.
+    scope_name_col: Option<(usize, OtlpStrCol<'a>)>,
+    /// Scope version column.
+    scope_version_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Non-special attribute columns: (field_name, pre-downcast array).
     attribute_cols: Vec<(String, AttrArray<'a>)>,
-    /// `_resource_*` columns promoted to OTLP Resource attributes.
+    /// Resource attribute columns promoted to OTLP Resource attributes.
     resource_cols: Vec<(String, AttrArray<'a>)>,
 }
 
@@ -739,13 +803,16 @@ fn resolve_otlp_str_col(col: &dyn Array) -> Option<OtlpStrCol<'_>> {
 }
 
 /// Scan the batch schema once and resolve column roles and downcast arrays.
-fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
+fn resolve_batch_columns<'a>(
+    batch: &'a RecordBatch,
+    message_field: &str,
+    resource_prefix: &str,
+) -> BatchColumns<'a> {
     let schema = batch.schema();
     let mut timestamp_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut timestamp_num_col: Option<(usize, &dyn Array)> = None;
     let mut level_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut body_col: Option<(usize, OtlpStrCol<'_>)> = None;
-    let mut raw_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut trace_id_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut span_id_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut flags_col: Option<(usize, &PrimitiveArray<Int64Type>)> = None;
@@ -788,27 +855,6 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
-            name if field_names::matches_any(
-                name,
-                field_names::BODY,
-                field_names::BODY_VARIANTS,
-            ) =>
-            {
-                if body_col.is_none()
-                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
-                {
-                    body_col = Some((idx, arr));
-                    excluded.push(idx);
-                }
-            }
-            field_names::RAW => {
-                // Always excluded from attributes; used as per-row body fallback.
-                excluded.push(idx);
-                if raw_col.is_none() {
-                    raw_col =
-                        resolve_otlp_str_col(batch.column(idx).as_ref()).map(|arr| (idx, arr));
-                }
-            }
             field_names::TRACE_ID => {
                 if trace_id_col.is_none()
                     && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
@@ -836,10 +882,46 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
                     excluded.push(idx);
                 }
             }
+            name if name == message_field => {
+                if body_col.is_none()
+                    && let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref())
+                {
+                    body_col = Some((idx, arr));
+                }
+            }
+            name if field_names::matches_any(
+                name,
+                field_names::BODY,
+                field_names::BODY_VARIANTS,
+            ) =>
+            {
+                if let Some(arr) = resolve_otlp_str_col(batch.column(idx).as_ref()) {
+                    // Canonical body wins over configured fields and aliases.
+                    if body_col.is_none() || name == field_names::BODY {
+                        if let Some((prev_idx, _)) = body_col
+                            && prev_idx != idx
+                        {
+                            // Keep the replaced configured/alias field as an attribute.
+                        }
+                        body_col = Some((idx, arr));
+                    }
+                }
+            }
+            "_raw" => {
+                excluded.push(idx);
+            }
             _ => {}
         }
     }
+    if let Some((idx, _)) = body_col {
+        excluded.push(idx);
+    }
 
+    // --- Second pass: new well-known columns and attribute/resource classification ---
+    let mut severity_num_col: Option<(usize, &PrimitiveArray<Int64Type>)> = None;
+    let mut observed_ts_col: Option<(usize, &dyn Array)> = None;
+    let mut scope_name_col: Option<(usize, OtlpStrCol<'_>)> = None;
+    let mut scope_version_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut attribute_cols: Vec<(String, AttrArray<'_>)> = Vec::new();
     let mut resource_cols: Vec<(String, AttrArray<'_>)> = Vec::new();
     for (idx, field) in schema.fields().iter().enumerate() {
@@ -847,15 +929,59 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
             continue;
         }
         let field_name = field.name().as_str();
-        if field_name.starts_with("_resource_") {
-            // Prefer the original key stored in field metadata (reversible).
-            // Fall back to stripping the prefix for backwards-compatibility with
-            // batches that pre-date the metadata annotation.
-            let original_key = field
-                .metadata()
-                .get("logfwd.resource_key")
-                .cloned()
-                .unwrap_or_else(|| field_name.trim_start_matches("_resource_").to_string());
+
+        // Severity number — use directly instead of deriving from text.
+        if field_name == field_names::SEVERITY_NUMBER
+            && severity_num_col.is_none()
+            && matches!(field.data_type(), DataType::Int64)
+        {
+            severity_num_col = Some((idx, batch.column(idx).as_primitive::<Int64Type>()));
+            continue;
+        }
+
+        // Observed timestamp.
+        if field_name == field_names::OBSERVED_TIMESTAMP
+            && observed_ts_col.is_none()
+            && matches!(
+                field.data_type(),
+                DataType::Int64 | DataType::UInt64 | DataType::Timestamp(_, _)
+            )
+        {
+            observed_ts_col = Some((idx, batch.column(idx).as_ref()));
+            continue;
+        }
+
+        // Scope metadata.
+        if field_name == field_names::SCOPE_NAME && scope_name_col.is_none() {
+            scope_name_col = resolve_otlp_str_col(batch.column(idx).as_ref()).map(|arr| (idx, arr));
+            if scope_name_col.is_some() {
+                continue;
+            }
+        }
+        if field_name == field_names::SCOPE_VERSION && scope_version_col.is_none() {
+            scope_version_col =
+                resolve_otlp_str_col(batch.column(idx).as_ref()).map(|arr| (idx, arr));
+            if scope_version_col.is_some() {
+                continue;
+            }
+        }
+
+        // Resource attributes — check configured prefix and legacy `_resource_` prefix.
+        let resource_key = field_name
+            .strip_prefix(resource_prefix)
+            .map(str::to_string)
+            .or_else(|| {
+                field_name
+                    .strip_prefix(field_names::LEGACY_RESOURCE_PREFIX)
+                    .map(|stripped| {
+                        field
+                            .metadata()
+                            .get("logfwd.resource_key")
+                            .cloned()
+                            .unwrap_or_else(|| stripped.to_string())
+                    })
+            });
+        if let Some(original_key) = resource_key {
             let resource_attr = match field.data_type() {
                 DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
                 DataType::Float64 => {
@@ -904,13 +1030,45 @@ fn resolve_batch_columns(batch: &RecordBatch) -> BatchColumns<'_> {
         timestamp_num_col,
         level_col,
         body_col,
-        raw_col,
         trace_id_col,
         span_id_col,
         flags_col,
+        severity_num_col,
+        observed_ts_col,
+        scope_name_col,
+        scope_version_col,
         attribute_cols,
         resource_cols,
     }
+}
+
+fn resource_prefix_from_batch(batch: &RecordBatch) -> String {
+    let schema = batch.schema();
+
+    if let Some(prefix) = schema.metadata().get("logfwd.resource_prefix")
+        && !prefix.is_empty()
+    {
+        return prefix.clone();
+    }
+
+    if schema
+        .fields()
+        .iter()
+        .any(|f| f.name().starts_with(field_names::DEFAULT_RESOURCE_PREFIX))
+    {
+        return field_names::DEFAULT_RESOURCE_PREFIX.to_string();
+    }
+
+    for field in schema.fields() {
+        if let Some(resource_key) = field.metadata().get("logfwd.resource_key")
+            && let Some(prefix) = field.name().strip_suffix(resource_key)
+            && !prefix.is_empty()
+        {
+            return prefix.to_string();
+        }
+    }
+
+    field_names::DEFAULT_RESOURCE_PREFIX.to_string()
 }
 
 fn numeric_timestamp_ns(arr: &dyn Array, row: usize) -> u64 {
@@ -980,10 +1138,18 @@ fn encode_row_as_log_record(
         } else {
             (Severity::Unspecified, b"")
         };
+    let severity_number = if let Some((_, arr)) = columns.severity_num_col.as_ref() {
+        if arr.is_null(row) {
+            severity_num as u64
+        } else {
+            u64::try_from(arr.value(row)).unwrap_or(severity_num as u64)
+        }
+    } else {
+        severity_num as u64
+    };
 
-    let body: &str = match (columns.body_col.as_ref(), columns.raw_col.as_ref()) {
-        (Some((_, body)), _) if !body.is_null(row) => body.value(row),
-        (_, Some((_, raw))) if !raw.is_null(row) => raw.value(row),
+    let body: &str = match columns.body_col.as_ref() {
+        Some((_, body)) if !body.is_null(row) => body.value(row),
         _ => "",
     };
     let body_bytes = body.as_bytes();
@@ -996,8 +1162,8 @@ fn encode_row_as_log_record(
     }
 
     // LogRecord.severity_number (varint)
-    if severity_num as u8 > 0 {
-        encode_varint_field(buf, otlp::LOG_RECORD_SEVERITY_NUMBER, severity_num as u64);
+    if severity_number > 0 {
+        encode_varint_field(buf, otlp::LOG_RECORD_SEVERITY_NUMBER, severity_number);
     }
 
     // LogRecord.severity_text (string)
@@ -1104,11 +1270,12 @@ fn encode_row_as_log_record(
     }
 
     // LogRecord.observed_time_unix_nano (fixed64)
-    encode_fixed64(
-        buf,
-        otlp::LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
-        metadata.observed_time_ns,
-    );
+    let observed_ns = if let Some((_, arr)) = columns.observed_ts_col.as_ref() {
+        numeric_timestamp_ns(*arr, row)
+    } else {
+        metadata.observed_time_ns
+    };
+    encode_fixed64(buf, otlp::LOG_RECORD_OBSERVED_TIME_UNIX_NANO, observed_ns);
 }
 
 /// Encode a KeyValue with string AnyValue as an attribute.
@@ -1629,6 +1796,87 @@ mod tests {
     }
 
     #[test]
+    fn configured_message_field_does_not_shadow_trace_id() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("trace_id", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("canonical-body")])),
+                Arc::new(StringArray::from(vec![Some(
+                    "0102030405060708090a0b0c0d0e0f10",
+                )])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = make_sink().with_message_field("trace_id".to_string());
+        sink.encode_batch(&batch, &make_metadata());
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+
+        let body = lr.body.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(body, Some("canonical-body"));
+        assert_eq!(
+            lr.trace_id,
+            vec![
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                0x0f, 0x10
+            ],
+            "trace_id should remain encoded in dedicated OTLP field"
+        );
+    }
+
+    #[test]
+    fn configured_message_field_does_not_shadow_span_id() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("canonical-body")])),
+                Arc::new(StringArray::from(vec![Some("0102030405060708")])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = make_sink().with_message_field("span_id".to_string());
+        sink.encode_batch(&batch, &make_metadata());
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+
+        let body = lr.body.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(body, Some("canonical-body"));
+        assert_eq!(
+            lr.span_id,
+            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            "span_id should remain encoded in dedicated OTLP field"
+        );
+    }
+
+    #[test]
     fn invalid_trace_id_hex_is_silently_ignored() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "trace_id",
@@ -2017,7 +2265,111 @@ mod tests {
     }
 
     #[test]
-    fn raw_column_falls_back_when_message_is_null_for_row() {
+    fn severity_number_null_falls_back_to_level() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new(field_names::SEVERITY_NUMBER, DataType::Int64, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("ERROR")])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(StringArray::from(vec![Some("broken")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            lr.severity_number, 17,
+            "null severity_number column must fall back to parsed level"
+        );
+    }
+
+    #[test]
+    fn unsupported_well_known_types_fall_back_to_attributes() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::default(),
+            observed_time_ns: 123_456_789,
+        };
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new(field_names::SEVERITY_NUMBER, DataType::Utf8, true),
+            Field::new(field_names::OBSERVED_TIMESTAMP, DataType::Utf8, true),
+            Field::new(field_names::SCOPE_NAME, DataType::Int64, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("ERROR")])),
+                Arc::new(StringArray::from(vec![Some("17")])),
+                Arc::new(StringArray::from(vec![Some("not-a-nanos-value")])),
+                Arc::new(Int64Array::from(vec![Some(42)])),
+                Arc::new(StringArray::from(vec![Some("hello")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &metadata);
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let rl = &request.resource_logs[0];
+        let sl = &rl.scope_logs[0];
+        let lr = &sl.log_records[0];
+
+        assert_eq!(lr.severity_number, 17);
+        assert_eq!(lr.observed_time_unix_nano, metadata.observed_time_ns);
+        let scope = sl.scope.as_ref().expect("scope must exist");
+        assert_eq!(scope.name, "logfwd");
+
+        let find_attr = |name: &str| lr.attributes.iter().find(|kv| kv.key == name);
+
+        let sev_attr = find_attr(field_names::SEVERITY_NUMBER)
+            .expect("severity_number should fall back to regular attribute");
+        let sev_text = sev_attr.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(sev_text, Some("17"));
+
+        let observed_attr = find_attr(field_names::OBSERVED_TIMESTAMP)
+            .expect("observed_timestamp should fall back to regular attribute");
+        let observed_text = observed_attr.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(observed_text, Some("not-a-nanos-value"));
+
+        let scope_name_attr = find_attr(field_names::SCOPE_NAME)
+            .expect("scope.name should fall back to regular attribute");
+        let scope_name_int = scope_name_attr.value.as_ref().and_then(|v| match &v.value {
+            Some(Value::IntValue(i)) => Some(*i),
+            _ => None,
+        });
+        assert_eq!(scope_name_int, Some(42));
+    }
+
+    #[test]
+    fn otlp_encoder_keeps_unselected_body_alias_as_attribute() {
         use opentelemetry_proto::tonic::{
             collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
         };
@@ -2025,7 +2377,49 @@ mod tests {
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("message", DataType::Utf8, true),
-            Field::new("_raw", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("alias-body")])),
+                Arc::new(StringArray::from(vec![Some("canonical-body")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink().with_message_field("message".to_string());
+        sink.encode_batch(&batch, &make_metadata());
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let record = &request.resource_logs[0].scope_logs[0].log_records[0];
+        let body = record.body.as_ref().and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        let message_attr = record.attributes.iter().find(|kv| kv.key == "message");
+        let message_attr =
+            message_attr
+                .and_then(|kv| kv.value.as_ref())
+                .and_then(|v| match &v.value {
+                    Some(Value::StringValue(s)) => Some(s.as_str()),
+                    _ => None,
+                });
+
+        assert_eq!(body, Some("canonical-body"));
+        assert_eq!(message_attr, Some("alias-body"));
+    }
+
+    #[test]
+    fn body_column_falls_back_when_message_is_null_for_row() {
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -2041,13 +2435,33 @@ mod tests {
 
         let metadata = make_metadata();
 
-        let mut handwritten = make_sink();
+        let mut handwritten = OtlpSink::new(
+            "test".to_string(),
+            "http://localhost:4318".to_string(),
+            OtlpProtocol::Http,
+            Compression::None,
+            vec![],
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::new()),
+        )
+        .expect("handwritten sink")
+        .with_message_field("message".to_string());
         handwritten.encode_batch(&batch, &metadata);
         let handwritten_request =
             ExportLogsServiceRequest::decode(handwritten.encoder_buf.as_slice())
                 .expect("prost must decode handwritten output");
 
-        let mut generated = make_sink();
+        let mut generated = OtlpSink::new(
+            "test".to_string(),
+            "http://localhost:4318".to_string(),
+            OtlpProtocol::Http,
+            Compression::None,
+            vec![],
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::new()),
+        )
+        .expect("generated sink")
+        .with_message_field("message".to_string());
         generated.encode_batch_generated_fast(&batch, &metadata);
         let generated_request = ExportLogsServiceRequest::decode(generated.encoder_buf.as_slice())
             .expect("prost must decode generated-fast output");
@@ -2079,8 +2493,38 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(handwritten_bodies, vec!["message-body", "raw-fallback"]);
-        assert_eq!(generated_bodies, vec!["message-body", "raw-fallback"]);
+        assert_eq!(handwritten_bodies, vec!["raw-first", "raw-fallback"]);
+        assert_eq!(generated_bodies, vec!["raw-first", "raw-fallback"]);
+    }
+
+    #[test]
+    fn otlp_encoder_excludes_internal_raw_attribute() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("_raw", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("hello")])),
+                Arc::new(StringArray::from(vec![Some("wire-only")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let attrs = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+        assert!(
+            attrs.iter().all(|kv| kv.key != "_raw"),
+            "_raw should remain internal-only"
+        );
     }
 
     /// Roundtrip with multiple rows to verify repeated LogRecord encoding.
@@ -2132,18 +2576,16 @@ mod tests {
         // Build fields with `logfwd.resource_key` metadata — the same way
         // `StreamingBuilder` produces them — so that the original OTLP keys
         // (containing dots) survive the round-trip through Arrow column names.
-        let svc_field = Field::new("_resource_service_name", DataType::Utf8, true).with_metadata(
-            std::collections::HashMap::from([(
+        let svc_field = Field::new("resource.attributes.service.name", DataType::Utf8, true)
+            .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "service.name".to_string(),
-            )]),
-        );
-        let ns_field = Field::new("_resource_k8s_namespace", DataType::Utf8, true).with_metadata(
-            std::collections::HashMap::from([(
+            )]));
+        let ns_field = Field::new("resource.attributes.k8s.namespace", DataType::Utf8, true)
+            .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "k8s.namespace".to_string(),
-            )]),
-        );
+            )]));
         let schema = Arc::new(Schema::new(vec![
             Field::new("message", DataType::Utf8, true),
             svc_field,
@@ -2257,7 +2699,7 @@ mod tests {
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("message", DataType::Utf8, true),
-            Field::new("_resource_service_name", DataType::Utf8, true),
+            Field::new("resource.attributes.service.name", DataType::Utf8, true),
             Field::new("host", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
@@ -2283,7 +2725,7 @@ mod tests {
         assert!(
             lr.attributes
                 .iter()
-                .all(|kv| kv.key != "_resource_service_name"),
+                .all(|kv| kv.key != "resource.attributes.service.name"),
             "resource columns must not be log record attrs"
         );
     }
@@ -2294,16 +2736,20 @@ mod tests {
         use opentelemetry_proto::tonic::common::v1::any_value::Value;
         use prost::Message;
 
-        let shard_field = Field::new("_resource_service_shard", DataType::Int64, true)
+        let shard_field = Field::new("resource.attributes.service.shard", DataType::Int64, true)
             .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "service.shard".to_string(),
             )]));
-        let enabled_field = Field::new("_resource_service_enabled", DataType::Boolean, true)
-            .with_metadata(std::collections::HashMap::from([(
-                "logfwd.resource_key".to_string(),
-                "service.enabled".to_string(),
-            )]));
+        let enabled_field = Field::new(
+            "resource.attributes.service.enabled",
+            DataType::Boolean,
+            true,
+        )
+        .with_metadata(std::collections::HashMap::from([(
+            "logfwd.resource_key".to_string(),
+            "service.enabled".to_string(),
+        )]));
         let schema = Arc::new(Schema::new(vec![
             Field::new("message", DataType::Utf8, true),
             shard_field,
@@ -2397,13 +2843,12 @@ mod tests {
         use opentelemetry_proto::tonic::common::v1::any_value::Value;
         use prost::Message;
 
-        let svc_field = Field::new("_resource_service_name", DataType::Utf8, true).with_metadata(
-            std::collections::HashMap::from([(
+        let svc_field = Field::new("resource.attributes.service.name", DataType::Utf8, true)
+            .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "service.name".to_string(),
-            )]),
-        );
-        let shard_field = Field::new("_resource_service_shard", DataType::Int64, true)
+            )]));
+        let shard_field = Field::new("resource.attributes.service.shard", DataType::Int64, true)
             .with_metadata(std::collections::HashMap::from([(
                 "logfwd.resource_key".to_string(),
                 "service.shard".to_string(),

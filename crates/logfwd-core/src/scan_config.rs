@@ -12,14 +12,17 @@ pub struct FieldSpec {
     pub aliases: Vec<String>,
 }
 
-/// Controls which fields to extract and whether to keep _raw.
+/// Controls which fields to extract and whether to capture each full input line.
 pub struct ScanConfig {
     /// Fields to extract. Empty = extract all (SELECT *).
     pub wanted_fields: Vec<FieldSpec>,
     /// True if the query uses SELECT * (extract everything).
     pub extract_all: bool,
-    /// True if _raw column is needed.
-    pub keep_raw: bool,
+    /// Optional output field name that receives the full unparsed line.
+    ///
+    /// When `Some(name)`, the scanner appends the original line bytes into
+    /// column `name` for every row.
+    pub line_field_name: Option<String>,
     /// When true, validates that the input buffer is valid UTF-8 before scanning
     /// and panics with a descriptive message if it is not. Disabled by default
     /// for maximum throughput; enable when input provenance is untrusted.
@@ -31,13 +34,19 @@ impl Default for ScanConfig {
         ScanConfig {
             wanted_fields: vec![],
             extract_all: true,
-            keep_raw: false,
+            line_field_name: None,
             validate_utf8: false,
         }
     }
 }
 
 impl ScanConfig {
+    /// Returns true when scanner line capture is enabled.
+    #[inline]
+    pub fn captures_line(&self) -> bool {
+        self.line_field_name.is_some()
+    }
+
     /// Is this field name wanted?
     #[inline]
     pub fn is_wanted(&self, key: &[u8]) -> bool {

@@ -17,7 +17,6 @@ logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-transform = { version = "0.1.0", path = "../logfwd-transform" }
 logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
-logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 arrow = { workspace = true }
 bytes = "1"
 datafusion = { workspace = true }
@@ -26,7 +25,6 @@ fastrand = "2"
 memchr = "2"
 serde = { workspace = true }
 serde_json = "1"
-clap = { workspace = true, features = ["derive"] }
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
 stats_alloc = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }

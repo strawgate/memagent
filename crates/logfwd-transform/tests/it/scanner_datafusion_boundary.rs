@@ -492,7 +492,7 @@ fn streaming_builder_realistic_transform() {
     let json = b"INFO ERROR INFO 12.5 340.0 8.0";
     let buf = bytes::Bytes::from(json.to_vec());
 
-    let mut b = StreamingBuilder::new(false);
+    let mut b = StreamingBuilder::new(None);
     b.begin_batch(buf.clone());
 
     let idx_level = b.resolve_field(b"level");
@@ -555,7 +555,7 @@ fn streaming_builder_group_by_and_order_by() {
     let json = b"INFO ERROR DEBUG ERROR INFO";
     let buf = bytes::Bytes::from(json.to_vec());
 
-    let mut b = StreamingBuilder::new(false);
+    let mut b = StreamingBuilder::new(None);
     b.begin_batch(buf.clone());
 
     let idx_level = b.resolve_field(b"level");

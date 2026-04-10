@@ -11,23 +11,29 @@
  *
  * THREE MODELS:
  *
- * 1. SAFETY (normal path, no ForceStop):
- *    Comment out ForceStop in PipelineMachine.tla Next relation.
- *    Check: TypeOK, NoDoubleComplete, DrainCompleteness,
- *           CheckpointOrderingInvariant, CommittedNeverAheadOfCreated
+ * 1. SAFETY (normal + ForceStop):
+ *    Check the invariants named in PipelineMachine.cfg:
+ *      TypeOK, NoDoubleComplete, DrainCompleteness,
+ *      QuiescenceHasNoSilentStrandedWork, CheckpointOrderingInvariant,
+ *      CommittedNeverAheadOfCreated, SentImpliesCreated,
+ *      InFlightImpliesCreated, InFlightImpliesSent,
+ *      AckedImpliesCreated, AckedImpliesSent,
+ *      RejectedImpliesCreated, RejectedImpliesSent,
+ *      AbandonedImpliesCreated, AbandonedImpliesSent
+ *    Temporal properties in the safety model:
+ *      NoCreateAfterDrain, CommittedMonotonic, DrainMeansNoNewSending
  *    Use: MCFast constants (2 sources, 3 batches) — < 30s
  *
- * 2. LIVENESS (normal path, no ForceStop):
+ * 2. LIVENESS (normal path must converge without ForceStop fairness):
  *    SMALLER constants to keep TLC liveness check tractable.
  *    Check: EventualDrain, NoBatchLeftBehind, StoppedIsStable
  *    Use: MCLiveness constants (2 sources, 2 batches) — < 5 min
  *    WARNING: do NOT use CONSTRAINT to bound state space — it silently
  *    breaks liveness checking. Use model constants instead (this file).
  *
- * 3. FORCE-STOP (with ForceStop action enabled):
- *    Include ForceStop in Next. Omit DrainCompleteness from INVARIANTS.
- *    Verify: ForceStop reaches Stopped; other invariants still hold.
- *    Use: MCFast constants.
+ * 3. COVERAGE (reachability witnesses):
+ *    Use PipelineMachine.coverage.cfg. Verify create/ack/reject/force-stop/
+ *    abandon paths are all reachable.
  *)
 
 EXTENDS PipelineMachine

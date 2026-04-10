@@ -82,6 +82,8 @@ pub struct HttpInputOptions {
     pub max_request_body_size: usize,
     /// HTTP response code for accepted requests.
     pub response_code: u16,
+    /// Optional static response body for accepted requests.
+    pub response_body: Option<String>,
 }
 
 impl Default for HttpInputOptions {
@@ -92,6 +94,7 @@ impl Default for HttpInputOptions {
             method: HttpInputMethod::Post,
             max_request_body_size: DEFAULT_MAX_REQUEST_BODY_SIZE,
             response_code: 200,
+            response_body: None,
         }
     }
 }
@@ -119,6 +122,7 @@ struct HttpServerState {
     accepted_method: HttpInputMethod,
     max_request_body_size: usize,
     success_response_code: StatusCode,
+    success_response_body: Option<String>,
     tx: mpsc::SyncSender<Vec<u8>>,
     is_running: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
@@ -183,6 +187,7 @@ impl HttpInput {
             accepted_method: options.method,
             max_request_body_size: options.max_request_body_size,
             success_response_code,
+            success_response_body: options.response_body,
             tx,
             is_running: Arc::clone(&is_running),
             health: Arc::clone(&health),
@@ -311,6 +316,17 @@ async fn handle_request(
     State(state): State<Arc<HttpServerState>>,
     request: Request<Body>,
 ) -> Response {
+    let success_response = || {
+        if state.success_response_code == StatusCode::NO_CONTENT {
+            return StatusCode::NO_CONTENT.into_response();
+        }
+        if let Some(body) = &state.success_response_body {
+            (state.success_response_code, body.clone()).into_response()
+        } else {
+            state.success_response_code.into_response()
+        }
+    };
+
     if !path_matches(request.uri().path(), &state.route_path, state.strict_path) {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
@@ -369,7 +385,7 @@ async fn handle_request(
         state
             .health
             .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
-        return state.success_response_code.into_response();
+        return success_response();
     }
 
     if !body.ends_with(b"\n") {
@@ -381,7 +397,7 @@ async fn handle_request(
             state
                 .health
                 .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
-            state.success_response_code.into_response()
+            success_response()
         }
         Err(mpsc::TrySendError::Full(_)) => {
             state
@@ -428,6 +444,12 @@ fn normalize_options(mut options: HttpInputOptions) -> io::Result<HttpInputOptio
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "http input response_code must be one of: 200, 201, 202, 204",
+        ));
+    }
+    if options.response_code == 204 && options.response_body.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "http input response_body is not allowed when response_code is 204",
         ));
     }
     Ok(options)
@@ -687,6 +709,55 @@ mod tests {
             Err(err) => panic!("unexpected request failure: {err}"),
         };
         assert_eq!(status, 405, "POST should be rejected for PUT-only endpoint");
+    }
+
+    #[test]
+    fn http_returns_configured_success_body() {
+        let options = HttpInputOptions {
+            path: "/_bulk".to_string(),
+            strict_path: false,
+            response_body: Some("{\"errors\":false}".to_string()),
+            ..HttpInputOptions::default()
+        };
+        let mut input =
+            HttpInput::new_with_options("test", "127.0.0.1:0", options).expect("http input binds");
+        let url = format!("http://{}/_bulk", input.local_addr());
+
+        let resp = ureq::post(&url)
+            .send(b"{\"index\":{}}\n{\"message\":\"ok\"}\n")
+            .expect("POST should succeed");
+        assert_eq!(resp.status(), 200);
+        let body = resp
+            .into_body()
+            .read_to_string()
+            .expect("response body should be readable");
+        assert_eq!(body, "{\"errors\":false}");
+
+        let data = poll_until_data(&mut input, Duration::from_secs(2));
+        let text = String::from_utf8_lossy(&data);
+        assert!(
+            text.contains("\"message\":\"ok\""),
+            "expected payload row: {text}"
+        );
+    }
+
+    #[test]
+    fn http_rejects_response_body_with_204() {
+        let options = HttpInputOptions {
+            path: "/ingest".to_string(),
+            response_code: 204,
+            response_body: Some("{\"ok\":true}".to_string()),
+            ..HttpInputOptions::default()
+        };
+        let err = match HttpInput::new_with_options("test", "127.0.0.1:0", options) {
+            Ok(_) => panic!("204 with response body should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("response_body is not allowed when response_code is 204"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

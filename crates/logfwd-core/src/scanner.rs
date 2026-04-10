@@ -67,7 +67,7 @@ pub enum BuilderState {
 ///   within a batch (same key → same index). May create new columns.
 /// - `append_*_by_idx`: stores a typed value at the current row for the
 ///   given column index. Byte slices are borrowed from the input buffer.
-/// - `append_raw`: stores the entire unparsed line (if `keep_raw` is set).
+/// - `append_line`: stores the entire unparsed line (if line capture is enabled).
 /// - First-write-wins: if a key appears twice in one row, the first value
 ///   is kept and subsequent writes are silently ignored.
 ///
@@ -99,8 +99,8 @@ pub trait ScanBuilder {
     fn append_bool_by_idx(&mut self, idx: usize, value: bool);
     /// Record a null value at the given column index.
     fn append_null_by_idx(&mut self, idx: usize);
-    /// Store the raw unparsed line (only called when `keep_raw` is set).
-    fn append_raw(&mut self, line: &[u8]);
+    /// Store the unparsed line (only called when line capture is enabled).
+    fn append_line(&mut self, line: &[u8]);
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +145,8 @@ fn scan_line<B: ScanBuilder>(
     builder: &mut B,
 ) {
     builder.begin_row();
-    if config.keep_raw {
-        builder.append_raw(&buf[start..end]);
+    if config.captures_line() {
+        builder.append_line(&buf[start..end]);
     }
 
     let mut pos = skip_ws(buf, start, end);

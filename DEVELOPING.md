@@ -199,9 +199,9 @@ carry them explicitly through `InputEvent::Data` or `InputEvent::Batch`.
 
 Compressed Arrow IPC is `StreamWriter` with `IpcWriteOptions::try_with_compression(Some(CompressionType::ZSTD))`. Any `RecordBatch` can be compressed. No special builder needed.
 
-### `keep_raw` costs 65% of table memory
+### Line Capture Can Dominate Table Memory
 
-The `_raw` column stores the full JSON line. Larger than all other columns combined. Default is `keep_raw: false`.
+The `body` column can store the full input line and is often larger than all parsed columns combined. Line capture is disabled unless configured (raw inputs default to `line_field_name: body`).
 
 ### Always use `just clippy`, never bare `cargo clippy`
 

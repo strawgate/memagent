@@ -148,15 +148,15 @@ This design:
 - Uses dictionary encoding for efficiency (same pod name on every row
   from one source costs ~one entry)
 - Output sinks exclude `_resource_*` columns from the payload (same
-  pattern as `_raw`)
+  pattern as `body`)
 
 ## Column naming conventions
 
 | Column | Purpose | Example |
 |--------|---------|---------|
-| `{field}` | Bare name, native Arrow type | `message` (Utf8View), `status` (Int64) |
+| `{field}` | Bare name, native Arrow type | `body` (Utf8View), `status` (Int64) |
 | `{field}` (conflict) | StructArray with typed children | `status: Struct { int: Int64, str: Utf8View }` |
-| `_raw` | Raw input line (optional) | `_raw` |
+| `body` | Original input line (optional) | `body` |
 | `_timestamp` | CRI timestamp (RFC 3339 string) | `_timestamp` |
 | `_stream` | CRI stream name | `_stream` |
 | `_resource_*` | Source/resource metadata | `_resource_k8s_pod_name` |
@@ -195,10 +195,10 @@ paths. Each instance is a full logfwd binary.
 
 ```
 Instance A (edge collector):
-  file source → scanner → write Arrow IPC to s3://bucket/raw/
+  file source → scanner → write Arrow IPC to s3://bucket/ingest/
 
 Instance B (central processor):
-  s3 source (reads s3://bucket/raw/) → transform → output sinks
+  s3 source (reads s3://bucket/ingest/) → transform → output sinks
   # or: → write to s3://bucket/transformed/ for another instance
 
 Instance C (dedicated sender):

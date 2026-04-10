@@ -745,7 +745,8 @@ mod tests {
             Field::new("_timestamp", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("message", DataType::Utf8, true),
-            Field::new("_resource_service_name", DataType::Utf8, true),
+            Field::new("resource.attributes.service_name", DataType::Utf8, true),
+            Field::new("resource.attributes.service.name", DataType::Utf8, true),
             Field::new("host", DataType::Utf8, true),
         ]));
 
@@ -763,6 +764,7 @@ mod tests {
                 Some("api-server"),
                 Some("api-server"),
             ])),
+            Arc::new(StringArray::from(vec![Some("orders"), Some("orders")])),
             Arc::new(StringArray::from(vec![Some("host-1"), Some("host-2")])),
         ];
 
@@ -818,7 +820,7 @@ mod tests {
         assert_eq!(lvl_arr.value(1), "ERROR");
 
         let rs_idx = rt_schema
-            .index_of("_resource_service_name")
+            .index_of("resource.attributes.service_name")
             .expect("resource col");
         let rs_arr = roundtrip
             .column(rs_idx)
@@ -827,6 +829,17 @@ mod tests {
             .expect("str");
         assert_eq!(rs_arr.value(0), "api-server");
         assert_eq!(rs_arr.value(1), "api-server");
+
+        let rs_dot_idx = rt_schema
+            .index_of("resource.attributes.service.name")
+            .expect("dotted resource col");
+        let rs_dot_arr = roundtrip
+            .column(rs_dot_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("str");
+        assert_eq!(rs_dot_arr.value(0), "orders");
+        assert_eq!(rs_dot_arr.value(1), "orders");
 
         let host_idx = rt_schema.index_of("host").expect("host col");
         let host_arr = roundtrip

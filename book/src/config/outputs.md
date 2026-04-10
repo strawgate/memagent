@@ -46,7 +46,7 @@ output:
 
 - **console**: Colored, human-readable (timestamp, level, message, key=value pairs)
 - **json**: One JSON object per line (machine-parseable)
-- **text**: Raw text (uses `_raw` column if available)
+- **text**: Raw text (uses `body` column if available)
 
 ## Elasticsearch
 

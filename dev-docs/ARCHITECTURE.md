@@ -65,7 +65,7 @@ Each input source runs on its own OS thread. Reads feed a bounded
 carries `Bytes` (immutable, refcounted) — ownership transfers cleanly
 across the thread boundary.
 
-### 2. Framing: raw bytes → complete lines
+### 2. Framing: input bytes → complete lines
 
 ```
 Vec<u8> → FramedInput::poll() → newline-delimited JSON as Vec<u8>
@@ -79,7 +79,8 @@ with per-source remainder tracking. It handles three formats:
 - **Cri**: Kubernetes container log format. Parses timestamp,
   stream, flags, message. Reassembles P (partial) lines into complete
   messages. Injects `_timestamp` and `_stream` as JSON fields.
-- **Raw**: Wraps each line as `{"_raw":"<escaped>"}`.
+- **Text/Raw**: Passes lines through verbatim. Line capture into `body` is
+  controlled by scanner `line_field_name`.
 
 **NewlineFramer** (`logfwd-core/src/framer.rs`): fixed-size
 output (4096 lines, 64KB stack), no heap, Kani-proven. It returns byte
@@ -147,7 +148,7 @@ pub trait ScanBuilder {
     fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
     fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
     fn append_null_by_idx(&mut self, idx: usize);
-    fn append_raw(&mut self, line: &[u8]);
+    fn append_line(&mut self, line: &[u8]);
 }
 ```
 

@@ -1819,4 +1819,80 @@ mod tests {
 
         pool.drain(Duration::from_secs(5)).await;
     }
+
+    #[cfg(feature = "loom-tests")]
+    #[test]
+    fn loom_worker_removal_vs_late_event_model_never_resurrects_slot() {
+        struct LoomState {
+            worker_present: bool,
+            slot_gen: u64,
+            slot_health: ComponentHealth,
+        }
+
+        loom::model(|| {
+            let state = loom::sync::Arc::new(loom::sync::Mutex::new(LoomState {
+                worker_present: true,
+                slot_gen: 0,
+                slot_health: ComponentHealth::Starting,
+            }));
+
+            let remove_state = loom::sync::Arc::clone(&state);
+            let remove = loom::thread::spawn(move || {
+                let mut state = remove_state
+                    .lock()
+                    .expect("loom mutex poisoned while removing worker");
+                state.slot_gen += 1;
+                state.worker_present = false;
+            });
+
+            let event_state = loom::sync::Arc::clone(&state);
+            let event = loom::thread::spawn(move || {
+                let observed_gen = {
+                    let state = event_state
+                        .lock()
+                        .expect("loom mutex poisoned while observing worker slot");
+                    state.slot_gen
+                };
+                let mut state = event_state
+                    .lock()
+                    .expect("loom mutex poisoned while applying event");
+                if state.worker_present && observed_gen == state.slot_gen {
+                    state.slot_health = reduce_worker_slot_health(
+                        state.slot_health,
+                        OutputHealthEvent::FatalFailure,
+                    );
+                    true
+                } else {
+                    false
+                }
+            });
+
+            remove.join().expect("remove thread should not panic");
+            let event_applied = event.join().expect("event thread should not panic");
+
+            let state = state
+                .lock()
+                .expect("loom mutex poisoned while validating state");
+            assert!(
+                !state.worker_present,
+                "late events must not resurrect removed worker state"
+            );
+            assert_eq!(
+                state.slot_gen, 1,
+                "worker removal must advance the slot generation"
+            );
+            let expected_health = if event_applied {
+                reduce_worker_slot_health(
+                    ComponentHealth::Starting,
+                    OutputHealthEvent::FatalFailure,
+                )
+            } else {
+                ComponentHealth::Starting
+            };
+            assert_eq!(
+                state.slot_health, expected_health,
+                "stale events must not mutate the resurrectable slot state"
+            );
+        });
+    }
 }

@@ -19,7 +19,7 @@ pub enum ColVariant {
 /// Describes one output JSON field, potentially backed by a struct conflict
 /// column or multiple flat typed columns.
 pub struct ColInfo {
-    /// Logical field name (e.g. "status", "_raw").
+    /// Logical field name (e.g. "status", "body").
     pub field_name: String,
     /// Variants ordered for JSON output: Int64 > Float64 > Boolean > Utf8.
     pub json_variants: Vec<ColVariant>,

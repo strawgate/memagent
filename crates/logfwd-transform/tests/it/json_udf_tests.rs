@@ -1,7 +1,7 @@
 //! Comprehensive integration tests for JSON extraction UDFs.
 //!
-//! Tests `json(_raw, 'key')`, `json_int(_raw, 'key')`, and
-//! `json_float(_raw, 'key')` against a `_raw` Utf8 column registered in
+//! Tests `json(body, 'key')`, `json_int(body, 'key')`, and
+//! `json_float(body, 'key')` against a `body` Utf8 column registered in
 //! DataFusion via SQL.
 //!
 //! Run with:
@@ -26,9 +26,9 @@ use logfwd_transform::udf::{JsonExtractMode, JsonExtractUdf};
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Create a `RecordBatch` with a single `_raw: Utf8` column from string slices.
+/// Create a `RecordBatch` with a single `body: Utf8` column from string slices.
 fn make_raw_batch(lines: &[&str]) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+    let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
     RecordBatch::try_new(
         schema,
         vec![Arc::new(StringArray::from(lines.to_vec())) as ArrayRef],
@@ -36,10 +36,10 @@ fn make_raw_batch(lines: &[&str]) -> RecordBatch {
     .unwrap()
 }
 
-/// Create a `RecordBatch` with a single `_raw: Utf8` column that may contain
+/// Create a `RecordBatch` with a single `body: Utf8` column that may contain
 /// nulls. Each element is `Some("...")` or `None`.
 fn make_raw_batch_nullable(lines: &[Option<&str>]) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+    let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
     RecordBatch::try_new(
         schema,
         vec![Arc::new(StringArray::from(lines.to_vec())) as ArrayRef],
@@ -47,10 +47,10 @@ fn make_raw_batch_nullable(lines: &[Option<&str>]) -> RecordBatch {
     .unwrap()
 }
 
-/// Create a `RecordBatch` with a single `_raw: Utf8View` column.
+/// Create a `RecordBatch` with a single `body: Utf8View` column.
 fn make_raw_batch_utf8view(lines: &[&str]) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![Field::new(
-        "_raw",
+        "body",
         DataType::Utf8View,
         true,
     )]));
@@ -105,7 +105,7 @@ async fn basic_extract_string_field() {
         r#"{"level": "INFO", "msg": "started"}"#,
         r#"{"level": "WARN", "msg": "slow"}"#,
     ]);
-    let result = query1("SELECT json(_raw, 'level') AS lvl FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'level') AS lvl FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -118,7 +118,7 @@ async fn basic_extract_string_field() {
 #[tokio::test]
 async fn basic_extract_integer_field() {
     let batch = make_raw_batch(&[r#"{"status": 200}"#, r#"{"status": 500}"#]);
-    let result = query1("SELECT json_int(_raw, 'status') AS s FROM logs", batch).await;
+    let result = query1("SELECT json_int(body, 'status') AS s FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -131,7 +131,7 @@ async fn basic_extract_integer_field() {
 #[tokio::test]
 async fn basic_extract_float_field() {
     let batch = make_raw_batch(&[r#"{"duration": 1.5}"#, r#"{"duration": 0.001}"#]);
-    let result = query1("SELECT json_float(_raw, 'duration') AS d FROM logs", batch).await;
+    let result = query1("SELECT json_float(body, 'duration') AS d FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -144,7 +144,7 @@ async fn basic_extract_float_field() {
 #[tokio::test]
 async fn basic_missing_field_returns_null() {
     let batch = make_raw_batch(&[r#"{"status": 200}"#, r#"{"level": "INFO"}"#]);
-    let result = query1("SELECT json(_raw, 'status') AS s FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'status') AS s FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -157,7 +157,7 @@ async fn basic_missing_field_returns_null() {
 #[tokio::test]
 async fn basic_empty_batch() {
     let batch = make_raw_batch(&[]);
-    let result = query("SELECT json(_raw, 'x') AS x FROM logs", batch).await;
+    let result = query("SELECT json(body, 'x') AS x FROM logs", batch).await;
     // Empty input should yield empty (or no) output.
     assert!(result.is_none());
 }
@@ -173,10 +173,10 @@ async fn coerce_json_int_on_string_parseable() {
     // _int column first.  The scanner writes 0 for unparsable-as-int strings
     // into _int, so the result is 0 (not 200).
     //
-    // To get 200 from a quoted-string JSON value, use json(_raw,'code') and
+    // To get 200 from a quoted-string JSON value, use json(body,'code') and
     // CAST in SQL.  This test documents the current behaviour.
     let batch = make_raw_batch(&[r#"{"code": "200"}"#]);
-    let result = query1("SELECT json_int(_raw, 'code') AS c FROM logs", batch).await;
+    let result = query1("SELECT json_int(body, 'code') AS c FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -194,7 +194,7 @@ async fn coerce_json_int_on_string_parseable() {
 async fn coerce_json_int_on_string_unparsable() {
     // String "OK" cannot be parsed as integer -> NULL.
     let batch = make_raw_batch(&[r#"{"code": "OK"}"#]);
-    let result = query1("SELECT json_int(_raw, 'code') AS c FROM logs", batch).await;
+    let result = query1("SELECT json_int(body, 'code') AS c FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -207,7 +207,7 @@ async fn coerce_json_int_on_string_unparsable() {
 async fn coerce_json_float_on_integer_value() {
     // Integer 200 should be coerced to float 200.0.
     let batch = make_raw_batch(&[r#"{"val": 200}"#]);
-    let result = query1("SELECT json_float(_raw, 'val') AS v FROM logs", batch).await;
+    let result = query1("SELECT json_float(body, 'val') AS v FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -223,10 +223,10 @@ async fn coerce_json_float_on_string_parseable() {
     // column.  The _float column gets 0.0 or NULL because the scanner cannot
     // parse the quoted string as a bare float.
     //
-    // This documents current behaviour: use json(_raw,'val') + CAST for
+    // This documents current behaviour: use json(body,'val') + CAST for
     // string-encoded floats.
     let batch = make_raw_batch(&[r#"{"val": "1.5"}"#]);
-    let result = query1("SELECT json_float(_raw, 'val') AS v FROM logs", batch).await;
+    let result = query1("SELECT json_float(body, 'val') AS v FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -244,7 +244,7 @@ async fn coerce_json_float_on_string_parseable() {
 async fn coerce_json_string_on_integer_field() {
     // json() on an integer field should cast to string.
     let batch = make_raw_batch(&[r#"{"status": 200}"#]);
-    let result = query1("SELECT json(_raw, 'status') AS s FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'status') AS s FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -259,7 +259,7 @@ async fn coerce_json_string_on_integer_field() {
 
 #[tokio::test]
 async fn null_raw_row_produces_null_not_error() {
-    // When _raw contains NULL rows, json() must return NULL for those rows
+    // When body contains NULL rows, json() must return NULL for those rows
     // without erroring the entire batch.  Previously, NULL rows were emitted
     // as bare `\n` (empty lines); the scanner skipped them, causing a row-count
     // mismatch error.  Fixed by emitting `{}\n` for NULL rows so the scanner
@@ -269,12 +269,12 @@ async fn null_raw_row_produces_null_not_error() {
     let ctx = make_ctx(batch);
 
     let result = ctx
-        .sql("SELECT json(_raw, 'status') AS s FROM logs")
+        .sql("SELECT json(body, 'status') AS s FROM logs")
         .await
         .unwrap()
         .collect()
         .await
-        .expect("NULL _raw rows must not error");
+        .expect("NULL body rows must not error");
 
     let batch = result.into_iter().next().unwrap();
     assert_eq!(batch.num_rows(), 3, "must have 3 rows");
@@ -284,7 +284,7 @@ async fn null_raw_row_produces_null_not_error() {
         .downcast_ref::<StringArray>()
         .unwrap();
     assert_eq!(col.value(0), "200", "row 0 must extract status");
-    assert!(col.is_null(1), "row 1 (null _raw) must produce null");
+    assert!(col.is_null(1), "row 1 (null body) must produce null");
     assert_eq!(col.value(2), "500", "row 2 must extract status");
 }
 
@@ -295,7 +295,7 @@ async fn mixed_rows_some_have_field_some_dont() {
         r#"{"status": 404}"#,
         r#"{"host": "web2"}"#,
     ]);
-    let result = query1("SELECT json(_raw, 'host') AS h FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'host') AS h FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -313,7 +313,7 @@ async fn mixed_rows_some_have_field_some_dont() {
 #[tokio::test]
 async fn edge_empty_json_object() {
     let batch = make_raw_batch(&["{}"]);
-    let result = query1("SELECT json(_raw, 'key') AS k FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'key') AS k FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -325,7 +325,7 @@ async fn edge_empty_json_object() {
 #[tokio::test]
 async fn edge_non_json_line() {
     let batch = make_raw_batch(&["plain text log line"]);
-    let result = query1("SELECT json(_raw, 'key') AS k FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'key') AS k FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -337,7 +337,7 @@ async fn edge_non_json_line() {
 #[tokio::test]
 async fn edge_malformed_json() {
     let batch = make_raw_batch(&[r#"{"status": 200"#]); // unterminated
-    let result = query1("SELECT json(_raw, 'status') AS s FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'status') AS s FROM logs", batch).await;
     // Malformed JSON may or may not extract; either value or null is acceptable.
     // The key requirement: no panic.
     assert_eq!(result.num_rows(), 1);
@@ -350,7 +350,7 @@ async fn edge_very_long_value() {
     let long_val = "x".repeat(500);
     let line = format!(r#"{{"big": "{}"}}"#, long_val);
     let batch = make_raw_batch(&[&line]);
-    let result = query1("SELECT json(_raw, 'big') AS b FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'big') AS b FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -369,7 +369,7 @@ async fn edge_very_long_value_12kb() {
     let long_val = "x".repeat(12_000);
     let line = format!(r#"{{"big": "{}"}}"#, long_val);
     let batch = make_raw_batch(&[&line]);
-    let result = query1("SELECT json(_raw, 'big') AS b FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'big') AS b FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -383,7 +383,7 @@ async fn edge_very_long_value_12kb() {
 #[tokio::test]
 async fn edge_unicode_field_name() {
     let batch = make_raw_batch(&[r#"{"日本語": "value"}"#]);
-    let result = query1("SELECT json(_raw, '日本語') AS u FROM logs", batch).await;
+    let result = query1("SELECT json(body, '日本語') AS u FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -398,7 +398,7 @@ async fn edge_unicode_field_name() {
 #[tokio::test]
 async fn edge_unicode_values() {
     let batch = make_raw_batch(&[r#"{"msg": "café résumé"}"#]);
-    let result = query1("SELECT json(_raw, 'msg') AS m FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'msg') AS m FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -411,7 +411,7 @@ async fn edge_unicode_values() {
 async fn edge_nested_object() {
     // Extracting a nested object should return the JSON representation.
     let batch = make_raw_batch(&[r#"{"meta": {"host": "web1", "dc": "us-east"}}"#]);
-    let result = query1("SELECT json(_raw, 'meta') AS m FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'meta') AS m FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -434,7 +434,7 @@ async fn edge_nested_object() {
 #[tokio::test]
 async fn edge_array_value() {
     let batch = make_raw_batch(&[r#"{"tags": ["a", "b", "c"]}"#]);
-    let result = query1("SELECT json(_raw, 'tags') AS t FROM logs", batch).await;
+    let result = query1("SELECT json(body, 'tags') AS t FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -452,7 +452,7 @@ async fn edge_boolean_values() {
     let batch = make_raw_batch(&[r#"{"debug": true, "verbose": false}"#]);
 
     // json() on boolean should return "true" / "false".
-    let result = query1("SELECT json(_raw, 'debug') AS d FROM logs", batch.clone()).await;
+    let result = query1("SELECT json(body, 'debug') AS d FROM logs", batch.clone()).await;
     let col = result
         .column(0)
         .as_any()
@@ -463,7 +463,7 @@ async fn edge_boolean_values() {
     }
 
     // json_int() on boolean should return NULL (not a number).
-    let result = query1("SELECT json_int(_raw, 'debug') AS d FROM logs", batch).await;
+    let result = query1("SELECT json_int(body, 'debug') AS d FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -477,7 +477,7 @@ async fn edge_json_null_value() {
     let batch = make_raw_batch(&[r#"{"status": null}"#]);
 
     // json -> NULL
-    let result = query1("SELECT json(_raw, 'status') AS s FROM logs", batch.clone()).await;
+    let result = query1("SELECT json(body, 'status') AS s FROM logs", batch.clone()).await;
     assert!(
         result.column(0).is_null(0),
         "json on JSON null should be NULL"
@@ -485,7 +485,7 @@ async fn edge_json_null_value() {
 
     // json_int -> NULL
     let result = query1(
-        "SELECT json_int(_raw, 'status') AS s FROM logs",
+        "SELECT json_int(body, 'status') AS s FROM logs",
         batch.clone(),
     )
     .await;
@@ -495,7 +495,7 @@ async fn edge_json_null_value() {
     );
 
     // json_float -> NULL
-    let result = query1("SELECT json_float(_raw, 'status') AS s FROM logs", batch).await;
+    let result = query1("SELECT json_float(body, 'status') AS s FROM logs", batch).await;
     assert!(
         result.column(0).is_null(0),
         "json_float on JSON null should be NULL"
@@ -507,7 +507,7 @@ async fn edge_duplicate_keys() {
     // JSON with duplicate keys -- behavior should be deterministic (no panic).
     // Most parsers return the last value, but either is acceptable.
     let batch = make_raw_batch(&[r#"{"status": 200, "status": 500}"#]);
-    let result = query1("SELECT json_int(_raw, 'status') AS s FROM logs", batch).await;
+    let result = query1("SELECT json_int(body, 'status') AS s FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -527,7 +527,7 @@ async fn edge_duplicate_keys() {
 #[tokio::test]
 async fn edge_numeric_large_integer() {
     let batch = make_raw_batch(&[r#"{"big": 9223372036854775807}"#]); // i64::MAX
-    let result = query1("SELECT json_int(_raw, 'big') AS b FROM logs", batch).await;
+    let result = query1("SELECT json_int(body, 'big') AS b FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -541,7 +541,7 @@ async fn edge_numeric_large_integer() {
 #[tokio::test]
 async fn edge_numeric_negative() {
     let batch = make_raw_batch(&[r#"{"val": -42}"#]);
-    let result = query1("SELECT json_int(_raw, 'val') AS v FROM logs", batch).await;
+    let result = query1("SELECT json_int(body, 'val') AS v FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -553,7 +553,7 @@ async fn edge_numeric_negative() {
 #[tokio::test]
 async fn edge_numeric_scientific_notation() {
     let batch = make_raw_batch(&[r#"{"val": 1.5e3}"#]);
-    let result = query1("SELECT json_float(_raw, 'val') AS v FROM logs", batch).await;
+    let result = query1("SELECT json_float(body, 'val') AS v FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -576,7 +576,7 @@ async fn where_clause_with_json_int() {
         r#"{"status": 301, "msg": "redirect"}"#,
     ]);
     let result = query1(
-        "SELECT json(_raw, 'msg') AS msg FROM logs WHERE json_int(_raw, 'status') > 400",
+        "SELECT json(body, 'msg') AS msg FROM logs WHERE json_int(body, 'status') > 400",
         batch,
     )
     .await;
@@ -597,7 +597,7 @@ async fn where_clause_with_json_string() {
         r#"{"level": "INFO", "msg": "heartbeat"}"#,
     ]);
     let result = query1(
-        "SELECT json(_raw, 'msg') AS msg FROM logs WHERE json(_raw, 'level') = 'ERROR'",
+        "SELECT json(body, 'msg') AS msg FROM logs WHERE json(body, 'level') = 'ERROR'",
         batch,
     )
     .await;
@@ -614,7 +614,7 @@ async fn where_clause_with_json_string() {
 async fn where_clause_filters_to_empty() {
     let batch = make_raw_batch(&[r#"{"status": 200}"#, r#"{"status": 201}"#]);
     let result = query(
-        "SELECT json_int(_raw, 'status') AS s FROM logs WHERE json_int(_raw, 'status') > 999",
+        "SELECT json_int(body, 'status') AS s FROM logs WHERE json_int(body, 'status') > 999",
         batch,
     )
     .await;
@@ -631,7 +631,7 @@ async fn combine_json_and_json_int_same_query() {
         r#"{"status": 500, "level": "ERROR"}"#,
     ]);
     let result = query1(
-        "SELECT json(_raw, 'level') AS lvl, json_int(_raw, 'status') AS code FROM logs",
+        "SELECT json(body, 'level') AS lvl, json_int(body, 'status') AS code FROM logs",
         batch,
     )
     .await;
@@ -658,7 +658,7 @@ async fn combine_json_and_json_int_same_query() {
 #[tokio::test]
 async fn select_raw_passthrough() {
     let batch = make_raw_batch(&[r#"{"status": 200}"#, r#"{"status": 500}"#]);
-    let result = query1("SELECT _raw FROM logs", batch).await;
+    let result = query1("SELECT body FROM logs", batch).await;
     assert_eq!(result.num_rows(), 2);
     let col = result
         .column(0)
@@ -672,9 +672,9 @@ async fn select_raw_passthrough() {
 #[tokio::test]
 async fn select_raw_and_extracted() {
     let batch = make_raw_batch(&[r#"{"status": 200, "msg": "ok"}"#]);
-    let result = query1("SELECT _raw, json(_raw, 'status') AS s FROM logs", batch).await;
+    let result = query1("SELECT body, json(body, 'status') AS s FROM logs", batch).await;
     assert_eq!(result.num_columns(), 2);
-    // _raw column
+    // body column
     let raw = result
         .column(0)
         .as_any()
@@ -695,7 +695,7 @@ async fn select_raw_and_extracted() {
 // =========================================================================
 
 /// The scanner produces Utf8View columns. Verify that all three UDFs accept
-/// Utf8View input by registering with a Utf8View _raw column.
+/// Utf8View input by registering with a Utf8View body column.
 ///
 /// NOTE: DataFusion may auto-cast Utf8View to Utf8 based on the UDF signature.
 /// This test verifies that the end-to-end path works regardless of how the
@@ -710,7 +710,7 @@ async fn utf8view_json_extract() {
 
     // json()
     let df = ctx
-        .sql("SELECT json(_raw, 'level') AS lvl FROM logs")
+        .sql("SELECT json(body, 'level') AS lvl FROM logs")
         .await
         .unwrap();
     let batches = df.collect().await.unwrap();
@@ -725,7 +725,7 @@ async fn utf8view_json_extract() {
 
     // json_int()
     let df = ctx
-        .sql("SELECT json_int(_raw, 'status') AS s FROM logs")
+        .sql("SELECT json_int(body, 'status') AS s FROM logs")
         .await
         .unwrap();
     let batches = df.collect().await.unwrap();
@@ -740,7 +740,7 @@ async fn utf8view_json_extract() {
 
     // json_float()
     let df = ctx
-        .sql("SELECT json_float(_raw, 'dur') AS d FROM logs")
+        .sql("SELECT json_float(body, 'dur') AS d FROM logs")
         .await
         .unwrap();
     let batches = df.collect().await.unwrap();
@@ -762,7 +762,7 @@ async fn utf8view_where_clause() {
     ]);
     let ctx = make_ctx(batch);
     let df = ctx
-        .sql("SELECT json(_raw, 'msg') AS msg FROM logs WHERE json_int(_raw, 'status') >= 500")
+        .sql("SELECT json(body, 'msg') AS msg FROM logs WHERE json_int(body, 'status') >= 500")
         .await
         .unwrap();
     let batches = df.collect().await.unwrap();
@@ -783,14 +783,14 @@ async fn utf8view_where_clause() {
 #[tokio::test]
 async fn mixed_valid_invalid_rows_no_nulls() {
     // A realistic batch with a mix of valid JSON, invalid JSON, and empty
-    // objects (but no NULL _raw rows, which trigger a scanner mismatch).
+    // objects (but no NULL body rows, which trigger a scanner mismatch).
     let batch = make_raw_batch(&[
         r#"{"status": 200, "level": "INFO"}"#,
         "not json at all",
         r#"{"status": 404}"#,
         "{}",
     ]);
-    let result = query1("SELECT json_int(_raw, 'status') AS s FROM logs", batch).await;
+    let result = query1("SELECT json_int(body, 'status') AS s FROM logs", batch).await;
     let col = result
         .column(0)
         .as_any()
@@ -808,17 +808,17 @@ async fn mixed_valid_invalid_rows_no_nulls() {
 
 #[tokio::test]
 async fn mixed_valid_invalid_null_rows_succeeds() {
-    // NULL _raw rows must produce NULL in the output without erroring the batch.
+    // NULL body rows must produce NULL in the output without erroring the batch.
     let batch =
         make_raw_batch_nullable(&[Some(r#"{"status": 200}"#), None, Some(r#"{"status": 404}"#)]);
     let ctx = make_ctx(batch);
     let result = ctx
-        .sql("SELECT json_int(_raw, 'status') AS s FROM logs")
+        .sql("SELECT json_int(body, 'status') AS s FROM logs")
         .await
         .unwrap()
         .collect()
         .await
-        .expect("NULL _raw rows must not error");
+        .expect("NULL body rows must not error");
     let batch = result.into_iter().next().unwrap();
     assert_eq!(batch.num_rows(), 3, "must have 3 rows");
     let col = batch
@@ -827,7 +827,7 @@ async fn mixed_valid_invalid_null_rows_succeeds() {
         .downcast_ref::<Int64Array>()
         .unwrap();
     assert_eq!(col.value(0), 200, "row 0 json_int status");
-    assert!(col.is_null(1), "row 1 (null _raw) must produce null");
+    assert!(col.is_null(1), "row 1 (null body) must produce null");
     assert_eq!(col.value(2), 404, "row 2 json_int status");
 }
 
@@ -838,7 +838,7 @@ async fn all_three_udfs_same_query() {
         r#"{"level": "ERROR", "status": 500, "dur": 0.01}"#,
     ]);
     let result = query1(
-        "SELECT json(_raw, 'level') AS lvl, json_int(_raw, 'status') AS code, json_float(_raw, 'dur') AS dur FROM logs",
+        "SELECT json(body, 'level') AS lvl, json_int(body, 'status') AS code, json_float(body, 'dur') AS dur FROM logs",
         batch,
     ).await;
     let lvl = result
@@ -874,9 +874,9 @@ async fn where_and_select_different_fields() {
         r#"{"status": 301, "level": "WARN", "dur": 0.1}"#,
     ]);
     let result = query1(
-        "SELECT json(_raw, 'level') AS lvl, json_float(_raw, 'dur') AS dur \
+        "SELECT json(body, 'level') AS lvl, json_float(body, 'dur') AS dur \
          FROM logs \
-         WHERE json_int(_raw, 'status') >= 400",
+         WHERE json_int(body, 'status') >= 400",
         batch,
     )
     .await;

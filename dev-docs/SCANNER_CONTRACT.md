@@ -77,9 +77,9 @@ multiple types across rows within the same batch.
 
 | Special column  | Description       | Arrow type  |
 |-----------------|-------------------|-------------|
-| `_raw`          | Original raw line | `Utf8`      |
+| `body` (default) | Original raw line | `Utf8` / `Utf8View` |
 
-The `_raw` column is only present when `ScanConfig::keep_raw = true`.
+The line-capture column is only present when `ScanConfig::line_field_name` is set.
 
 ### Nullability
 
@@ -147,5 +147,5 @@ carried over.
 - **No escape decoding of string values** — string values are stored as
   raw bytes (including any JSON escape sequences such as `\n`, `\uXXXX`).
   Callers that need decoded strings must unescape them.
-- **`_raw` column** — `keep_raw = true` is supported by both `scan()` and
+- **`body` column** — setting `line_field_name` is supported by both `scan()` and
   `scan_detached()` modes.

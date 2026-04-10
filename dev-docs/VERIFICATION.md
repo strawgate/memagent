@@ -42,12 +42,13 @@ Write a TLA+ spec when:
 | Property | Type | Description |
 |----------|------|-------------|
 | `DrainCompleteness` | Safety | `stop()` only reachable when all in-flight batches are resolved |
-| `CheckpointOrderingInvariant` | Safety | `committed[s]=n` implies all batches `1..n` are acked, none in-flight |
+| `QuiescenceHasNoSilentStrandedWork` | Safety | `Stopped` never leaves sent batches without a terminal `acked`/`rejected`/`abandoned` outcome |
+| `CheckpointOrderingInvariant` | Safety | `committed[s]=n` implies every sent batch `<= n` is terminalized via `acked`/`rejected`/`abandoned` and none are in-flight |
 | `CommittedMonotonic` | Safety | Checkpoint never goes backwards |
 | `NoCreateAfterDrain` | Safety | No new batches after `begin_drain` |
-| `NoDoubleComplete` | Safety | Batch cannot be both in-flight and acked |
+| `NoDoubleComplete` | Safety | In-flight batches are disjoint from `acked`, `rejected`, and `abandoned` terminal sets |
 | `EventualDrain` | Liveness | Every started drain eventually reaches Stopped |
-| `NoBatchLeftBehind` | Liveness | Every in-flight batch eventually leaves in-flight |
+| `NoBatchLeftBehind` | Liveness | Every in-flight batch eventually terminalizes (`ack`/`reject`/`abandon`) |
 | `StoppedIsStable` | Liveness | Once Stopped, stays Stopped |
 
 `tla/MCPipelineMachine.tla` is the TLC model checker configuration (symmetry sets, model
@@ -63,10 +64,11 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 ```
 
 Three models:
-- **Model 1 — Safety** (comment out `ForceStop` in `Next`): `Sources={"s1","s2"}`,
+- **Model 1 — Safety** (normal + ForceStop paths): `Sources={"s1","s2"}`,
   `MaxBatchesPerSource=3`, ~50K states, < 30s
 - **Model 2 — Liveness**: `MaxBatchesPerSource=2`, ~5K states, < 5 min
-- **Model 3 — ForceStop**: enable `ForceStop`, remove `DrainCompleteness` from invariants
+- **Model 3 — Coverage**: reachability/vacuity witnesses via
+  `PipelineMachine.coverage.cfg` (expected invariant violations as witnesses)
 
 > Do NOT use `CONSTRAINT` to bound state space for liveness — it silently breaks liveness
 > by cutting off infinite behaviors before they converge. Use model constants instead.

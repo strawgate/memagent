@@ -1,7 +1,7 @@
 //! Side-by-side benchmark: current scanner pipeline vs raw-first UDF pipeline
 //!
 //! Path A (current): bytes -> scanner -> typed columns -> DataFusion SQL -> output
-//! Path B (raw-first): bytes -> _raw Utf8 column -> DataFusion SQL with json UDFs -> output
+//! Path B (raw-first): bytes -> body Utf8 column -> DataFusion SQL with json UDFs -> output
 
 use arrow::array::*;
 use arrow::datatypes::*;
@@ -50,7 +50,7 @@ async fn path_a_extraction(json_data: &[u8], num_fields: usize) -> RecordBatch {
     let config = ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: false,
     };
     let mut scanner = logfwd_arrow::Scanner::new(config);
@@ -79,7 +79,7 @@ async fn path_a_passthrough(json_data: &[u8]) -> RecordBatch {
     let config = ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: false,
     };
     let mut scanner = logfwd_arrow::Scanner::new(config);
@@ -106,7 +106,7 @@ fn make_raw_batch(json_data: &[u8]) -> RecordBatch {
         .lines()
         .filter(|l| !l.is_empty())
         .collect();
-    let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, false)]));
+    let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, false)]));
     RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(lines)) as ArrayRef]).unwrap()
 }
 
@@ -128,13 +128,13 @@ async fn path_b_extraction(json_data: &[u8], num_fields: usize) -> RecordBatch {
     // Build SQL extracting fields with json UDFs
     let select_cols: Vec<String> = (0..num_fields.min(10))
         .map(|f| match f % 3 {
-            0 => format!("json_int(_raw, 'f{f}') as f{f}"),
-            1 => format!("json_float(_raw, 'f{f}') as f{f}"),
-            _ => format!("json(_raw, 'f{f}') as f{f}"),
+            0 => format!("json_int(body, 'f{f}') as f{f}"),
+            1 => format!("json_float(body, 'f{f}') as f{f}"),
+            _ => format!("json(body, 'f{f}') as f{f}"),
         })
         .collect();
     let sql = format!(
-        "SELECT {} FROM logs WHERE json_int(_raw, 'f0') > 5000",
+        "SELECT {} FROM logs WHERE json_int(body, 'f0') > 5000",
         select_cols.join(", ")
     );
 
@@ -149,7 +149,7 @@ async fn path_b_passthrough(json_data: &[u8]) -> RecordBatch {
     let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
     ctx.register_table("logs", Arc::new(table)).unwrap();
 
-    let df = ctx.sql("SELECT _raw FROM logs").await.unwrap();
+    let df = ctx.sql("SELECT body FROM logs").await.unwrap();
     df.collect().await.unwrap().into_iter().next().unwrap()
 }
 

@@ -343,6 +343,25 @@ jobs:
         run: cargo test -p logfwd --features turmoil --test turmoil_sim
 
   # -------------------------------------------------------------------------
+  # Loom deterministic concurrency seam checks
+  # -------------------------------------------------------------------------
+  loom:
+    name: Loom seam checks
+    needs: [changes]
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Loom seam test
+        run: cargo test -p logfwd-runtime --lib --features loom-tests loom_worker_removal_vs_late_event_model_never_resurrects_slot
+
+  # -------------------------------------------------------------------------
   # TLC: TLA+ model checking for all specs (parallelized via matrix)
   # -------------------------------------------------------------------------
   tlc:

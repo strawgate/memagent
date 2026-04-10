@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use logfwd_config::{Format, OutputConfig, OutputType};
 use logfwd_types::diagnostics::ComponentStats;
+use logfwd_types::field_names;
 
 use crate::arrow_ipc_sink::ArrowIpcSinkFactory;
 use crate::build_auth_headers;
@@ -176,6 +177,7 @@ pub fn build_sink_factory(
                 protocol,
                 compression,
                 auth_headers,
+                field_names::BODY.to_string(),
                 stats,
             )
             .map_err(|e| {

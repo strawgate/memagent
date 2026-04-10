@@ -1,13 +1,10 @@
 use super::*;
-use arrow::array::{Array, BooleanArray, Int64Array, StringArray, StringViewArray};
+use arrow::array::{Array, BooleanArray, Int64Array, StringArray};
 use arrow::datatypes::DataType;
-use bytes::Bytes;
-use logfwd_arrow::Scanner;
-use logfwd_core::scan_config::ScanConfig;
 use logfwd_types::field_names;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
-    common::v1::{AnyValue, KeyValue, any_value::Value},
+    common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList, any_value::Value},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     resource::v1::Resource,
 };
@@ -98,302 +95,6 @@ where
     }
 }
 
-fn unicode_string(max_len: usize) -> impl Strategy<Value = String> {
-    proptest::collection::vec(any::<char>(), 0..=max_len)
-        .prop_map(|chars| chars.into_iter().collect())
-}
-
-fn non_empty_unicode_string(max_len: usize) -> impl Strategy<Value = String> {
-    proptest::collection::vec(any::<char>(), 1..=max_len)
-        .prop_map(|chars| chars.into_iter().collect())
-}
-
-fn any_value_to_string_simple(v: &AnyValue) -> Option<String> {
-    match &v.value {
-        Some(Value::StringValue(s)) => Some(s.clone()),
-        Some(Value::IntValue(i)) => Some(i.to_string()),
-        Some(Value::DoubleValue(d)) => Some(d.to_string()),
-        Some(Value::BoolValue(b)) => Some(b.to_string()),
-        Some(Value::BytesValue(b)) => Some(hex::encode(b)),
-        _ => None,
-    }
-}
-
-fn any_value_to_json_simple(value: &AnyValue) -> Option<serde_json::Value> {
-    match &value.value {
-        Some(Value::IntValue(v)) => Some(serde_json::Value::from(*v)),
-        Some(Value::DoubleValue(v)) => {
-            let mut buf = Vec::new();
-            write_f64_to_buf_simple(&mut buf, *v);
-            serde_json::from_slice(&buf).ok()
-        }
-        Some(Value::BoolValue(v)) => Some(serde_json::Value::from(*v)),
-        Some(Value::StringValue(v)) => Some(serde_json::Value::String(v.clone())),
-        Some(Value::BytesValue(v)) => Some(serde_json::Value::String(hex::encode(v))),
-        _ => None,
-    }
-}
-
-fn convert_request_to_json_lines_simple(request: &ExportLogsServiceRequest) -> Vec<u8> {
-    let mut out = Vec::new();
-
-    for resource_logs in &request.resource_logs {
-        let mut resource_attrs: Vec<(String, String)> = Vec::new();
-        if let Some(resource) = &resource_logs.resource {
-            for attr in &resource.attributes {
-                if let Some(value) = &attr.value
-                    && let Some(stringified) = any_value_to_string_simple(value)
-                {
-                    resource_attrs.push((attr.key.clone(), stringified));
-                }
-            }
-        }
-
-        for scope_logs in &resource_logs.scope_logs {
-            for record in &scope_logs.log_records {
-                let mut obj = serde_json::Map::new();
-
-                if record.time_unix_nano > 0 {
-                    obj.insert(
-                        field_names::TIMESTAMP.to_string(),
-                        serde_json::Value::from(record.time_unix_nano),
-                    );
-                }
-
-                if !record.severity_text.is_empty() {
-                    obj.insert(
-                        field_names::SEVERITY.to_string(),
-                        serde_json::Value::String(record.severity_text.clone()),
-                    );
-                }
-
-                if let Some(body) = &record.body
-                    && let Some(body_str) = any_value_to_string_simple(body)
-                {
-                    obj.insert(
-                        field_names::BODY.to_string(),
-                        serde_json::Value::String(body_str),
-                    );
-                }
-
-                for (key, value) in &resource_attrs {
-                    obj.insert(key.clone(), serde_json::Value::String(value.clone()));
-                }
-
-                for attr in &record.attributes {
-                    if let Some(value) = &attr.value
-                        && let Some(json_value) = any_value_to_json_simple(value)
-                    {
-                        obj.insert(attr.key.clone(), json_value);
-                    }
-                }
-
-                if !record.trace_id.is_empty() {
-                    obj.insert(
-                        field_names::TRACE_ID.to_string(),
-                        serde_json::Value::String(hex::encode(&record.trace_id)),
-                    );
-                }
-                if !record.span_id.is_empty() {
-                    obj.insert(
-                        field_names::SPAN_ID.to_string(),
-                        serde_json::Value::String(hex::encode(&record.span_id)),
-                    );
-                }
-
-                serde_json::to_writer(&mut out, &serde_json::Value::Object(obj))
-                    .expect("json serialization should succeed");
-                out.push(b'\n');
-            }
-        }
-    }
-
-    out
-}
-
-fn parse_json_lines_values(bytes: &[u8]) -> Vec<serde_json::Value> {
-    if bytes.is_empty() {
-        return Vec::new();
-    }
-    std::str::from_utf8(bytes)
-        .expect("json lines must be valid UTF-8")
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid json line"))
-        .collect()
-}
-
-fn any_value_strategy() -> impl Strategy<Value = AnyValue> {
-    prop_oneof![
-        unicode_string(20).prop_map(|s| AnyValue {
-            value: Some(Value::StringValue(s)),
-        }),
-        any::<i64>().prop_map(|v| AnyValue {
-            value: Some(Value::IntValue(v)),
-        }),
-        prop_oneof![
-            (-1_000_000i64..1_000_000i64).prop_map(|n| n as f64 / 100.0),
-            Just(f64::NAN),
-            Just(f64::INFINITY),
-            Just(f64::NEG_INFINITY),
-        ]
-        .prop_map(|v| AnyValue {
-            value: Some(Value::DoubleValue(v)),
-        }),
-        any::<bool>().prop_map(|b| AnyValue {
-            value: Some(Value::BoolValue(b)),
-        }),
-        proptest::collection::vec(any::<u8>(), 0..16).prop_map(|b| AnyValue {
-            value: Some(Value::BytesValue(b)),
-        }),
-        Just(AnyValue { value: None }),
-    ]
-}
-
-fn key_value_strategy() -> impl Strategy<Value = KeyValue> {
-    (
-        non_empty_unicode_string(16),
-        prop::option::of(any_value_strategy()),
-    )
-        .prop_map(|(key, value)| KeyValue { key, value })
-}
-
-fn log_record_strategy() -> impl Strategy<Value = LogRecord> {
-    (
-        any::<u64>(),
-        unicode_string(8),
-        prop::option::of(any_value_strategy()),
-        proptest::collection::vec(key_value_strategy(), 0..6),
-        proptest::collection::vec(any::<u8>(), 0..20),
-        proptest::collection::vec(any::<u8>(), 0..12),
-    )
-        .prop_map(
-            |(time_unix_nano, severity_text, body, attributes, trace_id, span_id)| LogRecord {
-                time_unix_nano,
-                severity_text,
-                body,
-                attributes,
-                trace_id,
-                span_id,
-                ..Default::default()
-            },
-        )
-}
-
-fn scope_logs_strategy() -> impl Strategy<Value = ScopeLogs> {
-    proptest::collection::vec(log_record_strategy(), 0..6).prop_map(|log_records| ScopeLogs {
-        log_records,
-        ..Default::default()
-    })
-}
-
-fn resource_logs_strategy() -> impl Strategy<Value = ResourceLogs> {
-    (
-        proptest::collection::vec(key_value_strategy(), 0..6),
-        proptest::collection::vec(scope_logs_strategy(), 0..3),
-    )
-        .prop_map(|(resource_attributes, scope_logs)| ResourceLogs {
-            resource: Some(Resource {
-                attributes: resource_attributes,
-                ..Default::default()
-            }),
-            scope_logs,
-            ..Default::default()
-        })
-}
-
-fn request_strategy() -> impl Strategy<Value = ExportLogsServiceRequest> {
-    proptest::collection::vec(resource_logs_strategy(), 0..4)
-        .prop_map(|resource_logs| ExportLogsServiceRequest { resource_logs })
-}
-
-#[test]
-fn structured_batch_matches_legacy_scanned_batch() {
-    let body = make_test_request();
-    let json_lines = decode_otlp_logs(&body).expect("legacy decode succeeds");
-    let structured = decode_otlp_logs_to_batch(&body).expect("structured decode succeeds");
-
-    let mut scanner = Scanner::new(ScanConfig::default());
-    let legacy = scanner
-        .scan(Bytes::from(json_lines))
-        .expect("legacy JSON lines scan");
-
-    assert_eq!(legacy.num_columns(), structured.num_columns());
-    for idx in 0..legacy.num_columns() {
-        assert_eq!(
-            legacy.schema().field(idx).name(),
-            structured.schema().field(idx).name()
-        );
-        assert_eq!(
-            column_values(legacy.column(idx).as_ref()),
-            column_values(structured.column(idx).as_ref())
-        );
-    }
-}
-
-proptest! {
-    #[test]
-    fn proptest_convert_request_to_json_lines_fast_matches_simple(
-        request in request_strategy()
-    ) {
-        let fast = convert_request_to_json_lines(&request);
-        let simple = convert_request_to_json_lines_simple(&request);
-
-        prop_assert_eq!(
-            parse_json_lines_values(&fast),
-            parse_json_lines_values(&simple),
-            "convert_request_to_json_lines fast path drifted from simple reference"
-        );
-    }
-}
-
-fn column_values(array: &dyn Array) -> Vec<String> {
-    if let Some(array) = array.as_any().downcast_ref::<Int64Array>() {
-        return (0..array.len())
-            .map(|idx| {
-                if array.is_null(idx) {
-                    "NULL".to_string()
-                } else {
-                    array.value(idx).to_string()
-                }
-            })
-            .collect();
-    }
-    if let Some(array) = array.as_any().downcast_ref::<StringArray>() {
-        return (0..array.len())
-            .map(|idx| {
-                if array.is_null(idx) {
-                    "NULL".to_string()
-                } else {
-                    array.value(idx).to_string()
-                }
-            })
-            .collect();
-    }
-    if let Some(array) = array.as_any().downcast_ref::<StringViewArray>() {
-        return (0..array.len())
-            .map(|idx| {
-                if array.is_null(idx) {
-                    "NULL".to_string()
-                } else {
-                    array.value(idx).to_string()
-                }
-            })
-            .collect();
-    }
-    if let Some(array) = array.as_any().downcast_ref::<BooleanArray>() {
-        return (0..array.len())
-            .map(|idx| {
-                if array.is_null(idx) {
-                    "NULL".to_string()
-                } else {
-                    array.value(idx).to_string()
-                }
-            })
-            .collect();
-    }
-    panic!("unsupported test array type: {:?}", array.data_type());
-}
-
 #[test]
 fn structured_batch_preserves_boolean_type_and_dotted_attributes() {
     let request = ExportLogsServiceRequest {
@@ -423,7 +124,8 @@ fn structured_batch_preserves_boolean_type_and_dotted_attributes() {
         }],
     };
 
-    let batch = convert_request_to_batch(&request).expect("structured decode succeeds");
+    let batch = convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect("structured decode succeeds");
 
     let sampled = batch
         .column_by_name("sampled")
@@ -436,16 +138,16 @@ fn structured_batch_preserves_boolean_type_and_dotted_attributes() {
     assert!(sampled.value(0), "sampled=true must be preserved as bool");
 
     let service_name = batch
-        .column_by_name("service.name")
-        .expect("dotted attribute must keep original column name");
+        .column_by_name("resource.attributes.service.name")
+        .expect("resource attribute must be prefixed with resource.attributes.");
     let service_name = service_name
         .as_any()
         .downcast_ref::<StringArray>()
-        .expect("service.name should remain a flat string column");
+        .expect("resource.attributes.service.name should remain a flat string column");
     assert_eq!(service_name.value(0), "checkout-api");
     assert!(
-        batch.column_by_name("service_name").is_none(),
-        "dotted attributes must not require sanitized internal-name coupling"
+        batch.column_by_name("service.name").is_none(),
+        "resource attributes must not appear as bare keys"
     );
 }
 
@@ -470,10 +172,11 @@ fn structured_batch_preserves_resource_boolean_type() {
         }],
     };
 
-    let batch = convert_request_to_batch(&request).expect("structured decode succeeds");
+    let batch = convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect("structured decode succeeds");
     let sampled = batch
-        .column_by_name("resource.sampled")
-        .expect("resource.sampled must exist");
+        .column_by_name("resource.attributes.resource.sampled")
+        .expect("resource.attributes.resource.sampled must exist");
     assert_eq!(sampled.data_type(), &DataType::Boolean);
     let sampled = sampled
         .as_any()
@@ -483,37 +186,220 @@ fn structured_batch_preserves_resource_boolean_type() {
 }
 
 #[test]
-fn decodes_otlp_to_json_lines() {
-    let body = make_test_request();
-    let json = decode_otlp_logs(&body).unwrap();
-    let text = String::from_utf8(json).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
+fn structured_values_are_serialized_deterministically() {
+    let request = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "resource.labels".into(),
+                    value: Some(AnyValue {
+                        value: Some(Value::ArrayValue(ArrayValue {
+                            values: vec![
+                                AnyValue {
+                                    value: Some(Value::BoolValue(true)),
+                                },
+                                AnyValue {
+                                    value: Some(Value::StringValue("x".into())),
+                                },
+                            ],
+                        })),
+                    }),
+                }],
+                ..Default::default()
+            }),
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord {
+                    body: Some(AnyValue {
+                        value: Some(Value::ArrayValue(ArrayValue {
+                            values: vec![
+                                AnyValue {
+                                    value: Some(Value::StringValue("hello".into())),
+                                },
+                                AnyValue {
+                                    value: Some(Value::IntValue(2)),
+                                },
+                            ],
+                        })),
+                    }),
+                    attributes: vec![KeyValue {
+                        key: "ctx".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::KvlistValue(KeyValueList {
+                                values: vec![
+                                    KeyValue {
+                                        key: "b".into(),
+                                        value: Some(AnyValue {
+                                            value: Some(Value::StringValue("two".into())),
+                                        }),
+                                    },
+                                    KeyValue {
+                                        key: "a".into(),
+                                        value: Some(AnyValue {
+                                            value: Some(Value::IntValue(1)),
+                                        }),
+                                    },
+                                    KeyValue {
+                                        key: "a".into(),
+                                        value: Some(AnyValue {
+                                            value: Some(Value::IntValue(3)),
+                                        }),
+                                    },
+                                ],
+                            })),
+                        }),
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
 
-    assert_eq!(lines.len(), 2);
-    assert!(lines[0].contains("\"level\":\"INFO\""), "got: {}", lines[0]);
-    assert!(
-        lines[0].contains("\"message\":\"hello world\""),
-        "got: {}",
-        lines[0]
+    let batch = convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect("structured decode succeeds");
+
+    let body = batch
+        .column_by_name(field_names::BODY)
+        .expect("body column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("body must be Utf8");
+    assert_eq!(body.value(0), "[\"hello\",2]");
+
+    let ctx = batch
+        .column_by_name("ctx")
+        .expect("ctx column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("ctx must be Utf8");
+    assert_eq!(
+        ctx.value(0),
+        "[{\"k\":\"b\",\"v\":\"two\"},{\"k\":\"a\",\"v\":1},{\"k\":\"a\",\"v\":3}]"
     );
-    assert!(
-        lines[0].contains("\"service\":\"myapp\""),
-        "got: {}",
-        lines[0]
-    );
-    assert!(
-        lines[1].contains("\"level\":\"ERROR\""),
-        "got: {}",
-        lines[1]
-    );
-    assert!(lines[1].contains("\"status\":500"), "got: {}", lines[1]);
+
+    let labels = batch
+        .column_by_name("resource.attributes.resource.labels")
+        .expect("resource labels column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("resource labels must be Utf8");
+    assert_eq!(labels.value(0), "[true,\"x\"]");
+}
+
+#[test]
+fn canonical_fields_are_not_shadowed_by_attribute_collisions() {
+    let request = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                scope: Some(
+                    opentelemetry_proto::tonic::common::v1::InstrumentationScope {
+                        name: "otel-scope".into(),
+                        version: "1.2.3".into(),
+                        ..Default::default()
+                    },
+                ),
+                log_records: vec![LogRecord {
+                    flags: 123,
+                    attributes: vec![
+                        KeyValue {
+                            key: field_names::FLAGS.into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("shadow-flags".into())),
+                            }),
+                        },
+                        KeyValue {
+                            key: field_names::SCOPE_NAME.into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("shadow-scope".into())),
+                            }),
+                        },
+                        KeyValue {
+                            key: field_names::SCOPE_VERSION.into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::StringValue("shadow-version".into())),
+                            }),
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+
+    let batch = convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect("structured decode succeeds");
+
+    let flags = batch
+        .column_by_name(field_names::FLAGS)
+        .expect("flags column must exist")
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("flags must be Int64");
+    assert_eq!(flags.value(0), 123);
+
+    let scope_name = batch
+        .column_by_name(field_names::SCOPE_NAME)
+        .expect("scope.name column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("scope.name must be Utf8");
+    assert_eq!(scope_name.value(0), "otel-scope");
+
+    let scope_version = batch
+        .column_by_name(field_names::SCOPE_VERSION)
+        .expect("scope.version column must exist")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("scope.version must be Utf8");
+    assert_eq!(scope_version.value(0), "1.2.3");
+}
+
+#[test]
+fn decodes_protobuf_to_batch() {
+    let body = make_test_request();
+    let batch =
+        decode_otlp_protobuf(&body, field_names::DEFAULT_RESOURCE_PREFIX).expect("decode succeeds");
+    assert_eq!(batch.num_rows(), 2);
+
+    let severity = batch
+        .column_by_name(field_names::SEVERITY)
+        .expect("severity column must exist");
+    let severity = severity
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("severity must be StringArray");
+    assert_eq!(severity.value(0), "INFO");
+    assert_eq!(severity.value(1), "ERROR");
+
+    let body_col = batch
+        .column_by_name(field_names::BODY)
+        .expect("body column must exist");
+    let body_col = body_col
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("body must be StringArray");
+    assert_eq!(body_col.value(0), "hello world");
+    assert_eq!(body_col.value(1), "something broke");
+
+    let service = batch
+        .column_by_name("service")
+        .expect("service column must exist");
+    let service = service
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("service must be StringArray");
+    assert_eq!(service.value(0), "myapp");
 }
 
 /// Contract test: protobuf and JSON OTLP inputs that represent the same
-/// records must produce the same semantic JSON-line output.
+/// records must produce batches with the same row count.
 #[test]
-fn protobuf_and_json_inputs_match_semantics() {
-    let protobuf_lines = decode_otlp_logs(&make_test_request()).unwrap();
+fn protobuf_and_json_inputs_produce_batches() {
+    let proto_batch =
+        decode_otlp_protobuf(&make_test_request(), field_names::DEFAULT_RESOURCE_PREFIX).unwrap();
 
     let json_body = r#"{
         "resourceLogs": [{
@@ -546,32 +432,19 @@ fn protobuf_and_json_inputs_match_semantics() {
             }]
         }]
     }"#;
-    let json_lines = decode_otlp_logs_json(json_body.as_bytes()).unwrap();
+    let json_batch =
+        decode_otlp_json(json_body.as_bytes(), field_names::DEFAULT_RESOURCE_PREFIX).unwrap();
 
-    let parse = |lines: &[u8]| -> Vec<serde_json::Value> {
-        String::from_utf8(lines.to_vec())
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .collect()
-    };
-
-    let left = parse(&protobuf_lines);
-    let right = parse(&json_lines);
-    assert_eq!(left.len(), 2, "expected 2 protobuf-decoded rows");
-    assert_eq!(right.len(), 2, "expected 2 json-decoded rows");
-
-    for (lhs, rhs) in left.iter().zip(right.iter()) {
-        assert_eq!(lhs.get("level"), rhs.get("level"));
-        assert_eq!(lhs.get("message"), rhs.get("message"));
-        assert_eq!(lhs.get("service"), rhs.get("service"));
-        assert_eq!(lhs.get("status"), rhs.get("status"));
-        assert_eq!(lhs.get("payload"), rhs.get("payload"));
-    }
+    assert_eq!(
+        proto_batch.num_rows(),
+        2,
+        "expected 2 protobuf-decoded rows"
+    );
+    assert_eq!(json_batch.num_rows(), 2, "expected 2 json-decoded rows");
 }
 
 #[test]
-fn record_attributes_override_resource_attributes_in_protobuf_paths() {
+fn record_attributes_override_resource_attributes_in_structured_batch() {
     let request = ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
             resource: Some(Resource {
@@ -599,18 +472,8 @@ fn record_attributes_override_resource_attributes_in_protobuf_paths() {
         }],
     };
 
-    let json_lines = decode_otlp_logs(&request.encode_to_vec()).expect("protobuf decode");
-    let rows = parse_json_lines_values(&json_lines);
-    assert_eq!(rows.len(), 1, "expected one decoded row");
-    assert_eq!(
-        rows[0]
-            .get("service.name")
-            .and_then(serde_json::Value::as_str),
-        Some("record"),
-        "record attribute must override same-key resource attribute in JSON lines"
-    );
-
-    let batch = convert_request_to_batch(&request).expect("structured batch decode");
+    let batch = convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect("structured batch decode");
     let service_name = batch
         .column_by_name("service.name")
         .expect("service.name column should exist");
@@ -626,103 +489,8 @@ fn record_attributes_override_resource_attributes_in_protobuf_paths() {
 }
 
 #[test]
-fn record_attributes_override_resource_attributes_in_json_input_path() {
-    let json_body = serde_json::json!({
-        "resourceLogs": [{
-            "resource": {
-                "attributes": [{
-                    "key": "service.name",
-                    "value": {"stringValue": "resource"}
-                }]
-            },
-            "scopeLogs": [{
-                "logRecords": [{
-                    "attributes": [{
-                        "key": "service.name",
-                        "value": {"stringValue": "record"}
-                    }]
-                }]
-            }]
-        }]
-    });
-
-    let json_lines = decode_otlp_logs_json(json_body.to_string().as_bytes()).expect("json decode");
-    let rows = parse_json_lines_values(&json_lines);
-    assert_eq!(rows.len(), 1, "expected one decoded row");
-    assert_eq!(
-        rows[0]
-            .get("service.name")
-            .and_then(serde_json::Value::as_str),
-        Some("record"),
-        "record attribute must override same-key resource attribute for OTLP JSON input"
-    );
-}
-
-#[test]
-fn json_bytes_value_matches_protobuf_semantics() {
-    let request = ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![LogRecord {
-                    body: Some(AnyValue {
-                        value: Some(Value::BytesValue(vec![0x01, 0x02, 0x03, 0x04])),
-                    }),
-                    attributes: vec![KeyValue {
-                        key: "payload".into(),
-                        value: Some(AnyValue {
-                            value: Some(Value::BytesValue(vec![0x0a, 0x0b, 0x0c])),
-                        }),
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-
-    let protobuf_lines = decode_otlp_logs(&request.encode_to_vec()).unwrap();
-    let json_lines = decode_otlp_logs_json(
-        br#"{
-            "resourceLogs": [{
-                "scopeLogs": [{
-                    "logRecords": [{
-                        "body": {"bytesValue": "AQIDBA=="},
-                        "attributes": [{
-                            "key": "payload",
-                            "value": {"bytesValue": "CgsM"}
-                        }]
-                    }]
-                }]
-            }]
-        }"#,
-    )
-    .unwrap();
-
-    let parse_first = |lines: &[u8]| -> serde_json::Value {
-        let line = String::from_utf8(lines.to_vec())
-            .unwrap()
-            .lines()
-            .next()
-            .expect("one decoded row")
-            .to_string();
-        serde_json::from_str(&line).unwrap()
-    };
-
-    let left = parse_first(&protobuf_lines);
-    let right = parse_first(&json_lines);
-
-    assert_eq!(
-        left.get("message").and_then(serde_json::Value::as_str),
-        Some("01020304")
-    );
-    assert_eq!(left.get("message"), right.get("message"));
-    assert_eq!(left.get("payload"), right.get("payload"));
-}
-
-#[test]
 fn invalid_json_bytes_value_returns_error() {
-    let result = decode_otlp_logs_json(
+    let result = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -735,6 +503,7 @@ fn invalid_json_bytes_value_returns_error() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     );
 
     assert!(result.is_err(), "invalid base64 bytesValue must fail");
@@ -742,7 +511,7 @@ fn invalid_json_bytes_value_returns_error() {
 
 #[test]
 fn json_bytes_value_accepts_urlsafe_and_unpadded_base64() {
-    let json_lines = decode_otlp_logs_json(
+    let batch = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -755,20 +524,16 @@ fn json_bytes_value_accepts_urlsafe_and_unpadded_base64() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     )
     .expect("urlsafe unpadded base64 should decode");
 
-    let line = String::from_utf8(json_lines).expect("utf8");
-    let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
-    assert_eq!(
-        row.get("payload").and_then(serde_json::Value::as_str),
-        Some("fbff")
-    );
+    assert_eq!(batch.num_rows(), 1);
 }
 
 #[test]
 fn invalid_json_int_value_returns_error() {
-    let result = decode_otlp_logs_json(
+    let result = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -781,6 +546,7 @@ fn invalid_json_int_value_returns_error() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     );
 
     assert!(result.is_err(), "invalid intValue must fail");
@@ -788,7 +554,7 @@ fn invalid_json_int_value_returns_error() {
 
 #[test]
 fn invalid_json_double_value_returns_error() {
-    let result = decode_otlp_logs_json(
+    let result = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -801,6 +567,7 @@ fn invalid_json_double_value_returns_error() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     );
 
     assert!(result.is_err(), "invalid doubleValue must fail");
@@ -808,7 +575,7 @@ fn invalid_json_double_value_returns_error() {
 
 #[test]
 fn non_numeric_json_int_string_returns_error() {
-    let result = decode_otlp_logs_json(
+    let result = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -821,6 +588,7 @@ fn non_numeric_json_int_string_returns_error() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     );
 
     assert!(
@@ -831,7 +599,7 @@ fn non_numeric_json_int_string_returns_error() {
 
 #[test]
 fn exponent_form_json_int_value_is_accepted() {
-    let json_lines = decode_otlp_logs_json(
+    let batch = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -844,20 +612,24 @@ fn exponent_form_json_int_value_is_accepted() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     )
     .expect("ProtoJSON exponent intValue should decode");
 
-    let line = String::from_utf8(json_lines).expect("utf8");
-    let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
-    assert_eq!(
-        row.get("status").and_then(serde_json::Value::as_i64),
-        Some(500)
-    );
+    assert_eq!(batch.num_rows(), 1);
+    let status = batch
+        .column_by_name("status")
+        .expect("status column must exist");
+    let status = status
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("status must be Int64Array");
+    assert_eq!(status.value(0), 500);
 }
 
 #[test]
 fn bare_exponent_json_int_value_is_accepted() {
-    let json_lines = decode_otlp_logs_json(
+    let batch = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -870,20 +642,24 @@ fn bare_exponent_json_int_value_is_accepted() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     )
     .expect("bare exponent intValue should decode");
 
-    let line = String::from_utf8(json_lines).expect("utf8");
-    let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
-    assert_eq!(
-        row.get("status").and_then(serde_json::Value::as_i64),
-        Some(100)
-    );
+    assert_eq!(batch.num_rows(), 1);
+    let status = batch
+        .column_by_name("status")
+        .expect("status column must exist");
+    let status = status
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("status must be Int64Array");
+    assert_eq!(status.value(0), 100);
 }
 
 #[test]
 fn huge_positive_exponent_json_int_value_returns_error() {
-    let result = decode_otlp_logs_json(
+    let result = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -896,6 +672,7 @@ fn huge_positive_exponent_json_int_value_returns_error() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     );
 
     assert!(result.is_err(), "huge exponent intValue must fail");
@@ -903,7 +680,7 @@ fn huge_positive_exponent_json_int_value_returns_error() {
 
 #[test]
 fn huge_negative_exponent_json_int_value_returns_error_without_panicking() {
-    let result = decode_otlp_logs_json(
+    let result = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -916,6 +693,7 @@ fn huge_negative_exponent_json_int_value_returns_error_without_panicking() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     );
 
     assert!(
@@ -950,7 +728,7 @@ fn protojson_integral_normalization_rejects_non_integral_or_oversized_forms() {
 
 #[test]
 fn out_of_range_json_int_value_returns_error() {
-    let result = decode_otlp_logs_json(
+    let result = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -963,6 +741,7 @@ fn out_of_range_json_int_value_returns_error() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     );
 
     assert!(result.is_err(), "out-of-range intValue must fail");
@@ -970,7 +749,7 @@ fn out_of_range_json_int_value_returns_error() {
 
 #[test]
 fn invalid_json_time_unix_nano_returns_error() {
-    let result = decode_otlp_logs_json(
+    let result = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -980,14 +759,79 @@ fn invalid_json_time_unix_nano_returns_error() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     );
 
     assert!(result.is_err(), "invalid timeUnixNano must fail");
 }
 
 #[test]
+fn invalid_json_observed_time_unix_nano_returns_error() {
+    let result = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "timeUnixNano": "0",
+                        "observedTimeUnixNano": "not-a-number"
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    );
+
+    assert!(
+        result.is_err(),
+        "invalid observedTimeUnixNano must fail instead of being treated as missing"
+    );
+}
+
+#[test]
+fn invalid_json_severity_number_returns_error() {
+    let result = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "severityNumber": "bad-severity"
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    );
+
+    assert!(
+        result.is_err(),
+        "invalid severityNumber must fail instead of being treated as missing"
+    );
+}
+
+#[test]
+fn invalid_json_flags_returns_error() {
+    let result = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "flags": "invalid-flags"
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    );
+
+    assert!(
+        result.is_err(),
+        "invalid flags must fail instead of being treated as missing"
+    );
+}
+
+#[test]
 fn zero_json_time_unix_nano_is_accepted_and_omitted() {
-    let json_lines = decode_otlp_logs_json(
+    let batch = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -998,27 +842,29 @@ fn zero_json_time_unix_nano_is_accepted_and_omitted() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     )
     .expect("zero timeUnixNano should be accepted");
 
-    let line = String::from_utf8(json_lines).expect("utf8");
-    let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
-    assert_eq!(
-        row.get(field_names::BODY)
-            .and_then(serde_json::Value::as_str),
-        Some("hello")
-    );
-    assert!(
-        row.get(field_names::TIMESTAMP).is_none(),
-        "unknown timestamp should be omitted, not emitted as 0"
-    );
+    assert_eq!(batch.num_rows(), 1);
+    // When timestamp is 0, it should be omitted from the batch.
+    if let Some(ts_col) = batch.column_by_name(field_names::TIMESTAMP) {
+        let ts_arr = ts_col
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("_timestamp must be Int64");
+        assert!(
+            ts_arr.is_null(0),
+            "unknown timestamp should be null, not emitted as 0"
+        );
+    }
 }
 
 /// JSON OTLP path: when timeUnixNano is 0 but observedTimeUnixNano is set,
 /// the timestamp must use the observed time (issue #1690).
 #[test]
 fn json_path_uses_observed_time_when_event_time_is_zero() {
-    let json_lines = decode_otlp_logs_json(
+    let batch = decode_otlp_json(
         br#"{
             "resourceLogs": [{
                 "scopeLogs": [{
@@ -1030,194 +876,28 @@ fn json_path_uses_observed_time_when_event_time_is_zero() {
                 }]
             }]
         }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
     )
     .expect("valid OTLP JSON");
 
-    let line = String::from_utf8(json_lines).expect("utf8");
-    let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
+    assert_eq!(batch.num_rows(), 1);
+    let ts_col = batch
+        .column_by_name(field_names::TIMESTAMP)
+        .expect("_timestamp column must exist");
+    let ts_arr = ts_col
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("_timestamp must be Int64");
     assert_eq!(
-        row.get(field_names::TIMESTAMP)
-            .and_then(serde_json::Value::as_u64),
-        Some(1_705_314_700_000_000_000),
+        ts_arr.value(0),
+        1_705_314_700_000_000_000_i64,
         "JSON path must fall back to observedTimeUnixNano when timeUnixNano==0"
     );
 }
 
 #[test]
-fn special_float_strings_match_protobuf_semantics() {
-    let request = ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![LogRecord {
-                    body: Some(AnyValue {
-                        value: Some(Value::DoubleValue(f64::NAN)),
-                    }),
-                    attributes: vec![
-                        KeyValue {
-                            key: "nan_attr".into(),
-                            value: Some(AnyValue {
-                                value: Some(Value::DoubleValue(f64::NAN)),
-                            }),
-                        },
-                        KeyValue {
-                            key: "pos_inf".into(),
-                            value: Some(AnyValue {
-                                value: Some(Value::DoubleValue(f64::INFINITY)),
-                            }),
-                        },
-                        KeyValue {
-                            key: "neg_inf".into(),
-                            value: Some(AnyValue {
-                                value: Some(Value::DoubleValue(f64::NEG_INFINITY)),
-                            }),
-                        },
-                    ],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-
-    let protobuf_lines = decode_otlp_logs(&request.encode_to_vec()).unwrap();
-    let json_lines = decode_otlp_logs_json(
-        br#"{
-            "resourceLogs": [{
-                "scopeLogs": [{
-                    "logRecords": [{
-                        "body": {"doubleValue": "NaN"},
-                        "attributes": [
-                            {"key": "nan_attr", "value": {"doubleValue": "NaN"}},
-                            {"key": "pos_inf", "value": {"doubleValue": "Infinity"}},
-                            {"key": "neg_inf", "value": {"doubleValue": "-Infinity"}}
-                        ]
-                    }]
-                }]
-            }]
-        }"#,
-    )
-    .expect("special float string tokens should decode");
-
-    let parse_first = |lines: &[u8]| -> serde_json::Value {
-        let line = String::from_utf8(lines.to_vec())
-            .unwrap()
-            .lines()
-            .next()
-            .expect("one decoded row")
-            .to_string();
-        serde_json::from_str(&line).unwrap()
-    };
-
-    let protobuf_row = parse_first(&protobuf_lines);
-    let json_row = parse_first(&json_lines);
-    assert_eq!(protobuf_row, json_row);
-    assert_eq!(
-        json_row.get("message").and_then(serde_json::Value::as_str),
-        Some("NaN")
-    );
-    assert!(
-        json_row
-            .get("nan_attr")
-            .is_some_and(serde_json::Value::is_null)
-    );
-    assert!(
-        json_row
-            .get("pos_inf")
-            .is_some_and(serde_json::Value::is_null)
-    );
-    assert!(
-        json_row
-            .get("neg_inf")
-            .is_some_and(serde_json::Value::is_null)
-    );
-}
-
-#[test]
-fn empty_string_body_and_unsupported_values_preserve_wire_equivalence() {
-    let request = ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            resource: Some(Resource {
-                attributes: vec![
-                    KeyValue {
-                        key: "empty_resource".into(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue(String::new())),
-                        }),
-                    },
-                    KeyValue {
-                        key: "unsupported_resource".into(),
-                        value: Some(AnyValue {
-                            value: Some(Value::ArrayValue(Default::default())),
-                        }),
-                    },
-                ],
-                ..Default::default()
-            }),
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![LogRecord {
-                    body: Some(AnyValue {
-                        value: Some(Value::StringValue(String::new())),
-                    }),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-
-    let protobuf_lines = decode_otlp_logs(&request.encode_to_vec()).unwrap();
-    let json_lines = decode_otlp_logs_json(
-        br#"{
-            "resourceLogs": [{
-                "resource": {
-                    "attributes": [
-                        {"key": "empty_resource", "value": {"stringValue": ""}},
-                        {"key": "unsupported_resource", "value": {"arrayValue": {"values": []}}}
-                    ]
-                },
-                "scopeLogs": [{
-                    "logRecords": [{
-                        "body": {"stringValue": ""}
-                    }]
-                }]
-            }]
-        }"#,
-    )
-    .unwrap();
-
-    let parse_first = |lines: &[u8]| -> serde_json::Value {
-        let line = String::from_utf8(lines.to_vec())
-            .unwrap()
-            .lines()
-            .next()
-            .expect("one decoded row")
-            .to_string();
-        serde_json::from_str(&line).unwrap()
-    };
-
-    let protobuf_row = parse_first(&protobuf_lines);
-    let json_row = parse_first(&json_lines);
-    assert_eq!(protobuf_row, json_row);
-    assert_eq!(
-        protobuf_row
-            .get("empty_resource")
-            .and_then(serde_json::Value::as_str),
-        Some("")
-    );
-    assert!(protobuf_row.get("unsupported_resource").is_none());
-    assert_eq!(
-        protobuf_row
-            .get("message")
-            .and_then(serde_json::Value::as_str),
-        Some("")
-    );
-}
-
-#[test]
 fn handles_invalid_protobuf() {
-    let result = decode_otlp_logs(b"not valid protobuf");
+    let result = decode_otlp_protobuf(b"not valid protobuf", field_names::DEFAULT_RESOURCE_PREFIX);
     assert!(result.is_err());
 }
 
@@ -1228,7 +908,7 @@ fn invalid_protobuf_increments_parse_errors_when_stats_hooked() {
         "test",
         "127.0.0.1:0",
         16,
-        Arc::clone(&stats),
+        Some(Arc::clone(&stats)),
     )
     .unwrap();
     let url = format!("http://{}/v1/logs", receiver.local_addr());
@@ -1249,8 +929,9 @@ fn invalid_protobuf_increments_parse_errors_when_stats_hooked() {
 
 #[test]
 fn handles_empty_body() {
-    let json = decode_otlp_logs(b"").unwrap();
-    assert!(json.is_empty());
+    let batch =
+        decode_otlp_protobuf(b"", field_names::DEFAULT_RESOURCE_PREFIX).expect("empty body ok");
+    assert_eq!(batch.num_rows(), 0);
 }
 
 #[test]
@@ -1265,8 +946,9 @@ fn handles_request_with_no_log_records() {
         }],
     };
     let body = request.encode_to_vec();
-    let json = decode_otlp_logs(&body).unwrap();
-    assert!(json.is_empty());
+    let batch =
+        decode_otlp_protobuf(&body, field_names::DEFAULT_RESOURCE_PREFIX).expect("decode ok");
+    assert_eq!(batch.num_rows(), 0);
 }
 
 #[test]
@@ -1285,10 +967,22 @@ fn handles_record_with_no_body() {
         }],
     };
     let body = request.encode_to_vec();
-    let json = decode_otlp_logs(&body).unwrap();
-    let text = String::from_utf8(json).unwrap();
-    assert!(text.contains("\"level\":\"WARN\""));
-    assert!(!text.contains("\"message\""));
+    let batch =
+        decode_otlp_protobuf(&body, field_names::DEFAULT_RESOURCE_PREFIX).expect("decode ok");
+    assert_eq!(batch.num_rows(), 1);
+    let sev = batch
+        .column_by_name(field_names::SEVERITY)
+        .expect("severity column");
+    let sev = sev
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("severity string");
+    assert_eq!(sev.value(0), "WARN");
+    assert!(
+        batch.column_by_name(field_names::BODY).is_none()
+            || batch.column_by_name(field_names::BODY).unwrap().is_null(0),
+        "body column should be absent or null"
+    );
 }
 
 #[test]
@@ -1328,121 +1022,6 @@ fn integer_writers_emit_canonical_decimal_strings() {
     out.clear();
     write_i64_to_buf(&mut out, i64::MIN);
     assert_eq!(String::from_utf8(out).unwrap(), i64::MIN.to_string());
-}
-
-/// Local microbenchmark for OTLP request -> NDJSON conversion.
-///
-/// Run with:
-/// `cargo test -p logfwd-io otlp_receiver::tests::bench_convert_request_to_json_lines_fast_vs_simple --release -- --ignored --nocapture`
-#[test]
-#[ignore = "microbenchmark"]
-fn bench_convert_request_to_json_lines_fast_vs_simple() {
-    use std::hint::black_box;
-    use std::time::Instant;
-
-    let request = ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            resource: Some(Resource {
-                attributes: vec![
-                    KeyValue {
-                        key: "service.name".into(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("bench".into())),
-                        }),
-                    },
-                    KeyValue {
-                        key: "service.instance".into(),
-                        value: Some(AnyValue {
-                            value: Some(Value::StringValue("instance-1".into())),
-                        }),
-                    },
-                ],
-                ..Default::default()
-            }),
-            scope_logs: vec![ScopeLogs {
-                log_records: (0..2_000)
-                    .map(|i| LogRecord {
-                        time_unix_nano: 1_710_000_000_000_000_000 + i as u64,
-                        severity_text: match i % 4 {
-                            0 => "INFO".into(),
-                            1 => "WARN".into(),
-                            2 => "ERROR".into(),
-                            _ => "DEBUG".into(),
-                        },
-                        body: Some(AnyValue {
-                            value: Some(Value::StringValue(format!("message-{i}"))),
-                        }),
-                        attributes: vec![
-                            KeyValue {
-                                key: "status".into(),
-                                value: Some(AnyValue {
-                                    value: Some(Value::IntValue(200 + (i % 5) as i64)),
-                                }),
-                            },
-                            KeyValue {
-                                key: "latency".into(),
-                                value: Some(AnyValue {
-                                    value: Some(Value::DoubleValue((i % 1000) as f64 / 10.0)),
-                                }),
-                            },
-                            KeyValue {
-                                key: "active".into(),
-                                value: Some(AnyValue {
-                                    value: Some(Value::BoolValue(i % 2 == 0)),
-                                }),
-                            },
-                        ],
-                        trace_id: if i % 3 == 0 {
-                            Vec::new()
-                        } else {
-                            vec![
-                                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
-                                0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-                            ]
-                        },
-                        span_id: if i % 5 == 0 {
-                            Vec::new()
-                        } else {
-                            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-                        },
-                        ..Default::default()
-                    })
-                    .collect(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-
-    let fast_once = convert_request_to_json_lines(&request);
-    let simple_once = convert_request_to_json_lines_simple(&request);
-    assert_eq!(
-        parse_json_lines_values(&fast_once),
-        parse_json_lines_values(&simple_once),
-        "fast and simple converters must remain semantically equivalent"
-    );
-
-    const ITERS: usize = 80;
-    let t0 = Instant::now();
-    for _ in 0..ITERS {
-        let out = convert_request_to_json_lines(&request);
-        black_box(out.len());
-    }
-    let fast = t0.elapsed();
-
-    let t0 = Instant::now();
-    for _ in 0..ITERS {
-        let out = convert_request_to_json_lines_simple(&request);
-        black_box(out.len());
-    }
-    let simple = t0.elapsed();
-
-    eprintln!(
-        "convert_request_to_json_lines bench records={} iters={ITERS}",
-        request.resource_logs[0].scope_logs[0].log_records.len()
-    );
-    eprintln!("  fast={:?}", fast);
-    eprintln!("  simple={:?}", simple);
 }
 
 proptest! {
@@ -1597,16 +1176,12 @@ fn bench_writer_helpers_fast_vs_simple() {
 
 #[test]
 fn json_escaping_control_chars() {
-    // Build a string with all control chars that are valid single-byte UTF-8 (0x00-0x1f all are).
     let ctrl: String = (0u8..=0x1f).map(|b| b as char).collect();
     let mut out = Vec::new();
     write_json_string_field(&mut out, "k", &ctrl);
     let text = String::from_utf8(out).unwrap();
 
-    // No raw control bytes should appear in the output.
     for b in text.as_bytes() {
-        // The only bytes < 0x20 allowed are the literal `"` delimiters… but `"` is 0x22.
-        // So nothing < 0x20 should appear at all.
         assert!(
             *b >= 0x20,
             "raw control byte 0x{:02x} found in output: {text}",
@@ -1614,7 +1189,6 @@ fn json_escaping_control_chars() {
         );
     }
 
-    // Spot-check specific escapes.
     assert!(text.contains(r"\u0000"), "NUL not escaped: {text}");
     assert!(text.contains(r"\u0001"), "SOH not escaped: {text}");
     assert!(text.contains(r"\u0008"), "BS not escaped: {text}");
@@ -1626,18 +1200,15 @@ fn json_escaping_control_chars() {
 
 #[test]
 fn json_escaping_unicode() {
-    // Multi-byte UTF-8 should pass through unchanged.
     let input = "hello \u{00e9}\u{1f600} world \u{4e16}\u{754c}";
     let mut out = Vec::new();
     write_json_string_field(&mut out, "k", input);
     let text = String::from_utf8(out).unwrap();
 
-    // The multi-byte chars should appear literally (not \u-escaped).
     assert!(text.contains('\u{00e9}'), "e-acute missing: {text}");
     assert!(text.contains('\u{1f600}'), "emoji missing: {text}");
     assert!(text.contains('\u{4e16}'), "CJK char missing: {text}");
 
-    // Verify the whole thing is valid JSON.
     let json_str = format!("{{{text}}}");
     serde_json::from_str::<serde_json::Value>(&json_str)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json_str}"));
@@ -1658,7 +1229,6 @@ fn json_escaping_key_chars() {
 /// return 429 rather than silently dropping the payload and returning 200.
 #[test]
 fn returns_429_when_channel_full_not_200() {
-    // Use a tiny channel so it fills up after 2 sends.
     let mut receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 2).unwrap();
     let addr = receiver.local_addr();
     let url = format!("http://{addr}/v1/logs");
@@ -1846,16 +1416,12 @@ fn missing_resource_logs_returns_400() {
 
 #[test]
 fn receiver_shuts_down_cleanly_on_drop() {
-    // Create an input receiver binding to port 0 (OS assigns port).
     let receiver =
         OtlpReceiverInput::new("test-drop", "127.0.0.1:0").expect("should bind successfully");
     let local_addr = receiver.local_addr();
 
-    // Drop the receiver. This should trigger `Drop`, set `is_running` to false,
-    // and join the thread, closing the HTTP server and releasing the port.
     drop(receiver);
 
-    // Retry bind on the same port until it succeeds or times out.
     wait_until(
         Duration::from_secs(1),
         || OtlpReceiverInput::new("test-drop-2", &local_addr.to_string()).is_ok(),
@@ -1887,7 +1453,6 @@ fn receiver_health_reports_stopping_when_shutdown_requested() {
 fn receiver_health_reports_failed_when_server_thread_exits() {
     let mut receiver = OtlpReceiverInput::new("test-health-failed", "127.0.0.1:0")
         .expect("should bind successfully");
-    // Ensure the real worker exits before replacing the ownership task in-test.
     receiver.is_running.store(false, Ordering::Relaxed);
     let (shutdown_tx, _shutdown_rx) = oneshot::channel();
     receiver.background_task = BackgroundHttpTask::new_axum(shutdown_tx, std::thread::spawn(|| {}));
@@ -1945,76 +1510,6 @@ fn valid_otlp_json_returns_200() {
     );
 }
 
-/// Regression test for issue #1690: when time_unix_nano is 0 but
-/// observed_time_unix_nano is set, the timestamp must use the observed time.
-#[test]
-fn uses_observed_time_when_event_time_is_zero() {
-    const OBSERVED_NS: u64 = 1_705_314_700_000_000_000;
-
-    let request = ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![LogRecord {
-                    time_unix_nano: 0,                    // event time unknown
-                    observed_time_unix_nano: OBSERVED_NS, // observation time known
-                    severity_text: "INFO".into(),
-                    body: Some(AnyValue {
-                        value: Some(Value::StringValue("test".into())),
-                    }),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-
-    let json = convert_request_to_json_lines(&request);
-    let text = String::from_utf8(json).unwrap();
-
-    // Must contain the observed timestamp.
-    assert!(
-        text.contains(&OBSERVED_NS.to_string()),
-        "observed_time_unix_nano not written when time_unix_nano==0: {text}"
-    );
-}
-
-/// When time_unix_nano is set, it takes priority over observed_time_unix_nano.
-#[test]
-fn prefers_event_time_over_observed_time() {
-    const EVENT_NS: u64 = 1_705_314_600_000_000_000;
-    const OBSERVED_NS: u64 = 1_705_314_700_000_000_000;
-
-    let request = ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![LogRecord {
-                    time_unix_nano: EVENT_NS,
-                    observed_time_unix_nano: OBSERVED_NS,
-                    body: Some(AnyValue {
-                        value: Some(Value::StringValue("test".into())),
-                    }),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-
-    let json = convert_request_to_json_lines(&request);
-    let text = String::from_utf8(json).unwrap();
-
-    assert!(
-        text.contains(&EVENT_NS.to_string()),
-        "event time_unix_nano should be used when set: {text}"
-    );
-    assert!(
-        !text.contains(&OBSERVED_NS.to_string()),
-        "observed time should not appear when event time is set: {text}"
-    );
-}
-
 // Regression tests for issue #1167: non-finite floats must emit null, not "NaN"/"inf".
 #[test]
 fn write_f64_nan_emits_null() {
@@ -2053,138 +1548,12 @@ fn write_json_string_field_escapes_key() {
     let mut out = Vec::new();
     write_json_string_field(&mut out, r#"k"ey"#, "value");
     let text = String::from_utf8(out).unwrap();
-    // Must be valid JSON
     let json_str = format!("{{{text}}}");
     serde_json::from_str::<serde_json::Value>(&json_str)
         .unwrap_or_else(|e| panic!("invalid JSON after key escaping: {e}\n{json_str}"));
     assert!(
         text.contains(r#"k\"ey"#),
         "quote in key not escaped: {text}"
-    );
-}
-
-// Regression tests for #1665: BytesValue/ArrayValue/KvListValue attributes
-// must not produce spurious commas (invalid JSON) in the binary OTLP path.
-
-#[test]
-fn bytes_value_attr_produces_valid_json() {
-    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
-    use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-
-    let req = ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![LogRecord {
-                    attributes: vec![
-                        // int attribute before bytes
-                        KeyValue {
-                            key: "count".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::IntValue(42)),
-                            }),
-                        },
-                        // bytes attribute — must not produce a spurious comma
-                        KeyValue {
-                            key: "trace_bytes".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::BytesValue(vec![0xde, 0xad, 0xbe, 0xef])),
-                            }),
-                        },
-                        // int attribute after bytes — must appear correctly
-                        KeyValue {
-                            key: "status".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::IntValue(200)),
-                            }),
-                        },
-                    ],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-
-    let output = convert_request_to_json_lines(&req);
-    let text = String::from_utf8(output).expect("valid UTF-8");
-    let line = text.trim();
-    assert!(!line.is_empty(), "expected at least one output line");
-    let v: serde_json::Value = serde_json::from_str(line)
-        .unwrap_or_else(|e| panic!("bytes_value attribute produced invalid JSON: {e}\n{line}"));
-    // count and status must be present
-    assert_eq!(
-        v["count"], 42,
-        "int attribute before bytes must be preserved"
-    );
-    assert_eq!(
-        v["status"], 200,
-        "int attribute after bytes must be preserved"
-    );
-    // bytes value must be present as hex string
-    assert_eq!(
-        v["trace_bytes"], "deadbeef",
-        "bytes value must be hex-encoded"
-    );
-}
-
-#[test]
-fn array_value_attr_skipped_no_spurious_comma() {
-    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-    use opentelemetry_proto::tonic::common::v1::{
-        AnyValue, ArrayValue, KeyValue, any_value::Value,
-    };
-    use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-
-    let req = ExportLogsServiceRequest {
-        resource_logs: vec![ResourceLogs {
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![LogRecord {
-                    attributes: vec![
-                        KeyValue {
-                            key: "before".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue("a".to_string())),
-                            }),
-                        },
-                        // ArrayValue — must be silently skipped, not produce spurious comma
-                        KeyValue {
-                            key: "tags".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::ArrayValue(ArrayValue {
-                                    values: vec![AnyValue {
-                                        value: Some(Value::StringValue("x".to_string())),
-                                    }],
-                                })),
-                            }),
-                        },
-                        KeyValue {
-                            key: "after".to_string(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue("b".to_string())),
-                            }),
-                        },
-                    ],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }],
-    };
-
-    let output = convert_request_to_json_lines(&req);
-    let text = String::from_utf8(output).expect("valid UTF-8");
-    let line = text.trim();
-    assert!(!line.is_empty(), "expected at least one output line");
-    let v: serde_json::Value = serde_json::from_str(line)
-        .unwrap_or_else(|e| panic!("array_value attribute produced invalid JSON: {e}\n{line}"));
-    assert_eq!(v["before"], "a", "attribute before array must be present");
-    assert_eq!(v["after"], "b", "attribute after array must be present");
-    assert!(
-        v.get("tags").is_none(),
-        "array attribute must be skipped entirely"
     );
 }
 
@@ -2212,7 +1581,8 @@ fn batch_path_uses_observed_time_when_event_time_is_zero() {
         }],
     };
 
-    let batch = convert_request_to_batch(&request).expect("batch build must succeed");
+    let batch = convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect("batch build must succeed");
     let ts_col = batch
         .column_by_name(field_names::TIMESTAMP)
         .expect("_timestamp column must exist");

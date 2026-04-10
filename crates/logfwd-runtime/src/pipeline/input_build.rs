@@ -4,7 +4,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use logfwd_config::{
     Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorProfileConfig,
-    HttpMethodConfig, InputConfig, InputType, PlatformSensorBetaInputConfig,
+    HttpMethodConfig, InputConfig, InputType, PlatformSensorInputConfig,
 };
 use logfwd_diagnostics::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
@@ -39,11 +39,7 @@ fn make_format(
 
 fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> Result<(), String> {
     match input_type {
-        InputType::Generator
-        | InputType::Otlp
-        | InputType::LinuxSensorBeta
-        | InputType::MacosSensorBeta
-        | InputType::WindowsSensorBeta => {
+        InputType::Generator | InputType::Otlp => {
             if !matches!(format, Format::Json) {
                 return Err(format!(
                     "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
@@ -70,7 +66,6 @@ pub(super) fn build_input_state(
     name: &str,
     cfg: &InputConfig,
     stats: Arc<ComponentStats>,
-    otlp_structured_ingress: bool,
 ) -> Result<InputState, String> {
     let (raw_source, format, buf_cap): (Box<dyn InputSource>, Format, usize) = match cfg.input_type
     {
@@ -93,9 +88,19 @@ pub(super) fn build_input_state(
             }
             let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
             let source = if is_glob {
-                FileInput::new_with_globs(name.to_string(), &[path.as_str()], tail_config)
+                FileInput::new_with_globs(
+                    name.to_string(),
+                    &[path.as_str()],
+                    tail_config,
+                    Arc::clone(&stats),
+                )
             } else {
-                FileInput::new(name.to_string(), &[PathBuf::from(path)], tail_config)
+                FileInput::new(
+                    name.to_string(),
+                    &[PathBuf::from(path)],
+                    tail_config,
+                    Arc::clone(&stats),
+                )
             }
             .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
             validate_input_format(name, InputType::File, &format)?;
@@ -198,22 +203,20 @@ pub(super) fn build_input_state(
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': otlp input requires 'listen'"))?;
+            let resource_prefix = cfg
+                .resource_prefix
+                .as_deref()
+                .unwrap_or(logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX);
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Otlp, &format)?;
-            let source = if otlp_structured_ingress {
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_structured_with_stats(
+            let source =
+                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_and_resource_prefix(
                     name,
                     addr,
                     Arc::clone(&stats),
+                    resource_prefix,
                 )
-            } else {
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats(
-                    name,
-                    addr,
-                    Arc::clone(&stats),
-                )
-            }
-            .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
+                .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputType::Http => {
@@ -236,6 +239,9 @@ pub(super) fn build_input_state(
                 }
                 if let Some(response_code) = http.response_code {
                     options.response_code = response_code;
+                }
+                if let Some(response_body) = &http.response_body {
+                    options.response_body = Some(response_body.clone());
                 }
                 if let Some(method) = &http.method {
                     options.method = match method {
@@ -265,7 +271,7 @@ pub(super) fn build_input_state(
                     "input '{name}': CRI/auto format is not supported for UDP inputs (CRI is a file-based container log format)"
                 ));
             }
-            let source = logfwd_io::udp_input::UdpInput::new(name, addr)
+            let source = logfwd_io::udp_input::UdpInput::new(name, addr, Arc::clone(&stats))
                 .map_err(|e| format!("input '{name}': failed to bind UDP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Udp, &format)?;
@@ -281,33 +287,40 @@ pub(super) fn build_input_state(
                     "input '{name}': CRI/auto format is not supported for TCP inputs (CRI is a file-based container log format)"
                 ));
             }
-            let source = logfwd_io::tcp_input::TcpInput::new(name, addr)
+            let source = logfwd_io::tcp_input::TcpInput::new(name, addr, Arc::clone(&stats))
                 .map_err(|e| format!("input '{name}': failed to bind TCP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Tcp, &format)?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
-        InputType::LinuxSensorBeta | InputType::MacosSensorBeta | InputType::WindowsSensorBeta => {
-            use logfwd_io::platform_sensor_beta::{PlatformSensorBetaInput, PlatformSensorTarget};
+        InputType::LinuxEbpfSensor | InputType::MacosEsSensor | InputType::WindowsEbpfSensor => {
+            use logfwd_io::platform_sensor::{PlatformSensorInput, PlatformSensorTarget};
 
             let target = match cfg.input_type {
-                InputType::LinuxSensorBeta => PlatformSensorTarget::Linux,
-                InputType::MacosSensorBeta => PlatformSensorTarget::Macos,
-                InputType::WindowsSensorBeta => PlatformSensorTarget::Windows,
+                InputType::LinuxEbpfSensor => PlatformSensorTarget::Linux,
+                InputType::MacosEsSensor => PlatformSensorTarget::Macos,
+                InputType::WindowsEbpfSensor => PlatformSensorTarget::Windows,
                 _ => unreachable!("handled by outer match"),
             };
 
-            let format = cfg.format.clone().unwrap_or(Format::Json);
-            validate_input_format(name, cfg.input_type.clone(), &format)?;
+            if cfg.format.is_some() {
+                return Err(format!(
+                    "input '{name}': sensor inputs do not support 'format' (Arrow-native input)"
+                ));
+            }
 
-            let beta_cfg = build_platform_sensor_beta_config(cfg.sensor_beta.as_ref());
-            let source = PlatformSensorBetaInput::new(name, target, beta_cfg).map_err(|e| {
+            let sensor_cfg = build_platform_sensor_config(cfg.sensor.as_ref());
+            let source = PlatformSensorInput::new(name, target, sensor_cfg).map_err(|e| {
                 format!(
                     "input '{name}': failed to initialize {} input: {e}",
                     cfg.input_type
                 )
             })?;
-            (Box::new(source), format, 64 * 1024)
+            return Ok(InputState {
+                source: Box::new(source),
+                buf: BytesMut::with_capacity(64 * 1024),
+                stats,
+            });
         }
         _ => {
             return Err(format!(
@@ -328,31 +341,33 @@ pub(super) fn build_input_state(
     })
 }
 
-fn build_platform_sensor_beta_config(
-    cfg: Option<&PlatformSensorBetaInputConfig>,
-) -> logfwd_io::platform_sensor_beta::PlatformSensorBetaConfig {
+fn build_platform_sensor_config(
+    cfg: Option<&PlatformSensorInputConfig>,
+) -> logfwd_io::platform_sensor::PlatformSensorConfig {
     let poll_interval_ms = cfg.and_then(|c| c.poll_interval_ms).unwrap_or(10_000);
-    let emit_heartbeat = cfg.and_then(|c| c.emit_heartbeat).unwrap_or(true);
-    logfwd_io::platform_sensor_beta::PlatformSensorBetaConfig {
-        emit_heartbeat,
+    let control_reload_interval_ms = cfg
+        .and_then(|c| c.control_reload_interval_ms)
+        .unwrap_or(1_000);
+    logfwd_io::platform_sensor::PlatformSensorConfig {
         poll_interval: std::time::Duration::from_millis(poll_interval_ms.max(1)),
+        control_path: cfg.and_then(|c| c.control_path.clone()).map(PathBuf::from),
+        control_reload_interval: std::time::Duration::from_millis(
+            control_reload_interval_ms.max(1),
+        ),
+        enabled_families: cfg.and_then(|c| c.enabled_families.clone()),
+        emit_signal_rows: cfg.and_then(|c| c.emit_signal_rows).unwrap_or(true),
     }
 }
 
 /// Returns whether OTLP input should use structured ingress mode.
 ///
-/// Structured ingress preserves typed OTLP fields but does not synthesize the
-/// scanner-owned `_raw` column. We therefore keep legacy JSON-lines scanner mode
-/// whenever `ScanConfig.keep_raw` is enabled.
+/// Structured ingress preserves typed OTLP fields but bypasses the scanner.
+/// If scanner line capture is required, use legacy scanner ingress.
 pub(super) fn otlp_uses_structured_ingress(
     scan_config: &logfwd_core::scan_config::ScanConfig,
 ) -> bool {
-    // Structured OTLP ingress preserves typed log fields, but it does not yet
-    // synthesize scanner-owned `_raw`. Keep legacy JSON-lines -> scanner mode
-    // whenever the SQL plan requires `_raw` semantics.
-    !scan_config.keep_raw
+    !scan_config.captures_line()
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,18 +390,55 @@ mod tests {
 
     #[test]
     fn generator_and_otlp_require_json_format() {
-        for input_type in [
-            InputType::Generator,
-            InputType::Otlp,
-            InputType::LinuxSensorBeta,
-            InputType::MacosSensorBeta,
-            InputType::WindowsSensorBeta,
-        ] {
+        for input_type in [InputType::Generator, InputType::Otlp] {
             assert!(validate_input_format("in", input_type.clone(), &Format::Json).is_ok());
             let err = validate_input_format("in", input_type, &Format::Raw)
                 .expect_err("non-json format must be rejected");
             assert!(err.contains("expected json"), "unexpected error: {err}");
         }
+    }
+
+    #[test]
+    fn sensor_inputs_reject_format_configuration() {
+        let mut pm = logfwd_io::diagnostics::PipelineMetrics::new(
+            "p",
+            "SELECT 1",
+            &logfwd_test_utils::test_meter(),
+        );
+        let stats = pm.add_input("sensor", "test");
+        let input_type = if cfg!(target_os = "linux") {
+            InputType::LinuxEbpfSensor
+        } else if cfg!(target_os = "macos") {
+            InputType::MacosEsSensor
+        } else {
+            InputType::WindowsEbpfSensor
+        };
+        let cfg = InputConfig {
+            name: Some("sensor".to_string()),
+            input_type,
+            path: None,
+            listen: None,
+            resource_prefix: None,
+            format: Some(Format::Raw),
+            poll_interval_ms: None,
+            read_buf_size: None,
+            per_file_read_budget_bytes: None,
+            max_open_files: None,
+            glob_rescan_interval_ms: None,
+            generator: None,
+            http: None,
+            sensor: Some(Default::default()),
+            sql: None,
+            tls: None,
+        };
+        let err = match build_input_state("sensor", &cfg, stats) {
+            Ok(_) => panic!("sensor format must be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("do not support 'format'"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -403,6 +455,7 @@ mod tests {
             input_type: InputType::File,
             path: Some("/tmp/test.log".into()),
             listen: None,
+            resource_prefix: None,
             format: None,
             poll_interval_ms: None,
             read_buf_size: None,
@@ -410,7 +463,7 @@ mod tests {
             max_open_files: None,
             glob_rescan_interval_ms: None,
             generator: None,
-            sensor_beta: None,
+            sensor: None,
             http: None,
             sql: None,
             tls: None,
@@ -421,7 +474,7 @@ mod tests {
         // error. A more involved test requires exposing or inspecting the internal
         // file tailer state, but here we at least verify it parses and maps defaults
         // cleanly for a valid file input configuration.
-        assert!(build_input_state("test_in", &cfg_defaults, Arc::clone(&stats), false).is_ok());
+        assert!(build_input_state("test_in", &cfg_defaults, Arc::clone(&stats)).is_ok());
 
         // Explicit tuning overrides
         let cfg_overrides = InputConfig {
@@ -429,6 +482,7 @@ mod tests {
             input_type: InputType::File,
             path: Some("/tmp/test.log".into()),
             listen: None,
+            resource_prefix: None,
             format: None,
             poll_interval_ms: Some(123),
             read_buf_size: Some(456),
@@ -436,13 +490,13 @@ mod tests {
             max_open_files: Some(10),
             glob_rescan_interval_ms: None,
             generator: None,
-            sensor_beta: None,
+            sensor: None,
             http: None,
             sql: None,
             tls: None,
         };
 
-        assert!(build_input_state("test_in", &cfg_overrides, Arc::clone(&stats), false).is_ok());
+        assert!(build_input_state("test_in", &cfg_overrides, Arc::clone(&stats)).is_ok());
     }
 
     #[test]
@@ -459,6 +513,7 @@ mod tests {
                     input_type: input_type.clone(),
                     path: None,
                     listen: Some("127.0.0.1:0".to_string()),
+                    resource_prefix: None,
                     format: Some(format),
                     poll_interval_ms: None,
                     read_buf_size: None,
@@ -467,12 +522,12 @@ mod tests {
                     glob_rescan_interval_ms: None,
                     generator: None,
                     http: None,
-                    sensor_beta: None,
+                    sensor: None,
                     sql: None,
                     tls: None,
                 };
                 let stats = pm.add_input("in", "test");
-                let err = match build_input_state("in", &cfg, stats, true) {
+                let err = match build_input_state("in", &cfg, stats) {
                     Ok(_) => panic!("CRI/auto must be rejected for UDP/TCP inputs"),
                     Err(err) => err,
                 };
@@ -485,19 +540,18 @@ mod tests {
             }
         }
     }
-
     #[test]
-    fn otlp_structured_ingress_tracks_keep_raw_flag() {
+    fn otlp_structured_ingress_tracks_line_capture_flag() {
         let mut scan = logfwd_core::scan_config::ScanConfig::default();
-        scan.keep_raw = false;
+        scan.line_field_name = None;
         assert!(
             otlp_uses_structured_ingress(&scan),
-            "keep_raw=false should prefer structured OTLP ingress"
+            "line capture disabled should prefer structured OTLP ingress"
         );
-        scan.keep_raw = true;
+        scan.line_field_name = Some(logfwd_types::field_names::BODY.to_string());
         assert!(
             !otlp_uses_structured_ingress(&scan),
-            "keep_raw=true should force legacy scanner ingress"
+            "line capture enabled should force legacy scanner ingress"
         );
     }
 }

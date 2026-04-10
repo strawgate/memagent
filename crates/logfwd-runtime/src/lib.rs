@@ -5,6 +5,7 @@
 //! entrypoints and compatibility re-exports.
 
 pub mod bootstrap;
+pub mod generated_cli;
 pub mod pipeline;
 pub mod processor;
 pub mod transform;

@@ -39,7 +39,7 @@ string. Integer and float values are coerced to their string representation.
 Returns `NULL` when the key is not present.
 
 ```sql
-SELECT json(_raw, 'host') AS host FROM logs
+SELECT json(body, 'host') AS host FROM logs
 ```
 
 ### `json_int(column, key)` — extract an integer value from JSON
@@ -53,8 +53,8 @@ Extracts a field from a raw JSON string column and returns its value as a
 a JSON number (e.g. a quoted string `"200"` returns `NULL`).
 
 ```sql
-SELECT json_int(_raw, 'status') AS status FROM logs
-  WHERE json_int(_raw, 'status') >= 500
+SELECT json_int(body, 'status') AS status FROM logs
+  WHERE json_int(body, 'status') >= 500
 ```
 
 ### `json_float(column, key)` — extract a float value from JSON
@@ -68,8 +68,8 @@ Extracts a field from a raw JSON string column and returns its value as a
 key is not present or the value is a quoted string.
 
 ```sql
-SELECT json_float(_raw, 'duration') AS duration_sec FROM logs
-  WHERE json_float(_raw, 'duration') > 1.5
+SELECT json_float(body, 'duration') AS duration_sec FROM logs
+  WHERE json_float(body, 'duration') > 1.5
 ```
 
 ### `grok(column, pattern)` — grok pattern extraction
@@ -88,7 +88,7 @@ Built-in patterns: `IP`, `IPV4`, `IPV6`, `NUMBER`, `INT`, `BASE10NUM`,
 `TIME`, `LOGLEVEL`, `HOSTNAME`, `EMAILADDRESS`.
 
 ```sql
-SELECT grok(message, '%{WORD:method} %{URIPATH:path} %{NUMBER:status}')
+SELECT grok(body, '%{WORD:method} %{URIPATH:path} %{NUMBER:status}')
   FROM logs
 ```
 
@@ -103,7 +103,7 @@ when `group` is 0. Returns `NULL` when the pattern does not match or the
 group index is out of range.
 
 ```sql
-SELECT regexp_extract(message, 'status=(\d+)', 1) AS status_code FROM logs
+SELECT regexp_extract(body, 'status=(\d+)', 1) AS status_code FROM logs
 ```
 
 ### `geo_lookup(ip)` — GeoIP enrichment

@@ -39,9 +39,8 @@ pub(super) fn encode_row_as_log_record_fast_v1(
             (Severity::Unspecified, b"")
         };
 
-    let body: &str = match (columns.body_col.as_ref(), columns.raw_col.as_ref()) {
-        (Some((_, body)), _) if !body.is_null(row) => body.value(row),
-        (_, Some((_, raw))) if !raw.is_null(row) => raw.value(row),
+    let body: &str = match columns.body_col.as_ref() {
+        Some((_, body)) if !body.is_null(row) => body.value(row),
         _ => "",
     };
     let body_bytes = body.as_bytes();

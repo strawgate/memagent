@@ -33,15 +33,15 @@ fn scan_streaming(input: &[u8]) -> RecordBatch {
         .expect("scan failed")
 }
 
-/// Scan with Scanner (detached mode) using keep_raw=true.
-fn scan_storage_raw(input: &[u8]) -> RecordBatch {
+/// Scan with Scanner (detached mode) with line capture enabled.
+fn scan_storage_with_line_capture(input: &[u8]) -> RecordBatch {
     let config = ScanConfig {
-        keep_raw: true,
+        line_field_name: Some("body".to_string()),
         ..ScanConfig::default()
     };
     let mut s = Scanner::new(config);
     s.scan_detached(bytes::Bytes::from(input.to_vec()))
-        .expect("scan_detached (keep_raw) failed")
+        .expect("scan_detached (line_capture) failed")
 }
 
 /// Extract a string column value from a RecordBatch.
@@ -586,13 +586,13 @@ fn compliance_cri_partial_lines() {
 
 #[test]
 fn compliance_raw_format() {
-    // Raw format: non-JSON lines captured via keep_raw.
+    // Raw format: non-JSON lines captured via line_capture.
     let raw_input = b"This is a plain text log line\n";
 
     let config = ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
-        keep_raw: true,
+        line_field_name: Some("body".to_string()),
         validate_utf8: false,
     };
     let mut scanner = Scanner::new(config);
@@ -601,8 +601,8 @@ fn compliance_raw_format() {
         .unwrap();
     assert_eq!(batch.num_rows(), 1);
     assert!(
-        batch.schema().field_with_name("_raw").is_ok(),
-        "raw format should produce _raw column"
+        batch.schema().field_with_name("body").is_ok(),
+        "raw format should produce body column"
     );
 }
 
@@ -650,13 +650,13 @@ fn compliance_only_newlines() {
 }
 
 #[test]
-fn compliance_keep_raw_preserves_line() {
+fn compliance_line_capture_preserves_line() {
     let input = b"{\"a\":1,\"b\":\"hello\"}\n";
-    let batch = scan_storage_raw(input);
+    let batch = scan_storage_with_line_capture(input);
     assert_eq!(batch.num_rows(), 1);
     let raw = batch
-        .column_by_name("_raw")
-        .expect("_raw column should exist with keep_raw=true");
+        .column_by_name("body")
+        .expect("body column should exist with line_capture=true");
     let arr = raw.as_any().downcast_ref::<StringArray>().unwrap();
     let val = arr.value(0);
     assert_eq!(val, "{\"a\":1,\"b\":\"hello\"}");

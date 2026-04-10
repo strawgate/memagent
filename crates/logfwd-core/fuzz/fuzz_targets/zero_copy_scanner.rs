@@ -28,11 +28,27 @@ fn validate_batch(batch: &arrow::record_batch::RecordBatch, label: &str) {
 }
 
 fuzz_target!(|data: &[u8]| {
+    // Extract-all mode with line capture enabled.
+    let config_line = ScanConfig {
+        wanted_fields: vec![],
+        extract_all: true,
+        line_field_name: Some("body".to_string()),
+        validate_utf8: false,
+    };
+    let mut scanner_line = Scanner::new(config_line);
+    if let Ok(batch_line) = scanner_line.scan(bytes::Bytes::copy_from_slice(data)) {
+        validate_batch(&batch_line, "streaming_extract_all_line_capture");
+        assert!(
+            batch_line.num_rows() == 0 || batch_line.schema().column_with_name("body").is_some(),
+            "streaming_extract_all_line_capture: missing 'body' column when line capture is enabled",
+        );
+    }
+
     // Extract-all mode.
     let config = ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: false,
     };
     let mut scanner = Scanner::new(config);
@@ -52,7 +68,7 @@ fuzz_target!(|data: &[u8]| {
             },
         ],
         extract_all: false,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: false,
     };
     let mut scanner2 = Scanner::new(config2);
@@ -61,11 +77,23 @@ fuzz_target!(|data: &[u8]| {
 
     // --- validate_utf8: true variants ---
 
+    // Extract-all mode with UTF-8 validation + line capture.
+    let config_line_v = ScanConfig {
+        wanted_fields: vec![],
+        extract_all: true,
+        line_field_name: Some("body".to_string()),
+        validate_utf8: true,
+    };
+    let mut scanner_line_v = Scanner::new(config_line_v);
+    if let Ok(batch_line_v) = scanner_line_v.scan(bytes::Bytes::copy_from_slice(data)) {
+        validate_batch(&batch_line_v, "streaming_extract_all_line_capture_validate_utf8");
+    }
+
     // Extract-all mode with UTF-8 validation.
     let config_v = ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: true,
     };
     let mut scanner_v = Scanner::new(config_v);
@@ -86,7 +114,7 @@ fuzz_target!(|data: &[u8]| {
             },
         ],
         extract_all: false,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: true,
     };
     let mut scanner2_v = Scanner::new(config2_v);

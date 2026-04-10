@@ -12,9 +12,10 @@ use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
 };
 use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory};
+use logfwd_types::field_names;
 use logfwd_types::pipeline::{PipelineMachine, SourceId};
 
-use super::input_build::{build_input_state, otlp_uses_structured_ingress};
+use super::input_build::build_input_state;
 use super::{InputTransform, Pipeline};
 
 impl Pipeline {
@@ -232,12 +233,12 @@ impl Pipeline {
             }
 
             let mut scan_config = transform.scan_config();
-            // Raw format sends non-JSON lines to the scanner. Without keep_raw,
-            // these produce empty rows. Force keep_raw so every line is captured.
+            // Raw format sends plain text directly to the scanner, so capture
+            // the original line in the canonical body field for downstream SQL
+            // and sinks. Auto mode wraps plain-text fallback into JSON.
             if matches!(input_cfg.format, Some(Format::Raw)) {
-                scan_config.keep_raw = true;
+                scan_config.line_field_name = Some(field_names::BODY.to_string());
             }
-            let otlp_structured_ingress = otlp_uses_structured_ingress(&scan_config);
             let scanner = logfwd_arrow::scanner::Scanner::new(scan_config);
 
             input_transforms.push(InputTransform {
@@ -246,12 +247,7 @@ impl Pipeline {
                 input_name: input_name.clone(),
             });
 
-            inputs.push(build_input_state(
-                &input_name,
-                &resolved_cfg,
-                input_stats,
-                otlp_structured_ingress,
-            )?);
+            inputs.push(build_input_state(&input_name, &resolved_cfg, input_stats)?);
         }
 
         // Restore previously saved file offsets by fingerprint (SourceId).

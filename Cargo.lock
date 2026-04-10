@@ -1754,6 +1754,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "generator"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52f04ae4152da20c76fe800fa48659201d5cf627c5149ca0b707b69d7eef6cf9"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows-link",
+ "windows-result",
+]
+
+[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2479,7 +2494,6 @@ dependencies = [
  "clap_complete",
  "clap_complete_nushell",
  "dhat",
- "libc",
  "logfwd-arrow",
  "logfwd-config",
  "logfwd-core",
@@ -2522,7 +2536,6 @@ dependencies = [
  "axum",
  "backon",
  "bytes",
- "clap",
  "criterion",
  "datafusion",
  "dhat",
@@ -2535,7 +2548,6 @@ dependencies = [
  "hyper-util",
  "libc",
  "logfwd-arrow",
- "logfwd-config",
  "logfwd-core",
  "logfwd-io",
  "logfwd-output",
@@ -2680,7 +2692,6 @@ dependencies = [
  "httpdate",
  "insta",
  "itoa",
- "libc",
  "logfwd-arrow",
  "logfwd-config",
  "logfwd-core",
@@ -2733,6 +2744,7 @@ dependencies = [
  "logfwd-test-utils",
  "logfwd-transform",
  "logfwd-types",
+ "loom",
  "memchr",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -2793,6 +2805,19 @@ version = "0.1.0"
 dependencies = [
  "opentelemetry",
  "proptest",
+]
+
+[[package]]
+name = "loom"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
+dependencies = [
+ "cfg-if",
+ "generator",
+ "scoped-tls",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

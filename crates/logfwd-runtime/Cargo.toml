@@ -14,6 +14,7 @@ ignored = ["turmoil"]
 [features]
 default = ["datafusion"]
 turmoil = []
+loom-tests = []
 datafusion = ["dep:logfwd-transform"]
 dhat-heap = ["dep:dhat"]
 cpu-profiling = ["dep:pprof"]
@@ -52,6 +53,7 @@ tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 [dev-dependencies]
 arrow = { workspace = true }
 bytes = { workspace = true }
+loom = "0.7"
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1.11.0"
 serial_test = "3.4.0"

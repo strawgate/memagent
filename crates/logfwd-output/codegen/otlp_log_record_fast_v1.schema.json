@@ -4,7 +4,7 @@
   "roles": [
     { "name": "timestamp", "sources": ["timestamp", "time"] },
     { "name": "severity", "sources": ["level", "severity_text"] },
-    { "name": "body", "sources": ["message", "_raw"] },
+    { "name": "body", "sources": ["body", "message"] },
     { "name": "trace_id", "sources": ["trace_id"] },
     { "name": "span_id", "sources": ["span_id"] },
     { "name": "flags", "sources": ["flags", "trace_flags"] },

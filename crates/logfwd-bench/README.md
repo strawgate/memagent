@@ -17,9 +17,9 @@ cargo run -p logfwd-bench --release --bin cloudtrail_profile -- --lines 20000
 # Run the allocation-only FramedInput report (dhat-backed, slower)
 just bench-framed-input-alloc -- --lines 200000
 
-# Run the destination blast CLI (config-aware throughput harness)
-cargo run -p logfwd-bench --release --bin blast -- explain-flags
-cargo run -p logfwd-bench --release --bin blast -- run --destination otlp --endpoint http://localhost:4318/v1/logs --duration-secs 15
+# Run destination load from the main CLI wrappers (use two terminals)
+just bench-devour-otlp
+just bench-blast-otlp
 
 # Run all Criterion benchmarks (Tier 1 + 2, includes file_io, batch_formation)
 just bench-full
@@ -69,7 +69,6 @@ just bench-report
 | `bin/cloudtrail_profile.rs` | `cloudtrail_profile` | CloudTrail-like generator profile (NDJSON vs direct RecordBatch generation, cardinality, compression) |
 | `es_throughput.rs` | `es-throughput` | Elasticsearch output throughput with worker scaling |
 | `bin/framed_input_profile.rs` | `framed_input_profile` | FramedInput stage timings, RSS, optional flamegraph, optional dhat allocation report |
-| `bin/blast.rs` | `blast` | Destination-focused throughput CLI (`--destination`, creds, config.yaml bootstrapping, dry-run preview) |
 | `explore.rs` | *(lib)* | Multi-dimensional exploratory benchmark (CSV output) |
 | `rss.rs` | *(lib)* | Resident set size at each pipeline stage |
 | `sizes.rs` | *(lib)* | Data size analysis: raw → Arrow → IPC → Parquet |

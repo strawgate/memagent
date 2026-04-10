@@ -1,7 +1,7 @@
 //! Flat ↔ OTAP star schema conversion for Arrow RecordBatches.
 //!
 //! logfwd uses a **flat schema**: one `RecordBatch` with all fields as columns.
-//! Resource attributes are prefixed with `_resource_*`. This is directly
+//! Resource attributes are prefixed with `resource.attributes.*`. This is directly
 //! queryable by DuckDB, Polars, DataFusion with zero schema knowledge.
 //!
 //! OTAP uses a **star schema**: 4 tables with foreign keys (LOGS fact table +
@@ -57,7 +57,11 @@ const WELL_KNOWN_TRACE_ID: &[&str] = &["trace_id"];
 const WELL_KNOWN_SPAN_ID: &[&str] = &["span_id"];
 const WELL_KNOWN_FLAGS: &[&str] = &["flags", "trace_flags"];
 
-const RESOURCE_PREFIX: &str = "_resource_";
+/// Canonical resource attribute prefix shared across receivers/sinks.
+pub(crate) const RESOURCE_PREFIX: &str = "resource.attributes.";
+
+/// Legacy prefix for backwards compatibility with older batches.
+pub(crate) const LEGACY_RESOURCE_PREFIX: &str = "_resource_";
 
 // ---------------------------------------------------------------------------
 // Attribute type tags (stored in the `type` column of attrs tables)
@@ -118,7 +122,7 @@ pub fn attrs_schema() -> Schema {
 ///    Without this, `build_log_attrs` would see a StructArray, call
 ///    `str_value_at` which returns `""` for unknown types, and emit a NULL
 ///    attr row — silently dropping the field value.
-/// 2. Scans columns for `_resource_*` prefix, extracts unique resource
+/// 2. Scans columns for `resource.attributes.*` prefix, extracts unique resource
 ///    attribute sets, assigns `resource_id`, builds RESOURCE_ATTRS table.
 /// 3. Maps well-known columns to LOGS fact table fields.
 /// 4. Remaining columns become LOG_ATTRS rows (column-to-row pivot).
@@ -159,8 +163,21 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
     for (idx, field) in schema.fields().iter().enumerate() {
         let name = field.name().as_str();
 
-        if let Some(stripped) = name.strip_prefix(RESOURCE_PREFIX) {
-            resource_cols.push((stripped.to_string(), idx));
+        // Check both current and legacy resource attribute prefixes.
+        let resource_key = name
+            .strip_prefix(RESOURCE_PREFIX)
+            .map(str::to_string)
+            .or_else(|| {
+                name.strip_prefix(LEGACY_RESOURCE_PREFIX).map(|stripped| {
+                    field
+                        .metadata()
+                        .get("logfwd.resource_key")
+                        .cloned()
+                        .unwrap_or_else(|| stripped.to_string())
+                })
+            });
+        if let Some(resource_key) = resource_key {
+            resource_cols.push((resource_key, idx));
             continue;
         }
 
@@ -172,8 +189,24 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
             severity_col = Some(idx);
             continue;
         }
-        if body_col.is_none() && WELL_KNOWN_BODY.contains(&name) {
-            body_col = Some(idx);
+        if WELL_KNOWN_BODY.contains(&name) {
+            match body_col {
+                None => {
+                    body_col = Some(idx);
+                    continue;
+                }
+                Some(prev_idx) if name == "body" => {
+                    let prev_name = batch.schema().field(prev_idx).name().clone();
+                    if prev_name != "body" {
+                        attr_cols.push((prev_name, prev_idx));
+                        body_col = Some(idx);
+                        continue;
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        if name == "_raw" {
             continue;
         }
         if trace_id_col.is_none() && WELL_KNOWN_TRACE_ID.contains(&name) {
@@ -186,11 +219,6 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
         }
         if flags_col.is_none() && WELL_KNOWN_FLAGS.contains(&name) {
             flags_col = Some(idx);
-            continue;
-        }
-
-        // Skip _raw — internal only, not part of OTAP.
-        if name == "_raw" {
             continue;
         }
 
@@ -324,7 +352,7 @@ impl TypedColumn {
 /// 1. Reads LOG_ATTRS: unpivots rows grouped by parent_id into columns,
 ///    preserving the original Arrow type (string, int, double, bool).
 /// 2. Reads RESOURCE_ATTRS: groups by parent_id, prefixes keys with
-///    `_resource_`, scatters to rows via resource_id from the LOGS table.
+///    `resource.attributes.`, scatters to rows via resource_id from the LOGS table.
 /// 3. Maps well-known LOGS fields back: time_unix_nano → `_timestamp`,
 ///    severity_text → `level`, body_str → `message`.
 /// 4. Combines into a single flat `RecordBatch`.
@@ -347,6 +375,16 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         .as_any()
         .downcast_ref::<UInt32Array>()
         .ok_or_else(|| ArrowError::SchemaError("resource_id not UInt32".to_string()))?;
+    let scope_ids = star
+        .logs
+        .column(
+            logs_schema
+                .index_of("scope_id")
+                .map_err(|e| ArrowError::SchemaError(format!("missing scope_id: {e}")))?,
+        )
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+        .ok_or_else(|| ArrowError::SchemaError("scope_id not UInt32".to_string()))?;
 
     // Collect flat columns: name → TypedColumn.
     let mut flat_cols: Vec<(String, TypedColumn)> = Vec::new();
@@ -362,6 +400,19 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         } else {
             let idx = flat_cols.len();
             flat_cols.push((name.to_string(), TypedColumn::new_str(num_rows)));
+            col_index.insert(name.to_string(), idx);
+            idx
+        }
+    };
+    let ensure_int_col = |name: &str,
+                          flat_cols: &mut Vec<(String, TypedColumn)>,
+                          col_index: &mut HashMap<String, usize>|
+     -> usize {
+        if let Some(&idx) = col_index.get(name) {
+            idx
+        } else {
+            let idx = flat_cols.len();
+            flat_cols.push((name.to_string(), TypedColumn::new_int(num_rows)));
             col_index.insert(name.to_string(), idx);
             idx
         }
@@ -447,6 +498,104 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         }
     }
 
+    // severity_number
+    if let Ok(sev_num_idx) = logs_schema.index_of("severity_number") {
+        let sev_num_arr = star.logs.column(sev_num_idx);
+        if matches!(sev_num_arr.data_type(), DataType::Int32) {
+            let col_pos = ensure_int_col("severity_number", &mut flat_cols, &mut col_index);
+            let sev_num_arr = sev_num_arr
+                .as_any()
+                .downcast_ref::<arrow::array::Int32Array>()
+                .ok_or_else(|| ArrowError::SchemaError("severity_number not Int32".to_string()))?;
+            for row in 0..num_rows {
+                if !sev_num_arr.is_null(row)
+                    && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[row] = Some(i64::from(sev_num_arr.value(row)));
+                }
+            }
+        }
+    }
+
+    // trace_id (16-byte fixed binary) -> lowercase hex string
+    if let Ok(trace_idx) = logs_schema.index_of("trace_id") {
+        let trace_arr = star.logs.column(trace_idx);
+        if matches!(trace_arr.data_type(), DataType::FixedSizeBinary(16)) {
+            let col_pos = ensure_str_col("trace_id", &mut flat_cols, &mut col_index);
+            let trace_arr = trace_arr
+                .as_any()
+                .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+                .ok_or_else(|| {
+                    ArrowError::SchemaError("trace_id not FixedSizeBinary(16)".to_string())
+                })?;
+            for row in 0..num_rows {
+                if !trace_arr.is_null(row)
+                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[row] = Some(hex_encode_lower(trace_arr.value(row)));
+                }
+            }
+        }
+    }
+
+    // span_id (8-byte fixed binary) -> lowercase hex string
+    if let Ok(span_idx) = logs_schema.index_of("span_id") {
+        let span_arr = star.logs.column(span_idx);
+        if matches!(span_arr.data_type(), DataType::FixedSizeBinary(8)) {
+            let col_pos = ensure_str_col("span_id", &mut flat_cols, &mut col_index);
+            let span_arr = span_arr
+                .as_any()
+                .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+                .ok_or_else(|| {
+                    ArrowError::SchemaError("span_id not FixedSizeBinary(8)".to_string())
+                })?;
+            for row in 0..num_rows {
+                if !span_arr.is_null(row)
+                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[row] = Some(hex_encode_lower(span_arr.value(row)));
+                }
+            }
+        }
+    }
+
+    // flags
+    if let Ok(flags_idx) = logs_schema.index_of("flags") {
+        let flags_arr = star.logs.column(flags_idx);
+        if matches!(flags_arr.data_type(), DataType::UInt32) {
+            let col_pos = ensure_int_col("flags", &mut flat_cols, &mut col_index);
+            let flags_arr = flags_arr
+                .as_any()
+                .downcast_ref::<UInt32Array>()
+                .ok_or_else(|| ArrowError::SchemaError("flags not UInt32".to_string()))?;
+            for row in 0..num_rows {
+                if !flags_arr.is_null(row)
+                    && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
+                {
+                    v[row] = Some(i64::from(flags_arr.value(row)));
+                }
+            }
+        }
+    }
+
+    // --- Unpivot SCOPE_ATTRS ---
+    // Populate default scope fields first (e.g., synthetic "logfwd" scope).
+    // LOG_ATTRS are unpivoted afterward and may carry row-level scope.*
+    // values from the original flat input; those should take precedence.
+    unpivot_attrs_to_flat(
+        &star.scope_attrs,
+        &mut flat_cols,
+        &mut col_index,
+        num_rows,
+        |parent_id| parent_id as usize,
+        |key| match key {
+            "scope_name" => "scope.name".to_string(),
+            "scope_version" => "scope.version".to_string(),
+            _ if key.starts_with("scope.") => key.to_string(),
+            _ => format!("scope.{key}"),
+        },
+    )?;
+
     // --- Unpivot LOG_ATTRS → flat columns ---
     unpivot_attrs_to_flat(
         &star.log_attrs,
@@ -457,7 +606,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         str::to_string,                 // no prefix
     )?;
 
-    // --- Unpivot RESOURCE_ATTRS → _resource_* columns ---
+    // --- Unpivot RESOURCE_ATTRS → resource.attributes.* columns ---
     // Build resource_id → parent_id mapping: for each row, scatter resource
     // attrs via the LOGS table's resource_id column.
     unpivot_attrs_to_flat(
@@ -477,6 +626,9 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // The unpivot above set values at the resource_id index, but we need to
     // scatter them to all rows that share that resource_id.
     scatter_resource_attrs(&mut flat_cols, &col_index, resource_ids, num_rows);
+    // Scope attrs are keyed by scope_id and must be scattered to all rows
+    // sharing that scope.
+    scatter_scope_attrs(&mut flat_cols, &col_index, scope_ids, num_rows);
 
     // --- Build the flat RecordBatch ---
     let mut fields: Vec<Field> = Vec::with_capacity(flat_cols.len());
@@ -567,6 +719,16 @@ fn str_value_at(arr: &dyn Array, row: usize) -> String {
             .unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+fn hex_encode_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 /// Read a string value from a Utf8 or Utf8View array.
@@ -1492,7 +1654,7 @@ fn scatter_resource_attrs(
     resource_ids: &UInt32Array,
     num_rows: usize,
 ) {
-    // Find all _resource_* columns.
+    // Find all resource.attributes.* columns.
     let resource_col_indices: Vec<usize> = col_index
         .iter()
         .filter(|(name, _)| name.starts_with(RESOURCE_PREFIX))
@@ -1505,6 +1667,7 @@ fn scatter_resource_attrs(
 
     // For each resource column, build a map of resource_id → value from
     // the template rows, then scatter to all matching rows.
+    // Resource attrs are always strings (from resource.attributes.* flat columns).
     for &col_pos in &resource_col_indices {
         match &flat_cols[col_pos].1 {
             TypedColumn::Str(values) => {
@@ -1573,6 +1736,104 @@ fn collect_resource_template_values<T: Clone>(
     map
 }
 
+/// Scatter scope attribute values from template rows (indexed by scope_id) to
+/// all rows that share the same scope_id.
+fn scatter_scope_attrs(
+    flat_cols: &mut [(String, TypedColumn)],
+    col_index: &HashMap<String, usize>,
+    scope_ids: &UInt32Array,
+    num_rows: usize,
+) {
+    let scope_col_indices: Vec<usize> = col_index
+        .iter()
+        .filter(|(name, _)| name.starts_with("scope."))
+        .map(|(_, &idx)| idx)
+        .collect();
+
+    if scope_col_indices.is_empty() {
+        return;
+    }
+
+    for &col_pos in &scope_col_indices {
+        match &flat_cols[col_pos].1 {
+            TypedColumn::Str(values) => {
+                let sid_to_val = collect_template_values_by_id(values, scope_ids, num_rows);
+                if let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let sid = scope_ids.value(row);
+                        if let Some(val) = sid_to_val.get(&sid) {
+                            *slot = val.clone();
+                        }
+                    }
+                }
+            }
+            TypedColumn::Int(values) => {
+                let sid_to_val = collect_template_values_by_id(values, scope_ids, num_rows);
+                if let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let sid = scope_ids.value(row);
+                        if let Some(val) = sid_to_val.get(&sid) {
+                            *slot = *val;
+                        }
+                    }
+                }
+            }
+            TypedColumn::Double(values) => {
+                let sid_to_val = collect_template_values_by_id(values, scope_ids, num_rows);
+                if let TypedColumn::Double(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let sid = scope_ids.value(row);
+                        if let Some(val) = sid_to_val.get(&sid) {
+                            *slot = *val;
+                        }
+                    }
+                }
+            }
+            TypedColumn::Bool(values) => {
+                let sid_to_val = collect_template_values_by_id(values, scope_ids, num_rows);
+                if let TypedColumn::Bool(ref mut v) = flat_cols[col_pos].1 {
+                    for (row, slot) in v.iter_mut().enumerate().take(num_rows) {
+                        if slot.is_some() {
+                            continue;
+                        }
+                        let sid = scope_ids.value(row);
+                        if let Some(val) = sid_to_val.get(&sid) {
+                            *slot = *val;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_template_values_by_id<T: Clone>(
+    values: &[Option<T>],
+    ids: &UInt32Array,
+    num_rows: usize,
+) -> HashMap<u32, Option<T>> {
+    let mut map: HashMap<u32, Option<T>> = HashMap::new();
+    for row in 0..num_rows {
+        let id = ids.value(row);
+        if let std::collections::hash_map::Entry::Vacant(e) = map.entry(id) {
+            let template_row = id as usize;
+            if template_row < values.len() {
+                e.insert(values[template_row].clone());
+            }
+        }
+    }
+    map
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1588,8 +1849,11 @@ mod tests {
             Field::new("_timestamp", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("message", DataType::Utf8, true),
-            Field::new("_resource_service_name", DataType::Utf8, true),
-            Field::new("_resource_k8s_pod", DataType::Utf8, true),
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+            Field::new("flags", DataType::Int64, true),
+            Field::new("resource.attributes.service_name", DataType::Utf8, true),
+            Field::new("resource.attributes.k8s_pod", DataType::Utf8, true),
             Field::new("host", DataType::Utf8, true),
             Field::new("status", DataType::Int64, true),
         ]));
@@ -1610,6 +1874,17 @@ mod tests {
                 Some("connection failed"),
                 Some("retry attempt"),
             ])),
+            Arc::new(StringArray::from(vec![
+                Some("00112233445566778899aabbccddeeff"),
+                Some("fedcba98765432100123456789abcdef"),
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ])),
+            Arc::new(StringArray::from(vec![
+                Some("0011223344556677"),
+                Some("8899aabbccddeeff"),
+                Some("1234567890abcdef"),
+            ])),
+            Arc::new(Int64Array::from(vec![Some(1), Some(3), Some(255)])),
             Arc::new(StringArray::from(vec![
                 Some("api-server"),
                 Some("api-server"),
@@ -1689,9 +1964,61 @@ mod tests {
         assert_eq!(msg_arr.value(1), "connection failed");
         assert_eq!(msg_arr.value(2), "retry attempt");
 
+        let trace_idx = rt_schema.index_of("trace_id").expect("trace_id col");
+        let trace_arr = roundtrip
+            .column(trace_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("trace string");
+        assert_eq!(trace_arr.value(0), "00112233445566778899aabbccddeeff");
+        assert_eq!(trace_arr.value(1), "fedcba98765432100123456789abcdef");
+        assert_eq!(trace_arr.value(2), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+        let span_idx = rt_schema.index_of("span_id").expect("span_id col");
+        let span_arr = roundtrip
+            .column(span_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("span string");
+        assert_eq!(span_arr.value(0), "0011223344556677");
+        assert_eq!(span_arr.value(1), "8899aabbccddeeff");
+        assert_eq!(span_arr.value(2), "1234567890abcdef");
+
+        let flags_idx = rt_schema.index_of("flags").expect("flags col");
+        let flags_arr = roundtrip
+            .column(flags_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("flags i64");
+        assert_eq!(flags_arr.value(0), 1);
+        assert_eq!(flags_arr.value(1), 3);
+        assert_eq!(flags_arr.value(2), 255);
+
+        let sev_num_idx = rt_schema
+            .index_of("severity_number")
+            .expect("severity_number col");
+        let sev_num_arr = roundtrip
+            .column(sev_num_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("severity_number i64");
+        assert_eq!(sev_num_arr.value(0), 9); // INFO
+        assert_eq!(sev_num_arr.value(1), 17); // ERROR
+        assert_eq!(sev_num_arr.value(2), 13); // WARN
+
+        let scope_name_idx = rt_schema.index_of("scope.name").expect("scope.name col");
+        let scope_name_arr = roundtrip
+            .column(scope_name_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("scope.name string");
+        assert_eq!(scope_name_arr.value(0), "logfwd");
+        assert_eq!(scope_name_arr.value(1), "logfwd");
+        assert_eq!(scope_name_arr.value(2), "logfwd");
+
         // _resource_service_name
         let rs_idx = rt_schema
-            .index_of("_resource_service_name")
+            .index_of("resource.attributes.service_name")
             .expect("resource_service_name col");
         let rs_arr = roundtrip
             .column(rs_idx)
@@ -1704,7 +2031,7 @@ mod tests {
 
         // _resource_k8s_pod
         let rp_idx = rt_schema
-            .index_of("_resource_k8s_pod")
+            .index_of("resource.attributes.k8s_pod")
             .expect("resource_k8s_pod col");
         let rp_arr = roundtrip
             .column(rp_idx)
@@ -1739,6 +2066,117 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_preserves_existing_scope_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("scope.name", DataType::Utf8, true),
+            Field::new("scope.version", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("one"), Some("two")])),
+                Arc::new(StringArray::from(vec![Some("otel"), Some("custom")])),
+                Arc::new(StringArray::from(vec![Some("1.0.0"), Some("2.0.0")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+
+        let scope_name = roundtrip
+            .column(
+                roundtrip
+                    .schema()
+                    .index_of("scope.name")
+                    .expect("scope.name idx"),
+            )
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("scope.name utf8");
+        assert_eq!(scope_name.value(0), "otel");
+        assert_eq!(scope_name.value(1), "custom");
+
+        let scope_version = roundtrip
+            .column(
+                roundtrip
+                    .schema()
+                    .index_of("scope.version")
+                    .expect("scope.version idx"),
+            )
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("scope.version utf8");
+        assert_eq!(scope_version.value(0), "1.0.0");
+        assert_eq!(scope_version.value(1), "2.0.0");
+    }
+
+    #[test]
+    fn roundtrip_preserves_typed_scope_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("scope.name", DataType::Utf8, true),
+            Field::new("scope.enabled", DataType::Boolean, true),
+            Field::new("scope.rank", DataType::Int64, true),
+            Field::new("scope.ratio", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("one"), Some("two")])),
+                Arc::new(StringArray::from(vec![Some("otel"), Some("otel")])),
+                Arc::new(BooleanArray::from(vec![Some(true), Some(true)])),
+                Arc::new(Int64Array::from(vec![Some(7), Some(7)])),
+                Arc::new(Float64Array::from(vec![Some(0.25), Some(0.25)])),
+            ],
+        )
+        .expect("valid batch");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+
+        let scope_enabled = roundtrip
+            .column(
+                roundtrip
+                    .schema()
+                    .index_of("scope.enabled")
+                    .expect("scope.enabled idx"),
+            )
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("scope.enabled bool");
+        assert_eq!(scope_enabled.value(0), true);
+        assert_eq!(scope_enabled.value(1), true);
+
+        let scope_rank = roundtrip
+            .column(
+                roundtrip
+                    .schema()
+                    .index_of("scope.rank")
+                    .expect("scope.rank idx"),
+            )
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("scope.rank i64");
+        assert_eq!(scope_rank.value(0), 7);
+        assert_eq!(scope_rank.value(1), 7);
+
+        let scope_ratio = roundtrip
+            .column(
+                roundtrip
+                    .schema()
+                    .index_of("scope.ratio")
+                    .expect("scope.ratio idx"),
+            )
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("scope.ratio f64");
+        assert_eq!(scope_ratio.value(0), 0.25);
+        assert_eq!(scope_ratio.value(1), 0.25);
+    }
+
+    #[test]
     fn empty_batch_produces_empty_star() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "message",
@@ -1755,6 +2193,27 @@ mod tests {
 
         let roundtrip = star_to_flat(&star).expect("star_to_flat empty");
         assert_eq!(roundtrip.num_rows(), 0);
+    }
+
+    #[test]
+    fn collect_template_values_prefers_template_row_index() {
+        let values = vec![None, None, Some("otel".to_string())];
+        let ids = UInt32Array::from(vec![2u32, 2, 2]);
+
+        let collected = collect_template_values_by_id(&values, &ids, 3);
+
+        assert_eq!(collected.get(&2), Some(&Some("otel".to_string())));
+    }
+
+    #[test]
+    fn collect_template_values_skips_template_ids_outside_column_len() {
+        let values = vec![Some("otel".to_string())];
+        let ids = UInt32Array::from(vec![0u32, 1]);
+
+        let collected = collect_template_values_by_id(&values, &ids, 2);
+
+        assert_eq!(collected.get(&0), Some(&Some("otel".to_string())));
+        assert!(!collected.contains_key(&1));
     }
 
     #[test]
@@ -1801,9 +2260,98 @@ mod tests {
     }
 
     #[test]
+    fn flat_to_star_prefers_canonical_body_over_message_alias() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["alias-value"])),
+            Arc::new(StringArray::from(vec!["canonical-value"])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let body_idx = star.logs.schema().index_of("body_str").expect("body_str");
+        let body_arr = star
+            .logs
+            .column(body_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("body_str should be Utf8");
+        assert_eq!(
+            body_arr.value(0),
+            "canonical-value",
+            "canonical body should win over alias columns"
+        );
+    }
+
+    #[test]
+    fn flat_to_star_excludes_internal_raw_attribute() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("_raw", DataType::Utf8, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["canonical-value"])),
+            Arc::new(StringArray::from(vec!["wire-only"])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let key_idx = star.log_attrs.schema().index_of("key").expect("key");
+        let keys = star
+            .log_attrs
+            .column(key_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("key should be Utf8");
+
+        assert!(
+            !keys.iter().flatten().any(|key| key == "_raw"),
+            "_raw should remain internal-only"
+        );
+    }
+
+    #[test]
+    fn flat_to_star_keeps_unselected_body_alias_as_attribute() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["alias-value"])),
+            Arc::new(StringArray::from(vec!["canonical-value"])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let key_idx = star.log_attrs.schema().index_of("key").expect("key");
+        let str_idx = star.log_attrs.schema().index_of("str").expect("str");
+        let keys = star
+            .log_attrs
+            .column(key_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("key should be Utf8");
+        let values = star
+            .log_attrs
+            .column(str_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("str should be Utf8");
+        let message_value = keys
+            .iter()
+            .zip(values.iter())
+            .find_map(|(key, value)| if key == Some("message") { value } else { None });
+
+        assert_eq!(message_value, Some("alias-value"));
+    }
+
+    #[test]
     fn batch_with_only_resource_columns() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("_resource_service", DataType::Utf8, true),
+            Field::new("resource.attributes.service", DataType::Utf8, true),
             Field::new("_resource_env", DataType::Utf8, true),
         ]));
 
@@ -1824,7 +2372,7 @@ mod tests {
 
         let svc_idx = roundtrip
             .schema()
-            .index_of("_resource_service")
+            .index_of("resource.attributes.service")
             .expect("svc");
         let svc_arr = roundtrip
             .column(svc_idx)
@@ -1833,6 +2381,38 @@ mod tests {
             .expect("str");
         assert_eq!(svc_arr.value(0), "api");
         assert_eq!(svc_arr.value(1), "worker");
+    }
+
+    #[test]
+    fn legacy_resource_column_uses_metadata_key_for_roundtrip() {
+        let legacy_field = Field::new("_resource_service_name", DataType::Utf8, true)
+            .with_metadata(HashMap::from([(
+                "logfwd.resource_key".to_string(),
+                "service.name".to_string(),
+            )]));
+        let schema = Arc::new(Schema::new(vec![legacy_field]));
+        let columns: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec!["api", "worker"]))];
+        let batch = RecordBatch::try_new(schema, columns).expect("valid");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+        let rt_schema = roundtrip.schema();
+        assert!(
+            rt_schema
+                .index_of("resource.attributes.service_name")
+                .is_err(),
+            "legacy stripped key must not override explicit metadata key"
+        );
+        let idx = rt_schema
+            .index_of("resource.attributes.service.name")
+            .expect("resource key from metadata");
+        let arr = roundtrip
+            .column(idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("str");
+        assert_eq!(arr.value(0), "api");
+        assert_eq!(arr.value(1), "worker");
     }
 
     #[test]
@@ -2132,13 +2712,13 @@ mod tests {
 
         let payload_idx = roundtrip
             .schema()
-            .index_of("_resource_payload")
-            .expect("_resource_payload col");
+            .index_of("resource.attributes.payload")
+            .expect("resource.attributes.payload col");
         let payload_arr = roundtrip
             .column(payload_idx)
             .as_any()
             .downcast_ref::<StringArray>()
-            .expect("_resource_payload string");
+            .expect("resource.attributes.payload string");
 
         assert_eq!(payload_arr.value(0), "deadbeef");
         assert_eq!(payload_arr.value(1), "deadbeef");
@@ -2161,8 +2741,8 @@ mod tests {
 
         let idx = roundtrip
             .schema()
-            .index_of("_resource_retry_count")
-            .expect("_resource_retry_count");
+            .index_of("resource.attributes.retry_count")
+            .expect("resource.attributes.retry_count");
         let arr = roundtrip
             .column(idx)
             .as_any()

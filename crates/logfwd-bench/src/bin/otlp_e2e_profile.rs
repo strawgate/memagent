@@ -3,9 +3,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use logfwd_arrow::scanner::Scanner;
 use logfwd_bench::{generators, make_otlp_sink};
-use logfwd_core::scan_config::ScanConfig;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::otlp_receiver::OtlpReceiverInput;
 use logfwd_output::Compression;
@@ -89,38 +87,9 @@ struct Case {
     extra_string_attrs: usize,
 }
 
-#[derive(Clone, Copy)]
-enum ReceiverMode {
-    LegacyJsonLines,
-    StructuredBatch,
-}
-
-impl ReceiverMode {
-    fn label(self) -> &'static str {
-        match self {
-            ReceiverMode::LegacyJsonLines => "legacy-jsonlines",
-            ReceiverMode::StructuredBatch => "structured-batch",
-        }
-    }
-
-    fn matches_filter(self, filter: Option<&str>) -> bool {
-        match filter {
-            None => true,
-            Some("legacy") | Some("legacy-jsonlines") => {
-                matches!(self, ReceiverMode::LegacyJsonLines)
-            }
-            Some("structured") | Some("structured-batch") => {
-                matches!(self, ReceiverMode::StructuredBatch)
-            }
-            Some(_) => false,
-        }
-    }
-}
-
 #[derive(Default)]
 struct Totals {
     receiver: Duration,
-    scan: Duration,
     encode_manual: Duration,
     encode_generated: Duration,
 }
@@ -136,7 +105,6 @@ fn main() {
         .unwrap_or(10_000);
     let concurrencies = read_concurrency_list();
     let case_filter = std::env::var("OTLP_E2E_CASE").ok();
-    let mode_filter = std::env::var("OTLP_E2E_MODE").ok();
     let timeout = Duration::from_millis(timeout_ms);
     let cases = [
         Case {
@@ -152,50 +120,32 @@ fn main() {
     ];
 
     println!(
-        "=== OTLP Receiver -> Scanner -> OtlpSink EPS Profile (iters={iterations}, concurrency={concurrencies:?}) ===\n"
+        "=== OTLP Receiver -> OtlpSink EPS Profile (iters={iterations}, concurrency={concurrencies:?}) ===\n"
     );
 
     for case in cases {
-        for mode in [ReceiverMode::LegacyJsonLines, ReceiverMode::StructuredBatch] {
-            if case_filter.as_deref().is_some_and(|name| name != case.name) {
-                continue;
-            }
-            if !mode.matches_filter(mode_filter.as_deref()) {
-                continue;
-            }
-            for &concurrency in &concurrencies {
-                run_case(mode, &case, iterations, timeout, concurrency);
-            }
+        if case_filter.as_deref().is_some_and(|name| name != case.name) {
+            continue;
+        }
+        for &concurrency in &concurrencies {
+            run_case(&case, iterations, timeout, concurrency);
         }
     }
 }
 
-fn run_case(
-    mode: ReceiverMode,
-    case: &Case,
-    iterations: usize,
-    timeout: Duration,
-    concurrency: usize,
-) {
+fn run_case(case: &Case, iterations: usize, timeout: Duration, concurrency: usize) {
     let request = build_request(case.rows, case.extra_string_attrs);
     let request_body = request.encode_to_vec();
     let request_mb = request_body.len() as f64 / (1024.0 * 1024.0);
 
-    let mut input = match mode {
-        ReceiverMode::LegacyJsonLines => {
-            OtlpReceiverInput::new("bench-otlp", "127.0.0.1:0").expect("receiver binds")
-        }
-        ReceiverMode::StructuredBatch => {
-            OtlpReceiverInput::new_structured("bench-otlp", "127.0.0.1:0").expect("receiver binds")
-        }
-    };
+    let mut input = OtlpReceiverInput::new("bench-otlp", "127.0.0.1:0").expect("receiver binds");
     let url = format!("http://{}/v1/logs", input.local_addr());
     let poster = HttpPoster::new(concurrency);
     let metadata = generators::make_metadata();
     let mut totals = Totals::default();
     let mut total_rows = 0usize;
 
-    let scanned_batch = warm_up(
+    let warmup_batch = warm_up(
         concurrency,
         &poster,
         &url,
@@ -208,21 +158,9 @@ fn run_case(
     for _ in 0..iterations {
         let t0 = Instant::now();
         poster.post_many(&url, &request_body, concurrency);
-        let payload = poll_until_payload(&mut input, case.rows * concurrency, timeout);
+        let batch = poll_until_batch(&mut input, case.rows * concurrency, timeout);
         totals.receiver += t0.elapsed();
 
-        let batch = match payload {
-            ReceiverOutput::JsonLines(lines) => {
-                let t1 = Instant::now();
-                let mut scanner = Scanner::new(ScanConfig::default());
-                let batch = scanner
-                    .scan(Bytes::from(lines))
-                    .expect("receiver output must scan");
-                totals.scan += t1.elapsed();
-                batch
-            }
-            ReceiverOutput::Batch(batch) => batch,
-        };
         total_rows = total_rows.saturating_add(batch.num_rows());
 
         let t2 = Instant::now();
@@ -236,34 +174,28 @@ fn run_case(
         totals.encode_generated += t3.elapsed();
     }
 
-    let sink_only = run_sink_only(&scanned_batch, &metadata, iterations);
-    let sink_total_rows = scanned_batch.num_rows().saturating_mul(iterations);
+    let sink_only = run_sink_only(&warmup_batch, &metadata, iterations);
+    let sink_total_rows = warmup_batch.num_rows().saturating_mul(iterations);
 
     println!(
-        "{} [{} c={}]  rows={}  body={:.2} MiB",
-        case.name,
-        mode.label(),
-        concurrency,
-        case.rows,
-        request_mb
+        "{} [c={}]  rows={}  body={:.2} MiB",
+        case.name, concurrency, case.rows, request_mb
     );
     print_stage_block(
         "e2e manual",
         total_rows,
-        totals.receiver + totals.scan + totals.encode_manual,
+        totals.receiver + totals.encode_manual,
         Some(&[
             ("receive+decode", totals.receiver),
-            ("scan", totals.scan),
             ("sink encode", totals.encode_manual),
         ]),
     );
     print_stage_block(
         "e2e generated-fast",
         total_rows,
-        totals.receiver + totals.scan + totals.encode_generated,
+        totals.receiver + totals.encode_generated,
         Some(&[
             ("receive+decode", totals.receiver),
-            ("scan", totals.scan),
             ("sink encode", totals.encode_generated),
         ]),
     );
@@ -287,15 +219,7 @@ fn warm_up(
     input: &mut OtlpReceiverInput,
 ) -> arrow::record_batch::RecordBatch {
     poster.post_many(url, request_body, concurrency);
-    match poll_until_payload(input, expected_rows * concurrency, timeout) {
-        ReceiverOutput::JsonLines(lines) => {
-            let mut scanner = Scanner::new(ScanConfig::default());
-            scanner
-                .scan(Bytes::from(lines))
-                .expect("warmup receiver output must scan")
-        }
-        ReceiverOutput::Batch(batch) => batch,
-    }
+    poll_until_batch(input, expected_rows * concurrency, timeout)
 }
 
 fn run_sink_only(
@@ -353,61 +277,38 @@ fn print_stage_block(
     }
 }
 
-enum ReceiverOutput {
-    JsonLines(Vec<u8>),
-    Batch(arrow::record_batch::RecordBatch),
-}
-
-fn poll_until_payload(
+fn poll_until_batch(
     input: &mut dyn InputSource,
     expected_rows: usize,
     timeout: Duration,
-) -> ReceiverOutput {
+) -> arrow::record_batch::RecordBatch {
     let deadline = Instant::now() + timeout;
     let mut backoff = Duration::from_millis(5);
     let max_backoff = Duration::from_millis(200);
-    let mut all_lines = Vec::new();
     let mut all_batches = Vec::new();
     let mut total_batch_rows = 0usize;
 
     while Instant::now() < deadline {
         for event in input.poll().expect("input poll must succeed") {
-            match event {
-                InputEvent::Data { bytes, .. } => {
-                    all_lines.extend_from_slice(&bytes);
+            if let InputEvent::Batch { batch, .. } = event {
+                total_batch_rows += batch.num_rows();
+                all_batches.push(batch);
+                if total_batch_rows >= expected_rows {
+                    let schema = all_batches[0].schema();
+                    let batch = arrow::compute::concat_batches(&schema, &all_batches)
+                        .expect("benchmark batches should concatenate");
+                    return batch;
                 }
-                InputEvent::Batch { batch, .. } => {
-                    total_batch_rows += batch.num_rows();
-                    all_batches.push(batch);
-                    if total_batch_rows >= expected_rows {
-                        let schema = all_batches[0].schema();
-                        let batch = arrow::compute::concat_batches(&schema, &all_batches)
-                            .expect("benchmark batches should concatenate");
-                        return ReceiverOutput::Batch(batch);
-                    }
-                }
-                InputEvent::Rotated { .. }
-                | InputEvent::Truncated { .. }
-                | InputEvent::EndOfFile { .. } => {}
             }
-        }
-        if newline_count(&all_lines) >= expected_rows {
-            return ReceiverOutput::JsonLines(all_lines);
         }
         thread::sleep(backoff);
         backoff = (backoff * 2).min(max_backoff);
     }
 
     panic!(
-        "timed out waiting for {expected_rows} rows; only got {} lines / {} batch rows",
-        newline_count(&all_lines),
+        "timed out waiting for {expected_rows} rows; only got {} batch rows",
         total_batch_rows
     );
-}
-
-#[allow(clippy::naive_bytecount)] // bench-only helper; not worth adding bytecount dep
-fn newline_count(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|&&b| b == b'\n').count()
 }
 
 fn read_concurrency_list() -> Vec<usize> {

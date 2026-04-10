@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::future::Future;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use super::sink::{SendResult, Sink, SinkFactory};
 use arrow::util::display::array_value_to_string;
 
 use super::{
-    BatchMetadata, ColVariant, build_col_infos, get_array, is_null, str_value, write_json_value,
+    BatchMetadata, ColVariant, build_col_infos, get_array, is_null, write_json_value,
     write_row_json,
 };
 
@@ -39,6 +39,7 @@ pub enum StdoutFormat {
 pub struct StdoutSink {
     name: String,
     format: StdoutFormat,
+    message_field: String,
     buf: Vec<u8>,
     /// Reusable buffer for collecting the full batch output before writing to
     /// async stdout.  Separate from `buf` which is used as row-level scratch
@@ -50,13 +51,26 @@ pub struct StdoutSink {
 
 impl StdoutSink {
     pub fn new(name: String, format: StdoutFormat, stats: Arc<ComponentStats>) -> Self {
+        Self::with_message_field(name, format, field_names::BODY.to_string(), stats)
+    }
+
+    /// Create a sink with a custom text/console message field fallback.
+    ///
+    /// The sink always prefers canonical `body` when present, then falls back
+    /// to this configured field, then legacy aliases (`message`, `msg`).
+    pub fn with_message_field(
+        name: String,
+        format: StdoutFormat,
+        message_field: String,
+        stats: Arc<ComponentStats>,
+    ) -> Self {
         let color = format == StdoutFormat::Console
             && std::env::var_os("NO_COLOR").is_none()
-            // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
-            && unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 };
+            && io::stdout().is_terminal();
         StdoutSink {
             name,
             format,
+            message_field,
             buf: Vec::with_capacity(8192),
             output_buf: Vec::with_capacity(8192),
             color,
@@ -78,30 +92,20 @@ impl StdoutSink {
 
         match self.format {
             StdoutFormat::Text => {
-                // Try to find _raw column.
-                let raw_idx = batch
-                    .schema()
-                    .fields()
-                    .iter()
-                    .position(|f| f.name() == "_raw");
-                if let Some(idx) = raw_idx {
-                    let col = batch.column(idx);
-                    for row in 0..num_rows {
-                        if !col.is_null(row) {
-                            dest.write_all(str_value(col, row).as_bytes())?;
-                            dest.write_all(b"\n")?;
-                        }
-                    }
-                } else {
-                    // No _raw column — fall back to JSON and warn once.
+                let msg_indices =
+                    resolve_message_indices(batch.schema().fields(), &self.message_field);
+                if msg_indices.is_empty() {
+                    // Configured message field is absent — fall back to JSON and warn once.
                     static WARNED: std::sync::atomic::AtomicBool =
                         std::sync::atomic::AtomicBool::new(false);
                     if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                         tracing::warn!(
                             sink = %self.name,
-                            "stdout/file 'text' format requires a '_raw' column in the output \
-                             batch; falling back to JSON. Add _raw to your SQL SELECT or use \
+                            "stdout/file 'text' format requires message field '{}' in the output \
+                             batch; falling back to JSON. Add that field to your SQL SELECT or use \
                              format: json."
+                            ,
+                            self.message_field
                         );
                     }
                     let cols = build_col_infos(batch);
@@ -110,6 +114,19 @@ impl StdoutSink {
                         write_row_json(batch, row, &cols, &mut self.buf)?;
                         self.buf.push(b'\n');
                         dest.write_all(&self.buf)?;
+                    }
+                } else {
+                    for row in 0..num_rows {
+                        if let Some(col) = msg_indices
+                            .iter()
+                            .map(|&idx| batch.column(idx))
+                            .find(|col| !col.is_null(row))
+                        {
+                            dest.write_all(
+                                safe_array_value_to_string(col.as_ref(), row).as_bytes(),
+                            )?;
+                            dest.write_all(b"\n")?;
+                        }
                     }
                 }
             }
@@ -161,12 +178,7 @@ impl StdoutSink {
             field_names::SEVERITY_VARIANTS,
             &[],
         );
-        let msg_idx = find_preferred_column(
-            fields,
-            field_names::BODY,
-            field_names::BODY_VARIANTS,
-            &[field_names::RAW],
-        );
+        let msg_idx = resolve_message_idx(fields, self.message_field.as_str());
 
         let cols = build_col_infos(batch);
 
@@ -227,7 +239,8 @@ impl StdoutSink {
             // Remaining fields as key=value pairs (dim).
             let mut has_extra = false;
             for col in &cols {
-                // Skip the well-known columns and _raw. Check ALL variant
+                // Skip the well-known columns.
+                // Check ALL variant
                 // indices — find_col may have matched a different variant
                 // (e.g. message_str vs message_int).
                 let col_matches_well_known = col.json_variants.iter().any(|v| match v {
@@ -238,7 +251,7 @@ impl StdoutSink {
                     }
                     ColVariant::StructField { .. } => false,
                 });
-                if col.field_name == "_raw" || col_matches_well_known {
+                if col_matches_well_known {
                     continue;
                 }
 
@@ -357,6 +370,53 @@ fn find_exact_column(fields: &arrow::datatypes::Fields, name: &str) -> Option<us
     fields.iter().position(|f| f.name() == name)
 }
 
+/// Resolve the best message column for text or console output.
+///
+/// Priority: canonical `body` → configured `message_field` → legacy aliases.
+fn resolve_message_idx(fields: &arrow::datatypes::Fields, message_field: &str) -> Option<usize> {
+    resolve_message_indices(fields, message_field)
+        .into_iter()
+        .next()
+}
+
+fn push_unique(indices: &mut Vec<usize>, idx: Option<usize>) {
+    if let Some(idx) = idx {
+        if !indices.contains(&idx) {
+            indices.push(idx);
+        }
+    }
+}
+
+fn resolve_message_indices(fields: &arrow::datatypes::Fields, message_field: &str) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(4);
+
+    // Canonical body always wins when present.
+    push_unique(
+        &mut indices,
+        find_preferred_column(fields, field_names::BODY, &[], &[]),
+    );
+
+    // Then honor configured message field, including conflict-suffixed variant.
+    push_unique(&mut indices, find_exact_column(fields, message_field));
+    let conflict_name = format!("{message_field}__str");
+    push_unique(
+        &mut indices,
+        find_exact_column(fields, conflict_name.as_str()),
+    );
+
+    // Legacy fallbacks for external schemas.
+    for &name in field_names::BODY_VARIANTS {
+        push_unique(&mut indices, find_exact_column(fields, name));
+        let conflict_name = format!("{name}__str");
+        push_unique(
+            &mut indices,
+            find_exact_column(fields, conflict_name.as_str()),
+        );
+    }
+
+    indices
+}
+
 /// Convert an Arrow value to string without panicking or silently erasing errors.
 fn safe_array_value_to_string(col: &dyn Array, row: usize) -> String {
     match array_value_to_string(col, row) {
@@ -428,15 +488,27 @@ impl Sink for StdoutSink {
 pub struct StdoutSinkFactory {
     name: String,
     format: StdoutFormat,
+    message_field: String,
     stats: Arc<ComponentStats>,
 }
 
 impl StdoutSinkFactory {
     /// Create a new factory for stdout sinks.
     pub fn new(name: String, format: StdoutFormat, stats: Arc<ComponentStats>) -> Self {
+        Self::with_message_field(name, format, field_names::BODY.to_string(), stats)
+    }
+
+    /// Create a factory with a custom text/console message field fallback.
+    pub fn with_message_field(
+        name: String,
+        format: StdoutFormat,
+        message_field: String,
+        stats: Arc<ComponentStats>,
+    ) -> Self {
         StdoutSinkFactory {
             name,
             format,
+            message_field,
             stats,
         }
     }
@@ -444,11 +516,17 @@ impl StdoutSinkFactory {
 
 impl SinkFactory for StdoutSinkFactory {
     fn create(&self) -> io::Result<Box<dyn Sink>> {
-        Ok(Box::new(StdoutSink::new(
-            self.name.clone(),
-            self.format,
-            Arc::clone(&self.stats),
-        )))
+        let sink = if self.message_field == field_names::BODY {
+            StdoutSink::new(self.name.clone(), self.format, Arc::clone(&self.stats))
+        } else {
+            StdoutSink::with_message_field(
+                self.name.clone(),
+                self.format,
+                self.message_field.clone(),
+                Arc::clone(&self.stats),
+            )
+        };
+        Ok(Box::new(sink))
     }
 
     fn name(&self) -> &str {
@@ -478,10 +556,10 @@ mod tests {
         }
     }
 
-    /// A batch with a `_raw` column should be written as plain text lines.
+    /// A batch with a `body` column should be written as plain text lines.
     #[test]
     fn text_format_with_raw_column_writes_raw_lines() {
-        let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+        let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
         let raw = StringArray::from(vec![Some("line one"), Some("line two")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(raw)]).unwrap();
 
@@ -498,10 +576,10 @@ mod tests {
         assert_eq!(output, "line one\nline two\n");
     }
 
-    /// A batch *without* a `_raw` column should fall back to JSON output so
-    /// existing behaviour is preserved.
+    /// A batch without canonical `body` should still render text when a
+    /// supported alias is present.
     #[test]
-    fn text_format_without_raw_column_falls_back_to_json() {
+    fn text_format_message_alias_writes_text_lines() {
         let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
         let msg = StringArray::from(vec![Some("hello"), Some("world")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(msg)]).unwrap();
@@ -516,13 +594,83 @@ mod tests {
             .unwrap();
 
         let output = String::from_utf8(out).unwrap();
-        let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(lines.len(), 2, "expected two JSON lines, got: {output:?}");
-        // Each line must be valid JSON containing the msg field.
-        let row0: serde_json::Value = serde_json::from_str(lines[0]).expect("row 0 is valid JSON");
-        let row1: serde_json::Value = serde_json::from_str(lines[1]).expect("row 1 is valid JSON");
-        assert_eq!(row0["msg"], "hello");
-        assert_eq!(row1["msg"], "world");
+        assert_eq!(output, "hello\nworld\n");
+    }
+
+    #[test]
+    fn text_format_honors_message_alias_fallback() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "message",
+            DataType::Utf8,
+            true,
+        )]));
+        let msg = StringArray::from(vec![Some("hello"), Some("world")]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(msg)]).unwrap();
+
+        let mut sink = StdoutSink::new(
+            "test-message-alias".to_string(),
+            StdoutFormat::Text,
+            Arc::new(ComponentStats::new()),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        sink.write_batch_to(&batch, &make_metadata(), &mut out)
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert_eq!(output, "hello\nworld\n");
+    }
+
+    #[test]
+    fn text_format_falls_back_to_alias_when_body_is_null() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![
+                    Some("body-1"),
+                    None,
+                    Some("body-3"),
+                ])),
+                Arc::new(StringArray::from(vec![None, Some("msg-2"), Some("msg-3")])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = StdoutSink::new(
+            "test-mixed-schema".to_string(),
+            StdoutFormat::Text,
+            Arc::new(ComponentStats::new()),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        sink.write_batch_to(&batch, &make_metadata(), &mut out)
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert_eq!(output, "body-1\nmsg-2\nbody-3\n");
+    }
+
+    #[test]
+    fn text_format_non_string_body_does_not_panic() {
+        use arrow::array::Int64Array;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Int64, true)]));
+        let body = Int64Array::from(vec![Some(42), Some(7)]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(body)]).unwrap();
+
+        let mut sink = StdoutSink::new(
+            "test-non-string-body".to_string(),
+            StdoutFormat::Text,
+            Arc::new(ComponentStats::new()),
+        );
+        let mut out: Vec<u8> = Vec::new();
+        sink.write_batch_to(&batch, &make_metadata(), &mut out)
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert_eq!(output, "42\n7\n");
     }
 
     /// The JSON fallback output for text format must match what the explicit
@@ -619,30 +767,6 @@ mod tests {
         );
     }
 
-    /// Regression: console format with `_raw` as the only content column must
-    /// show the content. Before the fix, `_raw` was not in the `find_col`
-    /// message variant list, producing empty console lines.
-    #[test]
-    fn console_format_raw_as_message_column() {
-        let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
-        let raw = StringArray::from(vec![Some("raw log line here")]);
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(raw)]).unwrap();
-
-        let mut sink = StdoutSink::new(
-            "test-raw-console".to_string(),
-            StdoutFormat::Console,
-            Arc::new(ComponentStats::new()),
-        );
-        let mut out: Vec<u8> = Vec::new();
-        sink.write_batch_to(&batch, &make_metadata(), &mut out)
-            .unwrap();
-        let output = String::from_utf8(out).unwrap();
-        assert!(
-            output.contains("raw log line here"),
-            "_raw content should appear in console output: {output:?}"
-        );
-    }
-
     #[test]
     fn console_format_utf8view_message_column() {
         use arrow::array::StringViewArray;
@@ -698,40 +822,6 @@ mod tests {
     }
 
     #[test]
-    fn console_format_prefers_canonical_message_over_raw() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(field_names::RAW, DataType::Utf8, true),
-            Field::new(field_names::BODY, DataType::Utf8, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(StringArray::from(vec![Some("raw line")])),
-                Arc::new(StringArray::from(vec![Some("parsed message")])),
-            ],
-        )
-        .expect("valid batch");
-
-        let mut sink = StdoutSink::new(
-            "test-canonical-message".to_string(),
-            StdoutFormat::Console,
-            Arc::new(ComponentStats::new()),
-        );
-        let mut out: Vec<u8> = Vec::new();
-        sink.write_batch_to(&batch, &make_metadata(), &mut out)
-            .expect("console write");
-        let output = String::from_utf8(out).expect("utf8");
-        assert!(
-            output.contains("parsed message"),
-            "canonical message must win when message and _raw are both present: {output:?}"
-        );
-        assert!(
-            !output.contains("raw line"),
-            "_raw must not shadow canonical message: {output:?}"
-        );
-    }
-
-    #[test]
     fn console_format_prefers_canonical_timestamp_over_variant() {
         let schema = Arc::new(Schema::new(vec![
             Field::new(field_names::TIMESTAMP_UNDERSCORE, DataType::Utf8, true),
@@ -764,6 +854,76 @@ mod tests {
         assert!(
             !output.starts_with("00:00:00Z"),
             "_timestamp variant must not shadow canonical timestamp in leading slot: {output:?}"
+        );
+    }
+
+    #[test]
+    fn console_format_honors_custom_message_field_without_duplication() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new("custom_msg", DataType::Utf8, true),
+            Field::new("req_id", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("INFO")])),
+                Arc::new(StringArray::from(vec![Some("hello")])),
+                Arc::new(StringArray::from(vec![Some("r-1")])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = StdoutSink::with_message_field(
+            "console".to_string(),
+            StdoutFormat::Console,
+            "custom_msg".to_string(),
+            Arc::new(ComponentStats::new()),
+        );
+        let mut out = Vec::new();
+        sink.write_batch_to(&batch, &make_metadata(), &mut out)
+            .unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+
+        assert!(
+            rendered.contains("hello"),
+            "console output should include configured message value: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("custom_msg=hello"),
+            "configured message field should not be duplicated in extras: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn console_format_prefers_canonical_body_over_alias() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("canonical-body")])),
+                Arc::new(StringArray::from(vec![Some("alias-message")])),
+            ],
+        )
+        .unwrap();
+
+        let mut sink = StdoutSink::with_message_field(
+            "console".to_string(),
+            StdoutFormat::Console,
+            "message".to_string(),
+            Arc::new(ComponentStats::new()),
+        );
+        let mut out = Vec::new();
+        sink.write_batch_to(&batch, &make_metadata(), &mut out)
+            .unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+
+        assert!(
+            rendered.contains("canonical-body"),
+            "console output should render canonical body first: {rendered:?}"
         );
     }
 }

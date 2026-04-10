@@ -175,7 +175,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Apache logs to Elasticsearch",
         description: "Ships Apache logs to Elasticsearch for search and dashboards.",
         input: "input:\n  type: file\n  path: /var/log/apache2/*.log\n  format: raw\n",
-        output: "output:\n  type: elasticsearch\n  endpoint: https://elasticsearch:9200\n  index: apache-logs-%Y.%m.%d\n",
+        output: "output:\n  type: elasticsearch\n  endpoint: https://elasticsearch:9200\n  index: apache-logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -231,7 +231,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "Network raw logs (TCP) to Elasticsearch",
         description: "Receives newline-delimited raw logs over TCP and indexes them in Elasticsearch.",
         input: "input:\n  type: tcp\n  listen: 0.0.0.0:1514\n  format: raw\n",
-        output: "output:\n  type: elasticsearch\n  endpoint: https://elasticsearch:9200\n  index: syslog-%Y.%m.%d\n",
+        output: "output:\n  type: elasticsearch\n  endpoint: https://elasticsearch:9200\n  index: syslog\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {
@@ -247,7 +247,7 @@ pub(crate) const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
         title: "OTLP in to Elasticsearch",
         description: "Receives OTLP logs and indexes in Elasticsearch.",
         input: "input:\n  type: otlp\n  listen: 0.0.0.0:4318\n",
-        output: "output:\n  type: elasticsearch\n  endpoint: https://elasticsearch:9200\n  index: otlp-logs-%Y.%m.%d\n",
+        output: "output:\n  type: elasticsearch\n  endpoint: https://elasticsearch:9200\n  index: otlp-logs\n",
         transform: "SELECT * FROM logs",
     },
     UseCaseTemplate {

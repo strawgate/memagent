@@ -9,8 +9,9 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
+use std::time::Duration;
 
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use opentelemetry::metrics::MeterProvider;
 
 mod config_templates;
@@ -35,6 +36,8 @@ const CLI_AFTER_HELP: &str = r"Examples:
   logfwd dry-run --config config.yaml
   logfwd effective-config --config config.yaml
   logfwd blackhole
+  logfwd blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
+  logfwd devour --mode otlp --listen 127.0.0.1:4318
   logfwd generate-json 10000 test.json
   logfwd wizard
   logfwd completions bash
@@ -105,8 +108,7 @@ impl From<logfwd_runtime::bootstrap::RuntimeError> for CliError {
 // ---------------------------------------------------------------------------
 
 fn use_color() -> bool {
-    // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
-    env::var_os("NO_COLOR").is_none() && unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
+    env::var_os("NO_COLOR").is_none() && io::stderr().is_terminal()
 }
 
 fn use_json_logs_for_stderr(is_terminal: bool) -> bool {
@@ -157,6 +159,161 @@ enum CompletionShell {
     Nushell,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum BlastDestination {
+    #[value(alias = "elasticsearch_otlp")]
+    Otlp,
+    #[value(alias = "elasticsearch_bulk")]
+    Elasticsearch,
+    Loki,
+    #[value(alias = "arrow_ipc", alias = "arrow")]
+    ArrowIpc,
+    Udp,
+    Tcp,
+    Null,
+}
+
+impl BlastDestination {
+    fn as_output_type(self) -> logfwd_config::OutputType {
+        match self {
+            Self::Otlp => logfwd_config::OutputType::Otlp,
+            Self::Elasticsearch => logfwd_config::OutputType::Elasticsearch,
+            Self::Loki => logfwd_config::OutputType::Loki,
+            Self::ArrowIpc => logfwd_config::OutputType::ArrowIpc,
+            Self::Udp => logfwd_config::OutputType::Udp,
+            Self::Tcp => logfwd_config::OutputType::Tcp,
+            Self::Null => logfwd_config::OutputType::Null,
+        }
+    }
+
+    fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "otlp" | "elasticsearch_otlp" => Some(Self::Otlp),
+            "elasticsearch" | "elasticsearch_bulk" => Some(Self::Elasticsearch),
+            "loki" => Some(Self::Loki),
+            "arrow_ipc" | "arrow-ipc" | "arrow" => Some(Self::ArrowIpc),
+            "udp" => Some(Self::Udp),
+            "tcp" => Some(Self::Tcp),
+            "null" => Some(Self::Null),
+            _ => None,
+        }
+    }
+
+    fn should_require_endpoint(self) -> bool {
+        !matches!(self, Self::Null)
+    }
+
+    fn default_endpoint(self) -> &'static str {
+        match self {
+            Self::Otlp => "http://127.0.0.1:4318/v1/logs",
+            Self::Elasticsearch => "http://127.0.0.1:9200",
+            Self::Loki => "http://127.0.0.1:3100/loki/api/v1/push",
+            Self::ArrowIpc => "http://127.0.0.1:18081/v1/arrow",
+            Self::Udp => "127.0.0.1:15514",
+            Self::Tcp => "127.0.0.1:15140",
+            Self::Null => "",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DevourMode {
+    #[value(alias = "elasticsearch_otlp")]
+    Otlp,
+    Http,
+    #[value(name = "elasticsearch_bulk", alias = "elasticsearch")]
+    ElasticsearchBulk,
+    Tcp,
+    Udp,
+}
+
+impl DevourMode {
+    fn default_listen(self) -> &'static str {
+        match self {
+            Self::Otlp => "127.0.0.1:4318",
+            Self::Http => "127.0.0.1:8080",
+            Self::ElasticsearchBulk => "127.0.0.1:9200",
+            Self::Tcp => "127.0.0.1:15140",
+            Self::Udp => "127.0.0.1:15514",
+        }
+    }
+
+    fn target_hint(self, listen: &str) -> String {
+        match self {
+            Self::Otlp => format!("http://{listen}/v1/logs"),
+            Self::Http => format!("http://{listen}/"),
+            Self::ElasticsearchBulk => format!("http://{listen}/_bulk"),
+            Self::Tcp | Self::Udp => listen.to_string(),
+        }
+    }
+
+    fn spec(self) -> logfwd_runtime::generated_cli::DevourModeSpec {
+        match self {
+            Self::Otlp => logfwd_runtime::generated_cli::DevourModeSpec::Otlp,
+            Self::Http => logfwd_runtime::generated_cli::DevourModeSpec::Http,
+            Self::ElasticsearchBulk => {
+                logfwd_runtime::generated_cli::DevourModeSpec::ElasticsearchBulk
+            }
+            Self::Tcp => logfwd_runtime::generated_cli::DevourModeSpec::Tcp,
+            Self::Udp => logfwd_runtime::generated_cli::DevourModeSpec::Udp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Args)]
+struct BlastArgs {
+    /// Destination type to blast.
+    #[arg(long, value_enum)]
+    destination: Option<BlastDestination>,
+
+    /// Destination endpoint URL/address (required for all destinations except `null`).
+    #[arg(long)]
+    endpoint: Option<String>,
+
+    /// Bearer token auth.
+    #[arg(long)]
+    auth_bearer_token: Option<String>,
+
+    /// Extra header, repeatable: --auth-header 'Authorization=ApiKey xyz'.
+    #[arg(long, value_name = "KEY=VALUE")]
+    auth_header: Vec<String>,
+
+    /// Worker count.
+    #[arg(long, default_value_t = 2)]
+    workers: usize,
+
+    /// Lines per generated batch.
+    #[arg(long, default_value_t = 5_000)]
+    batch_lines: usize,
+
+    /// Optional run duration in seconds (default: run until stopped).
+    #[arg(long)]
+    duration_secs: Option<u64>,
+
+    /// Diagnostics server bind address for generated config.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    diagnostics_addr: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct DevourArgs {
+    /// Receiver mode to emulate.
+    #[arg(long, value_enum, default_value_t = DevourMode::Otlp)]
+    mode: DevourMode,
+
+    /// Bind address (defaults depend on mode).
+    #[arg(long)]
+    listen: Option<String>,
+
+    /// Optional run duration in seconds (default: run until stopped).
+    #[arg(long)]
+    duration_secs: Option<u64>,
+
+    /// Diagnostics server bind address for generated config.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    diagnostics_addr: String,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "logfwd",
@@ -204,6 +361,10 @@ enum Commands {
         )]
         config: Option<String>,
     },
+    /// Blast generated data into a destination sink via the normal runtime pipeline.
+    Blast(BlastArgs),
+    /// Run a blackhole receiver via the normal runtime pipeline.
+    Devour(DevourArgs),
     /// Start OTLP blackhole receiver for testing.
     Blackhole {
         #[arg(
@@ -318,6 +479,8 @@ async fn run_command(command: Commands) -> Result<(), CliError> {
             let config_path = resolve_config_path(config.as_deref())?;
             cmd_run(&config_path, false, true).await
         }
+        Commands::Blast(args) => cmd_blast(args).await,
+        Commands::Devour(args) => cmd_devour(args).await,
         Commands::Blackhole { bind_addr } => cmd_blackhole(bind_addr.as_deref()).await,
         Commands::GenerateJson {
             num_lines,
@@ -354,37 +517,208 @@ async fn cmd_run(config_path: &str, validate_only: bool, dry_run: bool) -> Resul
         return validate_pipelines(&config, dry_run, base_path);
     }
 
-    run_pipelines(config, base_path, config_path, &config_yaml).await
+    run_pipelines(config, base_path, config_path, &config_yaml, None).await
+}
+
+async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
+    maybe_prompt_blast_setup(&mut args)?;
+
+    if args.duration_secs == Some(0) {
+        return Err(CliError::Config(
+            "--duration-secs must be at least 1 when provided".to_owned(),
+        ));
+    }
+    if args.workers == 0 {
+        return Err(CliError::Config("--workers must be at least 1".to_owned()));
+    }
+    if args.batch_lines == 0 {
+        return Err(CliError::Config(
+            "--batch-lines must be at least 1".to_owned(),
+        ));
+    }
+
+    let destination = args
+        .destination
+        .ok_or_else(|| CliError::Config("blast requires --destination".to_owned()))?;
+    let generated = logfwd_runtime::generated_cli::build_blast_generated_config(
+        destination.as_output_type(),
+        args.endpoint.as_deref(),
+        args.auth_bearer_token.as_deref(),
+        &args.auth_header,
+        args.workers,
+        args.batch_lines,
+        &args.diagnostics_addr,
+    )
+    .map_err(CliError::Config)?;
+
+    println!("Starting blast (runtime pipeline shortcut)...");
+    println!(
+        "destination={} workers={} batch_lines={}",
+        destination.as_output_type(),
+        args.workers,
+        args.batch_lines
+    );
+    match args.duration_secs {
+        Some(duration) => println!("duration={}s", duration),
+        None => println!("duration=until-stopped (Ctrl-C)"),
+    }
+    if let Some(endpoint) = &args.endpoint {
+        println!("endpoint={endpoint}");
+    }
+    println!("diagnostics={}", args.diagnostics_addr);
+
+    let auto_shutdown_after = args.duration_secs.map(Duration::from_secs);
+    run_pipelines(
+        generated.config,
+        None,
+        "<blast-generated>",
+        &generated.yaml,
+        auto_shutdown_after,
+    )
+    .await
+}
+
+async fn cmd_devour(args: DevourArgs) -> Result<(), CliError> {
+    let listen = args
+        .listen
+        .clone()
+        .unwrap_or_else(|| args.mode.default_listen().to_string());
+
+    logfwd_config::validate_host_port(&listen)
+        .map_err(|e| CliError::Config(format!("invalid listen address: {e}")))?;
+    logfwd_config::validate_host_port(&args.diagnostics_addr)
+        .map_err(|e| CliError::Config(format!("invalid diagnostics address: {e}")))?;
+
+    if args.duration_secs == Some(0) {
+        return Err(CliError::Config(
+            "--duration-secs must be at least 1 when provided".to_owned(),
+        ));
+    }
+
+    println!(
+        "devour mode={:?} listening={} target={}",
+        args.mode,
+        listen,
+        args.mode.target_hint(&listen)
+    );
+    println!("dropping all received data (blackhole mode)");
+    println!("diagnostics={}", args.diagnostics_addr);
+    if let Some(duration) = args.duration_secs {
+        println!("duration={}s", duration);
+    }
+
+    let generated = logfwd_runtime::generated_cli::build_devour_generated_config(
+        args.mode.spec(),
+        &listen,
+        &args.diagnostics_addr,
+    )
+    .map_err(CliError::Config)?;
+
+    let auto_shutdown_after = args.duration_secs.map(Duration::from_secs);
+    run_pipelines(
+        generated.config,
+        None,
+        "<devour-generated>",
+        &generated.yaml,
+        auto_shutdown_after,
+    )
+    .await
 }
 
 async fn cmd_blackhole(bind_addr: Option<&str>) -> Result<(), CliError> {
-    let addr = bind_addr.unwrap_or("127.0.0.1:4318");
+    let args = DevourArgs {
+        mode: DevourMode::Otlp,
+        listen: bind_addr.map(ToOwned::to_owned),
+        duration_secs: None,
+        diagnostics_addr: "127.0.0.1:0".to_string(),
+    };
+    cmd_devour(args).await
+}
 
-    // Validate addr using the same hostname-accepting logic as the config
-    // validator (validate_host_port) so that a hostname like `localhost:4318`
-    // is accepted here and not only rejected later by the config layer.
-    logfwd_config::validate_host_port(addr)
-        .map_err(|e| CliError::Config(format!("invalid bind address: {e}")))?;
+fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
+    if args.destination.is_some() {
+        return Ok(());
+    }
 
-    // Use port 0 for diagnostics so it never collides with an in-use port.
-    // Quote addr as a YAML string so bracketed IPv6 (e.g. [::1]:4318) does not
-    // break YAML parsing. Single-quote with '' escaping for any embedded quotes.
-    let yaml_addr = addr.replace('\'', "''");
-    let yaml = format!(
-        "input:\n  type: otlp\n  listen: '{yaml_addr}'\noutput:\n  type: null\nserver:\n  diagnostics: 127.0.0.1:0\n"
-    );
-    let config = logfwd_config::Config::load_str(&yaml)
-        .map_err(|e| CliError::Config(format!("internal config error: {e}")))?;
+    if !wizard_uses_interactive_terminals(io::stdin().is_terminal(), io::stdout().is_terminal()) {
+        return Err(CliError::Config(
+            "no destination provided. Pass --destination (wizard requires interactive stdin/stdout)"
+                .to_owned(),
+        ));
+    }
 
-    eprintln!(
-        "{}logfwd blackhole{} starting on {}{addr}{}",
-        bold(),
-        reset(),
-        bold(),
-        reset(),
-    );
+    println!("blast quick setup");
+    println!("Press Enter to accept defaults.");
+    println!("Leave duration blank to run until Ctrl-C.");
 
-    run_pipelines(config, None, "<blackhole>", &yaml).await
+    let destination_raw = prompt_text(
+        "Destination [otlp/elasticsearch_otlp/elasticsearch/elasticsearch_bulk/loki/arrow_ipc/udp/tcp/null]",
+        "otlp",
+    )?;
+    let destination = BlastDestination::parse(&destination_raw).ok_or_else(|| {
+        CliError::Config(format!(
+            "unknown destination '{destination_raw}' (expected otlp/elasticsearch_otlp/elasticsearch/elasticsearch_bulk/loki/arrow_ipc/udp/tcp/null)"
+        ))
+    })?;
+    args.destination = Some(destination);
+
+    if destination.should_require_endpoint() && args.endpoint.is_none() {
+        let endpoint = prompt_text("Endpoint", destination.default_endpoint())?;
+        args.endpoint = Some(endpoint);
+    }
+
+    if args.auth_bearer_token.is_none() {
+        println!("Bearer token prompt skipped in wizard; pass --auth-bearer-token if needed.");
+    }
+
+    args.workers = prompt_text("Workers", &args.workers.to_string())?
+        .parse::<usize>()
+        .map_err(|_| CliError::Config("Workers must be a positive integer".to_owned()))?;
+    args.batch_lines = prompt_text("Batch lines", &args.batch_lines.to_string())?
+        .parse::<usize>()
+        .map_err(|_| CliError::Config("Batch lines must be a positive integer".to_owned()))?;
+    let duration_default = args
+        .duration_secs
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let duration_raw = prompt_text(
+        "Duration seconds (optional, blank=run until Ctrl-C)",
+        &duration_default,
+    )?;
+    args.duration_secs = if duration_raw.trim().is_empty() {
+        None
+    } else {
+        Some(duration_raw.parse::<u64>().map_err(|_| {
+            CliError::Config("Duration seconds must be a positive integer".to_owned())
+        })?)
+    };
+
+    Ok(())
+}
+
+fn resolve_blast_output_config(args: &BlastArgs) -> Result<logfwd_config::OutputConfig, CliError> {
+    let destination = args
+        .destination
+        .ok_or_else(|| CliError::Config("blast requires --destination".to_owned()))?;
+    logfwd_runtime::generated_cli::resolve_blast_output_config(
+        destination.as_output_type(),
+        args.endpoint.as_deref(),
+        args.auth_bearer_token.as_deref(),
+        &args.auth_header,
+    )
+    .map_err(CliError::Config)
+}
+
+fn render_devour_yaml(args: &DevourArgs, listen: &str) -> String {
+    logfwd_runtime::generated_cli::render_devour_yaml(
+        args.mode.spec(),
+        listen,
+        &args.diagnostics_addr,
+    )
+}
+
+fn yaml_quote(value: &str) -> String {
+    logfwd_runtime::generated_cli::yaml_quote(value)
 }
 
 fn cmd_generate_json(num_lines: usize, output_file: &str) -> Result<(), CliError> {
@@ -813,7 +1147,7 @@ fn validate_transform_probe_read_only(
 
     let fields: Vec<Field> = if transform.analyzer().referenced_columns.is_empty() {
         vec![
-            Field::new("_raw", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("msg", DataType::Utf8, true),
         ]
@@ -970,14 +1304,25 @@ fn validate_pipeline_read_only(
             .name
             .clone()
             .unwrap_or_else(|| format!("input_{i}"));
-        let format = input_cfg
-            .format
-            .clone()
-            .unwrap_or(match input_cfg.input_type {
-                InputType::File => Format::Auto,
-                _ => Format::Json,
-            });
-        validate_input_format_read_only(&input_name, input_cfg.input_type.clone(), &format)?;
+        if matches!(
+            input_cfg.input_type,
+            InputType::LinuxEbpfSensor | InputType::MacosEsSensor | InputType::WindowsEbpfSensor
+        ) {
+            if input_cfg.format.is_some() {
+                return Err(format!(
+                    "input '{input_name}': sensor inputs do not support 'format' (Arrow-native input)"
+                ));
+            }
+        } else {
+            let format = input_cfg
+                .format
+                .clone()
+                .unwrap_or(match input_cfg.input_type {
+                    InputType::File => Format::Auto,
+                    _ => Format::Json,
+                });
+            validate_input_format_read_only(&input_name, input_cfg.input_type.clone(), &format)?;
+        }
 
         let input_sql = input_cfg.sql.as_deref().unwrap_or(pipeline_sql);
         let mut transform = SqlTransform::new(input_sql).map_err(|e| e.to_string())?;
@@ -1011,11 +1356,7 @@ fn validate_input_format_read_only(
             format,
             Format::Cri | Format::Auto | Format::Json | Format::Raw
         ),
-        InputType::Generator
-        | InputType::Otlp
-        | InputType::LinuxSensorBeta
-        | InputType::MacosSensorBeta
-        | InputType::WindowsSensorBeta => matches!(format, Format::Json),
+        InputType::Generator | InputType::Otlp => matches!(format, Format::Json),
         InputType::Http => matches!(format, Format::Json | Format::Raw),
         InputType::Udp | InputType::Tcp => matches!(format, Format::Json | Format::Raw),
         InputType::ArrowIpc => false,
@@ -1121,6 +1462,7 @@ async fn run_pipelines(
     base_path: Option<&std::path::Path>,
     config_path: &str,
     config_yaml: &str,
+    auto_shutdown_after: Option<Duration>,
 ) -> Result<(), CliError> {
     logfwd_runtime::bootstrap::run_pipelines(
         config,
@@ -1131,6 +1473,7 @@ async fn run_pipelines(
             version: VERSION,
             use_color: use_color(),
             json_logs_for_stderr: use_json_logs_for_stderr(io::stderr().is_terminal()),
+            auto_shutdown_after,
         },
     )
     .await
@@ -1138,7 +1481,7 @@ async fn run_pipelines(
 }
 
 #[cfg(test)]
-fn format_duration(d: std::time::Duration) -> String {
+fn format_duration(d: Duration) -> String {
     logfwd_runtime::bootstrap::format_duration(d)
 }
 
@@ -1297,6 +1640,19 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
 mod cli_tests {
     use super::*;
 
+    fn blast_args_for_validation() -> BlastArgs {
+        BlastArgs {
+            destination: Some(BlastDestination::Otlp),
+            endpoint: Some("http://127.0.0.1:4318/v1/logs".to_owned()),
+            auth_bearer_token: None,
+            auth_header: Vec::new(),
+            workers: 2,
+            batch_lines: 5_000,
+            duration_secs: None,
+            diagnostics_addr: "127.0.0.1:0".to_owned(),
+        }
+    }
+
     #[test]
     fn clap_parses_validate_subcommand() {
         let cli = Cli::try_parse_from(["logfwd", "validate", "--config", "foo.yaml"])
@@ -1377,24 +1733,73 @@ mod cli_tests {
     }
 
     #[test]
+    fn clap_parses_blast_and_devour_aliases() {
+        let blast = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "elasticsearch_otlp",
+            "--endpoint",
+            "http://127.0.0.1:4318/v1/logs",
+        ])
+        .expect("blast alias should parse");
+        match blast.command.expect("command") {
+            Commands::Blast(args) => {
+                assert!(matches!(args.destination, Some(BlastDestination::Otlp)))
+            }
+            other => panic!("expected blast command, got {other:?}"),
+        }
+
+        let blast_arrow = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "arrow_ipc",
+            "--endpoint",
+            "http://127.0.0.1:18081",
+        ])
+        .expect("arrow_ipc alias should parse");
+        match blast_arrow.command.expect("command") {
+            Commands::Blast(args) => {
+                assert!(matches!(args.destination, Some(BlastDestination::ArrowIpc)))
+            }
+            other => panic!("expected blast command, got {other:?}"),
+        }
+
+        let devour = Cli::try_parse_from(["logfwd", "devour", "--mode", "elasticsearch"])
+            .expect("devour elasticsearch alias should parse");
+        match devour.command.expect("command") {
+            Commands::Devour(args) => assert!(matches!(args.mode, DevourMode::ElasticsearchBulk)),
+            other => panic!("expected devour command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clap_parses_devour_defaults() {
+        let cli = Cli::try_parse_from(["logfwd", "devour"]).expect("devour should parse");
+        match cli.command.expect("command") {
+            Commands::Devour(args) => {
+                assert!(matches!(args.mode, DevourMode::Otlp));
+                assert!(args.listen.is_none());
+                assert!(args.duration_secs.is_none());
+            }
+            other => panic!("expected devour command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn format_duration_seconds() {
-        assert_eq!(format_duration(std::time::Duration::from_secs(42)), "42s");
+        assert_eq!(format_duration(Duration::from_secs(42)), "42s");
     }
 
     #[test]
     fn format_duration_minutes() {
-        assert_eq!(
-            format_duration(std::time::Duration::from_secs(125)),
-            "2m 5s"
-        );
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
     }
 
     #[test]
     fn format_duration_hours() {
-        assert_eq!(
-            format_duration(std::time::Duration::from_secs(7260)),
-            "2h 1m"
-        );
+        assert_eq!(format_duration(Duration::from_secs(7260)), "2h 1m");
     }
 
     #[test]
@@ -1426,6 +1831,184 @@ mod cli_tests {
         assert!(!wizard_uses_interactive_terminals(true, false));
         assert!(!wizard_uses_interactive_terminals(false, true));
         assert!(wizard_uses_interactive_terminals(true, true));
+    }
+
+    #[test]
+    fn blast_destination_http_is_rejected_by_cli_parser() {
+        let err = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "http",
+            "--endpoint",
+            "http://127.0.0.1:8080",
+        ])
+        .expect_err("http destination should be rejected");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn blast_duration_defaults_to_none() {
+        let cli = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "otlp",
+            "--endpoint",
+            "http://127.0.0.1:4318/v1/logs",
+        ])
+        .expect("blast with explicit destination should parse");
+        match cli.command.expect("command") {
+            Commands::Blast(args) => assert!(args.duration_secs.is_none()),
+            other => panic!("expected blast command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blast_missing_destination_fails_in_non_interactive_mode() {
+        let mut args = blast_args_for_validation();
+        args.destination = None;
+        args.endpoint = None;
+        let err = maybe_prompt_blast_setup(&mut args).expect_err("missing destination should fail");
+        assert!(
+            err.to_string().contains("no destination provided"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn blast_arrow_ipc_default_endpoint_is_http_url() {
+        assert_eq!(
+            BlastDestination::ArrowIpc.default_endpoint(),
+            "http://127.0.0.1:18081/v1/arrow"
+        );
+    }
+
+    #[test]
+    fn devour_elasticsearch_bulk_uses_bulk_path() {
+        let args = DevourArgs {
+            mode: DevourMode::ElasticsearchBulk,
+            listen: None,
+            duration_secs: None,
+            diagnostics_addr: "127.0.0.1:0".to_owned(),
+        };
+        let yaml = render_devour_yaml(&args, "127.0.0.1:9200");
+        assert!(yaml.contains("path: '/_bulk'"));
+        assert!(
+            yaml.contains(
+                "response_body: \"{\\\"took\\\":0,\\\"errors\\\":false,\\\"items\\\":[]}\""
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_blast_output_config_rejects_auth_for_udp_destination() {
+        let mut args = blast_args_for_validation();
+        args.destination = Some(BlastDestination::Udp);
+        args.endpoint = Some("127.0.0.1:15514".to_owned());
+        args.auth_bearer_token = Some("token".to_owned());
+        let err =
+            resolve_blast_output_config(&args).expect_err("udp destination should reject auth");
+        assert!(
+            err.to_string()
+                .contains("only supported for otlp, elasticsearch, loki, and arrow_ipc"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_blast_output_config_preserves_tcp_endpoint() {
+        let mut args = blast_args_for_validation();
+        args.destination = Some(BlastDestination::Tcp);
+        args.endpoint = Some("127.0.0.1:15140".to_owned());
+
+        let output_cfg =
+            resolve_blast_output_config(&args).expect("tcp destination should preserve endpoint");
+        assert_eq!(output_cfg.endpoint.as_deref(), Some("127.0.0.1:15140"));
+    }
+
+    #[test]
+    fn cmd_devour_rejects_invalid_diagnostics_addr() {
+        let args = DevourArgs {
+            mode: DevourMode::Otlp,
+            listen: Some("127.0.0.1:4318".to_owned()),
+            duration_secs: None,
+            diagnostics_addr: "http://127.0.0.1:9191".to_owned(),
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_devour(args))
+            .expect_err("invalid diagnostics addr should fail");
+        assert!(
+            err.to_string().contains("invalid diagnostics address"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_blast_rejects_zero_workers() {
+        let mut args = blast_args_for_validation();
+        args.workers = 0;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_blast(args))
+            .expect_err("zero workers should fail");
+        assert!(
+            err.to_string().contains("--workers must be at least 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_blast_rejects_zero_batch_lines() {
+        let mut args = blast_args_for_validation();
+        args.batch_lines = 0;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_blast(args))
+            .expect_err("zero batch lines should fail");
+        assert!(
+            err.to_string().contains("--batch-lines must be at least 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_blast_rejects_zero_duration_when_provided() {
+        let mut args = blast_args_for_validation();
+        args.duration_secs = Some(0);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_blast(args))
+            .expect_err("zero duration should fail");
+        assert!(
+            err.to_string()
+                .contains("--duration-secs must be at least 1 when provided"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn yaml_quote_escapes_newlines_and_control_chars() {
+        let quoted = yaml_quote("line1\nline2\r\n\0tab\tquote\"slash\\");
+        assert_eq!(
+            quoted,
+            "\"line1\\nline2\\r\\n\\u0000tab\\tquote\\\"slash\\\\\""
+        );
+        assert!(!quoted.contains('\n'));
+        assert!(!quoted.contains('\r'));
     }
 
     #[test]
@@ -1466,6 +2049,39 @@ output:
         let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
         let result = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(matches!(result, Err(CliError::Config(_))));
+    }
+
+    #[test]
+    fn validate_pipelines_read_only_rejects_sensor_format() {
+        let yaml = r#"
+input:
+  type: linux_ebpf_sensor
+  format: raw
+output:
+  type: null
+"#;
+        let err = logfwd_config::Config::load_str(yaml)
+            .expect_err("sensor format should fail config validation");
+        assert!(
+            err.to_string()
+                .contains("sensor inputs do not support 'format'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_pipelines_read_only_accepts_arrow_native_sensor() {
+        let yaml = r#"
+input:
+  type: linux_ebpf_sensor
+  sensor:
+    poll_interval_ms: 1000
+output:
+  type: null
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        validate_pipelines_read_only(&config, None, |_name| {}, |_err| {})
+            .expect("sensor input without format should validate");
     }
     #[test]
     fn read_wizard_line_rejects_eof() {

@@ -1110,132 +1110,36 @@ fn test_empty_input_batch_uses_transformed_output_schema() {
     assert_eq!(result.schema().field(0).name(), "severity");
 }
 
-// -----------------------------------------------------------------------
-// Regression tests for #1627: _raw must be kept when referenced in SQL
-// -----------------------------------------------------------------------
-
-/// When a non-wildcard SELECT references `_raw` (e.g. `json(_raw, 'key')`),
-/// `scan_config()` must set `keep_raw = true` so the scanner includes the raw
-/// JSON string in the batch.
 #[test]
-fn test_scan_config_keep_raw_when_referenced() {
-    let sql = "SELECT level, json(_raw, 'status') AS s FROM logs";
-    let a = QueryAnalyzer::new(sql).unwrap();
-    assert!(
-        a.referenced_columns.contains("_raw"),
-        "expected '_raw' in referenced_columns, got {:?}",
-        a.referenced_columns
-    );
-    let cfg = a.scan_config();
-    assert!(
-        cfg.keep_raw,
-        "scan_config must set keep_raw=true when _raw is referenced"
-    );
-    // _raw must NOT appear in wanted_fields — it is not a JSON key.
-    assert!(
-        cfg.wanted_fields.iter().all(|f| f.name != "_raw"),
-        "_raw must not be in wanted_fields: {:?}",
-        cfg.wanted_fields
-            .iter()
-            .map(|f| &f.name)
-            .collect::<Vec<_>>()
-    );
-}
-
-/// Keep `_raw` only when query text actually references it.
-#[test]
-fn test_scan_config_keep_raw_only_when_raw_is_referenced() {
-    let with_raw =
-        QueryAnalyzer::new("SELECT level FROM logs WHERE json(_raw, 'status') = '500'").unwrap();
-    let with_cfg = with_raw.scan_config();
-    assert!(
-        with_cfg.keep_raw,
-        "keep_raw must be true when _raw is referenced in WHERE"
-    );
-    assert!(
-        with_cfg.wanted_fields.iter().all(|f| f.name != "_raw"),
-        "_raw must not be added to wanted_fields"
-    );
-    assert!(
-        with_cfg.wanted_fields.iter().any(|f| f.name == "level"),
-        "regular JSON fields should still be requested"
-    );
-
-    let without_raw = QueryAnalyzer::new("SELECT level FROM logs WHERE status = '500'").unwrap();
-    let without_cfg = without_raw.scan_config();
-    assert!(
-        !without_cfg.keep_raw,
-        "keep_raw must remain false when query does not reference _raw"
-    );
-}
-
-#[test]
-fn test_filter_hints_wanted_fields_excludes_raw() {
-    let analyzer =
-        QueryAnalyzer::new("SELECT level FROM logs WHERE json(_raw, 'status') = '500'").unwrap();
-    let hints = analyzer.filter_hints();
-    let wanted = hints
-        .wanted_fields
-        .expect("non-wildcard query should produce wanted_fields");
-    assert!(
-        !wanted.iter().any(|name| name == "_raw"),
-        "filter_hints wanted_fields must not include _raw: {wanted:?}"
-    );
-}
-
-// -----------------------------------------------------------------------
-// scan_config() / keep_raw tests — issue #1597
-// -----------------------------------------------------------------------
-
-/// `SELECT *` on a JSON-format input must NOT force keep_raw.
-#[test]
-fn scan_config_select_star_does_not_force_keep_raw() {
-    let analyzer = QueryAnalyzer::new("SELECT * FROM logs").unwrap();
-    let cfg = analyzer.scan_config();
-    assert!(
-        !cfg.keep_raw,
-        "SELECT * must not force keep_raw; the pipeline handles it for format:raw inputs"
-    );
-}
-
-/// Explicitly selecting `_raw` must enable keep_raw.
-#[test]
-fn scan_config_explicit_raw_reference_enables_keep_raw() {
-    let analyzer = QueryAnalyzer::new("SELECT level, _raw FROM logs").unwrap();
-    let cfg = analyzer.scan_config();
-    assert!(
-        cfg.keep_raw,
-        "explicit _raw reference in SELECT list must enable keep_raw"
-    );
-}
-
-/// `SELECT *` with an explicit `_raw` reference (e.g. `SELECT *, _raw`)
-/// must still enable keep_raw because the user asked for it.
-#[test]
-fn scan_config_select_star_with_explicit_raw_enables_keep_raw() {
-    let analyzer = QueryAnalyzer::new("SELECT * FROM logs WHERE _raw LIKE '%error%'").unwrap();
-    let cfg = analyzer.scan_config();
-    assert!(
-        cfg.keep_raw,
-        "WHERE clause referencing _raw must enable keep_raw"
-    );
-}
-
-/// Queries that do not mention `_raw` at all must leave keep_raw false.
-#[test]
-fn scan_config_no_raw_reference_keep_raw_is_false() {
+fn scan_config_never_forces_line_capture() {
     for sql in &[
+        "SELECT * FROM logs",
         "SELECT level, msg FROM logs",
-        "SELECT * FROM logs WHERE level = 'ERROR'",
-        "SELECT * EXCEPT (stack_trace) FROM logs",
+        "SELECT level FROM logs WHERE status = '500'",
     ] {
         let analyzer = QueryAnalyzer::new(sql).unwrap();
         let cfg = analyzer.scan_config();
         assert!(
-            !cfg.keep_raw,
-            "keep_raw must be false for {sql:?} (no _raw reference)"
+            cfg.line_field_name.is_none(),
+            "scan_config should not force line capture for {sql:?}"
         );
     }
+}
+
+#[test]
+fn scan_config_preserves_referenced_columns_in_wanted_fields() {
+    let analyzer =
+        QueryAnalyzer::new("SELECT level, body FROM logs WHERE json(body, 'status') = '500'")
+            .unwrap();
+    let cfg = analyzer.scan_config();
+    assert!(
+        cfg.wanted_fields.iter().any(|f| f.name == "level"),
+        "expected level in wanted_fields"
+    );
+    assert!(
+        cfg.wanted_fields.iter().any(|f| f.name == "body"),
+        "expected body in wanted_fields"
+    );
 }
 
 /// `collect_column_refs` must traverse `TRIM(col)` and add `col` to the
@@ -1544,27 +1448,15 @@ fn test_query_analyzer_match_recognize_column_refs() {
 /// from the batch schema, and DataFusion raised "column _raw not found" on the
 /// first batch, dropping all data.
 #[test]
-fn test_scan_config_keep_raw_true_when_raw_in_select_list() {
-    let a = QueryAnalyzer::new("SELECT _raw, level FROM logs WHERE level = 'ERROR'").unwrap();
+fn test_scan_config_selective_query_does_not_set_line_field() {
+    let a = QueryAnalyzer::new("SELECT body, level FROM logs WHERE level = 'ERROR'").unwrap();
     let sc = a.scan_config();
     assert!(
-        sc.keep_raw,
-        "scan_config.keep_raw must be true when _raw is in the SELECT list, got false"
+        sc.line_field_name.is_none(),
+        "scan_config must not set line_field_name for selective queries"
     );
     assert!(
         !sc.extract_all,
         "scan_config.extract_all must be false for a selective query"
-    );
-}
-
-/// Selective query that does NOT mention `_raw` must leave keep_raw false
-/// (no performance regression from the fix).
-#[test]
-fn test_scan_config_keep_raw_false_when_raw_not_referenced() {
-    let a = QueryAnalyzer::new("SELECT level, message FROM logs WHERE level = 'ERROR'").unwrap();
-    let sc = a.scan_config();
-    assert!(
-        !sc.keep_raw,
-        "scan_config.keep_raw must be false when _raw is not referenced, got true"
     );
 }

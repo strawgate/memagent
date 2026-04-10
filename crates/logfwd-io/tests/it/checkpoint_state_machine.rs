@@ -234,7 +234,12 @@ impl Sut {
             ..Default::default()
         };
         let paths = vec![self.log_path.clone()];
-        let mut tailer = FileTailer::new(&paths, config).expect("create tailer after crash");
+        let mut tailer = FileTailer::new(
+            &paths,
+            config,
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .expect("create tailer after crash");
 
         if saved_offset > 0 {
             let _ = tailer.set_offset(&self.log_path, saved_offset);
@@ -271,7 +276,12 @@ impl StateMachineTest for TailCheckpointTest {
         };
 
         let paths = vec![log_path.clone()];
-        let tailer = FileTailer::new(&paths, config).expect("create tailer");
+        let tailer = FileTailer::new(
+            &paths,
+            config,
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .expect("create tailer");
 
         let checkpoint_store = FileCheckpointStore::open(dir.path().join("checkpoints"))
             .expect("open checkpoint store");

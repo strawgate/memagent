@@ -344,7 +344,7 @@ of blocking OS threads — one per input plus shared coordinator threads.
 
 ### Tuning tips
 
-- **Reduce memory**: avoid `keep_raw: true` (disabled by default) — it stores the full
+- **Reduce memory**: avoid enabling input line capture unless needed (`line_field`) — it stores the full
   JSON line and accounts for up to 65 % of table memory.
 - **Reduce CPU**: use a `WHERE` clause in the transform to drop unwanted records early.
 - **Multiple pipelines**: each pipeline occupies its own thread. Add CPU budget

@@ -12,6 +12,7 @@ use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::*;
 
 use logfwd_core::scan_config::ScanConfig;
+use logfwd_types::field_names;
 
 use crate::cast_udf::{FloatCastUdf, IntCastUdf};
 use crate::{QueryAnalyzer, TransformError, conflict_schema, enrichment, udf};
@@ -269,7 +270,7 @@ impl SqlTransform {
         let fields: Vec<Field> = if self.analyzer.referenced_columns.is_empty() {
             // SELECT * — provide a minimal representative schema.
             vec![
-                Field::new("_raw", DataType::Utf8, true),
+                Field::new(field_names::BODY, DataType::Utf8, true),
                 Field::new("level", DataType::Utf8, true),
                 Field::new("msg", DataType::Utf8, true),
             ]

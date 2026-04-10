@@ -183,9 +183,8 @@ async fn test_otlp_gzip_send_batch_sets_content_encoding() {
 }
 
 #[test]
-fn test_raw_passthrough() {
-    // Build a batch with only _raw column (simulating no transforms).
-    let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+fn test_json_lines_serializes_body_column() {
+    let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
     let raw = StringArray::from(vec![
         Some(r#"{"ts":"2024-01-15","msg":"hello"}"#),
         Some(r#"{"ts":"2024-01-15","msg":"world"}"#),
@@ -204,15 +203,20 @@ fn test_raw_passthrough() {
     let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines.len(), 2);
-    // Should be the original JSON, not re-serialized.
-    assert_eq!(lines[0], r#"{"ts":"2024-01-15","msg":"hello"}"#);
-    assert_eq!(lines[1], r#"{"ts":"2024-01-15","msg":"world"}"#);
+    assert_eq!(
+        lines[0],
+        r#"{"body":"{\"ts\":\"2024-01-15\",\"msg\":\"hello\"}"}"#
+    );
+    assert_eq!(
+        lines[1],
+        r#"{"body":"{\"ts\":\"2024-01-15\",\"msg\":\"world\"}"}"#
+    );
 }
 
 #[test]
 fn test_stdout_text_format() {
     let schema = Arc::new(Schema::new(vec![
-        Field::new("_raw", DataType::Utf8, true),
+        Field::new("body", DataType::Utf8, true),
         Field::new("level", DataType::Utf8, true),
     ]));
     let raw = StringArray::from(vec![Some("original log line")]);
@@ -567,9 +571,8 @@ fn test_otlp_real_int_column_encoded() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn test_json_lines_raw_passthrough_no_panic() {
-    // A batch that satisfies is_raw_passthrough but has no other null columns.
-    let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+fn test_json_lines_body_only_no_panic() {
+    let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
     let raw = StringArray::from(vec![Some(r#"{"x":1}"#)]);
     let batch = RecordBatch::try_new(schema, vec![Arc::new(raw)]).unwrap();
     let mut sink = JsonLinesSink::new(
@@ -582,7 +585,7 @@ fn test_json_lines_raw_passthrough_no_panic() {
     // Must not panic.
     sink.serialize_batch(&batch).unwrap();
     let output = String::from_utf8(sink.batch_buf.clone()).unwrap();
-    assert_eq!(output.trim(), r#"{"x":1}"#);
+    assert_eq!(output.trim(), r#"{"body":"{\"x\":1}"}"#);
 }
 
 // -----------------------------------------------------------------------

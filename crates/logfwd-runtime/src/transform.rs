@@ -85,7 +85,7 @@ mod passthrough {
             ScanConfig {
                 wanted_fields: vec![],
                 extract_all: true,
-                keep_raw: true,
+                line_field_name: None,
                 validate_utf8: false,
             }
         }
