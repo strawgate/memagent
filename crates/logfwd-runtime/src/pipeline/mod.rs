@@ -941,17 +941,22 @@ output:
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None)
             .unwrap_or_else(|err| panic!("unexpected pipeline build error: {err}"));
         let events = pipeline.inputs[0].source.poll().unwrap();
-        let bytes = match &events[0] {
-            InputEvent::Data { bytes, .. } => bytes,
-            _ => panic!("expected generator data event"),
-        };
+        let mut bytes = Vec::new();
+        for event in &events {
+            match event {
+                InputEvent::Data {
+                    bytes: event_bytes, ..
+                } => bytes.extend_from_slice(event_bytes),
+                _ => panic!("expected generator data event"),
+            }
+        }
         let mut scanner = Scanner::new(ScanConfig {
             wanted_fields: vec![],
             extract_all: true,
             keep_raw: false,
             validate_utf8: false,
         });
-        let batch = scanner.scan_detached(Bytes::from(bytes.clone())).unwrap();
+        let batch = scanner.scan_detached(Bytes::from(bytes)).unwrap();
         let benchmark_id = batch
             .column_by_name("benchmark_id")
             .unwrap()

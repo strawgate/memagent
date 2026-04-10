@@ -437,6 +437,7 @@ impl InputSource for GeneratorInput {
 
         let mut events_to_emit = self.config.batch_size as u64;
         if self.config.events_per_sec > 0 {
+            let batch_size = self.config.batch_size as u64;
             let now = std::time::Instant::now();
             let elapsed_sec = now
                 .checked_duration_since(self.last_refill)
@@ -445,18 +446,19 @@ impl InputSource for GeneratorInput {
             self.last_refill = now;
             self.rate_credit_events += elapsed_sec * self.config.events_per_sec as f64;
 
+            // Bound carried credits to one poll burst window so scheduler stalls
+            // do not turn into an arbitrarily large catch-up burst.
+            let burst_cap = self.config.events_per_sec.max(batch_size);
+            self.rate_credit_events = self.rate_credit_events.min(burst_cap as f64);
             let available = self.rate_credit_events.floor() as u64;
-            if available == 0 {
+            let full_batches_available = available / batch_size;
+            if full_batches_available == 0 {
                 return Ok(vec![]);
             }
-            // Bound one poll() flush to at most ~1 second of target rate to
-            // avoid unbounded bursts after scheduler stalls.
-            let burst_cap = self
-                .config
-                .events_per_sec
-                .max(self.config.batch_size as u64);
-            events_to_emit = available.min(burst_cap);
-            self.rate_credit_events -= events_to_emit as f64;
+            // Preserve the legacy "full batches only" behavior in rate-limited
+            // mode while still allowing multiple batches per poll at high EPS.
+            let max_full_batches = burst_cap / batch_size;
+            events_to_emit = full_batches_available.min(max_full_batches) * batch_size;
         }
 
         if self.config.total_events > 0 {
@@ -468,7 +470,13 @@ impl InputSource for GeneratorInput {
             return Ok(vec![]);
         }
 
-        let mut out_events = Vec::new();
+        if self.config.events_per_sec > 0 {
+            self.rate_credit_events -= events_to_emit as f64;
+        }
+
+        let expected_batches = events_to_emit.div_ceil(self.config.batch_size as u64) as usize;
+        let mut out_events = Vec::with_capacity(expected_batches);
+        let out_capacity = self.buf.capacity().max(self.config.batch_size * 512);
         let mut remaining = events_to_emit;
         while remaining > 0 {
             let chunk = remaining.min(self.config.batch_size as u64) as usize;
@@ -476,8 +484,10 @@ impl InputSource for GeneratorInput {
             if self.buf.is_empty() {
                 break;
             }
-            // Swap buffers to preserve capacity (avoid realloc every batch).
-            let mut out = Vec::with_capacity(chunk * 512);
+            // Each emitted batch owns its bytes, so this path still needs one
+            // Vec per output event. Keep the generator buffer at full-batch
+            // capacity so a short final chunk does not shrink the hot buffer.
+            let mut out = Vec::with_capacity(out_capacity);
             std::mem::swap(&mut self.buf, &mut out);
             let accounted_bytes = out.len() as u64;
             out_events.push(InputEvent::Data {
@@ -723,6 +733,73 @@ mod tests {
         assert_eq!(emitted_rows, 4_000);
         assert_eq!(input.events_generated(), 5_000);
         assert!(input.poll().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rate_limited_waits_for_a_full_batch_of_credit() {
+        let mut input = GeneratorInput::new(
+            "test",
+            GeneratorConfig {
+                batch_size: 1_000,
+                events_per_sec: 500,
+                total_events: 0,
+                ..Default::default()
+            },
+        );
+
+        let first = input.poll().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(input.events_generated(), 1_000);
+
+        input.last_refill = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(500))
+            .unwrap_or_else(std::time::Instant::now);
+        assert!(input.poll().unwrap().is_empty());
+        assert_eq!(input.events_generated(), 1_000);
+
+        input.last_refill = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(2))
+            .unwrap_or_else(std::time::Instant::now);
+        let second = input.poll().unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(input.events_generated(), 2_000);
+    }
+
+    #[test]
+    fn rate_limited_discards_credit_beyond_burst_cap() {
+        let mut input = GeneratorInput::new(
+            "test",
+            GeneratorConfig {
+                batch_size: 1_000,
+                events_per_sec: 5_000,
+                total_events: 20_000,
+                ..Default::default()
+            },
+        );
+
+        let first = input.poll().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(input.events_generated(), 1_000);
+
+        input.last_refill = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(10))
+            .unwrap_or_else(std::time::Instant::now);
+        let second = input.poll().unwrap();
+        let emitted_rows: usize = second
+            .iter()
+            .map(|event| match event {
+                InputEvent::Data { bytes, .. } => {
+                    bytes.iter().filter(|byte| **byte == b'\n').count()
+                }
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(second.len(), 5);
+        assert_eq!(emitted_rows, 5_000);
+        assert_eq!(input.events_generated(), 6_000);
+
+        assert!(input.poll().unwrap().is_empty());
+        assert_eq!(input.events_generated(), 6_000);
     }
 
     #[test]
