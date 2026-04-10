@@ -451,14 +451,29 @@ impl InputSource for GeneratorInput {
             let burst_cap = self.config.events_per_sec.max(batch_size);
             self.rate_credit_events = self.rate_credit_events.min(burst_cap as f64);
             let available = self.rate_credit_events.floor() as u64;
+            let remaining_total = if self.config.total_events > 0 {
+                self.config.total_events.saturating_sub(self.counter)
+            } else {
+                u64::MAX
+            };
             let full_batches_available = available / batch_size;
             if full_batches_available == 0 {
-                return Ok(vec![]);
+                // Preserve full-batch cadence, but allow a final partial batch
+                // when the finite total_events tail is smaller than batch_size.
+                if self.config.total_events > 0
+                    && remaining_total < batch_size
+                    && available >= remaining_total
+                {
+                    events_to_emit = remaining_total;
+                } else {
+                    return Ok(vec![]);
+                }
+            } else {
+                // Preserve the legacy "full batches only" behavior in rate-limited
+                // mode while still allowing multiple batches per poll at high EPS.
+                let max_full_batches = burst_cap / batch_size;
+                events_to_emit = full_batches_available.min(max_full_batches) * batch_size;
             }
-            // Preserve the legacy "full batches only" behavior in rate-limited
-            // mode while still allowing multiple batches per poll at high EPS.
-            let max_full_batches = burst_cap / batch_size;
-            events_to_emit = full_batches_available.min(max_full_batches) * batch_size;
         }
 
         if self.config.total_events > 0 {
@@ -476,7 +491,6 @@ impl InputSource for GeneratorInput {
 
         let expected_batches = events_to_emit.div_ceil(self.config.batch_size as u64) as usize;
         let mut out_events = Vec::with_capacity(expected_batches);
-        let out_capacity = self.buf.capacity().max(self.config.batch_size * 512);
         let mut remaining = events_to_emit;
         while remaining > 0 {
             let chunk = remaining.min(self.config.batch_size as u64) as usize;
@@ -484,11 +498,9 @@ impl InputSource for GeneratorInput {
             if self.buf.is_empty() {
                 break;
             }
-            // Each emitted batch owns its bytes, so this path still needs one
-            // Vec per output event. Keep the generator buffer at full-batch
-            // capacity so a short final chunk does not shrink the hot buffer.
-            let mut out = Vec::with_capacity(out_capacity);
-            std::mem::swap(&mut self.buf, &mut out);
+            // Move emitted bytes out while keeping the generator hot buffer
+            // allocated for subsequent batches in this poll.
+            let out = self.buf.split_off(0);
             let accounted_bytes = out.len() as u64;
             out_events.push(InputEvent::Data {
                 bytes: out,
@@ -800,6 +812,39 @@ mod tests {
 
         assert!(input.poll().unwrap().is_empty());
         assert_eq!(input.events_generated(), 6_000);
+    }
+
+    #[test]
+    fn rate_limited_allows_final_partial_batch_for_finite_total_events() {
+        let mut input = GeneratorInput::new(
+            "test",
+            GeneratorConfig {
+                batch_size: 1_000,
+                events_per_sec: 100,
+                total_events: 1_500,
+                ..Default::default()
+            },
+        );
+
+        let first = input.poll().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(input.events_generated(), 1_000);
+
+        input.last_refill = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .unwrap_or_else(std::time::Instant::now);
+        let second = input.poll().unwrap();
+        assert_eq!(second.len(), 1);
+        let emitted_rows: usize = second
+            .iter()
+            .map(|event| match event {
+                InputEvent::Data { bytes, .. } => bytes.iter().filter(|byte| **byte == b'\n').count(),
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(emitted_rows, 500);
+        assert_eq!(input.events_generated(), 1_500);
+        assert!(input.poll().unwrap().is_empty());
     }
 
     #[test]
