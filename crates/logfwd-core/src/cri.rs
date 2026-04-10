@@ -275,30 +275,22 @@ pub fn process_cri_to_buf_with_plain_text_field(
         match parse_cri_line(line) {
             Some(cri) => match reassembler.feed(&cri) {
                 ReassembleResult::Complete(msg) => {
-                    if plain_text_field_name == "body" {
-                        write_json_line(msg, json_prefix, out);
-                    } else {
-                        write_json_line_with_plain_text_field(
-                            msg,
-                            json_prefix,
-                            plain_text_field_name,
-                            out,
-                        );
-                    }
+                    write_json_line_for_plain_text_field(
+                        msg,
+                        json_prefix,
+                        plain_text_field_name,
+                        out,
+                    );
                     count += 1;
                     reassembler.reset();
                 }
                 ReassembleResult::Truncated(msg) => {
-                    if plain_text_field_name == "body" {
-                        write_json_line(msg, json_prefix, out);
-                    } else {
-                        write_json_line_with_plain_text_field(
-                            msg,
-                            json_prefix,
-                            plain_text_field_name,
-                            out,
-                        );
-                    }
+                    write_json_line_for_plain_text_field(
+                        msg,
+                        json_prefix,
+                        plain_text_field_name,
+                        out,
+                    );
                     count += 1;
                     errors += 1;
                     reassembler.reset();
@@ -310,6 +302,20 @@ pub fn process_cri_to_buf_with_plain_text_field(
     }
 
     (count, errors)
+}
+
+#[inline]
+fn write_json_line_for_plain_text_field(
+    msg: &[u8],
+    json_prefix: Option<&[u8]>,
+    plain_text_field_name: &str,
+    out: &mut Vec<u8>,
+) {
+    if plain_text_field_name == "body" {
+        write_json_line(msg, json_prefix, out);
+    } else {
+        write_json_line_with_plain_text_field(msg, json_prefix, plain_text_field_name, out);
+    }
 }
 
 /// Append `src` to `dst` with JSON string escaping (no surrounding quotes).
@@ -747,6 +753,34 @@ mod verification {
                 assert!(flag_byte == b'P', "is_full=false but flag is not P");
             }
         }
+    }
+
+    /// Prove the configurable plain-text field wrapper path never panics.
+    #[kani::proof]
+    #[kani::unwind(40)]
+    fn verify_process_cri_to_buf_with_plain_text_field_no_panic() {
+        let chunk: [u8; 32] = kani::any();
+        let prefix: [u8; 4] = kani::any();
+
+        let mut out = Vec::new();
+        let mut reassembler = CriReassembler::new(64);
+        let _ = process_cri_to_buf_with_plain_text_field(
+            &chunk,
+            &mut reassembler,
+            Some(&prefix),
+            "body",
+            &mut out,
+        );
+
+        out.clear();
+        reassembler.reset();
+        let _ = process_cri_to_buf_with_plain_text_field(
+            &chunk,
+            &mut reassembler,
+            Some(&prefix),
+            "msg",
+            &mut out,
+        );
     }
 
     /// Prove parse_cri_line rejects known invalid stream tokens.
