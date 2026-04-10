@@ -200,7 +200,8 @@ fn test_eof_requires_fresh_idle_window_after_data() {
         poll_interval_ms: 50,
         ..Default::default()
     };
-    let mut tailer = make_file_tailer(std::slice::from_ref(&log_path), config);
+    let mut tailer =
+        FileTailer::new(std::slice::from_ref(&log_path), config, create_test_stats()).unwrap();
 
     // Reach an initial EOF cycle.
     let _ = poll_until(

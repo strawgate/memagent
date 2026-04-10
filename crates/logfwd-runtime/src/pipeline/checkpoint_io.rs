@@ -183,8 +183,14 @@ mod verification {
         let attempt = kani::any::<u32>();
         assert!(!should_retry_flush(attempt, 0));
         assert!(!should_retry_flush(attempt, 1));
-        kani::cover!(!should_retry_flush(0, 0), "zero-attempt no-retry path reachable");
-        kani::cover!(!should_retry_flush(0, 1), "one-attempt no-retry path reachable");
+        kani::cover!(
+            !should_retry_flush(0, 0),
+            "zero-attempt no-retry path reachable"
+        );
+        kani::cover!(
+            !should_retry_flush(0, 1),
+            "one-attempt no-retry path reachable"
+        );
     }
 
     #[kani::proof]

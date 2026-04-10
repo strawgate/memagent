@@ -580,7 +580,10 @@ mod verification {
     #[kani::proof]
     fn verify_zero_counters_do_not_stop_drain() {
         assert!(!should_stop_udp_drain(0, 0));
-        kani::cover!(!should_stop_udp_drain(0, 0), "non-stopping path is reachable");
+        kani::cover!(
+            !should_stop_udp_drain(0, 0),
+            "non-stopping path is reachable"
+        );
     }
 
     #[kani::proof]

@@ -1123,9 +1123,6 @@ mod verification {
             should_stop_client_read(MAX_BYTES_PER_CLIENT_PER_POLL, 0),
             "stop branch reachable"
         );
-        kani::cover!(
-            !should_stop_client_read(0, 0),
-            "continue branch reachable"
-        );
+        kani::cover!(!should_stop_client_read(0, 0), "continue branch reachable");
     }
 }

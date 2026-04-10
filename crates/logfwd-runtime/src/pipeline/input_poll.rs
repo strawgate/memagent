@@ -244,8 +244,14 @@ mod verification {
                 buffered_len > 0
             );
         }
-        kani::cover!(should_flush_buffer(1, 2, true), "timeout flush path reachable");
-        kani::cover!(!should_flush_buffer(0, 2, true), "empty timeout no-flush path reachable");
+        kani::cover!(
+            should_flush_buffer(1, 2, true),
+            "timeout flush path reachable"
+        );
+        kani::cover!(
+            !should_flush_buffer(0, 2, true),
+            "empty timeout no-flush path reachable"
+        );
     }
 
     #[kani::proof]
