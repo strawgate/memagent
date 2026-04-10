@@ -162,6 +162,20 @@ job in `.github/workflows/ci.yml`):
 A matching path change in a **draft** PR does not trigger the job; the PR must
 be marked ready for review first.
 
+### Verification guardrail checks
+
+The CI `Verification guardrail` job runs these lightweight anti-drift checks:
+
+- `scripts/verify_kani_boundary_contract.py` — validates non-core Kani seam policy
+- `scripts/verify_tlc_matrix_contract.py` — validates TLC matrix coverage for expected non-coverage/non-thorough `tla/*.cfg` models
+- `scripts/verify_proptest_regressions.py` — validates persisted proptest regression-file policy and approved `failure_persistence: None` usage
+
+Run them locally:
+
+```bash
+just verification-guardrail
+```
+
 ### Proof quality requirements
 
 Every Kani proof MUST:

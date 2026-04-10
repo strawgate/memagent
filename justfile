@@ -150,6 +150,17 @@ kani-required:
 kani-boundary:
     python3 scripts/verify_kani_boundary_contract.py
 
+# Validate that CI's TLC matrix covers expected tla/*.cfg files.
+tlc-matrix-contract:
+    python3 scripts/verify_tlc_matrix_contract.py
+
+# Validate proptest regression-file and persistence policy.
+proptest-regressions:
+    python3 scripts/verify_proptest_regressions.py
+
+# Run all lightweight verification guardrails enforced in CI.
+verification-guardrail: kani-boundary tlc-matrix-contract proptest-regressions
+
 # Download tla2tools.jar to .tools/ if missing.
 tla-setup:
     #!/usr/bin/env bash
@@ -200,7 +211,7 @@ tlc-tail:
 lint: fmt-check workspace-inheritance-guard clippy toml-check
 
 # Lint — full workspace (CI uses this)
-lint-all: fmt-check kani-boundary workspace-inheritance-guard clippy-all toml-check deny
+lint-all: fmt-check verification-guardrail clippy-all toml-check deny
 
 # Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test

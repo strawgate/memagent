@@ -221,6 +221,10 @@ jobs:
           python-version: "3.11"
       - name: Kani boundary contract
         run: python3 scripts/verify_kani_boundary_contract.py
+      - name: TLC matrix contract
+        run: python3 scripts/verify_tlc_matrix_contract.py
+      - name: Proptest regression policy
+        run: python3 scripts/verify_proptest_regressions.py
 
   # -------------------------------------------------------------------------
   # Tests — Linux and macOS in parallel
