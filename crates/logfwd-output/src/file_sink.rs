@@ -73,14 +73,14 @@ impl Sink for FileSink {
                 .serializer
                 .write_batch_to(batch, metadata, &mut self.output_buf)
             {
-                return SendResult::IoError(e);
+                return SendResult::from_io_error(e);
             }
 
             let bytes_written = self.output_buf.len() as u64;
             let lines_written = memchr::memchr_iter(b'\n', &self.output_buf).count() as u64;
             let mut file = self.file.lock().await;
             if let Err(e) = file.write_all(&self.output_buf).await {
-                return SendResult::IoError(e);
+                return SendResult::from_io_error(e);
             }
 
             self.stats.inc_lines(lines_written);
