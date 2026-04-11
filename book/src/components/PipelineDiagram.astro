@@ -3,6 +3,7 @@ const stages = [
   {
     id: 'inputs',
     label: 'Inputs',
+    subtitle: '8 types',
     summary: 'Sources produce raw bytes or Arrow batches independently',
     components: [
       {
@@ -58,6 +59,8 @@ const stages = [
   {
     id: 'scanner',
     label: 'Scanner',
+    subtitle: '4 stages',
+    layout: 'pipeline',
     summary: 'SIMD-accelerated JSON/CRI → Arrow conversion',
     components: [
       {
@@ -89,6 +92,7 @@ const stages = [
   {
     id: 'transform',
     label: 'SQL Transform',
+    subtitle: '3 components',
     summary: 'DataFusion SQL over Arrow RecordBatches',
     components: [
       {
@@ -101,12 +105,14 @@ const stages = [
         id: 'udfs', label: 'Custom UDFs',
         detail: 'Scalar functions registered into the DataFusion context alongside built-in functions.',
         flow: ['regexp_extract()', 'grok()', 'json() / json_int() / json_float()', 'int() / float()', 'geo_lookup()'],
+        flowType: 'list' as const,
         notes: 'grok() supports 20+ built-in patterns (IP, UUID, TIMESTAMP_ISO8601, etc.). geo_lookup() requires MaxMind .mmdb database. hash() for deterministic partitioning.',
       },
       {
         id: 'enrichment', label: 'Enrichment Tables',
         detail: 'SQL-joinable tables injected into the DataFusion context. Refreshed per batch cycle if the underlying snapshot changes.',
         flow: ['k8s_path (pod metadata)', 'host_info (hostname)', 'static (user labels)', 'geo_database (MaxMind)'],
+        flowType: 'list' as const,
         notes: 'k8s_path: zero-cost path parsing, no K8s API calls. static: one-row table from config labels. All exposed as regular SQL tables for JOIN.',
       },
     ],
@@ -114,6 +120,7 @@ const stages = [
   {
     id: 'outputs',
     label: 'Outputs',
+    subtitle: '8 types',
     summary: 'Fan-out to multiple destinations via bounded channels',
     components: [
       {
@@ -190,7 +197,7 @@ const icons: Record<string, string> = {
             <Fragment set:html={icons[stage.id]} />
           </svg>
           <span class="pd-stage-label">{stage.label}</span>
-          <span class="pd-stage-count">{stage.components.length} types</span>
+          <span class="pd-stage-count">{stage.subtitle ?? `${stage.components.length} types`}</span>
         </button>
         {i < stages.length - 1 && (
           <div class="pd-connector" aria-hidden="true">
@@ -215,28 +222,41 @@ const icons: Record<string, string> = {
           <p>{stage.summary}</p>
         </div>
       </div>
-      <div class="pd-components">
-        {stage.components.map((comp) => (
-          <button
-            class="pd-comp"
-            data-component={comp.id}
-            aria-expanded="false"
-          >
-            {comp.label}
-          </button>
+      <div class={stage.layout === 'pipeline' ? 'pd-comp-pipeline' : 'pd-components'}>
+        {stage.components.map((comp, j) => (
+          <>
+            <button
+              class="pd-comp"
+              data-component={comp.id}
+              aria-expanded="false"
+            >
+              {comp.label}
+            </button>
+            {stage.layout === 'pipeline' && j < stage.components.length - 1 && (
+              <div class="pd-comp-arrow" aria-hidden="true"></div>
+            )}
+          </>
         ))}
       </div>
       {stage.components.map((comp) => (
         <div class="pd-impl" data-impl-component={comp.id} hidden>
           <p class="pd-impl-desc">{comp.detail}</p>
-          <div class="pd-mini-flow">
-            {comp.flow.map((step, j) => (
-              <>
-                <div class="pd-mini-step">{step}</div>
-                {j < comp.flow.length - 1 && <div class="pd-mini-arrow" aria-hidden="true"></div>}
-              </>
-            ))}
-          </div>
+          {(comp.flowType ?? 'pipeline') === 'pipeline' ? (
+            <div class="pd-mini-flow">
+              {comp.flow.map((step, j) => (
+                <>
+                  <div class="pd-mini-step">{step}</div>
+                  {j < comp.flow.length - 1 && <div class="pd-mini-arrow" aria-hidden="true"></div>}
+                </>
+              ))}
+            </div>
+          ) : (
+            <div class="pd-mini-tags">
+              {comp.flow.map((item) => (
+                <span class="pd-mini-tag">{item}</span>
+              ))}
+            </div>
+          )}
           {comp.notes && <p class="pd-impl-notes">{comp.notes}</p>}
         </div>
       ))}
@@ -262,7 +282,7 @@ const icons: Record<string, string> = {
   /* ── Level 1: Stage flow ── */
   .pd-flow {
     display: flex;
-    align-items: center;
+    align-items: stretch; /* equal height stages */
     justify-content: center;
     gap: 0;
     padding: 1.25rem 0;
@@ -272,6 +292,7 @@ const icons: Record<string, string> = {
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 0.4rem;
     padding: 1.1rem 1.5rem;
     border: 1.5px solid var(--pd-border);
@@ -280,7 +301,7 @@ const icons: Record<string, string> = {
     color: var(--pd-text);
     cursor: pointer;
     transition: all 0.15s cubic-bezier(0.2, 0, 0, 1);
-    min-width: 130px;
+    width: 140px;
     font-family: inherit;
     position: relative;
   }
@@ -324,6 +345,7 @@ const icons: Record<string, string> = {
   .pd-connector {
     display: flex;
     align-items: center;
+    align-self: center;
     width: 52px;
     flex-shrink: 0;
     position: relative;
@@ -355,7 +377,8 @@ const icons: Record<string, string> = {
   }
 
   @keyframes pd-flow {
-    to { background-position: -20px 0; }
+    from { background-position: 20px 0; }
+    to { background-position: 0 0; }
   }
 
   /* ── Hint ── */
@@ -424,11 +447,40 @@ const icons: Record<string, string> = {
     color: var(--pd-muted);
   }
 
-  /* ── Component grid ── */
+  /* ── Component layout: options (flat wrap) ── */
   .pd-components {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
+  }
+
+  /* ── Component layout: pipeline (sequential with arrows) ── */
+  .pd-comp-pipeline {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0;
+    row-gap: 0.4rem;
+  }
+
+  .pd-comp-arrow {
+    width: 18px;
+    height: 2px;
+    background: var(--pd-accent);
+    opacity: 0.4;
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  .pd-comp-arrow::after {
+    content: '';
+    position: absolute;
+    right: -1px;
+    top: -3px;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 5px solid var(--pd-accent);
+    opacity: 0.5;
   }
 
   .pd-comp {
@@ -514,6 +566,26 @@ const icons: Record<string, string> = {
     border-bottom: 4px solid transparent;
     border-left: 6px solid var(--pd-accent);
     opacity: 0.6;
+  }
+
+  /* ── Mini flow: tag list (no arrows, just chips) ── */
+  .pd-mini-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    padding: 0.5rem 0;
+  }
+
+  .pd-mini-tag {
+    padding: 0.3rem 0.6rem;
+    background: var(--pd-surface);
+    border: 1px solid var(--pd-border);
+    border-radius: 5px;
+    font-size: 0.72rem;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--pd-text);
+    font-family: var(--sl-font-mono, monospace);
   }
 
   .pd-impl-notes {
