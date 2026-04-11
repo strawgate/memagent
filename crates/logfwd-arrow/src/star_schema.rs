@@ -10,7 +10,7 @@
 //!
 //! This module converts between the two representations at the boundary.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow::array::{
@@ -475,6 +475,8 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // Collect flat columns: name → TypedColumn.
     let mut flat_cols: Vec<(String, TypedColumn)> = Vec::new();
     let mut col_index: HashMap<String, usize> = HashMap::new();
+    let unprotected_cols: HashSet<String> = HashSet::new();
+    let mut protected_log_fact_cols: HashSet<String> = HashSet::new();
 
     // Helper to get or create a string column.
     let ensure_str_col = |name: &str,
@@ -518,6 +520,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
             )));
         }
         let col_pos = ensure_str_col("_timestamp", &mut flat_cols, &mut col_index);
+        protected_log_fact_cols.insert("_timestamp".to_string());
         for row in 0..num_rows {
             if !ts_arr.is_null(row) {
                 // Timestamp is stored as i64 nanoseconds.
@@ -550,6 +553,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
             )));
         }
         let col_pos = ensure_str_col("level", &mut flat_cols, &mut col_index);
+        protected_log_fact_cols.insert("level".to_string());
         for row in 0..num_rows {
             if !sev_arr.is_null(row) {
                 let val = str_from_array(sev_arr.as_ref(), row);
@@ -572,6 +576,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
             )));
         }
         let col_pos = ensure_str_col("message", &mut flat_cols, &mut col_index);
+        protected_log_fact_cols.insert("message".to_string());
         for row in 0..num_rows {
             if !body_arr.is_null(row) {
                 let val = str_from_array(body_arr.as_ref(), row);
@@ -589,6 +594,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         let sev_num_arr = star.logs.column(sev_num_idx);
         if matches!(sev_num_arr.data_type(), DataType::Int32) {
             let col_pos = ensure_int_col("severity_number", &mut flat_cols, &mut col_index);
+            protected_log_fact_cols.insert("severity_number".to_string());
             let sev_num_arr = sev_num_arr
                 .as_any()
                 .downcast_ref::<arrow::array::Int32Array>()
@@ -608,6 +614,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         let trace_arr = star.logs.column(trace_idx);
         if matches!(trace_arr.data_type(), DataType::FixedSizeBinary(16)) {
             let col_pos = ensure_str_col("trace_id", &mut flat_cols, &mut col_index);
+            protected_log_fact_cols.insert("trace_id".to_string());
             let trace_arr = trace_arr
                 .as_any()
                 .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
@@ -629,6 +636,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         let span_arr = star.logs.column(span_idx);
         if matches!(span_arr.data_type(), DataType::FixedSizeBinary(8)) {
             let col_pos = ensure_str_col("span_id", &mut flat_cols, &mut col_index);
+            protected_log_fact_cols.insert("span_id".to_string());
             let span_arr = span_arr
                 .as_any()
                 .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
@@ -650,6 +658,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         let flags_arr = star.logs.column(flags_idx);
         if matches!(flags_arr.data_type(), DataType::UInt32) {
             let col_pos = ensure_int_col("flags", &mut flat_cols, &mut col_index);
+            protected_log_fact_cols.insert("flags".to_string());
             let flags_arr = flags_arr
                 .as_any()
                 .downcast_ref::<UInt32Array>()
@@ -680,6 +689,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
             _ if key.starts_with("scope.") => key.to_string(),
             _ => format!("scope.{key}"),
         },
+        &unprotected_cols,
     )?;
 
     // --- Unpivot LOG_ATTRS → flat columns ---
@@ -690,6 +700,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         num_rows,
         |parent_id| parent_id as usize, // parent_id IS the row index
         str::to_string,                 // no prefix
+        &protected_log_fact_cols,
     )?;
 
     // --- Unpivot RESOURCE_ATTRS → resource.attributes.* columns ---
@@ -707,6 +718,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
             parent_id as usize
         },
         |key| format!("{RESOURCE_PREFIX}{key}"),
+        &unprotected_cols,
     )?;
 
     // The unpivot above set values at the resource_id index, but we need to
@@ -1548,6 +1560,10 @@ fn severity_text_to_number(text: &str) -> i32 {
 /// For each row in the attrs table, reads (parent_id, key, typed value) and
 /// writes the value into `flat_cols[key][row_for(parent_id)]`, preserving the
 /// original type from the `type` column.
+///
+/// Existing columns listed in `protected_existing_cols` are canonical fact
+/// columns; attrs with the same flat name are skipped because flat batches
+/// cannot represent duplicate column names.
 fn unpivot_attrs_to_flat(
     attrs_batch: &RecordBatch,
     flat_cols: &mut Vec<(String, TypedColumn)>,
@@ -1555,6 +1571,7 @@ fn unpivot_attrs_to_flat(
     num_rows: usize,
     row_for: impl Fn(u32) -> usize,
     map_key: impl Fn(&str) -> String,
+    protected_existing_cols: &HashSet<String>,
 ) -> Result<(), ArrowError> {
     if attrs_batch.num_rows() == 0 {
         return Ok(());
@@ -1651,6 +1668,13 @@ fn unpivot_attrs_to_flat(
         let key = key_arr.value(row);
         let mapped_key = map_key(key);
         let type_tag = type_arr.value(row);
+
+        // Preserve canonical LOGS fact fields when LOG_ATTRS use the same name.
+        if protected_existing_cols.contains(mapped_key.as_str())
+            && col_index.contains_key(mapped_key.as_str())
+        {
+            continue;
+        }
 
         // Get or create the flat column with the correct type.
         let col_pos = if let Some(&idx) = col_index.get(&mapped_key) {
@@ -2932,6 +2956,60 @@ mod tests {
 
         assert_eq!(payload_arr.value(0), "dead");
         assert_eq!(payload_arr.value(1), "text");
+    }
+
+    #[test]
+    fn log_attr_collision_does_not_overwrite_fact_column() {
+        let logs = RecordBatch::try_new(
+            Arc::new(logs_schema()),
+            vec![
+                Arc::new(UInt32Array::from(vec![0_u32])),
+                Arc::new(UInt32Array::from(vec![0_u32])),
+                Arc::new(UInt32Array::from(vec![0_u32])),
+                Arc::new(arrow::array::TimestampNanosecondArray::from(vec![
+                    None::<i64>,
+                ])),
+                Arc::new(arrow::array::Int32Array::from(vec![Some(9_i32)])),
+                Arc::new(StringArray::from(vec![Some("ERROR")])),
+                Arc::new(StringArray::from(vec![Some("row-0")])),
+                build_fixed_binary_array::<16>(&[None]).expect("trace ids"),
+                build_fixed_binary_array::<8>(&[None]).expect("span ids"),
+                Arc::new(UInt32Array::from(vec![Some(3_u32)])),
+                Arc::new(UInt32Array::from(vec![Some(0_u32)])),
+            ],
+        )
+        .expect("valid logs");
+
+        let log_attrs = RecordBatch::try_new(
+            Arc::new(attrs_schema()),
+            vec![
+                Arc::new(UInt32Array::from(vec![0_u32])),
+                Arc::new(StringArray::from(vec!["flags"])),
+                Arc::new(UInt8Array::from(vec![ATTR_TYPE_STR])),
+                Arc::new(StringArray::from(vec![Some("not-flags")])),
+                Arc::new(Int64Array::from(vec![None::<i64>])),
+                Arc::new(Float64Array::from(vec![None::<f64>])),
+                Arc::new(BooleanArray::from(vec![None::<bool>])),
+                Arc::new(BinaryArray::from(vec![None::<&[u8]>])),
+            ],
+        )
+        .expect("valid attrs");
+
+        let star = StarSchema {
+            logs,
+            log_attrs,
+            resource_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+            scope_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+        };
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+        let flags_idx = roundtrip.schema().index_of("flags").expect("flags");
+        let flags_arr = roundtrip
+            .column(flags_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("fact flags stays int");
+
+        assert_eq!(flags_arr.value(0), 3);
     }
 
     #[test]
