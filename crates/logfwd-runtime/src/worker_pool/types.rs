@@ -75,7 +75,11 @@ fn bound_reason_to_limit(reason: &mut String, max_bytes: usize) {
     }
     const SUFFIX: &str = "...";
     if max_bytes <= SUFFIX.len() {
-        reason.truncate(max_bytes);
+        let mut end = max_bytes;
+        while end > 0 && !reason.is_char_boundary(end) {
+            end -= 1;
+        }
+        reason.truncate(end);
         return;
     }
     let mut boundary = max_bytes - SUFFIX.len();
@@ -156,5 +160,15 @@ mod tests {
         bound_reason_to_limit(&mut reason, 2);
         assert_eq!(reason, "ab");
         assert_eq!(reason.len(), 2);
+    }
+
+    #[test]
+    fn bound_reason_to_limit_tiny_limit_with_multibyte_does_not_panic() {
+        // "é" is 2 bytes (0xC3 0xA9). With max_bytes=1 (< SUFFIX.len()),
+        // truncating at byte 1 would split the char and panic without the
+        // char-boundary walk-back.
+        let mut reason = "é".to_string();
+        bound_reason_to_limit(&mut reason, 1);
+        assert!(reason.is_empty());
     }
 }

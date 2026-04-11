@@ -316,6 +316,8 @@ impl OutputWorkerPool {
                         // A freshly created channel should never be full, but
                         // if this invariant is violated preserve correctness by
                         // falling back to the existing back-pressure path.
+                        // Push the handle back so the spawned worker task is not leaked.
+                        self.workers.push_front(handle);
                         tracing::warn!(
                             "worker_pool: newly spawned worker channel reported full; falling back to wait path"
                         );

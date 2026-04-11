@@ -85,8 +85,10 @@ mod tests {
 
     #[test]
     fn dispatch_step_waits_when_every_active_worker_is_full_at_capacity() {
-        let states = [ChannelState::Full, ChannelState::Closed, ChannelState::Full];
-        // Closed workers do not count toward active capacity, so active=2 == max.
+        // Both workers are Full and active == max_workers == 2, so backpressure
+        // must kick in. states.len() <= max_workers satisfies the Kani-proven
+        // precondition.
+        let states = [ChannelState::Full, ChannelState::Full];
         assert_eq!(dispatch_step(&states, 2), DispatchOutcome::WaitOnFront);
     }
 }
