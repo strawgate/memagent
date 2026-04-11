@@ -517,6 +517,57 @@ fn invalid_json_bytes_value_returns_error() {
 }
 
 #[test]
+fn json_trace_and_span_ids_decode_as_hex_bytes() {
+    let batch = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "traceId": "00112233445566778899AABBCCDDEEFF",
+                        "spanId": "0123456789ABCDEF"
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    )
+    .expect("valid OTLP JSON trace/span ids should decode");
+
+    assert_eq!(batch.num_rows(), 1);
+
+    let trace = batch
+        .column_by_name(field_names::TRACE_ID)
+        .expect("trace.id column must exist");
+    assert_eq!(
+        string_value_at(trace.as_ref(), 0),
+        "00112233445566778899aabbccddeeff"
+    );
+
+    let span = batch
+        .column_by_name(field_names::SPAN_ID)
+        .expect("span.id column must exist");
+    assert_eq!(string_value_at(span.as_ref(), 0), "0123456789abcdef");
+}
+
+#[test]
+fn json_invalid_trace_id_returns_error() {
+    let result = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "traceId": "not-hex"
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    );
+
+    assert!(result.is_err(), "invalid traceId must fail");
+}
+
+#[test]
 fn json_bytes_value_accepts_urlsafe_and_unpadded_base64() {
     let batch = decode_otlp_json(
         br#"{

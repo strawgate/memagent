@@ -16,8 +16,8 @@ use crate::receiver_http::MAX_REQUEST_BODY_SIZE;
 
 use super::convert::{
     convert_request_to_batch, decode_protojson_bytes, hex, parse_protojson_f64,
-    parse_protojson_i64, parse_protojson_u64, write_f64_to_buf, write_i64_to_buf, write_json_key,
-    write_json_string_field, write_u64_to_buf,
+    parse_protojson_i64, parse_protojson_u64, write_f64_to_buf, write_hex_to_buf, write_i64_to_buf,
+    write_json_key, write_json_string_field, write_u64_to_buf,
 };
 
 pub(super) fn decompress_zstd(body: &[u8]) -> Result<Vec<u8>, InputError> {
@@ -241,13 +241,21 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
 
                 if let Some(tid) = record.get("traceId").and_then(|v| v.as_str()) {
                     if !tid.is_empty() {
-                        write_json_string_field(&mut out, field_names::TRACE_ID, tid);
+                        let trace_id = decode_otel_id_hex::<16>(tid, "traceId")?;
+                        write_json_key(&mut out, field_names::TRACE_ID);
+                        out.push(b'"');
+                        write_hex_to_buf(&mut out, &trace_id);
+                        out.push(b'"');
                         out.push(b',');
                     }
                 }
                 if let Some(sid) = record.get("spanId").and_then(|v| v.as_str()) {
                     if !sid.is_empty() {
-                        write_json_string_field(&mut out, field_names::SPAN_ID, sid);
+                        let span_id = decode_otel_id_hex::<8>(sid, "spanId")?;
+                        write_json_key(&mut out, field_names::SPAN_ID);
+                        out.push(b'"');
+                        write_hex_to_buf(&mut out, &span_id);
+                        out.push(b'"');
                         out.push(b',');
                     }
                 }
@@ -285,6 +293,48 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
     }
 
     Ok(out)
+}
+
+fn decode_otel_id_hex<const BYTES: usize>(
+    value: &str,
+    field_name: &str,
+) -> Result<[u8; BYTES], InputError> {
+    let expected_len = BYTES * 2;
+    let raw = value.as_bytes();
+    if raw.len() != expected_len {
+        return Err(InputError::Receiver(format!(
+            "invalid OTLP JSON {field_name}: expected {expected_len} hex chars"
+        )));
+    }
+
+    let mut out = [0u8; BYTES];
+    for i in 0..BYTES {
+        let hi = decode_hex_nibble(raw[2 * i]).ok_or_else(|| {
+            InputError::Receiver(format!(
+                "invalid OTLP JSON {field_name}: non-hex character at offset {}",
+                2 * i
+            ))
+        })?;
+        let lo = decode_hex_nibble(raw[2 * i + 1]).ok_or_else(|| {
+            InputError::Receiver(format!(
+                "invalid OTLP JSON {field_name}: non-hex character at offset {}",
+                2 * i + 1
+            ))
+        })?;
+        out[i] = (hi << 4) | lo;
+    }
+
+    Ok(out)
+}
+
+#[inline]
+fn decode_hex_nibble(ch: u8) -> Option<u8> {
+    match ch {
+        b'0'..=b'9' => Some(ch - b'0'),
+        b'a'..=b'f' => Some(ch - b'a' + 10),
+        b'A'..=b'F' => Some(ch - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Extract a scalar OTLP JSON AnyValue as an owned string.
