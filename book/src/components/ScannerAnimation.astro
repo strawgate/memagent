@@ -22,13 +22,23 @@ const stringMask = bytes.map((b) => {
 // Pre-compute: is this byte a structural char outside a string?
 const structOutside = bytes.map((b, i) => charClasses[b] && !stringMask[i]);
 
-// For the extraction demo: find "level":"ERROR"
-// Key "level" is at bytes 1-7 (quotes included), colon at 8, value "ERROR" at 9-15
-const extractRanges = {
-  key: { start: 2, end: 6, label: 'level' },     // l,e,v,e,l
-  colon: 8,
-  value: { start: 10, end: 14, label: 'ERROR' },  // E,R,R,O,R
-};
+// All field ranges for the extraction demo
+const fields = [
+  { key: 'level', keyStart: 2, keyEnd: 6, colon: 8, value: 'ERROR', valStart: 10, valEnd: 14, color: 0 },
+  { key: 'message', keyStart: 18, keyEnd: 24, colon: 26, value: 'request failed', valStart: 28, valEnd: 41, color: 1 },
+  { key: 'status', keyStart: 45, keyEnd: 50, colon: 52, value: '503', valStart: 53, valEnd: 55, color: 2 },
+  { key: 'duration_ms', keyStart: 58, keyEnd: 68, colon: 70, value: '42.7', valStart: 71, valEnd: 74, color: 3 },
+];
+
+// Build per-byte field membership
+const byteField = bytes.map((_, i) => {
+  for (const f of fields) {
+    if (i >= f.keyStart && i <= f.keyEnd) return { role: 'key', color: f.color };
+    if (i === f.colon) return { role: 'colon', color: f.color };
+    if (i >= f.valStart && i <= f.valEnd) return { role: 'value', color: f.color };
+  }
+  return null;
+});
 ---
 
 <div class="sa" data-sa-root data-step="raw">
@@ -49,7 +59,8 @@ const extractRanges = {
       <button class="sa-pill" data-step="strings" data-index="2">3</button>
       <button class="sa-pill" data-step="result" data-index="3">4</button>
       <button class="sa-pill" data-step="extract" data-index="4">5</button>
-      <button class="sa-pill" data-step="complete" data-index="5">6</button>
+      <button class="sa-pill" data-step="allfields" data-index="5">6</button>
+      <button class="sa-pill" data-step="complete" data-index="6">7</button>
     </div>
   </div>
 
@@ -71,9 +82,8 @@ const extractRanges = {
           data-structural={cc ? 'true' : 'false'}
           data-in-string={stringMask[i] ? 'true' : 'false'}
           data-struct-outside={structOutside[i] ? 'true' : 'false'}
-          data-extract-key={i >= extractRanges.key.start && i <= extractRanges.key.end ? 'true' : 'false'}
-          data-extract-colon={i === extractRanges.colon ? 'true' : 'false'}
-          data-extract-value={i >= extractRanges.value.start && i <= extractRanges.value.end ? 'true' : 'false'}
+          data-field-role={byteField[i]?.role ?? ''}
+          data-field-color={byteField[i]?.color ?? ''}
         >
           <span class="sa-byte-char">{byte === ' ' ? '\u00B7' : byte}</span>
           <span class="sa-byte-pos">{i}</span>
@@ -108,7 +118,17 @@ const extractRanges = {
     </p>
   </div>
 
-  {/* Step 6: All fields extracted — Arrow RecordBatch */}
+  {/* Step 6: All fields highlighted */}
+  <div class="sa-allfields" data-sa-allfields hidden>
+    <div class="sa-allfields-grid">
+      <span class="sa-field-chip" style="--fc: var(--sa-f0)"><strong>level</strong> = ERROR</span>
+      <span class="sa-field-chip" style="--fc: var(--sa-f1)"><strong>message</strong> = request failed</span>
+      <span class="sa-field-chip" style="--fc: var(--sa-f2)"><strong>status</strong> = 503</span>
+      <span class="sa-field-chip" style="--fc: var(--sa-f3)"><strong>duration_ms</strong> = 42.7</span>
+    </div>
+  </div>
+
+  {/* Step 7: All fields extracted — Arrow RecordBatch */}
   <div class="sa-complete" data-sa-complete hidden>
     <div class="sa-complete-head">
       <strong>Arrow RecordBatch</strong>
@@ -145,6 +165,7 @@ const extractRanges = {
     --sa-text: var(--sl-color-text);
     --sa-muted: var(--sl-color-gray-3);
     --sa-green: #22c55e;
+    --sa-f0: #22c55e; --sa-f1: #8b5cf6; --sa-f2: #f59e0b; --sa-f3: #ec4899;
     margin: 1.5rem 0;
   }
 
@@ -286,21 +307,46 @@ const extractRanges = {
   .sa[data-step="result"] .sa-byte.sc-comma[data-struct-outside="true"] { background: #a78bfa18; }
   .sa[data-step="result"] .sa-byte.sc-brace[data-struct-outside="true"] { background: #f59e0b18; }
 
-  /* Step 5: extract */
+  /* Step 5: single field extract (field 0 = level) */
   .sa[data-step="extract"] .sa-byte { opacity: 0.2; }
-  .sa[data-step="extract"] .sa-byte[data-extract-key="true"] {
-    opacity: 1; border-color: var(--sa-green); border-width: 2px;
-    background: color-mix(in srgb, var(--sa-green) 12%, transparent);
+  .sa[data-step="extract"] .sa-byte[data-field-role="key"][data-field-color="0"] {
+    opacity: 1; border-color: var(--sa-f0); border-width: 2px;
+    background: color-mix(in srgb, var(--sa-f0) 12%, transparent);
   }
-  .sa[data-step="extract"] .sa-byte[data-extract-colon="true"] {
+  .sa[data-step="extract"] .sa-byte[data-field-role="colon"][data-field-color="0"] {
     opacity: 1; border-color: #60a5fa; border-width: 2px;
     background: #60a5fa18;
     transform: translateY(-4px);
     box-shadow: 0 4px 14px rgba(96,165,250,0.3);
   }
-  .sa[data-step="extract"] .sa-byte[data-extract-value="true"] {
+  .sa[data-step="extract"] .sa-byte[data-field-role="value"][data-field-color="0"] {
     opacity: 1; border-color: #f97316; border-width: 2px;
     background: color-mix(in srgb, #f97316 12%, transparent);
+  }
+
+  /* Step 6: all fields highlighted */
+  .sa[data-step="allfields"] .sa-byte { opacity: 0.15; }
+  .sa[data-step="allfields"] .sa-byte[data-field-role] { border-width: 2px; }
+
+  .sa[data-step="allfields"] .sa-byte[data-field-role="key"][data-field-color="0"],
+  .sa[data-step="allfields"] .sa-byte[data-field-role="value"][data-field-color="0"],
+  .sa[data-step="allfields"] .sa-byte[data-field-role="colon"][data-field-color="0"] {
+    opacity: 1; border-color: var(--sa-f0); background: color-mix(in srgb, var(--sa-f0) 10%, transparent);
+  }
+  .sa[data-step="allfields"] .sa-byte[data-field-role="key"][data-field-color="1"],
+  .sa[data-step="allfields"] .sa-byte[data-field-role="value"][data-field-color="1"],
+  .sa[data-step="allfields"] .sa-byte[data-field-role="colon"][data-field-color="1"] {
+    opacity: 1; border-color: var(--sa-f1); background: color-mix(in srgb, var(--sa-f1) 10%, transparent);
+  }
+  .sa[data-step="allfields"] .sa-byte[data-field-role="key"][data-field-color="2"],
+  .sa[data-step="allfields"] .sa-byte[data-field-role="value"][data-field-color="2"],
+  .sa[data-step="allfields"] .sa-byte[data-field-role="colon"][data-field-color="2"] {
+    opacity: 1; border-color: var(--sa-f2); background: color-mix(in srgb, var(--sa-f2) 10%, transparent);
+  }
+  .sa[data-step="allfields"] .sa-byte[data-field-role="key"][data-field-color="3"],
+  .sa[data-step="allfields"] .sa-byte[data-field-role="value"][data-field-color="3"],
+  .sa[data-step="allfields"] .sa-byte[data-field-role="colon"][data-field-color="3"] {
+    opacity: 1; border-color: var(--sa-f3); background: color-mix(in srgb, var(--sa-f3) 10%, transparent);
   }
 
   /* ── Bitmask ── */
@@ -397,7 +443,30 @@ const extractRanges = {
   }
   .sa-complete-desc { margin: 0; font-size: 0.78rem; line-height: 1.5; }
 
-  /* Step 6: hide byte grid, show table */
+  /* ── All-fields chips ── */
+  .sa-allfields {
+    padding: 0.5rem 0;
+    animation: sa-fadein 0.3s ease-out;
+  }
+  .sa-allfields > * { margin-top: 0 !important; }
+  .sa-allfields-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .sa-allfields-grid > * { margin-top: 0 !important; }
+  .sa-field-chip {
+    padding: 0.35rem 0.7rem;
+    border: 1.5px solid var(--fc);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--fc) 8%, transparent);
+    font-size: 0.78rem;
+    font-family: var(--sl-font-mono, monospace);
+    animation: sa-fadein 0.2s ease-out;
+  }
+  .sa-field-chip strong { color: var(--fc); }
+
+  /* Step 7: hide byte grid, show table */
   .sa[data-step="complete"] .sa-byte-grid { display: none; }
   .sa[data-step="complete"] .sa-bitmask { display: none; }
   .sa[data-step="complete"] .sa-legend { display: none; }
@@ -426,6 +495,7 @@ const extractRanges = {
     const byteEls = root.querySelectorAll<HTMLDivElement>('.sa-byte');
     const bits = root.querySelectorAll<HTMLSpanElement>('.sa-bit');
     const extract = root.querySelector<HTMLDivElement>('[data-sa-extract]')!;
+    const allfields = root.querySelector<HTMLDivElement>('[data-sa-allfields]')!;
     const complete = root.querySelector<HTMLDivElement>('[data-sa-complete]')!;
     const pills = root.querySelectorAll<HTMLButtonElement>('.sa-pill');
     const playBtn = root.querySelector<HTMLButtonElement>('[data-sa-play]')!;
@@ -442,10 +512,12 @@ const extractRanges = {
         desc: 'Quote positions feed into <code>prefix_xor</code> — 6 XOR shifts that produce a mask of which bytes are inside strings. Structural characters inside strings (like colons in <em>"request failed"</em>) get dashed borders — they\'re ignored.' },
       { id: 'result', title: 'Step 4: Usable structural positions',
         desc: 'The final bitmask: only structural characters <strong>outside</strong> strings survive. Finding the next colon or comma is a single <code>trailing_zeros</code> instruction — O(1) instead of scanning byte-by-byte.' },
-      { id: 'extract', title: 'Step 5: Field extraction',
-        desc: 'The field extractor uses the bitmask to jump directly to each colon, read the key to the left and value to the right. Zero scanning — each field is extracted in constant time.' },
-      { id: 'complete', title: 'Step 6: Arrow RecordBatch',
-        desc: 'All fields extracted in one pass. The result is a typed, columnar Arrow RecordBatch — ready for SQL. No serialization step, no intermediate format. This batch goes straight to DataFusion.' },
+      { id: 'extract', title: 'Step 5: First field extraction',
+        desc: 'The field extractor jumps to the first colon using <code>trailing_zeros(colon_mask)</code>, reads the key to the left and value to the right. One bitmask lookup — no scanning.' },
+      { id: 'allfields', title: 'Step 6: All fields extracted',
+        desc: 'The same O(1) jump repeats for every colon in the bitmask. All four fields are extracted in a single pass through the buffer. Each key-value pair is colored below.' },
+      { id: 'complete', title: 'Step 7: Arrow RecordBatch',
+        desc: 'The extracted fields become typed Arrow columns. The result is a columnar RecordBatch — ready for SQL. No serialization, no intermediate format. This goes straight to DataFusion.' },
     ];
 
     let currentStep = 0;
@@ -480,8 +552,9 @@ const extractRanges = {
       explanation.innerHTML = `<strong>${step.title}</strong><p>${step.desc}</p>`;
       progressFill.style.width = `${((index + 1) / stepData.length) * 100}%`;
 
-      // Hide both result panels by default
+      // Hide all result panels by default
       extract.hidden = true;
+      allfields.hidden = true;
       complete.hidden = true;
 
       if (step.id === 'raw') {
@@ -516,6 +589,7 @@ const extractRanges = {
           b.classList.toggle('sa-bit--on', isStruct);
         });
         extract.hidden = step.id !== 'extract';
+        allfields.hidden = step.id !== 'allfields';
         complete.hidden = step.id !== 'complete';
       }
     }
