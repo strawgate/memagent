@@ -339,7 +339,8 @@ CrashStop ==
             LET unresolved_s == sent[s] \ (acked[s] \cup rejected[s] \cup abandoned[s])
             IN abandoned[s] \cup unresolved_s]
     /\ in_flight' = [s \in Sources |-> {}]
-    /\ UNCHANGED <<created, sent, acked, rejected, committed>>
+    /\ held' = [s \in Sources |-> {}]
+    /\ UNCHANGED <<created, sent, retried, panic_held, hold_count, acked, rejected, committed>>
 
 (* ---------------------------------------------------------------------------
  * Next-state relation
