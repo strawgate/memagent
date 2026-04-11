@@ -13,6 +13,7 @@ use logfwd_output::BatchMetadata;
 use logfwd_types::pipeline::SourceId;
 use tokio_util::sync::CancellationToken;
 
+use super::internal_faults;
 use super::processor_stage::{ProcessorStageResult, run_processor_stage};
 #[cfg(feature = "turmoil")]
 use super::scan_maybe_blocking;
@@ -126,6 +127,16 @@ impl Pipeline {
         let input_rows = num_rows as u64;
         let out_rows = result.num_rows() as u64;
         let submitted_at = tokio::time::Instant::now();
+
+        if internal_faults::submit_before_pool_should_hold_and_shutdown() {
+            tracing::warn!("internal failpoint: submit pre-pool hold+shutdown");
+            self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Hold);
+            self.metrics.finish_active_batch(batch_id);
+            shutdown.cancel();
+            // Keep the select-loop on the normal shutdown path so run_async can
+            // still drain the input channel and avoid producer-side deadlocks.
+            return false;
+        }
 
         let batch_span = tracing::info_span!(
             "batch",

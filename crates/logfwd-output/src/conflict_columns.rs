@@ -97,20 +97,27 @@ pub(crate) fn variant_dt(v: &ColVariant) -> &DataType {
 /// Returns `true` if the given `ColVariant` is null at `row` in `batch`.
 pub(crate) fn is_null(batch: &RecordBatch, variant: &ColVariant, row: usize) -> bool {
     match variant {
-        ColVariant::Flat { col_idx, .. } => batch.column(*col_idx).is_null(row),
+        ColVariant::Flat { col_idx, .. } => batch
+            .columns()
+            .get(*col_idx)
+            .is_none_or(|col| col.is_null(row)),
         ColVariant::StructField {
             struct_col_idx,
             field_idx,
             ..
         } => {
             let Some(sa) = batch
-                .column(*struct_col_idx)
-                .as_any()
-                .downcast_ref::<StructArray>()
+                .columns()
+                .get(*struct_col_idx)
+                .and_then(|col| col.as_any().downcast_ref::<StructArray>())
             else {
                 return true;
             };
-            sa.is_null(row) || sa.column(*field_idx).is_null(row)
+            sa.is_null(row)
+                || sa
+                    .columns()
+                    .get(*field_idx)
+                    .is_none_or(|child| child.is_null(row))
         }
     }
 }
@@ -118,18 +125,46 @@ pub(crate) fn is_null(batch: &RecordBatch, variant: &ColVariant, row: usize) -> 
 /// Return a reference to the underlying Arrow array for a `ColVariant`.
 pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> Option<&'b dyn Array> {
     match variant {
-        ColVariant::Flat { col_idx, .. } => Some(batch.column(*col_idx).as_ref()),
+        ColVariant::Flat { col_idx, .. } => batch.columns().get(*col_idx).map(|col| col.as_ref()),
         ColVariant::StructField {
             struct_col_idx,
             field_idx,
             ..
         } => {
             let sa = batch
-                .column(*struct_col_idx)
-                .as_any()
-                .downcast_ref::<StructArray>()?;
-            Some(sa.column(*field_idx).as_ref())
+                .columns()
+                .get(*struct_col_idx)
+                .and_then(|col| col.as_any().downcast_ref::<StructArray>())?;
+            sa.columns().get(*field_idx).map(|child| child.as_ref())
         }
+    }
+}
+
+fn sort_variants(info: &mut ColInfo) {
+    info.json_variants
+        .sort_by_key(|v| std::cmp::Reverse(json_priority(variant_dt(v))));
+    info.str_variants
+        .sort_by_key(|v| std::cmp::Reverse(str_priority(variant_dt(v))));
+}
+
+fn upsert_col_info(
+    infos: &mut Vec<ColInfo>,
+    field_name: &str,
+    mut json_variants: Vec<ColVariant>,
+    mut str_variants: Vec<ColVariant>,
+) {
+    if let Some(existing) = infos.iter_mut().find(|c| c.field_name == field_name) {
+        existing.json_variants.append(&mut json_variants);
+        existing.str_variants.append(&mut str_variants);
+        sort_variants(existing);
+    } else {
+        let mut info = ColInfo {
+            field_name: field_name.to_string(),
+            json_variants,
+            str_variants,
+        };
+        sort_variants(&mut info);
+        infos.push(info);
     }
 }
 
@@ -147,7 +182,7 @@ pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
         match field.data_type() {
             DataType::Struct(child_fields) if is_conflict_struct(child_fields) => {
                 // Struct conflict column: one ColInfo, variants = child fields.
-                let mut json_variants: Vec<ColVariant> = child_fields
+                let json_variants: Vec<ColVariant> = child_fields
                     .iter()
                     .enumerate()
                     .map(|(field_idx, f)| ColVariant::StructField {
@@ -156,7 +191,7 @@ pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
                         dt: f.data_type().clone(),
                     })
                     .collect();
-                let mut str_variants: Vec<ColVariant> = child_fields
+                let str_variants: Vec<ColVariant> = child_fields
                     .iter()
                     .enumerate()
                     .map(|(field_idx, f)| ColVariant::StructField {
@@ -166,25 +201,12 @@ pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
                     })
                     .collect();
 
-                json_variants.sort_by_key(|v| std::cmp::Reverse(json_priority(variant_dt(v))));
-                str_variants.sort_by_key(|v| std::cmp::Reverse(str_priority(variant_dt(v))));
-                let field_name = field.name().as_str();
-                if let Some(existing) = infos.iter_mut().find(|c| c.field_name == field_name) {
-                    existing.json_variants.extend(json_variants);
-                    existing.str_variants.extend(str_variants);
-                    existing
-                        .json_variants
-                        .sort_by_key(|v| std::cmp::Reverse(json_priority(variant_dt(v))));
-                    existing
-                        .str_variants
-                        .sort_by_key(|v| std::cmp::Reverse(str_priority(variant_dt(v))));
-                } else {
-                    infos.push(ColInfo {
-                        field_name: field_name.to_string(),
-                        json_variants,
-                        str_variants,
-                    });
-                }
+                upsert_col_info(
+                    &mut infos,
+                    field.name().as_str(),
+                    json_variants,
+                    str_variants,
+                );
             }
             dt => {
                 // Plain flat column — use the column name verbatim.
@@ -193,39 +215,70 @@ pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
                 // multi-type conflicts use StructArray.  User-defined SQL aliases
                 // (e.g. `SELECT duration_ms_int AS dur_int`) must be preserved
                 // exactly — stripping the suffix would mangle the alias (#705).
-                let field_name = field.name().as_str();
-                if let Some(existing) = infos.iter_mut().find(|c| c.field_name == field_name) {
-                    existing.json_variants.push(ColVariant::Flat {
+                upsert_col_info(
+                    &mut infos,
+                    field.name().as_str(),
+                    vec![ColVariant::Flat {
                         col_idx,
                         dt: dt.clone(),
-                    });
-                    existing.str_variants.push(ColVariant::Flat {
+                    }],
+                    vec![ColVariant::Flat {
                         col_idx,
                         dt: dt.clone(),
-                    });
-                    // Re-sort both lists.
-                    existing
-                        .json_variants
-                        .sort_by_key(|v| std::cmp::Reverse(json_priority(variant_dt(v))));
-                    existing
-                        .str_variants
-                        .sort_by_key(|v| std::cmp::Reverse(str_priority(variant_dt(v))));
-                } else {
-                    infos.push(ColInfo {
-                        field_name: field_name.to_string(),
-                        json_variants: vec![ColVariant::Flat {
-                            col_idx,
-                            dt: dt.clone(),
-                        }],
-                        str_variants: vec![ColVariant::Flat {
-                            col_idx,
-                            dt: dt.clone(),
-                        }],
-                    });
-                }
+                    }],
+                );
             }
         }
     }
 
     infos
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int64Array, StructArray};
+    use arrow::datatypes::{Field, Fields, Schema};
+    use std::sync::Arc;
+
+    #[test]
+    fn struct_variant_out_of_bounds_is_treated_as_null_and_missing() {
+        let struct_fields = Fields::from(vec![Field::new("int", DataType::Int64, true)]);
+        let struct_array = StructArray::new(
+            struct_fields.clone(),
+            vec![Arc::new(Int64Array::from(vec![Some(1)]))],
+            None,
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "status",
+            DataType::Struct(struct_fields),
+            true,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).expect("valid batch");
+
+        let bad_child = ColVariant::StructField {
+            struct_col_idx: 0,
+            field_idx: 99,
+            dt: DataType::Int64,
+        };
+
+        assert!(is_null(&batch, &bad_child, 0));
+        assert!(get_array(&batch, &bad_child).is_none());
+    }
+
+    #[test]
+    fn flat_variant_out_of_bounds_is_treated_as_null_and_missing() {
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![Some(10)]))])
+            .expect("valid batch");
+
+        let bad_flat = ColVariant::Flat {
+            col_idx: 42,
+            dt: DataType::Int64,
+        };
+
+        assert!(is_null(&batch, &bad_flat, 0));
+        assert!(get_array(&batch, &bad_flat).is_none());
+    }
 }

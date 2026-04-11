@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
+use crate::support::http::loopback_client;
 use logfwd_io::{
     format::FormatDecoder,
     framed::FramedInput,
@@ -552,7 +553,8 @@ fn http_ndjson_roundtrip() {
     let addr = input.local_addr();
     let url = format!("http://{addr}/ingest");
 
-    let resp = ureq::post(&url)
+    let resp = loopback_client()
+        .post(&url)
         .header("Content-Type", "application/x-ndjson")
         .send(b"{\"seq\":1}\n{\"seq\":2}\n")
         .expect("HTTP POST should succeed");
@@ -573,7 +575,7 @@ fn http_wrong_path_rejected() {
     let addr = input.local_addr();
     let url = format!("http://{addr}/wrong");
 
-    let status = match ureq::post(&url).send(b"{\"x\":1}\n") {
+    let status = match loopback_client().post(&url).send(b"{\"x\":1}\n") {
         Ok(resp) => resp.status().as_u16(),
         Err(ureq::Error::StatusCode(code)) => code,
         Err(err) => panic!("unexpected request failure: {err}"),
@@ -625,7 +627,8 @@ fn otlp_protobuf_roundtrip() {
     let body = request.encode_to_vec();
 
     // POST the protobuf to the OTLP endpoint.
-    let resp = ureq::post(&url)
+    let resp = loopback_client()
+        .post(&url)
         .header("Content-Type", "application/x-protobuf")
         .send(&body)
         .expect("OTLP POST should succeed");
@@ -696,7 +699,8 @@ fn otlp_gzip_protobuf_roundtrip() {
     encoder.write_all(&body).expect("gzip write");
     let gzipped = encoder.finish().expect("gzip finish");
 
-    let resp = ureq::post(&url)
+    let resp = loopback_client()
+        .post(&url)
         .header("Content-Type", "application/x-protobuf")
         .header("Content-Encoding", "gzip")
         .send(&gzipped)
@@ -732,7 +736,8 @@ fn otlp_oversized_body() {
     // Build a body larger than 10 MB.
     let oversized = vec![0u8; 11 * 1024 * 1024];
 
-    let result = ureq::post(&url)
+    let result = loopback_client()
+        .post(&url)
         .header("Content-Type", "application/x-protobuf")
         .send(&oversized);
 
@@ -773,7 +778,8 @@ fn otlp_wrong_content_type() {
     let body = request.encode_to_vec();
 
     // text/plain is not JSON, so the receiver should try protobuf decode (the default).
-    let resp = ureq::post(&url)
+    let resp = loopback_client()
+        .post(&url)
         .header("Content-Type", "text/plain")
         .send(&body)
         .expect("POST should succeed");
@@ -827,7 +833,8 @@ fn otlp_concurrent_requests() {
                     }],
                 };
                 let body = request.encode_to_vec();
-                let resp = ureq::post(&url)
+                let resp = loopback_client()
+                    .post(&url)
                     .header("Content-Type", "application/x-protobuf")
                     .send(&body)
                     .expect("concurrent POST should succeed");

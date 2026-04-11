@@ -3,6 +3,7 @@
 //! This stays test-only (`turmoil_sim`) and emits JSONL for easy human inspection.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
@@ -17,6 +18,30 @@ pub enum TraceEvent {
     SinkResult { outcome: SinkOutcome, rows: u64 },
     CheckpointUpdate { source_id: u64, offset: u64 },
     CheckpointFlush { success: bool },
+}
+
+impl TraceEvent {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Phase { .. } => "phase",
+            Self::SinkResult { .. } => "sink_result",
+            Self::CheckpointUpdate { .. } => "checkpoint_update",
+            Self::CheckpointFlush { .. } => "checkpoint_flush",
+        }
+    }
+
+    fn summary(&self) -> String {
+        match self {
+            Self::Phase { phase } => format!("phase={}", phase.as_str()),
+            Self::SinkResult { outcome, rows } => {
+                format!("sink_result outcome={} rows={rows}", outcome.as_str())
+            }
+            Self::CheckpointUpdate { source_id, offset } => {
+                format!("checkpoint_update source_id={source_id} offset={offset}")
+            }
+            Self::CheckpointFlush { success } => format!("checkpoint_flush success={success}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,11 +222,214 @@ pub fn load_trace(path: impl AsRef<Path>) -> io::Result<Vec<TraceEvent>> {
     Ok(events)
 }
 
+/// Build a deterministic, human-readable contract trace.
+///
+/// This normalizes events into stable strings so replay tests can compare
+/// outcomes across runs with the same seed.
+pub fn normalized_contract_trace(events: &[TraceEvent]) -> Vec<String> {
+    events
+        .iter()
+        .map(|event| match event {
+            TraceEvent::Phase { phase } => format!("phase:{}", phase.as_str()),
+            TraceEvent::SinkResult { outcome, rows } => {
+                format!("sink:{}:{rows}", outcome.as_str())
+            }
+            TraceEvent::CheckpointUpdate { source_id, offset } => {
+                format!("ckpt_update:{source_id}:{offset}")
+            }
+            TraceEvent::CheckpointFlush { success } => format!("ckpt_flush:{success}"),
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PhaseState {
     Running,
     Draining,
     Stopped,
+}
+
+impl PhaseState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Draining => "draining",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Structured validator failure for a single trace event position.
+///
+/// This is returned by `TransitionValidator::validate_detailed` so callers can
+/// inspect stable machine-readable fields without parsing formatted text.
+pub struct ValidationError {
+    index: usize,
+    code: &'static str,
+    message: String,
+    event_summary: String,
+    previous_event_summary: Option<String>,
+}
+
+impl ValidationError {
+    fn at(
+        events: &[TraceEvent],
+        index: usize,
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        let event_summary = events
+            .get(index)
+            .map(TraceEvent::summary)
+            .unwrap_or_else(|| "<missing>".to_string());
+        let previous_event_summary = index
+            .checked_sub(1)
+            .and_then(|idx| events.get(idx))
+            .map(TraceEvent::summary);
+        Self {
+            index,
+            code,
+            message: message.into(),
+            event_summary,
+            previous_event_summary,
+        }
+    }
+
+    /// Index of the failing event in the trace.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Stable short code for programmatic matching.
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// Human-readable explanation of the violated condition.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Summary of the event at `index`.
+    pub fn event_summary(&self) -> &str {
+        &self.event_summary
+    }
+
+    /// Summary of the event immediately before `index`, when present.
+    pub fn previous_event_summary(&self) -> Option<&str> {
+        self.previous_event_summary.as_deref()
+    }
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.previous_event_summary {
+            Some(prev) => write!(
+                f,
+                "[{}] event #{}: {}; event={}; previous={}",
+                self.code, self.index, self.message, self.event_summary, prev
+            ),
+            None => write!(
+                f,
+                "[{}] event #{}: {}; event={}",
+                self.code, self.index, self.message, self.event_summary
+            ),
+        }
+    }
+}
+
+/// Strategy-B prototype: normalized event-log IR with validator plug-ins.
+///
+/// This is intentionally partial (no source-offset state), and exists as a
+/// contrast point for testing extension ergonomics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedTrace {
+    pub entries: Vec<NormalizedTraceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Normalized event record used by pluggable validators.
+pub struct NormalizedTraceEvent {
+    pub index: usize,
+    pub kind: &'static str,
+    pub attributes: BTreeMap<&'static str, String>,
+}
+
+impl NormalizedTrace {
+    pub fn from_events(events: &[TraceEvent]) -> Self {
+        let entries = events
+            .iter()
+            .enumerate()
+            .map(|(index, event)| {
+                let mut attributes: BTreeMap<&'static str, String> = BTreeMap::new();
+                match event {
+                    TraceEvent::Phase { phase } => {
+                        attributes.insert("phase", phase.as_str().to_string());
+                    }
+                    TraceEvent::SinkResult { outcome, rows } => {
+                        attributes.insert("outcome", outcome.as_str().to_string());
+                        attributes.insert("rows", rows.to_string());
+                    }
+                    TraceEvent::CheckpointUpdate { source_id, offset } => {
+                        attributes.insert("source_id", source_id.to_string());
+                        attributes.insert("offset", offset.to_string());
+                    }
+                    TraceEvent::CheckpointFlush { success } => {
+                        attributes.insert("success", success.to_string());
+                    }
+                }
+                NormalizedTraceEvent {
+                    index,
+                    kind: event.kind(),
+                    attributes,
+                }
+            })
+            .collect();
+        Self { entries }
+    }
+}
+
+/// Validator plug-in interface for normalized trace analysis.
+pub trait EventValidator {
+    fn validate(&self, trace: &NormalizedTrace) -> Result<(), String>;
+}
+
+/// Minimal validator that enforces `running -> draining -> stopped` order.
+pub struct PhaseOrderValidator;
+
+impl EventValidator for PhaseOrderValidator {
+    fn validate(&self, trace: &NormalizedTrace) -> Result<(), String> {
+        let mut expected = "running";
+        for entry in &trace.entries {
+            if entry.kind != "phase" {
+                continue;
+            }
+            let Some(phase) = entry.attributes.get("phase") else {
+                return Err(format!(
+                    "phase event missing normalized 'phase' at index {}",
+                    entry.index
+                ));
+            };
+            match (expected, phase.as_str()) {
+                ("running", "running") => expected = "draining",
+                ("draining", "draining") => expected = "stopped",
+                ("stopped", "stopped") => expected = "done",
+                (want, got) => {
+                    return Err(format!(
+                        "phase order mismatch at index {}: expected {want}, got {got}",
+                        entry.index
+                    ));
+                }
+            }
+        }
+        if expected != "done" {
+            return Err(format!(
+                "phase order incomplete in normalized trace: next_expected={expected}"
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Declared transition contract for replay validation.
@@ -212,8 +440,22 @@ pub struct TransitionValidator {
 
 impl TransitionValidator {
     pub fn validate(&self, events: &[TraceEvent]) -> Result<(), String> {
+        self.validate_detailed(events)
+            .map_err(|err| err.to_string())
+    }
+
+    /// Validate transition rules and return structured failure context.
+    ///
+    /// On success returns `Ok(())`. On failure returns `ValidationError`
+    /// with a stable code, failing event index, and neighboring summaries.
+    pub fn validate_detailed(&self, events: &[TraceEvent]) -> Result<(), ValidationError> {
         if events.is_empty() {
-            return Err("trace is empty".to_string());
+            return Err(ValidationError::at(
+                events,
+                0,
+                "empty_trace",
+                "trace is empty",
+            ));
         }
         if !matches!(
             events.first(),
@@ -221,7 +463,12 @@ impl TransitionValidator {
                 phase: TracePhase::Running
             })
         ) {
-            return Err("trace must start with running phase marker".to_string());
+            return Err(ValidationError::at(
+                events,
+                0,
+                "missing_running_start",
+                "trace must start with running phase marker",
+            ));
         }
 
         let mut phase = PhaseState::Running;
@@ -235,8 +482,11 @@ impl TransitionValidator {
                     if idx == 0 {
                         phase = PhaseState::Running;
                     } else {
-                        return Err(format!(
-                            "event {idx}: running phase marker may only appear first"
+                        return Err(ValidationError::at(
+                            events,
+                            idx,
+                            "duplicate_running",
+                            "running phase marker may only appear first",
                         ));
                     }
                 }
@@ -244,8 +494,11 @@ impl TransitionValidator {
                     phase: TracePhase::Draining,
                 } => {
                     if phase != PhaseState::Running {
-                        return Err(format!(
-                            "event {idx}: invalid phase transition {phase:?} -> Draining"
+                        return Err(ValidationError::at(
+                            events,
+                            idx,
+                            "invalid_phase_transition",
+                            format!("invalid phase transition {} -> draining", phase.as_str()),
                         ));
                     }
                     phase = PhaseState::Draining;
@@ -254,42 +507,71 @@ impl TransitionValidator {
                     phase: TracePhase::Stopped,
                 } => {
                     if phase != PhaseState::Draining {
-                        return Err(format!(
-                            "event {idx}: invalid phase transition {phase:?} -> Stopped"
+                        return Err(ValidationError::at(
+                            events,
+                            idx,
+                            "invalid_phase_transition",
+                            format!("invalid phase transition {} -> stopped", phase.as_str()),
                         ));
                     }
                     phase = PhaseState::Stopped;
                 }
                 TraceEvent::CheckpointUpdate { source_id, offset } => {
                     if phase == PhaseState::Stopped {
-                        return Err(format!(
-                            "event {idx}: checkpoint update after Stopped (source_id={source_id}, offset={offset})"
+                        return Err(ValidationError::at(
+                            events,
+                            idx,
+                            "event_after_stopped",
+                            format!(
+                                "checkpoint update after stopped (source_id={source_id}, offset={offset})"
+                            ),
                         ));
                     }
                     let last = source_offsets.get(source_id).copied().unwrap_or(0);
                     if *offset < last {
-                        return Err(format!(
-                            "event {idx}: checkpoint regression for source {source_id}: {offset} < {last}"
+                        return Err(ValidationError::at(
+                            events,
+                            idx,
+                            "checkpoint_regression",
+                            format!(
+                                "checkpoint regression for source {source_id}: {offset} < {last}"
+                            ),
                         ));
                     }
                     source_offsets.insert(*source_id, *offset);
                 }
                 TraceEvent::CheckpointFlush { .. } => {
                     if phase == PhaseState::Stopped {
-                        return Err(format!("event {idx}: flush after Stopped"));
+                        return Err(ValidationError::at(
+                            events,
+                            idx,
+                            "event_after_stopped",
+                            "checkpoint flush after stopped",
+                        ));
                     }
                 }
                 TraceEvent::SinkResult { .. } => {
                     if phase == PhaseState::Stopped {
-                        return Err(format!("event {idx}: sink activity after Stopped"));
+                        return Err(ValidationError::at(
+                            events,
+                            idx,
+                            "event_after_stopped",
+                            "sink activity after stopped",
+                        ));
                     }
                 }
             }
         }
 
         if phase != PhaseState::Stopped {
-            return Err(format!(
-                "trace ended before stopped transition (last phase: {phase:?})"
+            return Err(ValidationError::at(
+                events,
+                events.len().saturating_sub(1),
+                "terminal_phase_missing",
+                format!(
+                    "trace ended before stopped transition (last phase: {})",
+                    phase.as_str()
+                ),
             ));
         }
         Ok(())
@@ -309,5 +591,47 @@ mod tests {
         let value = event.to_json();
         let decoded = TraceEvent::from_json(&value).expect("decode should work");
         assert_eq!(event, decoded);
+    }
+
+    #[test]
+    fn strategy_b_normalized_trace_builds_event_entries() {
+        let events = vec![
+            TraceEvent::Phase {
+                phase: TracePhase::Running,
+            },
+            TraceEvent::SinkResult {
+                outcome: SinkOutcome::Ok,
+                rows: 2,
+            },
+        ];
+        let normalized = NormalizedTrace::from_events(&events);
+        assert_eq!(normalized.entries.len(), 2);
+        assert_eq!(normalized.entries[0].kind, "phase");
+        assert_eq!(
+            normalized.entries[0]
+                .attributes
+                .get("phase")
+                .expect("phase key present"),
+            "running"
+        );
+    }
+
+    #[test]
+    fn strategy_b_phase_validator_detects_order_mismatch() {
+        let normalized = NormalizedTrace::from_events(&[
+            TraceEvent::Phase {
+                phase: TracePhase::Running,
+            },
+            TraceEvent::Phase {
+                phase: TracePhase::Stopped,
+            },
+        ]);
+        let err = PhaseOrderValidator
+            .validate(&normalized)
+            .expect_err("phase mismatch should fail");
+        assert!(
+            err.contains("phase order mismatch"),
+            "unexpected error: {err}"
+        );
     }
 }
