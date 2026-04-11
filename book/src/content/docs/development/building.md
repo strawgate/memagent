@@ -1,4 +1,7 @@
-# Building & Testing
+---
+title: "Building & Testing"
+description: "Prerequisites, common commands, and project structure"
+---
 
 ## Prerequisites
 

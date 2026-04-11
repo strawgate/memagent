@@ -103,8 +103,8 @@ The workspace `default-members` excludes `logfwd-transform` (datafusion) and `lo
 │   ├── verification/            ← Kani boundary contract TOML + scripts
 │   └── references/              ← Library-specific guides (Arrow, DataFusion, Tokio, OTLP, Kani)
 │
-├── book/src/                    ← User-facing documentation (mdbook)
-│   └── SUMMARY.md               ← Table of contents for the user book
+├── book/src/content/docs/       ← User-facing documentation (Astro Starlight)
+│   └── (sidebar in book/astro.config.mjs)
 │
 ├── tla/                         ← TLA+ specs: PipelineMachine, ShutdownProtocol, PipelineBatch
 │   └── README.md                ← TLA+ documentation and model config
@@ -188,7 +188,7 @@ Full details: `dev-docs/VERIFICATION.md`.
 
 Before editing code, check `dev-docs/CHANGE_MAP.md`:
 
-- **Config fields changed** → update parsing code, `book/src/config/reference.md`, example configs, validation tests.
+- **Config fields changed** → update parsing code, `book/src/content/docs/configuration/reference.mdx`, example configs, validation tests.
 - **Pipeline behavior changed** → update `dev-docs/ARCHITECTURE.md`, troubleshooting, performance docs.
 - **Invariants changed** → update `dev-docs/VERIFICATION.md`, Kani/proptest harnesses, TLA+ specs.
 - **Crate boundaries changed** → update `dev-docs/CRATE_RULES.md`, crate-level `AGENTS.md` files.
@@ -220,7 +220,7 @@ Component labels use `component:` prefix (e.g., `component:processor/scanner`). 
 - **Find a crate's purpose:** `crates/<name>/` — each has a `Cargo.toml` and many have an `AGENTS.md` with crate-specific rules.
 - **Find how data flows:** `dev-docs/ARCHITECTURE.md` — full pipeline diagram and buffer lifecycle.
 - **Find what SQL UDFs exist:** `crates/logfwd-transform/src/udf/` — `int()`, `float()`, `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()`.
-- **Find config schema:** `book/src/config/reference.md` — all YAML fields, input/output types.
+- **Find config schema:** `book/src/content/docs/configuration/reference.mdx` — all YAML fields, input/output types.
 - **Find example configs:** `examples/use-cases/` — 20 common patterns.
 - **Find roadmap/priorities:** [GitHub issue #889](https://github.com/strawgate/memagent/issues/889).
 - **Find library-specific patterns:** `dev-docs/references/` — Arrow, DataFusion, Tokio, OTLP, Kani.

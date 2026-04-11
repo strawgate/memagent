@@ -14,8 +14,8 @@ Issue filed → Assign to Copilot → Copilot creates draft PR → Mark ready �
 Before opening a PR, confirm all items:
 
 - [ ] The PR description states exactly what behavior changed.
-- [ ] If behavior changed, docs changed in the same PR (user docs in `book/src/`, contributor docs in `dev-docs/` as needed).
-- [ ] If config semantics changed, `book/src/config/reference.md` was updated.
+- [ ] If behavior changed, docs changed in the same PR (user docs in `book/src/content/docs/`, contributor docs in `dev-docs/` as needed).
+- [ ] If config semantics changed, `book/src/content/docs/configuration/reference.mdx` was updated.
 - [ ] If pipeline/architecture behavior changed, update `dev-docs/ARCHITECTURE.md` and/or `dev-docs/DESIGN.md`.
 - [ ] If invariants/proofs changed, update `dev-docs/VERIFICATION.md` and related harnesses.
 - [ ] Commands in docs were copy/paste verified in the target environment.

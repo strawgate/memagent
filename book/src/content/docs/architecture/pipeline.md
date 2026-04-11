@@ -1,4 +1,7 @@
-# Architecture
+---
+title: "Pipeline Design"
+description: "How data flows from input through transform to output"
+---
 
 ## Data flow
 
@@ -260,7 +263,7 @@ The pipeline runs on a tokio multi-thread runtime. Key components:
 ## Current Support Status
 
 For current input/output support status, see the canonical tables in the
-[Configuration Reference](../config/reference.md#input-types) and
-[Configuration Reference](../config/reference.md#output-types). This
+[Configuration Reference](/configuration/reference/#input-types) and
+[Configuration Reference](/configuration/reference/#output-types). This
 architecture guide focuses on data flow and system shape rather than
 duplicating per-surface availability claims.

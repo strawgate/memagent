@@ -8,6 +8,9 @@ build
 .worktrees/
 .tools/
 book/book/
+book/dist/
+book/node_modules/
+book/.astro/
 .DS_Store
 crates/logfwd-io/src/dashboard-dist/
 .playwright-mcp/

@@ -1,10 +1,12 @@
-# Kubernetes Deployment
+---
+title: "Kubernetes Deployment"
+description: "Deploy logfwd as a DaemonSet with OTLP forwarding"
+---
 
 This page is the Kubernetes-specific production deployment guide for logfwd.
-For standalone container usage, see [Docker deployment](./docker.md).
+For standalone container usage, see [Docker deployment](/deployment/docker/).
 
-## Production safe defaults
-
+:::tip[Production safe defaults]
 Use these defaults unless you have measured reasons to change them:
 
 - Run as a DaemonSet with one pod per node.
@@ -15,6 +17,7 @@ Use these defaults unless you have measured reasons to change them:
 - Keep transform filters conservative first, then tighten once observability confirms behavior.
 
 These defaults prioritize stability and debuggability over premature optimization.
+:::
 
 ## DaemonSet
 

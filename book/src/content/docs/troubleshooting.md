@@ -1,10 +1,12 @@
-# Troubleshooting
+---
+title: "Troubleshooting"
+description: "Symptom-based triage for common logfwd issues"
+---
 
 Use this page when logfwd is running but results are wrong, incomplete, or unstable.
 Start with the symptom table, run the exact checks, and compare expected output before changing config.
 
-## Before you start
-
+:::tip[Before you start]
 - Use a config that passes validation: `logfwd validate --config config.yaml`.
 - Enable diagnostics while debugging:
 
@@ -20,6 +22,7 @@ server:
 kubectl -n collectors logs -f daemonset/logfwd
 # or local/docker: docker logs -f logfwd
 ```
+:::
 
 ## Symptom-first triage
 

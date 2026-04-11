@@ -18,7 +18,7 @@ How Arrow is used in logfwd.
 
 If Arrow schema or builder behavior changes:
 
-- Update `book/src/config/reference.md` (operator-facing impact).
+- Update `book/src/content/docs/configuration/reference.mdx` (operator-facing impact).
 - Update `dev-docs/SCANNER_CONTRACT.md` when scanner output contract changes.
 - Add regression tests for mixed types and sparse fields.
 - Re-run performance checks for hot-path changes.

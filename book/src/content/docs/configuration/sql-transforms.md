@@ -1,4 +1,7 @@
-# SQL Transforms
+---
+title: "SQL Transforms"
+description: "Filter, reshape, and enrich logs with DataFusion SQL"
+---
 
 logfwd uses Apache DataFusion to run SQL queries on your log data. Every log
 line becomes a row in a virtual `logs` table.

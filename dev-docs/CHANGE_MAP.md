@@ -8,8 +8,8 @@ It tells you which files usually need to change together so behavior, docs, and 
 When you add, rename, or remove config fields:
 
 - Config schema and validation in `logfwd-config` (and bootstrap wiring in `logfwd` when needed).
-- User-facing config reference in `book/src/config/reference.md`.
-- Related task pages that show examples (`book/src/getting-started/`, `book/src/deployment/`).
+- User-facing config reference in `book/src/content/docs/configuration/reference.mdx`.
+- Related task pages that show examples (`book/src/content/docs/getting-started/`, `book/src/content/docs/deployment/`).
 - Validation and negative tests for invalid configs.
 
 ## Pipeline behavior changes
@@ -18,8 +18,8 @@ When scan, transform, batching, or output semantics change:
 
 - Architecture expectations in `dev-docs/ARCHITECTURE.md`.
 - Design rationale if tradeoffs changed in `dev-docs/DESIGN.md`.
-- Troubleshooting guidance if observable symptoms changed in `book/src/troubleshooting.md`.
-- Performance docs if throughput/latency profile changed in `book/src/architecture/performance.md`.
+- Troubleshooting guidance if observable symptoms changed in `book/src/content/docs/troubleshooting.md`.
+- Performance docs if throughput/latency profile changed in `book/src/content/docs/architecture/performance.md`.
 
 ## Verification-impacting changes
 
@@ -50,7 +50,7 @@ Link to canonical docs instead.
 Before opening a PR, confirm:
 
 1. Code changes and docs changes are in the same PR when behavior changed.
-2. User-visible changes update the user book (`book/src/`).
+2. User-visible changes update the user book (`book/src/content/docs/`).
 3. Contributor-visible changes update relevant `dev-docs/` pages.
 4. Verification expectations are updated if invariants changed.
 5. You can point reviewers to exactly where each changed behavior is documented.

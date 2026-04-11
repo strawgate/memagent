@@ -1,4 +1,7 @@
-# Docker Deployment
+---
+title: "Docker Deployment"
+description: "Run logfwd as a standalone container"
+---
 
 Use this page when you want to run logfwd as a standalone container on a single host.
 

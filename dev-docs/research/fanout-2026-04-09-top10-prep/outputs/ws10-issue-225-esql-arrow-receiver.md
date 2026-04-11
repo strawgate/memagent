@@ -21,7 +21,7 @@ I validated the MVP shape against the required files:
 - `crates/logfwd-io/src/http_input.rs` and `crates/logfwd-io/src/receiver_http.rs`: reused HTTP receiver conventions (bounded channel, body size limits, `declared_content_length`, `read_limited_body`, health transitions).
 - `crates/logfwd-runtime/src/pipeline/`: verified `InputEvent::Batch` is already handled by both threaded and turmoil paths via `transform_direct_batch_for_send`.
 - `crates/logfwd-config/src/`: verified `InputType::ArrowIpc` existed but was intentionally blocked by validation.
-- `book/src/config/reference.md`: updated config surface/status for `arrow_ipc` input.
+- `book/src/content/docs/configuration/reference.mdx`: updated config surface/status for `arrow_ipc` input.
 
 ## Existing architecture fit (why MVP is feasible now)
 
@@ -114,7 +114,7 @@ This mirrors existing type-specific validation strategy and keeps `arrow_ipc` tr
 4. `crates/logfwd-config/src/lib.rs`
    - Updated tests from “always rejected” to “requires listen / valid when listen provided”.
 
-5. `book/src/config/reference.md`
+5. `book/src/content/docs/configuration/reference.mdx`
    - Updated `arrow_ipc` input section from “not supported” to implemented MVP behavior.
 
 ## Alternative integration shape considered

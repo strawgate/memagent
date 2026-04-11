@@ -11,7 +11,7 @@ Contributor and agent entrypoint for repo-critical engineering context.
 
 ## Task Routing
 
-- Changing config schema: [Change Map](CHANGE_MAP.md) + [Config Reference](../book/src/config/reference.md).
+- Changing config schema: [Change Map](CHANGE_MAP.md) + [Config Reference](../book/src/content/docs/configuration/reference.mdx).
 - Changing scanner/core behavior: [Scanner Contract](SCANNER_CONTRACT.md) + [Verification](VERIFICATION.md).
 - Changing IO/output boundaries: [Adapter Contract](ADAPTER_CONTRACT.md).
 - Changing architecture or crate placement: [Architecture](ARCHITECTURE.md) + [Design](DESIGN.md).

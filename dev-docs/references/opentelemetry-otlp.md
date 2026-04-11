@@ -20,7 +20,7 @@ When touching OTLP paths:
 
 - Update `dev-docs/ADAPTER_CONTRACT.md`.
 - Update user-facing config docs if fields or behavior changed:
-  `book/src/config/reference.md`.
+  `book/src/content/docs/configuration/reference.mdx`.
 - Add integration tests for malformed payloads, backpressure, and retry behavior.
 
 ## Canonical Docs

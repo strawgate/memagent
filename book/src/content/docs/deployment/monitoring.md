@@ -1,4 +1,7 @@
-# Monitoring & Diagnostics
+---
+title: "Monitoring & Diagnostics"
+description: "Diagnostics API endpoints and metrics reference"
+---
 
 Enable the diagnostics server in your config:
 

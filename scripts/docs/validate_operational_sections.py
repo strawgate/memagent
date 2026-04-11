@@ -4,17 +4,17 @@
 from pathlib import Path
 
 REQUIRED_MARKERS = {
-    "book/src/troubleshooting.md": [
-        "## Before you start",
+    "book/src/content/docs/troubleshooting.md": [
+        ":::tip[Before you start]",
         "## Symptom-first triage",
         "## Recovery fallback (safe mode)",
     ],
-    "book/src/deployment/kubernetes.md": [
-        "## Production safe defaults",
+    "book/src/content/docs/deployment/kubernetes.md": [
+        ":::tip[Production safe defaults]",
         "### Validate rollout",
         "### Rollback",
     ],
-    "book/src/deployment/docker.md": [
+    "book/src/content/docs/deployment/docker.md": [
         "## Safe defaults",
         "## Validate container health",
         "## Rollback",

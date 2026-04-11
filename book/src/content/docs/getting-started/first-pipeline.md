@@ -1,4 +1,7 @@
-# Your First Pipeline
+---
+title: "Your First Pipeline"
+description: "A production-ready logfwd config with monitoring"
+---
 
 This guide walks through setting up logfwd to tail application logs, filter
 by severity, and forward to an OpenTelemetry collector.

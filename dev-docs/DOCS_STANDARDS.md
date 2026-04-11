@@ -7,7 +7,7 @@ Rules for keeping docs dense, current, and useful for both humans and agents.
 | Surface | Path | Audience | Canonical Use |
 |---|---|---|---|
 | Root docs | `/*.md` | First-time contributors | project orientation and contribution entrypoints |
-| User book | `book/src/` | Operators/users | install, config, deployment, troubleshooting |
+| User book | `book/src/content/docs/` | Operators/users | install, config, deployment, troubleshooting |
 | Developer docs | `dev-docs/` | Engineers/agents | architecture, constraints, contracts, verification |
 | CI review guides | `dev-docs/review-guides/` | Reviewers | short pass/fail review checklists |
 | TLA specs | `tla/` | Formal/spec contributors | temporal properties and model configs |
@@ -20,7 +20,7 @@ Do not duplicate canonical facts across surfaces.
 - Developer entrypoint: `dev-docs/README.md`
 - Research index: `dev-docs/research/README.md`
 - References index: `dev-docs/references/README.md`
-- User-book navigation: `book/src/SUMMARY.md`
+- User-book navigation: `book/astro.config.mjs` (Starlight sidebar config)
 
 If you add or remove docs, update the corresponding index in the same PR.
 
@@ -88,8 +88,8 @@ One-off reports belong in `dev-docs/research/`.
 
 | Fact | Canonical doc |
 |---|---|
-| Config schema and options | `book/src/config/reference.md` |
-| SQL transform behavior | `book/src/config/sql-transforms.md` |
+| Config schema and options | `book/src/content/docs/configuration/reference.mdx` |
+| SQL transform behavior | `book/src/content/docs/configuration/sql-transforms.md` |
 | Pipeline data flow and layer boundaries | `dev-docs/ARCHITECTURE.md` |
 | Crate constraints and boundaries | `dev-docs/CRATE_RULES.md` |
 | Verification requirements | `dev-docs/VERIFICATION.md` |
@@ -102,7 +102,7 @@ One-off reports belong in `dev-docs/research/`.
 
 When behavior changes, docs must change in the same PR:
 
-- User-visible behavior -> update `book/src/` docs.
+- User-visible behavior -> update `book/src/content/docs/` docs.
 - Contributor-visible constraints -> update `dev-docs/` docs.
 - Review criteria changes -> update `dev-docs/review-guides/` checklist docs.
 - Architecture/invariant changes -> update `ARCHITECTURE.md`, `DESIGN.md`, and/or `VERIFICATION.md`.

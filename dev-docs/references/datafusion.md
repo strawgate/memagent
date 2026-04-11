@@ -19,8 +19,8 @@ How we use DataFusion in logfwd, without generic tutorial material.
 
 When changing transform behavior:
 
-- Update `book/src/config/sql-transforms.md`.
-- Update `book/src/config/reference.md` for any schema/UDF changes.
+- Update `book/src/content/docs/configuration/sql-transforms.md`.
+- Update `book/src/content/docs/configuration/reference.mdx` for any schema/UDF changes.
 - Update `dev-docs/ARCHITECTURE.md` if data flow changes.
 - Add tests for null handling, type conflicts, and empty batch behavior.
 
@@ -33,7 +33,7 @@ When changing transform behavior:
 ## Canonical Docs
 
 - Architecture contract: `dev-docs/ARCHITECTURE.md`
-- SQL user docs: `book/src/config/sql-transforms.md`
+- SQL user docs: `book/src/content/docs/configuration/sql-transforms.md`
 - Crate rules: `dev-docs/CRATE_RULES.md`
 
 ## Upstream

@@ -44,10 +44,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install mdBook
-        uses: peaceiris/actions-mdbook@v2
+      - uses: actions/setup-node@v4
         with:
-          mdbook-version: latest
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: book/package-lock.json
 
       - name: Link check (book + docs + README)
         uses: lycheeverse/lychee-action@v2
@@ -59,7 +60,8 @@ jobs:
             --max-retries 3
             --exclude 'mailto:'
             --exclude-loopback
-            README.md book/src dev-docs docs
+            --exclude '^/[a-z]'
+            README.md book/src/content/docs dev-docs docs
 
       - name: Validate required operational doc sections
         run: python3 scripts/docs/validate_operational_sections.py
@@ -73,8 +75,11 @@ jobs:
       - name: Report stale operational docs
         run: python3 scripts/docs/report_stale_docs.py
 
-      - name: Build mdBook
-        run: mdbook build book
+      - name: Install doc dependencies
+        run: cd book && npm ci
+
+      - name: Build docs (Starlight)
+        run: cd book && npm run build
 
       - name: Build rustdoc (public API only)
         run: |
@@ -84,19 +89,17 @@ jobs:
             -p logfwd-config \
             -p logfwd-output \
             -p logfwd-transform
-          cp -r target/doc book/book/api
+          cp -r target/doc book/dist/api
 
       - name: Include benchmark dashboard
         run: |
-          mkdir -p book/book/bench
-          cp -r bench/dashboard/* book/book/bench/ 2>/dev/null || true
-          # Data is served live from the bench-data branch via raw.githubusercontent.com
-          # — nothing to copy here.
+          mkdir -p book/dist/bench
+          cp -r bench/dashboard/* book/dist/bench/ 2>/dev/null || true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: book/book
+          path: book/dist
 
   deploy:
     needs: build

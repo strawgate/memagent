@@ -62,7 +62,7 @@ ERROR  request handled POST /api/v1/orders/10121  status=503 duration_ms=78
 ...
 ```
 
-Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/getting-started/quickstart.md) to keep going.
+Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/content/docs/getting-started/quickstart.md) to keep going.
 
 ---
 
@@ -100,7 +100,7 @@ FROM logs
 WHERE status >= 400
 ```
 
-Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](book/src/config/sql-transforms.md).
+Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](book/src/content/docs/configuration/sql-transforms.md).
 
 ---
 
@@ -124,7 +124,7 @@ cargo build --release -p logfwd
 cargo build --release -p logfwd --no-default-features
 ```
 
-See [Installation](book/src/getting-started/installation.md) for all platforms and options.
+See [Installation](book/src/content/docs/getting-started/installation.mdx) for all platforms and options.
 
 ---
 
@@ -170,7 +170,7 @@ pipelines:
         format: console
 ```
 
-See the [Configuration Reference](book/src/config/reference.md) for all YAML fields, input/output types, and enrichment tables.
+See the [Configuration Reference](book/src/content/docs/configuration/reference.mdx) for all YAML fields, input/output types, and enrichment tables.
 
 ### Platform Sensors
 
@@ -193,7 +193,7 @@ output:
   type: stdout
 ```
 
-See [Configuration Reference](book/src/config/reference.md#input-types) for full status/details.
+See [Configuration Reference](book/src/content/docs/configuration/reference.mdx#input-types) for full status/details.
 
 ---
 
@@ -206,14 +206,14 @@ kubectl -n collectors rollout status daemonset/logfwd
 
 Runs one logfwd pod per node, reads all container logs from `/var/log`. Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
 
-See the [Deployment Guide](book/src/deployment/kubernetes.md) for resource sizing, OTLP collector integration, and CRI log format details.
+See the [Deployment Guide](book/src/content/docs/deployment/kubernetes.md) for resource sizing, OTLP collector integration, and CRI log format details.
 
 ---
 
 ## Output Destinations
 
 For current output support status, see the canonical tables in the
-[Configuration Reference](book/src/config/reference.md#output-types). The
+[Configuration Reference](book/src/content/docs/configuration/reference.mdx#output-types). The
 README and task-oriented guides intentionally avoid duplicating status claims.
 
 ---
@@ -247,22 +247,22 @@ For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.m
 
 **Start here by goal**
 
-- Not sure where to begin: [Choose the Right Guide](book/src/getting-started/which-guide.md)
-- Run logfwd quickly: [Quick Start](book/src/getting-started/quickstart.md)
-- Build a safer production baseline: [Your First Pipeline](book/src/getting-started/first-pipeline.md)
-- Debug failures: [Troubleshooting](book/src/troubleshooting.md)
+- Not sure where to begin: [Choose the Right Guide](book/src/content/docs/getting-started/which-guide.md)
+- Run logfwd quickly: [Quick Start](book/src/content/docs/getting-started/quickstart.md)
+- Build a safer production baseline: [Your First Pipeline](book/src/content/docs/getting-started/first-pipeline.md)
+- Debug failures: [Troubleshooting](book/src/content/docs/troubleshooting.md)
 
-**User guides** — [book/src/](book/src/)
+**User guides** — [book/src/content/docs/](book/src/content/docs/)
 
 | Guide | Description |
 |-------|-------------|
-| [Choose the Right Guide](book/src/getting-started/which-guide.md) | Goal-based chooser for operators, contributors, and evaluators |
-| [Quick Start](book/src/getting-started/quickstart.md) | Working pipeline in 10 minutes with copy/paste commands |
-| [Your First Pipeline](book/src/getting-started/first-pipeline.md) | Production config with monitoring and validation |
-| [Configuration Reference](book/src/config/reference.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
-| [SQL Transforms](book/src/config/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
-| [Deployment](book/src/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |
-| [Troubleshooting](book/src/troubleshooting.md) | Common errors, debug mode, diagnostics API |
+| [Choose the Right Guide](book/src/content/docs/getting-started/which-guide.md) | Goal-based chooser for operators, contributors, and evaluators |
+| [Quick Start](book/src/content/docs/getting-started/quickstart.md) | Working pipeline in 10 minutes with copy/paste commands |
+| [Your First Pipeline](book/src/content/docs/getting-started/first-pipeline.md) | Production config with monitoring and validation |
+| [Configuration Reference](book/src/content/docs/configuration/reference.mdx) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
+| [SQL Transforms](book/src/content/docs/configuration/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
+| [Deployment](book/src/content/docs/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |
+| [Troubleshooting](book/src/content/docs/troubleshooting.md) | Common errors, debug mode, diagnostics API |
 
 **Developer guides**
 

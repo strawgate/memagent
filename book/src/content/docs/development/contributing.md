@@ -1,4 +1,7 @@
-# Developing logfwd
+---
+title: "Contributing"
+description: "Workspace layout, build commands, and development tips"
+---
 
 ## Workspace layout
 

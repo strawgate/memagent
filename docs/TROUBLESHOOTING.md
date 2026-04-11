@@ -2,4 +2,4 @@
 
 This document has moved to the book:
 
-**[book/src/troubleshooting.md](../book/src/troubleshooting.md)**
+**[book/src/content/docs/troubleshooting.md](../book/src/content/docs/troubleshooting.md)**

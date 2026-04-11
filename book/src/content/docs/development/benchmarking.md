@@ -1,4 +1,7 @@
-# Benchmarking
+---
+title: "Benchmarking"
+description: "Criterion, competitive, and exploratory benchmarks"
+---
 
 ## Criterion microbenchmarks
 

@@ -8,8 +8,8 @@ If user-visible or contributor-visible behavior changed, docs must change in the
 
 ## What Must Be Updated
 
-- Config schema/semantics: `book/src/config/reference.md`
-- SQL/UDF behavior: `book/src/config/sql-transforms.md`
+- Config schema/semantics: `book/src/content/docs/configuration/reference.mdx`
+- SQL/UDF behavior: `book/src/content/docs/configuration/sql-transforms.md`
 - Pipeline architecture/flow: `dev-docs/ARCHITECTURE.md`
 - Verification requirements/status: `dev-docs/VERIFICATION.md`
 - Crate responsibilities: `dev-docs/CRATE_RULES.md`

@@ -1,4 +1,9 @@
-# Configuration Reference
+---
+title: "Configuration Reference"
+description: "Complete YAML reference for all logfwd settings"
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 logfwd commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
 
@@ -12,62 +17,73 @@ logfwd supports two layout styles:
 Environment variables are expanded using `${VAR}` syntax anywhere in the file.
 If a variable is not set, config loading fails fast with a validation error.
 
+:::note
 This page is the canonical source for config support and status. Other docs may
 show examples or task-oriented guidance, but support-status claims for inputs,
 outputs, and config-only surfaces should link back here.
+:::
 
 ---
 
-## Simple layout
+## Config layout
 
-```yaml
-input:
-  type: file
-  path: /var/log/app/*.log
-  format: json
+<Tabs>
+  <TabItem label="Simple">
+    A single pipeline with top-level `input`, `transform`, and `output` keys:
 
-transform: SELECT level, message, status FROM logs WHERE status >= 400
+    ```yaml
+    input:
+      type: file
+      path: /var/log/app/*.log
+      format: json
 
-output:
-  type: otlp
-  endpoint: http://otel-collector:4318/v1/logs
-  compression: zstd
+    transform: SELECT level, message, status FROM logs WHERE status >= 400
 
-server:
-  diagnostics: 0.0.0.0:9090
-  log_level: info
-```
+    output:
+      type: otlp
+      endpoint: http://otel-collector:4318/v1/logs
+      compression: zstd
 
-## Advanced layout
+    server:
+      diagnostics: 0.0.0.0:9090
+      log_level: info
+    ```
+  </TabItem>
+  <TabItem label="Advanced (multi-pipeline)">
+    Multiple named pipelines under a `pipelines` map:
 
-```yaml
-pipelines:
-  errors:
-    inputs:
-      - name: pod_logs
-        type: file
-        path: /var/log/pods/**/*.log
-        format: cri
-    transform: SELECT * FROM logs WHERE level = 'ERROR'
-    outputs:
-      - type: otlp
-        endpoint: http://otel-collector:4318/v1/logs
+    ```yaml
+    pipelines:
+      errors:
+        inputs:
+          - name: pod_logs
+            type: file
+            path: /var/log/pods/**/*.log
+            format: cri
+        transform: SELECT * FROM logs WHERE level = 'ERROR'
+        outputs:
+          - type: otlp
+            endpoint: http://otel-collector:4318/v1/logs
 
-  debug:
-    inputs:
-      - type: file
-        path: /var/log/pods/**/*.log
-        format: cri
-    outputs:
-      - type: stdout
-        format: json
+      debug:
+        inputs:
+          - type: file
+            path: /var/log/pods/**/*.log
+            format: cri
+        outputs:
+          - type: stdout
+            format: json
 
-server:
-  diagnostics: 0.0.0.0:9090
-```
+    server:
+      diagnostics: 0.0.0.0:9090
+    ```
+  </TabItem>
+</Tabs>
 
+:::caution
 The two layouts cannot be mixed: specifying both `input`/`output` at the top level and
 a `pipelines` map is a validation error.
+:::
 
 ---
 
@@ -109,7 +125,7 @@ Emit synthetic records for benchmarks, demos, and pipeline tests.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `generator` | object | No | Generator settings. If omitted, runtime defaults are used, including `batch_size: 1000` and `events_per_sec: 0`. See [Input Types](inputs.md#generator) for the detailed nested fields. |
+| `generator` | object | No | Generator settings. If omitted, runtime defaults are used, including `batch_size: 1000` and `events_per_sec: 0`. See [Input Types](/configuration/inputs/#generator) for the detailed nested fields. |
 
 ```yaml
 input:

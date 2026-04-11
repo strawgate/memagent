@@ -1,4 +1,7 @@
-# Zero-Copy Scanner
+---
+title: "Scanner"
+description: "SIMD-accelerated zero-copy JSON to Arrow conversion"
+---
 
 The scanner converts newline-delimited JSON into Apache Arrow RecordBatches
 using SIMD-accelerated structural classification.

@@ -1,4 +1,7 @@
-# Performance
+---
+title: "Performance"
+description: "Benchmarks, throughput targets, and optimization techniques"
+---
 
 ## Throughput targets
 

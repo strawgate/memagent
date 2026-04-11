@@ -1,10 +1,13 @@
-# Quick Start
+---
+title: "Quick Start"
+description: "Get a working logfwd pipeline in about 10 minutes"
+---
 
 Get a working logfwd pipeline in about 10 minutes, then build on it.
 
 ## Prerequisites
 
-You need the `logfwd` binary. See [Installation](./installation.md) for all options, or grab it quickly:
+You need the `logfwd` binary. See [Installation](/getting-started/installation/) for all options, or grab it quickly:
 
 ```bash
 # Download the latest release (macOS Apple Silicon shown)
@@ -75,7 +78,9 @@ ready · 1 pipeline
 
 logfwd parsed every JSON line, detected field types automatically (strings, integers, floats), built Arrow RecordBatches, and printed them in a human-readable format. All 10,000 lines stream through in under a second.
 
-> **Note:** logfwd exits when it reaches the end of a finite file. In production you'd point it at a log file that's actively being appended to, and logfwd will tail it continuously — like `tail -f`, but with parsing and SQL.
+:::note
+logfwd exits when it reaches the end of a finite file. In production you'd point it at a log file that's actively being appended to, and logfwd will tail it continuously — like `tail -f`, but with parsing and SQL.
+:::
 
 ---
 
@@ -139,9 +144,11 @@ transform: |
 
 This extracts the URL path from the message with a regex and keeps only 4xx/5xx responses. Full SQL — `JOIN`, `GROUP BY`, `HAVING`, subqueries — all works.
 
-> **Note:** `ORDER BY` is valid SQL and works correctly within each batch. However, logfwd processes data in streaming batches, so ordering only applies within a single batch, not globally across all data.
+:::caution
+`ORDER BY` is valid SQL and works correctly within each batch. However, logfwd processes data in streaming batches, so ordering only applies within a single batch, not globally across all data.
+:::
 
-Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](../config/sql-transforms.md) for the complete reference.
+Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](/configuration/sql-transforms/) for the complete reference.
 
 ---
 
@@ -206,7 +213,9 @@ logfwd works out of the box with:
 
 ## Validate before deploying
 
-Before running in production, verify your config. `validate` catches YAML errors; `dry-run` goes further and compiles the SQL against the Arrow schema, catching column name typos and type mismatches before any data flows.
+:::tip
+Always validate before deploying. `validate` catches YAML errors; `dry-run` goes further and compiles the SQL against the Arrow schema, catching column name typos and type mismatches before any data flows.
+:::
 
 ```bash
 ./logfwd validate --config config.yaml
@@ -224,8 +233,8 @@ Before running in production, verify your config. `validate` catches YAML errors
 
 | Guide | What you'll learn |
 |-------|-------------------|
-| [Your First Pipeline](./first-pipeline.md) | Production config with monitoring, multi-pipeline setup, CRI format |
-| [SQL Transforms](../config/sql-transforms.md) | Full SQL reference — JOINs, UDFs, enrichment tables, column naming |
-| [Configuration Reference](../config/reference.md) | Every YAML field, input/output type, and option |
-| [Kubernetes Deployment](../deployment/kubernetes.md) | DaemonSet, resource sizing, OTLP collector integration |
-| [Troubleshooting](../troubleshooting.md) | Common errors, debug mode, diagnostics API |
+| [Your First Pipeline](/getting-started/first-pipeline/) | Production config with monitoring, multi-pipeline setup, CRI format |
+| [SQL Transforms](/configuration/sql-transforms/) | Full SQL reference — JOINs, UDFs, enrichment tables, column naming |
+| [Configuration Reference](/configuration/reference/) | Every YAML field, input/output type, and option |
+| [Kubernetes Deployment](/deployment/kubernetes/) | DaemonSet, resource sizing, OTLP collector integration |
+| [Troubleshooting](/troubleshooting/) | Common errors, debug mode, diagnostics API |
