@@ -1895,4 +1895,69 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn deterministic_worker_removal_late_event_orders_match_expected_health() {
+        #[derive(Clone, Copy)]
+        enum Step {
+            Observe,
+            Remove,
+            Apply,
+        }
+
+        struct DeterministicState {
+            worker_present: bool,
+            slot_gen: u64,
+            slot_health: ComponentHealth,
+            observed_gen: Option<u64>,
+        }
+
+        fn run_order(order: [Step; 3]) -> (bool, ComponentHealth) {
+            let mut state = DeterministicState {
+                worker_present: true,
+                slot_gen: 0,
+                slot_health: ComponentHealth::Starting,
+                observed_gen: None,
+            };
+            let mut event_applied = false;
+
+            for step in order {
+                match step {
+                    Step::Observe => {
+                        state.observed_gen = Some(state.slot_gen);
+                    }
+                    Step::Remove => {
+                        state.slot_gen = state.slot_gen.saturating_add(1);
+                        state.worker_present = false;
+                    }
+                    Step::Apply => {
+                        if state.worker_present && state.observed_gen == Some(state.slot_gen) {
+                            state.slot_health = reduce_worker_slot_health(
+                                state.slot_health,
+                                OutputHealthEvent::FatalFailure,
+                            );
+                            event_applied = true;
+                        }
+                    }
+                }
+            }
+
+            (event_applied, state.slot_health)
+        }
+
+        let expected_degraded =
+            reduce_worker_slot_health(ComponentHealth::Starting, OutputHealthEvent::FatalFailure);
+
+        // Order 1: event fully completes before removal. Health can degrade.
+        let (event_applied_before_removal, health_before_removal) =
+            run_order([Step::Observe, Step::Apply, Step::Remove]);
+        assert!(event_applied_before_removal);
+        assert_eq!(health_before_removal, expected_degraded);
+
+        // Order 2: remove happens before event apply. Stale event must be ignored.
+        let (event_applied_after_removal, health_after_removal) =
+            run_order([Step::Observe, Step::Remove, Step::Apply]);
+        assert!(!event_applied_after_removal);
+        assert_eq!(health_after_removal, ComponentHealth::Starting);
+    }
 }

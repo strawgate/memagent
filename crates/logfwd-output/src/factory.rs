@@ -100,9 +100,10 @@ pub fn build_sink_factory(
             })?;
             let compression = match cfg.compression.as_deref() {
                 Some("zstd") => Compression::Zstd,
+                Some("none") => Compression::None,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
-                        "output '{name}': arrow_ipc does not support '{other}' compression (use 'zstd' or omit)"
+                        "output '{name}': arrow_ipc does not support '{other}' compression (use 'zstd', 'none', or omit)"
                     )));
                 }
                 None => Compression::None,
@@ -254,5 +255,30 @@ pub fn build_sink_factory(
             "output '{name}': type {:?} not yet supported",
             cfg.output_type
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_sink_factory;
+    use std::sync::Arc;
+
+    use logfwd_config::{OutputConfig, OutputType};
+    use logfwd_types::diagnostics::ComponentStats;
+
+    #[test]
+    fn build_sink_factory_arrow_ipc_accepts_none_compression() {
+        let cfg = OutputConfig {
+            output_type: OutputType::ArrowIpc,
+            endpoint: Some("http://localhost:4318/v1/logs".to_string()),
+            compression: Some("none".to_string()),
+            ..Default::default()
+        };
+
+        let result = build_sink_factory("arrow", &cfg, None, Arc::new(ComponentStats::new()));
+        assert!(
+            result.is_ok(),
+            "arrow_ipc should accept explicit 'none' compression"
+        );
     }
 }

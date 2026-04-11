@@ -52,6 +52,7 @@ datafusion = { version = "48", default-features = false, features = [
     "regex_expressions",
     "recursive_protection",
 ] }
+fail = "0.5"
 globset = "0.4"
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
@@ -112,7 +113,7 @@ needless_pass_by_ref_mut = "warn"
 undocumented_unsafe_blocks = "warn"
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(feature, values("turmoil"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(feature, values("turmoil", "internal-failpoints"))'] }
 unused_qualifications = "warn"
 
 [profile.dev]

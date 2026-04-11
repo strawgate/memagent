@@ -9,6 +9,8 @@ use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use tokio::io::AsyncWriteExt;
 
+use memchr::memchr_iter;
+
 use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::field_names;
 
@@ -456,7 +458,8 @@ impl Sink for StdoutSink {
                 return SendResult::IoError(e);
             }
 
-            self.stats.inc_lines(batch.num_rows() as u64);
+            let lines_written = memchr_iter(b'\n', &self.output_buf).count() as u64;
+            self.stats.inc_lines(lines_written);
             self.stats.inc_bytes(bytes_written);
             SendResult::Ok
         })
@@ -924,6 +927,35 @@ mod tests {
         assert!(
             rendered.contains("canonical-body"),
             "console output should render canonical body first: {rendered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_batch_counts_emitted_lines_for_text_mode() {
+        use std::sync::atomic::Ordering;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
+        let body = StringArray::from(vec![Some("printed"), None]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(body)]).unwrap();
+
+        let stats = Arc::new(ComponentStats::new());
+        let mut sink = StdoutSink::new(
+            "test-lines".to_string(),
+            StdoutFormat::Text,
+            Arc::clone(&stats),
+        );
+        let meta = make_metadata();
+
+        let mut expected = Vec::new();
+        sink.write_batch_to(&batch, &meta, &mut expected).unwrap();
+        let expected_lines = expected.iter().filter(|b| **b == b'\n').count() as u64;
+
+        let _ = sink.send_batch(&batch, &meta).await.unwrap();
+
+        assert_eq!(
+            stats.lines_total.load(Ordering::Relaxed),
+            expected_lines,
+            "lines_total should reflect emitted lines, not raw row count"
         );
     }
 }

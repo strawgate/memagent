@@ -42,12 +42,15 @@
 
 use std::future::Future;
 use std::io;
+use std::io::Write as _;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
+use flate2::Compression as GzipLevel;
+use flate2::write::GzEncoder;
 use logfwd_otap_proto::otap::{
     ArrowPayload as ProtoArrowPayload, ArrowPayloadType as ProtoArrowPayloadType,
     BatchArrowRecords as ProtoBatchArrowRecords, BatchStatus as ProtoBatchStatus,
@@ -62,7 +65,7 @@ use logfwd_types::diagnostics::ComponentStats;
 use super::arrow_ipc_sink::serialize_ipc;
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{BatchMetadata, Compression};
-use crate::http_classify::DEFAULT_RETRY_AFTER_SECS;
+use crate::http_classify::{self, DEFAULT_RETRY_AFTER_SECS};
 
 mod generated_fast {
     include!("generated/otap_fast_v1.rs");
@@ -357,7 +360,12 @@ impl OtapSink {
     fn maybe_compress(&self) -> io::Result<Vec<u8>> {
         match self.config.compression {
             Compression::Zstd => zstd::bulk::compress(&self.proto_buf, 1).map_err(io::Error::other),
-            Compression::None | Compression::Gzip => Ok(self.proto_buf.clone()),
+            Compression::Gzip => {
+                let mut encoder = GzEncoder::new(Vec::new(), GzipLevel::fast());
+                encoder.write_all(&self.proto_buf)?;
+                encoder.finish()
+            }
+            Compression::None => Ok(self.proto_buf.clone()),
         }
     }
 
@@ -368,8 +376,10 @@ impl OtapSink {
             .post(&self.config.endpoint)
             .header("Content-Type", CONTENT_TYPE_PROTOBUF);
 
-        if self.config.compression == Compression::Zstd {
-            req = req.header("Content-Encoding", "zstd");
+        match self.config.compression {
+            Compression::Zstd => req = req.header("Content-Encoding", "zstd"),
+            Compression::Gzip => req = req.header("Content-Encoding", "gzip"),
+            Compression::None => {}
         }
 
         for (k, v) in &self.config.headers {
@@ -379,26 +389,19 @@ impl OtapSink {
         let response = req.body(payload).send().await.map_err(io::Error::other)?;
         let status = response.status();
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(DEFAULT_RETRY_AFTER_SECS);
-            return Ok(SendResult::RetryAfter(Duration::from_secs(retry_after)));
-        }
-
-        if status.is_server_error() {
-            let _body = response.text().await.unwrap_or_default();
-            return Ok(SendResult::RetryAfter(Duration::from_secs(
-                DEFAULT_RETRY_AFTER_SECS,
-            )));
-        }
-
         if !status.is_success() {
+            let retry_after = response.headers().get("Retry-After").cloned();
             let body = response.text().await.unwrap_or_default();
-            return Ok(SendResult::Rejected(format!("HTTP {status}: {body}")));
+            if let Some(send_result) = http_classify::classify_http_status(
+                status.as_u16(),
+                retry_after.as_ref(),
+                &format!("OTAP: {body}"),
+            ) {
+                return Ok(send_result);
+            }
+            return Err(io::Error::other(format!(
+                "OTAP request failed with status {status}: {body}"
+            )));
         }
 
         // Parse BatchStatus from the response body.
@@ -559,6 +562,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use logfwd_arrow::star_schema::{flat_to_star, star_to_flat};
     use logfwd_core::otlp::encode_varint_field;
+    use reqwest::header::{CONTENT_ENCODING, RETRY_AFTER};
 
     use super::super::arrow_ipc_sink::deserialize_ipc;
 
@@ -1123,5 +1127,119 @@ mod tests {
             status_vals.contains(&"200") && status_vals.contains(&"OK"),
             "expected both coalesced status values (200 and OK), got: {status_vals:?}"
         );
+    }
+
+    #[test]
+    fn maybe_compress_gzip_produces_valid_gzip_stream() {
+        use std::io::Read as _;
+
+        let config = Arc::new(OtapSinkConfig {
+            endpoint: "http://localhost:4318/v1/otap".to_string(),
+            compression: Compression::Gzip,
+            headers: vec![],
+        });
+        let mut sink = OtapSink::new(
+            "test".to_string(),
+            config,
+            reqwest::Client::new(),
+            Arc::new(AtomicI64::new(0)),
+            Arc::new(ComponentStats::new()),
+        );
+        sink.proto_buf = b"sample-otap-payload".to_vec();
+
+        let compressed = sink
+            .maybe_compress()
+            .expect("gzip compression should succeed");
+        assert_ne!(compressed, sink.proto_buf, "payload should be compressed");
+
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(compressed.as_slice())
+            .read_to_end(&mut decoded)
+            .expect("gzip payload should decompress");
+        assert_eq!(
+            decoded, sink.proto_buf,
+            "gzip roundtrip should preserve protobuf bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn otap_send_gzip_sets_content_encoding_header() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/otap")
+            .match_header(CONTENT_ENCODING.as_str(), "gzip")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let config = Arc::new(OtapSinkConfig {
+            endpoint: format!("{}/v1/otap", server.url()),
+            compression: Compression::Gzip,
+            headers: vec![],
+        });
+        let sink = OtapSink::new(
+            "test".to_string(),
+            config,
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("client"),
+            Arc::new(AtomicI64::new(0)),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let payload = b"sample-otap-payload".to_vec();
+        let send_result = sink
+            .do_send(payload, 1)
+            .await
+            .expect("do_send should succeed");
+        assert!(matches!(send_result, SendResult::Ok));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn otap_send_retry_after_http_date_is_honored() {
+        let retry_after_http_date =
+            httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(60));
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/v1/otap")
+            .with_status(429)
+            .with_header(RETRY_AFTER.as_str(), &retry_after_http_date)
+            .create_async()
+            .await;
+
+        let config = Arc::new(OtapSinkConfig {
+            endpoint: format!("{}/v1/otap", server.url()),
+            compression: Compression::None,
+            headers: vec![],
+        });
+        let sink = OtapSink::new(
+            "test".to_string(),
+            config,
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("client"),
+            Arc::new(AtomicI64::new(0)),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let result = sink
+            .do_send(vec![0x01], 10)
+            .await
+            .expect("do_send should classify 429");
+
+        match result {
+            SendResult::RetryAfter(duration) => {
+                assert!(
+                    (58..=60).contains(&duration.as_secs()),
+                    "HTTP-date Retry-After should parse to ~60s, got {}s",
+                    duration.as_secs()
+                );
+            }
+            other => panic!("expected RetryAfter, got {other:?}"),
+        }
     }
 }
