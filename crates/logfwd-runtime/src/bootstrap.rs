@@ -607,11 +607,12 @@ fn redact_url(url: &str) -> String {
     let authority = authority_and_tail
         .split_once(['/', '?', '#'])
         .map_or(authority_and_tail, |(head, _)| head);
-    let host = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
+    let (had_userinfo, host) = match authority.rsplit_once('@') {
+        Some((_, host)) => (true, host),
+        None => (false, authority),
+    };
 
-    if host.is_empty() {
+    if host.is_empty() && !had_userinfo {
         return url.to_string();
     }
 
@@ -644,6 +645,11 @@ mod tests {
     #[test]
     fn redact_url_returns_original_for_hostless_value() {
         assert_eq!(redact_url("https:///v1/traces"), "https:///v1/traces");
+    }
+
+    #[test]
+    fn redact_url_strips_credentials_when_host_is_empty() {
+        assert_eq!(redact_url("http://user:pass@/path"), "http://");
     }
 }
 
