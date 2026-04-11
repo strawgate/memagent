@@ -41,6 +41,7 @@ socket2 = { version = "0.6", features = ["all"] }
 tiny_http = { workspace = true }
 zstd = "0.13"
 xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
+sysinfo = "0.37"
 walkdir = { workspace = true }
 
 [dev-dependencies]

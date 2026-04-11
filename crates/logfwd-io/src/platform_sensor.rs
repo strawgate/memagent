@@ -5,16 +5,18 @@
 //! per-platform signal families so we can iterate toward production sensors
 //! without routing synthetic JSON through text decoders.
 
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use arrow::array::{ArrayRef, BooleanArray, StringArray, UInt64Array};
+use arrow::array::{ArrayRef, BooleanArray, Float32Array, StringArray, UInt32Array, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use logfwd_types::diagnostics::ComponentHealth;
 use serde::Deserialize;
+use sysinfo::{Networks, Process, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::input::{InputEvent, InputSource};
 
@@ -128,6 +130,8 @@ pub struct PlatformSensorConfig {
     pub enabled_families: Option<Vec<String>>,
     /// Emit periodic per-family sample rows.
     pub emit_signal_rows: bool,
+    /// Upper bound on data rows emitted per collection cycle.
+    pub max_rows_per_poll: usize,
 }
 
 impl Default for PlatformSensorConfig {
@@ -138,6 +142,7 @@ impl Default for PlatformSensorConfig {
             control_reload_interval: Duration::from_millis(1_000),
             enabled_families: None,
             emit_signal_rows: true,
+            max_rows_per_poll: 256,
         }
     }
 }
@@ -162,6 +167,8 @@ struct PlatformSensorCommon {
     host_platform: &'static str,
     cfg: PlatformSensorConfig,
     schema: Arc<Schema>,
+    system: System,
+    networks: Networks,
 }
 
 #[derive(Debug)]
@@ -222,6 +229,37 @@ struct SensorRow {
     enabled_families: Option<String>,
     effective_emit_signal_rows: Option<bool>,
     message: String,
+
+    // Process fields
+    process_pid: Option<u32>,
+    process_parent_pid: Option<u32>,
+    process_name: Option<String>,
+    process_cmd: Option<String>,
+    process_exe: Option<String>,
+    process_status: Option<String>,
+    process_cpu_usage: Option<f32>,
+    process_memory_bytes: Option<u64>,
+    process_virtual_memory_bytes: Option<u64>,
+    process_start_time_unix_sec: Option<u64>,
+    process_disk_read_delta_bytes: Option<u64>,
+    process_disk_write_delta_bytes: Option<u64>,
+
+    // Network fields
+    network_interface: Option<String>,
+    network_received_delta_bytes: Option<u64>,
+    network_transmitted_delta_bytes: Option<u64>,
+    network_received_total_bytes: Option<u64>,
+    network_transmitted_total_bytes: Option<u64>,
+    network_packets_received_delta: Option<u64>,
+    network_packets_transmitted_delta: Option<u64>,
+    network_errors_received_delta: Option<u64>,
+    network_errors_transmitted_delta: Option<u64>,
+
+    // Disk I/O fields
+    disk_io_read_delta_bytes: Option<u64>,
+    disk_io_write_delta_bytes: Option<u64>,
+    disk_io_read_total_bytes: Option<u64>,
+    disk_io_write_total_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -236,7 +274,7 @@ struct ControlFileConfig {
 }
 
 impl PlatformSensorState<InitState> {
-    fn start(self) -> Result<InitStartOk, InitStartErr> {
+    fn start(mut self) -> Result<InitStartOk, InitStartErr> {
         let now = Instant::now();
         let mut rows = vec![self.common.control_row(
             &self.state.control,
@@ -245,6 +283,8 @@ impl PlatformSensorState<InitState> {
             "ok",
         )];
         rows.extend(self.common.capability_rows(&self.state.control));
+        self.common
+            .run_collection_cycle(&self.state.control, &mut rows);
         rows.extend(self.common.signal_sample_rows(
             &self.state.control,
             "startup_sample",
@@ -279,14 +319,17 @@ impl PlatformSensorState<RunningState> {
             rows.extend(reload_rows);
         }
 
-        if self.state.last_emit.elapsed() >= self.common.cfg.poll_interval
-            && self.state.control.emit_signal_rows
-        {
-            rows.extend(self.common.signal_sample_rows(
-                &self.state.control,
-                "sample",
-                "periodic signal snapshot",
-            ));
+        if self.state.last_emit.elapsed() >= self.common.cfg.poll_interval {
+            self.common
+                .run_collection_cycle(&self.state.control, &mut rows);
+
+            if self.state.control.emit_signal_rows {
+                rows.extend(self.common.signal_sample_rows(
+                    &self.state.control,
+                    "sample",
+                    "periodic signal snapshot",
+                ));
+            }
             self.state.last_emit = Instant::now();
         }
 
@@ -373,16 +416,17 @@ impl PlatformSensorState<RunningState> {
 }
 
 impl PlatformSensorCommon {
-    fn control_row(
+    fn base_row(
         &self,
         control: &ControlState,
+        event_family: &str,
         event_kind: &str,
-        message: &str,
         signal_status: &str,
+        message: &str,
     ) -> SensorRow {
         SensorRow {
             timestamp_unix_nano: now_unix_nano(),
-            event_family: "sensor_control".to_string(),
+            event_family: event_family.to_string(),
             event_kind: event_kind.to_string(),
             signal_family: None,
             signal_status: signal_status.to_string(),
@@ -396,7 +440,48 @@ impl PlatformSensorCommon {
             enabled_families: Some(enabled_families_csv(control)),
             effective_emit_signal_rows: Some(control.emit_signal_rows),
             message: message.to_string(),
+            process_pid: None,
+            process_parent_pid: None,
+            process_name: None,
+            process_cmd: None,
+            process_exe: None,
+            process_status: None,
+            process_cpu_usage: None,
+            process_memory_bytes: None,
+            process_virtual_memory_bytes: None,
+            process_start_time_unix_sec: None,
+            process_disk_read_delta_bytes: None,
+            process_disk_write_delta_bytes: None,
+            network_interface: None,
+            network_received_delta_bytes: None,
+            network_transmitted_delta_bytes: None,
+            network_received_total_bytes: None,
+            network_transmitted_total_bytes: None,
+            network_packets_received_delta: None,
+            network_packets_transmitted_delta: None,
+            network_errors_received_delta: None,
+            network_errors_transmitted_delta: None,
+            disk_io_read_delta_bytes: None,
+            disk_io_write_delta_bytes: None,
+            disk_io_read_total_bytes: None,
+            disk_io_write_total_bytes: None,
         }
+    }
+
+    fn control_row(
+        &self,
+        control: &ControlState,
+        event_kind: &str,
+        message: &str,
+        signal_status: &str,
+    ) -> SensorRow {
+        self.base_row(
+            control,
+            "sensor_control",
+            event_kind,
+            signal_status,
+            message,
+        )
     }
 
     fn capability_rows(&self, control: &ControlState) -> Vec<SensorRow> {
@@ -406,31 +491,19 @@ impl PlatformSensorCommon {
             .iter()
             .map(|family| {
                 let is_enabled = enabled.contains(family);
-                SensorRow {
-                    timestamp_unix_nano: now_unix_nano(),
-                    event_family: "sensor_control".to_string(),
-                    event_kind: "capability".to_string(),
-                    signal_family: Some(family.as_str().to_string()),
-                    signal_status: if is_enabled {
-                        "enabled".to_string()
-                    } else {
-                        "disabled".to_string()
-                    },
-                    control_generation: control.generation,
-                    control_source: control.source.as_str().to_string(),
-                    control_path: self
-                        .cfg
-                        .control_path
-                        .as_ref()
-                        .map(|path| path.display().to_string()),
-                    enabled_families: Some(enabled_families_csv(control)),
-                    effective_emit_signal_rows: Some(control.emit_signal_rows),
-                    message: if is_enabled {
+                let mut row = self.base_row(
+                    control,
+                    "sensor_control",
+                    "capability",
+                    if is_enabled { "enabled" } else { "disabled" },
+                    &if is_enabled {
                         format!("{} family enabled", family.as_str())
                     } else {
                         format!("{} family disabled", family.as_str())
                     },
-                }
+                );
+                row.signal_family = Some(family.as_str().to_string());
+                row
             })
             .collect()
     }
@@ -448,24 +521,156 @@ impl PlatformSensorCommon {
         control
             .enabled_families
             .iter()
-            .map(|family| SensorRow {
-                timestamp_unix_nano: now_unix_nano(),
-                event_family: family.as_str().to_string(),
-                event_kind: event_kind.to_string(),
-                signal_family: Some(family.as_str().to_string()),
-                signal_status: "ok".to_string(),
-                control_generation: control.generation,
-                control_source: control.source.as_str().to_string(),
-                control_path: self
-                    .cfg
-                    .control_path
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
-                enabled_families: Some(enabled_families_csv(control)),
-                effective_emit_signal_rows: Some(control.emit_signal_rows),
-                message: format!("{} ({})", message, family.as_str()),
+            .filter(|family| {
+                !matches!(
+                    family,
+                    SignalFamily::Process | SignalFamily::Network | SignalFamily::File
+                )
+            })
+            .map(|family| {
+                let mut row = self.base_row(
+                    control,
+                    family.as_str(),
+                    event_kind,
+                    "ok",
+                    &format!("{} ({})", message, family.as_str()),
+                );
+                row.signal_family = Some(family.as_str().to_string());
+                row
             })
             .collect()
+    }
+
+    fn run_collection_cycle(&mut self, control: &ControlState, out: &mut Vec<SensorRow>) -> usize {
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::everything(),
+        );
+        self.networks.refresh(true);
+
+        let enabled: std::collections::HashSet<_> =
+            control.enabled_families.iter().copied().collect();
+        let mut emitted = 0usize;
+        let mut remaining = self.cfg.max_rows_per_poll;
+
+        if remaining > 0 && enabled.contains(&SignalFamily::Process) {
+            let count = self.emit_process_rows(control, out, remaining);
+            emitted += count;
+            remaining = remaining.saturating_sub(count);
+        }
+        if remaining > 0 && enabled.contains(&SignalFamily::Network) {
+            let count = self.emit_network_rows(control, out, remaining);
+            emitted += count;
+            remaining = remaining.saturating_sub(count);
+        }
+        if remaining > 0 && enabled.contains(&SignalFamily::File) {
+            let count = self.emit_disk_io_rows(control, out, remaining);
+            emitted += count;
+        }
+
+        emitted
+    }
+
+    fn emit_process_rows(
+        &self,
+        control: &ControlState,
+        out: &mut Vec<SensorRow>,
+        limit: usize,
+    ) -> usize {
+        let mut procs: Vec<(&sysinfo::Pid, &Process)> = self.system.processes().iter().collect();
+        procs.sort_unstable_by_key(|(pid, _)| pid.as_u32());
+
+        let mut emitted = 0usize;
+        for (pid, process) in procs.into_iter().take(limit) {
+            let disk_usage = process.disk_usage();
+            let mut row = self.base_row(control, "process", "snapshot", "ok", "process snapshot");
+            row.signal_family = Some("process".to_string());
+            row.process_pid = Some(pid.as_u32());
+            row.process_parent_pid = process.parent().map(sysinfo::Pid::as_u32);
+            row.process_name = Some(os_to_string(process.name()));
+            row.process_cmd = Some(os_vec_to_string(process.cmd()));
+            row.process_exe = process.exe().map(|p| p.to_string_lossy().to_string());
+            row.process_status = Some(format!("{:?}", process.status()));
+            row.process_cpu_usage = Some(process.cpu_usage());
+            row.process_memory_bytes = Some(process.memory());
+            row.process_virtual_memory_bytes = Some(process.virtual_memory());
+            row.process_start_time_unix_sec = Some(process.start_time());
+            row.process_disk_read_delta_bytes = Some(disk_usage.read_bytes);
+            row.process_disk_write_delta_bytes = Some(disk_usage.written_bytes);
+            out.push(row);
+            emitted += 1;
+        }
+
+        emitted
+    }
+
+    fn emit_network_rows(
+        &self,
+        control: &ControlState,
+        out: &mut Vec<SensorRow>,
+        limit: usize,
+    ) -> usize {
+        let mut ifaces: Vec<_> = self.networks.iter().collect();
+        ifaces.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+
+        let mut emitted = 0usize;
+        for (iface, data) in ifaces.into_iter().take(limit) {
+            let mut row = self.base_row(control, "network", "snapshot", "ok", "network snapshot");
+            row.signal_family = Some("network".to_string());
+            row.network_interface = Some(iface.clone());
+            row.network_received_delta_bytes = Some(data.received());
+            row.network_transmitted_delta_bytes = Some(data.transmitted());
+            row.network_received_total_bytes = Some(data.total_received());
+            row.network_transmitted_total_bytes = Some(data.total_transmitted());
+            row.network_packets_received_delta = Some(data.packets_received());
+            row.network_packets_transmitted_delta = Some(data.packets_transmitted());
+            row.network_errors_received_delta = Some(data.errors_on_received());
+            row.network_errors_transmitted_delta = Some(data.errors_on_transmitted());
+            out.push(row);
+            emitted += 1;
+        }
+
+        emitted
+    }
+
+    fn emit_disk_io_rows(
+        &self,
+        control: &ControlState,
+        out: &mut Vec<SensorRow>,
+        limit: usize,
+    ) -> usize {
+        let mut procs: Vec<(&sysinfo::Pid, &Process)> = self
+            .system
+            .processes()
+            .iter()
+            .filter(|(_, process)| {
+                let usage = process.disk_usage();
+                usage.read_bytes > 0 || usage.written_bytes > 0
+            })
+            .collect();
+        procs.sort_unstable_by(|(a_pid, a_proc), (b_pid, b_proc)| {
+            let a = a_proc.disk_usage().written_bytes + a_proc.disk_usage().read_bytes;
+            let b = b_proc.disk_usage().written_bytes + b_proc.disk_usage().read_bytes;
+            b.cmp(&a).then_with(|| a_pid.as_u32().cmp(&b_pid.as_u32()))
+        });
+
+        let mut emitted = 0usize;
+        for (pid, process) in procs.into_iter().take(limit) {
+            let usage = process.disk_usage();
+            let mut row = self.base_row(control, "disk_io", "snapshot", "ok", "disk I/O snapshot");
+            row.signal_family = Some("file".to_string());
+            row.process_pid = Some(pid.as_u32());
+            row.process_name = Some(os_to_string(process.name()));
+            row.disk_io_read_delta_bytes = Some(usage.read_bytes);
+            row.disk_io_write_delta_bytes = Some(usage.written_bytes);
+            row.disk_io_read_total_bytes = Some(usage.total_read_bytes);
+            row.disk_io_write_total_bytes = Some(usage.total_written_bytes);
+            out.push(row);
+            emitted += 1;
+        }
+
+        emitted
     }
 
     fn build_batch_event(&self, rows: Vec<SensorRow>) -> io::Result<InputEvent> {
@@ -473,20 +678,50 @@ impl PlatformSensorCommon {
             return Err(io::Error::other("cannot build sensor batch from zero rows"));
         }
 
-        let mut timestamp_unix_nano = Vec::with_capacity(rows.len());
-        let mut sensor_name = Vec::with_capacity(rows.len());
-        let mut sensor_target_platform = Vec::with_capacity(rows.len());
-        let mut sensor_host_platform = Vec::with_capacity(rows.len());
-        let mut event_family = Vec::with_capacity(rows.len());
-        let mut event_kind = Vec::with_capacity(rows.len());
-        let mut signal_family = Vec::with_capacity(rows.len());
-        let mut signal_status = Vec::with_capacity(rows.len());
-        let mut control_generation = Vec::with_capacity(rows.len());
-        let mut control_source = Vec::with_capacity(rows.len());
-        let mut control_path = Vec::with_capacity(rows.len());
-        let mut enabled_families = Vec::with_capacity(rows.len());
-        let mut effective_emit_signal_rows = Vec::with_capacity(rows.len());
-        let mut message = Vec::with_capacity(rows.len());
+        let len = rows.len();
+        let mut timestamp_unix_nano = Vec::with_capacity(len);
+        let mut sensor_name = Vec::with_capacity(len);
+        let mut sensor_target_platform = Vec::with_capacity(len);
+        let mut sensor_host_platform = Vec::with_capacity(len);
+        let mut event_family = Vec::with_capacity(len);
+        let mut event_kind = Vec::with_capacity(len);
+        let mut signal_family: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut signal_status = Vec::with_capacity(len);
+        let mut control_generation = Vec::with_capacity(len);
+        let mut control_source = Vec::with_capacity(len);
+        let mut control_path: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut enabled_families: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut effective_emit_signal_rows: Vec<Option<bool>> = Vec::with_capacity(len);
+        let mut message = Vec::with_capacity(len);
+
+        let mut process_pid: Vec<Option<u32>> = Vec::with_capacity(len);
+        let mut process_parent_pid: Vec<Option<u32>> = Vec::with_capacity(len);
+        let mut process_name: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut process_cmd: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut process_exe: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut process_status: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut process_cpu_usage: Vec<Option<f32>> = Vec::with_capacity(len);
+        let mut process_memory_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut process_virtual_memory_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut process_start_time_unix_sec: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut process_disk_read_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut process_disk_write_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+
+        let mut network_interface: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut network_received_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut network_transmitted_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut network_received_total_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut network_transmitted_total_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut network_packets_received_delta: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut network_packets_transmitted_delta: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut network_errors_received_delta: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut network_errors_transmitted_delta: Vec<Option<u64>> = Vec::with_capacity(len);
+
+        let mut disk_io_read_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut disk_io_write_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut disk_io_read_total_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut disk_io_write_total_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+
         let mut accounted_bytes = 0_u64;
 
         for row in rows {
@@ -505,6 +740,34 @@ impl PlatformSensorCommon {
             effective_emit_signal_rows.push(row.effective_emit_signal_rows);
             accounted_bytes = accounted_bytes.saturating_add(row.message.len() as u64);
             message.push(row.message);
+
+            process_pid.push(row.process_pid);
+            process_parent_pid.push(row.process_parent_pid);
+            process_name.push(row.process_name);
+            process_cmd.push(row.process_cmd);
+            process_exe.push(row.process_exe);
+            process_status.push(row.process_status);
+            process_cpu_usage.push(row.process_cpu_usage);
+            process_memory_bytes.push(row.process_memory_bytes);
+            process_virtual_memory_bytes.push(row.process_virtual_memory_bytes);
+            process_start_time_unix_sec.push(row.process_start_time_unix_sec);
+            process_disk_read_delta_bytes.push(row.process_disk_read_delta_bytes);
+            process_disk_write_delta_bytes.push(row.process_disk_write_delta_bytes);
+
+            network_interface.push(row.network_interface);
+            network_received_delta_bytes.push(row.network_received_delta_bytes);
+            network_transmitted_delta_bytes.push(row.network_transmitted_delta_bytes);
+            network_received_total_bytes.push(row.network_received_total_bytes);
+            network_transmitted_total_bytes.push(row.network_transmitted_total_bytes);
+            network_packets_received_delta.push(row.network_packets_received_delta);
+            network_packets_transmitted_delta.push(row.network_packets_transmitted_delta);
+            network_errors_received_delta.push(row.network_errors_received_delta);
+            network_errors_transmitted_delta.push(row.network_errors_transmitted_delta);
+
+            disk_io_read_delta_bytes.push(row.disk_io_read_delta_bytes);
+            disk_io_write_delta_bytes.push(row.disk_io_write_delta_bytes);
+            disk_io_read_total_bytes.push(row.disk_io_read_total_bytes);
+            disk_io_write_total_bytes.push(row.disk_io_write_total_bytes);
         }
 
         let columns: Vec<ArrayRef> = vec![
@@ -522,6 +785,31 @@ impl PlatformSensorCommon {
             Arc::new(StringArray::from(enabled_families)),
             Arc::new(BooleanArray::from(effective_emit_signal_rows)),
             Arc::new(StringArray::from(message)),
+            Arc::new(UInt32Array::from(process_pid)),
+            Arc::new(UInt32Array::from(process_parent_pid)),
+            Arc::new(StringArray::from(process_name)),
+            Arc::new(StringArray::from(process_cmd)),
+            Arc::new(StringArray::from(process_exe)),
+            Arc::new(StringArray::from(process_status)),
+            Arc::new(Float32Array::from(process_cpu_usage)),
+            Arc::new(UInt64Array::from(process_memory_bytes)),
+            Arc::new(UInt64Array::from(process_virtual_memory_bytes)),
+            Arc::new(UInt64Array::from(process_start_time_unix_sec)),
+            Arc::new(UInt64Array::from(process_disk_read_delta_bytes)),
+            Arc::new(UInt64Array::from(process_disk_write_delta_bytes)),
+            Arc::new(StringArray::from(network_interface)),
+            Arc::new(UInt64Array::from(network_received_delta_bytes)),
+            Arc::new(UInt64Array::from(network_transmitted_delta_bytes)),
+            Arc::new(UInt64Array::from(network_received_total_bytes)),
+            Arc::new(UInt64Array::from(network_transmitted_total_bytes)),
+            Arc::new(UInt64Array::from(network_packets_received_delta)),
+            Arc::new(UInt64Array::from(network_packets_transmitted_delta)),
+            Arc::new(UInt64Array::from(network_errors_received_delta)),
+            Arc::new(UInt64Array::from(network_errors_transmitted_delta)),
+            Arc::new(UInt64Array::from(disk_io_read_delta_bytes)),
+            Arc::new(UInt64Array::from(disk_io_write_delta_bytes)),
+            Arc::new(UInt64Array::from(disk_io_read_total_bytes)),
+            Arc::new(UInt64Array::from(disk_io_write_total_bytes)),
         ];
 
         let batch = RecordBatch::try_new(Arc::clone(&self.schema), columns)
@@ -580,6 +868,8 @@ impl PlatformSensorInput {
                     host_platform,
                     cfg,
                     schema: sensor_schema(),
+                    system: System::new_all(),
+                    networks: Networks::new_with_refreshed_list(),
                 },
                 state: InitState { control },
             })),
@@ -711,6 +1001,31 @@ fn sensor_schema() -> Arc<Schema> {
         Field::new("enabled_families", DataType::Utf8, true),
         Field::new("effective_emit_signal_rows", DataType::Boolean, true),
         Field::new("message", DataType::Utf8, false),
+        Field::new("process_pid", DataType::UInt32, true),
+        Field::new("process_parent_pid", DataType::UInt32, true),
+        Field::new("process_name", DataType::Utf8, true),
+        Field::new("process_cmd", DataType::Utf8, true),
+        Field::new("process_exe", DataType::Utf8, true),
+        Field::new("process_status", DataType::Utf8, true),
+        Field::new("process_cpu_usage", DataType::Float32, true),
+        Field::new("process_memory_bytes", DataType::UInt64, true),
+        Field::new("process_virtual_memory_bytes", DataType::UInt64, true),
+        Field::new("process_start_time_unix_sec", DataType::UInt64, true),
+        Field::new("process_disk_read_delta_bytes", DataType::UInt64, true),
+        Field::new("process_disk_write_delta_bytes", DataType::UInt64, true),
+        Field::new("network_interface", DataType::Utf8, true),
+        Field::new("network_received_delta_bytes", DataType::UInt64, true),
+        Field::new("network_transmitted_delta_bytes", DataType::UInt64, true),
+        Field::new("network_received_total_bytes", DataType::UInt64, true),
+        Field::new("network_transmitted_total_bytes", DataType::UInt64, true),
+        Field::new("network_packets_received_delta", DataType::UInt64, true),
+        Field::new("network_packets_transmitted_delta", DataType::UInt64, true),
+        Field::new("network_errors_received_delta", DataType::UInt64, true),
+        Field::new("network_errors_transmitted_delta", DataType::UInt64, true),
+        Field::new("disk_io_read_delta_bytes", DataType::UInt64, true),
+        Field::new("disk_io_write_delta_bytes", DataType::UInt64, true),
+        Field::new("disk_io_read_total_bytes", DataType::UInt64, true),
+        Field::new("disk_io_write_total_bytes", DataType::UInt64, true),
     ]))
 }
 
@@ -731,6 +1046,18 @@ impl HostPlatform {
             Self::Unsupported => None,
         }
     }
+}
+
+fn os_to_string(value: &OsStr) -> String {
+    value.to_string_lossy().to_string()
+}
+
+fn os_vec_to_string(values: &[std::ffi::OsString]) -> String {
+    values
+        .iter()
+        .map(|v| v.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn now_unix_nano() -> u64 {
@@ -887,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn signal_rows_disabled_emits_only_startup_batch() {
+    fn signal_rows_disabled_suppresses_sample_placeholders() {
         let mut input = PlatformSensorInput::new(
             "sensor",
             host_target(),
@@ -901,7 +1228,18 @@ mod tests {
 
         let startup = input.poll().expect("startup poll");
         assert_eq!(startup.len(), 1);
-        assert!(input.poll().expect("second poll").is_empty());
+        std::thread::sleep(Duration::from_millis(2));
+
+        // Data collection rows may still appear, but "sample" placeholders must not.
+        let events = input.poll().expect("second poll");
+        if !events.is_empty() {
+            let batch = first_batch(&events);
+            let kinds = string_col(batch, "event_kind");
+            assert!(
+                !kinds.iter().any(|v| v.as_deref() == Some("sample")),
+                "signal sample placeholders should be suppressed when emit_signal_rows is false"
+            );
+        }
     }
 
     #[test]
@@ -947,6 +1285,8 @@ mod tests {
         let kinds = string_col(batch, "event_kind");
         let families = string_col(batch, "signal_family");
 
+        // Process family now has real data collection (snapshot rows) instead of
+        // signal sample placeholders. DNS still gets signal sample rows.
         let sample_families: Vec<String> = kinds
             .iter()
             .zip(families.iter())
@@ -959,9 +1299,21 @@ mod tests {
             })
             .collect();
 
-        assert!(sample_families.iter().any(|f| f == "process"));
+        // dns is a placeholder-only family, so it should appear as startup_sample
         assert!(sample_families.iter().any(|f| f == "dns"));
+        // process now uses real collection (snapshot), not startup_sample
+        assert!(!sample_families.iter().any(|f| f == "process"));
+        // network is not enabled, so it should not appear
         assert!(!sample_families.iter().any(|f| f == "network"));
+
+        // Process data should appear as snapshot rows
+        let event_families = string_col(batch, "event_family");
+        assert!(
+            event_families
+                .iter()
+                .any(|v| v.as_deref() == Some("process")),
+            "process data collection rows should be in the startup batch"
+        );
     }
 
     #[test]
@@ -1197,5 +1549,150 @@ mod tests {
         assert_eq!(input.health(), ComponentHealth::Starting);
         let _ = input.poll().expect("startup poll succeeds");
         assert_eq!(input.health(), ComponentHealth::Healthy);
+    }
+
+    #[test]
+    fn health_degrades_on_control_reload_failure_and_recovers_on_success() {
+        let (_dir, control_path) = tempfiles::control_file_path();
+        let mut input = PlatformSensorInput::new(
+            "sensor",
+            host_target(),
+            PlatformSensorConfig {
+                control_path: Some(control_path.clone()),
+                control_reload_interval: Duration::from_millis(1),
+                emit_signal_rows: false,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        assert_eq!(input.health(), ComponentHealth::Starting);
+        let _ = input.poll().expect("startup poll");
+        assert_eq!(input.health(), ComponentHealth::Healthy);
+
+        tempfiles::write_control_file(&control_path, r#"{"generation":"bad"}"#);
+        std::thread::sleep(Duration::from_millis(2));
+        let _ = input.poll().expect("reload failure poll");
+        assert_eq!(input.health(), ComponentHealth::Degraded);
+
+        tempfiles::write_control_file(
+            &control_path,
+            r#"{"generation":2,"enabled_families":["process"],"emit_signal_rows":false}"#,
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        let _ = input.poll().expect("reload recovery poll");
+        assert_eq!(input.health(), ComponentHealth::Healthy);
+    }
+
+    fn u32_col_optional(batch: &RecordBatch, name: &str) -> Vec<Option<u32>> {
+        let idx = batch.schema().index_of(name).expect("column exists");
+        let arr = batch
+            .column(idx)
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("u32 array");
+        (0..arr.len())
+            .map(|i| {
+                if arr.is_null(i) {
+                    None
+                } else {
+                    Some(arr.value(i))
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn first_poll_emits_process_data() {
+        let mut input = PlatformSensorInput::new(
+            "sensor",
+            host_target(),
+            PlatformSensorConfig {
+                enabled_families: Some(vec!["process".to_string()]),
+                poll_interval: Duration::from_millis(1),
+                max_rows_per_poll: 8,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        let _ = input.poll().expect("startup poll");
+        std::thread::sleep(Duration::from_millis(2));
+
+        let events = input.poll().expect("second poll with data");
+        assert_eq!(events.len(), 1);
+        let batch = first_batch(&events);
+        let pids = u32_col_optional(batch, "process_pid");
+        assert!(
+            pids.iter().any(|v| v.is_some()),
+            "process snapshot rows should have process_pid set"
+        );
+        let kinds = string_col(batch, "event_kind");
+        assert!(
+            kinds.iter().any(|v| v.as_deref() == Some("snapshot")),
+            "should contain snapshot event_kind"
+        );
+    }
+
+    #[test]
+    fn first_poll_emits_network_data() {
+        let mut input = PlatformSensorInput::new(
+            "sensor",
+            host_target(),
+            PlatformSensorConfig {
+                enabled_families: Some(vec!["network".to_string()]),
+                poll_interval: Duration::from_millis(1),
+                max_rows_per_poll: 64,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        let _ = input.poll().expect("startup poll");
+        std::thread::sleep(Duration::from_millis(2));
+
+        let events = input.poll().expect("second poll with data");
+        // Some CI environments may have no network interfaces, so just check
+        // we get at least an empty successful poll.
+        if !events.is_empty() {
+            let batch = first_batch(&events);
+            let ifaces = string_col(batch, "network_interface");
+            assert!(
+                ifaces.iter().any(|v| v.is_some()),
+                "network snapshot rows should have network_interface set"
+            );
+        }
+    }
+
+    #[test]
+    fn collection_respects_enabled_families() {
+        let mut input = PlatformSensorInput::new(
+            "sensor",
+            host_target(),
+            PlatformSensorConfig {
+                enabled_families: Some(vec!["process".to_string()]),
+                emit_signal_rows: false,
+                poll_interval: Duration::from_millis(1),
+                max_rows_per_poll: 8,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        let _ = input.poll().expect("startup poll");
+        std::thread::sleep(Duration::from_millis(2));
+
+        let events = input.poll().expect("second poll");
+        assert_eq!(events.len(), 1);
+        let batch = first_batch(&events);
+        let families = string_col(batch, "event_family");
+        assert!(
+            !families.iter().any(|v| v.as_deref() == Some("network")),
+            "network rows should not be emitted when only process is enabled"
+        );
+        assert!(
+            !families.iter().any(|v| v.as_deref() == Some("disk_io")),
+            "disk_io rows should not be emitted when only process is enabled"
+        );
     }
 }
