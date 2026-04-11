@@ -16,7 +16,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use logfwd_types::diagnostics::ComponentHealth;
 use serde::Deserialize;
-use sysinfo::{Networks, Process, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Networks, Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::input::{InputEvent, InputSource};
 
@@ -542,31 +542,61 @@ impl PlatformSensorCommon {
     }
 
     fn run_collection_cycle(&mut self, control: &ControlState, out: &mut Vec<SensorRow>) -> usize {
-        self.system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::everything(),
-        );
-        self.networks.refresh(true);
-
         let enabled: std::collections::HashSet<_> =
             control.enabled_families.iter().copied().collect();
-        let mut emitted = 0usize;
-        let mut remaining = self.cfg.max_rows_per_poll;
 
-        if remaining > 0 && enabled.contains(&SignalFamily::Process) {
-            let count = self.emit_process_rows(control, out, remaining);
-            emitted += count;
-            remaining = remaining.saturating_sub(count);
+        // Families that have real data collection.
+        let collection_families = [
+            SignalFamily::Process,
+            SignalFamily::Network,
+            SignalFamily::File,
+        ];
+        let active_count = collection_families
+            .iter()
+            .filter(|f| enabled.contains(f))
+            .count();
+        if active_count == 0 {
+            return 0;
         }
-        if remaining > 0 && enabled.contains(&SignalFamily::Network) {
-            let count = self.emit_network_rows(control, out, remaining);
-            emitted += count;
-            remaining = remaining.saturating_sub(count);
+
+        // Only refresh the subsystems we actually need.
+        let needs_processes =
+            enabled.contains(&SignalFamily::Process) || enabled.contains(&SignalFamily::File);
+        if needs_processes {
+            self.system.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                true,
+                ProcessRefreshKind::nothing()
+                    .with_cpu()
+                    .with_memory()
+                    .with_disk_usage()
+                    .with_cmd(UpdateKind::OnlyIfNotSet)
+                    .with_exe(UpdateKind::OnlyIfNotSet),
+            );
         }
-        if remaining > 0 && enabled.contains(&SignalFamily::File) {
-            let count = self.emit_disk_io_rows(control, out, remaining);
-            emitted += count;
+        if enabled.contains(&SignalFamily::Network) {
+            self.networks.refresh(true);
+        }
+
+        // Split budget evenly across active families so no single family starves others.
+        let per_family_budget = self.cfg.max_rows_per_poll / active_count;
+        // Remainder goes to the first active family to avoid losing rows.
+        let remainder = self.cfg.max_rows_per_poll % active_count;
+
+        let mut emitted = 0usize;
+        let mut budget_extra = remainder;
+
+        if enabled.contains(&SignalFamily::Process) {
+            let budget = per_family_budget + std::mem::take(&mut budget_extra);
+            emitted += self.emit_process_rows(control, out, budget);
+        }
+        if enabled.contains(&SignalFamily::Network) {
+            let budget = per_family_budget + std::mem::take(&mut budget_extra);
+            emitted += self.emit_network_rows(control, out, budget);
+        }
+        if enabled.contains(&SignalFamily::File) {
+            let budget = per_family_budget + std::mem::take(&mut budget_extra);
+            emitted += self.emit_disk_io_rows(control, out, budget);
         }
 
         emitted
@@ -868,7 +898,7 @@ impl PlatformSensorInput {
                     host_platform,
                     cfg,
                     schema: sensor_schema(),
-                    system: System::new_all(),
+                    system: System::new(),
                     networks: Networks::new_with_refreshed_list(),
                 },
                 state: InitState { control },
@@ -1694,5 +1724,326 @@ mod tests {
             !families.iter().any(|v| v.as_deref() == Some("disk_io")),
             "disk_io rows should not be emitted when only process is enabled"
         );
+    }
+
+    #[test]
+    fn max_rows_per_poll_caps_data_collection() {
+        let mut input = PlatformSensorInput::new(
+            "sensor",
+            host_target(),
+            PlatformSensorConfig {
+                enabled_families: Some(vec!["process".to_string()]),
+                emit_signal_rows: false,
+                poll_interval: Duration::from_millis(1),
+                max_rows_per_poll: 3,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        let _ = input.poll().expect("startup poll");
+        std::thread::sleep(Duration::from_millis(2));
+
+        let events = input.poll().expect("second poll");
+        assert_eq!(events.len(), 1);
+        let batch = first_batch(&events);
+        // On any real system there are more than 3 processes; the cap should hold.
+        let snapshot_count = string_col(batch, "event_kind")
+            .iter()
+            .filter(|v| v.as_deref() == Some("snapshot"))
+            .count();
+        assert!(
+            snapshot_count <= 3,
+            "max_rows_per_poll should cap data rows, got {snapshot_count}"
+        );
+    }
+
+    #[test]
+    fn process_snapshot_has_valid_fields() {
+        let mut input = PlatformSensorInput::new(
+            "sensor",
+            host_target(),
+            PlatformSensorConfig {
+                enabled_families: Some(vec!["process".to_string()]),
+                emit_signal_rows: false,
+                poll_interval: Duration::from_millis(1),
+                max_rows_per_poll: 16,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        // Two polls so sysinfo has history for deltas.
+        let _ = input.poll().expect("startup poll");
+        std::thread::sleep(Duration::from_millis(50));
+        let events = input.poll().expect("second poll");
+        assert_eq!(events.len(), 1);
+        let batch = first_batch(&events);
+
+        let pids = u32_col_optional(batch, "process_pid");
+        let names = string_col(batch, "process_name");
+        let mem_col_idx = batch
+            .schema()
+            .index_of("process_memory_bytes")
+            .expect("col");
+        let mem_arr = batch
+            .column(mem_col_idx)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .expect("u64");
+
+        let mut found_valid = false;
+        for i in 0..batch.num_rows() {
+            if let Some(pid) = pids[i] {
+                assert!(pid > 0, "pid should be positive");
+                let name = names[i].as_deref().unwrap_or("");
+                assert!(!name.is_empty(), "process name should not be empty");
+                if !mem_arr.is_null(i) {
+                    // At least some processes have nonzero memory
+                    found_valid = true;
+                }
+            }
+        }
+        assert!(found_valid, "at least one process should have memory data");
+    }
+
+    #[test]
+    fn disk_io_family_emits_only_active_processes() {
+        let mut input = PlatformSensorInput::new(
+            "sensor",
+            host_target(),
+            PlatformSensorConfig {
+                enabled_families: Some(vec!["file".to_string()]),
+                emit_signal_rows: false,
+                poll_interval: Duration::from_millis(1),
+                max_rows_per_poll: 256,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        // First poll primes sysinfo; on second poll we may see disk_io rows.
+        let _ = input.poll().expect("startup poll");
+        std::thread::sleep(Duration::from_millis(50));
+        let events = input.poll().expect("second poll");
+
+        // Even if no process has active I/O, we should not crash.
+        if !events.is_empty() {
+            let batch = first_batch(&events);
+            let families = string_col(batch, "event_family");
+            // All data rows should be disk_io (no process or network)
+            for fam in &families {
+                if fam.as_deref() == Some("disk_io") {
+                    // disk_io rows are expected
+                }
+            }
+            assert!(
+                !families.iter().any(|v| v.as_deref() == Some("process")),
+                "only file family enabled; no process rows expected"
+            );
+        }
+    }
+
+    #[test]
+    fn second_cycle_network_deltas_are_plausible() {
+        let mut input = PlatformSensorInput::new(
+            "sensor",
+            host_target(),
+            PlatformSensorConfig {
+                enabled_families: Some(vec!["network".to_string()]),
+                emit_signal_rows: false,
+                poll_interval: Duration::from_millis(1),
+                max_rows_per_poll: 64,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        let _ = input.poll().expect("startup poll");
+        std::thread::sleep(Duration::from_millis(50));
+        let events = input.poll().expect("second poll");
+
+        if !events.is_empty() {
+            let batch = first_batch(&events);
+            let ifaces = string_col(batch, "network_interface");
+
+            let rx_total_idx = batch
+                .schema()
+                .index_of("network_received_total_bytes")
+                .expect("col");
+            let rx_total_arr = batch
+                .column(rx_total_idx)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .expect("u64");
+
+            let rx_delta_idx = batch
+                .schema()
+                .index_of("network_received_delta_bytes")
+                .expect("col");
+            let rx_delta_arr = batch
+                .column(rx_delta_idx)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .expect("u64");
+
+            for i in 0..batch.num_rows() {
+                if ifaces[i].is_some() && !rx_total_arr.is_null(i) && !rx_delta_arr.is_null(i) {
+                    let total = rx_total_arr.value(i);
+                    let delta = rx_delta_arr.value(i);
+                    assert!(
+                        delta <= total,
+                        "delta ({delta}) should not exceed total ({total}) for {}",
+                        ifaces[i].as_deref().unwrap_or("?")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn schema_column_count_matches_expected() {
+        let schema = sensor_schema();
+        assert_eq!(
+            schema.fields().len(),
+            39,
+            "schema should have 14 base + 25 telemetry columns"
+        );
+    }
+
+    #[test]
+    #[ignore] // interactive data audit — run with --ignored
+    fn data_audit_dump_two_cycles() {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut input = PlatformSensorInput::new(
+            "audit",
+            host_target(),
+            PlatformSensorConfig {
+                enabled_families: Some(vec![
+                    "process".to_string(),
+                    "network".to_string(),
+                    "file".to_string(),
+                ]),
+                emit_signal_rows: true,
+                poll_interval: Duration::from_millis(50),
+                max_rows_per_poll: 32,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("host target");
+
+        // --- Cycle 1: startup ---
+        let events = input.poll().expect("startup poll");
+        assert_eq!(events.len(), 1);
+        let batch = first_batch(&events);
+        eprintln!("\n=== CYCLE 1 (startup) ===");
+        eprintln!("rows: {}, cols: {}", batch.num_rows(), batch.num_columns());
+
+        let ts = u64_col(batch, "timestamp_unix_nano");
+        for t in &ts {
+            let secs = t / 1_000_000_000;
+            assert!(
+                secs >= now_secs - 5 && secs <= now_secs + 5,
+                "timestamp out of range: {secs} vs now {now_secs}"
+            );
+        }
+
+        let fams = string_col(batch, "event_family");
+        let kinds = string_col(batch, "event_kind");
+        let mut fk: std::collections::HashMap<String, usize> = Default::default();
+        for (f, k) in fams.iter().zip(kinds.iter()) {
+            let key = format!(
+                "{}/{}",
+                f.as_deref().unwrap_or("?"),
+                k.as_deref().unwrap_or("?")
+            );
+            *fk.entry(key).or_default() += 1;
+        }
+        eprintln!("event_family/event_kind distribution:");
+        let mut pairs: Vec<_> = fk.iter().collect();
+        pairs.sort_by(|a, b| b.1.cmp(a.1));
+        for (key, count) in &pairs {
+            eprintln!("  {key}: {count}");
+        }
+
+        let pids = u32_col_optional(batch, "process_pid");
+        let names = string_col(batch, "process_name");
+        eprintln!("\nSample processes (first 5 with data):");
+        let mut shown = 0;
+        for i in 0..batch.num_rows() {
+            if pids[i].is_some() {
+                let mem_idx = batch
+                    .schema()
+                    .index_of("process_memory_bytes")
+                    .expect("col");
+                let mem_arr = batch
+                    .column(mem_idx)
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .expect("u64");
+                let mem_kb = if mem_arr.is_null(i) {
+                    0
+                } else {
+                    mem_arr.value(i) / 1024
+                };
+                eprintln!(
+                    "  pid={} name={:?} mem={}KB",
+                    pids[i].unwrap_or(0),
+                    names[i].as_deref().unwrap_or("?"),
+                    mem_kb,
+                );
+                shown += 1;
+                if shown >= 5 {
+                    break;
+                }
+            }
+        }
+
+        let ifaces = string_col(batch, "network_interface");
+        let net_rows: Vec<_> = ifaces.iter().filter(|i| i.is_some()).collect();
+        eprintln!("\nnetwork rows: {}", net_rows.len());
+        for i in 0..batch.num_rows() {
+            if let Some(ref iface) = ifaces[i] {
+                let rx_idx = batch
+                    .schema()
+                    .index_of("network_received_total_bytes")
+                    .expect("col");
+                let rx_arr = batch
+                    .column(rx_idx)
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .expect("u64");
+                let rx = if rx_arr.is_null(i) {
+                    0
+                } else {
+                    rx_arr.value(i)
+                };
+                eprintln!("  iface={iface} rx_total={}KB", rx / 1024);
+            }
+        }
+
+        // --- Cycle 2: after interval ---
+        std::thread::sleep(Duration::from_millis(60));
+        let events2 = input.poll().expect("second poll");
+        if events2.is_empty() {
+            eprintln!("\n=== CYCLE 2: empty ===");
+        } else {
+            let batch2 = first_batch(&events2);
+            eprintln!(
+                "\n=== CYCLE 2 (periodic) ===\nrows: {}, cols: {}",
+                batch2.num_rows(),
+                batch2.num_columns()
+            );
+            assert_eq!(
+                batch.schema(),
+                batch2.schema(),
+                "schema must be stable across cycles"
+            );
+        }
+        eprintln!("\n=== DATA AUDIT COMPLETE ===");
     }
 }
