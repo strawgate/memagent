@@ -177,7 +177,7 @@ const icons: Record<string, string> = {
 };
 ---
 
-<div class="pd" id="pipeline-diagram">
+<div class="pd" data-pd-root>
   <div class="pd-flow">
     {stages.map((stage, i) => (
       <>
@@ -185,7 +185,6 @@ const icons: Record<string, string> = {
           class="pd-stage"
           data-stage={stage.id}
           aria-expanded="false"
-          aria-controls={`pd-detail-${stage.id}`}
         >
           <svg class="pd-stage-icon" viewBox="0 0 24 24" aria-hidden="true">
             <Fragment set:html={icons[stage.id]} />
@@ -203,10 +202,10 @@ const icons: Record<string, string> = {
     ))}
   </div>
 
-  <p class="pd-hint" id="pd-hint">Select a stage to explore its components</p>
+  <p class="pd-hint">Select a stage to explore its components</p>
 
   {stages.map((stage) => (
-    <div class="pd-detail" id={`pd-detail-${stage.id}`} hidden>
+    <div class="pd-detail" data-detail-stage={stage.id} hidden>
       <div class="pd-detail-head">
         <svg class="pd-detail-icon" viewBox="0 0 24 24" aria-hidden="true">
           <Fragment set:html={icons[stage.id]} />
@@ -222,14 +221,13 @@ const icons: Record<string, string> = {
             class="pd-comp"
             data-component={comp.id}
             aria-expanded="false"
-            aria-controls={`pd-impl-${comp.id}`}
           >
             {comp.label}
           </button>
         ))}
       </div>
       {stage.components.map((comp) => (
-        <div class="pd-impl" id={`pd-impl-${comp.id}`} hidden>
+        <div class="pd-impl" data-impl-component={comp.id} hidden>
           <p class="pd-impl-desc">{comp.detail}</p>
           <div class="pd-mini-flow">
             {comp.flow.map((step, j) => (
@@ -563,51 +561,55 @@ const icons: Record<string, string> = {
 </style>
 
 <script>
-  const diagram = document.getElementById('pipeline-diagram');
-  const hint = document.getElementById('pd-hint');
+  document.querySelectorAll<HTMLDivElement>('[data-pd-root]').forEach((diagram) => {
+    const hint = diagram.querySelector<HTMLParagraphElement>('.pd-hint');
 
-  diagram.querySelectorAll('.pd-stage').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const stageId = btn.dataset.stage;
-      const detail = document.getElementById(`pd-detail-${stageId}`);
-      const isOpen = btn.getAttribute('aria-expanded') === 'true';
+    diagram.querySelectorAll<HTMLButtonElement>('.pd-stage').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const stageId = btn.dataset.stage;
+        const detail = diagram.querySelector<HTMLDivElement>(`[data-detail-stage="${stageId}"]`);
+        if (!detail) return;
+        const isOpen = btn.getAttribute('aria-expanded') === 'true';
 
-      diagram.querySelectorAll('.pd-stage').forEach(b => b.setAttribute('aria-expanded', 'false'));
-      diagram.querySelectorAll('.pd-detail').forEach(d => d.hidden = true);
-      // Close any open component details
-      diagram.querySelectorAll('.pd-comp').forEach(b => b.setAttribute('aria-expanded', 'false'));
-      diagram.querySelectorAll('.pd-impl').forEach(d => d.hidden = true);
+        diagram.querySelectorAll('.pd-stage').forEach(b => b.setAttribute('aria-expanded', 'false'));
+        diagram.querySelectorAll<HTMLDivElement>('.pd-detail').forEach(d => d.hidden = true);
+        // Close any open component details
+        diagram.querySelectorAll('.pd-comp').forEach(b => b.setAttribute('aria-expanded', 'false'));
+        diagram.querySelectorAll<HTMLDivElement>('.pd-impl').forEach(d => d.hidden = true);
 
-      if (!isOpen) {
-        btn.setAttribute('aria-expanded', 'true');
-        detail.hidden = false;
-        hint.style.opacity = '0';
-        // Position the notch under the clicked stage
-        const diagramRect = diagram.getBoundingClientRect();
-        const btnRect = btn.getBoundingClientRect();
-        const notchX = btnRect.left + btnRect.width / 2 - diagramRect.left;
-        detail.style.setProperty('--pd-notch-x', `${notchX}px`);
-        detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      } else {
-        hint.style.opacity = '1';
-      }
+        if (!isOpen) {
+          btn.setAttribute('aria-expanded', 'true');
+          detail.hidden = false;
+          if (hint) hint.style.opacity = '0';
+          // Position the notch under the clicked stage
+          const diagramRect = diagram.getBoundingClientRect();
+          const btnRect = btn.getBoundingClientRect();
+          const notchX = btnRect.left + btnRect.width / 2 - diagramRect.left;
+          detail.style.setProperty('--pd-notch-x', `${notchX}px`);
+          detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } else if (hint) {
+          hint.style.opacity = '1';
+        }
+      });
     });
-  });
 
-  diagram.querySelectorAll('.pd-comp').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const compId = btn.dataset.component;
-      const impl = document.getElementById(`pd-impl-${compId}`);
-      const isOpen = btn.getAttribute('aria-expanded') === 'true';
-      const parent = btn.closest('.pd-detail');
+    diagram.querySelectorAll<HTMLButtonElement>('.pd-comp').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const compId = btn.dataset.component;
+        const impl = diagram.querySelector<HTMLDivElement>(`[data-impl-component="${compId}"]`);
+        if (!impl) return;
+        const isOpen = btn.getAttribute('aria-expanded') === 'true';
+        const parent = btn.closest('.pd-detail');
+        if (!parent) return;
 
-      parent.querySelectorAll('.pd-comp').forEach(b => b.setAttribute('aria-expanded', 'false'));
-      parent.querySelectorAll('.pd-impl').forEach(d => d.hidden = true);
+        parent.querySelectorAll('.pd-comp').forEach(b => b.setAttribute('aria-expanded', 'false'));
+        parent.querySelectorAll<HTMLDivElement>('.pd-impl').forEach(d => d.hidden = true);
 
-      if (!isOpen) {
-        btn.setAttribute('aria-expanded', 'true');
-        impl.hidden = false;
-      }
+        if (!isOpen) {
+          btn.setAttribute('aria-expanded', 'true');
+          impl.hidden = false;
+        }
+      });
     });
   });
 </script>

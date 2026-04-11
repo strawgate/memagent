@@ -50,7 +50,7 @@ jobs:
           cache: "npm"
           cache-dependency-path: book/package-lock.json
 
-      - name: Link check (book + docs + README)
+      - name: Link check (README + dev-docs)
         uses: lycheeverse/lychee-action@v2
         with:
           lycheeVersion: v0.23.0
@@ -60,8 +60,7 @@ jobs:
             --max-retries 3
             --exclude 'mailto:'
             --exclude-loopback
-            --exclude '^/[a-z]'
-            README.md book/src/content/docs dev-docs docs
+            README.md dev-docs docs
 
       - name: Validate required operational doc sections
         run: python3 scripts/docs/validate_operational_sections.py
@@ -80,6 +79,19 @@ jobs:
 
       - name: Build docs (Starlight)
         run: cd book && npm run build
+
+      - name: Link check (built site)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          lycheeVersion: v0.23.0
+          args: >-
+            --no-progress
+            --accept 200,429
+            --max-retries 3
+            --exclude 'mailto:'
+            --exclude-loopback
+            --root-dir book/dist
+            book/dist
 
       - name: Build rustdoc (public API only)
         run: |
