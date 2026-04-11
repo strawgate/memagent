@@ -1,0 +1,411 @@
+---
+const stages = [
+  {
+    id: 'inputs',
+    label: 'Inputs',
+    icon: '📥',
+    summary: 'Sources produce raw bytes independently',
+    components: [
+      {
+        id: 'file', label: 'File',
+        detail: 'Tail files matching glob patterns (e.g. /var/log/pods/**/*.log). Tracks file position across restarts, detects rotation (rename + create), drains old files before switching. Adaptive polling with configurable budget.',
+      },
+      {
+        id: 'tcp', label: 'TCP',
+        detail: 'Accept log lines on a TCP socket. Supports RFC 6587 octet counting and newline-delimited framing. Optional TLS/mTLS. Records larger than 1 MiB are discarded.',
+      },
+      {
+        id: 'udp', label: 'UDP',
+        detail: 'Receive log lines on a UDP socket. Kernel buffer overflow detection via SO_RXQ_OVFL. Single-datagram-per-record framing.',
+      },
+      {
+        id: 'otlp-in', label: 'OTLP',
+        detail: 'Receive OTLP log records over HTTP. Decodes protobuf and JSON payloads, preserves resource attributes with configurable prefix, flattens to Arrow columns.',
+      },
+      {
+        id: 'http-in', label: 'HTTP',
+        detail: 'Receive newline-delimited payloads via HTTP POST. Configurable path, method, max body size, and response code. Supports JSON and raw formats.',
+      },
+      {
+        id: 'arrow-ipc-in', label: 'Arrow IPC',
+        detail: 'Receive Arrow IPC stream payloads over HTTP POST. Bypasses the scanner entirely — decoded RecordBatches go directly into the pipeline. Supports zstd-compressed streams.',
+      },
+      {
+        id: 'sensor', label: 'Platform Sensor',
+        detail: 'eBPF (Linux), EndpointSecurity (macOS), or eBPF (Windows) sensor input. Arrow-native control + signal rows for process, file, network, DNS, and auth events.',
+      },
+      {
+        id: 'generator', label: 'Generator',
+        detail: 'Emit synthetic JSON log lines for benchmarking and pipeline testing. Configurable EPS, batch size, profiles (logs/record), and timestamp generation.',
+      },
+    ],
+  },
+  {
+    id: 'scanner',
+    label: 'Scanner',
+    icon: '⚡',
+    summary: 'SIMD-accelerated JSON → Arrow conversion',
+    components: [
+      {
+        id: 'format-detect', label: 'Format Parser',
+        detail: 'Detects CRI, JSON, or raw format. CRI parser strips timestamp/stream prefix, reassembles multi-line logs via the P partial flag. Auto mode tries CRI first, then JSON, then raw fallback.',
+      },
+      {
+        id: 'simd-index', label: 'SIMD Structural Index',
+        detail: 'One vectorized pass over the entire buffer using platform-native SIMD (AVX2/SSE2 on x86_64, NEON on aarch64). Classifies 10 structural characters simultaneously in 64-byte blocks. Produces bitmasks for O(1) string boundary lookups.',
+      },
+      {
+        id: 'field-extract', label: 'Field Extraction',
+        detail: 'Scalar state machine walks top-level JSON objects using pre-computed bitmasks. Resolves field names to column indices via HashMap (once per field per batch). Routes values to typed Arrow column builders.',
+      },
+      {
+        id: 'batch-builder', label: 'RecordBatch Builder',
+        detail: 'Deferred builder pattern: collects (row, value) pairs during scan, bulk-builds Arrow columns at finish. StringViewArray zero-copy mode shares the input buffer across all string columns. Injects _resource_* metadata columns.',
+      },
+    ],
+  },
+  {
+    id: 'transform',
+    label: 'SQL Transform',
+    icon: '🔄',
+    summary: 'DataFusion SQL over Arrow RecordBatches',
+    components: [
+      {
+        id: 'datafusion', label: 'DataFusion Engine',
+        detail: 'Each batch cycle registers source RecordBatches as partitions of a "logs" MemTable. Executes user-defined SQL with full support for SELECT, WHERE, GROUP BY, HAVING, JOINs, and subqueries. Field pushdown analyzes the query to skip unused columns during scanning.',
+      },
+      {
+        id: 'udfs', label: 'Custom UDFs',
+        detail: 'Built-in scalar functions: int(), float() for type casting; regexp_extract() for regex capture groups; grok() for Logstash-style pattern extraction; json(), json_int(), json_float() for JSON field access; geo_lookup() for MaxMind GeoIP enrichment.',
+      },
+      {
+        id: 'enrichment', label: 'Enrichment Tables',
+        detail: 'SQL-joinable tables injected into the query context. k8s_path: extracts namespace/pod/container from Kubernetes log paths. host_info: exposes the hostname. static: user-defined label columns (environment, cluster, tier).',
+      },
+    ],
+  },
+  {
+    id: 'outputs',
+    label: 'Outputs',
+    icon: '📤',
+    summary: 'Fan-out to multiple destinations',
+    components: [
+      {
+        id: 'otlp-out', label: 'OTLP',
+        detail: 'Encodes log records as OTLP protobuf. Groups rows by _resource_* columns into ResourceLogs. Supports zstd and gzip compression. HTTP and gRPC protocols. Connection pooling and retry with backoff.',
+      },
+      {
+        id: 'elasticsearch', label: 'Elasticsearch',
+        detail: 'Ships via the Bulk API with per-document error handling and automatic retries. Large payloads are split to stay within limits. Optional gzip compression. Experimental streaming mode for chunked HTTP.',
+      },
+      {
+        id: 'loki', label: 'Loki',
+        detail: 'Pushes to Grafana Loki with automatic label grouping. Sanitizes label keys into Loki-compatible names. Rejects configs where two sources would collapse to the same label key.',
+      },
+      {
+        id: 'stdout', label: 'stdout',
+        detail: 'Print to stdout for debugging. Console mode: colored, human-readable (timestamp, level, message, key=value). JSON mode: one object per line. Text mode: raw body column.',
+      },
+      {
+        id: 'file-out', label: 'File',
+        detail: 'Write NDJSON or raw text to a local file. Useful for capture, replay testing, and local archival.',
+      },
+      {
+        id: 'tcp-out', label: 'TCP',
+        detail: 'Send records to a TCP endpoint with persistent connections and retry backoff.',
+      },
+      {
+        id: 'udp-out', label: 'UDP',
+        detail: 'Fire-and-forget datagram output for low-overhead forwarding.',
+      },
+      {
+        id: 'arrow-ipc-out', label: 'Arrow IPC',
+        detail: 'Send Arrow IPC payloads to an HTTP endpoint for zero-copy handoff to downstream consumers.',
+      },
+    ],
+  },
+];
+---
+
+<div class="pipeline-diagram" id="pipeline-diagram">
+  <div class="pipeline-flow">
+    {stages.map((stage, i) => (
+      <>
+        <button
+          class="stage-box"
+          data-stage={stage.id}
+          aria-expanded="false"
+          aria-controls={`detail-${stage.id}`}
+        >
+          <span class="stage-icon">{stage.icon}</span>
+          <span class="stage-label">{stage.label}</span>
+          <span class="stage-hint">{stage.components.length} types</span>
+        </button>
+        {i < stages.length - 1 && (
+          <svg class="arrow" viewBox="0 0 48 24" aria-hidden="true">
+            <path d="M4 12 L36 12 M30 6 L38 12 L30 18" stroke="currentColor" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        )}
+      </>
+    ))}
+  </div>
+
+  <p class="diagram-hint" id="diagram-hint">Click a stage to explore its components</p>
+
+  {stages.map((stage) => (
+    <div class="stage-detail" id={`detail-${stage.id}`} hidden>
+      <div class="stage-detail-header">
+        <span class="stage-icon">{stage.icon}</span>
+        <div>
+          <h3>{stage.label}</h3>
+          <p class="stage-summary">{stage.summary}</p>
+        </div>
+      </div>
+      <div class="component-grid">
+        {stage.components.map((comp) => (
+          <button
+            class="component-card"
+            data-component={comp.id}
+            aria-expanded="false"
+            aria-controls={`impl-${comp.id}`}
+          >
+            <span class="comp-label">{comp.label}</span>
+          </button>
+        ))}
+      </div>
+      {stage.components.map((comp) => (
+        <div class="impl-detail" id={`impl-${comp.id}`} hidden>
+          <strong>{comp.label}</strong>
+          <p>{comp.detail}</p>
+        </div>
+      ))}
+    </div>
+  ))}
+</div>
+
+<style>
+  .pipeline-diagram {
+    --pd-bg: var(--sl-color-bg-nav);
+    --pd-border: var(--sl-color-gray-5);
+    --pd-accent: var(--sl-color-accent);
+    --pd-text: var(--sl-color-text);
+    --pd-text-muted: var(--sl-color-gray-3);
+    margin: 1.5rem 0;
+  }
+
+  .pipeline-flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    padding: 1rem 0;
+    overflow-x: auto;
+  }
+
+  .stage-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 1rem 1.25rem;
+    border: 2px solid var(--pd-border);
+    border-radius: 10px;
+    background: var(--pd-bg);
+    color: var(--pd-text);
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+    min-width: 120px;
+    font-family: inherit;
+    font-size: inherit;
+  }
+
+  .stage-box:hover {
+    border-color: var(--pd-accent);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+
+  .stage-box[aria-expanded="true"] {
+    border-color: var(--pd-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--pd-accent) 25%, transparent);
+  }
+
+  .stage-icon {
+    font-size: 1.5rem;
+    line-height: 1;
+  }
+
+  .stage-label {
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+
+  .stage-hint {
+    font-size: 0.7rem;
+    color: var(--pd-text-muted);
+  }
+
+  .arrow {
+    width: 48px;
+    height: 24px;
+    flex-shrink: 0;
+    color: var(--pd-border);
+  }
+
+  .diagram-hint {
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--pd-text-muted);
+    margin: 0;
+    transition: opacity 0.3s;
+  }
+
+  .stage-detail {
+    margin-top: 1rem;
+    padding: 1.25rem;
+    border: 1px solid var(--pd-border);
+    border-radius: 10px;
+    background: var(--pd-bg);
+    animation: slideDown 0.25s ease-out;
+  }
+
+  .stage-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .stage-detail-header .stage-icon {
+    font-size: 2rem;
+  }
+
+  .stage-detail-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+  }
+
+  .stage-summary {
+    margin: 0.15rem 0 0;
+    font-size: 0.85rem;
+    color: var(--pd-text-muted);
+  }
+
+  .component-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 0.5rem;
+  }
+
+  .component-card {
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--pd-border);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--pd-text);
+    cursor: pointer;
+    text-align: center;
+    font-family: inherit;
+    font-size: 0.85rem;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .component-card:hover {
+    border-color: var(--pd-accent);
+    background: color-mix(in srgb, var(--pd-accent) 8%, transparent);
+  }
+
+  .component-card[aria-expanded="true"] {
+    border-color: var(--pd-accent);
+    background: color-mix(in srgb, var(--pd-accent) 12%, transparent);
+    font-weight: 600;
+  }
+
+  .comp-label {
+    font-size: 0.85rem;
+  }
+
+  .impl-detail {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    background: color-mix(in srgb, var(--pd-accent) 6%, var(--pd-bg));
+    border-left: 3px solid var(--pd-accent);
+    border-radius: 0 6px 6px 0;
+    animation: slideDown 0.2s ease-out;
+  }
+
+  .impl-detail strong {
+    display: block;
+    margin-bottom: 0.3rem;
+    font-size: 0.9rem;
+  }
+
+  .impl-detail p {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    color: var(--pd-text);
+  }
+
+  @keyframes slideDown {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @media (max-width: 600px) {
+    .pipeline-flow {
+      flex-direction: column;
+    }
+    .arrow {
+      transform: rotate(90deg);
+      width: 24px;
+      height: 48px;
+    }
+    .stage-box {
+      width: 100%;
+      min-width: unset;
+    }
+  }
+</style>
+
+<script>
+  const diagram = document.getElementById('pipeline-diagram');
+  const hint = document.getElementById('diagram-hint');
+
+  diagram.querySelectorAll('.stage-box').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const stageId = btn.dataset.stage;
+      const detail = document.getElementById(`detail-${stageId}`);
+      const isOpen = btn.getAttribute('aria-expanded') === 'true';
+
+      diagram.querySelectorAll('.stage-box').forEach(b => b.setAttribute('aria-expanded', 'false'));
+      diagram.querySelectorAll('.stage-detail').forEach(d => d.hidden = true);
+
+      if (!isOpen) {
+        btn.setAttribute('aria-expanded', 'true');
+        detail.hidden = false;
+        hint.style.opacity = '0';
+        detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } else {
+        hint.style.opacity = '1';
+      }
+    });
+  });
+
+  diagram.querySelectorAll('.component-card').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const compId = btn.dataset.component;
+      const impl = document.getElementById(`impl-${compId}`);
+      const isOpen = btn.getAttribute('aria-expanded') === 'true';
+      const parent = btn.closest('.stage-detail');
+
+      parent.querySelectorAll('.component-card').forEach(b => b.setAttribute('aria-expanded', 'false'));
+      parent.querySelectorAll('.impl-detail').forEach(d => d.hidden = true);
+
+      if (!isOpen) {
+        btn.setAttribute('aria-expanded', 'true');
+        impl.hidden = false;
+      }
+    });
+  });
+</script>

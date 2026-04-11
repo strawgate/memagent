@@ -3,31 +3,33 @@ title: logfwd
 description: Fast log forwarder with SQL transforms
 template: splash
 hero:
-  tagline: A high-performance log forwarder built in Rust. Tail log files, parse JSON and Kubernetes CRI with portable SIMD, transform with DataFusion SQL, and ship to OTLP, Elasticsearch, Loki, or stdout.
+  tagline: A single-binary log forwarder built in Rust. Tail files, transform with SQL, ship to any OTLP backend — and only pay for the logs you actually need.
   actions:
     - text: Quick Start
       link: /getting-started/quickstart/
       icon: right-arrow
       variant: primary
-    - text: View on GitHub
-      link: https://github.com/strawgate/memagent
-      icon: external
+    - text: How It Works
+      link: /architecture/
+      icon: open-book
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
+logfwd replaces complex log pipelines with a single binary that reads, transforms, and forwards logs. Write standard SQL to control exactly what gets shipped — no vendor DSL, no agents to coordinate, no runtime dependencies.
+
 <CardGrid>
   <Card title="SQL Transforms" icon="pencil">
-    Write standard SQL to filter, reshape, and enrich every batch. No vendor DSL — just `SELECT`, `WHERE`, `GROUP BY`, and custom UDFs.
+    Filter, reshape, and enrich every batch with standard SQL. `SELECT`, `WHERE`, `GROUP BY`, JOINs, and custom UDFs like `grok()`, `regexp_extract()`, and `geo_lookup()`.
   </Card>
   <Card title="SIMD-Powered Scanner" icon="rocket">
-    Parse JSON and CRI at 2.8M lines/sec per core. Zero-copy Arrow RecordBatches via platform-native SIMD (AVX2, SSE2, NEON).
+    Parse JSON and CRI at ~2.8M lines/sec per core. Zero-copy Arrow RecordBatches via platform-native SIMD (AVX2, SSE2, NEON).
   </Card>
   <Card title="Single Binary" icon="seti:rust">
     One static binary, no runtime dependencies. Download, configure, run. Ships as a container image for Kubernetes DaemonSets.
   </Card>
-  <Card title="OTLP Native" icon="open-book">
+  <Card title="OTLP Native" icon="star">
     First-class OpenTelemetry support. Protobuf encoding with zstd compression. Works with any OTLP-compatible collector.
   </Card>
 </CardGrid>
@@ -41,10 +43,10 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="Quick Start" icon="right-arrow">
     [Working pipeline in 10 minutes](/getting-started/quickstart/)
   </Card>
+  <Card title="How It Works" icon="puzzle">
+    [Interactive pipeline architecture](/architecture/)
+  </Card>
   <Card title="Configuration" icon="setting">
     [Complete YAML reference](/configuration/reference/)
-  </Card>
-  <Card title="Kubernetes" icon="cloud">
-    [DaemonSet deployment guide](/deployment/kubernetes/)
   </Card>
 </CardGrid>

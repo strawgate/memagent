@@ -48,6 +48,7 @@ export default defineConfig({
         {
           label: "Architecture",
           items: [
+            { label: "How logfwd Works", slug: "architecture" },
             { label: "Pipeline Design", slug: "architecture/pipeline" },
             { label: "Scanner", slug: "architecture/scanner" },
             { label: "Performance", slug: "architecture/performance" },
