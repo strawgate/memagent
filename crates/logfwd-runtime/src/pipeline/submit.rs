@@ -172,7 +172,7 @@ impl Pipeline {
 
         if internal_faults::submit_before_pool_should_hold_and_shutdown() {
             tracing::warn!("internal failpoint: submit pre-pool hold+shutdown");
-            self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Hold);
+            self.ack_all_tickets(Some(batch_id), sending, super::checkpoint_policy::TicketDisposition::Hold);
             self.metrics.finish_active_batch(batch_id);
             shutdown.cancel();
             // Keep the select-loop on the normal shutdown path so run_async can
