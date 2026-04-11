@@ -40,7 +40,7 @@ pub const fn reduce_output_health(
             | ComponentHealth::Stopping
             | ComponentHealth::Stopped
             | ComponentHealth::Failed => current,
-            _ => ComponentHealth::Starting,
+            ComponentHealth::Starting => ComponentHealth::Starting,
         },
         OutputHealthEvent::StartupSucceeded => match current {
             ComponentHealth::Degraded => ComponentHealth::Degraded,

@@ -125,7 +125,7 @@ pub(crate) fn is_null(batch: &RecordBatch, variant: &ColVariant, row: usize) -> 
 /// Return a reference to the underlying Arrow array for a `ColVariant`.
 pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> Option<&'b dyn Array> {
     match variant {
-        ColVariant::Flat { col_idx, .. } => batch.columns().get(*col_idx).map(|col| col.as_ref()),
+        ColVariant::Flat { col_idx, .. } => batch.columns().get(*col_idx).map(AsRef::as_ref),
         ColVariant::StructField {
             struct_col_idx,
             field_idx,
@@ -135,7 +135,7 @@ pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> Opt
                 .columns()
                 .get(*struct_col_idx)
                 .and_then(|col| col.as_any().downcast_ref::<StructArray>())?;
-            sa.columns().get(*field_idx).map(|child| child.as_ref())
+            sa.columns().get(*field_idx).map(AsRef::as_ref)
         }
     }
 }
