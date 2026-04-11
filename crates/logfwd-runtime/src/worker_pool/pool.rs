@@ -198,7 +198,7 @@ pub struct OutputWorkerPool {
     cancel: CancellationToken,
     /// Tracks all spawned worker tasks for clean drain.
     join_set: JoinSet<()>,
-    /// Per-worker channel capacity. Capacity 2 allows one item buffered
+    /// Per-worker channel capacity. Capacity 1 allows one item buffered
     /// while the worker is processing another — keeps throughput high while
     /// preserving work consolidation (worker "appears full" quickly).
     channel_capacity: usize,
@@ -243,6 +243,9 @@ impl OutputWorkerPool {
             ack_tx,
             cancel: CancellationToken::new(),
             join_set: JoinSet::new(),
+            // Capacity 1 means a worker can process one item while one extra
+            // item is queued, which keeps throughput high without overfilling
+            // a single worker queue.
             channel_capacity: 1,
             max_workers,
             idle_timeout,
@@ -272,29 +275,7 @@ impl OutputWorkerPool {
             // silently losing it. This keeps the at-least-once invariant intact
             // even for callers that mistakenly submit after drain.
             tracing::warn!("worker_pool: submit after drain, rejecting batch immediately");
-            let ticket_count = item.tickets.len();
-            if self
-                .ack_tx
-                .send(AckItem {
-                    tickets: item.tickets,
-                    outcome: DeliveryOutcome::PoolClosed,
-                    num_rows: item.num_rows,
-                    submitted_at: item.submitted_at,
-                    scan_ns: item.scan_ns,
-                    transform_ns: item.transform_ns,
-                    output_ns: 0,
-                    queue_wait_ns: 0,
-                    send_latency_ns: 0,
-                    batch_id: item.batch_id,
-                    output_name: self.factory.name().to_string(),
-                })
-                .is_err()
-            {
-                tracing::error!(
-                    ticket_count,
-                    "worker_pool: ack channel closed, batch lost permanently"
-                );
-            }
+            self.reject_work_item(item, DeliveryOutcome::PoolClosed);
             return;
         }
 
@@ -326,10 +307,32 @@ impl OutputWorkerPool {
         // --- Step 2: spawn a new worker if under limit ---
         if self.workers.len() < self.max_workers {
             if let Ok(handle) = self.spawn_worker() {
-                // New channel: guaranteed to have space.
-                let _ = handle.tx.try_send(msg);
-                self.workers.push_front(handle);
-                return;
+                match handle.tx.try_send(msg) {
+                    Ok(()) => {
+                        self.workers.push_front(handle);
+                        return;
+                    }
+                    Err(mpsc::error::TrySendError::Full(returned)) => {
+                        // A freshly created channel should never be full, but
+                        // if this invariant is violated preserve correctness by
+                        // falling back to the existing back-pressure path.
+                        // Push the handle back so the spawned worker task is not leaked.
+                        self.workers.push_front(handle);
+                        tracing::warn!(
+                            "worker_pool: newly spawned worker channel reported full; falling back to wait path"
+                        );
+                        msg = returned;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(returned)) => {
+                        tracing::warn!(
+                            "worker_pool: newly spawned worker channel closed before first send"
+                        );
+                        if let WorkerMsg::Work(item) = returned {
+                            self.reject_work_item(item, DeliveryOutcome::WorkerChannelClosed);
+                        }
+                        return;
+                    }
+                }
             }
             // Sink factory failed — fall through to back-pressure path.
         }
@@ -342,29 +345,7 @@ impl OutputWorkerPool {
             if let Err(mpsc::error::SendError(WorkerMsg::Work(item))) = tx.send(msg).await {
                 // Rare race: worker closed its channel between clone and send.
                 // Reject explicitly rather than silently dropping.
-                let ticket_count = item.tickets.len();
-                if self
-                    .ack_tx
-                    .send(AckItem {
-                        tickets: item.tickets,
-                        outcome: DeliveryOutcome::WorkerChannelClosed,
-                        num_rows: item.num_rows,
-                        submitted_at: item.submitted_at,
-                        scan_ns: item.scan_ns,
-                        transform_ns: item.transform_ns,
-                        output_ns: 0,
-                        queue_wait_ns: 0,
-                        send_latency_ns: 0,
-                        batch_id: item.batch_id,
-                        output_name: self.factory.name().to_string(),
-                    })
-                    .is_err()
-                {
-                    tracing::error!(
-                        ticket_count,
-                        "worker_pool: ack channel closed, batch lost permanently"
-                    );
-                }
+                self.reject_work_item(item, DeliveryOutcome::WorkerChannelClosed);
             }
             return;
         }
@@ -374,29 +355,33 @@ impl OutputWorkerPool {
         // after its first worker exits). Silently dropping would lose the ack.
         if let WorkerMsg::Work(item) = msg {
             tracing::error!("worker_pool: no workers available, rejecting batch");
-            let ticket_count = item.tickets.len();
-            if self
-                .ack_tx
-                .send(AckItem {
-                    tickets: item.tickets,
-                    outcome: DeliveryOutcome::NoWorkersAvailable,
-                    num_rows: item.num_rows,
-                    submitted_at: item.submitted_at,
-                    scan_ns: item.scan_ns,
-                    transform_ns: item.transform_ns,
-                    output_ns: 0,
-                    queue_wait_ns: 0,
-                    send_latency_ns: 0,
-                    batch_id: item.batch_id,
-                    output_name: self.factory.name().to_string(),
-                })
-                .is_err()
-            {
-                tracing::error!(
-                    ticket_count,
-                    "worker_pool: ack channel closed, batch lost permanently"
-                );
-            }
+            self.reject_work_item(item, DeliveryOutcome::NoWorkersAvailable);
+        }
+    }
+
+    fn reject_work_item(&self, item: WorkItem, outcome: DeliveryOutcome) {
+        let ticket_count = item.tickets.len();
+        if self
+            .ack_tx
+            .send(AckItem {
+                tickets: item.tickets,
+                outcome,
+                num_rows: item.num_rows,
+                submitted_at: item.submitted_at,
+                scan_ns: item.scan_ns,
+                transform_ns: item.transform_ns,
+                output_ns: 0,
+                queue_wait_ns: 0,
+                send_latency_ns: 0,
+                batch_id: item.batch_id,
+                output_name: self.factory.name().to_string(),
+            })
+            .is_err()
+        {
+            tracing::error!(
+                ticket_count,
+                "worker_pool: ack channel closed, batch lost permanently"
+            );
         }
     }
 
@@ -1508,6 +1493,25 @@ mod tests {
             capture.contains_event_field("error", "503"),
             "expected logged error to include HTTP 503 detail"
         );
+    }
+
+    #[tokio::test]
+    async fn reject_work_item_emits_expected_ack() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let factory = Arc::new(CountingSinkFactory {
+            calls,
+            fail: false,
+            fail_shutdown: false,
+        });
+        let mut pool = OutputWorkerPool::new(factory, 1, Duration::from_secs(60), test_metrics());
+
+        pool.reject_work_item(empty_work_item(), DeliveryOutcome::WorkerChannelClosed);
+
+        let ack = pool
+            .ack_rx
+            .try_recv()
+            .expect("expected ack from reject_work_item");
+        assert_eq!(ack.outcome, DeliveryOutcome::WorkerChannelClosed);
     }
 
     #[tokio::test]

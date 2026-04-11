@@ -120,6 +120,16 @@ struct InputState {
     stats: Arc<ComponentStats>,
 }
 
+const DEFAULT_PASSTHROUGH_SQL: &str = "SELECT * FROM logs";
+
+fn assert_stateless_processor(processor: &dyn Processor) {
+    assert!(
+        !processor.is_stateful(),
+        "stateful processors are not yet supported: checkpointing path is incomplete \
+         (see #1404). Register only stateless processors."
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
@@ -180,8 +190,8 @@ impl Pipeline {
         });
         // Keep input_transforms in sync: one transform per input.
         while self.input_transforms.len() < self.inputs.len() {
-            let transform =
-                SqlTransform::new("SELECT * FROM logs").expect("default passthrough SQL");
+            let transform = SqlTransform::new(DEFAULT_PASSTHROUGH_SQL)
+                .expect("default passthrough SQL must compile");
             let scanner = Scanner::new(transform.scan_config());
             self.input_transforms.push(InputTransform {
                 scanner,
@@ -206,11 +216,7 @@ impl Pipeline {
     /// require deferred-ACK checkpointing support that is not yet implemented
     /// (tracked in #1404). Register only stateless processors until then.
     pub fn with_processor(mut self, processor: Box<dyn Processor>) -> Self {
-        assert!(
-            !processor.is_stateful(),
-            "stateful processors are not yet supported: checkpointing path is incomplete \
-             (see #1404). Register only stateless processors."
-        );
+        assert_stateless_processor(processor.as_ref());
         self.processors.push(processor);
         self
     }
@@ -225,11 +231,7 @@ impl Pipeline {
     /// See [`with_processor`](Self::with_processor) for details.
     pub fn with_processors(mut self, processors: Vec<Box<dyn Processor>>) -> Self {
         for p in &processors {
-            assert!(
-                !p.is_stateful(),
-                "stateful processors are not yet supported: checkpointing path is incomplete \
-                 (see #1404). Register only stateless processors."
-            );
+            assert_stateless_processor(p.as_ref());
         }
         self.processors.extend(processors);
         self
@@ -349,11 +351,16 @@ impl Pipeline {
     }
 
     /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
-    /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
     ///
     /// Delegates to `run_async` on a tokio runtime. The sync interface exists
     /// for test convenience; production uses `run_async` directly.
     pub fn run(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
+        if self.batch_timeout.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "batch_timeout must be greater than zero",
+            ));
+        }
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         builder.enable_all();
         if let Ok(threads_raw) = std::env::var("TOKIO_WORKER_THREADS")
@@ -382,6 +389,12 @@ impl Pipeline {
     ///   when ureq is replaced with an async HTTP client.
     /// - self.inputs.drain(..) makes this method non-reentrant.
     pub async fn run_async(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
+        if self.batch_timeout.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "batch_timeout must be greater than zero",
+            ));
+        }
         assert_eq!(
             self.inputs.len(),
             self.input_transforms.len(),
@@ -451,6 +464,7 @@ impl Pipeline {
 
         let mut heartbeat_interval = tokio::time::interval(self.batch_timeout);
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let has_stateful_processors = self.processors.iter().any(|p| p.is_stateful());
 
         let mut should_drain_input_channel = true;
         loop {
@@ -487,9 +501,7 @@ impl Pipeline {
                     // Heartbeat for stateful processors: send an empty batch through
                     // the chain so stateful processors can check their internal timers
                     // and emit timed-out data.
-                    if !self.processors.is_empty()
-                        && self.processors.iter().any(|p| p.is_stateful())
-                    {
+                    if has_stateful_processors {
                         let empty = RecordBatch::new_empty(
                             Arc::new(arrow::datatypes::Schema::empty()),
                         );
@@ -544,7 +556,7 @@ impl Pipeline {
 
         // Cascading flush: drain all buffered state from stateful processors.
         // Each processor's flushed output is fed through downstream processors.
-        if !self.processors.is_empty() {
+        if has_stateful_processors {
             let meta = BatchMetadata {
                 resource_attrs: Arc::clone(&self.resource_attrs),
                 observed_time_ns: now_nanos(),
@@ -1189,6 +1201,42 @@ output:
     }
 
     #[test]
+    #[should_panic(expected = "stateful processors are not yet supported")]
+    fn test_with_processor_rejects_stateful_processors() {
+        #[derive(Debug)]
+        struct StatefulProcessor;
+
+        impl Processor for StatefulProcessor {
+            fn process(
+                &mut self,
+                batch: RecordBatch,
+                _meta: &BatchMetadata,
+            ) -> Result<smallvec::SmallVec<[RecordBatch; 1]>, crate::processor::ProcessorError>
+            {
+                Ok(smallvec::smallvec![batch])
+            }
+
+            fn flush(&mut self) -> smallvec::SmallVec<[RecordBatch; 1]> {
+                smallvec::SmallVec::new()
+            }
+
+            fn name(&self) -> &'static str {
+                "stateful"
+            }
+
+            fn is_stateful(&self) -> bool {
+                true
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("stateful.log");
+        std::fs::write(&log_path, b"{\"ok\":true}\n").unwrap();
+        let pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        let _ = pipeline.with_processor(Box::new(StatefulProcessor));
+    }
+
+    #[test]
     fn test_pipeline_run_one_batch() {
         use std::sync::atomic::Ordering;
 
@@ -1444,6 +1492,27 @@ output:
         assert!(
             lines_in >= 100,
             "expected at least 100 lines through transform, got {lines_in}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_zero_batch_timeout_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("zero_timeout.log");
+        std::fs::write(&log_path, b"{\"msg\":\"x\"}\n").unwrap();
+
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        pipeline.set_batch_timeout(Duration::ZERO);
+
+        let shutdown = CancellationToken::new();
+        let err = pipeline
+            .run_async(&shutdown)
+            .await
+            .expect_err("zero batch_timeout must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("batch_timeout"),
+            "unexpected error: {err}"
         );
     }
 

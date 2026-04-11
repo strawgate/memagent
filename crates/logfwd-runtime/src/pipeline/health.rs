@@ -169,6 +169,17 @@ mod tests {
         }
 
         #[test]
+        fn stopping_state_never_recovers_to_healthy_or_starting(
+            events in proptest::collection::vec(arb_event(), 0..16)
+        ) {
+            let out = apply_events(ComponentHealth::Stopping, &events);
+            prop_assert!(matches!(
+                out,
+                ComponentHealth::Stopping | ComponentHealth::Stopped | ComponentHealth::Failed
+            ));
+        }
+
+        #[test]
         fn shutdown_requested_never_recovers_to_ready_without_full_restart(
             events in proptest::collection::vec(arb_event(), 0..16)
         ) {

@@ -9,6 +9,23 @@ const fn should_retry_flush(attempt: u32, max_attempts: u32) -> bool {
     attempt < max_attempts.saturating_sub(1)
 }
 
+#[must_use]
+const fn is_retryable_flush_error(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::WriteZero
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::BrokenPipe
+    )
+}
+
 /// Flush checkpoint store with bounded retry (3 attempts, 100ms between).
 ///
 /// The final shutdown flush is the last chance to persist checkpoint progress.
@@ -70,7 +87,8 @@ pub(super) async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore)
                     },
                 )
                 .await;
-                if should_retry_flush(attempt, MAX_ATTEMPTS) {
+                let retryable = is_retryable_flush_error(e.kind());
+                if retryable && should_retry_flush(attempt, MAX_ATTEMPTS) {
                     tracing::warn!(
                         attempt,
                         error = %e,
@@ -80,10 +98,12 @@ pub(super) async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore)
                 } else {
                     tracing::error!(
                         attempts = MAX_ATTEMPTS,
+                        retryable,
                         error = %e,
                         "pipeline: checkpoint flush failed after all retries — \
                          checkpoint progress from this run may be lost"
                     );
+                    return;
                 }
             }
         }
@@ -99,7 +119,7 @@ mod tests {
     use logfwd_io::checkpoint::{CheckpointStore, SourceCheckpoint};
     use proptest::prelude::*;
 
-    use super::{flush_checkpoint_with_retry, should_retry_flush};
+    use super::{flush_checkpoint_with_retry, is_retryable_flush_error, should_retry_flush};
 
     trait RetryFaultHook {
         fn fail_flush_attempt(&self, attempt: u32) -> bool;
@@ -190,7 +210,7 @@ mod tests {
 
         fn flush(&mut self) -> io::Result<()> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            Err(io::Error::other("flush failed"))
+            Err(io::Error::new(io::ErrorKind::TimedOut, "flush failed"))
         }
 
         fn load(&self, _source_id: u64) -> Option<SourceCheckpoint> {
@@ -214,6 +234,15 @@ mod tests {
         assert!(!should_retry_flush(0, 0));
     }
 
+    #[test]
+    fn retryable_error_kind_classification_matches_policy() {
+        assert!(is_retryable_flush_error(io::ErrorKind::Interrupted));
+        assert!(is_retryable_flush_error(io::ErrorKind::TimedOut));
+        assert!(is_retryable_flush_error(io::ErrorKind::WriteZero));
+        assert!(!is_retryable_flush_error(io::ErrorKind::InvalidInput));
+        assert!(!is_retryable_flush_error(io::ErrorKind::PermissionDenied));
+    }
+
     proptest! {
         #[test]
         fn retry_decision_equivalent_to_next_attempt_check(
@@ -223,12 +252,30 @@ mod tests {
             let expected = max_attempts > 0 && attempt.saturating_add(1) < max_attempts;
             prop_assert_eq!(should_retry_flush(attempt, max_attempts), expected);
         }
+
+        #[test]
+        fn retryable_error_kind_only_for_transient_kinds(kind in any::<io::ErrorKind>()) {
+            let expected = matches!(
+                kind,
+                io::ErrorKind::Interrupted
+                    | io::ErrorKind::WouldBlock
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::WriteZero
+                    | io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::NotConnected
+                    | io::ErrorKind::BrokenPipe
+            );
+            prop_assert_eq!(is_retryable_flush_error(kind), expected);
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn flush_stops_after_first_success() {
         let mut store = SequenceCheckpointStore::new(vec![
-            Err(io::Error::other("first failure")),
+            Err(io::Error::new(io::ErrorKind::TimedOut, "first failure")),
             Ok(()),
             Err(io::Error::other("must not be observed")),
         ]);
@@ -285,11 +332,28 @@ mod tests {
         fail::remove("runtime::pipeline::checkpoint_flush::before_flush");
         scenario.teardown();
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn flush_does_not_retry_non_retryable_failures() {
+        let mut store = SequenceCheckpointStore::new(vec![
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "permission denied",
+            )),
+            Ok(()),
+        ]);
+
+        flush_checkpoint_with_retry(&mut store).await;
+        assert_eq!(
+            store.calls, 1,
+            "flush should stop immediately for non-retryable failures"
+        );
+    }
 }
 
 #[cfg(kani)]
 mod verification {
-    use super::should_retry_flush;
+    use super::{is_retryable_flush_error, should_retry_flush};
 
     #[kani::proof]
     fn verify_zero_or_one_attempt_never_retries() {
@@ -314,5 +378,24 @@ mod verification {
         assert_eq!(should_retry_flush(attempt, max_attempts), expected);
         kani::cover!(should_retry_flush(0, 2), "retry path reachable");
         kani::cover!(!should_retry_flush(1, 2), "terminal-attempt path reachable");
+    }
+
+    #[kani::proof]
+    fn verify_retryable_flush_error_classification() {
+        let kind = kani::any::<std::io::ErrorKind>();
+        let expected = matches!(
+            kind,
+            std::io::ErrorKind::Interrupted
+                | std::io::ErrorKind::WouldBlock
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::WriteZero
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(is_retryable_flush_error(kind), expected);
     }
 }
