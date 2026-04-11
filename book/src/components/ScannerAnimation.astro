@@ -49,6 +49,7 @@ const extractRanges = {
       <button class="sa-pill" data-step="strings" data-index="2">3</button>
       <button class="sa-pill" data-step="result" data-index="3">4</button>
       <button class="sa-pill" data-step="extract" data-index="4">5</button>
+      <button class="sa-pill" data-step="complete" data-index="5">6</button>
     </div>
   </div>
 
@@ -107,6 +108,26 @@ const extractRanges = {
     </p>
   </div>
 
+  {/* Step 6: All fields extracted — Arrow RecordBatch */}
+  <div class="sa-complete" data-sa-complete hidden>
+    <div class="sa-complete-head">
+      <strong>Arrow RecordBatch</strong>
+      <span>4 columns, 1 row — ready for SQL</span>
+    </div>
+    <table class="sa-complete-table">
+      <thead>
+        <tr><th>level <span>Utf8</span></th><th>message <span>Utf8</span></th><th>status <span>Int64</span></th><th>duration_ms <span>Float64</span></th></tr>
+      </thead>
+      <tbody>
+        <tr><td>ERROR</td><td>request failed</td><td>503</td><td>42.7</td></tr>
+      </tbody>
+    </table>
+    <p class="sa-complete-desc">
+      All fields extracted in a single pass. The result is an Apache Arrow <strong>RecordBatch</strong> — columnar, typed, zero-copy.
+      This batch goes directly to DataFusion for SQL execution. No serialization, no intermediate format.
+    </p>
+  </div>
+
   {/* Legend */}
   <div class="sa-legend">
     <span class="sa-legend-item"><span class="sa-swatch sc-quote"></span> Quote</span>
@@ -127,7 +148,7 @@ const extractRanges = {
     margin: 1.5rem 0;
   }
 
-  .sa :is(.sa-playbar, .sa-explanation, .sa-byte-grid, .sa-bitmask, .sa-bitmask-bits, .sa-legend, .sa-step-pills, .sa-extract) > * {
+  .sa :is(.sa-playbar, .sa-explanation, .sa-byte-grid, .sa-bitmask, .sa-bitmask-bits, .sa-legend, .sa-step-pills, .sa-extract, .sa-complete, .sa-complete-head) > * {
     margin-top: 0 !important;
   }
 
@@ -332,6 +353,55 @@ const extractRanges = {
   .sa-extract-desc { margin: 0; font-size: 0.78rem; line-height: 1.5; }
   .sa-extract-desc code { font-size: 0.72rem; }
 
+  /* ── Step 6: Complete ── */
+  .sa-complete {
+    padding: 0.75rem 1rem;
+    background: color-mix(in srgb, var(--sa-accent) 5%, var(--sa-bg));
+    border: 1px solid color-mix(in srgb, var(--sa-accent) 20%, transparent);
+    border-radius: 8px;
+    margin-top: 0.5rem;
+    animation: sa-fadein 0.3s ease-out;
+  }
+  .sa-complete > * { margin-top: 0 !important; }
+  .sa-complete-head {
+    display: flex; align-items: baseline; gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+  .sa-complete-head strong { font-size: 0.85rem; color: var(--sa-accent); }
+  .sa-complete-head span { font-size: 0.72rem; color: var(--sa-muted); }
+
+  .sa-complete-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+    margin-bottom: 0.5rem;
+  }
+  .sa-complete-table th {
+    text-align: left;
+    padding: 0.35rem 0.6rem;
+    border-bottom: 2px solid var(--sa-accent);
+    font-weight: 700;
+    font-size: 0.75rem;
+  }
+  .sa-complete-table th span {
+    font-weight: 400;
+    font-size: 0.6rem;
+    color: var(--sa-muted);
+    margin-left: 0.25rem;
+  }
+  .sa-complete-table td {
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--sa-border);
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 0.75rem;
+  }
+  .sa-complete-desc { margin: 0; font-size: 0.78rem; line-height: 1.5; }
+
+  /* Step 6: hide byte grid, show table */
+  .sa[data-step="complete"] .sa-byte-grid { display: none; }
+  .sa[data-step="complete"] .sa-bitmask { display: none; }
+  .sa[data-step="complete"] .sa-legend { display: none; }
+
   @keyframes sa-fadein {
     from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
@@ -356,6 +426,7 @@ const extractRanges = {
     const byteEls = root.querySelectorAll<HTMLDivElement>('.sa-byte');
     const bits = root.querySelectorAll<HTMLSpanElement>('.sa-bit');
     const extract = root.querySelector<HTMLDivElement>('[data-sa-extract]')!;
+    const complete = root.querySelector<HTMLDivElement>('[data-sa-complete]')!;
     const pills = root.querySelectorAll<HTMLButtonElement>('.sa-pill');
     const playBtn = root.querySelector<HTMLButtonElement>('[data-sa-play]')!;
     const progressFill = root.querySelector<HTMLDivElement>('[data-sa-progress]')!;
@@ -373,6 +444,8 @@ const extractRanges = {
         desc: 'The final bitmask: only structural characters <strong>outside</strong> strings survive. Finding the next colon or comma is a single <code>trailing_zeros</code> instruction — O(1) instead of scanning byte-by-byte.' },
       { id: 'extract', title: 'Step 5: Field extraction',
         desc: 'The field extractor uses the bitmask to jump directly to each colon, read the key to the left and value to the right. Zero scanning — each field is extracted in constant time.' },
+      { id: 'complete', title: 'Step 6: Arrow RecordBatch',
+        desc: 'All fields extracted in one pass. The result is a typed, columnar Arrow RecordBatch — ready for SQL. No serialization step, no intermediate format. This batch goes straight to DataFusion.' },
     ];
 
     let currentStep = 0;
@@ -407,17 +480,19 @@ const extractRanges = {
       explanation.innerHTML = `<strong>${step.title}</strong><p>${step.desc}</p>`;
       progressFill.style.width = `${((index + 1) / stepData.length) * 100}%`;
 
+      // Hide both result panels by default
+      extract.hidden = true;
+      complete.hidden = true;
+
       if (step.id === 'raw') {
         // Step 1: plain bytes, no colors, empty bitmask
         stripColors();
         bits.forEach(b => { b.textContent = '·'; b.classList.remove('sa-bit--on'); });
-        extract.hidden = true;
 
       } else if (step.id === 'detect') {
         // Step 2: sweep — color each byte AND its bitmask bit simultaneously
         stripColors();
         bits.forEach(b => { b.textContent = '·'; b.classList.remove('sa-bit--on'); });
-        extract.hidden = true;
 
         byteEls.forEach((el, i) => {
           const cls = el.dataset.cls;
@@ -441,6 +516,7 @@ const extractRanges = {
           b.classList.toggle('sa-bit--on', isStruct);
         });
         extract.hidden = step.id !== 'extract';
+        complete.hidden = step.id !== 'complete';
       }
     }
 
