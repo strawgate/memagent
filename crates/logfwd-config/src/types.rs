@@ -49,6 +49,8 @@ pub enum InputType {
     #[serde(rename = "windows_ebpf_sensor", alias = "windows_sensor_beta")]
     WindowsEbpfSensor,
     ArrowIpc,
+    /// Journald (systemd journal) input via `journalctl` subprocess.
+    Journald,
 }
 
 impl fmt::Display for InputType {
@@ -64,6 +66,7 @@ impl fmt::Display for InputType {
             InputType::MacosEsSensor => f.write_str("macos_es_sensor"),
             InputType::WindowsEbpfSensor => f.write_str("windows_ebpf_sensor"),
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
+            InputType::Journald => f.write_str("journald"),
         }
     }
 }
@@ -284,6 +287,36 @@ pub struct TlsInputConfig {
     pub require_client_auth: bool,
 }
 
+/// Journald (systemd journal) input configuration.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct JournaldInputConfig {
+    /// Systemd units to include. If empty, all units are collected.
+    /// Unit names without a `.` are suffixed with `.service` automatically.
+    #[serde(default)]
+    pub include_units: Vec<String>,
+    /// Systemd units to exclude.
+    #[serde(default)]
+    pub exclude_units: Vec<String>,
+    /// Only include entries from the current boot (default: true).
+    #[serde(default = "default_true")]
+    pub current_boot_only: bool,
+    /// Only include entries appended after the receiver starts (default: false).
+    /// When false, reads all history from the current boot.
+    #[serde(default)]
+    pub since_now: bool,
+    /// Path to `journalctl` binary. Defaults to `journalctl` (found via PATH).
+    pub journalctl_path: Option<String>,
+    /// Custom journal directory (passed as `--directory=<path>`).
+    pub journal_directory: Option<String>,
+    /// Journal namespace (passed as `--namespace=<ns>`).
+    pub journal_namespace: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputConfig {
@@ -316,6 +349,8 @@ pub struct InputConfig {
     pub sql: Option<String>,
     #[serde(default)]
     pub tls: Option<TlsInputConfig>,
+    #[serde(default)]
+    pub journald: Option<JournaldInputConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

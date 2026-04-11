@@ -359,6 +359,26 @@ pub(super) fn build_input_state(
                 stats,
             });
         }
+        InputType::Journald => {
+            use logfwd_io::journald_input::{JournaldConfig, JournaldInput};
+
+            let jd_cfg = cfg.journald.as_ref();
+            let config = JournaldConfig {
+                include_units: jd_cfg.map(|c| c.include_units.clone()).unwrap_or_default(),
+                exclude_units: jd_cfg.map(|c| c.exclude_units.clone()).unwrap_or_default(),
+                current_boot_only: jd_cfg.is_none_or(|c| c.current_boot_only),
+                since_now: jd_cfg.is_some_and(|c| c.since_now),
+                journalctl_path: jd_cfg
+                    .and_then(|c| c.journalctl_path.clone())
+                    .unwrap_or_else(|| "journalctl".to_string()),
+                journal_directory: jd_cfg.and_then(|c| c.journal_directory.clone()),
+                journal_namespace: jd_cfg.and_then(|c| c.journal_namespace.clone()),
+            };
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            let source = JournaldInput::new(name, config, Arc::clone(&stats))
+                .map_err(|e| format!("input '{name}': failed to start journald receiver: {e}"))?;
+            (Box::new(source), format, 4 * 1024 * 1024)
+        }
         _ => {
             return Err(format!(
                 "input '{name}': type {:?} not yet supported",

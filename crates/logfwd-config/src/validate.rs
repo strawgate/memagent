@@ -208,6 +208,17 @@ impl Config {
                         | InputType::LinuxEbpfSensor
                         | InputType::MacosEsSensor
                         | InputType::WindowsEbpfSensor => {}
+                        InputType::Journald => {
+                            if let Some(jd) = &input.journald {
+                                for unit in &jd.include_units {
+                                    if jd.exclude_units.contains(unit) {
+                                        return Err(ConfigError::Validation(format!(
+                                            "pipeline '{name}' input '{label}': unit '{unit}' appears in both include_units and exclude_units"
+                                        )));
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Reject fields that don't apply to this input type.
@@ -236,6 +247,11 @@ impl Config {
                             if input.sensor.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
                                 )));
                             }
                         }
@@ -288,6 +304,11 @@ impl Config {
                             if input.sensor.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
                                 )));
                             }
                         }
@@ -359,6 +380,11 @@ impl Config {
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                                 )));
                             }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
+                                )));
+                            }
                         }
                         InputType::ArrowIpc => {
                             if input.tls.is_some() {
@@ -421,6 +447,11 @@ impl Config {
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                                 )));
                             }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
+                                )));
+                            }
                         }
                         InputType::Http => {
                             if input.tls.is_some() {
@@ -471,6 +502,11 @@ impl Config {
                             if input.sensor.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
                                 )));
                             }
                             if let Some(http) = &input.http {
@@ -554,6 +590,11 @@ impl Config {
                             if input.sensor.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
                                 )));
                             }
                             if input.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
@@ -718,6 +759,11 @@ impl Config {
                                     "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
                                 )));
                             }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
+                                )));
+                            }
                             if input.format.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': sensor inputs do not support 'format' (Arrow-native input)"
@@ -769,6 +815,68 @@ impl Config {
                                         )));
                                     }
                                 }
+                            }
+                        }
+                        InputType::Journald => {
+                            if input.listen.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'listen' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.path.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'path' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.tls.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'tls' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.generator.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
+                                )));
+                            }
+                            if input.http.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
+                                )));
+                            }
+                            if input.sensor.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.max_open_files.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'max_open_files' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.glob_rescan_interval_ms.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.poll_interval_ms.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'poll_interval_ms' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.read_buf_size.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'read_buf_size' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.per_file_read_budget_bytes.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.adaptive_fast_polls_max.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'adaptive_fast_polls_max' is not supported for journald inputs"
+                                )));
                             }
                         }
                     }
