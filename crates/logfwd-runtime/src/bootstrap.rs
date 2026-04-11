@@ -599,18 +599,58 @@ fn build_tracer_provider(
 }
 
 fn redact_url(url: &str) -> String {
-    let after_scheme = url.find("://").map_or(0, |i| i + 3);
-    let rest = &url[after_scheme..];
-    let host_start = rest.find('@').map_or(0, |i| i + 1);
-    let authority_and_path = &rest[host_start..];
-    let host_end = authority_and_path
-        .find(['/', '?', '#'])
-        .unwrap_or(authority_and_path.len());
-    let host = &authority_and_path[..host_end];
-    if host.is_empty() {
+    let (scheme, authority_and_tail) = match url.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, url),
+    };
+
+    let authority = authority_and_tail
+        .split_once(['/', '?', '#'])
+        .map_or(authority_and_tail, |(head, _)| head);
+    let (had_userinfo, host) = match authority.rsplit_once('@') {
+        Some((_, host)) => (true, host),
+        None => (false, authority),
+    };
+
+    if host.is_empty() && !had_userinfo {
         return url.to_string();
     }
-    format!("{}://{}", &url[..after_scheme.saturating_sub(3)], host)
+
+    match scheme {
+        Some(scheme) => format!("{scheme}://{host}"),
+        None => host.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_url;
+
+    #[test]
+    fn redact_url_strips_path_and_credentials() {
+        assert_eq!(
+            redact_url("http://user:pass@example.com:4318/v1/traces?api_key=secret"),
+            "http://example.com:4318"
+        );
+    }
+
+    #[test]
+    fn redact_url_keeps_host_for_no_scheme_endpoint() {
+        assert_eq!(
+            redact_url("collector.local:4318/v1/traces"),
+            "collector.local:4318"
+        );
+    }
+
+    #[test]
+    fn redact_url_returns_original_for_hostless_value() {
+        assert_eq!(redact_url("https:///v1/traces"), "https:///v1/traces");
+    }
+
+    #[test]
+    fn redact_url_strips_credentials_when_host_is_empty() {
+        assert_eq!(redact_url("http://user:pass@/path"), "http://");
+    }
 }
 
 #[cfg(unix)]
