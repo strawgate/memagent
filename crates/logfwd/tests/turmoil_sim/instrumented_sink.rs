@@ -4,6 +4,7 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -41,6 +42,7 @@ pub struct InstrumentedSink {
     call_index: usize,
     delivered_rows: Arc<AtomicU64>,
     call_count: Arc<AtomicU64>,
+    outcomes: Arc<Mutex<Vec<SinkOutcome>>>,
     trace: Option<TraceRecorder>,
 }
 
@@ -53,6 +55,7 @@ impl InstrumentedSink {
             call_index: 0,
             delivered_rows: Arc::new(AtomicU64::new(0)),
             call_count: Arc::new(AtomicU64::new(0)),
+            outcomes: Arc::new(Mutex::new(Vec::new())),
             trace: None,
         }
     }
@@ -70,6 +73,11 @@ impl InstrumentedSink {
     /// Get the shared counter for total calls.
     pub fn call_counter(&self) -> Arc<AtomicU64> {
         self.call_count.clone()
+    }
+
+    /// Get the shared sink outcome log in observed call order.
+    pub fn outcome_log(&self) -> Arc<Mutex<Vec<SinkOutcome>>> {
+        self.outcomes.clone()
     }
 
     /// Attach a trace recorder that receives sink result events.
@@ -98,9 +106,10 @@ impl InstrumentedSink {
 /// the same delivery and call counters. The factory pops scripts from a queue;
 /// when exhausted, new workers get an always-succeed sink.
 pub struct InstrumentedSinkFactory {
-    scripts: std::sync::Mutex<Vec<Vec<FailureAction>>>,
+    scripts: Mutex<Vec<Vec<FailureAction>>>,
     delivered_rows: Arc<AtomicU64>,
     call_count: Arc<AtomicU64>,
+    outcomes: Arc<Mutex<Vec<SinkOutcome>>>,
     trace: Option<TraceRecorder>,
 }
 
@@ -111,9 +120,10 @@ impl InstrumentedSinkFactory {
         let delivered_rows = Arc::new(AtomicU64::new(0));
         let call_count = Arc::new(AtomicU64::new(0));
         Self {
-            scripts: std::sync::Mutex::new(per_worker_scripts),
+            scripts: Mutex::new(per_worker_scripts),
             delivered_rows,
             call_count,
+            outcomes: Arc::new(Mutex::new(Vec::new())),
             trace: None,
         }
     }
@@ -126,6 +136,11 @@ impl InstrumentedSinkFactory {
     /// Get the shared counter for total calls.
     pub fn call_counter(&self) -> Arc<AtomicU64> {
         self.call_count.clone()
+    }
+
+    /// Get the shared outcome log across all sinks created by this factory.
+    pub fn outcome_log(&self) -> Arc<Mutex<Vec<SinkOutcome>>> {
+        self.outcomes.clone()
     }
 
     /// Attach a trace recorder that receives sink result events.
@@ -144,6 +159,7 @@ impl logfwd_output::SinkFactory for InstrumentedSinkFactory {
         let mut sink = InstrumentedSink::new(script);
         sink.delivered_rows = self.delivered_rows.clone();
         sink.call_count = self.call_count.clone();
+        sink.outcomes = self.outcomes.clone();
         sink.trace = self.trace.clone();
         Ok(Box::new(sink))
     }
@@ -167,11 +183,16 @@ impl Sink for InstrumentedSink {
         let action = self.next_action();
         let rows = batch.num_rows() as u64;
         let delivered = self.delivered_rows.clone();
+        let outcomes = self.outcomes.clone();
         let trace = self.trace.clone();
 
         Box::pin(async move {
             match action {
                 FailureAction::Succeed => {
+                    outcomes
+                        .lock()
+                        .expect("outcomes mutex poisoned")
+                        .push(SinkOutcome::Ok);
                     delivered.fetch_add(rows, Ordering::Relaxed);
                     if let Some(trace) = &trace {
                         trace.record(TraceEvent::SinkResult {
@@ -182,6 +203,10 @@ impl Sink for InstrumentedSink {
                     SendResult::Ok
                 }
                 FailureAction::RetryAfter(dur) => {
+                    outcomes
+                        .lock()
+                        .expect("outcomes mutex poisoned")
+                        .push(SinkOutcome::RetryAfter);
                     if let Some(trace) = &trace {
                         trace.record(TraceEvent::SinkResult {
                             outcome: SinkOutcome::RetryAfter,
@@ -191,6 +216,10 @@ impl Sink for InstrumentedSink {
                     SendResult::RetryAfter(dur)
                 }
                 FailureAction::IoError(kind) => {
+                    outcomes
+                        .lock()
+                        .expect("outcomes mutex poisoned")
+                        .push(SinkOutcome::IoError);
                     if let Some(trace) = &trace {
                         trace.record(TraceEvent::SinkResult {
                             outcome: SinkOutcome::IoError,
@@ -200,6 +229,10 @@ impl Sink for InstrumentedSink {
                     SendResult::IoError(io::Error::new(kind, "simulated failure"))
                 }
                 FailureAction::Reject(reason) => {
+                    outcomes
+                        .lock()
+                        .expect("outcomes mutex poisoned")
+                        .push(SinkOutcome::Rejected);
                     if let Some(trace) = &trace {
                         trace.record(TraceEvent::SinkResult {
                             outcome: SinkOutcome::Rejected,
@@ -210,6 +243,10 @@ impl Sink for InstrumentedSink {
                 }
                 FailureAction::Delay(dur) => {
                     tokio::time::sleep(dur).await;
+                    outcomes
+                        .lock()
+                        .expect("outcomes mutex poisoned")
+                        .push(SinkOutcome::Ok);
                     delivered.fetch_add(rows, Ordering::Relaxed);
                     if let Some(trace) = &trace {
                         trace.record(TraceEvent::SinkResult {
@@ -220,6 +257,10 @@ impl Sink for InstrumentedSink {
                     SendResult::Ok
                 }
                 FailureAction::Panic => {
+                    outcomes
+                        .lock()
+                        .expect("outcomes mutex poisoned")
+                        .push(SinkOutcome::Panic);
                     if let Some(trace) = &trace {
                         trace.record(TraceEvent::SinkResult {
                             outcome: SinkOutcome::Panic,

@@ -28,6 +28,7 @@ Models `PipelineMachine<S, C>` from
 |----------|------|-------------|
 | `DrainCompleteness` | Safety | `stop()` only reachable when all in_flight batches are resolved |
 | `QuiescenceHasNoSilentStrandedWork` | Safety | At `Stopped`, no in-flight batch is left without explicit terminal outcome |
+| `NoUnresolvedSentAtQuiescence` | Safety | At `Stopped`, every sent batch is terminalized (`acked`/`rejected`/`abandoned`) |
 | `CheckpointOrderingInvariant` | Safety | committed[s]=n implies all sent batches `<= n` are terminalized for commit (`acked` or `rejected`), none in_flight |
 | `CommittedNeverAheadOfCreated` | Safety | committed[s] never exceeds highest created batch ID |
 | `NoDoubleComplete` | Safety | batch cannot be both in_flight and any terminal set |
@@ -36,6 +37,7 @@ Models `PipelineMachine<S, C>` from
 | `CommittedMonotonic` | Safety (temporal) | checkpoint never goes backwards |
 | `NoCreateAfterDrain` | Safety (temporal) | no new batches after begin_drain |
 | `DrainMeansNoNewSending` | Safety (temporal) | in_flight cannot grow once phase ≠ Running |
+| `FailureTerminalizationPreservesCheckpoint` | Safety (temporal) | force/crash terminalization does not advance checkpoints |
 | `EventualDrain` | Liveness | every started drain eventually reaches Stopped |
 | `NoBatchLeftBehind` | Liveness | every in_flight batch eventually terminalizes (ack/reject/abandon) |
 | `StoppedIsStable` | Liveness | once Stopped, stays Stopped |
@@ -47,6 +49,7 @@ Models `PipelineMachine<S, C>` from
 | `ForcedReachable` | Reachability (invariant ~P) | ForceStop path is reachable (vacuity guard) |
 | `RejectOccurs` | Reachability (invariant ~P) | Reject path is reachable |
 | `AbandonOccurs` | Reachability (invariant ~P) | ForceStop abandonment path is reachable |
+| `CrashReachable` | Reachability (invariant ~P) | panic/unwind-equivalent crash-stop path is reachable |
 
 ### File structure (two-file pattern)
 

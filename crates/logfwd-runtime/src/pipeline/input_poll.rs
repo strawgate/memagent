@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "turmoil")]
-use logfwd_io::diagnostics::PipelineMetrics;
+use logfwd_diagnostics::diagnostics::PipelineMetrics;
 #[cfg(feature = "turmoil")]
 use logfwd_io::input::InputEvent;
 #[cfg(feature = "turmoil")]

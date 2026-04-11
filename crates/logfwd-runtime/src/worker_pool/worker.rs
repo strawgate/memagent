@@ -341,6 +341,7 @@ pub(super) async fn process_item(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -361,6 +362,38 @@ mod tests {
     use super::super::pool::WorkerConfig;
     use super::super::types::{DeliveryOutcome, WorkItem, WorkerMsg};
     use super::{process_item, worker_task};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TerminalizationAction {
+        AckDelivered,
+        AckChannelClosed,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+    struct TerminalizationState {
+        terminalizations: u8,
+        held_for_replay: bool,
+        cancel_requested: bool,
+    }
+
+    fn reduce_terminalization(
+        mut state: TerminalizationState,
+        action: TerminalizationAction,
+    ) -> TerminalizationState {
+        if state.terminalizations == 0 {
+            state.terminalizations = 1;
+            match action {
+                TerminalizationAction::AckDelivered => {
+                    state.held_for_replay = false;
+                }
+                TerminalizationAction::AckChannelClosed => {
+                    state.held_for_replay = true;
+                    state.cancel_requested = true;
+                }
+            }
+        }
+        state
+    }
 
     struct OkSink;
 
@@ -489,5 +522,99 @@ mod tests {
 
         assert_eq!(outcome, DeliveryOutcome::PoolClosed);
         assert_eq!(retries, 0);
+    }
+
+    #[test]
+    fn terminalization_reducer_is_idempotent_for_any_two_step_schedule() {
+        let actions = [
+            TerminalizationAction::AckDelivered,
+            TerminalizationAction::AckChannelClosed,
+        ];
+        let mut outcomes = BTreeSet::new();
+
+        for first in actions {
+            for second in actions {
+                let state = reduce_terminalization(
+                    reduce_terminalization(TerminalizationState::default(), first),
+                    second,
+                );
+                assert!(
+                    state.terminalizations <= 1,
+                    "terminalization must occur at most once"
+                );
+                outcomes.insert(state);
+            }
+        }
+
+        assert!(
+            outcomes.contains(&TerminalizationState {
+                terminalizations: 1,
+                held_for_replay: false,
+                cancel_requested: false,
+            }),
+            "delivered schedule should be reachable"
+        );
+        assert!(
+            outcomes.contains(&TerminalizationState {
+                terminalizations: 1,
+                held_for_replay: true,
+                cancel_requested: true,
+            }),
+            "ack-channel-closed schedule should be reachable"
+        );
+    }
+
+    #[cfg(feature = "loom-tests")]
+    #[test]
+    fn loom_terminalization_race_resolves_once() {
+        loom::model(|| {
+            let state =
+                loom::sync::Arc::new(loom::sync::Mutex::new(TerminalizationState::default()));
+
+            let state_ack = loom::sync::Arc::clone(&state);
+            let ack = loom::thread::spawn(move || {
+                let mut guard = state_ack
+                    .lock()
+                    .expect("loom mutex poisoned during ack path");
+                *guard = reduce_terminalization(*guard, TerminalizationAction::AckDelivered);
+            });
+
+            let state_closed = loom::sync::Arc::clone(&state);
+            let closed = loom::thread::spawn(move || {
+                let mut guard = state_closed
+                    .lock()
+                    .expect("loom mutex poisoned during ack-closed path");
+                *guard = reduce_terminalization(*guard, TerminalizationAction::AckChannelClosed);
+            });
+
+            ack.join().expect("ack thread should not panic");
+            closed
+                .join()
+                .expect("ack-channel-closed thread should not panic");
+
+            let final_state = *state
+                .lock()
+                .expect("loom mutex poisoned while validating terminalization state");
+
+            assert_eq!(
+                final_state.terminalizations, 1,
+                "checkpoint seam must resolve each ticket exactly once"
+            );
+            assert!(
+                final_state
+                    == TerminalizationState {
+                        terminalizations: 1,
+                        held_for_replay: false,
+                        cancel_requested: false,
+                    }
+                    || final_state
+                        == TerminalizationState {
+                            terminalizations: 1,
+                            held_for_replay: true,
+                            cancel_requested: true,
+                        },
+                "terminalization outcome must be either delivered or held-for-replay"
+            );
+        });
     }
 }

@@ -112,7 +112,7 @@ needless_pass_by_ref_mut = "warn"
 undocumented_unsafe_blocks = "warn"
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(feature, values("turmoil"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(feature, values("turmoil", "internal-failpoints"))'] }
 unused_qualifications = "warn"
 
 [profile.dev]

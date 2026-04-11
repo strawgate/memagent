@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use logfwd_io::checkpoint::CheckpointStore;
 
+use super::internal_faults;
+
 #[must_use]
 const fn should_retry_flush(attempt: u32, max_attempts: u32) -> bool {
     attempt < max_attempts.saturating_sub(1)
@@ -21,6 +23,22 @@ pub(super) async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore)
     const RETRY_DELAY: Duration = Duration::from_millis(100);
 
     for attempt in 0..MAX_ATTEMPTS {
+        if internal_faults::checkpoint_flush_should_fail() {
+            if should_retry_flush(attempt, MAX_ATTEMPTS) {
+                tracing::warn!(
+                    attempt,
+                    "pipeline: checkpoint flush failpoint fired, retrying"
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            } else {
+                tracing::error!(
+                    attempts = MAX_ATTEMPTS,
+                    "pipeline: checkpoint flush failpoint fired on final attempt"
+                );
+            }
+            continue;
+        }
+
         match store.flush() {
             Ok(()) => {
                 if attempt > 0 {
@@ -59,6 +77,41 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{flush_checkpoint_with_retry, should_retry_flush};
+
+    trait RetryFaultHook {
+        fn fail_flush_attempt(&self, attempt: u32) -> bool;
+    }
+
+    struct NeverFailHook;
+
+    impl RetryFaultHook for NeverFailHook {
+        fn fail_flush_attempt(&self, _attempt: u32) -> bool {
+            false
+        }
+    }
+
+    struct FailFirstAttemptHook;
+
+    impl RetryFaultHook for FailFirstAttemptHook {
+        fn fail_flush_attempt(&self, attempt: u32) -> bool {
+            attempt == 0
+        }
+    }
+
+    async fn flush_checkpoint_with_retry_hooked(
+        store: &mut dyn CheckpointStore,
+        hook: &dyn RetryFaultHook,
+    ) {
+        const MAX_ATTEMPTS: u32 = 3;
+        for attempt in 0..MAX_ATTEMPTS {
+            if hook.fail_flush_attempt(attempt) {
+                continue;
+            }
+            if store.flush().is_ok() {
+                return;
+            }
+        }
+    }
 
     struct SequenceCheckpointStore {
         outcomes: Vec<io::Result<()>>,
@@ -171,6 +224,43 @@ mod tests {
             3,
             "flush should execute exactly three attempts"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn trait_hook_prototype_can_inject_first_attempt_failure() {
+        let mut store = SequenceCheckpointStore::new(vec![Ok(()), Ok(())]);
+        let hook = FailFirstAttemptHook;
+
+        flush_checkpoint_with_retry_hooked(&mut store, &hook).await;
+        assert_eq!(store.calls, 1, "first real store.flush call should succeed");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn trait_hook_prototype_noop_matches_normal_path() {
+        let mut store = SequenceCheckpointStore::new(vec![Ok(())]);
+        let hook = NeverFailHook;
+
+        flush_checkpoint_with_retry_hooked(&mut store, &hook).await;
+        assert_eq!(store.calls, 1, "noop hook must preserve baseline behavior");
+    }
+
+    #[cfg(feature = "internal-failpoints")]
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn failpoint_checkpoint_flush_retries_then_succeeds() {
+        let scenario = fail::FailScenario::setup();
+        fail::cfg(
+            "runtime::pipeline::checkpoint_flush::before_flush",
+            "1*return->off",
+        )
+        .expect("configure failpoint");
+
+        let mut store = SequenceCheckpointStore::new(vec![Ok(()), Ok(())]);
+        flush_checkpoint_with_retry(&mut store).await;
+        assert_eq!(store.calls, 1, "one injected failure + one real success");
+
+        fail::remove("runtime::pipeline::checkpoint_flush::before_flush");
+        scenario.teardown();
     }
 }
 
