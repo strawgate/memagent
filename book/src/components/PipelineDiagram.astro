@@ -282,7 +282,7 @@ const icons: Record<string, string> = {
   /* ── Level 1: Stage flow ── */
   .pd-flow {
     display: flex;
-    align-items: stretch; /* equal height stages */
+    align-items: center;
     justify-content: center;
     gap: 0;
     padding: 1.25rem 0;
@@ -302,6 +302,7 @@ const icons: Record<string, string> = {
     cursor: pointer;
     transition: all 0.15s cubic-bezier(0.2, 0, 0, 1);
     width: 140px;
+    height: 140px; /* fixed height for perfect alignment */
     font-family: inherit;
     position: relative;
   }
@@ -345,10 +346,9 @@ const icons: Record<string, string> = {
   .pd-connector {
     display: flex;
     align-items: center;
-    align-self: center;
+    justify-content: center;
     width: 52px;
     flex-shrink: 0;
-    position: relative;
   }
 
   .pd-connector-line {
@@ -356,13 +356,10 @@ const icons: Record<string, string> = {
     height: 2px;
     background: repeating-linear-gradient(
       90deg,
-      var(--pd-accent) 0,
-      var(--pd-accent) 5px,
-      transparent 5px,
-      transparent 10px
+      var(--pd-accent) 0 5px,
+      transparent 5px 10px
     );
-    background-size: 200% 100%;
-    animation: pd-flow 1.5s linear infinite;
+    animation: pd-dash-right 0.6s linear infinite;
     opacity: 0.45;
     border-radius: 1px;
   }
@@ -376,9 +373,10 @@ const icons: Record<string, string> = {
     opacity: 0.45;
   }
 
-  @keyframes pd-flow {
-    from { background-position: 20px 0; }
-    to { background-position: 0 0; }
+  /* Dashes flow left→right: increasing background-position-x shifts
+     the texture rightward, so the visible pattern moves right */
+  @keyframes pd-dash-right {
+    to { background-position: 10px 0; }
   }
 
   /* ── Hint ── */
