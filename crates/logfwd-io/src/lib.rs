@@ -13,6 +13,8 @@ pub mod generator;
 /// HTTP NDJSON input source.
 pub mod http_input;
 pub mod input;
+/// Journald (systemd journal) input via `journalctl` subprocess.
+pub mod journald_input;
 pub mod otap_receiver;
 pub mod otlp_receiver;
 /// Platform sensor inputs and Arrow-native control/sample event emission.
