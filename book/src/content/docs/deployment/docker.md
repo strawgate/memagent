@@ -5,14 +5,14 @@ description: "Run logfwd as a standalone container"
 
 Use this page when you want to run logfwd as a standalone container on a single host.
 
-## Safe defaults
-
+:::tip[Safe defaults]
 Start with these settings for predictable behavior:
 
 - Mount `/var/log` read-only.
 - Mount `config.yaml` read-only.
 - Enable diagnostics (`server.diagnostics: 0.0.0.0:9090`).
 - Use OTLP compression (`compression: zstd`) for remote collectors.
+:::
 
 ## Quick start
 

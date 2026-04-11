@@ -15,7 +15,7 @@ REQUIRED_MARKERS = {
         "### Rollback",
     ],
     "book/src/content/docs/deployment/docker.md": [
-        "## Safe defaults",
+        ":::tip[Safe defaults]",
         "## Validate container health",
         "## Rollback",
     ],

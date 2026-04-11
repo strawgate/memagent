@@ -3,37 +3,57 @@ title: "Performance"
 description: "Benchmarks, throughput targets, and optimization techniques"
 ---
 
-## Throughput targets
-
-logfwd targets 1M+ lines/sec on a single CPU core with CRI parsing and
-OTLP encoding.
+:::tip[The headline]
+logfwd processes **~2.8 million log lines per second** on a single CPU core — parsing JSON, running SQL, encoding OTLP protobuf, and compressing with zstd. Total CPU time: 36ms per 100K lines.
+:::
 
 ## Benchmark results
 
 | Stage | Time (100K lines) | % of total |
 |-------|-------------------|-----------|
-| Scan (JSON→Arrow) | 21ms | 57% |
+| Scan (JSON to Arrow) | 21ms | 57% |
 | Transform (SQL) | ~0ms | ~0% |
 | OTLP encode | 9ms | 27% |
 | zstd compress | 6ms | 16% |
 | **Total CPU** | **36ms** | **2.8M lines/sec** |
 
-## Key optimizations
+The scanner dominates at 57% of CPU time. This is expected — parsing JSON structure is the hard work. The SQL transform is essentially free because DataFusion operates on Arrow columnar data that's already in the right format.
 
-- **SIMD structural indexing**: Classifies JSON structure in one vectorized pass
-- **Zero-copy StringViewArray**: No string copies in the hot path
-- **Field pushdown**: Scanner skips unused fields based on SQL analysis
-- **Persistent zstd context**: Compression context reused across batches
-- **Connection pooling**: HTTP agent reused for output requests
-- **Block-in-place output**: Overlaps I/O with scanning via tokio
+## Why it's fast
+
+Each optimization compounds on the others:
+
+- **SIMD structural indexing** — One vectorized pass classifies 10 JSON characters across 64 bytes simultaneously. Every subsequent string lookup is O(1) via bitmask + trailing_zeros. This is the same technique that powers simdjson.
+- **Zero-copy StringViewArray** — String data is never copied during scanning. 16-byte views point directly into the input buffer, shared via reference counting. Five string columns sharing one buffer use 1x memory, not 5x.
+- **Field pushdown** — logfwd analyzes your SQL query before scanning and only extracts referenced columns. If your query uses 3 of 20 fields, the scanner skips the other 17 — giving 2-3x throughput on wide data.
+- **Persistent zstd context** — The compression dictionary is reused across batches, avoiding re-initialization overhead.
+- **Connection pooling** — HTTP clients reuse connections for output requests, amortizing TLS handshake and TCP setup.
 
 ## Memory profile
 
-At our default 4MB batch size (~23K lines):
-- Arrow RecordBatch overhead: ~2MB
-- Input buffer: 4MB (shared with StringView columns)
-- Total per batch: ~6MB
+At the default 4 MB batch size (~23K lines):
 
-For 1M lines (stress test only):
-- Real RSS: ~205MB (not 926MB as `get_array_memory_size()` reports)
-- StringViewArray shares the input buffer across all string columns
+| Component | Memory |
+|-----------|--------|
+| Input buffer | 4 MB (shared with StringView columns) |
+| Arrow RecordBatch | ~2 MB |
+| **Total per batch** | **~6 MB** |
+
+For stress tests at 1M lines:
+- Real RSS: ~205 MB
+- `get_array_memory_size()` reports ~926 MB — this overcounts because StringViewArray shares the backing buffer across all string columns
+
+:::note
+Memory usage scales with batch size, not total data volume. logfwd processes data in streaming batches and releases memory after each batch completes.
+:::
+
+## Scanner throughput by data shape
+
+| Dataset | Fields | Throughput |
+|---------|--------|-----------|
+| Narrow (3 fields) | 3 | 3.4M lines/sec |
+| Simple (6 fields) | 6 | 2.0M lines/sec |
+| Wide (20 fields) | 20 | 560K lines/sec |
+| Wide with pushdown (20 fields, 2 projected) | 20 to 2 | 1.4M lines/sec |
+
+Field pushdown recovers most of the throughput loss from wide data. If your SQL only references 2 columns from 20-field logs, you get 1.4M lines/sec instead of 560K.

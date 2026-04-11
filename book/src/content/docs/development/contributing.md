@@ -94,8 +94,9 @@ Caveats:
 
 ## Things that will bite you
 
-Hard-won lessons from building the scanner and builder pipeline.
-See also `dev-docs/ARCHITECTURE.md` for pipeline data flow.
+:::caution
+Hard-won lessons from building the scanner and builder pipeline. Read these before modifying core code. See also `dev-docs/ARCHITECTURE.md` for pipeline data flow.
+:::
 
 ### The deferred builder pattern exists because incremental null-padding is broken
 

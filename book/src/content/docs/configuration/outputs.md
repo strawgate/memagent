@@ -71,6 +71,10 @@ output:
 - **Compression**: Optional gzip compression for reduced network usage.
 - **Streaming mode**: Experimental chunked HTTP request bodies for benchmarking against hosted/serverless clusters.
 
+:::caution
+Streaming mode is experimental and currently requires `compression: none`. Use `buffered` (default) for production.
+:::
+
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Elasticsearch URL |
