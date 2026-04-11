@@ -11,7 +11,9 @@ use axum::response::{IntoResponse, Response};
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
 use crate::InputError;
-use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, declared_content_length, parse_content_type, read_limited_body};
+use crate::receiver_http::{
+    MAX_REQUEST_BODY_SIZE, declared_content_length, parse_content_type, read_limited_body,
+};
 
 use super::decode::{decode_otlp_json, decode_otlp_protobuf, decompress_gzip, decompress_zstd};
 use super::{OtlpServerState, ReceiverPayload};
@@ -179,4 +181,3 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusC
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Some(parsed.to_ascii_lowercase()))
 }
-

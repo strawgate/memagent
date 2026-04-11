@@ -35,7 +35,9 @@ use tokio::sync::oneshot;
 use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
-use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, declared_content_length, parse_content_type, read_limited_body};
+use crate::receiver_http::{
+    MAX_REQUEST_BODY_SIZE, declared_content_length, parse_content_type, read_limited_body,
+};
 
 /// Bounded channel capacity.
 const CHANNEL_BOUND: usize = 256;
@@ -331,7 +333,6 @@ async fn handle_otap_request(
         }
     }
 }
-
 
 /// Decoded `BatchArrowRecords` message.
 struct BatchArrowRecords {

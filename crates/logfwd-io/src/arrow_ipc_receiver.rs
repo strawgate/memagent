@@ -33,7 +33,9 @@ use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::input::{InputEvent, InputSource};
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
-use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, declared_content_length, parse_content_type, read_limited_body};
+use crate::receiver_http::{
+    MAX_REQUEST_BODY_SIZE, declared_content_length, parse_content_type, read_limited_body,
+};
 
 /// Bounded channel capacity — limits memory when the pipeline falls behind.
 const CHANNEL_BOUND: usize = 256;
@@ -428,7 +430,6 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusC
     }
     Ok(is_zstd.then_some("zstd".to_string()))
 }
-
 
 impl Drop for ArrowIpcReceiver {
     fn drop(&mut self) {
