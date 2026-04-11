@@ -58,6 +58,7 @@ jobs:
             --no-progress
             --accept 200,429
             --max-retries 3
+            --root-dir .
             --exclude 'mailto:'
             --exclude-loopback
             --exclude '^/[a-z]'

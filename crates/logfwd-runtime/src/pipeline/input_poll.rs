@@ -28,7 +28,12 @@ const fn should_flush_buffer(
     batch_target_bytes: usize,
     timeout_elapsed: bool,
 ) -> bool {
-    buffered_len >= batch_target_bytes || (buffered_len > 0 && timeout_elapsed)
+    let safe_target = if batch_target_bytes == 0 {
+        1
+    } else {
+        batch_target_bytes
+    };
+    buffered_len >= safe_target || (buffered_len > 0 && timeout_elapsed)
 }
 
 /// Async input loop for simulation testing.

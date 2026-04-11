@@ -125,6 +125,8 @@ impl FileTailer {
             }
         }
 
+        let read_buf_size = config.read_buf_size.max(1);
+
         let mut tailer = FileTailer {
             discovery: FileDiscovery {
                 watcher,
@@ -136,7 +138,7 @@ impl FileTailer {
             },
             reader: FileReader {
                 files: HashMap::new(),
-                read_buf: vec![0u8; config.read_buf_size],
+                read_buf: vec![0u8; read_buf_size],
                 evicted_offsets: HashMap::new(),
                 scratch_paths: Vec::new(),
                 last_read_had_data: false,

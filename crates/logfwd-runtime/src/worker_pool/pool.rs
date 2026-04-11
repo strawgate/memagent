@@ -198,9 +198,9 @@ pub struct OutputWorkerPool {
     cancel: CancellationToken,
     /// Tracks all spawned worker tasks for clean drain.
     join_set: JoinSet<()>,
-    /// Per-worker channel capacity. Capacity 2 allows one item buffered
-    /// while the worker is processing another — keeps throughput high while
-    /// preserving work consolidation (worker "appears full" quickly).
+    /// Per-worker channel capacity (currently 1).
+    /// Capacity 1 keeps MRU consolidation tight so busy workers appear full
+    /// quickly and new work either fans out or back-pressures deterministically.
     channel_capacity: usize,
     /// Maximum number of concurrent workers.
     max_workers: usize,
@@ -326,10 +326,22 @@ impl OutputWorkerPool {
         // --- Step 2: spawn a new worker if under limit ---
         if self.workers.len() < self.max_workers {
             if let Ok(handle) = self.spawn_worker() {
-                // New channel: guaranteed to have space.
-                let _ = handle.tx.try_send(msg);
-                self.workers.push_front(handle);
-                return;
+                match handle.tx.try_send(msg) {
+                    Ok(()) => {
+                        self.workers.push_front(handle);
+                        return;
+                    }
+                    Err(mpsc::error::TrySendError::Full(returned)) => {
+                        // Extremely unlikely for a fresh channel, but preserve the work item.
+                        msg = returned;
+                        self.workers.push_front(handle);
+                    }
+                    Err(mpsc::error::TrySendError::Closed(returned)) => {
+                        // Worker exited before first dispatch; preserve the work item and
+                        // continue into the existing back-pressure/rejection paths.
+                        msg = returned;
+                    }
+                }
             }
             // Sink factory failed — fall through to back-pressure path.
         }

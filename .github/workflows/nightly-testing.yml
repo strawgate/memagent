@@ -184,6 +184,7 @@ jobs:
             --label "bug"
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
 
   fuzz-short:
     name: Fuzz (5 minutes per target)

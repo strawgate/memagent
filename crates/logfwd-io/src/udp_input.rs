@@ -12,8 +12,8 @@ use socket2::{Domain, Protocol, Socket, Type};
 use crate::input::{InputEvent, InputSource};
 use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
 
-/// Maximum UDP payload: 65535 (IP max) - 20 (IP header) - 8 (UDP header).
-const MAX_UDP_PAYLOAD: usize = 65507;
+/// Maximum UDP payload based on UDP length field: 65535 - 8-byte UDP header.
+const MAX_UDP_PAYLOAD: usize = 65527;
 
 /// Desired kernel receive buffer size (8 MiB). Set best-effort — the OS may
 /// cap it lower depending on `sysctl net.core.rmem_max`.
@@ -337,7 +337,7 @@ mod tests {
             Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
         )
         .unwrap();
-        assert_eq!(input.buf.len(), 65507);
+        assert_eq!(input.buf.len(), MAX_UDP_PAYLOAD);
     }
 
     #[test]

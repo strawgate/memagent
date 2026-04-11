@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::glob::expand_glob_patterns;
-use super::identity::identify_file;
+use super::identity::{FileIdentity, identify_file};
 use super::reader::FileReader;
 use super::tailer::TailEvent;
 
@@ -119,8 +119,12 @@ impl FileDiscovery {
             };
 
             let is_rotated = reader.files.get(path).is_some_and(|tailed| {
-                tailed.identity.device != current_identity.device
-                    || tailed.identity.inode != current_identity.inode
+                let previous_handle_deleted = tailed
+                    .file
+                    .metadata()
+                    .map(|meta| metadata_indicates_deleted(&meta))
+                    .unwrap_or(false);
+                should_rotate_file(&tailed.identity, &current_identity, previous_handle_deleted)
             });
             let is_new = !reader.files.contains_key(path);
 
@@ -315,6 +319,42 @@ mod tests {
     }
 
     #[test]
+    fn identity_fingerprint_drift_without_inode_change_is_not_rotation() {
+        let previous = FileIdentity {
+            device: 1,
+            inode: 2,
+            fingerprint: 3,
+        };
+        let current = FileIdentity {
+            device: 1,
+            inode: 2,
+            fingerprint: 4,
+        };
+        assert!(
+            !identity_indicates_rotation(&previous, &current),
+            "fingerprint drift during append must not be treated as rotation"
+        );
+    }
+
+    #[test]
+    fn deleted_handle_always_rotates_even_when_identity_matches() {
+        let previous = FileIdentity {
+            device: 1,
+            inode: 2,
+            fingerprint: 3,
+        };
+        let current = FileIdentity {
+            device: 1,
+            inode: 2,
+            fingerprint: 3,
+        };
+        assert!(
+            should_rotate_file(&previous, &current, true),
+            "unlinked previous handle must rotate to the current path file"
+        );
+    }
+
+    #[test]
     fn rescan_globs_noop_when_no_patterns() {
         let (watcher, rx) = test_watcher();
         let mut discovery = FileDiscovery {
@@ -418,4 +458,17 @@ mod tests {
             Err(io::Error::other("open failed"))
         ));
     }
+}
+#[inline]
+fn identity_indicates_rotation(previous: &FileIdentity, current: &FileIdentity) -> bool {
+    previous.device != current.device || previous.inode != current.inode
+}
+
+#[inline]
+fn should_rotate_file(
+    previous: &FileIdentity,
+    current: &FileIdentity,
+    previous_handle_deleted: bool,
+) -> bool {
+    previous_handle_deleted || identity_indicates_rotation(previous, current)
 }

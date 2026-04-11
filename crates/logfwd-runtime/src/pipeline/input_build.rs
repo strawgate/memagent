@@ -73,6 +73,23 @@ fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> 
     Ok(())
 }
 
+fn require_non_empty<'a>(
+    name: &str,
+    input_type: &str,
+    field: &str,
+    value: Option<&'a String>,
+) -> Result<&'a str, String> {
+    let value = value
+        .map(|v| v.as_str())
+        .ok_or_else(|| format!("input '{name}': {input_type} input requires '{field}'"))?;
+    if value.trim().is_empty() {
+        return Err(format!(
+            "input '{name}': {input_type} input requires non-empty '{field}'"
+        ));
+    }
+    Ok(value)
+}
+
 /// Build the runtime input state (source, staging buffer, and metrics handle)
 /// from a validated input config.
 pub(super) fn build_input_state(
@@ -83,10 +100,7 @@ pub(super) fn build_input_state(
     let (raw_source, format, buf_cap): (Box<dyn InputSource>, Format, usize) = match cfg.input_type
     {
         InputType::File => {
-            let path = cfg
-                .path
-                .as_ref()
-                .ok_or_else(|| format!("input '{name}': file input requires 'path'"))?;
+            let path = require_non_empty(name, "file", "path", cfg.path.as_ref())?;
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
                 start_from_end: false,
@@ -110,7 +124,7 @@ pub(super) fn build_input_state(
             let source = if is_glob {
                 FileInput::new_with_globs(
                     name.to_string(),
-                    &[path.as_str()],
+                    &[path],
                     tail_config,
                     Arc::clone(&stats),
                 )
@@ -221,10 +235,7 @@ pub(super) fn build_input_state(
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputType::Otlp => {
-            let addr = cfg
-                .listen
-                .as_ref()
-                .ok_or_else(|| format!("input '{name}': otlp input requires 'listen'"))?;
+            let addr = require_non_empty(name, "otlp", "listen", cfg.listen.as_ref())?;
             let resource_prefix = cfg
                 .resource_prefix
                 .as_deref()
@@ -242,10 +253,7 @@ pub(super) fn build_input_state(
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputType::ArrowIpc => {
-            let addr = cfg
-                .listen
-                .as_ref()
-                .ok_or_else(|| format!("input '{name}': arrow_ipc input requires 'listen'"))?;
+            let addr = require_non_empty(name, "arrow_ipc", "listen", cfg.listen.as_ref())?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::ArrowIpc, &format)?;
             let source = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiver::new(name, addr)
@@ -253,15 +261,17 @@ pub(super) fn build_input_state(
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputType::Http => {
-            let addr = cfg
-                .listen
-                .as_ref()
-                .ok_or_else(|| format!("input '{name}': http input requires 'listen'"))?;
+            let addr = require_non_empty(name, "http", "listen", cfg.listen.as_ref())?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Http, &format)?;
             let mut options = logfwd_io::http_input::HttpInputOptions::default();
             if let Some(http) = &cfg.http {
                 if let Some(path) = &http.path {
+                    if path.trim().is_empty() {
+                        return Err(format!(
+                            "input '{name}': http input requires non-empty 'http.path' when provided"
+                        ));
+                    }
                     options.path = path.clone();
                 }
                 if let Some(strict_path) = http.strict_path {
@@ -295,10 +305,7 @@ pub(super) fn build_input_state(
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputType::Udp => {
-            let addr = cfg
-                .listen
-                .as_ref()
-                .ok_or_else(|| format!("input '{name}': udp input requires 'listen'"))?;
+            let addr = require_non_empty(name, "udp", "listen", cfg.listen.as_ref())?;
             if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
                 return Err(format!(
                     "input '{name}': CRI/auto format is not supported for UDP inputs (CRI is a file-based container log format)"
@@ -311,10 +318,7 @@ pub(super) fn build_input_state(
             (Box::new(source), format, 1024 * 1024)
         }
         InputType::Tcp => {
-            let addr = cfg
-                .listen
-                .as_ref()
-                .ok_or_else(|| format!("input '{name}': tcp input requires 'listen'"))?;
+            let addr = require_non_empty(name, "tcp", "listen", cfg.listen.as_ref())?;
             if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
                 return Err(format!(
                     "input '{name}': CRI/auto format is not supported for TCP inputs (CRI is a file-based container log format)"
@@ -591,6 +595,116 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn build_input_state_rejects_empty_file_path_and_listen() {
+        use logfwd_diagnostics::diagnostics::PipelineMetrics;
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
+
+        let file_cfg = InputConfig {
+            name: Some("file-in".to_string()),
+            input_type: InputType::File,
+            path: Some("   ".to_string()),
+            listen: None,
+            resource_prefix: None,
+            format: Some(Format::Json),
+            poll_interval_ms: None,
+            read_buf_size: None,
+            per_file_read_budget_bytes: None,
+            adaptive_fast_polls_max: None,
+            max_open_files: None,
+            glob_rescan_interval_ms: None,
+            generator: None,
+            http: None,
+            sensor: None,
+            sql: None,
+            tls: None,
+        };
+        let stats = pm.add_input("file-in", "file");
+        let err = match build_input_state("file-in", &file_cfg, stats) {
+            Ok(_) => panic!("empty file path should be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.contains("non-empty 'path'"), "unexpected error: {err}");
+
+        for input_type in [
+            InputType::Otlp,
+            InputType::ArrowIpc,
+            InputType::Http,
+            InputType::Udp,
+            InputType::Tcp,
+        ] {
+            let cfg = InputConfig {
+                name: Some("net-in".to_string()),
+                input_type,
+                path: None,
+                listen: Some("   ".to_string()),
+                resource_prefix: None,
+                format: Some(Format::Json),
+                poll_interval_ms: None,
+                read_buf_size: None,
+                per_file_read_budget_bytes: None,
+                adaptive_fast_polls_max: None,
+                max_open_files: None,
+                glob_rescan_interval_ms: None,
+                generator: None,
+                http: None,
+                sensor: None,
+                sql: None,
+                tls: None,
+            };
+            let stats = pm.add_input("net-in", "net");
+            let err = match build_input_state("net-in", &cfg, stats) {
+                Ok(_) => panic!("empty listen should be rejected"),
+                Err(err) => err,
+            };
+            assert!(
+                err.contains("non-empty 'listen'"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_input_state_rejects_empty_http_path_override() {
+        use logfwd_diagnostics::diagnostics::PipelineMetrics;
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
+        let stats = pm.add_input("http-in", "http");
+        let cfg = InputConfig {
+            name: Some("http-in".to_string()),
+            input_type: InputType::Http,
+            path: None,
+            listen: Some("127.0.0.1:0".to_string()),
+            resource_prefix: None,
+            format: Some(Format::Json),
+            poll_interval_ms: None,
+            read_buf_size: None,
+            per_file_read_budget_bytes: None,
+            adaptive_fast_polls_max: None,
+            max_open_files: None,
+            glob_rescan_interval_ms: None,
+            generator: None,
+            http: Some(logfwd_config::HttpInputConfig {
+                path: Some("   ".to_string()),
+                ..Default::default()
+            }),
+            sensor: None,
+            sql: None,
+            tls: None,
+        };
+        let err = match build_input_state("http-in", &cfg, stats) {
+            Ok(_) => panic!("empty http.path override should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("non-empty 'http.path'"),
+            "unexpected error: {err}"
+        );
     }
     #[test]
     fn otlp_structured_ingress_tracks_line_capture_flag() {

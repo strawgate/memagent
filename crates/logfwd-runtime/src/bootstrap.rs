@@ -599,10 +599,12 @@ fn build_tracer_provider(
 }
 
 fn redact_url(url: &str) -> String {
-    let after_scheme = url.find("://").map_or(0, |i| i + 3);
-    let rest = &url[after_scheme..];
-    let host_start = rest.find('@').map_or(0, |i| i + 1);
-    let authority_and_path = &rest[host_start..];
+    let (scheme, rest) = if let Some(i) = url.find("://") {
+        (&url[..i], &url[i + 3..])
+    } else {
+        ("", url)
+    };
+    let authority_and_path = &rest[rest.rfind('@').map_or(0, |i| i + 1)..];
     let host_end = authority_and_path
         .find(['/', '?', '#'])
         .unwrap_or(authority_and_path.len());
@@ -610,7 +612,11 @@ fn redact_url(url: &str) -> String {
     if host.is_empty() {
         return url.to_string();
     }
-    format!("{}://{}", &url[..after_scheme.saturating_sub(3)], host)
+    if scheme.is_empty() {
+        host.to_string()
+    } else {
+        format!("{scheme}://{host}")
+    }
 }
 
 #[cfg(unix)]
@@ -659,5 +665,31 @@ fn style(use_color: bool, color: &'static str, bold: &'static str) -> &'static s
         }
     } else {
         ""
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_url;
+
+    #[test]
+    fn redact_url_handles_urls_without_scheme() {
+        assert_eq!(
+            redact_url("collector.local:4318/v1/traces"),
+            "collector.local:4318"
+        );
+    }
+
+    #[test]
+    fn redact_url_uses_last_at_in_userinfo() {
+        assert_eq!(
+            redact_url("https://user:pa@ss@example.com/v1/traces"),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn redact_url_keeps_original_when_host_is_empty() {
+        assert_eq!(redact_url("https:///v1/traces"), "https:///v1/traces");
     }
 }

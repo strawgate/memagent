@@ -393,7 +393,11 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusC
         return Ok(None);
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
-    Ok(Some(parsed.to_ascii_lowercase()))
+    let normalized = parsed.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Some(normalized))
 }
 
 fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
@@ -401,7 +405,16 @@ fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, StatusCode>
         return Ok(None);
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
-    Ok(Some(parsed.to_ascii_lowercase()))
+    let media_type = parsed
+        .split(';')
+        .next()
+        .unwrap_or(parsed)
+        .trim()
+        .to_ascii_lowercase();
+    if media_type.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Some(media_type))
 }
 
 impl Drop for ArrowIpcReceiver {
@@ -599,6 +612,32 @@ mod tests {
         let url = format!("http://{addr}/v1/arrow");
         let response = ureq::post(&url)
             .header("Content-Type", "application/vnd.apache.arrow.stream+zstd")
+            .send(&compressed)
+            .expect("POST should succeed");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let received = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("should receive a batch");
+        assert_eq!(received.num_rows(), 2);
+    }
+
+    #[test]
+    fn receiver_accepts_zstd_content_type_with_parameters() {
+        let receiver = ArrowIpcReceiver::new_with_capacity("test-zstd-params", "127.0.0.1:0", 16)
+            .expect("bind should succeed");
+        let addr = receiver.local_addr();
+
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_batch(&batch);
+        let compressed = zstd::bulk::compress(&ipc_bytes, 1).expect("zstd compress should succeed");
+
+        let url = format!("http://{addr}/v1/arrow");
+        let response = ureq::post(&url)
+            .header(
+                "Content-Type",
+                "application/vnd.apache.arrow.stream+zstd; charset=binary",
+            )
             .send(&compressed)
             .expect("POST should succeed");
         assert_eq!(response.status().as_u16(), 200);

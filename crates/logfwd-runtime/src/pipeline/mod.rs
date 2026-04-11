@@ -275,6 +275,22 @@ impl Pipeline {
         self.batch_target_bytes = bytes;
     }
 
+    fn validate_batch_settings(&self) -> io::Result<()> {
+        if self.batch_timeout.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "batch_timeout must be greater than zero",
+            ));
+        }
+        if self.batch_target_bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "batch_target_bytes must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+
     /// Override the output worker-pool drain timeout (default 60s).
     ///
     /// Tests can shorten this to keep deterministic simulations fast while
@@ -374,6 +390,7 @@ impl Pipeline {
     /// Delegates to `run_async` on a tokio runtime. The sync interface exists
     /// for test convenience; production uses `run_async` directly.
     pub fn run(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
+        self.validate_batch_settings()?;
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         builder.enable_all();
         if let Ok(threads_raw) = std::env::var("TOKIO_WORKER_THREADS")
@@ -402,6 +419,7 @@ impl Pipeline {
     ///   when ureq is replaced with an async HTTP client.
     /// - self.inputs.drain(..) makes this method non-reentrant.
     pub async fn run_async(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
+        self.validate_batch_settings()?;
         assert_eq!(
             self.inputs.len(),
             self.input_transforms.len(),
@@ -793,17 +811,50 @@ fn now_nanos() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::atomic::Ordering;
     // std::time::Instant is cfg-gated in the parent module for turmoil compatibility,
     // but tests need it for timeout deadlines regardless of the turmoil feature flag.
     use serial_test::serial;
     use std::time::Instant;
 
+    use arrow::record_batch::RecordBatch;
     use logfwd_config::{Format, OutputConfig, OutputType};
     use logfwd_core::scan_config::ScanConfig;
     use logfwd_diagnostics::diagnostics::ComponentStats;
+    use logfwd_output::{
+        BatchMetadata,
+        sink::{SendResult, Sink},
+    };
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::test_meter;
+
+    struct PanicSink;
+
+    impl Sink for PanicSink {
+        fn send_batch<'a>(
+            &'a mut self,
+            _batch: &'a RecordBatch,
+            _metadata: &'a BatchMetadata,
+        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+            Box::pin(async move {
+                panic!("injected panic for held-ticket shutdown test");
+            })
+        }
+
+        fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn name(&self) -> &str {
+            "panic"
+        }
+
+        fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
 
     #[test]
     fn test_build_sink_factory_stdout() {
@@ -996,6 +1047,72 @@ pipelines:
         assert_eq!(pipeline.batch_target_bytes, 8192);
         assert_eq!(pipeline.batch_timeout, Duration::from_millis(250));
         assert_eq!(pipeline.poll_interval, Duration::from_millis(42));
+    }
+
+    #[test]
+    fn run_rejects_zero_batch_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
+
+        let yaml = format!(
+            r"
+input:
+  type: file
+  path: {}
+  format: json
+output:
+  type: stdout
+  format: json
+",
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+        pipeline.batch_timeout = Duration::ZERO;
+        let shutdown = CancellationToken::new();
+        let err = pipeline
+            .run(&shutdown)
+            .expect_err("zero batch_timeout should be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("batch_timeout"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn run_rejects_zero_batch_target_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
+
+        let yaml = format!(
+            r"
+input:
+  type: file
+  path: {}
+  format: json
+output:
+  type: stdout
+  format: json
+",
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+        pipeline.batch_target_bytes = 0;
+        let shutdown = CancellationToken::new();
+        let err = pipeline
+            .run(&shutdown)
+            .expect_err("zero batch_target_bytes should be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("batch_target_bytes"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1653,9 +1770,12 @@ output:
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
-        pipeline = pipeline.with_sink(Box::new(FailingSink::new(u32::MAX)));
+        // A panic in the sink is converted into InternalFailure by the worker,
+        // which maps to Hold and triggers terminal shutdown.
+        pipeline = pipeline.with_sink(Box::new(PanicSink));
         pipeline.batch_target_bytes = 64;
         pipeline.batch_timeout = Duration::from_millis(10);
+        pipeline.set_pool_drain_timeout(Duration::from_secs(1));
 
         let shutdown = CancellationToken::new();
         let result =
@@ -2398,10 +2518,7 @@ output:
     // -----------------------------------------------------------------------
 
     /// Helper: build a pipeline from a log file path with a custom async sink.
-    fn pipeline_with_sink(
-        log_path: &std::path::Path,
-        sink: Box<dyn logfwd_output::Sink>,
-    ) -> Pipeline {
+    fn pipeline_with_sink(log_path: &std::path::Path, sink: Box<dyn Sink>) -> Pipeline {
         let yaml = format!(
             r#"
 input:

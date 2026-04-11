@@ -179,7 +179,10 @@ fn libc_getuid() -> u32 {
             for line in status.lines() {
                 #[allow(clippy::collapsible_if)]
                 if let Some(rest) = line.strip_prefix("Uid:") {
-                    if let Some(uid_str) = rest.split_whitespace().next() {
+                    // /proc/self/status "Uid:" fields are:
+                    // real, effective, saved set, filesystem.
+                    // Use effective uid for permission checks.
+                    if let Some(uid_str) = rest.split_whitespace().nth(1) {
                         if let Ok(uid) = uid_str.parse::<u32>() {
                             return uid;
                         }

@@ -27,7 +27,7 @@ pub fn parse_retry_after(header: Option<&reqwest::header::HeaderValue>) -> Optio
         return Some(Duration::from_secs(secs));
     }
     // HTTP-date fallback
-    if let Ok(target) = httpdate::parse_http_date(value) {
+    if let Ok(target) = httpdate::parse_http_date(value.trim()) {
         return target.duration_since(std::time::SystemTime::now()).ok();
     }
     None
@@ -193,5 +193,15 @@ mod tests {
     fn parse_retry_after_invalid() {
         let hv = reqwest::header::HeaderValue::from_static("not-a-number");
         assert_eq!(parse_retry_after(Some(&hv)), None);
+    }
+
+    #[test]
+    fn parse_retry_after_http_date_with_whitespace() {
+        let hv = reqwest::header::HeaderValue::from_static(" Wed, 21 Oct 2099 07:28:00 GMT ");
+        let parsed = parse_retry_after(Some(&hv));
+        assert!(
+            parsed.is_some(),
+            "expected HTTP-date Retry-After with surrounding whitespace to parse"
+        );
     }
 }

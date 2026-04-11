@@ -235,10 +235,20 @@ impl ElasticsearchSink {
                         .get("reason")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("no reason provided");
+                    let status = action_obj
+                        .get("status")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    if status == 429 || (500..600).contains(&status) {
+                        // Status indicates transient backpressure/server failure.
+                        return Err(io::Error::other(format!(
+                            "ES bulk transient error (status {status}): {error_type}: {reason}"
+                        )));
+                    }
                     // InvalidData: document-level rejection — permanent, do not retry.
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("ES bulk error: {error_type}: {reason}"),
+                        format!("ES bulk error (status {status}): {error_type}: {reason}"),
                     ));
                 }
             }
@@ -1331,6 +1341,24 @@ mod tests {
         let err = ElasticsearchSink::parse_bulk_response(response)
             .expect_err("should error on bulk failure");
         assert!(err.to_string().contains("mapper_parsing_exception"));
+    }
+
+    #[test]
+    fn parse_bulk_response_retryable_item_error_is_transient() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"error":{"type":"es_rejected_execution_exception","reason":"too many requests"},"status":429}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("status 429 bulk item error must be transient");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::Other,
+            "429 item-level errors should be retried"
+        );
     }
 
     /// Regression test for issue #1675.

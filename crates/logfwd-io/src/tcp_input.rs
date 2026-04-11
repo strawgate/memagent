@@ -75,6 +75,8 @@ struct Client {
     last_data: Instant,
     /// Unparsed bytes for this connection.
     pending: Vec<u8>,
+    /// Set after the first successfully parsed octet-counted frame.
+    octet_counting_mode: bool,
     /// Remaining bytes to drop from an oversized octet-counted frame.
     discard_octet_bytes: usize,
     /// Whether we are dropping newline-delimited bytes until a newline appears.
@@ -104,6 +106,13 @@ fn advance_pending(client: &mut Client, consumed: usize) {
     let remaining = client.pending.len().saturating_sub(consumed);
     client.pending.copy_within(consumed.., 0);
     client.pending.truncate(remaining);
+}
+
+#[inline]
+fn has_incomplete_octet_frame_tail(buf: &[u8]) -> bool {
+    parse_octet_prefix(buf)
+        .and_then(|(len, prefix_len)| prefix_len.checked_add(len))
+        .is_some_and(|needed| buf.len() < needed)
 }
 
 fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
@@ -150,6 +159,7 @@ fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
                     || parse_octet_prefix(&pending[needed..]).is_some());
 
             if octet_frame_ready && octet_boundary_is_plausible {
+                client.octet_counting_mode = true;
                 if len > MAX_LINE_LENGTH {
                     client.discard_octet_bytes = len;
                     consumed += prefix_len;
@@ -300,6 +310,7 @@ impl InputSource for TcpInput {
                         source_id: sid,
                         last_data: Instant::now(),
                         pending: Vec::new(),
+                        octet_counting_mode: false,
                         discard_octet_bytes: 0,
                         discard_until_newline: false,
                     });
@@ -452,7 +463,9 @@ impl InputSource for TcpInput {
                 let client = &mut self.clients[i];
                 let has_pending = !client.pending.is_empty();
                 let mid_discard = client.discard_octet_bytes > 0 || client.discard_until_newline;
-                if has_pending && !mid_discard {
+                let incomplete_octet_tail =
+                    client.octet_counting_mode && has_incomplete_octet_frame_tail(&client.pending);
+                if has_pending && !mid_discard && !incomplete_octet_tail {
                     let mut tail = std::mem::take(&mut client.pending);
                     tail.push(b'\n');
                     let accounted_bytes = tail.len() as u64;
@@ -930,6 +943,45 @@ mod tests {
         assert!(
             has_eof,
             "EndOfFile must still be emitted after the pending Data"
+        );
+    }
+
+    #[test]
+    fn incomplete_octet_tail_is_not_flushed_on_close_after_octet_mode() {
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
+        let addr = input.local_addr().unwrap();
+
+        {
+            let mut client = StdTcpStream::connect(addr).unwrap();
+            // Complete frame (`hello`) followed by an incomplete octet-counted tail.
+            client.write_all(b"5 hello4 tes").unwrap();
+            client.flush().unwrap();
+        } // close connection
+
+        std::thread::sleep(Duration::from_millis(50));
+        let events = input.poll().unwrap();
+
+        let data_bytes: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                InputEvent::Data { bytes, .. } => Some(bytes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let rendered = String::from_utf8_lossy(&data_bytes);
+        assert!(
+            rendered.contains("hello\n"),
+            "complete octet frame should still be emitted; got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("tes"),
+            "incomplete octet-counted tail must be dropped on close; got: {rendered}"
         );
     }
 

@@ -228,8 +228,9 @@ fn io_worker_loop(
             }
         }
 
+        let safe_batch_target_bytes = batch_target_bytes.max(1);
         let timeout_elapsed = buffered_since.is_some_and(|t| t.elapsed() >= batch_timeout);
-        let flush_by_size = input.buf.len() >= batch_target_bytes;
+        let flush_by_size = input.buf.len() >= safe_batch_target_bytes;
         let flush_by_timeout = !input.buf.is_empty() && timeout_elapsed;
 
         if flush_by_size || flush_by_timeout {

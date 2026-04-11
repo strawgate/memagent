@@ -253,15 +253,6 @@ func main() {
 	}
 
 	model := buildModel()
-	state := model.Init()
-	for idx, op := range ops {
-		ok, next := model.Step(state, op.Input, op.Output)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "sequential precheck failed at op #%d: %s\n", idx, model.DescribeOperation(op.Input, op.Output))
-			os.Exit(1)
-		}
-		state = next
-	}
 	if ok := porcupine.CheckOperations(model, ops); !ok {
 		fmt.Fprintln(os.Stderr, "history is not linearizable")
 		os.Exit(1)

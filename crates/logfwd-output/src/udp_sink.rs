@@ -8,6 +8,7 @@
 
 use std::future::Future;
 use std::io;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ const MAX_DATAGRAM_PAYLOAD: usize = 1400;
 pub struct UdpSink {
     name: String,
     socket: UdpSocket,
-    target: String,
+    target: SocketAddr,
     /// Scratch buffer for serializing a single row before deciding whether
     /// it fits in the current datagram.
     row_buf: Vec<u8>,
@@ -39,20 +40,28 @@ pub struct UdpSink {
 impl UdpSink {
     /// Create a new UDP sink.
     ///
-    /// Binds a UDP socket to an ephemeral port (`0.0.0.0:0`) for outbound-only
-    /// traffic. The socket is set to non-blocking mode and converted to a
-    /// `tokio::net::UdpSocket`.
+    /// Resolves the target once, then binds an ephemeral socket in the same IP
+    /// family for outbound-only traffic.
     pub fn new(
         name: impl Into<String>,
         target: impl Into<String>,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
-        let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        let target = target.into();
+        let resolved_target = target.to_socket_addrs()?.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "target resolved to no address")
+        })?;
+        let bind_addr = if resolved_target.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        };
+        let std_socket = std::net::UdpSocket::bind(bind_addr)?;
         std_socket.set_nonblocking(true)?;
         let socket = UdpSocket::from_std(std_socket)?;
         Ok(Self {
             name: name.into(),
-            target: target.into(),
+            target: resolved_target,
             socket,
             row_buf: Vec::with_capacity(2048),
             dgram_buf: Vec::with_capacity(MAX_DATAGRAM_PAYLOAD),
@@ -67,7 +76,7 @@ impl UdpSink {
         if self.dgram_buf.is_empty() {
             return Ok(());
         }
-        match self.socket.send_to(&self.dgram_buf, &self.target).await {
+        match self.socket.send_to(&self.dgram_buf, self.target).await {
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
                 // Silently drop — UDP is best-effort.
@@ -101,7 +110,7 @@ impl UdpSink {
             // but that is better than silently dropping data.
             if row_len > MAX_DATAGRAM_PAYLOAD {
                 self.flush_dgram().await?;
-                match self.socket.send_to(&self.row_buf, &self.target).await {
+                match self.socket.send_to(&self.row_buf, self.target).await {
                     Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {}
                     Err(e) => return Err(e),
