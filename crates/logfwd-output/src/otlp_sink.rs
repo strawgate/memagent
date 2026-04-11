@@ -72,8 +72,6 @@ pub struct OtlpSink {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum ResourceValueRef<'a> {
     Str(&'a str),
-    /// Owned stringified value for non-string Arrow types (e.g. UInt64 from `hash()` UDF).
-    OwnedStr(String),
     Bytes(&'a [u8]),
     Int(i64),
     Float(u64),
@@ -238,15 +236,15 @@ impl OtlpSink {
             });
             let scope_key = (scope_name, scope_version);
 
-            let group_idx = if let Some(existing) =
-                group_index_by_key.get(&(key.clone(), scope_key)).copied()
-            {
-                existing
-            } else {
-                let idx = grouped_ranges.len();
-                group_index_by_key.insert((key.clone(), scope_key), idx);
-                grouped_ranges.push((key, scope_key, Vec::new()));
-                idx
+            let group_idx = match group_index_by_key.entry((key, scope_key)) {
+                std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let idx = grouped_ranges.len();
+                    let (group_key, group_scope) = entry.key();
+                    grouped_ranges.push((group_key.clone(), *group_scope, Vec::new()));
+                    entry.insert(idx);
+                    idx
+                }
             };
 
             let start = records_buf.len();
@@ -297,12 +295,6 @@ impl OtlpSink {
                 if let Some(v) = value {
                     match v {
                         ResourceValueRef::Str(v) => encode_key_value_string(
-                            &mut resource_msg,
-                            otlp::RESOURCE_ATTRIBUTES,
-                            key_name.as_bytes(),
-                            v.as_bytes(),
-                        ),
-                        ResourceValueRef::OwnedStr(v) => encode_key_value_string(
                             &mut resource_msg,
                             otlp::RESOURCE_ATTRIBUTES,
                             key_name.as_bytes(),
@@ -754,6 +746,7 @@ impl OtlpStrCol<'_> {
 enum AttrArray<'a> {
     Str(OtlpStrCol<'a>),
     OtherStr(&'a dyn Array),
+    PreformattedStr(Vec<Option<String>>),
     Bytes(&'a BinaryArray),
     LargeBytes(&'a LargeBinaryArray),
     Int(&'a PrimitiveArray<Int64Type>),
@@ -767,8 +760,19 @@ impl AttrArray<'_> {
         match self {
             Self::Str(arr) => (!arr.is_null(row)).then(|| ResourceValueRef::Str(arr.value(row))),
             Self::OtherStr(arr) => {
-                format_non_string_attr_value(*arr, row, field_name).map(ResourceValueRef::OwnedStr)
+                if !arr.is_null(row) {
+                    tracing::warn!(
+                        column = field_name,
+                        row,
+                        "skipping OTLP resource attribute: unsupported non-string column was not preformatted"
+                    );
+                }
+                None
             }
+            Self::PreformattedStr(values) => values
+                .get(row)
+                .and_then(|value| value.as_deref())
+                .map(ResourceValueRef::Str),
             Self::Bytes(arr) => {
                 (!arr.is_null(row)).then(|| ResourceValueRef::Bytes(arr.value(row)))
             }
@@ -1027,7 +1031,12 @@ fn resolve_batch_columns<'a>(
                     continue;
                 }
                 _ => resolve_otlp_str_col(batch.column(idx).as_ref()).map_or_else(
-                    || AttrArray::OtherStr(batch.column(idx).as_ref()),
+                    || {
+                        AttrArray::PreformattedStr(preformat_non_string_attr_column(
+                            batch.column(idx).as_ref(),
+                            field_name,
+                        ))
+                    },
                     AttrArray::Str,
                 ),
             };
@@ -1381,6 +1390,11 @@ fn encode_attr_array_value(
                 );
             }
         }
+        AttrArray::PreformattedStr(values) => {
+            if let Some(Some(value)) = values.get(row) {
+                encode_key_value_string(buf, field_number, field_name.as_bytes(), value.as_bytes());
+            }
+        }
         AttrArray::Bytes(arr) => {
             if !arr.is_null(row) {
                 encode_key_value_bytes(buf, field_number, field_name.as_bytes(), arr.value(row));
@@ -1415,6 +1429,12 @@ fn format_non_string_attr_value(arr: &dyn Array, row: usize, field_name: &str) -
             None
         }
     }
+}
+
+fn preformat_non_string_attr_column(arr: &dyn Array, field_name: &str) -> Vec<Option<String>> {
+    (0..arr.len())
+        .map(|row| format_non_string_attr_value(arr, row, field_name))
+        .collect()
 }
 
 /// Encode a KeyValue with double AnyValue (`AnyValue.double_value`).
