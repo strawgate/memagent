@@ -314,8 +314,12 @@ const icons: Record<string, string> = {
     padding: 1rem 0;
   }
 
-  /* Override Starlight's lobotomized owl spacing (+ * { margin-top }) */
-  .pd-grid > * { margin-top: 0 !important; }
+  /* Override Starlight's lobotomized owl spacing (* + * { margin-top })
+     which adds 16px top margin to every sibling after the first.
+     This breaks all flex/grid alignment in our diagram. */
+  .pd :is(.pd-grid, .pd-chips, .pd-flow-steps, .pd-tags, .pd-panel, .pd-detail, .pd-panel-head) > * {
+    margin-top: 0 !important;
+  }
 
   .pd-stage {
     display: flex;
