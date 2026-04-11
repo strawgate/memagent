@@ -204,7 +204,10 @@ capacity-independent so small values suffice for model checking.
 | `NoCpuStopBeforeIoDrain` | Safety | cpu_workers_stopped implies io_channels_drained |
 | `NoJoinBeforePipelineDrain` | Safety | workers_joined implies pipeline_channel_drained |
 | `NoStopBeforeJoin` | Safety | machine_stopped implies workers_joined |
+| `MachineStoppedImpliesOutputTerminal` | Safety | machine_stopped implies output health is terminal (`Stopped` or `Failed`) |
 | `NormalStopImpliesPoolDrained` | Safety | normal stop (not forced) implies pool fully drained |
+| `ForcedStopImpliesOutputFailed` | Safety | forced stop reports terminal output failure |
+| `DrainFlagsConsistent` | Safety | latched shutdown milestones imply their underlying worker/channel state |
 | `IoConservation` | Safety | per-input: produced = in_io_channel + cpu_forwarded (no dup/loss) |
 | `PipelineConservation` | Safety | total forwarded = in_pipeline_channel + consumed (no dup/loss) |
 | `ShutdownCompletes` | Liveness | shutdown signal leads to machine_stopped |
@@ -212,12 +215,16 @@ capacity-independent so small values suffice for model checking.
 | `IoCpuChannelEventuallyDrained` | Liveness | all I/O workers stopped leads to io_channels_drained |
 | `CpuWorkersEventuallyStop` | Liveness | all I/O workers stopped leads to all CPU workers stopped |
 | `EventualStop` | Liveness | machine eventually reaches stopped state permanently |
+| `OutputFailureSticky` | Liveness | once output health is failed, it remains failed |
 | `ShutdownReachable` | Reachability | shutdown_signaled is reachable (vacuity guard) |
 | `IoChannelsDrainedReachable` | Reachability | io_channels_drained is reachable |
 | `CpuWorkersStoppedReachable` | Reachability | cpu_workers_stopped is reachable |
 | `PipelineChannelDrainedReachable` | Reachability | pipeline_channel_drained is reachable |
+| `WorkersJoinedReachable` | Reachability | workers_joined is reachable |
+| `PoolDrainedReachable` | Reachability | pool_drained is reachable |
 | `NormalStopReachable` | Reachability | normal stop is reachable |
 | `ForceStopReachable` | Reachability | force stop is reachable |
+| `OutputFailedReachable` | Reachability | output failure path is reachable |
 | `IoChannelFullReachable` | Reachability | at least one io channel reaches capacity (backpressure) |
 | `PipelineChannelFullReachable` | Reachability | pipeline channel reaches capacity (backpressure) |
 
