@@ -389,6 +389,13 @@ impl Pipeline {
             self.inputs.len(),
             self.input_transforms.len(),
         );
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::PipelinePhase {
+                phase: crate::turmoil_barriers::PipelinePhase::Running,
+            },
+        )
+        .await;
         // Spawn input threads. Each polls its source, parses format, and
         // sends accumulated JSON lines through a bounded channel.
         // Backpressure: when the channel is full, the input thread blocks.
@@ -558,6 +565,13 @@ impl Pipeline {
 
         // Drain the pool: signal workers to finish current item and exit,
         // then wait up to 60s for graceful shutdown.
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::PipelinePhase {
+                phase: crate::turmoil_barriers::PipelinePhase::Draining,
+            },
+        )
+        .await;
         self.pool.drain(Duration::from_secs(60)).await;
 
         // Drain remaining acks that workers sent before exiting.
@@ -605,6 +619,13 @@ impl Pipeline {
             }
         }
 
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::PipelinePhase {
+                phase: crate::turmoil_barriers::PipelinePhase::Stopped,
+            },
+        )
+        .await;
         Ok(())
     }
 

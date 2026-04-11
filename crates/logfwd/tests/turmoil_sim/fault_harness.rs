@@ -9,19 +9,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use futures_util::FutureExt;
 use logfwd::pipeline::Pipeline;
+use logfwd_runtime::turmoil_barriers::RuntimeBarrierEvent;
 use logfwd_test_utils::sinks::CountingSink;
 use logfwd_types::pipeline::SourceId;
-use tempfile::NamedTempFile;
 use tokio_util::sync::CancellationToken;
+use turmoil::barriers::Barrier;
 
 use super::channel_input::ChannelInputSource;
 use super::instrumented_sink::{FailureAction, InstrumentedSink};
 use super::observable_checkpoint::{CheckpointHandle, ObservableCheckpointStore};
 use super::tcp_server::{TcpServerHandle, run_tcp_server};
 use super::trace_bridge::{
-    TraceEvent, TracePhase, TraceRecorder, TransitionValidator, load_trace,
-    normalized_contract_trace,
+    TraceEvent, TransitionValidator, normalized_contract_trace, trace_event_from_runtime_barrier,
 };
 use super::turmoil_tcp_sink::TurmoilTcpSink;
 
@@ -217,14 +218,11 @@ impl FaultScenario {
         let mut call_counter = Arc::new(AtomicU64::new(0));
         let mut checkpoint_handle: Option<CheckpointHandle> = None;
         let mut tcp_server_handle: Option<TcpServerHandle> = None;
-        let trace_path = NamedTempFile::new()
-            .expect("create temp trace")
-            .into_temp_path();
-        let trace = TraceRecorder::new(&trace_path).expect("create trace recorder");
+        let mut runtime_events_barrier = Barrier::new(|_: &RuntimeBarrierEvent| true);
+        let mut trace_events = Vec::new();
 
         match &self.sink_mode {
             SinkMode::TurmoilTcp => {
-                let trace_for_pipeline = trace.clone();
                 let server = TcpServerHandle::new();
                 let sh = server.clone();
                 sim.host("server", move || {
@@ -242,7 +240,6 @@ impl FaultScenario {
                     || scenario.arm_checkpoint_crash_after.is_some()
                 {
                     let (store, handle) = ObservableCheckpointStore::new();
-                    let store = store.with_trace_recorder(trace_for_pipeline.clone());
                     checkpoint_handle = Some(handle.clone());
                     Some((store, handle))
                 } else {
@@ -250,9 +247,6 @@ impl FaultScenario {
                 };
 
                 sim.client("pipeline", async move {
-                    trace_for_pipeline.record(TraceEvent::Phase {
-                        phase: TracePhase::Running,
-                    });
                     let lines = generate_json_lines(scenario.lines);
                     let input = ChannelInputSource::new("scenario", scenario.source_id, lines);
 
@@ -277,27 +271,18 @@ impl FaultScenario {
 
                     let shutdown = CancellationToken::new();
                     let sd = shutdown.clone();
-                    let trace_for_shutdown = trace_for_pipeline.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(scenario.shutdown_after).await;
-                        trace_for_shutdown.record(TraceEvent::Phase {
-                            phase: TracePhase::Draining,
-                        });
                         sd.cancel();
                     });
 
                     let run_result = pipeline.run_async(&shutdown).await;
                     run_result?;
-                    trace_for_pipeline.record(TraceEvent::Phase {
-                        phase: TracePhase::Stopped,
-                    });
                     Ok(())
                 });
             }
             SinkMode::Instrumented { script } => {
-                let trace_for_pipeline = trace.clone();
-                let sink = InstrumentedSink::new(script.clone())
-                    .with_trace_recorder(trace_for_pipeline.clone());
+                let sink = InstrumentedSink::new(script.clone());
                 delivered_counter = sink.delivered_counter();
                 call_counter = sink.call_counter();
 
@@ -306,7 +291,6 @@ impl FaultScenario {
                     || scenario.arm_checkpoint_crash_after.is_some()
                 {
                     let (store, handle) = ObservableCheckpointStore::new();
-                    let store = store.with_trace_recorder(trace_for_pipeline.clone());
                     checkpoint_handle = Some(handle.clone());
                     Some((store, handle))
                 } else {
@@ -314,9 +298,6 @@ impl FaultScenario {
                 };
 
                 sim.client("pipeline", async move {
-                    trace_for_pipeline.record(TraceEvent::Phase {
-                        phase: TracePhase::Running,
-                    });
                     let lines = generate_json_lines(scenario.lines);
                     let input = ChannelInputSource::new("scenario", scenario.source_id, lines);
                     let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
@@ -340,25 +321,17 @@ impl FaultScenario {
 
                     let shutdown = CancellationToken::new();
                     let sd = shutdown.clone();
-                    let trace_for_shutdown = trace_for_pipeline.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(scenario.shutdown_after).await;
-                        trace_for_shutdown.record(TraceEvent::Phase {
-                            phase: TracePhase::Draining,
-                        });
                         sd.cancel();
                     });
 
                     let run_result = pipeline.run_async(&shutdown).await;
                     run_result?;
-                    trace_for_pipeline.record(TraceEvent::Phase {
-                        phase: TracePhase::Stopped,
-                    });
                     Ok(())
                 });
             }
             SinkMode::Counting => {
-                let trace_for_pipeline = trace.clone();
                 let sink = CountingSink::new(delivered_counter.clone());
                 let scenario = self.clone();
 
@@ -366,7 +339,6 @@ impl FaultScenario {
                     || scenario.arm_checkpoint_crash_after.is_some()
                 {
                     let (store, handle) = ObservableCheckpointStore::new();
-                    let store = store.with_trace_recorder(trace_for_pipeline.clone());
                     checkpoint_handle = Some(handle.clone());
                     Some((store, handle))
                 } else {
@@ -374,9 +346,6 @@ impl FaultScenario {
                 };
 
                 sim.client("pipeline", async move {
-                    trace_for_pipeline.record(TraceEvent::Phase {
-                        phase: TracePhase::Running,
-                    });
                     let lines = generate_json_lines(scenario.lines);
                     let input = ChannelInputSource::new("scenario", scenario.source_id, lines);
                     let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
@@ -400,20 +369,13 @@ impl FaultScenario {
 
                     let shutdown = CancellationToken::new();
                     let sd = shutdown.clone();
-                    let trace_for_shutdown = trace_for_pipeline.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(scenario.shutdown_after).await;
-                        trace_for_shutdown.record(TraceEvent::Phase {
-                            phase: TracePhase::Draining,
-                        });
                         sd.cancel();
                     });
 
                     let run_result = pipeline.run_async(&shutdown).await;
                     run_result?;
-                    trace_for_pipeline.record(TraceEvent::Phase {
-                        phase: TracePhase::Stopped,
-                    });
                     Ok(())
                 });
             }
@@ -424,48 +386,41 @@ impl FaultScenario {
 
         let mut applied_network_fault_steps = Vec::new();
         let run_outcome = catch_unwind(AssertUnwindSafe(|| {
-            if network_faults.is_empty() {
-                sim.run()
-            } else {
-                let mut faults = network_faults.iter().peekable();
-                let mut step = 0usize;
+            let mut faults = network_faults.iter().peekable();
+            let mut step = 0usize;
+
+            while let Some(fault) = faults.peek() {
+                if fault.step != 0 {
+                    break;
+                }
+                applied_network_fault_steps.push(fault.step);
+                apply_network_fault(&mut sim, fault);
+                faults.next();
+            }
+
+            loop {
+                if sim.step()? {
+                    break Ok::<(), Box<dyn std::error::Error>>(());
+                }
+                drain_runtime_events(&mut runtime_events_barrier, &mut trace_events);
+                step += 1;
                 while let Some(fault) = faults.peek() {
-                    if fault.step != 0 {
+                    if fault.step != step {
                         break;
                     }
                     applied_network_fault_steps.push(fault.step);
                     apply_network_fault(&mut sim, fault);
                     faults.next();
                 }
-                while faults.peek().is_some() {
-                    if sim.step()? {
-                        return Ok(());
-                    }
-                    step += 1;
-                    while let Some(fault) = faults.peek() {
-                        if fault.step != step {
-                            break;
-                        }
-                        applied_network_fault_steps.push(fault.step);
-                        apply_network_fault(&mut sim, fault);
-                        faults.next();
-                    }
-                }
-                sim.run()
             }
         }));
+        drain_runtime_events(&mut runtime_events_barrier, &mut trace_events);
 
         let (panicked, sim_error) = match run_outcome {
             Ok(Ok(())) => (false, None),
             Ok(Err(err)) => (false, Some(err.to_string())),
             Err(_) => (true, None),
         };
-        let trace_events = load_trace(&trace_path).unwrap_or_else(|err| {
-            panic!(
-                "failed to load turmoil trace from {}: {err}",
-                trace_path.display()
-            )
-        });
         let trace_validation_error = TransitionValidator::default().validate(&trace_events).err();
         let normalized_trace = normalized_contract_trace(&trace_events);
 
@@ -487,6 +442,20 @@ impl FaultScenario {
             typed_contract.verify(&outcome);
         }
         outcome
+    }
+}
+
+fn drain_runtime_events(barrier: &mut Barrier<RuntimeBarrierEvent>, events: &mut Vec<TraceEvent>) {
+    loop {
+        let mut wait = Box::pin(barrier.wait());
+        match wait.as_mut().now_or_never() {
+            Some(Some(triggered)) => {
+                if let Some(event) = trace_event_from_runtime_barrier(&triggered) {
+                    events.push(event);
+                }
+            }
+            Some(None) | None => break,
+        }
     }
 }
 

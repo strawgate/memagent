@@ -30,6 +30,11 @@ pub(super) async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore)
         .await;
 
         if internal_faults::checkpoint_flush_should_fail() {
+            #[cfg(feature = "turmoil")]
+            crate::turmoil_barriers::trigger(
+                crate::turmoil_barriers::RuntimeBarrierEvent::CheckpointFlush { success: false },
+            )
+            .await;
             if should_retry_flush(attempt, MAX_ATTEMPTS) {
                 tracing::warn!(
                     attempt,
@@ -47,12 +52,24 @@ pub(super) async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore)
 
         match store.flush() {
             Ok(()) => {
+                #[cfg(feature = "turmoil")]
+                crate::turmoil_barriers::trigger(
+                    crate::turmoil_barriers::RuntimeBarrierEvent::CheckpointFlush { success: true },
+                )
+                .await;
                 if attempt > 0 {
                     tracing::info!(attempt, "pipeline: checkpoint flush succeeded after retry");
                 }
                 return;
             }
             Err(e) => {
+                #[cfg(feature = "turmoil")]
+                crate::turmoil_barriers::trigger(
+                    crate::turmoil_barriers::RuntimeBarrierEvent::CheckpointFlush {
+                        success: false,
+                    },
+                )
+                .await;
                 if should_retry_flush(attempt, MAX_ATTEMPTS) {
                     tracing::warn!(
                         attempt,

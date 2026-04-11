@@ -9,6 +9,8 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use logfwd_runtime::turmoil_barriers::{PipelinePhase, RuntimeBarrierEvent};
+use logfwd_runtime::worker_pool::DeliveryOutcome;
 use serde_json::{Value, json};
 
 /// Runtime trace event schema (JSONL row).
@@ -41,6 +43,43 @@ impl TraceEvent {
             }
             Self::CheckpointFlush { success } => format!("checkpoint_flush success={success}"),
         }
+    }
+}
+
+/// Convert runtime-emitted turmoil barrier events into contract trace events.
+#[must_use]
+pub fn trace_event_from_runtime_barrier(event: &RuntimeBarrierEvent) -> Option<TraceEvent> {
+    match event {
+        RuntimeBarrierEvent::PipelinePhase { phase } => {
+            let phase = match phase {
+                PipelinePhase::Running => TracePhase::Running,
+                PipelinePhase::Draining => TracePhase::Draining,
+                PipelinePhase::Stopped => TracePhase::Stopped,
+            };
+            Some(TraceEvent::Phase { phase })
+        }
+        RuntimeBarrierEvent::BeforeWorkerAckSend {
+            outcome, num_rows, ..
+        } => {
+            let outcome = match outcome {
+                DeliveryOutcome::Delivered => SinkOutcome::Ok,
+                DeliveryOutcome::Rejected { .. } => SinkOutcome::Rejected,
+                DeliveryOutcome::InternalFailure => SinkOutcome::Panic,
+                DeliveryOutcome::RetryExhausted
+                | DeliveryOutcome::TimedOut
+                | DeliveryOutcome::PoolClosed
+                | DeliveryOutcome::WorkerChannelClosed
+                | DeliveryOutcome::NoWorkersAvailable => SinkOutcome::IoError,
+            };
+            Some(TraceEvent::SinkResult {
+                outcome,
+                rows: *num_rows,
+            })
+        }
+        RuntimeBarrierEvent::CheckpointFlush { success } => {
+            Some(TraceEvent::CheckpointFlush { success: *success })
+        }
+        RuntimeBarrierEvent::BeforeCheckpointFlushAttempt { .. } => None,
     }
 }
 

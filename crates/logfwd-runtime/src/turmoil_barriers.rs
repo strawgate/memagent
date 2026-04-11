@@ -5,18 +5,31 @@
 
 use crate::worker_pool::DeliveryOutcome;
 
+/// Pipeline lifecycle phases emitted by runtime seam hooks.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PipelinePhase {
+    Running,
+    Draining,
+    Stopped,
+}
+
 /// Barrier events emitted by runtime seam hooks.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RuntimeBarrierEvent {
+    /// Emitted when the pipeline transitions between lifecycle phases.
+    PipelinePhase { phase: PipelinePhase },
     /// Emitted by worker tasks immediately before sending an ack item.
     BeforeWorkerAckSend {
         worker_id: usize,
         batch_id: u64,
         outcome: DeliveryOutcome,
         retries: usize,
+        num_rows: u64,
     },
     /// Emitted by checkpoint I/O immediately before each flush attempt.
     BeforeCheckpointFlushAttempt { attempt: u32 },
+    /// Emitted by checkpoint I/O after a flush attempt resolves.
+    CheckpointFlush { success: bool },
 }
 
 /// Trigger a Turmoil barrier event.

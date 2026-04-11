@@ -137,6 +137,7 @@ pub(super) async fn worker_task(
                                 batch_id: ack.batch_id,
                                 outcome: ack.outcome.clone(),
                                 retries,
+                                num_rows: ack.num_rows,
                             },
                         )
                         .await;
