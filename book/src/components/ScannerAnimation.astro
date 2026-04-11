@@ -35,12 +35,9 @@ const extractRanges = {
   {/* Play controls */}
   <div class="sa-playbar">
     <button class="sa-play-btn" data-sa-play aria-label="Play animation">
-      <svg class="sa-play-icon" viewBox="0 0 20 20" width="16" height="16">
-        <polygon points="4,2 18,10 4,18" fill="currentColor" />
-      </svg>
-      <svg class="sa-pause-icon" viewBox="0 0 20 20" width="16" height="16" hidden>
-        <rect x="3" y="2" width="5" height="16" rx="1" fill="currentColor" />
-        <rect x="12" y="2" width="5" height="16" rx="1" fill="currentColor" />
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+        <path class="sa-icon-play" d="M8 5v14l11-7z" />
+        <path class="sa-icon-pause" d="M6 4h4v16H6zm8 0h4v16h-4z" style="display:none" />
       </svg>
     </button>
     <div class="sa-progress">
@@ -67,8 +64,9 @@ const extractRanges = {
       const cc = charClasses[byte];
       return (
         <div
-          class={`sa-byte ${cc ? cc.cls : ''}`}
+          class="sa-byte"
           data-index={i}
+          data-cls={cc ? cc.cls : ''}
           data-structural={cc ? 'true' : 'false'}
           data-in-string={stringMask[i] ? 'true' : 'false'}
           data-struct-outside={structOutside[i] ? 'true' : 'false'}
@@ -153,8 +151,8 @@ const extractRanges = {
     transition: background 0.12s;
   }
   .sa-play-btn:hover { background: color-mix(in srgb, var(--sa-accent) 12%, transparent); }
-  .sa[data-playing="true"] .sa-play-icon { display: none; }
-  .sa[data-playing="true"] .sa-pause-icon { display: block !important; }
+  .sa[data-playing="true"] .sa-icon-play { display: none; }
+  .sa[data-playing="true"] .sa-icon-pause { display: block !important; }
 
   .sa-progress {
     flex: 1;
@@ -355,67 +353,95 @@ const extractRanges = {
 <script>
   document.querySelectorAll<HTMLDivElement>('[data-sa-root]').forEach((root) => {
     const explanation = root.querySelector<HTMLDivElement>('[data-sa-explanation]')!;
+    const byteEls = root.querySelectorAll<HTMLDivElement>('.sa-byte');
     const bits = root.querySelectorAll<HTMLSpanElement>('.sa-bit');
     const extract = root.querySelector<HTMLDivElement>('[data-sa-extract]')!;
     const pills = root.querySelectorAll<HTMLButtonElement>('.sa-pill');
     const playBtn = root.querySelector<HTMLButtonElement>('[data-sa-play]')!;
     const progressFill = root.querySelector<HTMLDivElement>('[data-sa-progress]')!;
 
+    const colorClasses = ['sc-quote', 'sc-colon', 'sc-comma', 'sc-brace', 'sc-bracket', 'sc-escape'];
+
     const stepData = [
       { id: 'raw', title: 'Step 1: Raw bytes',
         desc: 'A JSON log line arrives as raw bytes. logfwd processes the entire buffer in 64-byte SIMD blocks — not character by character.' },
       { id: 'detect', title: 'Step 2: SIMD structural detection',
-        desc: 'One SIMD instruction compares all bytes against 10 structural characters simultaneously. On AVX2, 32 bytes per cycle. Watch the bitmask fill in below — each <strong>1</strong> marks a structural character.' },
+        desc: 'One SIMD instruction compares all bytes against 10 structural characters simultaneously. On AVX2, 32 bytes per cycle. Watch the structural characters light up as the bitmask fills in.' },
       { id: 'strings', title: 'Step 3: String interior mask',
         desc: 'Quote positions feed into <code>prefix_xor</code> — 6 XOR shifts that produce a mask of which bytes are inside strings. Structural characters inside strings (like colons in <em>"request failed"</em>) get dashed borders — they\'re ignored.' },
       { id: 'result', title: 'Step 4: Usable structural positions',
         desc: 'The final bitmask: only structural characters <strong>outside</strong> strings survive. Finding the next colon or comma is a single <code>trailing_zeros</code> instruction — O(1) instead of scanning byte-by-byte.' },
       { id: 'extract', title: 'Step 5: Field extraction',
-        desc: 'Now the field extractor uses the bitmask to jump directly to each colon, read the key to the left and value to the right. Zero scanning. Each field is extracted in constant time.' },
+        desc: 'The field extractor uses the bitmask to jump directly to each colon, read the key to the left and value to the right. Zero scanning — each field is extracted in constant time.' },
     ];
 
     let currentStep = 0;
     let playing = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const STEP_DURATION = 3500;
+    let autoTimer: number | null = null;
+    let sweepTimers: number[] = [];
+    const STEP_DURATION = 4000;
+
+    function clearSweepTimers() {
+      sweepTimers.forEach(t => clearTimeout(t));
+      sweepTimers = [];
+    }
+
+    function stripColors() {
+      byteEls.forEach(el => colorClasses.forEach(c => el.classList.remove(c)));
+    }
+
+    function applyAllColors() {
+      byteEls.forEach(el => {
+        const cls = el.dataset.cls;
+        if (cls) el.classList.add(cls);
+      });
+    }
 
     function goToStep(index: number) {
       currentStep = index;
       const step = stepData[index];
       root.dataset.step = step.id;
+      clearSweepTimers();
 
-      // Update pills
       pills.forEach((p, i) => p.classList.toggle('sa-pill--active', i === index));
-
-      // Update explanation
       explanation.innerHTML = `<strong>${step.title}</strong><p>${step.desc}</p>`;
+      progressFill.style.width = `${((index + 1) / stepData.length) * 100}%`;
 
-      // Update bitmask
       if (step.id === 'raw') {
+        // Step 1: plain bytes, no colors, empty bitmask
+        stripColors();
         bits.forEach(b => { b.textContent = '·'; b.classList.remove('sa-bit--on'); });
+        extract.hidden = true;
+
       } else if (step.id === 'detect') {
-        // Animate bitmask filling in sequentially
-        bits.forEach((b, i) => {
-          const isStruct = b.dataset.isStructural === 'true';
-          setTimeout(() => {
-            b.textContent = isStruct ? '1' : '0';
-            b.classList.toggle('sa-bit--on', isStruct);
-          }, i * 12); // sweep across at ~12ms per bit
+        // Step 2: sweep — color each byte AND its bitmask bit simultaneously
+        stripColors();
+        bits.forEach(b => { b.textContent = '·'; b.classList.remove('sa-bit--on'); });
+        extract.hidden = true;
+
+        byteEls.forEach((el, i) => {
+          const cls = el.dataset.cls;
+          const isStruct = el.dataset.structural === 'true';
+          const bit = bits[i];
+          sweepTimers.push(window.setTimeout(() => {
+            if (cls) el.classList.add(cls);
+            if (bit) {
+              bit.textContent = isStruct ? '1' : '0';
+              if (isStruct) bit.classList.add('sa-bit--on');
+            }
+          }, i * 14));
         });
-      } else if (step.id === 'strings' || step.id === 'result' || step.id === 'extract') {
-        // Show final bitmask immediately (structural outside strings only)
+
+      } else {
+        // Steps 3-5: all colors applied immediately, full bitmask shown
+        applyAllColors();
         bits.forEach(b => {
           const isStruct = b.dataset.isStructural === 'true';
           b.textContent = isStruct ? '1' : '0';
           b.classList.toggle('sa-bit--on', isStruct);
         });
+        extract.hidden = step.id !== 'extract';
       }
-
-      // Show/hide extraction result
-      extract.hidden = step.id !== 'extract';
-
-      // Update progress bar
-      progressFill.style.width = `${((index + 1) / stepData.length) * 100}%`;
     }
 
     function startPlaying() {
@@ -427,26 +453,20 @@ const extractRanges = {
     function stopPlaying() {
       playing = false;
       root.dataset.playing = 'false';
-      if (timer) { clearTimeout(timer); timer = null; }
+      if (autoTimer !== null) { clearTimeout(autoTimer); autoTimer = null; }
     }
 
     function scheduleNext() {
       if (!playing) return;
-      timer = setTimeout(() => {
-        if (currentStep < stepData.length - 1) {
-          goToStep(currentStep + 1);
-          scheduleNext();
-        } else {
-          // Loop back to start after a longer pause
-          timer = setTimeout(() => {
-            goToStep(0);
-            scheduleNext();
-          }, 4000);
-        }
-      }, STEP_DURATION);
+      const delay = currentStep === stepData.length - 1 ? 5000 : STEP_DURATION;
+      autoTimer = window.setTimeout(() => {
+        if (!playing) return;
+        const next = (currentStep + 1) % stepData.length;
+        goToStep(next);
+        scheduleNext();
+      }, delay);
     }
 
-    // Play/pause button
     playBtn.addEventListener('click', () => {
       if (playing) {
         stopPlaying();
@@ -456,7 +476,6 @@ const extractRanges = {
       }
     });
 
-    // Step pills — click to jump, stop autoplay
     pills.forEach((pill) => {
       pill.addEventListener('click', () => {
         stopPlaying();
@@ -464,7 +483,6 @@ const extractRanges = {
       });
     });
 
-    // Initialize
     goToStep(0);
   });
 </script>
