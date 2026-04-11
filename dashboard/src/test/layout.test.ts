@@ -35,7 +35,6 @@ function makeTr(overrides: Partial<TraceRecord> = {}): TraceRecord {
     flush_reason: "size",
     errors: 0,
     status: "unset",
-    lifecycle_state: "completed",
     ...overrides,
   };
 }
@@ -200,8 +199,9 @@ describe("layoutSwimlane", () => {
       start_unix_ns: (nowMs - 5_000) * 1e6,
       scan_ns: 100_000_000, // short initial value — will be overridden by live extension
       transform_ns: 0,
-      lifecycle_state: "scan_in_progress",
-      lifecycle_state_start_unix_ns: stageStartNs,
+      in_progress: true,
+      stage: "scan",
+      stage_start_unix_ns: stageStartNs,
     });
     const scanLane = makeLane(SCAN_LANE, [tr]);
     const bars = layoutSwimlane([scanLane], windowMs, nowMs, null, tr.bytes_in, W);
@@ -229,8 +229,9 @@ describe("layoutSwimlane", () => {
       start_unix_ns: (nowMs - 100) * 1e6, // started just now
       scan_ns: 50_000_000,
       transform_ns: 0,
-      lifecycle_state: "scan_in_progress",
-      lifecycle_state_start_unix_ns: stageStartNs,
+      in_progress: true,
+      stage: "scan",
+      stage_start_unix_ns: stageStartNs,
     });
     const scanLane = makeLane(SCAN_LANE, [tr]);
     const bars = layoutSwimlane([scanLane], windowMs, nowMs, null, tr.bytes_in, W);
@@ -246,15 +247,16 @@ describe("layoutSwimlane", () => {
 
   // 8. Stale guard: in-progress batch older than 60s is NOT extended
   it("stale guard: in-progress stage older than 60s not extended to now", () => {
-    // lifecycle_state_start_unix_ns is 90 seconds ago — beyond the 60s stale guard
+    // stage_start_unix_ns is 90 seconds ago — beyond the 60s stale guard
     const stageStartNs = (nowMs - 90_000) * 1e6;
     const staticScanNs = 200_000_000; // 200 ms
     const tr = makeTr({
       start_unix_ns: (nowMs - 10_000) * 1e6,
       scan_ns: staticScanNs,
       transform_ns: 0,
-      lifecycle_state: "scan_in_progress",
-      lifecycle_state_start_unix_ns: stageStartNs,
+      in_progress: true,
+      stage: "scan",
+      stage_start_unix_ns: stageStartNs,
     });
     const scanLane = makeLane(SCAN_LANE, [tr]);
     const bars = layoutSwimlane([scanLane], windowMs, nowMs, null, tr.bytes_in, W);
@@ -313,8 +315,9 @@ describe("layoutSwimlane", () => {
       output_ns: 0,
       output_start_unix_ns: 0, // not yet assigned
       worker_id: -1, // no worker yet
-      lifecycle_state: "queued_for_output",
-      lifecycle_state_start_unix_ns: stageStartNs,
+      in_progress: true,
+      stage: "output",
+      stage_start_unix_ns: stageStartNs,
     });
     const workerLane = makeLane(0, [tr]);
     const bars = layoutSwimlane(
@@ -346,7 +349,7 @@ describe("layoutSwimlane", () => {
       start_unix_ns: (nowMs - 100 - scanMs) * 1e6,
       scan_ns: scanMs * 1e6,
       transform_ns: 0,
-      lifecycle_state: "completed",
+      in_progress: false,
     });
     const scanLane = makeLane(SCAN_LANE, [tr]);
     const bars = layoutSwimlane([scanLane], windowMs, nowMs, null, tr.bytes_in, W);
@@ -360,7 +363,7 @@ describe("layoutSwimlane", () => {
       start_unix_ns: (nowMs - 1_000 - scanMs) * 1e6,
       scan_ns: scanMs * 1e6,
       transform_ns: 100_000_000,
-      lifecycle_state: "completed",
+      in_progress: false,
     });
     const scanLane = makeLane(SCAN_LANE, [tr]);
     const bars = layoutSwimlane([scanLane], windowMs, nowMs, null, tr.bytes_in, W);
@@ -416,7 +419,7 @@ describe("layoutSwimlane", () => {
       worker_id: 0,
       send_ns: 0, // no send/recv breakdown, uses C.output
       recv_ns: 0,
-      lifecycle_state: "completed",
+      in_progress: false,
     });
     const workerLane = makeLane(0, [tr]);
     const bars = layoutSwimlane(

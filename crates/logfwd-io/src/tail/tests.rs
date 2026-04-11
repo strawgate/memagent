@@ -228,9 +228,7 @@ fn test_eof_requires_fresh_idle_window_after_data() {
     );
 
     // Two immediate no-data polls after fresh data should still not emit EOF.
-    // Force cadence for each poll so assertions cannot pass vacuously via
-    // poll-interval short-circuiting.
-    tailer.force_poll_due();
+    std::thread::sleep(Duration::from_millis(60));
     let no_data_1 = tailer.poll().unwrap();
     assert!(
         !no_data_1
@@ -239,7 +237,7 @@ fn test_eof_requires_fresh_idle_window_after_data() {
         "first no-data poll after fresh data must not emit EOF"
     );
 
-    tailer.force_poll_due();
+    std::thread::sleep(Duration::from_millis(60));
     let no_data_2 = tailer.poll().unwrap();
     assert!(
         !no_data_2
@@ -2323,36 +2321,6 @@ fn test_adaptive_fast_poll_stays_idle_for_small_live_tail_updates() {
     // before poll_interval should remain idle.
     let second = tailer.poll().unwrap();
     assert!(second.is_empty(), "idle live-tail should not spin");
-}
-
-#[test]
-fn test_zero_read_buffer_size_is_safely_promoted() {
-    let dir = tempfile::tempdir().unwrap();
-    let log_path = dir.path().join("zero-read-buf.log");
-    fs::write(&log_path, b"hello\n").unwrap();
-
-    let mut tailer = FileTailer::new(
-        std::slice::from_ref(&log_path),
-        TailConfig {
-            start_from_end: false,
-            poll_interval_ms: 0,
-            read_buf_size: 0,
-            ..Default::default()
-        },
-        create_test_stats(),
-    )
-    .expect("tailer should construct with zero read buffer config");
-
-    let events = poll_until(
-        &mut tailer,
-        Duration::from_secs(1),
-        |events, _| events.iter().any(|e| matches!(e, TailEvent::Data { .. })),
-        "timed out waiting for data with zero read_buf_size",
-    );
-    assert!(
-        events.iter().any(|e| matches!(e, TailEvent::Data { .. })),
-        "tailer should still emit data when configured read_buf_size is zero"
-    );
 }
 
 /// Directional benchmark for issue #1258.

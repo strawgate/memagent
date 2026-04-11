@@ -7,8 +7,9 @@ use std::sync::Arc;
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
-use memchr::memchr_iter;
 use tokio::io::AsyncWriteExt;
+
+use memchr::memchr_iter;
 
 use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::field_names;
@@ -447,7 +448,6 @@ impl Sink for StdoutSink {
             }
 
             let bytes_written = self.output_buf.len() as u64;
-            let rendered_lines = memchr_iter(b'\n', &self.output_buf).count() as u64;
 
             // Write the pre-rendered buffer to async stdout in one shot.
             let mut stdout = tokio::io::stdout();
@@ -458,7 +458,8 @@ impl Sink for StdoutSink {
                 return SendResult::IoError(e);
             }
 
-            self.stats.inc_lines(rendered_lines);
+            let lines_written = memchr_iter(b'\n', &self.output_buf).count() as u64;
+            self.stats.inc_lines(lines_written);
             self.stats.inc_bytes(bytes_written);
             SendResult::Ok
         })

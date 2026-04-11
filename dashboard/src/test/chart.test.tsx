@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/preact";
-import type { MetricSeries } from "../app";
-import { CHART_CONSTANTS, Chart } from "../components/Chart";
 import { RingBuffer } from "../lib/ring";
+import { Chart, CHART_CONSTANTS } from "../components/Chart";
+import type { MetricSeries } from "../app";
 
 // ─── uPlot mock ──────────────────────────────────────────────────────────────
 

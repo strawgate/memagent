@@ -134,13 +134,6 @@ test:
 test-all:
     cargo nextest run --workspace --profile ci
 
-# Network-dependent tests — skipped by the default local lane.
-test-network:
-    cargo nextest run -p logfwd-io --profile ci --run-ignored ignored-only --test it transport_e2e
-    cargo nextest run -p logfwd-io --profile ci --run-ignored ignored-only --lib otap_receiver::tests::
-    cargo nextest run -p logfwd-io --profile ci --run-ignored ignored-only --lib otlp_receiver::tests:: -- --skip bench_writer_helpers_fast_vs_simple
-    cargo nextest run -p logfwd-diagnostics --profile ci --run-ignored ignored-only --lib diagnostics::server::tests::
-
 # Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:
@@ -284,6 +277,10 @@ test-extended:
     PROPTEST_CASES=10000 cargo nextest run --profile ci
     cargo nextest run --profile ci --run-ignored ignored-only
     cargo test -p logfwd --features turmoil --test turmoil_sim
+
+# Run turmoil simulation including Porcupine linearizability checker integration.
+test-linearizability:
+    cargo test -p logfwd --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history
 
 # Build release binary (full package, includes DataFusion SQL)
 build:

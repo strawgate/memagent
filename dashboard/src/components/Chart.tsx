@@ -17,7 +17,7 @@ export const CHART_CONSTANTS = {
 export function buildChartOpts(
   series: MetricSeries,
   width: number,
-  points: ReturnType<MetricSeries["ring"]["bucket"]>
+  points: ReturnType<MetricSeries["ring"]["bucket"]>,
 ): uPlot.Options {
   const { CHART_HEIGHT, CHART_PADDING, CHART_FONT, MAX_WINDOW_SEC, MIN_WINDOW_SEC } =
     CHART_CONSTANTS;
@@ -124,11 +124,7 @@ export function Chart({ series }: Props) {
           const vals = pts.map((p) => p.v);
           const lastVal = vals[vals.length - 1];
           const initYe = vals.map((_, i) => (i === vals.length - 1 ? lastVal : null));
-          const plot = new uPlot(
-            buildChartOpts(series, el.offsetWidth, pts),
-            [times, vals, initYe],
-            el
-          );
+          const plot = new uPlot(buildChartOpts(series, el.offsetWidth, pts), [times, vals, initYe], el);
           plotRef.current = plot;
 
           const ro = new ResizeObserver(() => {
@@ -158,8 +154,8 @@ export function Chart({ series }: Props) {
           ye[n] = lastVal;
 
           plotRef.current.batch(() => {
-            plotRef.current?.setData([xs, ys, ye]);
-            plotRef.current?.setScale("x", { min: now2 - win2, max: now2 });
+            plotRef.current!.setData([xs, ys, ye]);
+            plotRef.current!.setScale("x", { min: now2 - win2, max: now2 });
           });
         }
       }

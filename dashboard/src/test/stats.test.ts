@@ -3,12 +3,6 @@ import type { TraceRecord } from "../types";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-/** Assert a value is non-null and return it with narrowed type. */
-function assertDefined<T>(value: T | null | undefined, msg = "expected non-null"): T {
-  if (value == null) throw new Error(msg);
-  return value;
-}
-
 let nextId = 1;
 
 /**
@@ -34,7 +28,6 @@ function makeTr(overrides: Partial<TraceRecord> = {}): TraceRecord {
     errors: 0,
     status: "ok",
     worker_id: 0,
-    lifecycle_state: "completed",
     ...overrides,
   };
 }
@@ -56,9 +49,9 @@ describe("computeStats", () => {
 
   it("returns null when only in-progress traces exist", () => {
     const traces = [
-      makeTr({ lifecycle_state: "scan_in_progress" }),
-      makeTr({ lifecycle_state: "scan_in_progress" }),
-      makeTr({ lifecycle_state: "scan_in_progress" }),
+      makeTr({ in_progress: true }),
+      makeTr({ in_progress: true }),
+      makeTr({ in_progress: true }),
     ];
     expect(computeStats(traces)).toBeNull();
   });
@@ -66,8 +59,8 @@ describe("computeStats", () => {
   it("returns null when only one completed trace and rest are in-progress", () => {
     const traces = [
       makeTr(), // completed
-      makeTr({ lifecycle_state: "scan_in_progress" }),
-      makeTr({ lifecycle_state: "scan_in_progress" }),
+      makeTr({ in_progress: true }),
+      makeTr({ in_progress: true }),
     ];
     expect(computeStats(traces)).toBeNull();
   });
@@ -76,10 +69,7 @@ describe("computeStats", () => {
     // two completed traces 1 s apart → window = 1 s → 120 batches/min
     const t1 = makeTr({ start_unix_ns: 0 });
     const t2 = makeTr({ start_unix_ns: 1_000_000_000 }); // 1 second later
-    const tInProgress = makeTr({
-      lifecycle_state: "scan_in_progress",
-      start_unix_ns: 999_999_999_999,
-    });
+    const tInProgress = makeTr({ in_progress: true, start_unix_ns: 999_999_999_999 });
     const stats = computeStats([t1, t2, tInProgress]);
     expect(stats).not.toBeNull();
     // window is determined only by completed traces
@@ -94,14 +84,14 @@ describe("computeStats", () => {
     it("computes correct avgMs", () => {
       // Both traces: scan=100ms, xfm=50ms, queue=10ms, out=200ms → e2e=360ms each
       const traces = [makeTr({ start_unix_ns: 0 }), makeTr({ start_unix_ns: 1_000_000_000 })];
-      const stats = assertDefined(computeStats(traces));
+      const stats = computeStats(traces)!;
       expect(stats.avgMs).toBeCloseTo(360, 5);
     });
 
     it("computes correct p90Ms for two-item array", () => {
       // sorted = [360ms, 360ms]; index = floor(2*0.9) = 1 → 360ms
       const traces = [makeTr({ start_unix_ns: 0 }), makeTr({ start_unix_ns: 1_000_000_000 })];
-      const stats = assertDefined(computeStats(traces));
+      const stats = computeStats(traces)!;
       expect(stats.p90Ms).toBeCloseTo(360, 5);
     });
 
@@ -117,7 +107,7 @@ describe("computeStats", () => {
           output_ns: 0,
         });
       });
-      const stats = assertDefined(computeStats(traces));
+      const stats = computeStats(traces)!;
       // sorted = [100,200,...,1000]; index = floor(10*0.9) = 9 → 1000ms
       expect(stats.p90Ms).toBeCloseTo(1000, 5);
     });
@@ -126,7 +116,7 @@ describe("computeStats", () => {
       // scan=100, xfm=50, queue=10, out=200 → total e2e=360
       // scanPct = 100/360*100, xfmPct = 50/360*100, etc.
       const traces = [makeTr({ start_unix_ns: 0 }), makeTr({ start_unix_ns: 1_000_000_000 })];
-      const stats = assertDefined(computeStats(traces));
+      const stats = computeStats(traces)!;
       expect(stats.scanPct).toBeCloseTo((100 / 360) * 100, 3);
       expect(stats.xfmPct).toBeCloseTo((50 / 360) * 100, 3);
       expect(stats.queuePct).toBeCloseTo((10 / 360) * 100, 3);
@@ -135,7 +125,7 @@ describe("computeStats", () => {
 
     it("percentages sum to approximately 100", () => {
       const traces = [makeTr({ start_unix_ns: 0 }), makeTr({ start_unix_ns: 2_000_000_000 })];
-      const stats = assertDefined(computeStats(traces));
+      const stats = computeStats(traces)!;
       const total = stats.scanPct + stats.xfmPct + stats.queuePct + stats.outPct;
       expect(total).toBeCloseTo(100, 5);
     });
@@ -155,7 +145,7 @@ describe("computeStats", () => {
         queue_wait_ns: 0,
         output_ns: 0,
       });
-      const stats = assertDefined(computeStats([t1, t2]));
+      const stats = computeStats([t1, t2])!;
       expect(stats.scanPct).toBe(0);
       expect(stats.xfmPct).toBe(0);
       expect(stats.queuePct).toBe(0);
@@ -165,7 +155,7 @@ describe("computeStats", () => {
     it("computes batchPerMin — two traces 1 s apart → 120 batches/min", () => {
       const t1 = makeTr({ start_unix_ns: 0 });
       const t2 = makeTr({ start_unix_ns: 1_000_000_000 });
-      const stats = assertDefined(computeStats([t1, t2]));
+      const stats = computeStats([t1, t2])!;
       // window = 1s, batches = 2, rate = 2/1*60 = 120
       expect(stats.batchPerMin).toBeCloseTo(120, 5);
     });
@@ -174,7 +164,7 @@ describe("computeStats", () => {
       // Same start_unix_ns → window = 0 → clamped to 1s
       const t1 = makeTr({ start_unix_ns: 5_000_000_000 });
       const t2 = makeTr({ start_unix_ns: 5_000_000_000 });
-      const stats = assertDefined(computeStats([t1, t2]));
+      const stats = computeStats([t1, t2])!;
       // 2 batches / 1 sec * 60 = 120
       expect(stats.batchPerMin).toBeCloseTo(120, 5);
     });
@@ -182,7 +172,7 @@ describe("computeStats", () => {
 
   describe("error counting", () => {
     it("counts zero errors when no traces have errors", () => {
-      const stats = assertDefined(computeStats([makeTr({ errors: 0 }), makeTr({ errors: 0 })]));
+      const stats = computeStats([makeTr({ errors: 0 }), makeTr({ errors: 0 })])!;
       expect(stats.errors).toBe(0);
     });
 
@@ -192,13 +182,13 @@ describe("computeStats", () => {
         makeTr({ errors: 0 }),
         makeTr({ errors: 1 }), // counted as 1 errored trace
       ];
-      const stats = assertDefined(computeStats(traces));
+      const stats = computeStats(traces)!;
       expect(stats.errors).toBe(2);
     });
 
     it("counts all traces as errors when all have errors", () => {
       const traces = [makeTr({ errors: 1 }), makeTr({ errors: 5 }), makeTr({ errors: 2 })];
-      const stats = assertDefined(computeStats(traces));
+      const stats = computeStats(traces)!;
       expect(stats.errors).toBe(3);
     });
 
@@ -206,9 +196,9 @@ describe("computeStats", () => {
       const traces = [
         makeTr({ errors: 1, start_unix_ns: 0 }),
         makeTr({ errors: 0, start_unix_ns: 1_000_000_000 }),
-        makeTr({ errors: 99, lifecycle_state: "scan_in_progress" }), // excluded
+        makeTr({ errors: 99, in_progress: true }), // excluded
       ];
-      const stats = assertDefined(computeStats(traces));
+      const stats = computeStats(traces)!;
       expect(stats.errors).toBe(1);
     });
   });
@@ -257,22 +247,22 @@ describe("buildLanes", () => {
     const t1 = makeTr({ worker_id: 1 });
     const { lanes } = buildLanes([t0a, t0b, t1]);
 
-    const lane0 = assertDefined(lanes.find((l) => l.workerId === 0));
-    const lane1 = assertDefined(lanes.find((l) => l.workerId === 1));
+    const lane0 = lanes.find((l) => l.workerId === 0)!;
+    const lane1 = lanes.find((l) => l.workerId === 1)!;
     expect(lane0.traces).toHaveLength(2);
     expect(lane1.traces).toHaveLength(1);
   });
 
   describe("pending traces", () => {
     it("collects in-progress output batches with no worker (worker_id < 0) as pending", () => {
-      const pending = makeTr({ worker_id: -1, lifecycle_state: "queued_for_output" });
+      const pending = makeTr({ worker_id: -1, in_progress: true, stage: "output" });
       const { pendingTraces } = buildLanes([pending]);
       expect(pendingTraces).toHaveLength(1);
       expect(pendingTraces[0]).toBe(pending);
     });
 
     it("does not add pending traces to any worker lane", () => {
-      const pending = makeTr({ worker_id: -1, lifecycle_state: "queued_for_output" });
+      const pending = makeTr({ worker_id: -1, in_progress: true, stage: "output" });
       const { lanes } = buildLanes([pending]);
       // only scan lane, no worker lanes
       expect(lanes).toHaveLength(1);
@@ -280,7 +270,7 @@ describe("buildLanes", () => {
 
     it("ignores in-progress traces not in output stage for pending", () => {
       // worker_id < 0 but stage = "scan" — not pending, not in any worker lane
-      const scanning = makeTr({ worker_id: -1, lifecycle_state: "scan_in_progress" });
+      const scanning = makeTr({ worker_id: -1, in_progress: true, stage: "scan" });
       const { pendingTraces, lanes } = buildLanes([scanning]);
       expect(pendingTraces).toHaveLength(0);
       expect(lanes).toHaveLength(1); // only scan lane
@@ -288,7 +278,7 @@ describe("buildLanes", () => {
 
     it("completed traces with worker_id < 0 are not added to pending or worker lanes", () => {
       // worker_id = -1 but not in_progress → neither pending nor worker lane
-      const done = makeTr({ worker_id: -1, lifecycle_state: "completed" });
+      const done = makeTr({ worker_id: -1, in_progress: false });
       const { pendingTraces, lanes } = buildLanes([done]);
       expect(pendingTraces).toHaveLength(0);
       expect(lanes).toHaveLength(1); // scan lane only
@@ -297,7 +287,7 @@ describe("buildLanes", () => {
     it("mixes worker and pending traces correctly", () => {
       const w0 = makeTr({ worker_id: 0 });
       const w1 = makeTr({ worker_id: 1 });
-      const p = makeTr({ worker_id: -1, lifecycle_state: "queued_for_output" });
+      const p = makeTr({ worker_id: -1, in_progress: true, stage: "output" });
       const { lanes, pendingTraces } = buildLanes([w0, w1, p]);
 
       expect(pendingTraces).toHaveLength(1);

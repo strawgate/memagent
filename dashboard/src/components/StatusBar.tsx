@@ -24,21 +24,21 @@ export function StatusBar({
     ? ready !== "ready" || componentHealth === "failed" || componentHealth === "stopped"
       ? "pill pill-off"
       : totalErrors > 0 || componentHealth === "degraded"
-        ? "pill pill-err"
-        : "pill pill-ok"
+      ? "pill pill-err"
+      : "pill pill-ok"
     : "pill pill-off";
   const pillText = connected
     ? ready !== "ready"
       ? "not ready"
       : componentHealth === "failed"
-        ? "failed"
-        : componentHealth === "stopped"
-          ? "stopped"
-          : totalErrors > 0
-            ? `${totalErrors} errors`
-            : componentHealth === "degraded"
-              ? "degraded"
-              : "healthy"
+      ? "failed"
+      : componentHealth === "stopped"
+      ? "stopped"
+      : totalErrors > 0
+      ? `${totalErrors} errors`
+      : componentHealth === "degraded"
+      ? "degraded"
+      : "healthy"
     : "disconnected";
 
   return (

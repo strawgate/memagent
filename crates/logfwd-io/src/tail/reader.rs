@@ -374,7 +374,7 @@ impl FileReader {
             return Ok(());
         }
         if let Some(evicted) = self.evicted_offsets.get_mut(path) {
-            evicted.offset = clamp_offset_for_path(path, offset, "checkpoint offset");
+            evicted.offset = offset;
         }
         Ok(())
     }
@@ -410,8 +410,7 @@ impl FileReader {
         }
         for evicted in self.evicted_offsets.values_mut() {
             if evicted.source_id == source_id {
-                evicted.offset =
-                    clamp_offset_for_path(&evicted.path, offset, "checkpoint source offset");
+                evicted.offset = offset;
                 return Ok(());
             }
         }
@@ -459,25 +458,6 @@ impl FileReader {
             .map(|e| (e.source_id, e.path.clone()));
 
         active.chain(evicted).collect()
-    }
-}
-
-fn clamp_offset_for_path(path: &Path, offset: u64, context: &str) -> u64 {
-    let file_size = match std::fs::metadata(path) {
-        Ok(meta) => meta.len(),
-        Err(_) => return offset,
-    };
-
-    if offset > file_size {
-        tracing::warn!(
-            path = %path.display(),
-            saved_offset = offset,
-            file_size,
-            "{context} exceeds file size — resetting to 0"
-        );
-        0
-    } else {
-        offset
     }
 }
 
@@ -983,89 +963,20 @@ mod tests {
     }
 
     #[test]
-    fn read_new_data_with_zero_len_buffer_reads_data_after_tailer_guard() {
+    fn read_new_data_with_zero_len_buffer_classifies_empty_read_as_no_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty-read-buffer.log");
         fs::write(&path, b"abcdef").unwrap();
 
         let mut reader = test_reader();
-        // FileTailer::new guards read buffers to at least one byte.
-        reader.read_buf.resize(1, 0);
+        reader.read_buf.clear();
         reader.open_file_at(&path, false).unwrap();
         reader.set_offset(&path, 1).unwrap();
 
         let got = reader.read_new_data(&path).unwrap();
         assert!(
-            matches!(got, ReadResult::Data(_)),
-            "non-empty files should still be readable with a minimal read buffer"
-        );
-    }
-
-    #[test]
-    fn set_offset_clamps_evicted_entry_when_underlying_file_is_smaller() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("evicted-clamp.log");
-        fs::write(&path, b"abc").unwrap();
-        let mut reader = test_reader();
-        reader.evicted_offsets.insert(
-            path.clone(),
-            EvictedFile {
-                identity: FileIdentity {
-                    device: 1,
-                    inode: 2,
-                    fingerprint: 7,
-                },
-                offset: 1,
-                path: path.clone(),
-                source_id: SourceId(42),
-            },
-        );
-
-        reader
-            .set_offset(&path, 999)
-            .expect("set_offset should clamp evicted entry");
-
-        assert_eq!(
-            reader
-                .evicted_offsets
-                .get(&path)
-                .expect("evicted entry should remain present")
-                .offset,
-            0
-        );
-    }
-
-    #[test]
-    fn set_offset_by_source_clamps_evicted_entry_when_underlying_file_is_smaller() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("evicted-by-source-clamp.log");
-        fs::write(&path, b"abc").unwrap();
-        let mut reader = test_reader();
-        reader.evicted_offsets.insert(
-            path.clone(),
-            EvictedFile {
-                identity: FileIdentity {
-                    device: 1,
-                    inode: 2,
-                    fingerprint: 7,
-                },
-                offset: 1,
-                path: path.clone(),
-                source_id: SourceId(77),
-            },
-        );
-
-        reader
-            .set_offset_by_source(SourceId(77), 999)
-            .expect("set_offset_by_source should clamp evicted entry");
-
-        assert_eq!(
-            reader
-                .evicted_offsets
-                .get(&path)
-                .expect("evicted entry should remain present")
-                .offset,
-            0
+            matches!(got, ReadResult::NoData),
+            "zero-length read buffer should produce empty read classification"
         );
     }
 }

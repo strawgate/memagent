@@ -19,8 +19,7 @@
  *   - Rust typestate encoding (BatchTicket<Queued> vs <Sending>)
  *   - Memory safety and arithmetic overflow (Kani proofs in batch.rs)
  *   - The opaque checkpoint type C (modeled as sequence numbers)
- *   - Backoff timing between non-terminal hold/retry attempts
- *   - Batch payload retention across retries (only lifecycle state is modeled)
+ *   - fail() / retry path (invisible to machine state)
  *   - Network message loss (modeled at a higher level)
  *
  * Comparison with production systems (Vector, Filebeat, Fluent Bit, OTel):
@@ -40,11 +39,9 @@ EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
     Sources,               \* Set of source identifiers (use symmetry in MC file)
-    MaxBatchesPerSource,   \* Max batch IDs to explore per source
-    MaxNonTerminalHolds    \* Max non-terminal hold/fail/panic events per batch
+    MaxBatchesPerSource    \* Max batch IDs to explore per source
 
 ASSUME MaxBatchesPerSource \in Nat /\ MaxBatchesPerSource >= 1
-ASSUME MaxNonTerminalHolds \in Nat /\ MaxNonTerminalHolds >= 1
 
 BatchIds == 1..MaxBatchesPerSource
 
@@ -62,10 +59,6 @@ VARIABLES
     created,     \* [Sources -> SUBSET BatchIds] — assigned via create_batch
     sent,        \* [Sources -> SUBSET BatchIds] — entered machine via begin_send
     in_flight,   \* [Sources -> SUBSET BatchIds] — after begin_send, before apply_ack
-    held,        \* [Sources -> SUBSET BatchIds] — non-terminal hold/fail/panic, still in_flight
-    retried,     \* [Sources -> SUBSET BatchIds] — observed RetryHeldBatch release
-    panic_held,  \* [Sources -> SUBSET BatchIds] — observed panic-driven hold
-    hold_count,  \* [Sources -> [BatchIds -> Nat]] — bounded non-terminal attempts
     acked,       \* [Sources -> SUBSET BatchIds] — terminal success outcome
     rejected,    \* [Sources -> SUBSET BatchIds] — terminal permanent-reject outcome
     abandoned,   \* [Sources -> SUBSET BatchIds] — terminal crash/force-stop outcome
@@ -73,7 +66,7 @@ VARIABLES
     forced,      \* BOOLEAN — TRUE if ForceStop was used (data loss accepted)
     stop_reason  \* "none" | "graceful" | "force" | "crash"
 
-vars == <<phase, created, sent, in_flight, held, retried, panic_held, hold_count, acked, rejected, abandoned, committed, forced, stop_reason>>
+vars == <<phase, created, sent, in_flight, acked, rejected, abandoned, committed, forced, stop_reason>>
 
 (* ---------------------------------------------------------------------------
  * Helper operators
@@ -102,15 +95,6 @@ NewCommitted(new_acked_s, new_rejected_s, new_in_flight_s) ==
                         \A b \in ever_sent : b <= n => b \in terminal_for_commit}
     IN SetMax(eligible)
 
-\* Highest safe checkpoint prefix based only on terminal commit outcomes.
-\* Held, active in-flight, and abandoned batches are not commit-terminal.
-TerminalizedPrefix(s) ==
-    LET terminal_for_commit == acked[s] \cup rejected[s]
-        ever_sent == sent[s]
-        eligible  == {n \in (ever_sent \cup {0}) :
-                        \A b \in ever_sent : b <= n => b \in terminal_for_commit}
-    IN SetMax(eligible)
-
 (* ---------------------------------------------------------------------------
  * Type invariant
  * ---------------------------------------------------------------------------*)
@@ -123,21 +107,13 @@ TypeOK ==
         /\ created[s]   \subseteq BatchIds
         /\ sent[s]      \subseteq created[s]
         /\ in_flight[s] \subseteq sent[s]
-        /\ held[s]      \subseteq in_flight[s]
-        /\ retried[s]   \subseteq sent[s]
-        /\ panic_held[s] \subseteq sent[s]
         /\ acked[s]     \subseteq sent[s]
         /\ rejected[s]  \subseteq sent[s]
         /\ abandoned[s] \subseteq sent[s]
         /\ in_flight[s] \subseteq created[s]
-        /\ held[s]      \subseteq created[s]
-        /\ retried[s]   \subseteq created[s]
-        /\ panic_held[s] \subseteq created[s]
         /\ acked[s]     \subseteq created[s]
         /\ rejected[s]  \subseteq created[s]
         /\ abandoned[s] \subseteq created[s]
-        /\ hold_count[s] \in [BatchIds -> 0..MaxNonTerminalHolds]
-        /\ \A b \in BatchIds : hold_count[s][b] > 0 => b \in sent[s]
         /\ in_flight[s] \cap (acked[s] \cup rejected[s] \cup abandoned[s]) = {}
         /\ acked[s] \cap rejected[s] = {}
         /\ acked[s] \cap abandoned[s] = {}
@@ -157,10 +133,6 @@ Init ==
     /\ created    = [s \in Sources |-> {}]
     /\ sent       = [s \in Sources |-> {}]
     /\ in_flight  = [s \in Sources |-> {}]
-    /\ held       = [s \in Sources |-> {}]
-    /\ retried    = [s \in Sources |-> {}]
-    /\ panic_held = [s \in Sources |-> {}]
-    /\ hold_count = [s \in Sources |-> [b \in BatchIds |-> 0]]
     /\ acked      = [s \in Sources |-> {}]
     /\ rejected   = [s \in Sources |-> {}]
     /\ abandoned  = [s \in Sources |-> {}]
@@ -179,7 +151,7 @@ CreateBatch(s) ==
     /\ phase = "Running"
     /\ next_id \in BatchIds
     /\ created'   = [created   EXCEPT ![s] = created[s] \cup {next_id}]
-    /\ UNCHANGED <<phase, sent, in_flight, held, retried, panic_held, hold_count, acked, rejected, abandoned, committed, forced, stop_reason>>
+    /\ UNCHANGED <<phase, sent, in_flight, acked, rejected, abandoned, committed, forced, stop_reason>>
 
 \* begin_send: machine takes ownership of batch b for source s.
 \* A Queued ticket dropped before begin_send has no machine state — safe.
@@ -191,7 +163,6 @@ BeginSend(s, b) ==
     /\ phase = "Running"
     /\ b \in created[s]
     /\ b \notin in_flight[s]
-    /\ b \notin held[s]
     /\ b \notin acked[s]
     /\ b \notin rejected[s]
     /\ b \notin abandoned[s]
@@ -203,40 +174,7 @@ BeginSend(s, b) ==
     /\ \A other \in (in_flight[s] \cup acked[s] \cup rejected[s] \cup abandoned[s]) : b >= other
     /\ sent'      = [sent      EXCEPT ![s] = sent[s] \cup {b}]
     /\ in_flight' = [in_flight EXCEPT ![s] = in_flight[s] \cup {b}]
-    /\ UNCHANGED <<phase, created, held, retried, panic_held, hold_count, acked, rejected, abandoned, committed, forced, stop_reason>>
-
-\* Non-terminal control-plane failures hold a batch without advancing the
-\* checkpoint. This models fail(), retry exhaustion, dispatch failure, timeout,
-\* and other "retry later" outcomes that must stay unresolved.
-\*
-\* A held batch remains in_flight, so it blocks normal Stop and cannot be
-\* committed past. MaxNonTerminalHolds bounds retry/failure churn for TLC.
-HoldBatch(s, b) ==
-    /\ b \in in_flight[s]
-    /\ b \notin held[s]
-    /\ hold_count[s][b] < MaxNonTerminalHolds
-    /\ held'       = [held       EXCEPT ![s] = held[s] \cup {b}]
-    /\ hold_count' = [hold_count EXCEPT ![s][b] = hold_count[s][b] + 1]
-    /\ UNCHANGED <<phase, created, sent, in_flight, retried, panic_held, acked, rejected, abandoned, committed, forced, stop_reason>>
-
-\* Panic is modeled as an explicit non-terminal hold with an audit marker.
-\* The machine does not commit through panic-held work; it must be retried and
-\* terminalized, or explicitly abandoned by ForceStop.
-PanicHoldBatch(s, b) ==
-    /\ b \in in_flight[s]
-    /\ b \notin held[s]
-    /\ hold_count[s][b] < MaxNonTerminalHolds
-    /\ held'       = [held       EXCEPT ![s] = held[s] \cup {b}]
-    /\ panic_held' = [panic_held EXCEPT ![s] = panic_held[s] \cup {b}]
-    /\ hold_count' = [hold_count EXCEPT ![s][b] = hold_count[s][b] + 1]
-    /\ UNCHANGED <<phase, created, sent, in_flight, retried, acked, rejected, abandoned, committed, forced, stop_reason>>
-
-\* Retry releases a non-terminal hold. It does not itself commit or terminalize.
-RetryHeldBatch(s, b) ==
-    /\ b \in held[s]
-    /\ held'    = [held    EXCEPT ![s] = held[s] \ {b}]
-    /\ retried' = [retried EXCEPT ![s] = retried[s] \cup {b}]
-    /\ UNCHANGED <<phase, created, sent, in_flight, panic_held, hold_count, acked, rejected, abandoned, committed, forced, stop_reason>>
+    /\ UNCHANGED <<phase, created, acked, rejected, abandoned, committed, forced, stop_reason>>
 
 \* apply_ack / apply_reject: batch leaves in_flight, checkpoint may advance.
 \*
@@ -254,7 +192,6 @@ RetryHeldBatch(s, b) ==
 \* the safety/liveness properties this spec targets).
 AckBatch(s, b) ==
     /\ b \in in_flight[s]
-    /\ b \notin held[s]
     /\ LET new_in_flight_s == in_flight[s] \ {b}
            new_acked_s     == acked[s] \cup {b}
            new_rejected_s  == rejected[s]
@@ -262,11 +199,10 @@ AckBatch(s, b) ==
        /\ in_flight' = [in_flight EXCEPT ![s] = new_in_flight_s]
        /\ acked'     = [acked     EXCEPT ![s] = new_acked_s]
        /\ committed' = [committed EXCEPT ![s] = NewCommitted(new_acked_s, new_rejected_s, new_in_flight_s)]
-    /\ UNCHANGED <<phase, created, sent, held, retried, panic_held, hold_count, rejected, abandoned, forced, stop_reason>>
+    /\ UNCHANGED <<phase, created, sent, rejected, abandoned, forced, stop_reason>>
 
 RejectBatch(s, b) ==
     /\ b \in in_flight[s]
-    /\ b \notin held[s]
     /\ LET new_in_flight_s == in_flight[s] \ {b}
            new_acked_s     == acked[s]
            new_rejected_s  == rejected[s] \cup {b}
@@ -274,13 +210,13 @@ RejectBatch(s, b) ==
        /\ in_flight' = [in_flight EXCEPT ![s] = new_in_flight_s]
        /\ rejected'  = [rejected  EXCEPT ![s] = new_rejected_s]
        /\ committed' = [committed EXCEPT ![s] = NewCommitted(new_acked_s, new_rejected_s, new_in_flight_s)]
-    /\ UNCHANGED <<phase, created, sent, held, retried, panic_held, hold_count, acked, abandoned, forced, stop_reason>>
+    /\ UNCHANGED <<phase, created, sent, acked, abandoned, forced, stop_reason>>
 
 \* begin_drain: closes pipeline to new batches.
 BeginDrain ==
     /\ phase = "Running"
     /\ phase' = "Draining"
-    /\ UNCHANGED <<created, sent, in_flight, held, retried, panic_held, hold_count, acked, rejected, abandoned, committed, forced, stop_reason>>
+    /\ UNCHANGED <<created, sent, in_flight, acked, rejected, abandoned, committed, forced, stop_reason>>
 
 \* stop: THE DRAIN GUARANTEE.
 \* Rust: PipelineMachine<Draining, C>::stop() returns Err(self) if not drained.
@@ -300,7 +236,7 @@ Stop ==
     /\ \A s \in Sources : in_flight[s] = {}    \* THE DRAIN GUARD (≡ is_drained())
     /\ phase' = "Stopped"
     /\ stop_reason' = "graceful"
-    /\ UNCHANGED <<created, sent, in_flight, held, retried, panic_held, hold_count, acked, rejected, abandoned, committed, forced>>
+    /\ UNCHANGED <<created, sent, in_flight, acked, rejected, abandoned, committed, forced>>
 
 \* force_stop: emergency shutdown when grace period expires.
 \* Discards in-flight state. Every production system has an equivalent:
@@ -323,8 +259,7 @@ ForceStop ==
     /\ stop_reason' = "force"
     /\ abandoned' = [s \in Sources |-> abandoned[s] \cup in_flight[s]]
     /\ in_flight' = [s \in Sources |-> {}]
-    /\ held' = [s \in Sources |-> {}]
-    /\ UNCHANGED <<created, sent, retried, panic_held, hold_count, acked, rejected, committed>>
+    /\ UNCHANGED <<created, sent, acked, rejected, committed>>
 
 \* crash_stop: panic/unwind-equivalent terminalization.
 \* Models runtime abort/failure completion obligations without encoding Rust stack unwind.
@@ -339,8 +274,7 @@ CrashStop ==
             LET unresolved_s == sent[s] \ (acked[s] \cup rejected[s] \cup abandoned[s])
             IN abandoned[s] \cup unresolved_s]
     /\ in_flight' = [s \in Sources |-> {}]
-    /\ held' = [s \in Sources |-> {}]
-    /\ UNCHANGED <<created, sent, retried, panic_held, hold_count, acked, rejected, committed>>
+    /\ UNCHANGED <<created, sent, acked, rejected, committed>>
 
 (* ---------------------------------------------------------------------------
  * Next-state relation
@@ -350,12 +284,6 @@ Next ==
     \/ \E s \in Sources         : CreateBatch(s)
     \/ \E s \in Sources,
           b \in BatchIds        : BeginSend(s, b)
-    \/ \E s \in Sources,
-          b \in BatchIds        : HoldBatch(s, b)
-    \/ \E s \in Sources,
-          b \in BatchIds        : PanicHoldBatch(s, b)
-    \/ \E s \in Sources,
-          b \in BatchIds        : RetryHeldBatch(s, b)
     \/ \E s \in Sources,
           b \in BatchIds        : AckBatch(s, b)
     \/ \E s \in Sources,
@@ -373,13 +301,9 @@ Next ==
  * WF_vars(a) = if action a is continuously enabled, it eventually fires.
  *
  * WF(AckBatch/RejectBatch): once a batch is Sending, it stays there until
- *   it receives an explicit terminal outcome (ack/reject/abandon), unless a
- *   bounded non-terminal hold temporarily disables terminalization.
+ *   it receives an explicit terminal outcome (ack/reject/abandon).
+ *   Correct because the Sending state is stable until a terminalizing action is called.
  *   The downstream sink always eventually responds (retry budget is finite).
- *
- * WF(RetryHeldBatch): non-terminal hold state is stable until retry releases it
- *   or ForceStop abandons it. This models finite retry/backoff windows without
- *   modeling wall-clock delay.
  *
  * WF(BeginDrain): the drain signal is sticky (CancellationToken semantics).
  *   Correct because once signaled, the drain state is not un-signaled.
@@ -398,7 +322,6 @@ Fairness ==
     /\ \A s \in Sources, b \in BatchIds :
         /\ WF_vars(AckBatch(s, b))
         /\ WF_vars(RejectBatch(s, b))
-        /\ WF_vars(RetryHeldBatch(s, b))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -421,11 +344,6 @@ NoDoubleComplete ==
 \* ForceStop preserves this by explicitly moving in-flight work to abandoned.
 DrainCompleteness ==
     phase = "Stopped" => \A s \in Sources : in_flight[s] = {}
-
-\* Stopped means no non-terminal hold remains. Normal Stop requires the
-\* in_flight set to drain first; ForceStop clears held while abandoning it.
-NoHeldWorkAfterStop ==
-    phase = "Stopped" => \A s \in Sources : held[s] = {}
 
 \* Crash-aware terminalization: every sent batch is explicit at quiescence.
 \* This prevents silent "stranded in limbo" work after either normal Stop or ForceStop.
@@ -472,17 +390,6 @@ FailureTerminalizationPreservesCheckpoint ==
         => (\A s \in Sources : committed'[s] = committed[s])
     ]_vars
 
-\* Non-terminal hold/retry transitions cannot advance checkpoints. Ack and
-\* permanent reject are the only commit-moving outcomes.
-HeldTransitionsDoNotCommit ==
-    [][(\E s \in Sources : held[s]' /= held[s]) => committed' = committed]_vars
-
-\* ForceStop must explicitly account for every unresolved batch it cuts off.
-ForceStopAbandonsAllInFlight ==
-    [][(phase = "Draining" /\ phase' = "Stopped" /\ forced' = TRUE /\ forced = FALSE) =>
-        /\ \A s \in Sources : abandoned'[s] = abandoned[s] \cup in_flight[s]
-        /\ \A s \in Sources : held'[s] = {}]_vars
-
 \* THE CHECKPOINT ORDERING INVARIANT:
 \* committed[s] = n implies every SENT batch with ID ≤ n is acked and none
 \* are still in_flight. "Sent" = ever passed through begin_send (ever_sent).
@@ -507,20 +414,6 @@ CheckpointOrderingInvariant ==
                     /\ i \in committed_terminal_s
                     /\ i \notin in_flight[s]
 
-\* A held/active in-flight batch is unresolved and must not be silently
-\* committed past. This is intentionally explicit even though it follows from
-\* CheckpointOrderingInvariant; it documents the no-advance-on-hold contract.
-UnresolvedWorkNotCommittedPast ==
-    \A s \in Sources :
-        \A b \in in_flight[s] :
-            committed[s] < b
-
-\* The checkpoint is never ahead of the ack/reject terminalized prefix.
-\* Abandoned work is explicitly accounted for at ForceStop, but it is not a
-\* commit-terminal outcome and cannot justify checkpoint advancement.
-CheckpointNeverAheadOfTerminalizedPrefix ==
-    \A s \in Sources : committed[s] <= TerminalizedPrefix(s)
-
 \* committed[s] never exceeds the highest created batch ID.
 \* (It can exceed Cardinality(acked[s] \cup rejected[s]) when some batch IDs were created
 \* but never sent — skipped batches don't block checkpoint advancement.)
@@ -536,20 +429,6 @@ SentImpliesCreated ==
 
 InFlightImpliesSent ==
     \A s \in Sources : in_flight[s] \subseteq sent[s]
-
-HeldImpliesInFlight ==
-    \A s \in Sources : held[s] \subseteq in_flight[s]
-
-RetriedImpliesSent ==
-    \A s \in Sources : retried[s] \subseteq sent[s]
-
-PanickedImpliesSent ==
-    \A s \in Sources : panic_held[s] \subseteq sent[s]
-
-HoldCountOnlyForSent ==
-    \A s \in Sources :
-        \A b \in BatchIds :
-            hold_count[s][b] > 0 => b \in sent[s]
 
 AckedImpliesCreated ==
     \A s \in Sources : acked[s] \subseteq created[s]
@@ -592,19 +471,6 @@ StoppedIsStable == <>[](phase = "Stopped")
 NoBatchLeftBehind ==
     \A s \in Sources, b \in BatchIds :
         (b \in in_flight[s]) ~>
-            (\/ b \in acked[s]
-             \/ b \in rejected[s]
-             \/ b \in abandoned[s])
-
-\* Non-terminal hold cannot become a silent permanent limbo state.
-HeldBatchEventuallyReleased ==
-    \A s \in Sources, b \in BatchIds :
-        (b \in held[s]) ~> (b \notin held[s])
-
-\* Panic-held work must still reach a terminal outcome eventually.
-PanickedBatchEventuallyAccountedFor ==
-    \A s \in Sources, b \in BatchIds :
-        (b \in panic_held[s]) ~>
             (\/ b \in acked[s]
              \/ b \in rejected[s]
              \/ b \in abandoned[s])
@@ -667,15 +533,6 @@ AckOccurs == ~(\E s \in Sources : acked[s] /= {})
 \* At least one permanent reject occurs (explicit ack vs reject distinction).
 RejectOccurs == ~(\E s \in Sources : rejected[s] /= {})
 
-\* At least one non-terminal hold/failure occurs.
-HoldOccurs == ~(\E s \in Sources : held[s] /= {})
-
-\* At least one held batch is retried.
-RetryOccurs == ~(\E s \in Sources : retried[s] /= {})
-
-\* At least one panic-driven hold occurs.
-PanicHoldOccurs == ~(\E s \in Sources : panic_held[s] /= {})
-
 \* The committed checkpoint advances at least once (ordering logic is exercised).
 CheckpointAdvances == ~(\E s \in Sources : committed[s] > 0)
 
@@ -687,12 +544,6 @@ AbandonOccurs == ~(\E s \in Sources : abandoned[s] /= {})
 
 \* Crash-stop path is reachable.
 CrashReachable == ~(stop_reason = "crash")
-
-\* At least one held batch is explicitly abandoned by ForceStop.
-HeldAbandonOccurs ==
-    ~(\E s \in Sources :
-        \E b \in abandoned[s] :
-            hold_count[s][b] > 0)
 
 \* At least one batch is created (CreateBatch fires).
 \* Covers NoBatchLeftBehind and AllCreatedBatchesEventuallyAccountedFor

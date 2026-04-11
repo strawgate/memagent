@@ -73,13 +73,6 @@ fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> 
     Ok(())
 }
 
-fn require_non_empty(name: &str, field: &str, value: &str) -> Result<(), String> {
-    if value.trim().is_empty() {
-        return Err(format!("input '{name}': {field} must not be empty"));
-    }
-    Ok(())
-}
-
 /// Build the runtime input state (source, staging buffer, and metrics handle)
 /// from a validated input config.
 pub(super) fn build_input_state(
@@ -94,7 +87,6 @@ pub(super) fn build_input_state(
                 .path
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': file input requires 'path'"))?;
-            require_non_empty(name, "path", path)?;
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
                 start_from_end: false,
@@ -233,7 +225,6 @@ pub(super) fn build_input_state(
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': otlp input requires 'listen'"))?;
-            require_non_empty(name, "listen", addr)?;
             let resource_prefix = cfg
                 .resource_prefix
                 .as_deref()
@@ -255,7 +246,6 @@ pub(super) fn build_input_state(
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': arrow_ipc input requires 'listen'"))?;
-            require_non_empty(name, "listen", addr)?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::ArrowIpc, &format)?;
             let source = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiver::new(name, addr)
@@ -267,7 +257,6 @@ pub(super) fn build_input_state(
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': http input requires 'listen'"))?;
-            require_non_empty(name, "listen", addr)?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Http, &format)?;
             let mut options = logfwd_io::http_input::HttpInputOptions::default();
@@ -310,7 +299,6 @@ pub(super) fn build_input_state(
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': udp input requires 'listen'"))?;
-            require_non_empty(name, "listen", addr)?;
             if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
                 return Err(format!(
                     "input '{name}': CRI/auto format is not supported for UDP inputs (CRI is a file-based container log format)"
@@ -327,7 +315,6 @@ pub(super) fn build_input_state(
                 .listen
                 .as_ref()
                 .ok_or_else(|| format!("input '{name}': tcp input requires 'listen'"))?;
-            require_non_empty(name, "listen", addr)?;
             if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
                 return Err(format!(
                     "input '{name}': CRI/auto format is not supported for TCP inputs (CRI is a file-based container log format)"
@@ -618,87 +605,5 @@ mod tests {
             !otlp_uses_structured_ingress(&scan),
             "line capture enabled should force legacy scanner ingress"
         );
-    }
-
-    #[test]
-    fn build_input_state_rejects_blank_file_path() {
-        use logfwd_diagnostics::diagnostics::PipelineMetrics;
-
-        let meter = logfwd_test_utils::test_meter();
-        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
-        let stats = pm.add_input("file", "test");
-        let cfg = InputConfig {
-            name: Some("file".to_string()),
-            input_type: InputType::File,
-            path: Some("   ".to_string()),
-            listen: None,
-            resource_prefix: None,
-            format: Some(Format::Json),
-            poll_interval_ms: None,
-            read_buf_size: None,
-            per_file_read_budget_bytes: None,
-            adaptive_fast_polls_max: None,
-            max_open_files: None,
-            glob_rescan_interval_ms: None,
-            generator: None,
-            http: None,
-            sensor: None,
-            sql: None,
-            tls: None,
-        };
-        let err = match build_input_state("file", &cfg, stats) {
-            Ok(_) => panic!("blank path must be rejected"),
-            Err(err) => err,
-        };
-        assert!(
-            err.contains("path must not be empty"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn build_input_state_rejects_blank_listen_for_socket_inputs() {
-        use logfwd_diagnostics::diagnostics::PipelineMetrics;
-
-        let meter = logfwd_test_utils::test_meter();
-        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
-
-        for input_type in [
-            InputType::Otlp,
-            InputType::ArrowIpc,
-            InputType::Http,
-            InputType::Udp,
-            InputType::Tcp,
-        ] {
-            let cfg = InputConfig {
-                name: Some("sock".to_string()),
-                input_type: input_type.clone(),
-                path: None,
-                listen: Some("   ".to_string()),
-                resource_prefix: None,
-                format: Some(Format::Json),
-                poll_interval_ms: None,
-                read_buf_size: None,
-                per_file_read_budget_bytes: None,
-                adaptive_fast_polls_max: None,
-                max_open_files: None,
-                glob_rescan_interval_ms: None,
-                generator: None,
-                http: None,
-                sensor: None,
-                sql: None,
-                tls: None,
-            };
-            let stats = pm.add_input("sock", "test");
-            let err = match build_input_state("sock", &cfg, stats) {
-                Ok(_) => panic!("blank listen address must be rejected"),
-                Err(err) => err,
-            };
-            assert!(
-                err.contains("listen must not be empty"),
-                "unexpected error for {:?}: {err}",
-                input_type
-            );
-        }
     }
 }

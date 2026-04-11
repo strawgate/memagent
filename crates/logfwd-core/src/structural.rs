@@ -507,21 +507,11 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::Config as ProptestConfig;
 
-    fn miri_aware_proptest_config() -> ProptestConfig {
-        #[cfg(miri)]
-        {
-            let mut cfg = ProptestConfig::default();
-            cfg.failure_persistence = None;
-            cfg
-        }
-        #[cfg(not(miri))]
-        {
-            ProptestConfig::default()
-        }
-    }
-
     proptest! {
-        #![proptest_config(miri_aware_proptest_config())]
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            .. ProptestConfig::default()
+        })]
         #[test]
         fn simd_eq_scalar(
             block in (any::<[u8; 32]>(), any::<[u8; 32]>()).prop_map(|(a, b)| {

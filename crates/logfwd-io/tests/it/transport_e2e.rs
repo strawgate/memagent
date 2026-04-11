@@ -173,7 +173,6 @@ fn collect_string_column(
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn tcp_single_line() {
     let stats = Arc::new(ComponentStats::new());
     let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::clone(&stats)).unwrap();
@@ -194,7 +193,6 @@ fn tcp_single_line() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn tcp_multiple_lines() {
     let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -221,7 +219,6 @@ fn tcp_multiple_lines() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn tcp_partial_line_across_reads() {
     let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -246,7 +243,6 @@ fn tcp_partial_line_across_reads() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn tcp_multiple_clients() {
     let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -285,7 +281,6 @@ fn tcp_multiple_clients() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn tcp_client_disconnect_mid_stream() {
     let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -319,7 +314,6 @@ fn tcp_client_disconnect_mid_stream() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn tcp_partial_line_disconnect_emits_eof() {
     let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -358,7 +352,6 @@ fn tcp_partial_line_disconnect_emits_eof() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn tcp_large_message() {
     let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -383,7 +376,6 @@ fn tcp_large_message() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn tcp_rfc6587_octet_counting_prevents_newline_injection_split() {
     let tcp = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = tcp.local_addr().unwrap();
@@ -407,7 +399,6 @@ fn tcp_rfc6587_octet_counting_prevents_newline_injection_split() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn tcp_rapid_connect_disconnect() {
     let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -442,7 +433,6 @@ fn tcp_rapid_connect_disconnect() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn udp_single_datagram() {
     let stats = Arc::new(ComponentStats::new());
     let mut input = UdpInput::new("test", "127.0.0.1:0", Arc::clone(&stats)).unwrap();
@@ -462,7 +452,6 @@ fn udp_single_datagram() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn udp_multiple_datagrams() {
     let mut input = UdpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -496,7 +485,6 @@ fn udp_multiple_datagrams() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn udp_max_size_datagram() {
     let mut input = UdpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -535,7 +523,6 @@ fn udp_max_size_datagram() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn udp_no_trailing_newline() {
     let mut input = UdpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
@@ -561,7 +548,6 @@ fn udp_no_trailing_newline() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn http_ndjson_roundtrip() {
     let mut input = HttpInput::new("test", "127.0.0.1:0", Some("/ingest")).unwrap();
     let addr = input.local_addr();
@@ -584,7 +570,6 @@ fn http_ndjson_roundtrip() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn http_wrong_path_rejected() {
     let input = HttpInput::new("test", "127.0.0.1:0", Some("/ingest")).unwrap();
     let addr = input.local_addr();
@@ -603,7 +588,6 @@ fn http_wrong_path_rejected() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn otlp_protobuf_roundtrip() {
     use opentelemetry_proto::tonic::{
         collector::logs::v1::ExportLogsServiceRequest,
@@ -674,7 +658,6 @@ fn otlp_protobuf_roundtrip() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn otlp_gzip_protobuf_roundtrip() {
     use opentelemetry_proto::tonic::{
         collector::logs::v1::ExportLogsServiceRequest,
@@ -745,7 +728,6 @@ fn otlp_gzip_protobuf_roundtrip() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn otlp_oversized_body() {
     let receiver = OtlpReceiverInput::new("test", "127.0.0.1:0").unwrap();
     let addr = receiver.local_addr();
@@ -765,7 +747,6 @@ fn otlp_oversized_body() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn otlp_wrong_content_type() {
     use opentelemetry_proto::tonic::{
         collector::logs::v1::ExportLogsServiceRequest,
@@ -820,7 +801,6 @@ fn otlp_wrong_content_type() {
 }
 
 #[test]
-#[ignore = "network integration test; run with `just test-network`"]
 fn otlp_concurrent_requests() {
     use opentelemetry_proto::tonic::{
         collector::logs::v1::ExportLogsServiceRequest,

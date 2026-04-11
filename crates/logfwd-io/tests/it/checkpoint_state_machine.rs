@@ -421,28 +421,13 @@ impl StateMachineTest for TailCheckpointTest {
 // ---------------------------------------------------------------------------
 
 prop_state_machine! {
-    #![proptest_config(miri_aware_proptest_config())]
+    #![proptest_config(ProptestConfig {
+        cases: logfwd_test_utils::state_machine_proptest_cases(),
+        max_shrink_iters: 5_000,
+        failure_persistence: None,
+        .. ProptestConfig::default()
+    })]
 
     #[test]
     fn checkpoint_state_machine(sequential 5..30 => TailCheckpointTest);
-}
-
-fn miri_aware_proptest_config() -> ProptestConfig {
-    #[cfg(miri)]
-    {
-        ProptestConfig {
-            cases: logfwd_test_utils::state_machine_proptest_cases(),
-            max_shrink_iters: 5_000,
-            failure_persistence: None,
-            ..ProptestConfig::default()
-        }
-    }
-    #[cfg(not(miri))]
-    {
-        ProptestConfig {
-            cases: logfwd_test_utils::state_machine_proptest_cases(),
-            max_shrink_iters: 5_000,
-            ..ProptestConfig::default()
-        }
-    }
 }

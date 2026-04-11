@@ -22,6 +22,7 @@ Point-in-time investigations that informed architecture decisions.
 - [checkpoint-snapshot-design.md](checkpoint-snapshot-design.md)
 - [crate-restructure-plan.md](crate-restructure-plan.md)
 - [file-tailing-audit.md](file-tailing-audit.md)
+- [linearizability-porcupine-plan.md](linearizability-porcupine-plan.md)
 - [per-input-sql-analysis.md](per-input-sql-analysis.md)
 - [tla-gap-analysis.md](tla-gap-analysis.md)
 - [turmoil-concurrency-bugs-report-2026-04.md](turmoil-concurrency-bugs-report-2026-04.md)

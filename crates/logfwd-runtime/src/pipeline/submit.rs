@@ -17,10 +17,7 @@ use super::internal_faults;
 use super::processor_stage::{ProcessorStageResult, run_processor_stage};
 #[cfg(feature = "turmoil")]
 use super::scan_maybe_blocking;
-use super::{
-    ChannelMsg, Pipeline, TransitionAction, TransitionEvent, TransitionOutcome, TransitionPhase,
-    now_nanos,
-};
+use super::{ChannelMsg, Pipeline, now_nanos};
 #[cfg(feature = "turmoil")]
 use super::{InputState, InputTransform};
 
@@ -61,29 +58,14 @@ impl Pipeline {
 
         // Create Queued tickets, then transition to Sending.
         // After begin_send, tickets MUST be acked or rejected.
-        let transition_events = self.transition_events.clone();
         let sending: Vec<_> = if let Some(ref mut machine) = self.machine {
-            let mut sending = Vec::with_capacity(checkpoints.len());
-            for (&sid, &offset) in &checkpoints {
-                let queued = machine.create_batch(sid, offset.0);
-                let ticket = machine.begin_send(queued);
-                transition_events.emit_with(|seq, timestamp_nanos| {
-                    let mut event = TransitionEvent::new(
-                        seq,
-                        timestamp_nanos,
-                        TransitionPhase::Batch,
-                        TransitionAction::EnterSending,
-                    );
-                    event.batch_id = Some(batch_id);
-                    event.ticket_id = Some(ticket.id().0);
-                    event.source_id = Some(sid.0);
-                    event.checkpoint_offset = Some(offset.0);
-                    event.outcome = Some(TransitionOutcome::Entered);
-                    event
-                });
-                sending.push(ticket);
-            }
-            sending
+            checkpoints
+                .iter()
+                .map(|(&sid, &offset)| {
+                    let queued = machine.create_batch(sid, offset.0);
+                    machine.begin_send(queued)
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -93,11 +75,7 @@ impl Pipeline {
         // Handle zero-row results (SQL WHERE filtered all rows).
         // Ack tickets so the input doesn't re-read the same data.
         if num_rows == 0 {
-            self.ack_all_tickets(
-                Some(batch_id),
-                sending,
-                super::checkpoint_policy::TicketDisposition::Ack,
-            );
+            self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Ack);
             self.metrics.record_batch(0, scan_ns, transform_ns, 0);
             self.metrics.finish_active_batch(batch_id);
             return false;
@@ -111,11 +89,8 @@ impl Pipeline {
             ProcessorStageResult::Forward { batch, output_rows } => (batch, output_rows),
             ProcessorStageResult::Hold { reason } => {
                 tracing::warn!(reason = %reason, "processor stage requested hold");
-                let held = self.ack_all_tickets(
-                    Some(batch_id),
-                    sending,
-                    super::checkpoint_policy::TicketDisposition::Hold,
-                );
+                let (held, _advances) = self
+                    .ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Hold);
                 self.metrics.finish_active_batch(batch_id);
                 if held {
                     shutdown.cancel();
@@ -124,11 +99,7 @@ impl Pipeline {
             }
             ProcessorStageResult::PermanentError { reason } => {
                 tracing::warn!(reason = %reason, "processor stage permanent error; dropping batch");
-                self.ack_all_tickets(
-                    Some(batch_id),
-                    sending,
-                    super::checkpoint_policy::TicketDisposition::Ack,
-                );
+                self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Ack);
                 self.metrics.inc_dropped_batch();
                 self.metrics.record_batch(0, scan_ns, transform_ns, 0);
                 self.metrics.finish_active_batch(batch_id);
@@ -136,33 +107,21 @@ impl Pipeline {
             }
             ProcessorStageResult::ZeroRow { reason } => {
                 tracing::debug!(reason = %reason, "processor stage emitted zero rows");
-                self.ack_all_tickets(
-                    Some(batch_id),
-                    sending,
-                    super::checkpoint_policy::TicketDisposition::Ack,
-                );
+                self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Ack);
                 self.metrics.record_batch(0, scan_ns, transform_ns, 0);
                 self.metrics.finish_active_batch(batch_id);
                 return false;
             }
             ProcessorStageResult::Fatal { reason } => {
                 tracing::error!(reason = %reason, "processor stage requested shutdown");
-                self.ack_all_tickets(
-                    Some(batch_id),
-                    sending,
-                    super::checkpoint_policy::TicketDisposition::Hold,
-                );
+                self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Hold);
                 self.metrics.finish_active_batch(batch_id);
                 shutdown.cancel();
                 return true;
             }
             ProcessorStageResult::Reject { reason } => {
                 tracing::error!(reason = %reason, "processor stage rejected batch");
-                self.ack_all_tickets(
-                    Some(batch_id),
-                    sending,
-                    super::checkpoint_policy::TicketDisposition::Reject,
-                );
+                self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Reject);
                 self.metrics.finish_active_batch(batch_id);
                 return false;
             }
@@ -175,11 +134,7 @@ impl Pipeline {
 
         if internal_faults::submit_before_pool_should_hold_and_shutdown() {
             tracing::warn!("internal failpoint: submit pre-pool hold+shutdown");
-            self.ack_all_tickets(
-                Some(batch_id),
-                sending,
-                super::checkpoint_policy::TicketDisposition::Hold,
-            );
+            self.ack_all_tickets(sending, super::checkpoint_policy::TicketDisposition::Hold);
             self.metrics.finish_active_batch(batch_id);
             shutdown.cancel();
             return true;
@@ -198,6 +153,21 @@ impl Pipeline {
         self.metrics
             .inflight_batches
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(feature = "turmoil")]
+        let mut submitted_checkpoints: Vec<(u64, u64)> = checkpoints
+            .iter()
+            .map(|(&sid, &offset)| (sid.0, offset.0))
+            .collect();
+        #[cfg(feature = "turmoil")]
+        submitted_checkpoints.sort_unstable();
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::BatchSubmitted {
+                batch_id,
+                checkpoints: submitted_checkpoints,
+            },
+        )
+        .await;
         self.pool
             .submit(crate::worker_pool::WorkItem {
                 num_rows: out_rows,

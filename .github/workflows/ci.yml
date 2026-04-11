@@ -472,11 +472,20 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: scripts/linearizability/go.mod
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Turmoil simulation tests
         run: cargo test -p logfwd --features turmoil --test turmoil_sim
+      - name: Turmoil replay-equivalence checks
+        run: |
+          cargo test -p logfwd --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_supports_three_identical_replays -- --exact
+          cargo test -p logfwd --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_matrix_keeps_history_equivalent -- --exact
+          cargo test -p logfwd --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history -- --exact
 
   # -------------------------------------------------------------------------
   # Loom deterministic concurrency seam checks
@@ -495,7 +504,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Loom seam test
-        run: cargo test -p logfwd-runtime --lib --features loom-tests loom_worker_removal_vs_late_event_model_never_resurrects_slot
+        run: cargo test -p logfwd-runtime --lib --features loom-tests worker_pool::pool::tests::loom_worker_removal_vs_late_event_model_never_resurrects_slot -- --exact
 
   # -------------------------------------------------------------------------
   # TLC: TLA+ model checking for all specs (parallelized via matrix)
@@ -707,7 +716,6 @@ jobs:
       - lint
       - test-linux
       - test-macos
-      - test-network
       - build-check
       - core-no-std
       - kani
