@@ -1197,7 +1197,7 @@ fn encode_row_as_log_record(
                 Some(ts) => Some(ts),
                 None => {
                     tracing::debug!(
-                        "timestamp parse fallback: event_time omitted for unparseable value"
+                        "timestamp parse fallback: event_time omitted for unparsable value"
                     );
                     None
                 }

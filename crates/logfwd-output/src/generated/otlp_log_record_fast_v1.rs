@@ -24,7 +24,7 @@ pub(super) fn encode_row_as_log_record_fast_v1(
             match parse_timestamp_nanos(arr.value(row).as_bytes()) {
                 Some(ts) => Some(ts),
                 None => {
-                    tracing::debug!("timestamp parse fallback: event_time omitted for unparseable value");
+                    tracing::debug!("timestamp parse fallback: event_time omitted for unparsable value");
                     None
                 }
             }
