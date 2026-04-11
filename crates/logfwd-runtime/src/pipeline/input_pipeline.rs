@@ -68,7 +68,7 @@ fn should_flush_buffer(
     // Config validation rejects zero, but keep this path robust for
     // programmatic construction in tests/fuzzing.
     let target = batch_target_bytes.max(1);
-    (buffered_len >= target && buffered_len > 0) || (buffered_len > 0 && timeout_elapsed)
+    buffered_len > 0 && (buffered_len >= target || timeout_elapsed)
 }
 
 #[cfg(not(feature = "turmoil"))]
