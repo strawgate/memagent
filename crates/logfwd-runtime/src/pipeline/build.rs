@@ -40,11 +40,23 @@ impl Pipeline {
         meter: &Meter,
         base_path: Option<&std::path::Path>,
     ) -> Result<Self, String> {
+        if config.inputs.is_empty() {
+            return Err("pipeline must have at least one input".to_string());
+        }
+        if config.outputs.is_empty() {
+            return Err("pipeline must have at least one output".to_string());
+        }
         if config.workers == Some(0) {
             return Err("workers must be >= 1".to_string());
         }
         if config.batch_target_bytes == Some(0) {
             return Err("batch_target_bytes must be > 0".to_string());
+        }
+        if config.batch_timeout_ms == Some(0) {
+            return Err("batch_timeout_ms must be > 0".to_string());
+        }
+        if config.poll_interval_ms == Some(0) {
+            return Err("poll_interval_ms must be > 0".to_string());
         }
 
         // Collect enrichment sources once — they are shared across all
@@ -357,5 +369,130 @@ impl Pipeline {
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use logfwd_config::{InputConfig, InputType, OutputConfig, OutputType};
+
+    fn minimal_input(path: String) -> InputConfig {
+        InputConfig {
+            name: Some("input".to_string()),
+            input_type: InputType::File,
+            path: Some(path),
+            listen: None,
+            resource_prefix: None,
+            format: Some(Format::Json),
+            poll_interval_ms: None,
+            read_buf_size: None,
+            per_file_read_budget_bytes: None,
+            adaptive_fast_polls_max: None,
+            max_open_files: None,
+            glob_rescan_interval_ms: None,
+            generator: None,
+            sensor: None,
+            http: None,
+            sql: None,
+            tls: None,
+        }
+    }
+
+    fn minimal_output() -> OutputConfig {
+        OutputConfig {
+            name: Some("output".to_string()),
+            output_type: OutputType::Stdout,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn from_config_rejects_missing_inputs() {
+        let cfg = PipelineConfig {
+            inputs: Vec::new(),
+            transform: None,
+            outputs: vec![minimal_output()],
+            enrichment: Vec::new(),
+            resource_attrs: Default::default(),
+            workers: None,
+            batch_target_bytes: None,
+            batch_timeout_ms: None,
+            poll_interval_ms: None,
+        };
+        let err = match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
+            Ok(_) => panic!("empty inputs must be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("at least one input"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_config_rejects_missing_outputs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("in.log");
+        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").expect("write input");
+        let cfg = PipelineConfig {
+            inputs: vec![minimal_input(log_path.to_string_lossy().into_owned())],
+            transform: None,
+            outputs: Vec::new(),
+            enrichment: Vec::new(),
+            resource_attrs: Default::default(),
+            workers: None,
+            batch_target_bytes: None,
+            batch_timeout_ms: None,
+            poll_interval_ms: None,
+        };
+        let err = match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
+            Ok(_) => panic!("empty outputs must be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("at least one output"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_config_rejects_zero_batch_and_poll_timeouts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("in.log");
+        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").expect("write input");
+        let mut cfg = PipelineConfig {
+            inputs: vec![minimal_input(log_path.to_string_lossy().into_owned())],
+            transform: None,
+            outputs: vec![minimal_output()],
+            enrichment: Vec::new(),
+            resource_attrs: Default::default(),
+            workers: None,
+            batch_target_bytes: None,
+            batch_timeout_ms: Some(0),
+            poll_interval_ms: None,
+        };
+
+        let batch_err =
+            match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
+                Ok(_) => panic!("zero batch timeout must be rejected"),
+                Err(err) => err,
+            };
+        assert!(
+            batch_err.contains("batch_timeout_ms must be > 0"),
+            "unexpected error: {batch_err}"
+        );
+
+        cfg.batch_timeout_ms = None;
+        cfg.poll_interval_ms = Some(0);
+        let poll_err =
+            match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
+                Ok(_) => panic!("zero poll interval must be rejected"),
+                Err(err) => err,
+            };
+        assert!(
+            poll_err.contains("poll_interval_ms must be > 0"),
+            "unexpected error: {poll_err}"
+        );
     }
 }

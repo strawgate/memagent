@@ -79,6 +79,10 @@ struct Client {
     discard_octet_bytes: usize,
     /// Whether we are dropping newline-delimited bytes until a newline appears.
     discard_until_newline: bool,
+    /// True after this connection has successfully parsed at least one
+    /// octet-counted frame. Used to disambiguate incomplete numeric tails
+    /// during clean close.
+    octet_counting_mode: bool,
 }
 
 fn parse_octet_prefix(buf: &[u8]) -> Option<(usize, usize)> {
@@ -104,6 +108,25 @@ fn advance_pending(client: &mut Client, consumed: usize) {
     let remaining = client.pending.len().saturating_sub(consumed);
     client.pending.copy_within(consumed.., 0);
     client.pending.truncate(remaining);
+}
+
+#[inline]
+fn pending_starts_with_incomplete_octet_frame(buf: &[u8]) -> bool {
+    if let Some((len, prefix_len)) = parse_octet_prefix(buf) {
+        match prefix_len.checked_add(len) {
+            Some(needed) => buf.len() < needed,
+            // Overflow is malformed framing; treat it as incomplete for
+            // close-path protection once octet mode has been committed.
+            None => true,
+        }
+    } else {
+        // A buffer that is entirely ASCII digits is a truncated octet length
+        // prefix — the trailing space (and payload) never arrived before the
+        // connection closed.  `parse_octet_prefix` returns `None` because it
+        // requires a space delimiter, but in octet-counting mode this is still
+        // an incomplete frame that must not be flushed as a legacy line.
+        !buf.is_empty() && buf.iter().all(u8::is_ascii_digit)
+    }
 }
 
 fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
@@ -150,6 +173,7 @@ fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
                     || parse_octet_prefix(&pending[needed..]).is_some());
 
             if octet_frame_ready && octet_boundary_is_plausible {
+                client.octet_counting_mode = true;
                 if len > MAX_LINE_LENGTH {
                     client.discard_octet_bytes = len;
                     consumed += prefix_len;
@@ -302,6 +326,7 @@ impl InputSource for TcpInput {
                         pending: Vec::new(),
                         discard_octet_bytes: 0,
                         discard_until_newline: false,
+                        octet_counting_mode: false,
                     });
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -452,7 +477,9 @@ impl InputSource for TcpInput {
                 let client = &mut self.clients[i];
                 let has_pending = !client.pending.is_empty();
                 let mid_discard = client.discard_octet_bytes > 0 || client.discard_until_newline;
-                if has_pending && !mid_discard {
+                let incomplete_octet = client.octet_counting_mode
+                    && pending_starts_with_incomplete_octet_frame(&client.pending);
+                if has_pending && !mid_discard && !incomplete_octet {
                     let mut tail = std::mem::take(&mut client.pending);
                     tail.push(b'\n');
                     let accounted_bytes = tail.len() as u64;
@@ -842,6 +869,131 @@ mod tests {
         }
 
         assert_eq!(got, b"200 OK\n");
+    }
+
+    #[test]
+    fn tcp_truncated_octet_tail_is_dropped_after_octet_mode_commit_on_close() {
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
+        let addr = input.local_addr().unwrap();
+
+        {
+            let mut client = StdTcpStream::connect(addr).unwrap();
+            // Complete "hello" octet frame (commits octet mode), followed by
+            // an incomplete octet-counted frame that must not be flushed as a
+            // synthetic newline tail on close.
+            client.write_all(b"5 hello4 abc").unwrap();
+            client.flush().unwrap();
+        } // clean EOF
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut all_data = Vec::new();
+        for event in input.poll().unwrap() {
+            if let InputEvent::Data { bytes, .. } = event {
+                all_data.extend_from_slice(&bytes);
+            }
+        }
+
+        assert_eq!(
+            all_data, b"hello\n",
+            "incomplete octet-counted tail after mode commit must be dropped on close"
+        );
+    }
+
+    /// When octet-counting mode is committed and the connection closes with
+    /// only a partial length prefix (digits but no trailing space), the pending
+    /// bytes must be dropped — not flushed as a legacy line.
+    #[test]
+    fn tcp_truncated_octet_prefix_digits_only_dropped_on_close() {
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
+        let addr = input.local_addr().unwrap();
+
+        // Use a two-phase write: first send a complete octet frame so that
+        // octet-counting mode is committed, then send a truncated length
+        // prefix (digits only, no space) before closing the connection.
+        let mut client = StdTcpStream::connect(addr).unwrap();
+
+        // Phase 1: complete octet frame — commits octet-counting mode.
+        // Use two back-to-back frames so the boundary plausibility check
+        // succeeds (parse_octet_prefix succeeds on the second frame).
+        client.write_all(b"5 hello5 world").unwrap();
+        client.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Drain the complete frames so octet_counting_mode is set.
+        let mut all_data = Vec::new();
+        for event in input.poll().unwrap() {
+            if let InputEvent::Data { bytes, .. } = event {
+                all_data.extend_from_slice(&bytes);
+            }
+        }
+        assert!(
+            all_data.windows(5).any(|w| w == b"hello"),
+            "first octet frame must be emitted"
+        );
+
+        // Phase 2: send a truncated length prefix and close.
+        client.write_all(b"12").unwrap();
+        client.flush().unwrap();
+        drop(client); // clean EOF
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut close_data = Vec::new();
+        for event in input.poll().unwrap() {
+            if let InputEvent::Data { bytes, .. } = event {
+                close_data.extend_from_slice(&bytes);
+            }
+        }
+
+        assert!(
+            close_data.is_empty() || !close_data.windows(2).any(|w| w == b"12"),
+            "truncated octet length prefix (digits only) after mode commit must be dropped on close; got: {:?}",
+            String::from_utf8_lossy(&close_data),
+        );
+    }
+
+    #[test]
+    fn tcp_close_preserves_legacy_numeric_tail_without_octet_mode_commit() {
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
+        let addr = input.local_addr().unwrap();
+
+        {
+            let mut client = StdTcpStream::connect(addr).unwrap();
+            // Looks like an octet prefix but no complete frame has ever been
+            // parsed on this connection, so this must flush as legacy text.
+            client.write_all(b"200 partial-tail").unwrap();
+            client.flush().unwrap();
+        } // clean EOF
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut all_data = Vec::new();
+        for event in input.poll().unwrap() {
+            if let InputEvent::Data { bytes, .. } = event {
+                all_data.extend_from_slice(&bytes);
+            }
+        }
+
+        assert_eq!(
+            all_data, b"200 partial-tail\n",
+            "legacy numeric tail must be preserved on close before octet mode is committed"
+        );
     }
 
     #[test]

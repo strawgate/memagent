@@ -28,6 +28,8 @@ Models `PipelineMachine<S, C>` from
 |----------|------|-------------|
 | `DrainCompleteness` | Safety | `stop()` only reachable when all in_flight batches are resolved |
 | `QuiescenceHasNoSilentStrandedWork` | Safety | At `Stopped`, no in-flight batch is left without explicit terminal outcome |
+| `NoUnresolvedSentAtQuiescence` | Safety | At `Stopped`, every sent batch is terminalized (`acked`/`rejected`/`abandoned`) |
+| `StopMetadataConsistent` | Safety | `forced`/`stop_reason` remain phase-consistent (`Stopped` iff reason is not `none`) |
 | `CheckpointOrderingInvariant` | Safety | committed[s]=n implies all sent batches `<= n` are terminalized for commit (`acked` or `rejected`), none in_flight |
 | `CommittedNeverAheadOfCreated` | Safety | committed[s] never exceeds highest created batch ID |
 | `NoDoubleComplete` | Safety | batch cannot be both in_flight and any terminal set |
@@ -36,6 +38,8 @@ Models `PipelineMachine<S, C>` from
 | `CommittedMonotonic` | Safety (temporal) | checkpoint never goes backwards |
 | `NoCreateAfterDrain` | Safety (temporal) | no new batches after begin_drain |
 | `DrainMeansNoNewSending` | Safety (temporal) | in_flight cannot grow once phase ≠ Running |
+| `FailureTerminalizationPreservesCheckpoint` | Safety (temporal) | force/crash terminalization does not advance checkpoints |
+| `FailureClassMustTerminalizePrototype` | Safety (temporal) | force/crash transition class preserves terminalization completeness |
 | `EventualDrain` | Liveness | every started drain eventually reaches Stopped |
 | `NoBatchLeftBehind` | Liveness | every in_flight batch eventually terminalizes (ack/reject/abandon) |
 | `StoppedIsStable` | Liveness | once Stopped, stays Stopped |
@@ -47,6 +51,7 @@ Models `PipelineMachine<S, C>` from
 | `ForcedReachable` | Reachability (invariant ~P) | ForceStop path is reachable (vacuity guard) |
 | `RejectOccurs` | Reachability (invariant ~P) | Reject path is reachable |
 | `AbandonOccurs` | Reachability (invariant ~P) | ForceStop abandonment path is reachable |
+| `CrashReachable` | Reachability (invariant ~P) | panic/unwind-equivalent crash-stop path is reachable |
 
 ### File structure (two-file pattern)
 
@@ -60,7 +65,8 @@ tla/
   MCPipelineMachine.tla         — TLC config: symmetry sets, model constants
   PipelineMachine.cfg           — safety model (~50K states)
   PipelineMachine.liveness.cfg  — liveness model (smaller constants, no SYMMETRY)
-  PipelineMachine.thorough.cfg  — thorough safety model (3 sources, 4 batches)
+  PipelineMachine.thorough.cfg  — PR-CI thorough safety model (3 sources, 3 batches)
+  PipelineMachine.nightly.thorough.cfg — nightly deep safety model (3 sources, 4 batches)
   PipelineMachine.coverage.cfg  — reachability / vacuity guards
 
   # Shutdown coordination (two-tier I/O+CPU worker drain protocol)
@@ -129,8 +135,14 @@ impossible.
 
 ```bash
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg
-# Sources={"s1","s2","s3"}, MaxBatchesPerSource=4
-# Hundreds of millions of generated states, usually under 90 minutes in CI.
+# PR CI default thorough depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=3
+```
+
+**Model 5 — Nightly deep safety sweep (slowest):**
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.nightly.thorough.cfg
+# Nightly CI depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=4
 ```
 
 **Sabotage test** — verify no invariant is vacuously true:

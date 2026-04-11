@@ -9,15 +9,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use futures_util::FutureExt;
 use logfwd::pipeline::Pipeline;
+use logfwd_runtime::turmoil_barriers::RuntimeBarrierEvent;
 use logfwd_test_utils::sinks::CountingSink;
 use logfwd_types::pipeline::SourceId;
 use tokio_util::sync::CancellationToken;
+use turmoil::barriers::Barrier;
 
 use super::channel_input::ChannelInputSource;
 use super::instrumented_sink::{FailureAction, InstrumentedSink};
 use super::observable_checkpoint::{CheckpointHandle, ObservableCheckpointStore};
 use super::tcp_server::{TcpServerHandle, run_tcp_server};
+use super::trace_bridge::{
+    TraceEvent, TransitionValidator, normalized_contract_trace, trace_event_from_runtime_barrier,
+};
 use super::turmoil_tcp_sink::TurmoilTcpSink;
 
 const DEFAULT_SIM_DURATION_SECS: u64 = 60;
@@ -36,6 +42,10 @@ pub enum NetworkFaultAction {
     Partition,
     /// Repair the pipeline and server hosts.
     Repair,
+    /// Hold all in-flight messages between the hosts.
+    Hold,
+    /// Release held in-flight messages between the hosts.
+    Release,
 }
 
 /// A network fault scheduled for a particular turmoil simulation step.
@@ -93,6 +103,7 @@ pub struct FaultScenario {
     arm_checkpoint_crash_after: Option<Duration>,
     network_faults: Vec<NetworkFault>,
     fail_rate: Option<f64>,
+    typed_contract: Option<TypedInvariantBundle>,
 }
 
 impl FaultScenario {
@@ -112,6 +123,7 @@ impl FaultScenario {
             arm_checkpoint_crash_after: None,
             network_faults: Vec::new(),
             fail_rate: None,
+            typed_contract: None,
         }
     }
 
@@ -181,6 +193,12 @@ impl FaultScenario {
         self
     }
 
+    /// Prototype Shape A lane: attach a typed invariant bundle.
+    pub fn with_typed_contract(mut self, typed_contract: TypedInvariantBundle) -> Self {
+        self.typed_contract = Some(typed_contract);
+        self
+    }
+
     /// Execute the scenario and return the captured outcome.
     pub fn run(self) -> TestOutcome {
         let scenario_name = self.name.clone();
@@ -200,6 +218,8 @@ impl FaultScenario {
         let mut call_counter = Arc::new(AtomicU64::new(0));
         let mut checkpoint_handle: Option<CheckpointHandle> = None;
         let mut tcp_server_handle: Option<TcpServerHandle> = None;
+        let mut runtime_events_barrier = Barrier::new(|_: &RuntimeBarrierEvent| true);
+        let mut trace_events = Vec::new();
 
         match &self.sink_mode {
             SinkMode::TurmoilTcp => {
@@ -256,7 +276,8 @@ impl FaultScenario {
                         sd.cancel();
                     });
 
-                    pipeline.run_async(&shutdown).await?;
+                    let run_result = pipeline.run_async(&shutdown).await;
+                    run_result?;
                     Ok(())
                 });
             }
@@ -305,7 +326,8 @@ impl FaultScenario {
                         sd.cancel();
                     });
 
-                    pipeline.run_async(&shutdown).await?;
+                    let run_result = pipeline.run_async(&shutdown).await;
+                    run_result?;
                     Ok(())
                 });
             }
@@ -352,7 +374,8 @@ impl FaultScenario {
                         sd.cancel();
                     });
 
-                    pipeline.run_async(&shutdown).await?;
+                    let run_result = pipeline.run_async(&shutdown).await;
+                    run_result?;
                     Ok(())
                 });
             }
@@ -363,44 +386,45 @@ impl FaultScenario {
 
         let mut applied_network_fault_steps = Vec::new();
         let run_outcome = catch_unwind(AssertUnwindSafe(|| {
-            if network_faults.is_empty() {
-                sim.run()
-            } else {
-                let mut faults = network_faults.iter().peekable();
-                let mut step = 0usize;
+            let mut faults = network_faults.iter().peekable();
+            let mut step = 0usize;
+
+            while let Some(fault) = faults.peek() {
+                if fault.step != 0 {
+                    break;
+                }
+                applied_network_fault_steps.push(fault.step);
+                apply_network_fault(&mut sim, fault);
+                faults.next();
+            }
+
+            loop {
+                if sim.step()? {
+                    break Ok::<(), Box<dyn std::error::Error>>(());
+                }
+                drain_runtime_events(&mut runtime_events_barrier, &mut trace_events);
+                step += 1;
                 while let Some(fault) = faults.peek() {
-                    if fault.step != 0 {
+                    if fault.step != step {
                         break;
                     }
                     applied_network_fault_steps.push(fault.step);
                     apply_network_fault(&mut sim, fault);
                     faults.next();
                 }
-                while faults.peek().is_some() {
-                    if sim.step()? {
-                        return Ok(());
-                    }
-                    step += 1;
-                    while let Some(fault) = faults.peek() {
-                        if fault.step != step {
-                            break;
-                        }
-                        applied_network_fault_steps.push(fault.step);
-                        apply_network_fault(&mut sim, fault);
-                        faults.next();
-                    }
-                }
-                sim.run()
             }
         }));
+        drain_runtime_events(&mut runtime_events_barrier, &mut trace_events);
 
         let (panicked, sim_error) = match run_outcome {
             Ok(Ok(())) => (false, None),
             Ok(Err(err)) => (false, Some(err.to_string())),
             Err(_) => (true, None),
         };
+        let trace_validation_error = TransitionValidator::default().validate(&trace_events).err();
+        let normalized_trace = normalized_contract_trace(&trace_events);
 
-        TestOutcome {
+        let outcome = TestOutcome {
             scenario_name,
             seed,
             delivered_rows: delivered_counter.load(Ordering::Relaxed),
@@ -410,6 +434,27 @@ impl FaultScenario {
             applied_network_fault_steps,
             checkpoint: checkpoint_handle,
             tcp_server: tcp_server_handle,
+            trace_events,
+            trace_validation_error,
+            normalized_trace,
+        };
+        if let Some(typed_contract) = self.typed_contract {
+            typed_contract.verify(&outcome);
+        }
+        outcome
+    }
+}
+
+fn drain_runtime_events(barrier: &mut Barrier<RuntimeBarrierEvent>, events: &mut Vec<TraceEvent>) {
+    loop {
+        let mut wait = Box::pin(barrier.wait());
+        match wait.as_mut().now_or_never() {
+            Some(Some(triggered)) => {
+                if let Some(event) = trace_event_from_runtime_barrier(&triggered) {
+                    events.push(event);
+                }
+            }
+            Some(None) | None => break,
         }
     }
 }
@@ -418,6 +463,8 @@ fn apply_network_fault(sim: &mut turmoil::Sim<'_>, fault: &NetworkFault) {
     match fault.action {
         NetworkFaultAction::Partition => sim.partition("pipeline", "server"),
         NetworkFaultAction::Repair => sim.repair("pipeline", "server"),
+        NetworkFaultAction::Hold => sim.hold("pipeline", "server"),
+        NetworkFaultAction::Release => sim.release("pipeline", "server"),
     }
 }
 
@@ -442,6 +489,9 @@ pub struct TestOutcome {
     applied_network_fault_steps: Vec<usize>,
     checkpoint: Option<CheckpointHandle>,
     tcp_server: Option<TcpServerHandle>,
+    trace_events: Vec<TraceEvent>,
+    trace_validation_error: Option<String>,
+    normalized_trace: Vec<String>,
 }
 
 impl TestOutcome {
@@ -491,6 +541,16 @@ impl TestOutcome {
             self.seed
         )
     }
+
+    /// Normalized deterministic contract trace for replay comparison.
+    pub fn normalized_contract_trace(&self) -> &[String] {
+        &self.normalized_trace
+    }
+
+    /// Raw trace events captured during the scenario run.
+    pub fn trace_events(&self) -> &[TraceEvent] {
+        &self.trace_events
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -498,11 +558,21 @@ enum Invariant {
     NoSimError,
     DeliveredEq(u64),
     CallsGe(u64),
-    CheckpointMonotonic { source_id: u64 },
+    CheckpointMonotonic {
+        source_id: u64,
+    },
     CheckpointCrashCountGe(u64),
-    CheckpointUpdatesGe { source_id: u64, min: usize },
+    CheckpointUpdatesGe {
+        source_id: u64,
+        min: usize,
+    },
     ServerReceivedGe(u64),
     ServerConnectionsGe(u64),
+    CheckpointDurableEq {
+        source_id: u64,
+        expected: Option<u64>,
+    },
+    TraceContractValid,
 }
 
 /// Builder-style collection of invariants to assert against a `TestOutcome`.
@@ -569,6 +639,21 @@ impl InvariantSet {
     pub fn server_connections_ge(mut self, minimum: u64) -> Self {
         self.invariants
             .push(Invariant::ServerConnectionsGe(minimum));
+        self
+    }
+
+    /// Require an exact durable checkpoint value (or no checkpoint).
+    pub fn checkpoint_durable_eq(mut self, source_id: u64, expected: Option<u64>) -> Self {
+        self.invariants.push(Invariant::CheckpointDurableEq {
+            source_id,
+            expected,
+        });
+        self
+    }
+
+    /// Require the transition-contract validator to accept trace output.
+    pub fn trace_contract_valid(mut self) -> Self {
+        self.invariants.push(Invariant::TraceContractValid);
         self
     }
 
@@ -669,7 +754,61 @@ impl InvariantSet {
                         outcome.replay_hint()
                     );
                 }
+                Invariant::CheckpointDurableEq {
+                    source_id,
+                    expected,
+                } => {
+                    let checkpoint = outcome
+                        .checkpoint()
+                        .expect("checkpoint invariant requested without checkpoint handle");
+                    let durable = checkpoint.durable_offset(*source_id);
+                    assert_eq!(
+                        durable,
+                        *expected,
+                        "scenario '{}' expected durable checkpoint {:?} for source {}, got {:?} ({})",
+                        outcome.scenario_name,
+                        expected,
+                        source_id,
+                        durable,
+                        outcome.replay_hint()
+                    );
+                }
+                Invariant::TraceContractValid => {
+                    if let Some(err) = &outcome.trace_validation_error {
+                        panic!(
+                            "scenario '{}' produced invalid transition trace: {err} ({})",
+                            outcome.scenario_name,
+                            outcome.replay_hint()
+                        );
+                    }
+                }
             }
+        }
+    }
+}
+
+/// Prototype for Shape A: typed phase + invariant bundle contract.
+#[derive(Clone, Debug)]
+pub struct TypedInvariantBundle {
+    requires_trace_contract: bool,
+}
+
+impl TypedInvariantBundle {
+    /// Build a minimal typed contract prototype that requires valid traces.
+    pub fn trace_contract() -> Self {
+        Self {
+            requires_trace_contract: true,
+        }
+    }
+
+    fn verify(&self, outcome: &TestOutcome) {
+        if self.requires_trace_contract {
+            assert!(
+                outcome.trace_validation_error.is_none(),
+                "typed invariant bundle rejected outcome '{}': {:?}",
+                outcome.scenario_name,
+                outcome.trace_validation_error
+            );
         }
     }
 }

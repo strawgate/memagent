@@ -147,6 +147,13 @@ mod tests {
             ),
             ComponentHealth::Degraded
         );
+        assert_eq!(
+            reduce_output_health(
+                ComponentHealth::Stopping,
+                OutputHealthEvent::StartupRequested
+            ),
+            ComponentHealth::Stopping
+        );
     }
 
     #[test]

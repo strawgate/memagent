@@ -11,6 +11,7 @@ mod health;
 mod input_build;
 pub(crate) mod input_pipeline;
 mod input_poll;
+mod internal_faults;
 mod processor_stage;
 mod submit;
 
@@ -40,7 +41,7 @@ use logfwd_io::checkpoint::FileCheckpointStore;
 use logfwd_io::checkpoint::{CheckpointStore, SourceCheckpoint};
 #[cfg(test)]
 use logfwd_io::format::FormatDecoder;
-#[cfg(any(test, feature = "turmoil"))]
+#[cfg(test)]
 use logfwd_io::input::InputEvent;
 use logfwd_io::input::InputSource;
 use logfwd_io::tail::ByteOffset;
@@ -388,6 +389,13 @@ impl Pipeline {
             self.inputs.len(),
             self.input_transforms.len(),
         );
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::PipelinePhase {
+                phase: crate::turmoil_barriers::PipelinePhase::Running,
+            },
+        )
+        .await;
         // Spawn input threads. Each polls its source, parses format, and
         // sends accumulated JSON lines through a bounded channel.
         // Backpressure: when the channel is full, the input thread blocks.
@@ -512,7 +520,7 @@ impl Pipeline {
             }
         }
 
-        if should_drain_input_channel {
+        if should_drain_input_channel && !internal_faults::shutdown_skip_channel_drain() {
             // Drain channel messages before joining input threads.
             // This prevents deadlock during shutdown if a producer is blocked in
             // `blocking_send` while the bounded channel is full.
@@ -557,6 +565,13 @@ impl Pipeline {
 
         // Drain the pool: signal workers to finish current item and exit,
         // then wait up to 60s for graceful shutdown.
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::PipelinePhase {
+                phase: crate::turmoil_barriers::PipelinePhase::Draining,
+            },
+        )
+        .await;
         self.pool.drain(Duration::from_secs(60)).await;
 
         // Drain remaining acks that workers sent before exiting.
@@ -604,6 +619,13 @@ impl Pipeline {
             }
         }
 
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::PipelinePhase {
+                phase: crate::turmoil_barriers::PipelinePhase::Stopped,
+            },
+        )
+        .await;
         Ok(())
     }
 
@@ -2460,6 +2482,71 @@ output:
             0,
             "inflight counter must not underflow on stray ack"
         );
+    }
+
+    #[cfg(feature = "internal-failpoints")]
+    #[test]
+    #[serial]
+    fn test_failpoint_submit_before_pool_triggers_hold_and_shutdown() {
+        let scenario = fail::FailScenario::setup();
+        fail::cfg(
+            "runtime::pipeline::submit::before_pool_submit",
+            "1*return->off",
+        )
+        .expect("configure failpoint");
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("submit-failpoint.log");
+        logfwd_test_utils::generate_json_lines(&log_path, 20, "submit-failpoint");
+
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+
+        let shutdown = CancellationToken::new();
+        let result = pipeline.run(&shutdown);
+        assert!(
+            result.is_ok(),
+            "submit failpoint should trigger graceful shutdown without panic"
+        );
+        assert!(
+            pipeline.machine.is_none(),
+            "pipeline machine should still reach drained terminal state"
+        );
+
+        fail::remove("runtime::pipeline::submit::before_pool_submit");
+        scenario.teardown();
+    }
+
+    #[cfg(feature = "internal-failpoints")]
+    #[test]
+    #[serial]
+    fn test_failpoint_shutdown_skip_channel_drain_remains_safe() {
+        let scenario = fail::FailScenario::setup();
+        fail::cfg("runtime::pipeline::run_async::skip_channel_drain", "return")
+            .expect("configure failpoint");
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("shutdown-skip-drain.log");
+        logfwd_test_utils::generate_json_lines(&log_path, 100, "skip-drain");
+
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            sd.cancel();
+        });
+
+        let result = pipeline.run(&shutdown);
+        assert!(
+            result.is_ok(),
+            "skip-drain failpoint must not deadlock or crash shutdown"
+        );
+
+        fail::remove("runtime::pipeline::run_async::skip_channel_drain");
+        scenario.teardown();
     }
 
     #[test]

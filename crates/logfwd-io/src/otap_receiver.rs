@@ -35,10 +35,14 @@ use tokio::sync::oneshot;
 use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
-use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, declared_content_length, read_limited_body};
+use crate::receiver_http::{
+    MAX_REQUEST_BODY_SIZE, declared_content_length, parse_content_type, read_limited_body,
+};
 
 /// Bounded channel capacity.
 const CHANNEL_BOUND: usize = 256;
+const CONTENT_TYPE_PROTOBUF: &str = "application/x-protobuf";
+const CONTENT_TYPE_PROTOBUF_ALT: &str = "application/protobuf";
 
 // ---------------------------------------------------------------------------
 // ArrowPayloadType enum values (from OTAP proto)
@@ -239,6 +243,20 @@ async fn handle_otap_request(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    let content_type = match parse_content_type(&headers) {
+        Ok(content_type) => content_type,
+        Err(status) => return (status, "invalid content-type header").into_response(),
+    };
+    if content_type.as_deref().is_some_and(|content_type| {
+        content_type != CONTENT_TYPE_PROTOBUF && content_type != CONTENT_TYPE_PROTOBUF_ALT
+    }) {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported content-type for OTAP receiver",
+        )
+            .into_response();
+    }
+
     let content_length = declared_content_length(&headers);
     if content_length.is_some_and(|body_len| body_len > MAX_REQUEST_BODY_SIZE as u64) {
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
@@ -278,7 +296,7 @@ async fn handle_otap_request(
         let resp_body = encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
         return (
             StatusCode::OK,
-            [(CONTENT_TYPE, "application/x-protobuf")],
+            [(CONTENT_TYPE, CONTENT_TYPE_PROTOBUF)],
             resp_body,
         )
             .into_response();
@@ -290,7 +308,7 @@ async fn handle_otap_request(
             let resp_body = encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
             (
                 StatusCode::OK,
-                [(CONTENT_TYPE, "application/x-protobuf")],
+                [(CONTENT_TYPE, CONTENT_TYPE_PROTOBUF)],
                 resp_body,
             )
                 .into_response()
@@ -495,29 +513,50 @@ mod tests {
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use logfwd_arrow::star_schema::flat_to_star;
 
+    fn loopback_http_client() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_global(Some(Duration::from_secs(5)))
+            .build()
+            .into()
+    }
+
+    fn wait_until<F>(timeout: Duration, mut predicate: F, failure_message: &str)
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(predicate(), "{failure_message}");
+    }
+
     // Regression test for issue #1142: clean shutdown
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn clean_shutdown_releases_port() {
         let addr = "127.0.0.1:0";
         let receiver = OtapReceiver::new("test", addr).unwrap();
         let port = receiver.local_addr().port();
 
-        // Wait briefly for thread to start blocking
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
         // Drop it
         drop(receiver);
 
-        // Wait briefly for the OS to actually release the port
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
         // The port should now be free to bind to immediately
         let new_addr = format!("127.0.0.1:{}", port);
-        let result = tiny_http::Server::http(&new_addr);
-        assert!(result.is_ok(), "Failed to bind to port {} after drop", port);
+        wait_until(
+            Duration::from_secs(1),
+            || tiny_http::Server::http(&new_addr).is_ok(),
+            &format!("failed to bind to port {port} after drop"),
+        );
     }
 
     /// Build a `BatchArrowRecords` protobuf from components.
@@ -849,8 +888,8 @@ mod tests {
     }
 
     // --- HTTP integration tests ---
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn receiver_accepts_otap_post() {
         let receiver = OtapReceiver::new_with_capacity("test", "127.0.0.1:0", 16)
             .expect("bind should succeed");
@@ -874,7 +913,8 @@ mod tests {
         );
 
         let url = format!("http://{addr}/v1/arrow_logs");
-        let response = ureq::post(&url)
+        let response = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto)
             .expect("POST should succeed");
@@ -882,41 +922,41 @@ mod tests {
 
         // Receive the flat batch.
         let received = receiver
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(2))
             .expect("should receive a batch");
         assert_eq!(received.num_rows(), 2);
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn receiver_rejects_wrong_path() {
         let receiver = OtapReceiver::new_with_capacity("test-404", "127.0.0.1:0", 16)
             .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         let url = format!("http://{addr}/v1/logs");
-        let result = ureq::post(&url).send(b"data" as &[u8]);
+        let result = loopback_http_client().post(&url).send(b"data" as &[u8]);
         match result {
             Err(ureq::Error::StatusCode(code)) => assert_eq!(code, 404),
             other => panic!("expected 404, got {other:?}"),
         }
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn receiver_rejects_get_method() {
         let receiver = OtapReceiver::new_with_capacity("test-405", "127.0.0.1:0", 16)
             .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         let url = format!("http://{addr}/v1/arrow_logs");
-        let result = ureq::get(&url).call();
+        let result = loopback_http_client().get(&url).call();
         match result {
             Err(ureq::Error::StatusCode(code)) => assert_eq!(code, 405),
             other => panic!("expected 405, got {other:?}"),
         }
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn receiver_returns_429_when_channel_full() {
         let receiver = OtapReceiver::new_with_capacity("test-429", "127.0.0.1:0", 1)
             .expect("bind should succeed");
@@ -928,7 +968,8 @@ mod tests {
         let url = format!("http://{addr}/v1/arrow_logs");
 
         // Fill the channel (capacity = 1).
-        let resp = ureq::post(&url)
+        let resp = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto)
             .expect("first POST should succeed");
@@ -936,7 +977,8 @@ mod tests {
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
 
         // Next request should get 429.
-        let result = ureq::post(&url)
+        let result = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto);
         let status: u16 = match result {
@@ -944,21 +986,19 @@ mod tests {
             Err(ureq::Error::StatusCode(code)) => code,
             Err(e) => panic!("unexpected error: {e}"),
         };
-        assert!(
-            status == 429 || status == 503,
-            "expected 429 or 503, got {status}"
-        );
+        assert_eq!(status, 429, "channel-full request should return 429");
         assert_eq!(receiver.health(), ComponentHealth::Degraded);
 
         // Drain so the receiver is valid.
         let _ = receiver.try_recv_all();
 
-        let resp = ureq::post(&url)
+        let resp = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto)
             .expect("recovery POST should succeed");
         assert_eq!(resp.status().as_u16(), 200);
-        let _ = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        let _ = receiver.recv_timeout(Duration::from_secs(2));
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
     }
 
@@ -968,5 +1008,46 @@ mod tests {
         let decoded = ProtoBatchStatus::decode(resp.as_slice()).expect("decode status");
         assert_eq!(decoded.batch_id, 42);
         assert_eq!(decoded.status_code, BATCH_STATUS_OK as i32);
+    }
+
+    #[test]
+    fn parse_content_type_accepts_parameters() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            "application/x-protobuf; charset=utf-8"
+                .parse()
+                .expect("valid header value"),
+        );
+        assert_eq!(
+            parse_content_type(&headers).expect("parse should succeed"),
+            Some(CONTENT_TYPE_PROTOBUF.to_string())
+        );
+    }
+
+    #[test]
+    fn parse_content_type_accepts_application_protobuf() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            "application/protobuf".parse().expect("valid header value"),
+        );
+        assert_eq!(
+            parse_content_type(&headers).expect("parse should succeed"),
+            Some(CONTENT_TYPE_PROTOBUF_ALT.to_string())
+        );
+    }
+
+    #[test]
+    fn parse_content_type_normalizes_and_allows_handler_rejection() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            "application/json".parse().expect("valid header value"),
+        );
+        assert_eq!(
+            parse_content_type(&headers).expect("parse should succeed"),
+            Some("application/json".to_string())
+        );
     }
 }

@@ -267,11 +267,23 @@ mod proptests {
     use proptest::prelude::*;
     use proptest::test_runner::Config as ProptestConfig;
 
+    fn miri_aware_proptest_config() -> ProptestConfig {
+        #[cfg(miri)]
+        {
+            // Miri runs with isolation enabled; filesystem-backed persistence
+            // calls getcwd and fails under isolation.
+            let mut cfg = ProptestConfig::default();
+            cfg.failure_persistence = None;
+            cfg
+        }
+        #[cfg(not(miri))]
+        {
+            ProptestConfig::default()
+        }
+    }
+
     proptest! {
-        #![proptest_config(ProptestConfig {
-            failure_persistence: None,
-            .. ProptestConfig::default()
-        })]
+        #![proptest_config(miri_aware_proptest_config())]
         /// Output never exceeds max_message_size for any sequence of P and F feeds.
         ///
         /// Extends the Kani proofs (fixed depth P+F, P+P+F) to arbitrary-length

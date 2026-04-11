@@ -5,6 +5,27 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  tlc-pipeline-nightly-thorough:
+    name: "TLA+ PipelineMachine (nightly thorough)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download tla2tools.jar
+        run: |
+          mkdir -p /tmp/tla
+          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
+
+      - name: "TLC: PipelineMachine — nightly thorough"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.nightly.thorough.cfg -workers auto
+
   proptest-extended:
     name: Proptest (100K cases)
     runs-on: ubuntu-latest

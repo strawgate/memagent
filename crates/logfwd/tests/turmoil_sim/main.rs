@@ -1,10 +1,12 @@
 #![cfg(feature = "turmoil")]
 
+mod barrier_sim;
 mod bug_hunt;
 mod channel_input;
 mod crash_sim;
 mod fault_harness;
 mod fault_scenario_sim;
+mod fs_crash_sim;
 mod instrumented_sink;
 mod network_sim;
 mod observable_checkpoint;

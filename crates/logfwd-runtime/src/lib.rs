@@ -9,4 +9,6 @@ pub mod generated_cli;
 pub mod pipeline;
 pub mod processor;
 pub mod transform;
+#[cfg(feature = "turmoil")]
+pub mod turmoil_barriers;
 pub mod worker_pool;

@@ -349,7 +349,8 @@ fn inject_cri_metadata(
     plain_text_field_name: &str,
     out: &mut Vec<u8>,
 ) {
-    if msg.first() == Some(&b'{') {
+    let first_nonws = msg.iter().position(|b| !matches!(b, b' ' | b'\t' | b'\r'));
+    if let Some(obj_start) = first_nonws.filter(|&idx| msg[idx] == b'{') {
         out.push(b'{');
         out.extend_from_slice(b"\"_timestamp\":\"");
         out.extend_from_slice(timestamp);
@@ -358,7 +359,7 @@ fn inject_cri_metadata(
         // Fixes #1658: if the message body after '{' is empty (just '}' possibly
         // with leading whitespace), do NOT emit a trailing comma — the result
         // would be invalid JSON.
-        let after_brace = &msg[1..];
+        let after_brace = &msg[obj_start + 1..];
         let rest = after_brace
             .iter()
             .position(|b| !b.is_ascii_whitespace())
@@ -649,6 +650,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cri_json_message_with_leading_whitespace_is_injected_as_json() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let input = b"2024-01-15T10:30:00Z stdout F   {\"msg\":\"hello\"}\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"msg\":\"hello\"}\n"
+        );
+    }
+
+    #[test]
+    fn cri_whitespace_only_message_is_wrapped_as_plain_text() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let input = b"2024-01-15T10:30:00Z stdout F   \n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(
+            out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"body\":\"  \"}\n"
+        );
+    }
+
     /// Regression for #1658: a CRI log line whose message is an empty JSON
     /// object `{}` must NOT produce a trailing comma in the output.
     ///
@@ -890,7 +917,11 @@ mod verification {
     #[kani::unwind(6)]
     fn verify_inject_non_json_msg_uses_body_key() {
         let msg: [u8; 4] = kani::any();
-        kani::assume(msg[0] != b'{');
+        kani::assume(
+            !msg.iter()
+                .find(|&&b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+                .is_some_and(|&b| b == b'{'),
+        );
         let ts = b"TS";
         let stream = b"S";
         let mut out = Vec::new();
