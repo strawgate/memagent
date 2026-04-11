@@ -59,6 +59,9 @@ impl TraceEvent {
     fn kind(&self) -> &'static str {
         match self {
             Self::Phase { .. } => "phase",
+            Self::BatchBegin { .. } => "batch_begin",
+            Self::BatchTerminal { .. } => "batch_terminal",
+            Self::SinkAttempt { .. } => "sink_attempt",
             Self::SinkResult { .. } => "sink_result",
             Self::CheckpointUpdate { .. } => "checkpoint_update",
             Self::CheckpointFlush { .. } => "checkpoint_flush",
@@ -68,6 +71,32 @@ impl TraceEvent {
     fn summary(&self) -> String {
         match self {
             Self::Phase { phase } => format!("phase={}", phase.as_str()),
+            Self::BatchBegin {
+                batch_id,
+                source_id,
+                checkpoint,
+            } => {
+                format!(
+                    "batch_begin batch={batch_id} source={source_id} checkpoint={checkpoint}"
+                )
+            }
+            Self::BatchTerminal {
+                batch_id,
+                source_id,
+                checkpoint,
+                outcome,
+                disposition,
+                rows,
+            } => {
+                format!(
+                    "batch_terminal batch={batch_id:?} source={source_id:?} checkpoint={checkpoint:?} outcome={} disposition={} rows={rows}",
+                    outcome.as_str(),
+                    disposition.as_str()
+                )
+            }
+            Self::SinkAttempt { outcome, rows } => {
+                format!("sink_attempt outcome={} rows={rows}", outcome.as_str())
+            }
             Self::SinkResult { outcome, rows } => {
                 format!("sink_result outcome={} rows={rows}", outcome.as_str())
             }
@@ -526,15 +555,32 @@ pub fn load_trace(path: impl AsRef<Path>) -> io::Result<Vec<TraceEvent>> {
 pub fn normalized_contract_trace(events: &[TraceEvent]) -> Vec<String> {
     events
         .iter()
-        .map(|event| match event {
-            TraceEvent::Phase { phase } => format!("phase:{}", phase.as_str()),
+        .filter_map(|event| match event {
+            TraceEvent::Phase { phase } => Some(format!("phase:{}", phase.as_str())),
+            TraceEvent::BatchBegin {
+                batch_id,
+                source_id,
+                checkpoint,
+            } => Some(format!("batch_begin:{batch_id}:{source_id}:{checkpoint}")),
+            TraceEvent::BatchTerminal {
+                outcome,
+                disposition,
+                rows,
+                ..
+            } => Some(format!(
+                "batch_terminal:{}:{}:{rows}",
+                outcome.as_str(),
+                disposition.as_str()
+            )),
+            // SinkAttempt is an intermediate event (pre-result); excluded from the contract trace.
+            TraceEvent::SinkAttempt { .. } => None,
             TraceEvent::SinkResult { outcome, rows } => {
-                format!("sink:{}:{rows}", outcome.as_str())
+                Some(format!("sink:{}:{rows}", outcome.as_str()))
             }
             TraceEvent::CheckpointUpdate { source_id, offset } => {
-                format!("ckpt_update:{source_id}:{offset}")
+                Some(format!("ckpt_update:{source_id}:{offset}"))
             }
-            TraceEvent::CheckpointFlush { success } => format!("ckpt_flush:{success}"),
+            TraceEvent::CheckpointFlush { success } => Some(format!("ckpt_flush:{success}")),
         })
         .collect()
 }
@@ -696,6 +742,40 @@ impl NormalizedTrace {
                     TraceEvent::Phase { phase } => {
                         attributes.insert("phase", phase.as_str().to_string());
                     }
+                    TraceEvent::BatchBegin {
+                        batch_id,
+                        source_id,
+                        checkpoint,
+                    } => {
+                        attributes.insert("batch_id", batch_id.to_string());
+                        attributes.insert("source_id", source_id.to_string());
+                        attributes.insert("checkpoint", checkpoint.to_string());
+                    }
+                    TraceEvent::BatchTerminal {
+                        batch_id,
+                        source_id,
+                        checkpoint,
+                        outcome,
+                        disposition,
+                        rows,
+                    } => {
+                        if let Some(batch_id) = batch_id {
+                            attributes.insert("batch_id", batch_id.to_string());
+                        }
+                        if let Some(source_id) = source_id {
+                            attributes.insert("source_id", source_id.to_string());
+                        }
+                        if let Some(checkpoint) = checkpoint {
+                            attributes.insert("checkpoint", checkpoint.to_string());
+                        }
+                        attributes.insert("outcome", outcome.as_str().to_string());
+                        attributes.insert("disposition", disposition.as_str().to_string());
+                        attributes.insert("rows", rows.to_string());
+                    }
+                    TraceEvent::SinkAttempt { outcome, rows } => {
+                        attributes.insert("outcome", outcome.as_str().to_string());
+                        attributes.insert("rows", rows.to_string());
+                    }
                     TraceEvent::SinkResult { outcome, rows } => {
                         attributes.insert("outcome", outcome.as_str().to_string());
                         attributes.insert("rows", rows.to_string());
@@ -707,7 +787,6 @@ impl NormalizedTrace {
                     TraceEvent::CheckpointFlush { success } => {
                         attributes.insert("success", success.to_string());
                     }
-                    _ => {}
                 }
                 NormalizedTraceEvent {
                     index,
@@ -863,9 +942,14 @@ impl TransitionValidator {
                     source_id,
                     checkpoint,
                 } => {
-                    reject_after_stopped(idx, saw_stopped, "begin_send")?;
+                    reject_after_stopped(events, idx, saw_stopped, "begin_send")?;
                     if batches.contains_key(batch_id) {
-                        return Err(format!("event {idx}: duplicate batch id {batch_id}"));
+                        return Err(ValidationError::at(
+                            events,
+                            idx,
+                            "duplicate_batch_id",
+                            format!("duplicate batch id {batch_id}"),
+                        ));
                     }
                     batches.insert(
                         *batch_id,
@@ -889,7 +973,7 @@ impl TransitionValidator {
                     disposition,
                     rows: _,
                 } => {
-                    reject_after_stopped(idx, saw_stopped, "sink/disposition activity")?;
+                    reject_after_stopped(events, idx, saw_stopped, "sink/disposition activity")?;
                     apply_terminal_event(
                         idx,
                         &mut batches,
@@ -900,10 +984,11 @@ impl TransitionValidator {
                         *checkpoint,
                         *outcome,
                         *disposition,
-                    )?;
+                    )
+                    .map_err(|msg| ValidationError::at(events, idx, "terminal_event", msg))?;
                 }
                 TraceEvent::CheckpointUpdate { source_id, offset } => {
-                    reject_after_stopped(idx, saw_stopped, "checkpoint update")?;
+                    reject_after_stopped(events, idx, saw_stopped, "checkpoint update")?;
                     let last = source_offsets.get(source_id).copied().unwrap_or(0);
                     if *offset < last {
                         return Err(ValidationError::at(
@@ -920,20 +1005,25 @@ impl TransitionValidator {
                             && matches!(batch.status, BatchStatus::Open | BatchStatus::Held)
                             && *offset >= batch.checkpoint
                         {
-                            return Err(format!(
-                                "event {idx}: checkpoint advanced to {offset} past unresolved gap \
-                                 batch {batch_id} for source {source_id} at checkpoint {}",
-                                batch.checkpoint
+                            return Err(ValidationError::at(
+                                events,
+                                idx,
+                                "checkpoint_past_unresolved_batch",
+                                format!(
+                                    "checkpoint advanced to {offset} past unresolved gap \
+                                     batch {batch_id} for source {source_id} at checkpoint {}",
+                                    batch.checkpoint
+                                ),
                             ));
                         }
                     }
                     source_offsets.insert(*source_id, *offset);
                 }
                 TraceEvent::CheckpointFlush { .. } => {
-                    reject_after_stopped(idx, saw_stopped, "flush")?;
+                    reject_after_stopped(events, idx, saw_stopped, "flush")?;
                 }
                 TraceEvent::SinkAttempt { outcome, .. } => {
-                    reject_after_stopped(idx, saw_stopped, "sink activity")?;
+                    reject_after_stopped(events, idx, saw_stopped, "sink activity")?;
                     if matches!(
                         outcome,
                         SinkOutcome::RetryAfter | SinkOutcome::IoError | SinkOutcome::Panic
@@ -946,7 +1036,7 @@ impl TransitionValidator {
                     }
                 }
                 TraceEvent::SinkResult { outcome, rows } => {
-                    reject_after_stopped(idx, saw_stopped, "sink activity")?;
+                    reject_after_stopped(events, idx, saw_stopped, "sink activity")?;
                     apply_legacy_sink_result(
                         idx,
                         &mut batches,
@@ -954,7 +1044,8 @@ impl TransitionValidator {
                         saw_batch_marker,
                         *outcome,
                         *rows,
-                    )?;
+                    )
+                    .map_err(|msg| ValidationError::at(events, idx, "legacy_sink", msg))?;
                 }
             }
         }
@@ -969,10 +1060,15 @@ impl TransitionValidator {
         }
         for (batch_id, batch) in &batches {
             if batch.status == BatchStatus::Open {
-                return Err(format!(
-                    "batch {batch_id}: begin_send was not terminalized or explicitly held \
-                     (source_id={}, checkpoint={}, saw_failure_attempt={})",
-                    batch.source_id, batch.checkpoint, batch.saw_failure_attempt
+                return Err(ValidationError::at(
+                    events,
+                    events.len().saturating_sub(1),
+                    "unterminated_batch",
+                    format!(
+                        "batch {batch_id}: begin_send was not terminalized or explicitly held \
+                         (source_id={}, checkpoint={}, saw_failure_attempt={})",
+                        batch.source_id, batch.checkpoint, batch.saw_failure_attempt
+                    ),
                 ));
             }
         }
@@ -1115,9 +1211,19 @@ fn trace_disposition_from_runtime(
     }
 }
 
-fn reject_after_stopped(idx: usize, saw_stopped: bool, activity: &str) -> Result<(), String> {
+fn reject_after_stopped(
+    events: &[TraceEvent],
+    idx: usize,
+    saw_stopped: bool,
+    activity: &str,
+) -> Result<(), ValidationError> {
     if saw_stopped {
-        Err(format!("event {idx}: {activity} after Stopped"))
+        Err(ValidationError::at(
+            events,
+            idx,
+            "activity_after_stopped",
+            format!("{activity} after Stopped"),
+        ))
     } else {
         Ok(())
     }
