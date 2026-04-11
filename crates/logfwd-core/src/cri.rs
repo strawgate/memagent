@@ -791,28 +791,31 @@ mod verification {
         }
     }
 
-    /// Prove configurable plain-text wrapper calls are panic-free for empty input.
+    /// Prove configurable plain-text wrapper calls are panic-free for
+    /// bounded symbolic input that exercises the CRI parser logic.
     #[kani::proof]
-    #[kani::unwind(4)]
+    #[kani::unwind(12)]
     #[kani::solver(kissat)]
     fn verify_process_cri_to_buf_with_plain_text_field_no_panic() {
         let use_body: bool = kani::any();
         let field_name = if use_body { "body" } else { SHORT_FIELD_NAME };
 
-        let chunk = b"";
+        let chunk: [u8; 8] = kani::any();
         let mut out = Vec::new();
         let mut reassembler = CriReassembler::new(64);
         let (count, errors) = process_cri_to_buf_with_plain_text_field(
-            chunk,
+            &chunk,
             &mut reassembler,
             None,
             field_name,
             &mut out,
         );
 
-        assert_eq!(count, 0);
-        assert_eq!(errors, 0);
-        assert!(out.is_empty());
+        // Total processed lines can never exceed input line count.
+        let newline_count = chunk.iter().filter(|&&b| b == b'\n').count();
+        assert!(count + errors <= newline_count);
+        kani::cover!(count > 0, "successful parse reachable");
+        kani::cover!(errors > 0, "error path reachable");
         kani::cover!(use_body, "body-field branch reachable");
         kani::cover!(!use_body, "short-field branch reachable");
     }

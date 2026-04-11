@@ -260,6 +260,7 @@ struct GeneratorGeneratedFieldState {
 
 impl GeneratorInput {
     pub fn new(name: impl Into<String>, config: GeneratorConfig) -> Self {
+        debug_assert!(config.batch_size > 0, "batch_size must be at least 1");
         let name = name.into();
         let initial_rate_credit_events = if config.events_per_sec > 0 {
             config.batch_size as f64
@@ -426,6 +427,10 @@ impl GeneratorInput {
 
 impl InputSource for GeneratorInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        if self.config.batch_size == 0 {
+            return Ok(vec![]);
+        }
+
         if self.done {
             return Ok(vec![]);
         }
