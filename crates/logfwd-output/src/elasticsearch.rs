@@ -226,6 +226,10 @@ impl ElasticsearchSink {
                 .and_then(|obj| obj.values().next())
                 .and_then(serde_json::Value::as_object);
             if let Some(action_obj) = action {
+                let status = action_obj
+                    .get("status")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|s| s as u16);
                 if let Some(error) = action_obj.get("error") {
                     let error_type = error
                         .get("type")
@@ -235,11 +239,33 @@ impl ElasticsearchSink {
                         .get("reason")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("no reason provided");
+                    if let Some(status) = status {
+                        if status == 429 || status >= 500 {
+                            return Err(io::Error::other(format!(
+                                "ES bulk transient item failure (status {status}): {error_type}: {reason}"
+                            )));
+                        }
+                    }
                     // InvalidData: document-level rejection — permanent, do not retry.
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("ES bulk error: {error_type}: {reason}"),
                     ));
+                }
+                if let Some(status) = status {
+                    if status >= 400 {
+                        if status == 429 || status >= 500 {
+                            return Err(io::Error::other(format!(
+                                "ES bulk transient item failure (status {status})"
+                            )));
+                        }
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "ES bulk item failed with HTTP status {status} (no error details)"
+                            ),
+                        ));
+                    }
                 }
             }
         }
@@ -1331,6 +1357,59 @@ mod tests {
         let err = ElasticsearchSink::parse_bulk_response(response)
             .expect_err("should error on bulk failure");
         assert!(err.to_string().contains("mapper_parsing_exception"));
+    }
+
+    #[test]
+    fn parse_bulk_response_transient_item_error_is_io_error() {
+        let response = br#"{
+            "took":3,
+            "errors":true,
+            "items":[
+                {"index":{"error":{"type":"es_rejected_execution_exception","reason":"queue is full"},"status":429}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("transient bulk item errors must return Err");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::Other,
+            "429 should be surfaced as transient to allow retry"
+        );
+        assert!(err.to_string().contains("status 429"));
+    }
+
+    #[test]
+    fn parse_bulk_response_status_only_transient_is_io_error() {
+        let response = br#"{
+            "took":3,
+            "errors":true,
+            "items":[
+                {"index":{"status":503}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("status-only transient failure should return Err");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::Other,
+            "5xx status-only failures should remain retriable"
+        );
+        assert!(err.to_string().contains("status 503"));
+    }
+
+    #[test]
+    fn parse_bulk_response_status_only_client_error_is_invalid_data() {
+        let response = br#"{
+            "took":3,
+            "errors":true,
+            "items":[
+                {"index":{"status":400}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("status-only 4xx should be permanent");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("HTTP status 400"));
     }
 
     /// Regression test for issue #1675.
