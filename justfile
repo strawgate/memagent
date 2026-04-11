@@ -614,7 +614,7 @@ install-extensions:
         echo "  Cmd/Ctrl+Shift+P → 'Shell Command: Install code command in PATH'"
         exit 1
     fi
-    grep -oP '"[a-zA-Z0-9_-]+\.[a-zA-Z0-9._-]+"' .vscode/extensions.json \
+    grep -oE '"[a-zA-Z0-9_-]+\.[a-zA-Z0-9._-]+"' .vscode/extensions.json \
         | tr -d '"' \
         | while read -r ext; do
             echo "Installing $ext …"
