@@ -98,6 +98,7 @@ pub struct FaultScenario {
     duration_secs: u64,
     tick_ms: u64,
     batch_timeout_ms: u64,
+    batch_target_bytes: Option<usize>,
     shutdown_after: Duration,
     checkpoint_flush_interval: Option<Duration>,
     arm_checkpoint_crash_after: Option<Duration>,
@@ -119,6 +120,7 @@ impl FaultScenario {
             duration_secs: DEFAULT_SIM_DURATION_SECS,
             tick_ms: DEFAULT_TICK_MS,
             batch_timeout_ms: DEFAULT_BATCH_TIMEOUT_MS,
+            batch_target_bytes: None,
             shutdown_after: Duration::from_secs(5),
             checkpoint_flush_interval: None,
             arm_checkpoint_crash_after: None,
@@ -168,6 +170,12 @@ impl FaultScenario {
     /// Override the pipeline batch timeout.
     pub fn with_batch_timeout(mut self, timeout: Duration) -> Self {
         self.batch_timeout_ms = timeout.as_millis() as u64;
+        self
+    }
+
+    /// Override the pipeline batch target size in bytes.
+    pub fn with_batch_target_bytes(mut self, bytes: usize) -> Self {
+        self.batch_target_bytes = Some(bytes);
         self
     }
 
@@ -262,6 +270,9 @@ impl FaultScenario {
                     let sink = TurmoilTcpSink::new("server", DEFAULT_TCP_PORT);
                     let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
                     pipeline.set_batch_timeout(Duration::from_millis(scenario.batch_timeout_ms));
+                    if let Some(bytes) = scenario.batch_target_bytes {
+                        pipeline.set_batch_target_bytes(bytes);
+                    }
                     let mut pipeline = pipeline.with_input("scenario", Box::new(input));
 
                     if let Some(interval) = scenario.checkpoint_flush_interval {
@@ -315,6 +326,9 @@ impl FaultScenario {
                     let input = ChannelInputSource::new("scenario", scenario.source_id, lines);
                     let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
                     pipeline.set_batch_timeout(Duration::from_millis(scenario.batch_timeout_ms));
+                    if let Some(bytes) = scenario.batch_target_bytes {
+                        pipeline.set_batch_target_bytes(bytes);
+                    }
 
                     let mut pipeline = pipeline.with_input("scenario", Box::new(input));
 
@@ -367,6 +381,9 @@ impl FaultScenario {
                     let input = ChannelInputSource::new("scenario", scenario.source_id, lines);
                     let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
                     pipeline.set_batch_timeout(Duration::from_millis(scenario.batch_timeout_ms));
+                    if let Some(bytes) = scenario.batch_target_bytes {
+                        pipeline.set_batch_target_bytes(bytes);
+                    }
 
                     let mut pipeline = pipeline.with_input("scenario", Box::new(input));
 

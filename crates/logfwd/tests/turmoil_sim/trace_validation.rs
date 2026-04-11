@@ -20,7 +20,7 @@ fn generate_json_lines(n: usize) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn trace_bridge_end_to_end_validates_runtime_transitions() {
+fn trace_bridge_end_to_end_validates_runtime_event_contracts() {
     let mut sim = super::build_sim(40, 1);
 
     let trace_path = NamedTempFile::new()
@@ -35,10 +35,6 @@ fn trace_bridge_end_to_end_validates_runtime_transitions() {
     let store = store.with_trace_recorder(trace.clone());
 
     sim.client("pipeline", async move {
-        trace.record(TraceEvent::Phase {
-            phase: TracePhase::Running,
-        });
-
         let lines = generate_json_lines(20);
         let input = ChannelInputSource::new("test", SourceId(1), lines);
 
@@ -51,20 +47,12 @@ fn trace_bridge_end_to_end_validates_runtime_transitions() {
 
         let shutdown = CancellationToken::new();
         let sd = shutdown.clone();
-        let trace_for_shutdown = trace.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            trace_for_shutdown.record(TraceEvent::Phase {
-                phase: TracePhase::Draining,
-            });
             sd.cancel();
         });
 
         pipeline.run_async(&shutdown).await.unwrap();
-
-        trace.record(TraceEvent::Phase {
-            phase: TracePhase::Stopped,
-        });
 
         Ok(())
     });
@@ -87,7 +75,7 @@ fn trace_bridge_end_to_end_validates_runtime_transitions() {
     let validator = TransitionValidator::default();
     validator
         .validate(&events)
-        .expect("runtime trace should satisfy declared transition contract");
+        .expect("runtime event stream should satisfy declared trace contract");
 }
 
 #[test]
@@ -170,9 +158,33 @@ fn trace_validator_rejects_missing_running_marker() {
         .validate(&events)
         .expect_err("trace without initial running marker must be rejected");
     assert!(
-        err.contains("start with running phase marker"),
+        err.contains("invalid phase transition"),
         "unexpected validator error: {err}"
     );
+}
+
+#[test]
+fn trace_validator_accepts_phase_less_runtime_event_streams() {
+    let events = vec![
+        TraceEvent::CheckpointUpdate {
+            source_id: 1,
+            offset: 10,
+        },
+        TraceEvent::CheckpointFlush { success: true },
+        TraceEvent::SinkResult {
+            outcome: super::trace_bridge::SinkOutcome::Ok,
+            rows: 5,
+        },
+        TraceEvent::CheckpointUpdate {
+            source_id: 1,
+            offset: 20,
+        },
+    ];
+
+    let validator = TransitionValidator::default();
+    validator
+        .validate(&events)
+        .expect("phase-less streams should validate when checkpoint monotonicity holds");
 }
 
 #[test]

@@ -528,31 +528,18 @@ impl TransitionValidator {
                 "trace is empty",
             ));
         }
-        if !matches!(
-            events.first(),
-            Some(TraceEvent::Phase {
-                phase: TracePhase::Running
-            })
-        ) {
-            return Err(ValidationError::at(
-                events,
-                0,
-                "missing_running_start",
-                "trace must start with running phase marker",
-            ));
-        }
-
-        let mut phase = PhaseState::Running;
+        let mut phase: Option<PhaseState> = None;
         let mut source_offsets = self.source_offsets.clone();
+        let saw_phase_marker = events
+            .iter()
+            .any(|event| matches!(event, TraceEvent::Phase { .. }));
 
         for (idx, event) in events.iter().enumerate() {
             match event {
                 TraceEvent::Phase {
                     phase: TracePhase::Running,
                 } => {
-                    if idx == 0 {
-                        phase = PhaseState::Running;
-                    } else {
+                    if idx != 0 || phase.is_some() {
                         return Err(ValidationError::at(
                             events,
                             idx,
@@ -560,35 +547,36 @@ impl TransitionValidator {
                             "running phase marker may only appear first",
                         ));
                     }
+                    phase = Some(PhaseState::Running);
                 }
                 TraceEvent::Phase {
                     phase: TracePhase::Draining,
                 } => {
-                    if phase != PhaseState::Running {
+                    if phase != Some(PhaseState::Running) {
                         return Err(ValidationError::at(
                             events,
                             idx,
                             "invalid_phase_transition",
-                            format!("invalid phase transition {} -> draining", phase.as_str()),
+                            format!("invalid phase transition {phase:?} -> Draining"),
                         ));
                     }
-                    phase = PhaseState::Draining;
+                    phase = Some(PhaseState::Draining);
                 }
                 TraceEvent::Phase {
                     phase: TracePhase::Stopped,
                 } => {
-                    if phase != PhaseState::Draining {
+                    if phase != Some(PhaseState::Draining) {
                         return Err(ValidationError::at(
                             events,
                             idx,
                             "invalid_phase_transition",
-                            format!("invalid phase transition {} -> stopped", phase.as_str()),
+                            format!("invalid phase transition {phase:?} -> Stopped"),
                         ));
                     }
-                    phase = PhaseState::Stopped;
+                    phase = Some(PhaseState::Stopped);
                 }
                 TraceEvent::CheckpointUpdate { source_id, offset } => {
-                    if phase == PhaseState::Stopped {
+                    if phase == Some(PhaseState::Stopped) {
                         return Err(ValidationError::at(
                             events,
                             idx,
@@ -612,7 +600,7 @@ impl TransitionValidator {
                     source_offsets.insert(*source_id, *offset);
                 }
                 TraceEvent::CheckpointFlush { .. } => {
-                    if phase == PhaseState::Stopped {
+                    if phase == Some(PhaseState::Stopped) {
                         return Err(ValidationError::at(
                             events,
                             idx,
@@ -622,7 +610,7 @@ impl TransitionValidator {
                     }
                 }
                 TraceEvent::SinkResult { .. } => {
-                    if phase == PhaseState::Stopped {
+                    if phase == Some(PhaseState::Stopped) {
                         return Err(ValidationError::at(
                             events,
                             idx,
@@ -634,14 +622,13 @@ impl TransitionValidator {
             }
         }
 
-        if phase != PhaseState::Stopped {
+        if saw_phase_marker && phase != Some(PhaseState::Stopped) {
             return Err(ValidationError::at(
                 events,
                 events.len().saturating_sub(1),
                 "terminal_phase_missing",
                 format!(
-                    "trace ended before stopped transition (last phase: {})",
-                    phase.as_str()
+                    "trace ended before stopped transition (last phase: {phase:?})"
                 ),
             ));
         }

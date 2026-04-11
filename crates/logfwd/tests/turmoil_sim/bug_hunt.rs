@@ -130,6 +130,7 @@ fn worker_panic_does_not_block_drain() {
         FailureAction::Panic,
     ]]));
     let delivered_counter = factory.delivered_counter();
+    let (store, ckpt_handle) = ObservableCheckpointStore::new();
 
     sim.client("pipeline", async move {
         let lines = generate_json_lines(20);
@@ -137,7 +138,10 @@ fn worker_panic_does_not_block_drain() {
 
         let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
         pipeline.set_batch_timeout(Duration::from_millis(20));
-        let mut pipeline = pipeline.with_input("test", Box::new(input));
+        pipeline.set_checkpoint_flush_interval(Duration::from_millis(50));
+        let mut pipeline = pipeline
+            .with_input("test", Box::new(input))
+            .with_checkpoint_store(Box::new(store));
 
         let shutdown = CancellationToken::new();
         let sd = shutdown.clone();
@@ -173,6 +177,17 @@ fn worker_panic_does_not_block_drain() {
     eprintln!(
         "worker_panic test: {delivered} rows delivered out of 20 \
          (0 is acceptable if worker pool doesn't respawn after panic)"
+    );
+
+    // A panic path is mapped to InternalFailure and must hold the checkpoint.
+    assert!(
+        ckpt_handle.durable_offset(1).is_none(),
+        "panic must not advance durable checkpoint state"
+    );
+    assert_eq!(
+        ckpt_handle.update_count(1),
+        0,
+        "panic must not write checkpoint updates"
     );
 }
 

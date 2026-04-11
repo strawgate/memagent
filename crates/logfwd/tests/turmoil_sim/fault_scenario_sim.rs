@@ -217,6 +217,33 @@ fn panic_unwind_scenario_reports_panic_contract() {
 }
 
 #[test]
+fn panic_scenario_holds_checkpoint_progress() {
+    let outcome = FaultScenario::builder("panic-holds-checkpoint")
+        .with_seed(20260419)
+        .with_line_count(20)
+        .with_sink_script(vec![FailureAction::Panic])
+        .with_checkpoint_flush_interval(Duration::from_millis(50))
+        .with_shutdown_after(Duration::from_secs(3))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .delivered_eq(0)
+        .calls_ge(1)
+        .checkpoint_durable_absent(1)
+        .verify(&outcome);
+
+    let checkpoint = outcome
+        .checkpoint()
+        .expect("checkpoint handle should be present for checkpoint invariants");
+    assert_eq!(
+        checkpoint.update_count(1),
+        0,
+        "panic path should not produce checkpoint updates"
+    );
+}
+
+#[test]
 fn checkpoint_flush_crash_can_hold_durable_checkpoint_progress() {
     let outcome = FaultScenario::builder("checkpoint-hold-no-advance")
         .with_seed(20260421)
@@ -237,6 +264,68 @@ fn checkpoint_flush_crash_can_hold_durable_checkpoint_progress() {
 }
 
 #[test]
+fn panic_after_initial_success_keeps_checkpoint_monotonic() {
+    let outcome = FaultScenario::builder("panic-after-progress")
+        .with_seed(20260420)
+        .with_line_count(200)
+        .with_batch_target_bytes(512)
+        .with_sink_script(vec![
+            FailureAction::Succeed,
+            FailureAction::Succeed,
+            FailureAction::Panic,
+        ])
+        .with_checkpoint_flush_interval(Duration::from_millis(50))
+        .with_shutdown_after(Duration::from_secs(8))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .calls_ge(3)
+        .checkpoint_monotonic(1)
+        .checkpoint_updates_ge(1, 1)
+        .checkpoint_durable_not_ahead_of_updates(1)
+        .verify(&outcome);
+
+    assert!(
+        outcome.delivered_rows() > 0,
+        "expected at least some rows delivered before panic"
+    );
+}
+
+#[test]
+fn reject_then_success_preserves_checkpoint_contract() {
+    let outcome = FaultScenario::builder("reject-then-success")
+        .with_seed(20260421)
+        .with_line_count(200)
+        .with_batch_target_bytes(512)
+        .with_sink_script(vec![
+            FailureAction::Reject("simulated bad payload".to_string()),
+            FailureAction::Succeed,
+            FailureAction::Succeed,
+        ])
+        .with_checkpoint_flush_interval(Duration::from_millis(50))
+        .with_shutdown_after(Duration::from_secs(8))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .calls_ge(3)
+        .checkpoint_monotonic(1)
+        .checkpoint_updates_ge(1, 1)
+        .checkpoint_durable_not_ahead_of_updates(1)
+        .verify(&outcome);
+
+    assert!(
+        outcome.delivered_rows() > 0,
+        "expected post-reject batches to still be delivered"
+    );
+    assert!(
+        outcome.delivered_rows() < 200,
+        "first rejected batch should prevent full delivery"
+    );
+}
+
+#[test]
 fn post_stop_trace_contract_disallows_further_side_effects() {
     let outcome = FaultScenario::builder("post-stop-contract")
         .with_seed(20260422)
@@ -250,6 +339,39 @@ fn post_stop_trace_contract_disallows_further_side_effects() {
         .no_sim_error()
         .trace_contract_valid()
         .verify(&outcome);
+}
+
+#[test]
+fn retry_exhaustion_with_checkpoint_store_keeps_durable_absent() {
+    let outcome = FaultScenario::builder("retry-exhaustion-checkpoint")
+        .with_seed(20260422)
+        .with_line_count(20)
+        .with_sink_script(vec![
+            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
+            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
+            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
+            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
+            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
+        ])
+        .with_checkpoint_flush_interval(Duration::from_millis(50))
+        .with_shutdown_after(Duration::from_secs(5))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .delivered_eq(0)
+        .calls_ge(4)
+        .checkpoint_durable_absent(1)
+        .verify(&outcome);
+
+    let checkpoint = outcome
+        .checkpoint()
+        .expect("checkpoint handle should be present for checkpoint invariants");
+    assert_eq!(
+        checkpoint.update_count(1),
+        0,
+        "retry exhaustion should not advance checkpoint history"
+    );
 }
 
 #[test]
@@ -333,6 +455,67 @@ fn replay_equivalence_seed_matrix_keeps_history_equivalent() {
         ])
         .unwrap_or_else(|err| panic!("seed {seed} replay equivalence failed: {err}"));
     }
+}
+
+#[test]
+fn panic_checkpoint_seed_replay_is_stable() {
+    let seed = 20260423;
+    let baseline = FaultScenario::builder("panic-checkpoint-baseline")
+        .with_seed(seed)
+        .with_line_count(200)
+        .with_batch_target_bytes(512)
+        .with_sink_script(vec![
+            FailureAction::Succeed,
+            FailureAction::Succeed,
+            FailureAction::Panic,
+        ])
+        .with_checkpoint_flush_interval(Duration::from_millis(50))
+        .with_shutdown_after(Duration::from_secs(8))
+        .run();
+
+    let replay = FaultScenario::builder("panic-checkpoint-replay")
+        .with_seed(seed)
+        .with_line_count(200)
+        .with_batch_target_bytes(512)
+        .with_sink_script(vec![
+            FailureAction::Succeed,
+            FailureAction::Succeed,
+            FailureAction::Panic,
+        ])
+        .with_checkpoint_flush_interval(Duration::from_millis(50))
+        .with_shutdown_after(Duration::from_secs(8))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .calls_ge(3)
+        .checkpoint_monotonic(1)
+        .checkpoint_durable_not_ahead_of_updates(1)
+        .verify(&baseline);
+    InvariantSet::new()
+        .no_sim_error()
+        .calls_ge(3)
+        .checkpoint_monotonic(1)
+        .checkpoint_durable_not_ahead_of_updates(1)
+        .verify(&replay);
+
+    let baseline_checkpoint = baseline
+        .checkpoint()
+        .expect("checkpoint handle should be present for checkpoint invariants");
+    let replay_checkpoint = replay
+        .checkpoint()
+        .expect("checkpoint handle should be present for checkpoint invariants");
+
+    assert_eq!(
+        baseline.delivered_rows(),
+        replay.delivered_rows(),
+        "same seed should reproduce same delivered-row count"
+    );
+    assert_eq!(
+        baseline_checkpoint.update_count(1),
+        replay_checkpoint.update_count(1),
+        "same seed should reproduce same checkpoint update count"
+    );
 }
 
 #[test]
