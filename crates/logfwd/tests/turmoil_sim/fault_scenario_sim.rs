@@ -7,7 +7,7 @@ use super::fault_harness::{
     FaultScenario, InvariantSet, NetworkFault, NetworkFaultAction, TypedInvariantBundle,
 };
 use super::instrumented_sink::FailureAction;
-use super::trace_bridge::{SinkOutcome, TraceEvent};
+use super::trace_bridge::{SinkOutcome, TraceEvent, validate_replay_history_equivalence};
 
 #[test]
 fn checkpoint_crash_scenario_keeps_delivery_and_monotonic_updates() {
@@ -246,6 +246,48 @@ fn replay_equivalence_same_seed_produces_same_normalized_contract_trace() {
         replay.normalized_contract_trace(),
         "same seed should produce same normalized contract trace"
     );
+}
+
+#[test]
+fn replay_equivalence_seed_matrix_keeps_history_equivalent() {
+    let seeds = [20260430_u64, 20260431, 20260432, 20260433];
+    for seed in seeds {
+        let run_a = FaultScenario::builder("replay-matrix-a")
+            .with_seed(seed)
+            .with_line_count(16)
+            .with_sink_script(vec![
+                FailureAction::RetryAfter(Duration::from_millis(5)),
+                FailureAction::Succeed,
+            ])
+            .with_checkpoint_flush_interval(Duration::from_millis(30))
+            .with_shutdown_after(Duration::from_secs(3))
+            .run();
+        let run_b = FaultScenario::builder("replay-matrix-b")
+            .with_seed(seed)
+            .with_line_count(16)
+            .with_sink_script(vec![
+                FailureAction::RetryAfter(Duration::from_millis(5)),
+                FailureAction::Succeed,
+            ])
+            .with_checkpoint_flush_interval(Duration::from_millis(30))
+            .with_shutdown_after(Duration::from_secs(3))
+            .run();
+
+        InvariantSet::new()
+            .no_sim_error()
+            .trace_contract_valid()
+            .verify(&run_a);
+        InvariantSet::new()
+            .no_sim_error()
+            .trace_contract_valid()
+            .verify(&run_b);
+
+        validate_replay_history_equivalence(&[
+            run_a.trace_events().to_vec(),
+            run_b.trace_events().to_vec(),
+        ])
+        .unwrap_or_else(|err| panic!("seed {seed} replay equivalence failed: {err}"));
+    }
 }
 
 #[test]

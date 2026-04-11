@@ -9,6 +9,8 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use logfwd_runtime::turmoil_barriers::{PipelinePhase, RuntimeBarrierEvent};
+use logfwd_runtime::worker_pool::DeliveryOutcome;
 use serde_json::{Value, json};
 
 /// Runtime trace event schema (JSONL row).
@@ -41,6 +43,43 @@ impl TraceEvent {
             }
             Self::CheckpointFlush { success } => format!("checkpoint_flush success={success}"),
         }
+    }
+}
+
+/// Convert runtime-emitted turmoil barrier events into contract trace events.
+#[must_use]
+pub fn trace_event_from_runtime_barrier(event: &RuntimeBarrierEvent) -> Option<TraceEvent> {
+    match event {
+        RuntimeBarrierEvent::PipelinePhase { phase } => {
+            let phase = match phase {
+                PipelinePhase::Running => TracePhase::Running,
+                PipelinePhase::Draining => TracePhase::Draining,
+                PipelinePhase::Stopped => TracePhase::Stopped,
+            };
+            Some(TraceEvent::Phase { phase })
+        }
+        RuntimeBarrierEvent::BeforeWorkerAckSend {
+            outcome, num_rows, ..
+        } => {
+            let outcome = match outcome {
+                DeliveryOutcome::Delivered => SinkOutcome::Ok,
+                DeliveryOutcome::Rejected { .. } => SinkOutcome::Rejected,
+                DeliveryOutcome::InternalFailure => SinkOutcome::Panic,
+                DeliveryOutcome::RetryExhausted
+                | DeliveryOutcome::TimedOut
+                | DeliveryOutcome::PoolClosed
+                | DeliveryOutcome::WorkerChannelClosed
+                | DeliveryOutcome::NoWorkersAvailable => SinkOutcome::IoError,
+            };
+            Some(TraceEvent::SinkResult {
+                outcome,
+                rows: *num_rows,
+            })
+        }
+        RuntimeBarrierEvent::CheckpointFlush { success } => {
+            Some(TraceEvent::CheckpointFlush { success: *success })
+        }
+        RuntimeBarrierEvent::BeforeCheckpointFlushAttempt { .. } => None,
     }
 }
 
@@ -240,6 +279,38 @@ pub fn normalized_contract_trace(events: &[TraceEvent]) -> Vec<String> {
             TraceEvent::CheckpointFlush { success } => format!("ckpt_flush:{success}"),
         })
         .collect()
+}
+
+/// Validate transition history across multiple replay runs.
+///
+/// Ensures every run satisfies `TransitionValidator` and that all runs produce
+/// the same normalized contract trace as run 0.
+pub fn validate_replay_history_equivalence(
+    runs: &[Vec<TraceEvent>],
+) -> Result<Vec<String>, String> {
+    let Some(first) = runs.first() else {
+        return Err("no runs supplied for replay equivalence validation".to_string());
+    };
+
+    let validator = TransitionValidator::default();
+    validator
+        .validate(first)
+        .map_err(|err| format!("run 0 transition contract failed: {err}"))?;
+    let baseline = normalized_contract_trace(first);
+
+    for (idx, run) in runs.iter().enumerate().skip(1) {
+        validator
+            .validate(run)
+            .map_err(|err| format!("run {idx} transition contract failed: {err}"))?;
+        let normalized = normalized_contract_trace(run);
+        if normalized != baseline {
+            return Err(format!(
+                "run {idx} diverged from run 0 normalized contract trace"
+            ));
+        }
+    }
+
+    Ok(baseline)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

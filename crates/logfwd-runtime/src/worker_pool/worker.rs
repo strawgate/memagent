@@ -130,6 +130,17 @@ pub(super) async fn worker_task(
                             batch_id,
                             output_name,
                         };
+                        #[cfg(feature = "turmoil")]
+                        crate::turmoil_barriers::trigger(
+                            crate::turmoil_barriers::RuntimeBarrierEvent::BeforeWorkerAckSend {
+                                worker_id: id,
+                                batch_id: ack.batch_id,
+                                outcome: ack.outcome.clone(),
+                                retries,
+                                num_rows: ack.num_rows,
+                            },
+                        )
+                        .await;
                         if let Err(send_err) = ack_tx.send(ack) {
                             let mut lost_ack = send_err.0;
                             let unresolved_tickets = lost_ack.tickets.len();

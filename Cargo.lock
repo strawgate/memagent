@@ -2505,6 +2505,7 @@ dependencies = [
  "clap_complete",
  "clap_complete_nushell",
  "dhat",
+ "futures-util",
  "logfwd-arrow",
  "logfwd-config",
  "logfwd-core",
@@ -4886,6 +4887,7 @@ dependencies = [
  "scoped-tls",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

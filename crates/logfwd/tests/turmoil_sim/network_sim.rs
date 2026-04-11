@@ -29,6 +29,26 @@ fn generate_json_lines(n: usize) -> Vec<Vec<u8>> {
         .collect()
 }
 
+fn inflight_link_messages(sim: &turmoil::Sim<'_>, a: &str, b: &str) -> usize {
+    let a_ip = sim.lookup(a);
+    let b_ip = sim.lookup(b);
+    let pair = if a_ip < b_ip {
+        (a_ip, b_ip)
+    } else {
+        (b_ip, a_ip)
+    };
+    let mut count = 0usize;
+    sim.links(|links| {
+        for link in links {
+            if link.pair() == pair {
+                count = link.count();
+                break;
+            }
+        }
+    });
+    count
+}
+
 /// Test: retry exhaustion holds checkpoint progress and pipeline does not hang.
 ///
 /// Invariant probed: worker pool retry exhaustion (MAX_RETRIES=3, so 4 total
@@ -522,18 +542,40 @@ fn tcp_hold_release_burst_delivery() {
     sim.hold("pipeline", "server");
 
     // Step during hold — data is buffered, not delivered.
+    let mut held_inflight_peak = 0usize;
     for _ in 0..500 {
         sim.step().unwrap();
+        held_inflight_peak =
+            held_inflight_peak.max(inflight_link_messages(&sim, "pipeline", "server"));
     }
     let during_hold = server_check.received_lines.load(Ordering::Relaxed);
+    let pending_before_release = inflight_link_messages(&sim, "pipeline", "server");
+    assert!(
+        pending_before_release > 0 || held_inflight_peak > 0,
+        "expected pending in-flight traffic while hold is active"
+    );
 
     // Release: deliver all buffered data in a burst.
     sim.release("pipeline", "server");
+    let mut observed_release_progress = false;
+    for _ in 0..100 {
+        sim.step().unwrap();
+        let pending = inflight_link_messages(&sim, "pipeline", "server");
+        if pending < pending_before_release {
+            observed_release_progress = true;
+            break;
+        }
+    }
+    assert!(
+        observed_release_progress || pending_before_release == 0,
+        "expected link backlog to decrease after release; before={pending_before_release}"
+    );
 
     // Run to completion.
     sim.run().unwrap();
 
     let total = server_check.received_lines.load(Ordering::Relaxed);
+    let pending_after_run = inflight_link_messages(&sim, "pipeline", "server");
 
     // After release, total should exceed during_hold (burst delivery).
     // If during_hold == total, the hold had no effect (all data arrived
@@ -547,6 +589,14 @@ fn tcp_hold_release_burst_delivery() {
     assert_eq!(
         total, 200,
         "expected all 200 lines delivered after hold/release, got {total}"
+    );
+    assert!(
+        pending_after_run <= 1,
+        "expected bounded residual in-flight messages after completion, got {pending_after_run}"
+    );
+    assert!(
+        pending_after_run <= pending_before_release,
+        "release should not increase backlog at completion: before={pending_before_release}, after={pending_after_run}"
     );
 }
 

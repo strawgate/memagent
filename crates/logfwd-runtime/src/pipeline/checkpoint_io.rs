@@ -23,7 +23,18 @@ pub(super) async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore)
     const RETRY_DELAY: Duration = Duration::from_millis(100);
 
     for attempt in 0..MAX_ATTEMPTS {
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::BeforeCheckpointFlushAttempt { attempt },
+        )
+        .await;
+
         if internal_faults::checkpoint_flush_should_fail() {
+            #[cfg(feature = "turmoil")]
+            crate::turmoil_barriers::trigger(
+                crate::turmoil_barriers::RuntimeBarrierEvent::CheckpointFlush { success: false },
+            )
+            .await;
             if should_retry_flush(attempt, MAX_ATTEMPTS) {
                 tracing::warn!(
                     attempt,
@@ -41,12 +52,24 @@ pub(super) async fn flush_checkpoint_with_retry(store: &mut dyn CheckpointStore)
 
         match store.flush() {
             Ok(()) => {
+                #[cfg(feature = "turmoil")]
+                crate::turmoil_barriers::trigger(
+                    crate::turmoil_barriers::RuntimeBarrierEvent::CheckpointFlush { success: true },
+                )
+                .await;
                 if attempt > 0 {
                     tracing::info!(attempt, "pipeline: checkpoint flush succeeded after retry");
                 }
                 return;
             }
             Err(e) => {
+                #[cfg(feature = "turmoil")]
+                crate::turmoil_barriers::trigger(
+                    crate::turmoil_barriers::RuntimeBarrierEvent::CheckpointFlush {
+                        success: false,
+                    },
+                )
+                .await;
                 if should_retry_flush(attempt, MAX_ATTEMPTS) {
                     tracing::warn!(
                         attempt,
