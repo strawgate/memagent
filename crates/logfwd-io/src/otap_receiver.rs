@@ -35,7 +35,9 @@ use tokio::sync::oneshot;
 use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
-use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, declared_content_length, read_limited_body};
+use crate::receiver_http::{
+    MAX_REQUEST_BODY_SIZE, declared_content_length, parse_content_type, read_limited_body,
+};
 
 /// Bounded channel capacity.
 const CHANNEL_BOUND: usize = 256;
@@ -330,22 +332,6 @@ async fn handle_otap_request(
                 .into_response()
         }
     }
-}
-
-fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
-    let Some(value) = headers.get(CONTENT_TYPE) else {
-        return Ok(None);
-    };
-    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
-    let mime = parsed
-        .split(';')
-        .next()
-        .map(str::trim)
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    if mime.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    Ok(Some(mime.to_ascii_lowercase()))
 }
 
 /// Decoded `BatchArrowRecords` message.

@@ -757,7 +757,8 @@ mod verification {
     #[kani::unwind(34)]
     fn verify_parse_cri_line_no_panic() {
         let input: [u8; 32] = kani::any();
-        let _ = parse_cri_line(&input);
+        let result = parse_cri_line(&input);
+        kani::cover!(result.is_some(), "some path reachable");
     }
 
     /// Prove parse_cri_line semantic correctness: if it returns Some,

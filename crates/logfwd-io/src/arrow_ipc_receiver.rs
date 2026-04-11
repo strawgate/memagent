@@ -22,7 +22,7 @@ use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
+use axum::http::header::CONTENT_ENCODING;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -33,7 +33,9 @@ use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::input::{InputEvent, InputSource};
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
-use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, declared_content_length, read_limited_body};
+use crate::receiver_http::{
+    MAX_REQUEST_BODY_SIZE, declared_content_length, parse_content_type, read_limited_body,
+};
 
 /// Bounded channel capacity — limits memory when the pipeline falls behind.
 const CHANNEL_BOUND: usize = 256;
@@ -429,22 +431,6 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusC
     Ok(is_zstd.then_some("zstd".to_string()))
 }
 
-fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
-    let Some(value) = headers.get(CONTENT_TYPE) else {
-        return Ok(None);
-    };
-    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
-    let mime = parsed
-        .split(';')
-        .next()
-        .map(str::trim)
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    if mime.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    Ok(Some(mime.to_ascii_lowercase()))
-}
-
 impl Drop for ArrowIpcReceiver {
     fn drop(&mut self) {
         let current = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
@@ -494,6 +480,7 @@ impl InputSource for ArrowIpcReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::CONTENT_TYPE;
 
     // Regression test for issue #1142: clean shutdown
     #[test]
