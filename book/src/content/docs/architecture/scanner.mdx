@@ -1,0 +1,65 @@
+---
+title: "Scanner"
+description: "SIMD-accelerated zero-copy JSON to Arrow conversion"
+---
+
+import ScannerAnimation from '../../../components/ScannerAnimation.astro';
+
+The scanner converts newline-delimited JSON into Apache Arrow RecordBatches
+using SIMD-accelerated structural classification. It's the performance-critical
+path — and the reason logfwd processes **2.8 million lines per second** on a single core.
+
+## See it in action
+
+Step through how the scanner classifies a real JSON log line. Click each step to see what happens at the byte level.
+
+<ScannerAnimation />
+
+## How it works
+
+The scanner has two stages that work together:
+
+### Stage 1: SIMD structural classification
+
+The entire input buffer is processed in 64-byte blocks using platform-native SIMD instructions (AVX2/SSE2 on x86_64, NEON on aarch64). In a single vectorized pass, logfwd detects all 10 structural JSON characters simultaneously:
+
+`"` `\` `,` `:` `{` `}` `[` `]` `\n` `space`
+
+Each character type produces a 64-bit bitmask — one bit per byte position. These bitmasks make every subsequent operation O(1):
+
+- **Find the closing quote**: `trailing_zeros(quote_mask >> position)`
+- **Find the next comma**: `trailing_zeros(comma_mask >> position)`
+- **Check if inside a string**: `(in_string_mask >> position) & 1`
+
+Cross-block state is just 2 integers: the escape carry and string-interior carry. No heap allocation. No stored vectors.
+
+### Stage 2: Scalar field extraction
+
+A state machine walks the JSON using the pre-computed bitmasks. For each field:
+
+1. Find opening `{` (one bitmask lookup)
+2. Find key start/end (quote bitmask)
+3. Resolve field name to column index (HashMap, once per batch)
+4. Detect value type (int/float/string/bool/null/nested)
+5. Append value to the appropriate column builder
+
+:::tip[Field pushdown]
+Before scanning, logfwd analyzes your SQL query and builds a `ScanConfig` listing only the columns you reference. Fields not in the config are skipped entirely — no parsing, no memory allocation. On wide data (20+ fields), this gives 2-3x throughput improvement.
+:::
+
+## Zero-copy mode
+
+The scanner produces Arrow `StringViewArray` columns — 16-byte views that point directly into the input buffer. String data is never copied. The input buffer stays alive via `bytes::Bytes` reference counting while any column references it.
+
+This is why logfwd uses ~6 MB of RAM per batch even when processing millions of string values. Five string columns sharing one buffer use 1x the memory, not 5x.
+
+For persistence (Arrow IPC segments), the scanner has a second mode (`scan_detached`) that produces owned `StringArray` columns via a single bulk copy at batch finalization.
+
+## Performance
+
+| Dataset | Fields | Throughput |
+|---------|--------|-----------|
+| Narrow (3 fields) | 3 | 3.4M lines/sec |
+| Simple (6 fields) | 6 | 2.0M lines/sec |
+| Wide (20 fields) | 20 | 560K lines/sec |
+| Wide with pushdown (20 fields, 2 projected) | 20 → 2 | 1.4M lines/sec |

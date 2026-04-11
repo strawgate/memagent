@@ -1,0 +1,409 @@
+---
+// A realistic JSON log line to animate
+const sampleLine = '{"level":"ERROR","message":"request failed","status":503,"duration_ms":42.7}';
+const bytes = sampleLine.split('');
+
+// Character classification
+const structural = new Set(['"', '\\', ',', ':', '{', '}', '[', ']']);
+const charClasses: Record<string, { cls: string; label: string }> = {
+  '"': { cls: 'sc-quote', label: 'Quote' },
+  '\\': { cls: 'sc-escape', label: 'Escape' },
+  ',': { cls: 'sc-comma', label: 'Comma' },
+  ':': { cls: 'sc-colon', label: 'Colon' },
+  '{': { cls: 'sc-brace', label: 'Brace' },
+  '}': { cls: 'sc-brace', label: 'Brace' },
+  '[': { cls: 'sc-bracket', label: 'Bracket' },
+  ']': { cls: 'sc-bracket', label: 'Bracket' },
+};
+
+// Pre-compute which bytes are inside strings (for the bitmask display)
+let inString = false;
+const stringMask = bytes.map((b, i) => {
+  if (b === '"') {
+    const wasIn = inString;
+    inString = !inString;
+    return false; // quote itself is not "inside"
+  }
+  return inString;
+});
+
+// Steps for the walkthrough
+const steps = [
+  {
+    id: 'raw',
+    title: 'Step 1: Raw bytes',
+    desc: 'A JSON log line arrives as raw bytes. logfwd processes the entire buffer — not line by line, but in 64-byte SIMD blocks.',
+  },
+  {
+    id: 'detect',
+    title: 'Step 2: SIMD structural detection',
+    desc: 'One SIMD instruction compares all bytes against 10 structural characters simultaneously. On AVX2, that\'s 32 bytes per cycle. Each match produces a bit in the corresponding bitmask.',
+  },
+  {
+    id: 'strings',
+    title: 'Step 3: String interior mask',
+    desc: 'Quote positions feed into prefix_xor — a chain of 6 XOR shifts that produces a mask of which bytes are inside JSON strings. Structural characters inside strings (like the colon in "request failed") are ignored.',
+  },
+  {
+    id: 'result',
+    title: 'Step 4: Usable structural positions',
+    desc: 'The final bitmask: structural characters outside strings. These are the only positions the field extractor needs to visit. Finding the next colon or comma is now a single trailing_zeros instruction — O(1).',
+  },
+];
+---
+
+<div class="sa" data-sa-root>
+  <div class="sa-controls">
+    {steps.map((step, i) => (
+      <button
+        class={`sa-step-btn ${i === 0 ? 'sa-step-btn--active' : ''}`}
+        data-step={step.id}
+        data-index={i}
+      >
+        <span class="sa-step-num">{i + 1}</span>
+        {step.title.replace(/Step \d+: /, '')}
+      </button>
+    ))}
+  </div>
+
+  <div class="sa-explanation" data-sa-explanation>
+    <strong>{steps[0].title}</strong>
+    <p>{steps[0].desc}</p>
+  </div>
+
+  <div class="sa-byte-grid" data-sa-grid>
+    {bytes.map((byte, i) => {
+      const cc = charClasses[byte];
+      return (
+        <div
+          class={`sa-byte ${cc ? cc.cls : ''}`}
+          data-index={i}
+          data-char={byte}
+          data-structural={cc ? 'true' : 'false'}
+          data-in-string={stringMask[i] ? 'true' : 'false'}
+        >
+          <span class="sa-byte-char">{byte === ' ' ? '\u00B7' : byte}</span>
+          <span class="sa-byte-pos">{i}</span>
+        </div>
+      );
+    })}
+  </div>
+
+  <div class="sa-bitmask" data-sa-bitmask hidden>
+    <div class="sa-bitmask-label">Bitmask:</div>
+    <div class="sa-bitmask-bits" data-sa-bits>
+      {bytes.map((byte, i) => {
+        const cc = charClasses[byte];
+        const isStructOutsideString = cc && !stringMask[i];
+        return (
+          <span
+            class="sa-bit"
+            data-index={i}
+            data-structural-outside={isStructOutsideString ? 'true' : 'false'}
+          >
+            {isStructOutsideString ? '1' : '0'}
+          </span>
+        );
+      })}
+    </div>
+  </div>
+
+  <div class="sa-legend" data-sa-legend hidden>
+    <span class="sa-legend-item"><span class="sa-swatch sc-quote"></span> Quote</span>
+    <span class="sa-legend-item"><span class="sa-swatch sc-colon"></span> Colon</span>
+    <span class="sa-legend-item"><span class="sa-swatch sc-comma"></span> Comma</span>
+    <span class="sa-legend-item"><span class="sa-swatch sc-brace"></span> Brace</span>
+    <span class="sa-legend-item"><span class="sa-swatch sa-in-string"></span> Inside string</span>
+  </div>
+</div>
+
+<style>
+  .sa {
+    --sa-bg: var(--sl-color-bg-sidebar);
+    --sa-border: var(--sl-color-hairline);
+    --sa-accent: var(--sl-color-accent);
+    --sa-text: var(--sl-color-text);
+    --sa-muted: var(--sl-color-gray-3);
+    margin: 1.5rem 0;
+  }
+
+  .sa > * { margin-top: 0 !important; }
+
+  /* ── Controls ── */
+  .sa-controls {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .sa-controls > * { margin-top: 0 !important; }
+
+  .sa-step-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.8rem;
+    border: 1px solid var(--sa-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--sa-text);
+    font-family: inherit;
+    font-size: 0.78rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+
+  .sa-step-btn:hover { border-color: var(--sa-accent); }
+
+  .sa-step-btn--active {
+    border-color: var(--sa-accent);
+    background: var(--sa-accent);
+    color: white;
+    font-weight: 600;
+  }
+
+  .sa-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--sa-accent) 15%, transparent);
+    font-size: 0.65rem;
+    font-weight: 700;
+  }
+
+  .sa-step-btn--active .sa-step-num {
+    background: rgba(255,255,255,0.25);
+    color: white;
+  }
+
+  /* ── Explanation ── */
+  .sa-explanation {
+    padding: 0.75rem 1rem;
+    background: var(--sa-bg);
+    border: 1px solid var(--sa-border);
+    border-radius: 8px;
+    margin-bottom: 1rem;
+  }
+  .sa-explanation > * { margin-top: 0 !important; }
+  .sa-explanation strong { font-size: 0.85rem; display: block; margin-bottom: 0.3rem; }
+  .sa-explanation p { margin: 0; font-size: 0.82rem; line-height: 1.55; color: var(--sa-text); }
+
+  /* ── Byte grid ── */
+  .sa-byte-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 0.5rem 0;
+    font-family: var(--sl-font-mono, monospace);
+  }
+  .sa-byte-grid > * { margin-top: 0 !important; }
+
+  .sa-byte {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 26px;
+    height: 38px;
+    border: 1px solid var(--sa-border);
+    border-radius: 3px;
+    background: var(--sa-bg);
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .sa-byte-char {
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 24px;
+    color: var(--sa-text);
+  }
+
+  .sa-byte-pos {
+    font-size: 0.45rem;
+    color: var(--sa-muted);
+    line-height: 1;
+  }
+
+  /* Character type colors */
+  .sa-byte.sc-quote { border-color: #e879a0; }
+  .sa-byte.sc-colon { border-color: #60a5fa; }
+  .sa-byte.sc-comma { border-color: #a78bfa; }
+  .sa-byte.sc-brace { border-color: #f59e0b; }
+  .sa-byte.sc-bracket { border-color: #34d399; }
+  .sa-byte.sc-escape { border-color: #fb923c; }
+
+  /* Step: detect — highlight structural chars */
+  .sa[data-step="detect"] .sa-byte[data-structural="true"] {
+    border-width: 2px;
+    transform: translateY(-2px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+  .sa[data-step="detect"] .sa-byte.sc-quote { background: #e879a015; }
+  .sa[data-step="detect"] .sa-byte.sc-colon { background: #60a5fa15; }
+  .sa[data-step="detect"] .sa-byte.sc-comma { background: #a78bfa15; }
+  .sa[data-step="detect"] .sa-byte.sc-brace { background: #f59e0b15; }
+
+  /* Step: strings — dim bytes inside strings */
+  .sa[data-step="strings"] .sa-byte[data-in-string="true"] {
+    background: color-mix(in srgb, var(--sa-accent) 8%, var(--sa-bg));
+    opacity: 0.5;
+  }
+  .sa[data-step="strings"] .sa-byte[data-structural="true"] {
+    border-width: 2px;
+  }
+  .sa[data-step="strings"] .sa-byte[data-structural="true"][data-in-string="true"] {
+    opacity: 0.3;
+    border-style: dashed;
+    transform: none;
+    box-shadow: none;
+  }
+
+  /* Step: result — only structural outside strings glow */
+  .sa[data-step="result"] .sa-byte { opacity: 0.35; }
+  .sa[data-step="result"] .sa-byte[data-structural="true"]:not([data-in-string="true"]) {
+    opacity: 1;
+    border-width: 2px;
+    transform: translateY(-3px);
+    box-shadow: 0 3px 12px rgba(0,0,0,0.15);
+  }
+  .sa[data-step="result"] .sa-byte.sc-quote:not([data-in-string="true"]) { background: #e879a020; }
+  .sa[data-step="result"] .sa-byte.sc-colon:not([data-in-string="true"]) { background: #60a5fa20; }
+  .sa[data-step="result"] .sa-byte.sc-comma:not([data-in-string="true"]) { background: #a78bfa20; }
+  .sa[data-step="result"] .sa-byte.sc-brace:not([data-in-string="true"]) { background: #f59e0b20; }
+
+  /* ── Bitmask display ── */
+  .sa-bitmask {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0;
+    font-family: var(--sl-font-mono, monospace);
+  }
+  .sa-bitmask > * { margin-top: 0 !important; }
+
+  .sa-bitmask-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--sa-muted);
+    flex-shrink: 0;
+  }
+
+  .sa-bitmask-bits {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1px;
+  }
+  .sa-bitmask-bits > * { margin-top: 0 !important; }
+
+  .sa-bit {
+    width: 14px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.55rem;
+    font-weight: 700;
+    color: var(--sa-muted);
+    border-radius: 2px;
+  }
+
+  .sa-bit[data-structural-outside="true"] {
+    color: var(--sa-accent);
+    background: color-mix(in srgb, var(--sa-accent) 15%, transparent);
+  }
+
+  /* ── Legend ── */
+  .sa-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+    font-size: 0.72rem;
+    color: var(--sa-muted);
+  }
+  .sa-legend > * { margin-top: 0 !important; }
+
+  .sa-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .sa-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    border: 2px solid;
+  }
+
+  .sa-swatch.sc-quote { border-color: #e879a0; }
+  .sa-swatch.sc-colon { border-color: #60a5fa; }
+  .sa-swatch.sc-comma { border-color: #a78bfa; }
+  .sa-swatch.sc-brace { border-color: #f59e0b; }
+  .sa-swatch.sa-in-string {
+    border-color: var(--sa-muted);
+    background: color-mix(in srgb, var(--sa-accent) 8%, var(--sa-bg));
+    opacity: 0.5;
+  }
+</style>
+
+<script>
+  document.querySelectorAll<HTMLDivElement>('[data-sa-root]').forEach((root) => {
+    const explanation = root.querySelector<HTMLDivElement>('[data-sa-explanation]')!;
+    const bitmask = root.querySelector<HTMLDivElement>('[data-sa-bitmask]')!;
+    const legend = root.querySelector<HTMLDivElement>('[data-sa-legend]')!;
+    const buttons = root.querySelectorAll<HTMLButtonElement>('.sa-step-btn');
+
+    const steps = [
+      {
+        id: 'raw',
+        title: 'Step 1: Raw bytes',
+        desc: 'A JSON log line arrives as raw bytes. logfwd processes the entire buffer — not line by line, but in 64-byte SIMD blocks.',
+      },
+      {
+        id: 'detect',
+        title: 'Step 2: SIMD structural detection',
+        desc: 'One SIMD instruction compares all bytes against 10 structural characters simultaneously. On AVX2, that\'s 32 bytes per cycle. Each match produces a bit in the corresponding bitmask.',
+      },
+      {
+        id: 'strings',
+        title: 'Step 3: String interior mask',
+        desc: 'Quote positions feed into prefix_xor — a chain of 6 XOR shifts that produces a mask of which bytes are inside JSON strings. Structural characters inside strings (like the colon in "request failed") must be ignored.',
+      },
+      {
+        id: 'result',
+        title: 'Step 4: Usable structural positions',
+        desc: 'The final bitmask: structural characters outside strings. These are the only positions the field extractor needs to visit. Finding the next colon or comma is now a single trailing_zeros instruction — O(1) instead of scanning byte-by-byte.',
+      },
+    ];
+
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const stepId = btn.dataset.step!;
+        const index = parseInt(btn.dataset.index!, 10);
+
+        // Update active button
+        buttons.forEach(b => b.classList.remove('sa-step-btn--active'));
+        btn.classList.add('sa-step-btn--active');
+
+        // Update step attribute for CSS
+        root.dataset.step = stepId;
+
+        // Update explanation
+        const step = steps[index];
+        explanation.innerHTML = `<strong>${step.title}</strong><p>${step.desc}</p>`;
+
+        // Show/hide bitmask and legend
+        bitmask.hidden = stepId === 'raw';
+        legend.hidden = stepId === 'raw';
+      });
+    });
+
+    // Set initial state
+    root.dataset.step = 'raw';
+  });
+</script>
