@@ -299,6 +299,30 @@ jobs:
         run: cargo nextest run --workspace --profile ci
 
   # -------------------------------------------------------------------------
+  # Network integration tests — #[ignore] tests that bind ports / make
+  # HTTP calls.  Runs after the main test job to reuse the build cache.
+  # -------------------------------------------------------------------------
+  test-network:
+    name: Test (network integration)
+    needs: [test-linux]
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Network integration tests
+        run: cargo nextest run --workspace --profile ci --run-ignored ignored-only -E 'test(~network)'
+
+  # -------------------------------------------------------------------------
   # Build check — aarch64 cross-compile only (release check removed:
   # clippy already does a full debug build that catches the same errors)
   # -------------------------------------------------------------------------
@@ -679,6 +703,7 @@ jobs:
       - lint
       - test-linux
       - test-macos
+      - test-network
       - build-check
       - core-no-std
       - kani
