@@ -386,6 +386,28 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::{is_retryable_flush_error, should_retry_flush};
+    use std::io::ErrorKind;
+
+    fn any_error_kind() -> ErrorKind {
+        match kani::any::<u8>() {
+            0 => ErrorKind::Interrupted,
+            1 => ErrorKind::WouldBlock,
+            2 => ErrorKind::TimedOut,
+            3 => ErrorKind::WriteZero,
+            4 => ErrorKind::UnexpectedEof,
+            5 => ErrorKind::ConnectionReset,
+            6 => ErrorKind::ConnectionAborted,
+            7 => ErrorKind::ConnectionRefused,
+            8 => ErrorKind::NotConnected,
+            9 => ErrorKind::BrokenPipe,
+            10 => ErrorKind::PermissionDenied,
+            11 => ErrorKind::NotFound,
+            12 => ErrorKind::AlreadyExists,
+            13 => ErrorKind::InvalidInput,
+            14 => ErrorKind::InvalidData,
+            _ => ErrorKind::Other,
+        }
+    }
 
     #[kani::proof]
     fn verify_zero_or_one_attempt_never_retries() {
@@ -414,20 +436,28 @@ mod verification {
 
     #[kani::proof]
     fn verify_retryable_flush_error_classification() {
-        let kind = kani::any::<std::io::ErrorKind>();
+        let kind = any_error_kind();
         let expected = matches!(
             kind,
-            std::io::ErrorKind::Interrupted
-                | std::io::ErrorKind::WouldBlock
-                | std::io::ErrorKind::TimedOut
-                | std::io::ErrorKind::WriteZero
-                | std::io::ErrorKind::UnexpectedEof
-                | std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::ConnectionAborted
-                | std::io::ErrorKind::ConnectionRefused
-                | std::io::ErrorKind::NotConnected
-                | std::io::ErrorKind::BrokenPipe
+            ErrorKind::Interrupted
+                | ErrorKind::WouldBlock
+                | ErrorKind::TimedOut
+                | ErrorKind::WriteZero
+                | ErrorKind::UnexpectedEof
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::ConnectionRefused
+                | ErrorKind::NotConnected
+                | ErrorKind::BrokenPipe
         );
         assert_eq!(is_retryable_flush_error(kind), expected);
+        kani::cover!(
+            matches!(kind, ErrorKind::TimedOut),
+            "retryable flush error covered"
+        );
+        kani::cover!(
+            matches!(kind, ErrorKind::PermissionDenied),
+            "non-retryable flush error covered"
+        );
     }
 }

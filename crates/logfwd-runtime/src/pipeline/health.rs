@@ -18,6 +18,9 @@ pub(super) enum HealthTransitionEvent {
     ShutdownCompleted,
 }
 
+/// Consecutive poll failures allowed while still starting before escalation.
+pub(super) const STARTING_POLL_FAILURE_ESCALATION_THRESHOLD: u32 = 3;
+
 /// Reduce a current health value and lifecycle event into the next value.
 ///
 /// Terminal states are sticky: once a component is stopped or failed, later
@@ -52,9 +55,34 @@ pub(super) const fn reduce_component_health(
     }
 }
 
+/// Reduce one poll failure with startup-aware bounded escalation.
+///
+/// While `Starting`, repeated poll failures stay `Starting` until
+/// `consecutive_poll_failures` reaches
+/// [`STARTING_POLL_FAILURE_ESCALATION_THRESHOLD`], then escalate to
+/// `Degraded`. Other states follow [`reduce_component_health`] `PollFailed`
+/// semantics.
+#[must_use]
+pub(super) const fn reduce_component_health_after_poll_failure(
+    current: ComponentHealth,
+    consecutive_poll_failures: u32,
+) -> ComponentHealth {
+    match current {
+        ComponentHealth::Starting
+            if consecutive_poll_failures >= STARTING_POLL_FAILURE_ESCALATION_THRESHOLD =>
+        {
+            ComponentHealth::Degraded
+        }
+        _ => reduce_component_health(current, HealthTransitionEvent::PollFailed),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{HealthTransitionEvent, reduce_component_health};
+    use super::{
+        HealthTransitionEvent, STARTING_POLL_FAILURE_ESCALATION_THRESHOLD, reduce_component_health,
+        reduce_component_health_after_poll_failure,
+    };
     use logfwd_diagnostics::diagnostics::ComponentHealth;
     use proptest::prelude::*;
 
@@ -124,6 +152,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn starting_poll_failures_escalate_once_threshold_is_reached() {
+        assert_eq!(
+            reduce_component_health_after_poll_failure(ComponentHealth::Starting, 1),
+            ComponentHealth::Starting
+        );
+        assert_eq!(
+            reduce_component_health_after_poll_failure(
+                ComponentHealth::Starting,
+                STARTING_POLL_FAILURE_ESCALATION_THRESHOLD - 1,
+            ),
+            ComponentHealth::Starting
+        );
+        assert_eq!(
+            reduce_component_health_after_poll_failure(
+                ComponentHealth::Starting,
+                STARTING_POLL_FAILURE_ESCALATION_THRESHOLD,
+            ),
+            ComponentHealth::Degraded
+        );
+    }
+
+    #[test]
+    fn non_starting_poll_failure_semantics_are_unchanged_with_counter() {
+        assert_eq!(
+            reduce_component_health_after_poll_failure(ComponentHealth::Healthy, 100),
+            ComponentHealth::Degraded
+        );
+        assert_eq!(
+            reduce_component_health_after_poll_failure(ComponentHealth::Stopped, 100),
+            ComponentHealth::Stopped
+        );
+    }
+
+    #[test]
+    fn post_threshold_starting_poll_failures_stay_degraded_until_observed() {
+        let mut current = ComponentHealth::Starting;
+        for n in 1..=(STARTING_POLL_FAILURE_ESCALATION_THRESHOLD + 3) {
+            current = reduce_component_health_after_poll_failure(current, n);
+        }
+        assert_eq!(current, ComponentHealth::Degraded);
+
+        current = reduce_component_health_after_poll_failure(current, 99);
+        assert_eq!(current, ComponentHealth::Degraded);
+
+        current = reduce_component_health(
+            current,
+            HealthTransitionEvent::Observed(ComponentHealth::Healthy),
+        );
+        assert_eq!(current, ComponentHealth::Healthy);
+    }
+
     fn arb_health() -> impl Strategy<Value = ComponentHealth> {
         prop_oneof![
             Just(ComponentHealth::Starting),
@@ -186,12 +266,59 @@ mod tests {
             let out = apply_events(ComponentHealth::Stopping, &events);
             prop_assert!(matches!(out, ComponentHealth::Stopping | ComponentHealth::Stopped | ComponentHealth::Failed));
         }
+
+        #[test]
+        fn starting_poll_failure_escalation_is_threshold_deterministic(
+            failures in 0u32..32
+        ) {
+            let mut current = ComponentHealth::Starting;
+            for n in 1..=failures {
+                current = reduce_component_health_after_poll_failure(current, n);
+            }
+
+            let expected = if failures >= STARTING_POLL_FAILURE_ESCALATION_THRESHOLD {
+                ComponentHealth::Degraded
+            } else {
+                ComponentHealth::Starting
+            };
+            prop_assert_eq!(current, expected);
+        }
+
+        #[test]
+        fn observed_starting_resets_startup_poll_failure_window(
+            first_streak in 0u32..16,
+            second_streak in 0u32..16
+        ) {
+            let mut current = ComponentHealth::Starting;
+            for n in 1..=first_streak {
+                current = reduce_component_health_after_poll_failure(current, n);
+            }
+
+            current = reduce_component_health(
+                current,
+                HealthTransitionEvent::Observed(ComponentHealth::Starting),
+            );
+
+            for n in 1..=second_streak {
+                current = reduce_component_health_after_poll_failure(current, n);
+            }
+
+            let expected = if second_streak >= STARTING_POLL_FAILURE_ESCALATION_THRESHOLD {
+                ComponentHealth::Degraded
+            } else {
+                ComponentHealth::Starting
+            };
+            prop_assert_eq!(current, expected);
+        }
     }
 }
 
 #[cfg(kani)]
 mod verification {
-    use super::{HealthTransitionEvent, reduce_component_health};
+    use super::{
+        HealthTransitionEvent, STARTING_POLL_FAILURE_ESCALATION_THRESHOLD, reduce_component_health,
+        reduce_component_health_after_poll_failure,
+    };
     use logfwd_diagnostics::diagnostics::ComponentHealth;
 
     #[kani::proof]
@@ -284,5 +411,43 @@ mod verification {
             current == ComponentHealth::Stopped,
             "stopped preserves on poll failure"
         );
+    }
+
+    #[kani::proof]
+    fn verify_starting_poll_failure_escalates_after_threshold() {
+        let consecutive_failures: u32 = kani::any();
+        let out = reduce_component_health_after_poll_failure(
+            ComponentHealth::Starting,
+            consecutive_failures,
+        );
+
+        if consecutive_failures >= STARTING_POLL_FAILURE_ESCALATION_THRESHOLD {
+            assert_eq!(out, ComponentHealth::Degraded);
+        } else {
+            assert_eq!(out, ComponentHealth::Starting);
+        }
+
+        kani::cover!(consecutive_failures == 0, "zero_failures");
+        kani::cover!(
+            consecutive_failures >= STARTING_POLL_FAILURE_ESCALATION_THRESHOLD,
+            "threshold_reached"
+        );
+    }
+
+    #[kani::proof]
+    fn verify_non_starting_poll_failure_matches_base_reducer() {
+        let health_repr = kani::any_where(|repr: &u8| {
+            ComponentHealth::from_repr(*repr) != ComponentHealth::Starting
+        });
+        let current = ComponentHealth::from_repr(health_repr);
+        let consecutive_failures: u32 = kani::any();
+
+        let out_with_counter =
+            reduce_component_health_after_poll_failure(current, consecutive_failures);
+        let out_base = reduce_component_health(current, HealthTransitionEvent::PollFailed);
+        assert_eq!(out_with_counter, out_base);
+
+        kani::cover!(current == ComponentHealth::Healthy, "healthy_case");
+        kani::cover!(current == ComponentHealth::Stopped, "stopped_case");
     }
 }

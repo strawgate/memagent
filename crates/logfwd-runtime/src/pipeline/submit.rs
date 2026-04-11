@@ -111,13 +111,16 @@ impl Pipeline {
             ProcessorStageResult::Forward { batch, output_rows } => (batch, output_rows),
             ProcessorStageResult::Hold { reason } => {
                 tracing::warn!(reason = %reason, "processor stage requested hold");
-                self.ack_all_tickets(
+                let held = self.ack_all_tickets(
                     Some(batch_id),
                     sending,
                     super::checkpoint_policy::TicketDisposition::Hold,
                 );
                 self.metrics.finish_active_batch(batch_id);
-                return false;
+                if held {
+                    shutdown.cancel();
+                }
+                return held;
             }
             ProcessorStageResult::PermanentError { reason } => {
                 tracing::warn!(reason = %reason, "processor stage permanent error; dropping batch");
@@ -179,9 +182,7 @@ impl Pipeline {
             );
             self.metrics.finish_active_batch(batch_id);
             shutdown.cancel();
-            // Keep the select-loop on the normal shutdown path so run_async can
-            // still drain the input channel and avoid producer-side deadlocks.
-            return false;
+            return true;
         }
 
         let batch_span = tracing::info_span!(

@@ -50,7 +50,9 @@ use logfwd_types::pipeline::SourceId;
 use logfwd_io::tail::ByteOffset;
 
 #[cfg(not(feature = "turmoil"))]
-use super::health::{HealthTransitionEvent, reduce_component_health};
+use super::health::{
+    HealthTransitionEvent, reduce_component_health, reduce_component_health_after_poll_failure,
+};
 #[cfg(not(feature = "turmoil"))]
 use super::{InputState, InputTransform};
 
@@ -135,6 +137,7 @@ fn io_worker_loop(
 ) {
     let mut buffered_since: Option<Instant> = None;
     let mut last_bp_warn: Option<Instant> = None;
+    let mut consecutive_poll_failures: u32 = 0;
     let mut adaptive_poll =
         AdaptivePollController::new(input.source.get_cadence().adaptive_fast_polls_max);
 
@@ -152,15 +155,19 @@ fn io_worker_loop(
             Err(e) => {
                 adaptive_poll.reset_fast_polls();
                 input.stats.inc_errors();
-                input.stats.set_health(reduce_component_health(
-                    input.stats.health(),
-                    HealthTransitionEvent::PollFailed,
-                ));
+                consecutive_poll_failures = consecutive_poll_failures.saturating_add(1);
+                input
+                    .stats
+                    .set_health(reduce_component_health_after_poll_failure(
+                        input.stats.health(),
+                        consecutive_poll_failures,
+                    ));
                 tracing::warn!(input = input.source.name(), error = %e, "input.poll_error");
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
         };
+        consecutive_poll_failures = 0;
 
         input.stats.set_health(reduce_component_health(
             input.stats.health(),

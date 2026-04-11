@@ -76,6 +76,12 @@ constants). `tla/PipelineMachine.cfg` is the TLC configuration file (three model
 documented inside). See `tla/README.md` for full documentation, design decisions captured
 in the spec, and known gaps.
 
+`tla/ShutdownProtocol.tla` models split I/O/CPU worker shutdown plus output
+terminal health. Clean shutdown reaches output health `Stopped`; forced stop
+and worker-panic paths reach `Failed`. Safety checks include
+`MachineStoppedImpliesOutputTerminal` and `ForcedStopImpliesOutputFailed`;
+liveness checks include `OutputFailureSticky`.
+
 ### Running TLC
 
 ```bash
@@ -363,7 +369,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `cri.rs` | CRI log parsing + partial line reassembly | Kani exhaustive (8 proofs) |
 | `otlp.rs` | Protobuf wire format + OTLP encoding + timestamp parsing | Kani mixed exhaustive + bounded (30 proofs incl. 3 contract verifications) |
 | `pipeline/lifecycle.rs` | Pipeline state machine (ordered ACK, drain, shutdown) | Kani exhaustive (6 proofs) + proptest + **TLA+** |
-| `logfwd/pipeline/health.rs` | Pipeline component-health transition reducer (`observed`, poll failure, shutdown) | Kani exhaustive (4 proofs) + unit tests + proptest sequence checks |
+| `logfwd-runtime/pipeline/health.rs` | Pipeline component-health transition reducer (`observed`, bounded startup poll failure escalation, shutdown) | Kani exhaustive (6 proofs) + unit tests + proptest sequence checks |
 | `pipeline/batch.rs` | BatchTicket typestate (ack/nack/fail/reject) | Kani exhaustive (5 proofs) + compile-time |
 | `logfwd-types/diagnostics/health.rs` | `ComponentHealth` lattice (`combine`, readiness, storage repr) | Kani exhaustive (4 proofs) + unit tests |
 | `logfwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (8 proofs: ColVariant field preservation, variant_dt, is_conflict_struct, json/str priority contracts) |
@@ -385,11 +391,11 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-io/framed.rs` | Per-source framing/remainder checkpoint boundary (`overflow_tainted`, EOF remainder flush, source-scoped EOF semantics) | Unit tests (remainder carry/overflow, per-source isolation, EOF flush + checkpoint advancement contracts) |
 | `logfwd-io/tail/verification.rs` | File tailer pure reducers for EOF emission + error backoff (`eof_model_transition`, `backoff_transition`) | Kani (7 proofs: EOF at-most-once thresholding, reset semantics, two-poll/repeat cycle, backoff cap/reset/monotonicity) + proptest (state reducer invariants in `tail/state.rs`) + **TLA+** (`tla/TailLifecycle.tla`) |
 | `logfwd-io/segment.rs` | Checkpoint segment envelope read/write/recovery (`LCHK` header/footer, checksum, replay plan) | Unit tests for panic/OOM/silent-mask hardening (unsupported-version, permission-denied I/O surfacing, write/read size-bound parity, recovery error semantics) |
-| `logfwd/pipeline/checkpoint_policy.rs` | Typed delivery outcome -> checkpoint disposition mapping plus bounded ordered-commit seam model (`Ack`, `Reject`, `Hold`) | Kani exhaustive/bounded (6 proofs: outcome mapping, hold no-advance, ack/reject terminal equivalence, mixed-sequence monotonicity/no-gap jumps) + unit tests + proptest ordered sequence invariants |
-| `logfwd/pipeline/checkpoint_io.rs` | Final checkpoint flush retry window (`MAX_ATTEMPTS`, retry/no-retry boundary, stop-on-success behavior) | Kani (2 proofs: zero/one-attempt no-retry, retry-window equivalence) + unit tests + proptest retry-window equivalence checks + async retry behavior tests |
-| `logfwd/pipeline/input_poll.rs` | Turmoil input-loop flush predicate (`should_flush_buffer`) for byte-batch/timeout emission policy | Kani (3 proofs: empty-buffer no-flush, timeout gate semantics, predicate equivalence) + unit tests + proptest policy equivalence |
-| `logfwd/worker_pool/health.rs` | Pool idle-phase insertion + worker-slot aggregation policy | Kani exhaustive (3 proofs) + unit tests + proptest aggregation checks |
-| `logfwd/worker_pool.rs` | MRU dispatch decision + typed delivery outcome helpers | Kani (8 dispatch/outcome proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
+| `logfwd-runtime/pipeline/checkpoint_policy.rs` | Typed delivery outcome -> checkpoint disposition mapping plus bounded ordered-commit seam model (`Ack`, `Reject`, `Hold`) | Kani exhaustive/bounded (6 proofs: outcome mapping, hold no-advance, ack/reject terminal equivalence, mixed-sequence monotonicity/no-gap jumps) + unit tests + proptest ordered sequence invariants |
+| `logfwd-runtime/pipeline/checkpoint_io.rs` | Final checkpoint flush retry window (`MAX_ATTEMPTS`, retry/no-retry boundary, retryable error classification, stop-on-success behavior) | Kani (3 proofs: zero/one-attempt no-retry, retry-window equivalence, retryable error classification) + unit tests + proptest retry-window equivalence checks + async retry behavior tests |
+| `logfwd-runtime/pipeline/input_poll.rs` | Turmoil input-loop flush predicate (`should_flush_buffer`) for byte-batch/timeout emission policy | Kani (3 proofs: empty-buffer no-flush, timeout gate semantics, predicate equivalence) + unit tests + proptest policy equivalence |
+| `logfwd-runtime/worker_pool/health.rs` | Pool idle-phase insertion + worker-slot aggregation policy | Kani exhaustive (3 proofs) + unit tests + proptest aggregation checks |
+| `logfwd-runtime/worker_pool.rs` | MRU dispatch decision + typed delivery outcome helpers | Kani (8 dispatch/outcome proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
 | `logfwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `logfwd-arrow/streaming_builder.rs` | StructArray conflict column assembly (StringView) | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `logfwd-arrow/conflict_schema.rs` | Conflict-struct detection + row-level precedence selection | Kani recommended (2 proofs) + unit tests |

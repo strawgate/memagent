@@ -366,6 +366,7 @@ impl Pipeline {
             resource_attrs: Arc::new(resource_attrs),
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store,
+            held_tickets: Vec::new(),
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
             transition_events: super::transition::TransitionEventEmitterHandle::noop(),

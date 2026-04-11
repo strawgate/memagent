@@ -13,7 +13,9 @@ use logfwd_io::poll_cadence::AdaptivePollController;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "turmoil")]
-use super::health::{HealthTransitionEvent, reduce_component_health};
+use super::health::{
+    HealthTransitionEvent, reduce_component_health, reduce_component_health_after_poll_failure,
+};
 #[cfg(feature = "turmoil")]
 use super::submit::{scan_and_transform_for_send, transform_direct_batch_for_send};
 #[cfg(feature = "turmoil")]
@@ -53,6 +55,7 @@ pub(super) async fn async_input_poll_loop(
     input_index: usize,
 ) {
     let mut buffered_since: Option<tokio::time::Instant> = None;
+    let mut consecutive_poll_failures: u32 = 0;
     let mut adaptive_poll =
         AdaptivePollController::new(input.source.get_cadence().adaptive_fast_polls_max);
     'poll_loop: loop {
@@ -69,15 +72,19 @@ pub(super) async fn async_input_poll_loop(
             Err(e) => {
                 adaptive_poll.reset_fast_polls();
                 input.stats.inc_errors();
-                input.stats.set_health(reduce_component_health(
-                    input.stats.health(),
-                    HealthTransitionEvent::PollFailed,
-                ));
+                consecutive_poll_failures = consecutive_poll_failures.saturating_add(1);
+                input
+                    .stats
+                    .set_health(reduce_component_health_after_poll_failure(
+                        input.stats.health(),
+                        consecutive_poll_failures,
+                    ));
                 tracing::warn!(input = input.source.name(), error = %e, "input.poll_error");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
         };
+        consecutive_poll_failures = 0;
 
         input.stats.set_health(reduce_component_health(
             input.stats.health(),

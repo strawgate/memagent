@@ -172,24 +172,23 @@ pipelines:
 
 See the [Configuration Reference](book/src/config/reference.md) for all YAML fields, input/output types, and enrichment tables.
 
-### Platform Sensor Betas
+### Platform Sensors
 
-`logfwd` now includes explicit beta input lanes for all three major host platforms:
+`logfwd` includes explicit sensor input lanes for all three major host platforms:
 
-- `linux_sensor_beta`
-- `macos_sensor_beta`
-- `windows_sensor_beta`
+- `linux_ebpf_sensor`
+- `macos_es_sensor`
+- `windows_ebpf_sensor`
 
 These inputs are platform-gated and emit Arrow-native sensor control/signal batches while
 deeper native sensor integrations are being brought online.
 
 ```yaml
 input:
-  type: linux_sensor_beta
-  format: raw
-  sensor_beta:
+  type: linux_ebpf_sensor
+  sensor:
     poll_interval_ms: 2000
-    emit_heartbeat: true
+    emit_signal_rows: true
 output:
   type: stdout
 ```

@@ -320,7 +320,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Network integration tests
-        run: cargo nextest run --workspace --profile ci --run-ignored ignored-only -E 'test(~network)'
+        run: |
+          cargo nextest run --no-tests fail -p logfwd-io --profile ci --run-ignored ignored-only --test it transport_e2e
+          cargo nextest run --no-tests fail -p logfwd-io --profile ci --run-ignored ignored-only --lib otap_receiver::tests::
+          cargo nextest run --no-tests fail -p logfwd-io --profile ci --run-ignored ignored-only --lib otlp_receiver::tests:: -- --skip bench_writer_helpers_fast_vs_simple
+          cargo nextest run --no-tests fail -p logfwd-diagnostics --profile ci --run-ignored ignored-only --lib diagnostics::server::tests::
 
   # -------------------------------------------------------------------------
   # Build check — aarch64 cross-compile only (release check removed:

@@ -165,6 +165,12 @@ pub struct Pipeline {
     machine: Option<PipelineMachine<Running, u64>>,
     /// Durable checkpoint store. None when running without persistence (tests).
     checkpoint_store: Option<Box<dyn CheckpointStore>>,
+    /// Tickets for batches that failed after send ownership was transferred.
+    ///
+    /// The runtime cannot requeue these without also retaining payload ownership,
+    /// but it must keep the queued ticket alive so the lifecycle machine keeps
+    /// the batch unresolved and checkpoints do not advance past undelivered data.
+    held_tickets: Vec<logfwd_types::pipeline::BatchTicket<logfwd_types::pipeline::Queued, u64>>,
     /// Throttle checkpoint flushes to at most once per this interval.
     /// Uses tokio::time::Instant so the throttle works correctly under
     /// both real and simulated (Turmoil) time.
@@ -324,6 +330,7 @@ impl Pipeline {
             resource_attrs: Arc::new(vec![]),
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store: None,
+            held_tickets: Vec::new(),
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
             transition_events: TransitionEventEmitterHandle::noop(),
@@ -359,6 +366,7 @@ impl Pipeline {
             resource_attrs: Arc::new(vec![]),
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store: None,
+            held_tickets: Vec::new(),
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
             transition_events: TransitionEventEmitterHandle::noop(),
@@ -505,7 +513,11 @@ impl Pipeline {
                 // we ingest or flush more data.
                 ack = self.pool.ack_rx_mut().recv() => {
                     if let Some(ack) = ack {
-                        self.apply_pool_ack(ack);
+                        if self.apply_pool_ack(ack) {
+                            shutdown.cancel();
+                            should_drain_input_channel = false;
+                            break;
+                        }
                     }
                 }
 
@@ -516,8 +528,8 @@ impl Pipeline {
                 msg = rx.recv() => {
                     if let Some(msg) = msg {
                         if self.submit_batch(msg, shutdown).await {
-                            // `submit_batch` returns true only for processor fatal
-                            // shutdowns. Stop ingesting additional channel messages.
+                            // Terminal processor/checkpoint paths stop accepting
+                            // additional channel messages.
                             should_drain_input_channel = false;
                             break;
                         }
@@ -570,6 +582,11 @@ impl Pipeline {
                     break;
                 }
             }
+        } else {
+            // Terminal paths intentionally stop accepting more input, but the
+            // receiver must still be closed before joining producers. Otherwise
+            // a producer blocked on the bounded channel can keep shutdown stuck.
+            drop(rx);
         }
 
         // All sender clones have now been dropped, so input threads/tasks can
@@ -741,7 +758,7 @@ impl Pipeline {
     /// Apply a pool `AckItem` at the worker/checkpoint seam.
     ///
     /// Called from the `select!` loop when a pool worker finishes a batch.
-    fn apply_pool_ack(&mut self, ack: AckItem) {
+    fn apply_pool_ack(&mut self, ack: AckItem) -> bool {
         if self
             .metrics
             .inflight_batches
@@ -775,7 +792,7 @@ impl Pipeline {
             Some(ack.batch_id),
             ack.tickets,
             default_ticket_disposition(&ack.outcome),
-        );
+        )
     }
 
     /// Finalize Sending tickets and apply receipts to the machine when present.
@@ -786,9 +803,9 @@ impl Pipeline {
         batch_id: Option<u64>,
         tickets: Vec<logfwd_types::pipeline::BatchTicket<logfwd_types::pipeline::Sending, u64>>,
         disposition: TicketDisposition,
-    ) {
+    ) -> bool {
         let Some(ref mut machine) = self.machine else {
-            return;
+            return false;
         };
         let transition_events = self.transition_events.clone();
         let mut any_advanced = false;
@@ -810,7 +827,7 @@ impl Pipeline {
                     // contract without acknowledging the batch. We
                     // intentionally do not re-dispatch yet; the machine keeps
                     // this batch in-flight so checkpoints do not advance.
-                    let _ = ticket.fail();
+                    self.held_tickets.push(ticket.fail());
                     held += 1;
                     None
                 }
@@ -898,7 +915,7 @@ impl Pipeline {
         if held > 0 {
             tracing::warn!(
                 held_tickets = held,
-                "pipeline: leaving tickets unresolved so checkpoints do not advance past undelivered data"
+                "pipeline: terminal hold requested; stopping ingestion so checkpoints do not advance past undelivered data"
             );
         }
         // Flush to disk at most once per checkpoint_flush_interval to amortize fsync cost.
@@ -928,6 +945,7 @@ impl Pipeline {
                 }
             }
         }
+        held > 0
     }
 }
 
@@ -1835,6 +1853,55 @@ output:
         );
     }
 
+    /// Terminal held-ticket shutdown must close the input channel before
+    /// joining producers. Otherwise producers blocked on a full bounded channel
+    /// can keep shutdown stuck forever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn held_ticket_shutdown_does_not_deadlock_on_full_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("held_ticket_full_channel.log");
+
+        let mut data = String::new();
+        for i in 0..200 {
+            data.push_str(&format!(r#"{{"i":{i}}}"#));
+            data.push('\n');
+        }
+        std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: "{}"
+  format: json
+output:
+  type: stdout
+  format: json
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+        pipeline = pipeline.with_sink(Box::new(FailingSink::new(u32::MAX)));
+        pipeline.batch_target_bytes = 64;
+        pipeline.batch_timeout = Duration::from_millis(10);
+
+        let shutdown = CancellationToken::new();
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
+
+        assert!(
+            result.is_ok(),
+            "held-ticket shutdown should close the channel and not deadlock"
+        );
+        assert!(
+            result.unwrap().is_ok(),
+            "pipeline should complete terminal held-ticket shutdown cleanly"
+        );
+    }
+
     /// Shutdown with a slow output must still drain all buffered data.
     /// The output takes 50ms per batch, but shutdown should wait for
     /// the drain to complete rather than dropping data.
@@ -2714,6 +2781,37 @@ output:
     }
 
     #[test]
+    fn hold_disposition_retains_failed_ticket_without_advancing_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hold.log");
+        std::fs::write(&log_path, b"").unwrap();
+
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        let machine = pipeline.machine.as_mut().unwrap();
+        let source = SourceId(42);
+        let ticket = machine.create_batch(source, 1000);
+        let ticket = machine.begin_send(ticket);
+
+        assert!(
+            pipeline.ack_all_tickets(None, vec![ticket], TicketDisposition::Hold),
+            "hold disposition must request terminal shutdown to bound held-ticket growth"
+        );
+
+        let machine = pipeline.machine.as_ref().unwrap();
+        assert_eq!(
+            machine.in_flight_count(),
+            1,
+            "held tickets must keep the source checkpoint unadvanced"
+        );
+        assert_eq!(machine.committed_checkpoint(source), None);
+        assert_eq!(
+            pipeline.held_tickets.len(),
+            1,
+            "hold must retain a failed queued ticket instead of dropping the sending ticket"
+        );
+    }
+
+    #[test]
     fn test_apply_pool_ack_does_not_underflow_inflight_counter() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("underflow.log");
@@ -2742,6 +2840,45 @@ output:
             pipeline.metrics.inflight_batches.load(Ordering::Relaxed),
             0,
             "inflight counter must not underflow on stray ack"
+        );
+    }
+
+    #[test]
+    fn held_pool_ack_requests_terminal_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("held-pool-ack.log");
+        std::fs::write(&log_path, "").unwrap();
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        let machine = pipeline.machine.as_mut().unwrap();
+        let ticket = machine.create_batch(SourceId(42), 1000);
+        let ticket = machine.begin_send(ticket);
+
+        let should_stop = pipeline.apply_pool_ack(AckItem {
+            tickets: vec![ticket],
+            outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
+            num_rows: 0,
+            submitted_at: tokio::time::Instant::now(),
+            scan_ns: 0,
+            transform_ns: 0,
+            output_ns: 0,
+            queue_wait_ns: 0,
+            send_latency_ns: 0,
+            batch_id: 0,
+            output_name: "test".to_string(),
+        });
+
+        assert!(
+            should_stop,
+            "held worker outcomes must terminalize ingestion instead of accumulating tickets"
+        );
+        assert_eq!(pipeline.held_tickets.len(), 1);
+        assert_eq!(
+            pipeline
+                .machine
+                .as_ref()
+                .unwrap()
+                .committed_checkpoint(SourceId(42)),
+            None
         );
     }
 
