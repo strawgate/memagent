@@ -49,8 +49,7 @@ input:
   path: {}
   format: json
 output:
-  type: stdout
-  format: json
+  type: null
 ",
         log_path.display()
     )
@@ -86,8 +85,7 @@ input:
   format: json
   glob_rescan_interval_ms: 50
 output:
-  type: stdout
-  format: json
+  type: null
 "#,
         pattern
     )
