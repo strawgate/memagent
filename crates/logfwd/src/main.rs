@@ -995,6 +995,11 @@ fn prompt_select_described(
     options: &[&str],
     descriptions: &[&str],
 ) -> Result<usize, CliError> {
+    debug_assert_eq!(
+        descriptions.len(),
+        options.len(),
+        "options/descriptions length mismatch"
+    );
     let mut stdout = io::stdout();
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
