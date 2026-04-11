@@ -39,6 +39,8 @@ use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, declared_content_length, read_
 
 /// Bounded channel capacity.
 const CHANNEL_BOUND: usize = 256;
+const CONTENT_TYPE_PROTOBUF: &str = "application/x-protobuf";
+const CONTENT_TYPE_PROTOBUF_ALT: &str = "application/protobuf";
 
 // ---------------------------------------------------------------------------
 // ArrowPayloadType enum values (from OTAP proto)
@@ -239,6 +241,20 @@ async fn handle_otap_request(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    let content_type = match parse_content_type(&headers) {
+        Ok(content_type) => content_type,
+        Err(status) => return (status, "invalid content-type header").into_response(),
+    };
+    if content_type.as_deref().is_some_and(|content_type| {
+        content_type != CONTENT_TYPE_PROTOBUF && content_type != CONTENT_TYPE_PROTOBUF_ALT
+    }) {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported content-type for OTAP receiver",
+        )
+            .into_response();
+    }
+
     let content_length = declared_content_length(&headers);
     if content_length.is_some_and(|body_len| body_len > MAX_REQUEST_BODY_SIZE as u64) {
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
@@ -278,7 +294,7 @@ async fn handle_otap_request(
         let resp_body = encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
         return (
             StatusCode::OK,
-            [(CONTENT_TYPE, "application/x-protobuf")],
+            [(CONTENT_TYPE, CONTENT_TYPE_PROTOBUF)],
             resp_body,
         )
             .into_response();
@@ -290,7 +306,7 @@ async fn handle_otap_request(
             let resp_body = encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
             (
                 StatusCode::OK,
-                [(CONTENT_TYPE, "application/x-protobuf")],
+                [(CONTENT_TYPE, CONTENT_TYPE_PROTOBUF)],
                 resp_body,
             )
                 .into_response()
@@ -314,6 +330,22 @@ async fn handle_otap_request(
                 .into_response()
         }
     }
+}
+
+fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
+    let Some(value) = headers.get(CONTENT_TYPE) else {
+        return Ok(None);
+    };
+    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let mime = parsed
+        .split(';')
+        .next()
+        .map(str::trim)
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    if mime.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Some(mime.to_ascii_lowercase()))
 }
 
 /// Decoded `BatchArrowRecords` message.
@@ -992,5 +1024,46 @@ mod tests {
         let decoded = ProtoBatchStatus::decode(resp.as_slice()).expect("decode status");
         assert_eq!(decoded.batch_id, 42);
         assert_eq!(decoded.status_code, BATCH_STATUS_OK as i32);
+    }
+
+    #[test]
+    fn parse_content_type_accepts_parameters() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            "application/x-protobuf; charset=utf-8"
+                .parse()
+                .expect("valid header value"),
+        );
+        assert_eq!(
+            parse_content_type(&headers).expect("parse should succeed"),
+            Some(CONTENT_TYPE_PROTOBUF.to_string())
+        );
+    }
+
+    #[test]
+    fn parse_content_type_accepts_application_protobuf() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            "application/protobuf".parse().expect("valid header value"),
+        );
+        assert_eq!(
+            parse_content_type(&headers).expect("parse should succeed"),
+            Some(CONTENT_TYPE_PROTOBUF_ALT.to_string())
+        );
+    }
+
+    #[test]
+    fn parse_content_type_normalizes_and_allows_handler_rejection() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            "application/json".parse().expect("valid header value"),
+        );
+        assert_eq!(
+            parse_content_type(&headers).expect("parse should succeed"),
+            Some("application/json".to_string())
+        );
     }
 }
