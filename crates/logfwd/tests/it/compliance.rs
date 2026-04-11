@@ -34,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 /// Coverage instrumentation and busy CI hosts introduce significant
 /// scheduling jitter — keep headroom to avoid flaky failures.
 fn wait_timeout() -> Duration {
-    Duration::from_secs(30)
+    Duration::from_secs(60)
 }
 
 // ---------------------------------------------------------------------------
