@@ -281,7 +281,7 @@ const icons: Record<string, string> = {
     background: var(--pd-surface);
     color: var(--pd-text);
     cursor: pointer;
-    transition: all 0.18s ease;
+    transition: all 0.15s cubic-bezier(0.2, 0, 0, 1);
     min-width: 130px;
     font-family: inherit;
     position: relative;
@@ -322,7 +322,7 @@ const icons: Record<string, string> = {
     font-weight: 500;
   }
 
-  /* ── Connectors ── */
+  /* ── Connectors (animated dashed flow) ── */
   .pd-connector {
     display: flex;
     align-items: center;
@@ -334,8 +334,17 @@ const icons: Record<string, string> = {
   .pd-connector-line {
     flex: 1;
     height: 2px;
-    background: linear-gradient(90deg, var(--pd-border) 0%, var(--pd-accent) 100%);
-    opacity: 0.5;
+    background: repeating-linear-gradient(
+      90deg,
+      var(--pd-accent) 0,
+      var(--pd-accent) 5px,
+      transparent 5px,
+      transparent 10px
+    );
+    background-size: 200% 100%;
+    animation: pd-flow 1.5s linear infinite;
+    opacity: 0.45;
+    border-radius: 1px;
   }
 
   .pd-connector-arrow {
@@ -344,7 +353,11 @@ const icons: Record<string, string> = {
     border-top: 5px solid transparent;
     border-bottom: 5px solid transparent;
     border-left: 8px solid var(--pd-accent);
-    opacity: 0.5;
+    opacity: 0.45;
+  }
+
+  @keyframes pd-flow {
+    to { background-position: -20px 0; }
   }
 
   /* ── Hint ── */
@@ -363,7 +376,27 @@ const icons: Record<string, string> = {
     border: 1px solid var(--pd-border);
     border-radius: var(--pd-radius);
     background: var(--pd-surface);
-    animation: pd-slide 0.2s ease-out;
+    animation: pd-expand 0.18s cubic-bezier(0.2, 0, 0, 1);
+    position: relative;
+  }
+
+  /* Notch connecting panel to parent stage */
+  .pd-detail::before {
+    content: '';
+    position: absolute;
+    top: -6px;
+    left: var(--pd-notch-x, 50%);
+    transform: translateX(-50%) rotate(45deg);
+    width: 10px;
+    height: 10px;
+    background: var(--pd-surface);
+    border-top: 1px solid var(--pd-border);
+    border-left: 1px solid var(--pd-border);
+  }
+
+  @keyframes pd-expand {
+    from { opacity: 0; transform: scaleY(0.97) translateY(-4px); }
+    to { opacity: 1; transform: scaleY(1) translateY(0); }
   }
 
   .pd-detail-head {
@@ -432,7 +465,7 @@ const icons: Record<string, string> = {
     border-left: 3px solid var(--pd-accent);
     border-radius: 0 var(--pd-radius) var(--pd-radius) 0;
     background: var(--pd-accent-lo);
-    animation: pd-slide 0.18s ease-out;
+    animation: pd-expand 0.18s cubic-bezier(0.2, 0, 0, 1);
   }
 
   .pd-impl-desc {
@@ -493,11 +526,7 @@ const icons: Record<string, string> = {
     font-style: italic;
   }
 
-  /* ── Animation ── */
-  @keyframes pd-slide {
-    from { opacity: 0; transform: translateY(-4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
+  /* (animations defined inline above) */
 
   /* ── Responsive ── */
   @media (max-width: 700px) {
@@ -553,6 +582,11 @@ const icons: Record<string, string> = {
         btn.setAttribute('aria-expanded', 'true');
         detail.hidden = false;
         hint.style.opacity = '0';
+        // Position the notch under the clicked stage
+        const diagramRect = diagram.getBoundingClientRect();
+        const btnRect = btn.getBoundingClientRect();
+        const notchX = btnRect.left + btnRect.width / 2 - diagramRect.left;
+        detail.style.setProperty('--pd-notch-x', `${notchX}px`);
         detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       } else {
         hint.style.opacity = '1';
