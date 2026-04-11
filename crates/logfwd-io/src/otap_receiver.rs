@@ -526,6 +526,7 @@ mod tests {
 
     // Regression test for issue #1142: clean shutdown
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn clean_shutdown_releases_port() {
         let addr = "127.0.0.1:0";
         let receiver = OtapReceiver::new("test", addr).unwrap();
@@ -872,8 +873,8 @@ mod tests {
     }
 
     // --- HTTP integration tests ---
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn receiver_accepts_otap_post() {
         let receiver = OtapReceiver::new_with_capacity("test", "127.0.0.1:0", 16)
             .expect("bind should succeed");
@@ -911,8 +912,8 @@ mod tests {
         assert_eq!(received.num_rows(), 2);
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn receiver_rejects_wrong_path() {
         let receiver = OtapReceiver::new_with_capacity("test-404", "127.0.0.1:0", 16)
             .expect("bind should succeed");
@@ -925,8 +926,8 @@ mod tests {
             other => panic!("expected 404, got {other:?}"),
         }
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn receiver_rejects_get_method() {
         let receiver = OtapReceiver::new_with_capacity("test-405", "127.0.0.1:0", 16)
             .expect("bind should succeed");
@@ -939,8 +940,8 @@ mod tests {
             other => panic!("expected 405, got {other:?}"),
         }
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn receiver_returns_429_when_channel_full() {
         let receiver = OtapReceiver::new_with_capacity("test-429", "127.0.0.1:0", 1)
             .expect("bind should succeed");

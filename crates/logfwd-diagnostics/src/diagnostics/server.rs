@@ -1350,8 +1350,8 @@ output:
             "malformed endpoint with userinfo should be replaced with fail-closed marker"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn diagnostics_server_handle_drop_releases_port() {
         let server = DiagnosticsServer::new("127.0.0.1:0");
         let (handle, addr) = server.start().expect("server bind failed");
@@ -1391,8 +1391,8 @@ output:
         stats.set_health(ComponentHealth::Degraded);
         assert_eq!(stats.health(), ComponentHealth::Degraded);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_live_endpoint() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1411,8 +1411,8 @@ output:
         );
         assert!(body.contains(r#""uptime_seconds":"#), "body: {}", body);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1500,8 +1500,8 @@ output:
         // Bottleneck field must be present and well-formed.
         assert!(body.contains(r#""bottleneck":{"stage":"#), "body: {}", body);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_stats_endpoint_contract() {
         let mut server = server_with_test_pipeline();
         server.set_memory_stats_fn(|| {
@@ -1665,8 +1665,8 @@ output:
         assert_eq!(pm.outputs[0].2.errors(), 1);
         assert_eq!(pm.outputs[1].2.errors(), 1);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_not_found() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1677,8 +1677,8 @@ output:
         let (status, _body) = http_get(port, "/nonexistent");
         assert_eq!(status, 404);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_no_memory_stats() {
         // Without a memory_stats_fn set, the system section must NOT contain
         // a "memory" key — no partial or null fields.
@@ -1697,8 +1697,8 @@ output:
             body
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_with_memory_stats() {
         // With a memory_stats_fn set, the system section must include
         // "memory" with resident/allocated/active fields.
@@ -1722,8 +1722,8 @@ output:
         assert!(body.contains(r#""allocated":800000"#), "body: {}", body);
         assert!(body.contains(r#""active":900000"#), "body: {}", body);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_no_pipelines_returns_503() {
         // No pipelines registered yet → not ready.
         let server = DiagnosticsServer::new("127.0.0.1:0");
@@ -1742,8 +1742,8 @@ output:
             body
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_with_pipeline_returns_200() {
         // A registered pipeline makes the server ready, regardless of
         // whether any batches have been processed.
@@ -1767,8 +1767,8 @@ output:
             body
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_with_starting_component_returns_503() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1791,8 +1791,8 @@ output:
             body
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_with_degraded_input_stays_200() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1895,8 +1895,8 @@ output:
             false,
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_includes_transport_parity_fields() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1945,8 +1945,8 @@ output:
         assert_eq!(udp["transport"]["udp"]["drops_detected"], 100);
         assert_eq!(udp["transport"]["udp"]["recv_buffer_size"], 8_388_608);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_shows_degraded_input_as_non_blocking() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1986,8 +1986,8 @@ output:
         assert_eq!(esc("bell\x07"), "bell\\u0007");
         assert_eq!(esc("escape\x1b"), "escape\\u001b");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_escaping() {
         let meter = opentelemetry::global::meter("test");
         // Control character in pipeline name.
@@ -2013,8 +2013,8 @@ output:
         let _v: serde_json::Value =
             serde_json::from_str(&body).expect("invalid JSON output from /admin/v1/status");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_traces_endpoint_empty() {
         // Server with no trace buffer attached — should return empty array.
         let server = server_with_test_pipeline();
@@ -2027,8 +2027,8 @@ output:
         assert_eq!(status, 200);
         assert_eq!(body, r#"{"traces":[]}"#, "unexpected body: {body}");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_traces_endpoint_with_data() {
         use crate::span_exporter::{SpanBuffer, TraceSpan};
 
@@ -2161,6 +2161,7 @@ output:
 
     // Bug #728: diagnostics server should return 405 for non-GET methods.
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn non_get_returns_405() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2175,8 +2176,8 @@ output:
     }
 
     // -- OTLP telemetry endpoint tests --
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_metrics_endpoint_returns_valid_otlp() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2217,8 +2218,8 @@ output:
             "expected at least one metric"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_traces_endpoint_with_spans() {
         use crate::span_exporter::{SpanBuffer, TraceSpan};
 
@@ -2265,8 +2266,8 @@ output:
             "startTimeUnixNano must be a string"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_logs_endpoint_returns_valid_otlp() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2286,8 +2287,8 @@ output:
             "expected resourceLogs array"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_endpoints_empty_on_fresh_start() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2317,8 +2318,8 @@ output:
             "traces must have resourceSpans array"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn existing_endpoints_unchanged_after_telemetry() {
         // Backward compatibility: existing endpoints must still work.
         let server = server_with_test_pipeline();
@@ -2346,8 +2347,8 @@ output:
         assert_eq!(status, 200, "live: {body}");
         assert!(body.contains("\"status\":\"live\""), "live: {body}");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn removed_legacy_endpoints_return_404() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
