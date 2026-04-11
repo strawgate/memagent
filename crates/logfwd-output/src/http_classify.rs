@@ -22,8 +22,9 @@ pub const DEFAULT_RETRY_AFTER_SECS: u64 = 5;
 /// Returns `None` if the value is absent, unparsable, or in the past.
 pub fn parse_retry_after(header: Option<&reqwest::header::HeaderValue>) -> Option<Duration> {
     let value = header.and_then(|v| v.to_str().ok())?;
+    let value = value.trim();
     // delta-seconds first (most common for APIs)
-    if let Ok(secs) = value.trim().parse::<u64>() {
+    if let Ok(secs) = value.parse::<u64>() {
         return Some(Duration::from_secs(secs));
     }
     // HTTP-date fallback
@@ -193,5 +194,16 @@ mod tests {
     fn parse_retry_after_invalid() {
         let hv = reqwest::header::HeaderValue::from_static("not-a-number");
         assert_eq!(parse_retry_after(Some(&hv)), None);
+    }
+
+    #[test]
+    fn parse_retry_after_http_date_with_whitespace() {
+        let future = std::time::SystemTime::now() + Duration::from_secs(120);
+        let value = format!(" {}\t", httpdate::fmt_http_date(future));
+        let hv = reqwest::header::HeaderValue::from_str(&value).expect("valid header value");
+        assert!(
+            parse_retry_after(Some(&hv)).is_some(),
+            "whitespace-padded HTTP-date Retry-After should parse"
+        );
     }
 }
