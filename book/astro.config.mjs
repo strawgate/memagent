@@ -2,6 +2,8 @@ import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 
 export default defineConfig({
+  site: 'https://strawgate.github.io',
+  base: '/memagent',
   integrations: [
     starlight({
       title: "logfwd",
@@ -48,7 +50,6 @@ export default defineConfig({
         {
           label: "Architecture",
           items: [
-            { label: "How logfwd Works", slug: "architecture" },
             { label: "Pipeline Design", slug: "architecture/pipeline" },
             { label: "Scanner", slug: "architecture/scanner" },
             { label: "Performance", slug: "architecture/performance" },
