@@ -8,12 +8,16 @@
 //! simulated network, validating end-to-end delivery, partition recovery,
 //! and server crash reconnection.
 
+use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use logfwd::pipeline::Pipeline;
+use logfwd_io::input::{InputEvent, InputSource};
+use logfwd_io::tail::ByteOffset;
+use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 use tokio_util::sync::CancellationToken;
 
@@ -235,6 +239,100 @@ fn multi_worker_out_of_order_ack_checkpoint_ordering() {
 // ============================================================================
 
 const TCP_PORT: u16 = 9000;
+
+fn step_until_received(
+    sim: &mut turmoil::Sim<'_>,
+    handle: &TcpServerHandle,
+    min_lines: u64,
+    max_steps: usize,
+    context: &str,
+) -> u64 {
+    for _ in 0..max_steps {
+        sim.step().unwrap();
+        let received = handle.received_lines.load(Ordering::Relaxed);
+        if received >= min_lines {
+            return received;
+        }
+    }
+
+    let received = handle.received_lines.load(Ordering::Relaxed);
+    panic!(
+        "{context}: expected at least {min_lines} received lines within {max_steps} steps, got {received}"
+    );
+}
+
+struct GappedInputSource {
+    name: String,
+    source_id: SourceId,
+    first: VecDeque<Vec<u8>>,
+    gap_polls: usize,
+    second: VecDeque<Vec<u8>>,
+    offset: u64,
+}
+
+impl GappedInputSource {
+    fn new(
+        name: &str,
+        source_id: SourceId,
+        first: Vec<Vec<u8>>,
+        gap_polls: usize,
+        second: Vec<Vec<u8>>,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            source_id,
+            first: first.into(),
+            gap_polls,
+            second: second.into(),
+            offset: 0,
+        }
+    }
+
+    fn data_event(&mut self, bytes: Vec<u8>) -> Vec<InputEvent> {
+        let accounted_bytes = bytes.len() as u64;
+        self.offset += accounted_bytes;
+        vec![InputEvent::Data {
+            bytes,
+            source_id: Some(self.source_id),
+            accounted_bytes,
+        }]
+    }
+}
+
+impl InputSource for GappedInputSource {
+    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        if let Some(bytes) = self.first.pop_front() {
+            return Ok(self.data_event(bytes));
+        }
+
+        if self.gap_polls > 0 {
+            self.gap_polls -= 1;
+            return Ok(vec![]);
+        }
+
+        if let Some(bytes) = self.second.pop_front() {
+            return Ok(self.data_event(bytes));
+        }
+
+        Ok(vec![])
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn health(&self) -> ComponentHealth {
+        ComponentHealth::Healthy
+    }
+
+    fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
+        if self.offset > 0 {
+            vec![(self.source_id, ByteOffset(self.offset))]
+        } else {
+            vec![]
+        }
+    }
+}
 
 /// Test A: basic end-to-end TCP delivery through turmoil::net.
 ///
@@ -658,5 +756,290 @@ fn tcp_intermittent_failures_with_fail_rate() {
     assert!(
         received >= 5,
         "expected at least 5 of 50 lines despite 0.5% fail rate (seed={seed}), got {received}"
+    );
+}
+
+/// Test: prolonged partition plus small TCP capacity fails safely.
+///
+/// Invariant probed: a long outage while the pipeline has more input than the
+/// simulated TCP buffers can absorb must not deadlock or over-deliver. Some
+/// in-flight/pre-partition data may arrive, and later batches may be dropped
+/// after retry exhaustion, but the run must terminate with delivered rows
+/// bounded by the source size.
+#[test]
+fn tcp_prolonged_partition_small_capacity_fails_safely() {
+    let mut builder = super::sim_builder();
+    builder
+        .simulation_duration(Duration::from_secs(90))
+        .tick_duration(Duration::from_millis(1))
+        .tcp_capacity(512);
+    let mut sim = builder.build();
+
+    let server_handle = TcpServerHandle::new();
+    let server_check = server_handle.clone();
+
+    let sh = server_handle.clone();
+    sim.host("server", move || {
+        let h = sh.clone();
+        async move { run_tcp_server(TCP_PORT, h).await }
+    });
+
+    sim.client("pipeline", async move {
+        let lines = generate_json_lines(400);
+        let input = ChannelInputSource::new("test", SourceId(1), lines);
+        let sink = TurmoilTcpSink::new("server", TCP_PORT);
+        let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+        pipeline.set_batch_target_bytes(512);
+        let mut pipeline = pipeline.with_input("test", Box::new(input));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(45)).await;
+            sd.cancel();
+        });
+
+        pipeline.run_async(&shutdown).await.unwrap();
+        Ok(())
+    });
+
+    let pre_partition = step_until_received(
+        &mut sim,
+        &server_check,
+        1,
+        5_000,
+        "before prolonged partition",
+    );
+
+    sim.partition("pipeline", "server");
+    for _ in 0..5_000 {
+        sim.step().unwrap();
+    }
+    let during_partition = server_check.received_lines.load(Ordering::Relaxed);
+
+    sim.repair("pipeline", "server");
+    sim.run().unwrap();
+
+    let total = server_check.received_lines.load(Ordering::Relaxed);
+    assert!(
+        during_partition >= pre_partition,
+        "received count regressed during partition: pre={pre_partition}, during={during_partition}"
+    );
+    assert!(
+        total >= during_partition,
+        "received count regressed after repair: during={during_partition}, total={total}"
+    );
+    assert!(
+        total <= 400,
+        "server must not receive more rows than source produced: total={total}"
+    );
+}
+
+/// Test: hold/release buffers a burst without duplicate delivery.
+///
+/// Invariant probed: held TCP traffic may be delayed and released in a burst,
+/// but release must make bounded forward progress. We assert that not all rows
+/// arrive while the link is held, then all source rows arrive after release
+/// with no duplicates.
+#[test]
+fn tcp_hold_release_burst_is_bounded_and_complete() {
+    let mut builder = super::sim_builder();
+    builder
+        .simulation_duration(Duration::from_secs(90))
+        .tick_duration(Duration::from_millis(1))
+        .tcp_capacity(1024 * 1024);
+    let mut sim = builder.build();
+
+    let server_handle = TcpServerHandle::new();
+    let server_check = server_handle.clone();
+
+    let sh = server_handle.clone();
+    sim.host("server", move || {
+        let h = sh.clone();
+        async move { run_tcp_server(TCP_PORT, h).await }
+    });
+
+    sim.client("pipeline", async move {
+        let lines = generate_json_lines(300);
+        let input = ChannelInputSource::new("test", SourceId(1), lines);
+        let sink = TurmoilTcpSink::new("server", TCP_PORT);
+        let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+        pipeline.set_batch_target_bytes(512);
+        let mut pipeline = pipeline.with_input("test", Box::new(input));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(45)).await;
+            sd.cancel();
+        });
+
+        pipeline.run_async(&shutdown).await.unwrap();
+        Ok(())
+    });
+
+    let pre_hold = step_until_received(&mut sim, &server_check, 1, 5_000, "before hold");
+    sim.hold("pipeline", "server");
+
+    for _ in 0..1_000 {
+        sim.step().unwrap();
+    }
+    let during_hold = server_check.received_lines.load(Ordering::Relaxed);
+
+    sim.release("pipeline", "server");
+    sim.run().unwrap();
+
+    let total = server_check.received_lines.load(Ordering::Relaxed);
+    assert!(
+        during_hold >= pre_hold,
+        "received count regressed during hold: pre={pre_hold}, during={during_hold}"
+    );
+    assert!(
+        during_hold < 300,
+        "hold should delay at least some rows before release, but all 300 arrived during hold"
+    );
+    assert!(
+        total > during_hold,
+        "release should deliver buffered rows: during_hold={during_hold}, total={total}"
+    );
+    assert_eq!(
+        total, 300,
+        "release should deliver exactly the 300 source rows without duplicates"
+    );
+}
+
+/// Test: high fail_rate with tiny socket capacity remains bounded.
+///
+/// Invariant probed: random TCP breakage plus tiny buffers should surface
+/// connection/write failures to the runtime rather than hanging forever or
+/// entering an unbounded reconnect storm. Delivery may be partial, but it must
+/// be bounded by source rows and connection churn must remain finite.
+#[test]
+fn tcp_fail_rate_tiny_capacity_has_bounded_failure_surface() {
+    let seed = super::turmoil_seed();
+
+    let mut builder = super::sim_builder();
+    builder
+        .simulation_duration(Duration::from_secs(120))
+        .tick_duration(Duration::from_millis(1))
+        .tcp_capacity(64)
+        .fail_rate(0.05)
+        .repair_rate(1.0);
+    let mut sim = builder.build();
+
+    let server_handle = TcpServerHandle::new();
+    let server_check = server_handle.clone();
+
+    let sh = server_handle.clone();
+    sim.host("server", move || {
+        let h = sh.clone();
+        async move { run_tcp_server(TCP_PORT, h).await }
+    });
+
+    sim.client("pipeline", async move {
+        let lines = generate_json_lines(80);
+        let input = ChannelInputSource::new("test", SourceId(1), lines);
+        let sink = TurmoilTcpSink::new("server", TCP_PORT);
+        let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+        pipeline.set_batch_target_bytes(256);
+        let mut pipeline = pipeline.with_input("test", Box::new(input));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            sd.cancel();
+        });
+
+        pipeline.run_async(&shutdown).await.unwrap();
+        Ok(())
+    });
+
+    sim.run().unwrap();
+
+    let received = server_check.received_lines.load(Ordering::Relaxed);
+    let connections = server_check.connection_count.load(Ordering::Relaxed);
+    assert!(
+        received <= 80,
+        "server must not receive more rows than source produced (seed={seed}): received={received}"
+    );
+    assert!(
+        connections <= 320,
+        "connection churn should remain bounded by retry policy and batch count (seed={seed}): connections={connections}"
+    );
+}
+
+/// Test: repairing a short partition resumes delivery after partial success.
+///
+/// Invariant probed: a partition between input phases should not poison future
+/// delivery. The first phase proves partial delivery, the link is partitioned
+/// while the input source is intentionally idle, and repair must allow the
+/// second phase to arrive completely.
+#[test]
+fn tcp_short_partition_repair_makes_post_repair_progress() {
+    let mut builder = super::sim_builder();
+    builder
+        .simulation_duration(Duration::from_secs(90))
+        .tick_duration(Duration::from_millis(1))
+        .tcp_capacity(4096);
+    let mut sim = builder.build();
+
+    let server_handle = TcpServerHandle::new();
+    let server_check = server_handle.clone();
+
+    let sh = server_handle.clone();
+    sim.host("server", move || {
+        let h = sh.clone();
+        async move { run_tcp_server(TCP_PORT, h).await }
+    });
+
+    sim.client("pipeline", async move {
+        let mut lines = generate_json_lines(120);
+        let second = lines.split_off(20);
+        let input = GappedInputSource::new("test", SourceId(1), lines, 200, second);
+        let sink = TurmoilTcpSink::new("server", TCP_PORT);
+        let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
+        pipeline.set_batch_timeout(Duration::from_millis(10));
+        pipeline.set_batch_target_bytes(512);
+        let mut pipeline = pipeline.with_input("test", Box::new(input));
+
+        let shutdown = CancellationToken::new();
+        let sd = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(45)).await;
+            sd.cancel();
+        });
+
+        pipeline.run_async(&shutdown).await.unwrap();
+        Ok(())
+    });
+
+    let pre_partition =
+        step_until_received(&mut sim, &server_check, 20, 5_000, "before short partition");
+
+    sim.partition("pipeline", "server");
+    for _ in 0..100 {
+        sim.step().unwrap();
+    }
+    let during_partition = server_check.received_lines.load(Ordering::Relaxed);
+
+    sim.repair("pipeline", "server");
+    sim.run().unwrap();
+
+    let total = server_check.received_lines.load(Ordering::Relaxed);
+    assert!(
+        during_partition >= pre_partition,
+        "received count regressed during short partition: pre={pre_partition}, during={during_partition}"
+    );
+    assert!(
+        total > during_partition,
+        "expected post-repair delivery progress: during_partition={during_partition}, total={total}"
+    );
+    assert_eq!(
+        total, 120,
+        "repair should allow all second-phase rows to arrive without duplicates"
     );
 }
