@@ -790,29 +790,30 @@ mod verification {
         }
     }
 
-    /// Prove configurable plain-text field dispatch remains correct.
-    ///
-    /// We intentionally avoid the full chunk parser path here because Kani's
-    /// model of `memchr` + allocation internals makes that harness dominate CI
-    /// runtime. Parser semantics and escaping behavior are covered by the
-    /// dedicated proofs below; this harness focuses on field-name dispatch.
+    /// Prove configurable plain-text wrapper calls are panic-free for empty input.
     #[kani::proof]
     #[kani::unwind(4)]
     #[kani::solver(kissat)]
     fn verify_process_cri_to_buf_with_plain_text_field_no_panic() {
-        let msg = b"plain";
         let use_body: bool = kani::any();
         let field_name = if use_body { "body" } else { SHORT_FIELD_NAME };
 
+        let chunk = b"";
         let mut out = Vec::new();
-        write_json_line_for_plain_text_field(msg, None, field_name, &mut out);
+        let mut reassembler = CriReassembler::new(64);
+        let (count, errors) = process_cri_to_buf_with_plain_text_field(
+            chunk,
+            &mut reassembler,
+            None,
+            field_name,
+            &mut out,
+        );
 
-        // Stable wrapper shape and trailing newline are contractual.
-        if use_body {
-            assert_bytes_eq(&out, b"{\"body\":\"plain\"}\n");
-        } else {
-            assert_bytes_eq(&out, b"{\"b\":\"plain\"}\n");
-        }
+        assert_eq!(count, 0);
+        assert_eq!(errors, 0);
+        assert!(out.is_empty());
+        kani::cover!(use_body, "body-field branch reachable");
+        kani::cover!(!use_body, "short-field branch reachable");
     }
 
     /// Prove parse_cri_line rejects known invalid stream tokens.

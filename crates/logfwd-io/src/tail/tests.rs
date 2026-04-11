@@ -228,8 +228,9 @@ fn test_eof_requires_fresh_idle_window_after_data() {
     );
 
     // Two immediate no-data polls after fresh data should still not emit EOF.
-    // Keep these polls back-to-back to avoid scheduler jitter crossing the
-    // idle-duration threshold on slower CI hosts.
+    // Force cadence for each poll so assertions cannot pass vacuously via
+    // poll-interval short-circuiting.
+    tailer.force_poll_due();
     let no_data_1 = tailer.poll().unwrap();
     assert!(
         !no_data_1
@@ -238,6 +239,7 @@ fn test_eof_requires_fresh_idle_window_after_data() {
         "first no-data poll after fresh data must not emit EOF"
     );
 
+    tailer.force_poll_due();
     let no_data_2 = tailer.poll().unwrap();
     assert!(
         !no_data_2
