@@ -12,8 +12,12 @@ use socket2::{Domain, Protocol, Socket, Type};
 use crate::input::{InputEvent, InputSource};
 use crate::polling_input_health::{PollingInputHealthEvent, reduce_polling_input_health};
 
-/// Maximum UDP payload: 65535 (IP max) - 20 (IP header) - 8 (UDP header).
-const MAX_UDP_PAYLOAD: usize = 65507;
+/// Maximum UDP payload we accept without truncation across IPv4/IPv6.
+///
+/// IPv4 max UDP payload is 65_507 bytes, while IPv6 can carry up to 65_527
+/// bytes (65_535 payload length - 8 byte UDP header). Use the IPv6-safe upper
+/// bound so dual-stack sockets don't silently truncate valid IPv6 datagrams.
+const MAX_UDP_PAYLOAD: usize = 65_527;
 
 /// Desired kernel receive buffer size (8 MiB). Set best-effort — the OS may
 /// cap it lower depending on `sysctl net.core.rmem_max`.
@@ -150,6 +154,7 @@ impl InputSource for UdpInput {
                     }
                     let emitted_bytes = total.as_ref().map_or(0, Vec::len);
                     if should_stop_udp_drain(datagrams_read, emitted_bytes) {
+                        under_pressure = true;
                         break;
                     }
                 }
@@ -337,7 +342,7 @@ mod tests {
             Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
         )
         .unwrap();
-        assert_eq!(input.buf.len(), 65507);
+        assert_eq!(input.buf.len(), MAX_UDP_PAYLOAD);
     }
 
     #[test]
@@ -491,6 +496,36 @@ mod tests {
 
         let events = input.poll().unwrap();
         assert!(events.is_empty());
+        assert_eq!(input.health(), ComponentHealth::Healthy);
+    }
+
+    #[test]
+    fn udp_health_degrades_when_poll_hits_drain_cap() {
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
+        let addr = input.local_addr().unwrap();
+        let sender = StdSocket::bind("127.0.0.1:0").unwrap();
+
+        for i in 0..(MAX_DATAGRAMS_PER_POLL + 8) {
+            let payload = format!("pkt-{i}\n");
+            sender.send_to(payload.as_bytes(), addr).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(75));
+
+        let first = input.poll().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(input.health(), ComponentHealth::Degraded);
+
+        for _ in 0..8 {
+            if input.poll().unwrap().is_empty() {
+                break;
+            }
+        }
+        assert!(input.poll().unwrap().is_empty());
         assert_eq!(input.health(), ComponentHealth::Healthy);
     }
 
