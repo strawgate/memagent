@@ -982,6 +982,7 @@ fn handles_invalid_protobuf() {
 }
 
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn invalid_protobuf_increments_parse_errors_when_stats_hooked() {
     let stats = Arc::new(ComponentStats::new());
     let receiver = OtlpReceiverInput::new_with_capacity_and_stats(
@@ -1309,6 +1310,7 @@ fn json_escaping_key_chars() {
 /// Regression test: when the pipeline channel is full the receiver must
 /// return 429 rather than silently dropping the payload and returning 200.
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn returns_429_when_channel_full_not_200() {
     let mut receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 2).unwrap();
     let addr = receiver.local_addr();
@@ -1352,10 +1354,7 @@ fn returns_429_when_channel_full_not_200() {
         status, 200,
         "channel-full request must not return 200 (got {status})"
     );
-    assert!(
-        status == 429 || status == 503,
-        "expected 429 or 503 for backpressure, got {status}"
-    );
+    assert_eq!(status, 429, "channel-full request should return 429");
     assert_eq!(receiver.health(), ComponentHealth::Degraded);
 
     // Drain the two buffered entries so the receiver is valid.
@@ -1372,6 +1371,7 @@ fn returns_429_when_channel_full_not_200() {
 
 // Bug #686: /v1/logsFOO and /v1/logs/extra should return 404, not 200.
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn path_prefix_variants_return_404() {
     let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
     let port = receiver.local_addr().port();
@@ -1389,6 +1389,7 @@ fn path_prefix_variants_return_404() {
 
 // Bug #687: Content-Type: Application/JSON (capital A) should be treated as JSON.
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn content_type_matching_is_case_insensitive() {
     let mut receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
     let port = receiver.local_addr().port();
@@ -1427,6 +1428,7 @@ fn content_type_matching_is_case_insensitive() {
 }
 
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn content_type_substring_match_does_not_route_json() {
     let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
     let port = receiver.local_addr().port();
@@ -1458,6 +1460,7 @@ fn content_type_substring_match_does_not_route_json() {
 
 // Bug #723: wrong HTTP method should return 405, not 404.
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn wrong_http_method_returns_405() {
     let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
     let port = receiver.local_addr().port();
@@ -1481,6 +1484,7 @@ fn wrong_http_method_returns_405() {
 
 // Bug #722: JSON body missing resourceLogs should return 400, not 200.
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn missing_resource_logs_returns_400() {
     let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
     let port = receiver.local_addr().port();
@@ -1502,6 +1506,7 @@ fn missing_resource_logs_returns_400() {
 }
 
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn receiver_shuts_down_cleanly_on_drop() {
     let receiver =
         OtlpReceiverInput::new("test-drop", "127.0.0.1:0").expect("should bind successfully");
@@ -1517,6 +1522,7 @@ fn receiver_shuts_down_cleanly_on_drop() {
 }
 
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn receiver_health_is_healthy_while_running() {
     let receiver =
         OtlpReceiverInput::new("test-health", "127.0.0.1:0").expect("should bind successfully");
@@ -1525,6 +1531,7 @@ fn receiver_health_is_healthy_while_running() {
 }
 
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn receiver_health_reports_stopping_when_shutdown_requested() {
     let receiver = OtlpReceiverInput::new("test-health-stop", "127.0.0.1:0")
         .expect("should bind successfully");
@@ -1537,6 +1544,7 @@ fn receiver_health_reports_stopping_when_shutdown_requested() {
 }
 
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn receiver_health_reports_failed_when_server_thread_exits() {
     let mut receiver = OtlpReceiverInput::new("test-health-failed", "127.0.0.1:0")
         .expect("should bind successfully");
@@ -1554,6 +1562,7 @@ fn receiver_health_reports_failed_when_server_thread_exits() {
 }
 
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn receiver_health_reports_failed_when_pipeline_disconnects() {
     let mut receiver = OtlpReceiverInput::new_with_capacity("test-disconnect", "127.0.0.1:0", 16)
         .expect("should bind successfully");
@@ -1578,6 +1587,7 @@ fn receiver_health_reports_failed_when_pipeline_disconnects() {
 
 // Valid OTLP JSON should still return 200 after the 400 fix.
 #[test]
+#[ignore = "network integration test; run with `just test-network`"]
 fn valid_otlp_json_returns_200() {
     let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
     let port = receiver.local_addr().port();

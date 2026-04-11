@@ -134,6 +134,13 @@ test:
 test-all:
     cargo nextest run --workspace --profile ci
 
+# Network-dependent tests — skipped by the default local lane.
+test-network:
+    cargo nextest run -p logfwd-io --profile ci --run-ignored ignored-only --test it transport_e2e
+    cargo nextest run -p logfwd-io --profile ci --run-ignored ignored-only --lib otap_receiver::tests::
+    cargo nextest run -p logfwd-io --profile ci --run-ignored ignored-only --lib otlp_receiver::tests:: -- --skip bench_writer_helpers_fast_vs_simple
+    cargo nextest run -p logfwd-diagnostics --profile ci --run-ignored ignored-only --lib diagnostics::server::tests::
+
 # Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:

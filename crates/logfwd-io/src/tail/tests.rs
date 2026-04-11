@@ -2323,6 +2323,36 @@ fn test_adaptive_fast_poll_stays_idle_for_small_live_tail_updates() {
     assert!(second.is_empty(), "idle live-tail should not spin");
 }
 
+#[test]
+fn test_zero_read_buffer_size_is_safely_promoted() {
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("zero-read-buf.log");
+    fs::write(&log_path, b"hello\n").unwrap();
+
+    let mut tailer = FileTailer::new(
+        std::slice::from_ref(&log_path),
+        TailConfig {
+            start_from_end: false,
+            poll_interval_ms: 0,
+            read_buf_size: 0,
+            ..Default::default()
+        },
+        create_test_stats(),
+    )
+    .expect("tailer should construct with zero read buffer config");
+
+    let events = poll_until(
+        &mut tailer,
+        Duration::from_secs(1),
+        |events, _| events.iter().any(|e| matches!(e, TailEvent::Data { .. })),
+        "timed out waiting for data with zero read_buf_size",
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, TailEvent::Data { .. })),
+        "tailer should still emit data when configured read_buf_size is zero"
+    );
+}
+
 /// Directional benchmark for issue #1258.
 ///
 /// Run with:
