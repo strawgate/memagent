@@ -3,180 +3,243 @@ const stages = [
   {
     id: 'inputs',
     label: 'Inputs',
-    icon: '📥',
-    summary: 'Sources produce raw bytes independently',
+    summary: 'Sources produce raw bytes or Arrow batches independently',
     components: [
       {
         id: 'file', label: 'File',
-        detail: 'Tail files matching glob patterns (e.g. /var/log/pods/**/*.log). Tracks file position across restarts, detects rotation (rename + create), drains old files before switching. Adaptive polling with configurable budget.',
+        detail: 'Tail files matching glob patterns with position tracking across restarts. Detects rotation via inode/device identity, drains old files before switching.',
+        flow: ['Glob Discovery', 'File Watcher', 'Read Loop', 'Budget Control', 'EOF Detection'],
+        notes: 'kqueue/inotify + polling hybrid. Adaptive fast-poll on budget hit. LRU eviction at 1024 open files. Checkpoint via atomic JSON write + fsync.',
       },
       {
         id: 'tcp', label: 'TCP',
-        detail: 'Accept log lines on a TCP socket. Supports RFC 6587 octet counting and newline-delimited framing. Optional TLS/mTLS. Records larger than 1 MiB are discarded.',
+        detail: 'Accept log lines on a TCP socket with automatic framing detection. Supports RFC 6587 octet counting and newline-delimited fallback.',
+        flow: ['Accept', 'Keepalive', 'Read (512KB/client)', 'Frame Detect', 'Line Extract'],
+        notes: 'Max 1024 concurrent clients. Global 256 MiB memory budget. Idle timeout 60s. Oversized lines (>1 MiB) discarded. Optional TLS/mTLS.',
       },
       {
         id: 'udp', label: 'UDP',
-        detail: 'Receive log lines on a UDP socket. Kernel buffer overflow detection via SO_RXQ_OVFL. Single-datagram-per-record framing.',
+        detail: 'Receive log lines as individual datagrams. Kernel buffer tuned to 8 MiB. Drop detection via ENOBUFS/ENOMEM.',
+        flow: ['Socket Bind', 'Buffer Tune (8 MiB)', 'Drain Loop', 'Line Normalize'],
+        notes: 'Max 256 datagrams per poll, 1 MiB emit budget. Fire-and-forget: no ack, no ordering guarantee.',
       },
       {
         id: 'otlp-in', label: 'OTLP',
-        detail: 'Receive OTLP log records over HTTP. Decodes protobuf and JSON payloads, preserves resource attributes with configurable prefix, flattens to Arrow columns.',
+        detail: 'Receive OpenTelemetry log records over HTTP. Decodes protobuf and JSON payloads directly into Arrow RecordBatches — bypasses the scanner.',
+        flow: ['HTTP Server', 'Proto/JSON Decode', 'Resource Flatten', 'Arrow Convert'],
+        notes: 'Structured input: produces RecordBatch directly, not raw bytes. Resource attributes flattened with configurable prefix. Bounded channel to pipeline.',
       },
       {
         id: 'http-in', label: 'HTTP',
-        detail: 'Receive newline-delimited payloads via HTTP POST. Configurable path, method, max body size, and response code. Supports JSON and raw formats.',
+        detail: 'Receive newline-delimited payloads via HTTP POST. Configurable path, method, body size limit, and response code.',
+        flow: ['Axum Server', 'Route Match', 'Body Read', 'Gzip Decompress', 'Channel Send'],
+        notes: 'Background thread with bounded channel. Max 10 MiB body. Supports gzip Content-Encoding.',
       },
       {
         id: 'arrow-ipc-in', label: 'Arrow IPC',
-        detail: 'Receive Arrow IPC stream payloads over HTTP POST. Bypasses the scanner entirely — decoded RecordBatches go directly into the pipeline. Supports zstd-compressed streams.',
+        detail: 'Receive Arrow IPC stream payloads over HTTP POST. Bypasses the scanner entirely — decoded RecordBatches go directly into the pipeline.',
+        flow: ['HTTP POST /v1/arrow', 'Zstd Decompress', 'IPC Decode', 'RecordBatch'],
+        notes: 'Scanner bypass: zero parsing overhead. Canonical content type: application/vnd.apache.arrow.stream.',
       },
       {
         id: 'sensor', label: 'Platform Sensor',
-        detail: 'eBPF (Linux), EndpointSecurity (macOS), or eBPF (Windows) sensor input. Arrow-native control + signal rows for process, file, network, DNS, and auth events.',
+        detail: 'eBPF (Linux), EndpointSecurity (macOS), or ETW (Windows) sensor. Arrow-native control and signal rows for process, file, network, DNS events.',
+        flow: ['Kernel Attach', 'Ring Buffer Poll', 'Signal Decode', 'Arrow Emit'],
+        notes: 'Arrow-native: no format/scanner. Control-plane reload via JSON file. Configurable signal families.',
       },
       {
         id: 'generator', label: 'Generator',
-        detail: 'Emit synthetic JSON log lines for benchmarking and pipeline testing. Configurable EPS, batch size, profiles (logs/record), and timestamp generation.',
+        detail: 'Emit synthetic JSON log lines for benchmarking and pipeline testing. Configurable EPS, batch size, and timestamp generation.',
+        flow: ['Profile Select', 'Row Generate', 'JSON Serialize', 'Batch Emit'],
+        notes: 'Profiles: logs (synthetic requests) and record (flat JSON from attributes). Zero external dependencies.',
       },
     ],
   },
   {
     id: 'scanner',
     label: 'Scanner',
-    icon: '⚡',
-    summary: 'SIMD-accelerated JSON → Arrow conversion',
+    summary: 'SIMD-accelerated JSON/CRI → Arrow conversion',
     components: [
       {
         id: 'format-detect', label: 'Format Parser',
-        detail: 'Detects CRI, JSON, or raw format. CRI parser strips timestamp/stream prefix, reassembles multi-line logs via the P partial flag. Auto mode tries CRI first, then JSON, then raw fallback.',
+        detail: 'Detects and parses CRI, JSON, or raw format. CRI parser strips timestamp/stream prefix and reassembles multi-line logs via the P partial flag.',
+        flow: ['Format Detect', 'CRI/JSON/Raw Parse', 'Line Extract', 'Remainder Track'],
+        notes: 'Auto mode: try CRI first → JSON → raw fallback. CRI reassembler buffers partials (P flag), emits on full (F flag). CRLF normalized.',
       },
       {
         id: 'simd-index', label: 'SIMD Structural Index',
-        detail: 'One vectorized pass over the entire buffer using platform-native SIMD (AVX2/SSE2 on x86_64, NEON on aarch64). Classifies 10 structural characters simultaneously in 64-byte blocks. Produces bitmasks for O(1) string boundary lookups.',
+        detail: 'One vectorized pass over the entire buffer using platform-native SIMD. Classifies 10 structural characters simultaneously in 64-byte blocks.',
+        flow: ['64-byte Block Load', 'SIMD Compare (10 chars)', 'Escape Parity', 'Quote Mask', 'StructuralIndex'],
+        notes: 'AVX2/SSE2 on x86_64, NEON on aarch64 via wide crate. Output: real_quotes + in_string bitmasks. O(1) string boundary lookup via trailing_zeros.',
       },
       {
         id: 'field-extract', label: 'Field Extraction',
-        detail: 'Scalar state machine walks top-level JSON objects using pre-computed bitmasks. Resolves field names to column indices via HashMap (once per field per batch). Routes values to typed Arrow column builders.',
+        detail: 'Scalar state machine walks top-level JSON objects using pre-computed bitmasks. Resolves field names to column indices once per batch via HashMap.',
+        flow: ['Find Opening {', 'Key Resolve (HashMap)', 'Value Type Detect', 'Append to Builder'],
+        notes: 'Field pushdown: QueryAnalyzer extracts referenced columns from SQL. Scanner skips unwanted fields — 2-3x throughput on wide data.',
       },
       {
         id: 'batch-builder', label: 'RecordBatch Builder',
-        detail: 'Deferred builder pattern: collects (row, value) pairs during scan, bulk-builds Arrow columns at finish. StringViewArray zero-copy mode shares the input buffer across all string columns. Injects _resource_* metadata columns.',
+        detail: 'Deferred builder pattern: collects (row, offset, len) views during scan, bulk-builds Arrow columns at finish. Zero-copy StringViewArray shares the input buffer.',
+        flow: ['Accumulate Views', 'Type Resolution', 'Null Padding', 'finish_batch()', 'RecordBatch'],
+        notes: 'scan() → StringViewArray (zero-copy, buffer shared via Bytes refcount). scan_detached() → StringArray (single bulk copy). Resource metadata injected as columns.',
       },
     ],
   },
   {
     id: 'transform',
     label: 'SQL Transform',
-    icon: '🔄',
     summary: 'DataFusion SQL over Arrow RecordBatches',
     components: [
       {
         id: 'datafusion', label: 'DataFusion Engine',
-        detail: 'Each batch cycle registers source RecordBatches as partitions of a "logs" MemTable. Executes user-defined SQL with full support for SELECT, WHERE, GROUP BY, HAVING, JOINs, and subqueries. Field pushdown analyzes the query to skip unused columns during scanning.',
+        detail: 'Each batch cycle registers source RecordBatches as partitions of a "logs" MemTable. Schema changes detected via hash — context rebuilt only when needed.',
+        flow: ['Schema Hash Check', 'MemTable Register', 'SQL Parse + Plan', 'Execute', 'Collect Batches'],
+        notes: 'Lazy SessionContext creation. Full SQL: SELECT, WHERE, GROUP BY, HAVING, JOINs, subqueries, window functions. Enrichment tables registered per batch.',
       },
       {
         id: 'udfs', label: 'Custom UDFs',
-        detail: 'Built-in scalar functions: int(), float() for type casting; regexp_extract() for regex capture groups; grok() for Logstash-style pattern extraction; json(), json_int(), json_float() for JSON field access; geo_lookup() for MaxMind GeoIP enrichment.',
+        detail: 'Scalar functions registered into the DataFusion context alongside built-in functions.',
+        flow: ['regexp_extract()', 'grok()', 'json() / json_int() / json_float()', 'int() / float()', 'geo_lookup()'],
+        notes: 'grok() supports 20+ built-in patterns (IP, UUID, TIMESTAMP_ISO8601, etc.). geo_lookup() requires MaxMind .mmdb database. hash() for deterministic partitioning.',
       },
       {
         id: 'enrichment', label: 'Enrichment Tables',
-        detail: 'SQL-joinable tables injected into the query context. k8s_path: extracts namespace/pod/container from Kubernetes log paths. host_info: exposes the hostname. static: user-defined label columns (environment, cluster, tier).',
+        detail: 'SQL-joinable tables injected into the DataFusion context. Refreshed per batch cycle if the underlying snapshot changes.',
+        flow: ['k8s_path (pod metadata)', 'host_info (hostname)', 'static (user labels)', 'geo_database (MaxMind)'],
+        notes: 'k8s_path: zero-cost path parsing, no K8s API calls. static: one-row table from config labels. All exposed as regular SQL tables for JOIN.',
       },
     ],
   },
   {
     id: 'outputs',
     label: 'Outputs',
-    icon: '📤',
-    summary: 'Fan-out to multiple destinations',
+    summary: 'Fan-out to multiple destinations via bounded channels',
     components: [
       {
         id: 'otlp-out', label: 'OTLP',
-        detail: 'Encodes log records as OTLP protobuf. Groups rows by _resource_* columns into ResourceLogs. Supports zstd and gzip compression. HTTP and gRPC protocols. Connection pooling and retry with backoff.',
+        detail: 'Encodes log records as OTLP protobuf with 3-phase encoding: encode LogRecords → group by resource/scope → write final protobuf with computed sizes.',
+        flow: ['Row Encode', 'Resource Group', 'Size Compute', 'Proto Serialize', 'Compress + Send'],
+        notes: 'Groups rows by _resource_* columns into ResourceLogs. Two encoders: handwritten (full) and generated fast path. zstd/gzip compression. HTTP and gRPC protocols.',
       },
       {
         id: 'elasticsearch', label: 'Elasticsearch',
-        detail: 'Ships via the Bulk API with per-document error handling and automatic retries. Large payloads are split to stay within limits. Optional gzip compression. Experimental streaming mode for chunked HTTP.',
+        detail: 'Ships via the Bulk API with per-document error handling. Oversized payloads split recursively. @timestamp injected if missing.',
+        flow: ['Bulk Serialize', 'Size Check', 'Split if >5 MiB', 'HTTP Send', 'Error Parse'],
+        notes: 'Precomputed action bytes (zero alloc hot path). ISO-8601 timestamp on 47-byte stack buffer. Per-document error extraction. Reactive split on 413.',
       },
       {
         id: 'loki', label: 'Loki',
-        detail: 'Pushes to Grafana Loki with automatic label grouping. Sanitizes label keys into Loki-compatible names. Rejects configs where two sources would collapse to the same label key.',
+        detail: 'Pushes to Grafana Loki with automatic label grouping and key sanitization. Rejects configs where two sources collapse to the same label key.',
+        flow: ['Label Extract', 'Key Sanitize', 'Stream Group', 'Proto Encode', 'HTTP Push'],
+        notes: 'Label cardinality control via config. Duplicate label key detection at validation time.',
       },
       {
         id: 'stdout', label: 'stdout',
-        detail: 'Print to stdout for debugging. Console mode: colored, human-readable (timestamp, level, message, key=value). JSON mode: one object per line. Text mode: raw body column.',
+        detail: 'Print to stdout for debugging. Console mode: colored, human-readable. JSON mode: one object per line. Text mode: raw body column.',
+        flow: ['Format Select', 'Row Serialize', 'Write to fd 1'],
+        notes: 'Three formats: console (colored), json (NDJSON), text (raw). Zero network overhead — useful for pipeline validation.',
       },
       {
         id: 'file-out', label: 'File',
-        detail: 'Write NDJSON or raw text to a local file. Useful for capture, replay testing, and local archival.',
+        detail: 'Write NDJSON or raw text to a local file for capture, replay testing, and local archival.',
+        flow: ['Format Select', 'Serialize', 'File Write'],
+        notes: 'NDJSON or text output. Useful for capture and replay testing.',
       },
       {
         id: 'tcp-out', label: 'TCP',
         detail: 'Send records to a TCP endpoint with persistent connections and retry backoff.',
+        flow: ['Connect', 'Serialize', 'Send', 'Retry on Error'],
+        notes: 'Persistent connection with automatic reconnect. Configurable encoding.',
       },
       {
         id: 'udp-out', label: 'UDP',
         detail: 'Fire-and-forget datagram output for low-overhead forwarding.',
+        flow: ['Serialize', 'Send Datagram'],
+        notes: 'No ack, no retry. Lowest overhead output.',
       },
       {
         id: 'arrow-ipc-out', label: 'Arrow IPC',
-        detail: 'Send Arrow IPC payloads to an HTTP endpoint for zero-copy handoff to downstream consumers.',
+        detail: 'Send Arrow IPC payloads for zero-copy handoff to downstream consumers.',
+        flow: ['IPC Serialize', 'Optional Compress', 'HTTP Send'],
+        notes: 'Zero-copy when paired with Arrow IPC input. Supports zstd compression.',
       },
     ],
   },
 ];
+
+// SVG icons for each stage (inline, no external deps)
+const icons: Record<string, string> = {
+  inputs: '<path d="M12 3v10m0 0l-3-3m3 3l3-3M5 17h14a2 2 0 002-2v0a2 2 0 00-2-2H5a2 2 0 00-2 2v0a2 2 0 002 2z" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  scanner: '<path d="M13 10V3L4 14h7v7l9-11h-7z" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  transform: '<path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  outputs: '<path d="M12 21V11m0 0l3 3m-3-3l-3 3M5 7h14a2 2 0 002-2v0a2 2 0 00-2-2H5a2 2 0 00-2 2v0a2 2 0 002 2z" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+};
 ---
 
-<div class="pipeline-diagram" id="pipeline-diagram">
-  <div class="pipeline-flow">
+<div class="pd" id="pipeline-diagram">
+  <div class="pd-flow">
     {stages.map((stage, i) => (
       <>
         <button
-          class="stage-box"
+          class="pd-stage"
           data-stage={stage.id}
           aria-expanded="false"
-          aria-controls={`detail-${stage.id}`}
+          aria-controls={`pd-detail-${stage.id}`}
         >
-          <span class="stage-icon">{stage.icon}</span>
-          <span class="stage-label">{stage.label}</span>
-          <span class="stage-hint">{stage.components.length} types</span>
+          <svg class="pd-stage-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <Fragment set:html={icons[stage.id]} />
+          </svg>
+          <span class="pd-stage-label">{stage.label}</span>
+          <span class="pd-stage-count">{stage.components.length} types</span>
         </button>
         {i < stages.length - 1 && (
-          <svg class="arrow" viewBox="0 0 48 24" aria-hidden="true">
-            <path d="M4 12 L36 12 M30 6 L38 12 L30 18" stroke="currentColor" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+          <div class="pd-connector" aria-hidden="true">
+            <div class="pd-connector-line"></div>
+            <div class="pd-connector-arrow"></div>
+          </div>
         )}
       </>
     ))}
   </div>
 
-  <p class="diagram-hint" id="diagram-hint">Click a stage to explore its components</p>
+  <p class="pd-hint" id="pd-hint">Select a stage to explore its components</p>
 
   {stages.map((stage) => (
-    <div class="stage-detail" id={`detail-${stage.id}`} hidden>
-      <div class="stage-detail-header">
-        <span class="stage-icon">{stage.icon}</span>
+    <div class="pd-detail" id={`pd-detail-${stage.id}`} hidden>
+      <div class="pd-detail-head">
+        <svg class="pd-detail-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <Fragment set:html={icons[stage.id]} />
+        </svg>
         <div>
           <h3>{stage.label}</h3>
-          <p class="stage-summary">{stage.summary}</p>
+          <p>{stage.summary}</p>
         </div>
       </div>
-      <div class="component-grid">
+      <div class="pd-components">
         {stage.components.map((comp) => (
           <button
-            class="component-card"
+            class="pd-comp"
             data-component={comp.id}
             aria-expanded="false"
-            aria-controls={`impl-${comp.id}`}
+            aria-controls={`pd-impl-${comp.id}`}
           >
-            <span class="comp-label">{comp.label}</span>
+            {comp.label}
           </button>
         ))}
       </div>
       {stage.components.map((comp) => (
-        <div class="impl-detail" id={`impl-${comp.id}`} hidden>
-          <strong>{comp.label}</strong>
-          <p>{comp.detail}</p>
+        <div class="pd-impl" id={`pd-impl-${comp.id}`} hidden>
+          <p class="pd-impl-desc">{comp.detail}</p>
+          <div class="pd-mini-flow">
+            {comp.flow.map((step, j) => (
+              <>
+                <div class="pd-mini-step">{step}</div>
+                {j < comp.flow.length - 1 && <div class="pd-mini-arrow" aria-hidden="true"></div>}
+              </>
+            ))}
+          </div>
+          {comp.notes && <p class="pd-impl-notes">{comp.notes}</p>}
         </div>
       ))}
     </div>
@@ -184,202 +247,307 @@ const stages = [
 </div>
 
 <style>
-  .pipeline-diagram {
+  /* ── Tokens ── */
+  .pd {
     --pd-bg: var(--sl-color-bg-nav);
-    --pd-border: var(--sl-color-gray-5);
+    --pd-surface: var(--sl-color-bg-sidebar);
+    --pd-border: var(--sl-color-hairline);
     --pd-accent: var(--sl-color-accent);
+    --pd-accent-lo: color-mix(in srgb, var(--pd-accent) 12%, transparent);
+    --pd-accent-md: color-mix(in srgb, var(--pd-accent) 25%, transparent);
     --pd-text: var(--sl-color-text);
-    --pd-text-muted: var(--sl-color-gray-3);
+    --pd-muted: var(--sl-color-gray-3);
+    --pd-radius: 10px;
     margin: 1.5rem 0;
   }
 
-  .pipeline-flow {
+  /* ── Level 1: Stage flow ── */
+  .pd-flow {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.25rem;
-    padding: 1rem 0;
-    overflow-x: auto;
+    gap: 0;
+    padding: 1.25rem 0;
   }
 
-  .stage-box {
+  .pd-stage {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.3rem;
-    padding: 1rem 1.25rem;
-    border: 2px solid var(--pd-border);
-    border-radius: 10px;
-    background: var(--pd-bg);
+    gap: 0.4rem;
+    padding: 1.1rem 1.5rem;
+    border: 1.5px solid var(--pd-border);
+    border-radius: var(--pd-radius);
+    background: var(--pd-surface);
     color: var(--pd-text);
     cursor: pointer;
-    transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
-    min-width: 120px;
+    transition: all 0.18s ease;
+    min-width: 130px;
     font-family: inherit;
-    font-size: inherit;
+    position: relative;
   }
 
-  .stage-box:hover {
+  .pd-stage:hover {
     border-color: var(--pd-accent);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px rgba(0,0,0,.08);
   }
 
-  .stage-box[aria-expanded="true"] {
+  .pd-stage[aria-expanded="true"] {
     border-color: var(--pd-accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--pd-accent) 25%, transparent);
+    background: var(--pd-accent-lo);
+    box-shadow: 0 0 0 3px var(--pd-accent-md);
   }
 
-  .stage-icon {
-    font-size: 1.5rem;
-    line-height: 1;
+  .pd-stage-icon {
+    width: 28px;
+    height: 28px;
+    color: var(--pd-accent);
+    transition: transform 0.18s;
   }
 
-  .stage-label {
+  .pd-stage:hover .pd-stage-icon {
+    transform: scale(1.1);
+  }
+
+  .pd-stage-label {
     font-weight: 700;
-    font-size: 0.9rem;
+    font-size: 0.88rem;
+    letter-spacing: 0.01em;
   }
 
-  .stage-hint {
+  .pd-stage-count {
     font-size: 0.7rem;
-    color: var(--pd-text-muted);
+    color: var(--pd-muted);
+    font-weight: 500;
   }
 
-  .arrow {
-    width: 48px;
-    height: 24px;
+  /* ── Connectors ── */
+  .pd-connector {
+    display: flex;
+    align-items: center;
+    width: 52px;
     flex-shrink: 0;
-    color: var(--pd-border);
+    position: relative;
   }
 
-  .diagram-hint {
+  .pd-connector-line {
+    flex: 1;
+    height: 2px;
+    background: linear-gradient(90deg, var(--pd-border) 0%, var(--pd-accent) 100%);
+    opacity: 0.5;
+  }
+
+  .pd-connector-arrow {
+    width: 0;
+    height: 0;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-left: 8px solid var(--pd-accent);
+    opacity: 0.5;
+  }
+
+  /* ── Hint ── */
+  .pd-hint {
     text-align: center;
-    font-size: 0.8rem;
-    color: var(--pd-text-muted);
+    font-size: 0.78rem;
+    color: var(--pd-muted);
     margin: 0;
-    transition: opacity 0.3s;
+    transition: opacity 0.25s;
   }
 
-  .stage-detail {
+  /* ── Level 2: Detail panel ── */
+  .pd-detail {
     margin-top: 1rem;
     padding: 1.25rem;
     border: 1px solid var(--pd-border);
-    border-radius: 10px;
-    background: var(--pd-bg);
-    animation: slideDown 0.25s ease-out;
+    border-radius: var(--pd-radius);
+    background: var(--pd-surface);
+    animation: pd-slide 0.2s ease-out;
   }
 
-  .stage-detail-header {
+  .pd-detail-head {
     display: flex;
     align-items: center;
     gap: 0.75rem;
     margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--pd-border);
   }
 
-  .stage-detail-header .stage-icon {
-    font-size: 2rem;
+  .pd-detail-icon {
+    width: 32px;
+    height: 32px;
+    color: var(--pd-accent);
+    flex-shrink: 0;
   }
 
-  .stage-detail-header h3 {
+  .pd-detail-head h3 {
     margin: 0;
-    font-size: 1.1rem;
+    font-size: 1.05rem;
   }
 
-  .stage-summary {
-    margin: 0.15rem 0 0;
-    font-size: 0.85rem;
-    color: var(--pd-text-muted);
+  .pd-detail-head p {
+    margin: 0.1rem 0 0;
+    font-size: 0.82rem;
+    color: var(--pd-muted);
   }
 
-  .component-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-    gap: 0.5rem;
+  /* ── Component grid ── */
+  .pd-components {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
   }
 
-  .component-card {
-    padding: 0.6rem 0.75rem;
+  .pd-comp {
+    padding: 0.5rem 0.9rem;
     border: 1px solid var(--pd-border);
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
     color: var(--pd-text);
     cursor: pointer;
-    text-align: center;
     font-family: inherit;
-    font-size: 0.85rem;
-    transition: border-color 0.15s, background 0.15s;
+    font-size: 0.82rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
   }
 
-  .component-card:hover {
+  .pd-comp:hover {
     border-color: var(--pd-accent);
-    background: color-mix(in srgb, var(--pd-accent) 8%, transparent);
+    background: var(--pd-accent-lo);
   }
 
-  .component-card[aria-expanded="true"] {
+  .pd-comp[aria-expanded="true"] {
     border-color: var(--pd-accent);
-    background: color-mix(in srgb, var(--pd-accent) 12%, transparent);
+    background: var(--pd-accent);
+    color: white;
     font-weight: 600;
   }
 
-  .comp-label {
-    font-size: 0.85rem;
-  }
-
-  .impl-detail {
+  /* ── Level 3: Implementation detail ── */
+  .pd-impl {
     margin-top: 0.75rem;
-    padding: 0.75rem 1rem;
-    background: color-mix(in srgb, var(--pd-accent) 6%, var(--pd-bg));
+    padding: 1rem 1.25rem;
     border-left: 3px solid var(--pd-accent);
-    border-radius: 0 6px 6px 0;
-    animation: slideDown 0.2s ease-out;
+    border-radius: 0 var(--pd-radius) var(--pd-radius) 0;
+    background: var(--pd-accent-lo);
+    animation: pd-slide 0.18s ease-out;
   }
 
-  .impl-detail strong {
-    display: block;
-    margin-bottom: 0.3rem;
-    font-size: 0.9rem;
-  }
-
-  .impl-detail p {
-    margin: 0;
+  .pd-impl-desc {
+    margin: 0 0 0.75rem;
     font-size: 0.85rem;
-    line-height: 1.55;
-    color: var(--pd-text);
+    line-height: 1.6;
   }
 
-  @keyframes slideDown {
-    from { opacity: 0; transform: translateY(-6px); }
+  /* ── Mini flow (sub-pipeline) ── */
+  .pd-mini-flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    overflow-x: auto;
+    padding: 0.5rem 0;
+    margin: 0 -0.25rem;
+  }
+
+  .pd-mini-step {
+    padding: 0.35rem 0.65rem;
+    background: var(--pd-surface);
+    border: 1px solid var(--pd-border);
+    border-radius: 5px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--pd-text);
+    letter-spacing: 0.01em;
+  }
+
+  .pd-mini-arrow {
+    width: 20px;
+    height: 2px;
+    background: var(--pd-accent);
+    flex-shrink: 0;
+    position: relative;
+    opacity: 0.6;
+  }
+
+  .pd-mini-arrow::after {
+    content: '';
+    position: absolute;
+    right: -1px;
+    top: -3px;
+    width: 0;
+    height: 0;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 6px solid var(--pd-accent);
+    opacity: 0.6;
+  }
+
+  .pd-impl-notes {
+    margin: 0.75rem 0 0;
+    font-size: 0.78rem;
+    color: var(--pd-muted);
+    line-height: 1.5;
+    font-style: italic;
+  }
+
+  /* ── Animation ── */
+  @keyframes pd-slide {
+    from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
   }
 
-  @media (max-width: 600px) {
-    .pipeline-flow {
+  /* ── Responsive ── */
+  @media (max-width: 700px) {
+    .pd-flow {
+      flex-direction: column;
+      gap: 0;
+    }
+    .pd-connector {
+      width: 2px;
+      height: 32px;
       flex-direction: column;
     }
-    .arrow {
-      transform: rotate(90deg);
-      width: 24px;
-      height: 48px;
+    .pd-connector-line {
+      width: 2px;
+      height: 100%;
+      background: linear-gradient(180deg, var(--pd-border) 0%, var(--pd-accent) 100%);
     }
-    .stage-box {
+    .pd-connector-arrow {
+      border-top: 8px solid var(--pd-accent);
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-bottom: none;
+    }
+    .pd-stage {
       width: 100%;
       min-width: unset;
+      flex-direction: row;
+      gap: 0.75rem;
+      padding: 0.75rem 1rem;
     }
+    .pd-stage-icon { width: 22px; height: 22px; }
+    .pd-mini-flow { flex-wrap: wrap; }
   }
 </style>
 
 <script>
   const diagram = document.getElementById('pipeline-diagram');
-  const hint = document.getElementById('diagram-hint');
+  const hint = document.getElementById('pd-hint');
 
-  diagram.querySelectorAll('.stage-box').forEach((btn) => {
+  diagram.querySelectorAll('.pd-stage').forEach((btn) => {
     btn.addEventListener('click', () => {
       const stageId = btn.dataset.stage;
-      const detail = document.getElementById(`detail-${stageId}`);
+      const detail = document.getElementById(`pd-detail-${stageId}`);
       const isOpen = btn.getAttribute('aria-expanded') === 'true';
 
-      diagram.querySelectorAll('.stage-box').forEach(b => b.setAttribute('aria-expanded', 'false'));
-      diagram.querySelectorAll('.stage-detail').forEach(d => d.hidden = true);
+      diagram.querySelectorAll('.pd-stage').forEach(b => b.setAttribute('aria-expanded', 'false'));
+      diagram.querySelectorAll('.pd-detail').forEach(d => d.hidden = true);
+      // Close any open component details
+      diagram.querySelectorAll('.pd-comp').forEach(b => b.setAttribute('aria-expanded', 'false'));
+      diagram.querySelectorAll('.pd-impl').forEach(d => d.hidden = true);
 
       if (!isOpen) {
         btn.setAttribute('aria-expanded', 'true');
@@ -392,15 +560,15 @@ const stages = [
     });
   });
 
-  diagram.querySelectorAll('.component-card').forEach((btn) => {
+  diagram.querySelectorAll('.pd-comp').forEach((btn) => {
     btn.addEventListener('click', () => {
       const compId = btn.dataset.component;
-      const impl = document.getElementById(`impl-${compId}`);
+      const impl = document.getElementById(`pd-impl-${compId}`);
       const isOpen = btn.getAttribute('aria-expanded') === 'true';
-      const parent = btn.closest('.stage-detail');
+      const parent = btn.closest('.pd-detail');
 
-      parent.querySelectorAll('.component-card').forEach(b => b.setAttribute('aria-expanded', 'false'));
-      parent.querySelectorAll('.impl-detail').forEach(d => d.hidden = true);
+      parent.querySelectorAll('.pd-comp').forEach(b => b.setAttribute('aria-expanded', 'false'));
+      parent.querySelectorAll('.pd-impl').forEach(d => d.hidden = true);
 
       if (!isOpen) {
         btn.setAttribute('aria-expanded', 'true');
