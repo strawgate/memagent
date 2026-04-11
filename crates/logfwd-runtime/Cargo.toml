@@ -15,6 +15,7 @@ ignored = ["turmoil"]
 default = ["datafusion"]
 turmoil = []
 loom-tests = []
+internal-failpoints = ["dep:fail", "fail/failpoints"]
 datafusion = ["dep:logfwd-transform"]
 dhat-heap = ["dep:dhat"]
 cpu-profiling = ["dep:pprof"]
@@ -43,6 +44,7 @@ thiserror = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 tokio-util = { version = "0.7" }
 futures-util = "0.3"
+fail = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
