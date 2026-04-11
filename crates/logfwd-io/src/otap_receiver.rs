@@ -495,8 +495,31 @@ mod tests {
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use logfwd_arrow::star_schema::flat_to_star;
+
+    fn loopback_http_client() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_global(Some(Duration::from_secs(5)))
+            .build()
+            .into()
+    }
+
+    fn wait_until<F>(timeout: Duration, mut predicate: F, failure_message: &str)
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(predicate(), "{failure_message}");
+    }
 
     // Regression test for issue #1142: clean shutdown
     #[test]
@@ -505,19 +528,16 @@ mod tests {
         let receiver = OtapReceiver::new("test", addr).unwrap();
         let port = receiver.local_addr().port();
 
-        // Wait briefly for thread to start blocking
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
         // Drop it
         drop(receiver);
 
-        // Wait briefly for the OS to actually release the port
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
         // The port should now be free to bind to immediately
         let new_addr = format!("127.0.0.1:{}", port);
-        let result = tiny_http::Server::http(&new_addr);
-        assert!(result.is_ok(), "Failed to bind to port {} after drop", port);
+        wait_until(
+            Duration::from_secs(1),
+            || tiny_http::Server::http(&new_addr).is_ok(),
+            &format!("failed to bind to port {port} after drop"),
+        );
     }
 
     /// Build a `BatchArrowRecords` protobuf from components.
@@ -874,7 +894,8 @@ mod tests {
         );
 
         let url = format!("http://{addr}/v1/arrow_logs");
-        let response = ureq::post(&url)
+        let response = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto)
             .expect("POST should succeed");
@@ -882,7 +903,7 @@ mod tests {
 
         // Receive the flat batch.
         let received = receiver
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(2))
             .expect("should receive a batch");
         assert_eq!(received.num_rows(), 2);
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
@@ -895,7 +916,7 @@ mod tests {
         let addr = receiver.local_addr();
 
         let url = format!("http://{addr}/v1/logs");
-        let result = ureq::post(&url).send(b"data" as &[u8]);
+        let result = loopback_http_client().post(&url).send(b"data" as &[u8]);
         match result {
             Err(ureq::Error::StatusCode(code)) => assert_eq!(code, 404),
             other => panic!("expected 404, got {other:?}"),
@@ -909,7 +930,7 @@ mod tests {
         let addr = receiver.local_addr();
 
         let url = format!("http://{addr}/v1/arrow_logs");
-        let result = ureq::get(&url).call();
+        let result = loopback_http_client().get(&url).call();
         match result {
             Err(ureq::Error::StatusCode(code)) => assert_eq!(code, 405),
             other => panic!("expected 405, got {other:?}"),
@@ -928,7 +949,8 @@ mod tests {
         let url = format!("http://{addr}/v1/arrow_logs");
 
         // Fill the channel (capacity = 1).
-        let resp = ureq::post(&url)
+        let resp = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto)
             .expect("first POST should succeed");
@@ -936,7 +958,8 @@ mod tests {
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
 
         // Next request should get 429.
-        let result = ureq::post(&url)
+        let result = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto);
         let status: u16 = match result {
@@ -953,12 +976,13 @@ mod tests {
         // Drain so the receiver is valid.
         let _ = receiver.try_recv_all();
 
-        let resp = ureq::post(&url)
+        let resp = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto)
             .expect("recovery POST should succeed");
         assert_eq!(resp.status().as_u16(), 200);
-        let _ = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        let _ = receiver.recv_timeout(Duration::from_secs(2));
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
     }
 

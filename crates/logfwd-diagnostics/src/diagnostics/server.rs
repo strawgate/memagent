@@ -1144,6 +1144,7 @@ mod tests {
     use crate::diagnostics::{ComponentHealth, ComponentStats};
     use std::io::Read;
     use std::sync::atomic::Ordering;
+    use std::time::Instant;
 
     /// Build a server with one pipeline pre-populated with known counter values.
     /// Binds to port 0 so the OS assigns a free port; call `.start()` and use
@@ -1258,6 +1259,20 @@ mod tests {
         (status, body)
     }
 
+    fn wait_until<F>(timeout: std::time::Duration, mut predicate: F, failure_message: &str)
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate() {
+                return;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(predicate(), "{failure_message}");
+    }
+
     #[test]
     fn redact_config_yaml_masks_auth_and_endpoint_credentials() {
         let raw = r#"
@@ -1343,13 +1358,12 @@ output:
         let port = addr.port();
 
         drop(handle);
-        thread::sleep(std::time::Duration::from_millis(50));
 
         let rebound_addr = format!("127.0.0.1:{port}");
-        let result = tiny_http::Server::http(&rebound_addr);
-        assert!(
-            result.is_ok(),
-            "failed to rebind diagnostics port {port} after drop"
+        wait_until(
+            std::time::Duration::from_secs(1),
+            || tiny_http::Server::http(&rebound_addr).is_ok(),
+            &format!("failed to rebind diagnostics port {port} after drop"),
         );
     }
 

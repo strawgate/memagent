@@ -93,6 +93,14 @@ where
     assert!(predicate(), "{failure_message}");
 }
 
+fn loopback_http_client() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_global(Some(Duration::from_secs(5)))
+        .build()
+        .into()
+}
+
 fn poll_receiver_until<F>(
     receiver: &mut OtlpReceiverInput,
     timeout: Duration,
@@ -985,7 +993,8 @@ fn invalid_protobuf_increments_parse_errors_when_stats_hooked() {
     .unwrap();
     let url = format!("http://{}/v1/logs", receiver.local_addr());
 
-    let status = match ureq::post(&url)
+    let status = match loopback_http_client()
+        .post(&url)
         .header("content-type", "application/x-protobuf")
         .send(b"not valid protobuf".as_slice())
     {
@@ -1316,7 +1325,8 @@ fn returns_429_when_channel_full_not_200() {
 
     // Fill the channel (capacity = 2 so two sends succeed).
     for i in 0..2 {
-        let resp = ureq::post(&url)
+        let resp = loopback_http_client()
+            .post(&url)
             .header("content-type", "application/json")
             .send(body.as_bytes())
             .unwrap_or_else(|e| panic!("request {i} failed: {e}"));
@@ -1328,7 +1338,8 @@ fn returns_429_when_channel_full_not_200() {
     }
 
     // The channel is now full; the next request must not return 200.
-    let result = ureq::post(&url)
+    let result = loopback_http_client()
+        .post(&url)
         .header("content-type", "application/json")
         .send(body.as_bytes());
 
@@ -1350,7 +1361,8 @@ fn returns_429_when_channel_full_not_200() {
     // Drain the two buffered entries so the receiver is valid.
     let _ = receiver.poll().unwrap();
 
-    let resp = ureq::post(&url)
+    let resp = loopback_http_client()
+        .post(&url)
         .header("content-type", "application/json")
         .send(body.as_bytes())
         .expect("request after drain failed");
@@ -1366,7 +1378,7 @@ fn path_prefix_variants_return_404() {
 
     for bad_path in &["/v1/logsFOO", "/v1/logs/extra", "/v1/logs2", "/v1/log"] {
         let url = format!("http://127.0.0.1:{port}{bad_path}");
-        let status = match ureq::get(&url).call() {
+        let status = match loopback_http_client().get(&url).call() {
             Ok(r) => r.status().as_u16(),
             Err(ureq::Error::StatusCode(c)) => c,
             Err(e) => panic!("unexpected error for {bad_path}: {e}"),
@@ -1391,7 +1403,8 @@ fn content_type_matching_is_case_insensitive() {
     })
     .to_string();
 
-    let resp = ureq::post(&url)
+    let resp = loopback_http_client()
+        .post(&url)
         .header("content-type", "Application/JSON")
         .send(body.as_bytes())
         .expect("request failed");
@@ -1428,7 +1441,8 @@ fn content_type_substring_match_does_not_route_json() {
     })
     .to_string();
 
-    let status = match ureq::post(&url)
+    let status = match loopback_http_client()
+        .post(&url)
         .header("content-type", "application/jsonl")
         .send(body.as_bytes())
     {
@@ -1450,8 +1464,8 @@ fn wrong_http_method_returns_405() {
     let url = format!("http://127.0.0.1:{port}/v1/logs");
 
     for (method, result) in [
-        ("GET", ureq::get(&url).call()),
-        ("DELETE", ureq::delete(&url).call()),
+        ("GET", loopback_http_client().get(&url).call()),
+        ("DELETE", loopback_http_client().delete(&url).call()),
     ] {
         let status: u16 = match result {
             Ok(resp) => resp.status().as_u16(),
@@ -1474,7 +1488,8 @@ fn missing_resource_logs_returns_400() {
 
     let bad_bodies = [r"{}", r#"{"foo":"bar"}"#, r#"{"resourceLogs":null}"#];
     for body in &bad_bodies {
-        let result = ureq::post(&url)
+        let result = loopback_http_client()
+            .post(&url)
             .header("content-type", "application/json")
             .send(body.as_bytes());
         let status: u16 = match result {
@@ -1546,7 +1561,8 @@ fn receiver_health_reports_failed_when_pipeline_disconnects() {
     let url = format!("http://127.0.0.1:{port}/v1/logs");
     receiver.rx.take();
 
-    let status = match ureq::post(&url)
+    let status = match loopback_http_client()
+        .post(&url)
         .header("content-type", "application/json")
         .send(
         br#"{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"body":{"stringValue":"hello"}}]}]}]}"#,
@@ -1568,7 +1584,8 @@ fn valid_otlp_json_returns_200() {
     let url = format!("http://127.0.0.1:{port}/v1/logs");
 
     let valid_body = r#"{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"severityText":"INFO","body":{"stringValue":"hello"}}]}]}]}"#;
-    let result = ureq::post(&url)
+    let result = loopback_http_client()
+        .post(&url)
         .header("content-type", "application/json")
         .send(valid_body.as_bytes());
     let status: u16 = match result {
