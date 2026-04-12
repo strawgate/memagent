@@ -83,6 +83,19 @@ jobs:
       - name: Build docs (Starlight)
         run: cd book && npm run build
 
+      - name: Link check (Starlight built output)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          lycheeVersion: v0.23.0
+          args: >-
+            --no-progress
+            --accept 200,429
+            --max-retries 3
+            --exclude 'mailto:'
+            --exclude-loopback
+            --root-dir book/dist/memagent
+            book/dist/memagent
+
       - name: Build rustdoc (public API only)
         run: |
           cargo doc --no-deps \
@@ -114,3 +127,4 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@v5
+

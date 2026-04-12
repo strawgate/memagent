@@ -5,14 +5,16 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
   pull_request_review:
     types: [submitted, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
   workflow_run:
     workflows: ["CI"]
     types: [completed]
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
+
+concurrency:
+  group: ready-for-human-${{ github.event.pull_request.number || github.event.workflow_run.id || 'schedule' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
