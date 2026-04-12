@@ -855,7 +855,7 @@ impl StreamingBuilder {
             }
             let mut builder = StringViewBuilder::new();
             if num_rows > 0 {
-                let original_block = builder.append_block(arrow_buf.clone());
+                let original_block = builder.append_block(arrow_buf);
                 let decoded_block = decoded_arrow_buf
                     .as_ref()
                     .map(|buf| builder.append_block(buf.clone()));
