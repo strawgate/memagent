@@ -7,14 +7,14 @@ Get a working logfwd pipeline in about 10 minutes, then build on it.
 
 ## Prerequisites
 
-You need the `logfwd` binary. See [Installation](./installation.mdx) for all options, or grab it quickly:
+You need the `logfwd` binary. See [Installation](/getting-started/installation/) for all options, or grab it quickly:
 
 ```bash
-# Download the latest release (macOS Apple Silicon shown)
+# Download the latest release (macOS Apple Silicon shown — see Installation for other platforms)
 curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd-darwin-arm64 -o logfwd
 chmod +x logfwd
 
-# Or build from source (Rust 1.85+)
+# Or build from source
 cargo build --release --bin logfwd && cp target/release/logfwd .
 ```
 
@@ -86,9 +86,13 @@ logfwd exits when it reaches the end of a finite file. In production you'd point
 
 ## Stage 2: Filter with SQL
 
-Now add a SQL transform to keep only what matters. This is the core reason to use logfwd — every batch of parsed records becomes a DataFusion SQL table named `logs`.
+Now add a SQL transform to keep only what matters. This is the core reason to use logfwd — every batch of parsed records becomes a DataFusion SQL table that you query with standard SQL.
 
-First, regenerate the test data — logfwd tracks file positions between runs so it doesn't reprocess data it has already seen:
+:::note
+Every input automatically creates a table called **`logs`**. Your SQL transform queries this table. All parsed fields become columns — `level`, `message`, `status`, `duration_ms`, etc.
+:::
+
+First, regenerate the test data. logfwd tracks file positions between runs (via a checkpoint file) so it won't reprocess data it has already seen. Overwriting the file with `generate-json` creates a new file identity, so logfwd will read it fresh:
 
 ```bash
 ./logfwd generate-json 10000 logs.json
@@ -142,13 +146,13 @@ transform: |
   WHERE status >= 400
 ```
 
-This extracts the URL path from the message with a regex and keeps only 4xx/5xx responses. Full SQL — `JOIN`, `GROUP BY`, `HAVING`, subqueries — all works.
+This extracts the URL path from the message with a regex and keeps only 4xx/5xx responses. Full SQL — `GROUP BY`, `HAVING`, subqueries — all works. `JOIN` works against enrichment tables (Kubernetes metadata, static labels, GeoIP).
 
 :::caution
 `ORDER BY` is valid SQL and works correctly within each batch. However, logfwd processes data in streaming batches, so ordering only applies within a single batch, not globally across all data.
 :::
 
-Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](../configuration/sql-transforms.md) for the complete reference.
+Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](/configuration/sql-transforms/) for the complete reference.
 
 ---
 
@@ -195,6 +199,12 @@ output:
 
 logfwd parses the JSON, runs the SQL filter, encodes matching records as OTLP protobuf with zstd compression, and ships them over HTTP. The blackhole receiver accepts everything.
 
+When you're done, stop the background blackhole receiver:
+
+```bash
+kill %1
+```
+
 To ship to a real collector, replace the endpoint:
 
 ```yaml
@@ -233,8 +243,8 @@ Always validate before deploying. `validate` catches YAML errors; `dry-run` goes
 
 | Guide | What you'll learn |
 |-------|-------------------|
-| [Your First Pipeline](./first-pipeline.md) | Production config with monitoring, multi-pipeline setup, CRI format |
-| [SQL Transforms](../configuration/sql-transforms.md) | Full SQL reference — JOINs, UDFs, enrichment tables, column naming |
-| [Configuration Reference](../configuration/reference.mdx) | Every YAML field, input/output type, and option |
-| [Kubernetes Deployment](../deployment/kubernetes.md) | DaemonSet, resource sizing, OTLP collector integration |
-| [Troubleshooting](../troubleshooting.md) | Common errors, debug mode, diagnostics API |
+| [Your First Pipeline](/getting-started/first-pipeline/) | Production config with monitoring, multi-pipeline setup, CRI format |
+| [SQL Transforms](/configuration/sql-transforms/) | Full SQL reference — JOINs, UDFs, enrichment tables, column naming |
+| [Configuration Reference](/configuration/reference/) | Every YAML field, input/output type, and option |
+| [Kubernetes Deployment](/deployment/kubernetes/) | DaemonSet, resource sizing, OTLP collector integration |
+| [Troubleshooting](/troubleshooting/) | Common errors, debug mode, diagnostics API |

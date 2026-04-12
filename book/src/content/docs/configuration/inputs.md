@@ -1,14 +1,28 @@
 ---
 title: "Input Types"
-description: "Usage notes and examples for each input type"
+description: "Usage notes, data flow, and examples for each input type"
 ---
 
-Support status lives in the [Configuration Reference](./reference.mdx#input-types).
-This page focuses on usage notes and examples.
+Support status lives in the [Configuration Reference](/configuration/reference/#input-types).
+This page covers usage notes, data flow, and configuration examples for every input type.
 
 ## File
 
-Tail one or more log files with glob pattern support.
+Tail one or more log files with glob pattern support. New files are discovered automatically and rotation is handled transparently.
+
+### Data flow
+
+```
+Glob Pattern (/var/log/**/*.log)
+  → Glob Discovery (every 5s)
+    → File Watcher (inotify / kqueue)
+      → Read Loop (poll_interval_ms)
+        → Line Framing (newline split)
+          → Format Parse (cri | json | raw)
+            → RecordBatch
+```
+
+### Configuration
 
 ```yaml
 input:
@@ -17,21 +31,39 @@ input:
   format: cri      # cri | json | raw | auto
 ```
 
+### Key behaviors
+
 - **Glob re-scanning**: New files matching the pattern are discovered automatically (every 5s).
 - **Rotation handling**: Detects file rotation (rename + create) and switches to the new file. Drains remaining data from the old file before switching.
-- **Formats**: CRI (Kubernetes container runtime), JSON (newline-delimited), raw (plain text passthrough; line capture typically writes each line to `body` via `line_field_name`)
+- **Formats**: CRI (Kubernetes container runtime), JSON (newline-delimited), raw (plain text passthrough; line capture typically writes each line to `body` via `line_field_name`).
 
-**Tuning knobs (optional):**
+### Tuning knobs (optional)
 
-- `poll_interval_ms` (default: 50): How often, in milliseconds, the tailer checks the file for new data when at the end of the file.
-- `read_buf_size` (default: 262144, max: 4194304): The buffer size used when reading chunks of the file.
-- `per_file_read_budget_bytes` (default: 262144): The maximum bytes to read from a single file during one polling iteration before yielding to other files.
-- `adaptive_fast_polls_max` (default: 8): Immediate repoll budget after a read-budget hit; set to `0` to disable adaptive fast repolls.
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `poll_interval_ms` | `50` | How often (ms) the tailer checks for new data when at EOF. |
+| `read_buf_size` | `262144` (max `4194304`) | Buffer size for reading file chunks. |
+| `per_file_read_budget_bytes` | `262144` | Max bytes from one file per poll iteration before yielding. |
+| `adaptive_fast_polls_max` | `8` | Immediate repoll budget after a read-budget hit; `0` disables. |
+
+---
 
 ## Generator
 
-Emit synthetic JSON log lines for benchmarking and pipeline testing. No external
-data source is required.
+Emit synthetic JSON log lines for benchmarking and pipeline testing. No external data source is required.
+
+### Data flow
+
+```
+Config (profile + rate + batch_size)
+  → Event Template (logs | record)
+    → Rate Limiter (events_per_sec)
+      → Batch Assembly (batch_size records)
+        → Format Serialize (JSON)
+          → RecordBatch
+```
+
+### Configuration
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -68,7 +100,7 @@ input:
     event_created_unix_nano_field: event_created_unix_nano
 ```
 
-### Timestamp examples (`logs` profile)
+### Timestamp examples (logs profile)
 
 ```yaml
 # Real-time simulation (timestamps start at now, +1ms per event)
@@ -97,9 +129,24 @@ input:
 
 Use `generate-json <num_lines> <output_file>` on the CLI to write a fixed number of lines to a file instead.
 
+---
+
 ## UDP
 
-Receive log lines on a UDP socket.
+Receive log lines on a UDP socket. Each datagram is treated as a single log record.
+
+### Data flow
+
+```
+Remote Sender
+  → UDP Socket (bind listen addr)
+    → Datagram Receive
+      → Line Extract (one record per datagram)
+        → Format Parse (json | raw)
+          → RecordBatch
+```
+
+### Configuration
 
 ```yaml
 input:
@@ -108,11 +155,32 @@ input:
   format: json
 ```
 
-TLS is not supported for UDP inputs.
+### Key behaviors
+
+- Each UDP datagram produces one log record.
+- TLS is **not** supported for UDP inputs.
+- No connection state -- dropped datagrams are silently lost (inherent to UDP).
+
+---
 
 ## TCP
 
-Accept log lines on a TCP socket.
+Accept log lines on a TCP socket with automatic framing detection.
+
+### Data flow
+
+```
+Remote Client
+  → TCP Accept (per-connection task)
+    → TLS Handshake (optional, mTLS supported)
+      → Keepalive
+        → Frame Detect (octet-counting or newline)
+          → Line Extract
+            → Format Parse (json | raw)
+              → RecordBatch
+```
+
+### Configuration
 
 ```yaml
 input:
@@ -121,13 +189,13 @@ input:
   format: json
 ```
 
-Framing behavior:
+### Framing behavior
 
-- Prefer RFC 6587 octet counting (`<len><space><payload>`).
-- Fall back to newline-delimited records for legacy senders.
+- Prefers RFC 6587 octet counting (`<len><space><payload>`).
+- Falls back to newline-delimited records for legacy senders.
 - Records larger than 1 MiB are discarded.
 
-Optional TLS/mTLS config:
+### Optional TLS / mTLS
 
 ```yaml
 input:
@@ -140,9 +208,24 @@ input:
     client_ca_file: /etc/logfwd/tls/clients-ca.pem
 ```
 
+---
+
 ## OTLP
 
-Receive OTLP log records from another agent or SDK.
+Receive OTLP log records from another agent or OpenTelemetry SDK over HTTP.
+
+### Data flow
+
+```
+OTLP Client (agent / SDK)
+  → HTTP POST /v1/logs
+    → Protobuf Decode (ExportLogsServiceRequest)
+      → Resource + Scope Flatten
+        → Arrow Convert (typed columns)
+          → RecordBatch
+```
+
+### Configuration
 
 ```yaml
 input:
@@ -150,9 +233,30 @@ input:
   listen: 0.0.0.0:4318
 ```
 
+### Key behaviors
+
+- Accepts the standard OTLP/HTTP log export endpoint.
+- Resource and scope attributes are flattened into per-record columns.
+- Protobuf wire format (not JSON) is expected from clients.
+
+---
+
 ## HTTP
 
-Receive newline-delimited payloads over HTTP `POST` (NDJSON or raw lines).
+Receive newline-delimited payloads over HTTP POST (NDJSON or raw lines).
+
+### Data flow
+
+```
+HTTP Client
+  → HTTP POST (path + method filter)
+    → Body Read (up to max_request_body_size)
+      → Newline Split (NDJSON lines)
+        → Format Parse (json | raw)
+          → RecordBatch
+```
+
+### Configuration
 
 ```yaml
 input:
@@ -166,3 +270,9 @@ input:
     max_request_body_size: 20971520
     response_code: 200
 ```
+
+### Key behaviors
+
+- When `strict_path` is true, requests to paths other than the configured `path` receive a 404.
+- `max_request_body_size` defaults to 20 MiB. Requests exceeding this are rejected.
+- The configured `response_code` is returned on successful ingestion.

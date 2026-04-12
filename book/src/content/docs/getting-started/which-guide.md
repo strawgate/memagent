@@ -1,46 +1,46 @@
 ---
 title: "Choose the Right Guide"
 description: "Find the shortest path to your goal with logfwd"
+sidebar:
+  order: 0
 ---
 
-Use this page to pick the shortest path for your goal.
+Not sure where to start? Match your goal below.
 
 ## I want to see logfwd working quickly
 
-Read [Quick Start](./quickstart.md).
-This path is for running a working pipeline in about 10 minutes with local sample data.
+[Quick Start](/getting-started/quickstart/) — working pipeline in about 10 minutes with local sample data. No external dependencies.
 
-## I want to install logfwd correctly for my platform
+## I want to install logfwd for my platform
 
-Read [Installation](./installation.mdx).
-This page covers binary, container, and source install options.
+[Installation](/getting-started/installation/) — binary download, Docker, build from source, or Kubernetes DaemonSet.
 
-## I want a production-ready baseline pipeline
+## I want a production-ready pipeline
 
-Read [Your First Pipeline](./first-pipeline.md).
-This path includes validation, monitoring hooks, and safer defaults.
+[Your First Pipeline](/getting-started/first-pipeline/) — CRI format, monitoring, multi-pipeline setup, and enrichment tables.
+
+## I want to understand how logfwd works
+
+[How logfwd Works](/architecture/) — interactive pipeline diagram with drill-down into every component.
 
 ## I need to configure specific fields or behaviors
 
-Read [Config Reference](../configuration/reference.mdx).
-Use this as the canonical source of truth for YAML options and defaults.
+[Configuration Reference](/configuration/reference/) — canonical source of truth for all YAML fields, input/output types, and options.
 
-## I need SQL transform examples and function behavior
+## I need SQL transform examples
 
-Read [SQL Transforms](../configuration/sql-transforms.md).
-This page includes DataFusion SQL patterns and built-in UDF guidance.
+[SQL Transforms](/configuration/sql-transforms/) — DataFusion SQL patterns, custom UDFs (`grok`, `regexp_extract`, `json`, `geo_lookup`), and enrichment table JOINs.
 
 ## I need deployment help
 
-Read [Kubernetes DaemonSet](../deployment/kubernetes.md) or [Docker](../deployment/docker.md).
-Then use [Monitoring & Diagnostics](../deployment/monitoring.md) to validate runtime behavior.
+- [Kubernetes DaemonSet](/deployment/kubernetes/) — manifest, resource sizing, OTLP collector integration
+- [Docker](/deployment/docker/) — container images, volume config, health checks
+- [Monitoring & Diagnostics](/deployment/monitoring/) — diagnostics API, key metrics, transport observability
 
 ## I am debugging an issue
 
-Read [Troubleshooting](../troubleshooting.md).
-Start from symptom and follow the recommended diagnosis steps.
+[Troubleshooting](/troubleshooting/) — symptom-first triage table, diagnostic commands, recovery fallback.
 
 ## I want to contribute code
 
-Read [Contributing](../development/contributing.md), then [Building & Testing](../development/building.md).
-For internals and constraints, use [Pipeline Design](../architecture/pipeline.md) and [Scanner](../architecture/scanner.md).
+[Contributing](/development/contributing/) — workspace layout, build commands, then [Building & Testing](/development/building/) for prerequisites. For internals, see [Pipeline Design](/architecture/pipeline/) and [Scanner](/architecture/scanner/).
