@@ -369,6 +369,7 @@ impl Pipeline {
             held_tickets: Vec::new(),
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
+            pool_drain_timeout: Duration::from_secs(60),
             transition_events: super::transition::TransitionEventEmitterHandle::noop(),
         })
     }

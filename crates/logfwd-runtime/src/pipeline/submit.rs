@@ -111,11 +111,13 @@ impl Pipeline {
             ProcessorStageResult::Forward { batch, output_rows } => (batch, output_rows),
             ProcessorStageResult::Hold { reason } => {
                 tracing::warn!(reason = %reason, "processor stage requested hold");
-                let held = self.ack_all_tickets(
-                    Some(batch_id),
-                    sending,
-                    super::checkpoint_policy::TicketDisposition::Hold,
-                );
+                let held = self
+                    .ack_all_tickets(
+                        Some(batch_id),
+                        sending,
+                        super::checkpoint_policy::TicketDisposition::Hold,
+                    )
+                    .held;
                 self.metrics.finish_active_batch(batch_id);
                 if held {
                     shutdown.cancel();
@@ -198,6 +200,21 @@ impl Pipeline {
         self.metrics
             .inflight_batches
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(feature = "turmoil")]
+        {
+            let mut checkpoint_vec: Vec<(u64, u64)> = checkpoints
+                .iter()
+                .map(|(source_id, offset)| (source_id.0, offset.0))
+                .collect();
+            checkpoint_vec.sort_unstable();
+            crate::turmoil_barriers::trigger(
+                crate::turmoil_barriers::RuntimeBarrierEvent::BatchSubmitted {
+                    batch_id,
+                    checkpoints: checkpoint_vec,
+                },
+            )
+            .await;
+        }
         self.pool
             .submit(crate::worker_pool::WorkItem {
                 num_rows: out_rows,

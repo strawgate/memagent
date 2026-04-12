@@ -31,6 +31,64 @@ const DEFAULT_TICK_MS: u64 = 1;
 const DEFAULT_BATCH_TIMEOUT_MS: u64 = 20;
 const DEFAULT_TCP_PORT: u16 = 9137;
 
+/// Shared scenario profile values for turmoil fault harness tests.
+#[derive(Clone, Copy, Debug)]
+pub struct ScenarioProfile {
+    duration_secs: u64,
+    tick_ms: u64,
+    tcp_capacity: Option<usize>,
+    batch_timeout_ms: u64,
+    shutdown_after: Duration,
+    pool_drain_timeout: Duration,
+}
+
+impl ScenarioProfile {
+    /// Balanced default profile used by most scenario tests.
+    pub const fn balanced() -> Self {
+        Self {
+            duration_secs: DEFAULT_SIM_DURATION_SECS,
+            tick_ms: DEFAULT_TICK_MS,
+            tcp_capacity: None,
+            batch_timeout_ms: DEFAULT_BATCH_TIMEOUT_MS,
+            shutdown_after: Duration::from_secs(5),
+            pool_drain_timeout: Duration::from_secs(60),
+        }
+    }
+
+    /// Profile tuned for network-chaos scenarios with longer convergence windows.
+    pub const fn network_chaos() -> Self {
+        Self {
+            duration_secs: 90,
+            tick_ms: 1,
+            tcp_capacity: Some(1024 * 1024),
+            batch_timeout_ms: 20,
+            shutdown_after: Duration::from_secs(20),
+            pool_drain_timeout: Duration::from_secs(60),
+        }
+    }
+
+    /// Profile tuned for aggressive retry-shutdown interactions.
+    pub const fn retry_stress() -> Self {
+        Self {
+            duration_secs: 60,
+            tick_ms: 1,
+            tcp_capacity: None,
+            batch_timeout_ms: 20,
+            shutdown_after: Duration::from_secs(5),
+            pool_drain_timeout: Duration::from_secs(2),
+        }
+    }
+}
+
+/// One runtime barrier event captured with a monotonic logical timestamp.
+#[derive(Clone, Debug)]
+pub struct RuntimeEventRecord {
+    /// Monotonic logical timestamp assigned by the fault harness.
+    pub ts: u64,
+    /// Raw runtime barrier event observed at the simulation seam.
+    pub event: RuntimeBarrierEvent,
+}
+
 /// A network fault operation the scenario can inject into the simulation.
 ///
 /// `Partition` isolates the pipeline host from the server host for the
@@ -42,6 +100,10 @@ pub enum NetworkFaultAction {
     Partition,
     /// Repair the pipeline and server hosts.
     Repair,
+    /// Partition the pipeline -> server direction only.
+    PartitionOneWay,
+    /// Repair the pipeline -> server direction only.
+    RepairOneWay,
     /// Hold all in-flight messages between the hosts.
     Hold,
     /// Release held in-flight messages between the hosts.
@@ -98,8 +160,10 @@ pub struct FaultScenario {
     duration_secs: u64,
     tick_ms: u64,
     batch_timeout_ms: u64,
+    tcp_capacity: Option<usize>,
     batch_target_bytes: Option<usize>,
     shutdown_after: Duration,
+    pool_drain_timeout: Duration,
     checkpoint_flush_interval: Option<Duration>,
     arm_checkpoint_crash_after: Option<Duration>,
     crash_on_nth_flush: Option<u64>,
@@ -111,17 +175,20 @@ pub struct FaultScenario {
 impl FaultScenario {
     /// Build a scenario with the default harness settings.
     pub fn builder(name: &str) -> Self {
+        let profile = ScenarioProfile::balanced();
         Self {
             name: name.to_string(),
             seed: super::turmoil_seed(),
             source_id: SourceId(1),
             lines: 10,
             sink_mode: SinkMode::Counting,
-            duration_secs: DEFAULT_SIM_DURATION_SECS,
-            tick_ms: DEFAULT_TICK_MS,
-            batch_timeout_ms: DEFAULT_BATCH_TIMEOUT_MS,
+            duration_secs: profile.duration_secs,
+            tick_ms: profile.tick_ms,
+            tcp_capacity: profile.tcp_capacity,
+            batch_timeout_ms: profile.batch_timeout_ms,
             batch_target_bytes: None,
-            shutdown_after: Duration::from_secs(5),
+            shutdown_after: profile.shutdown_after,
+            pool_drain_timeout: profile.pool_drain_timeout,
             checkpoint_flush_interval: None,
             arm_checkpoint_crash_after: None,
             crash_on_nth_flush: None,
@@ -134,6 +201,17 @@ impl FaultScenario {
     /// Override the turmoil RNG seed.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
+        self
+    }
+
+    /// Apply a shared simulation profile to reduce per-test magic numbers.
+    pub fn with_profile(mut self, profile: ScenarioProfile) -> Self {
+        self.duration_secs = profile.duration_secs;
+        self.tick_ms = profile.tick_ms;
+        self.batch_timeout_ms = profile.batch_timeout_ms;
+        self.tcp_capacity = profile.tcp_capacity;
+        self.shutdown_after = profile.shutdown_after;
+        self.pool_drain_timeout = profile.pool_drain_timeout;
         self
     }
 
@@ -167,15 +245,21 @@ impl FaultScenario {
         self
     }
 
+    /// Override worker-pool drain timeout for this scenario.
+    pub fn with_pool_drain_timeout(mut self, timeout: Duration) -> Self {
+        self.pool_drain_timeout = timeout;
+        self
+    }
+
     /// Override the pipeline batch timeout.
     pub fn with_batch_timeout(mut self, timeout: Duration) -> Self {
         self.batch_timeout_ms = timeout.as_millis() as u64;
         self
     }
 
-    /// Override the pipeline batch target size in bytes.
-    pub fn with_batch_target_bytes(mut self, bytes: usize) -> Self {
-        self.batch_target_bytes = Some(bytes);
+    /// Override the pipeline batch target bytes.
+    pub fn with_batch_target_bytes(mut self, batch_target_bytes: usize) -> Self {
+        self.batch_target_bytes = Some(batch_target_bytes);
         self
     }
 
@@ -191,12 +275,7 @@ impl FaultScenario {
         self
     }
 
-    /// Crash deterministically on the Nth checkpoint flush (1-indexed).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `n` is 0 because the crash trigger is 1-indexed; 0 would
-    /// silently disable the crash path.
+    /// Simulate a crash exactly on the Nth checkpoint flush attempt.
     pub fn with_checkpoint_crash_on_nth_flush(mut self, n: u64) -> Self {
         assert!(n > 0, "crash trigger is 1-indexed; 0 disables crash path");
         self.crash_on_nth_flush = Some(n);
@@ -225,12 +304,15 @@ impl FaultScenario {
     pub fn run(self) -> TestOutcome {
         let scenario_name = self.name.clone();
         let seed = self.seed;
-        let mut builder = turmoil::Builder::new();
-        builder
-            .rng_seed(seed)
-            .enable_random_order()
-            .simulation_duration(Duration::from_secs(self.duration_secs))
-            .tick_duration(Duration::from_millis(self.tick_ms));
+        let mut builder = super::sim_builder_with_profile(
+            super::SimProfile::DEFAULT
+                .with_duration(self.duration_secs)
+                .with_tick(self.tick_ms),
+        );
+        builder.rng_seed(seed);
+        if let Some(tcp_capacity) = self.tcp_capacity {
+            builder.tcp_capacity(tcp_capacity);
+        }
         if let Some(fail_rate) = self.fail_rate {
             builder.fail_rate(fail_rate);
         }
@@ -242,6 +324,8 @@ impl FaultScenario {
         let mut tcp_server_handle: Option<TcpServerHandle> = None;
         let mut runtime_events_barrier = Barrier::new(|_: &RuntimeBarrierEvent| true);
         let mut trace_events = Vec::new();
+        let mut runtime_events = Vec::new();
+        let mut runtime_event_ts = 0_u64;
 
         match &self.sink_mode {
             SinkMode::TurmoilTcp => {
@@ -275,9 +359,10 @@ impl FaultScenario {
 
                     let sink = TurmoilTcpSink::new("server", DEFAULT_TCP_PORT);
                     let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
+                    pipeline.set_pool_drain_timeout(scenario.pool_drain_timeout);
                     pipeline.set_batch_timeout(Duration::from_millis(scenario.batch_timeout_ms));
-                    if let Some(bytes) = scenario.batch_target_bytes {
-                        pipeline.set_batch_target_bytes(bytes);
+                    if let Some(batch_target_bytes) = scenario.batch_target_bytes {
+                        pipeline.set_batch_target_bytes(batch_target_bytes);
                     }
                     let mut pipeline = pipeline.with_input("scenario", Box::new(input));
 
@@ -331,9 +416,10 @@ impl FaultScenario {
                     let lines = generate_json_lines(scenario.lines);
                     let input = ChannelInputSource::new("scenario", scenario.source_id, lines);
                     let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
+                    pipeline.set_pool_drain_timeout(scenario.pool_drain_timeout);
                     pipeline.set_batch_timeout(Duration::from_millis(scenario.batch_timeout_ms));
-                    if let Some(bytes) = scenario.batch_target_bytes {
-                        pipeline.set_batch_target_bytes(bytes);
+                    if let Some(batch_target_bytes) = scenario.batch_target_bytes {
+                        pipeline.set_batch_target_bytes(batch_target_bytes);
                     }
 
                     let mut pipeline = pipeline.with_input("scenario", Box::new(input));
@@ -386,9 +472,10 @@ impl FaultScenario {
                     let lines = generate_json_lines(scenario.lines);
                     let input = ChannelInputSource::new("scenario", scenario.source_id, lines);
                     let mut pipeline = Pipeline::for_simulation("sim", Box::new(sink));
+                    pipeline.set_pool_drain_timeout(scenario.pool_drain_timeout);
                     pipeline.set_batch_timeout(Duration::from_millis(scenario.batch_timeout_ms));
-                    if let Some(bytes) = scenario.batch_target_bytes {
-                        pipeline.set_batch_target_bytes(bytes);
+                    if let Some(batch_target_bytes) = scenario.batch_target_bytes {
+                        pipeline.set_batch_target_bytes(batch_target_bytes);
                     }
 
                     let mut pipeline = pipeline.with_input("scenario", Box::new(input));
@@ -445,7 +532,13 @@ impl FaultScenario {
                 if sim.step()? {
                     break Ok::<(), Box<dyn std::error::Error>>(());
                 }
-                drain_runtime_events(&mut runtime_events_barrier, &mut trace_events);
+                super::maybe_trace_sim_step(&scenario_name, step + 1);
+                drain_runtime_events(
+                    &mut runtime_events_barrier,
+                    &mut trace_events,
+                    &mut runtime_events,
+                    &mut runtime_event_ts,
+                );
                 step += 1;
                 while let Some(fault) = faults.peek() {
                     if fault.step != step {
@@ -457,7 +550,12 @@ impl FaultScenario {
                 }
             }
         }));
-        drain_runtime_events(&mut runtime_events_barrier, &mut trace_events);
+        drain_runtime_events(
+            &mut runtime_events_barrier,
+            &mut trace_events,
+            &mut runtime_events,
+            &mut runtime_event_ts,
+        );
 
         let (panicked, sim_error) = match run_outcome {
             Ok(Ok(())) => (false, None),
@@ -478,6 +576,7 @@ impl FaultScenario {
             checkpoint: checkpoint_handle,
             tcp_server: tcp_server_handle,
             trace_events,
+            runtime_events,
             trace_validation_error,
             normalized_trace,
         };
@@ -488,14 +587,22 @@ impl FaultScenario {
     }
 }
 
-fn drain_runtime_events(barrier: &mut Barrier<RuntimeBarrierEvent>, events: &mut Vec<TraceEvent>) {
+fn drain_runtime_events(
+    barrier: &mut Barrier<RuntimeBarrierEvent>,
+    events: &mut Vec<TraceEvent>,
+    runtime_events: &mut Vec<RuntimeEventRecord>,
+    runtime_event_ts: &mut u64,
+) {
     loop {
         let mut wait = Box::pin(barrier.wait());
         match wait.as_mut().now_or_never() {
             Some(Some(triggered)) => {
-                if let Some(event) = trace_event_from_runtime_barrier(&triggered) {
-                    events.push(event);
-                }
+                *runtime_event_ts += 1;
+                runtime_events.push(RuntimeEventRecord {
+                    ts: *runtime_event_ts,
+                    event: (*triggered).clone(),
+                });
+                events.extend(trace_event_from_runtime_barrier(&triggered));
             }
             Some(None) | None => break,
         }
@@ -506,6 +613,8 @@ fn apply_network_fault(sim: &mut turmoil::Sim<'_>, fault: &NetworkFault) {
     match fault.action {
         NetworkFaultAction::Partition => sim.partition("pipeline", "server"),
         NetworkFaultAction::Repair => sim.repair("pipeline", "server"),
+        NetworkFaultAction::PartitionOneWay => sim.partition_oneway("pipeline", "server"),
+        NetworkFaultAction::RepairOneWay => sim.repair_oneway("pipeline", "server"),
         NetworkFaultAction::Hold => sim.hold("pipeline", "server"),
         NetworkFaultAction::Release => sim.release("pipeline", "server"),
     }
@@ -533,6 +642,7 @@ pub struct TestOutcome {
     checkpoint: Option<CheckpointHandle>,
     tcp_server: Option<TcpServerHandle>,
     trace_events: Vec<TraceEvent>,
+    runtime_events: Vec<RuntimeEventRecord>,
     trace_validation_error: Option<String>,
     normalized_trace: Vec<String>,
 }
@@ -594,6 +704,11 @@ impl TestOutcome {
     pub fn trace_events(&self) -> &[TraceEvent] {
         &self.trace_events
     }
+
+    /// Raw runtime barrier events captured during the scenario run.
+    pub fn runtime_events(&self) -> &[RuntimeEventRecord] {
+        &self.runtime_events
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -610,17 +725,17 @@ enum Invariant {
         source_id: u64,
         min: usize,
     },
-    CheckpointDurableAbsent {
-        source_id: u64,
-    },
-    CheckpointDurableNotAheadOfUpdates {
-        source_id: u64,
-    },
     ServerReceivedGe(u64),
     ServerConnectionsGe(u64),
     CheckpointDurableEq {
         source_id: u64,
         expected: Option<u64>,
+    },
+    CheckpointDurableAbsent {
+        source_id: u64,
+    },
+    CheckpointDurableNotAheadOfUpdates {
+        source_id: u64,
     },
     TraceContractValid,
 }
@@ -685,20 +800,6 @@ impl InvariantSet {
         self
     }
 
-    /// Require that durable checkpoint is absent for a source.
-    pub fn checkpoint_durable_absent(mut self, source_id: u64) -> Self {
-        self.invariants
-            .push(Invariant::CheckpointDurableAbsent { source_id });
-        self
-    }
-
-    /// Require durable checkpoint to never exceed update history.
-    pub fn checkpoint_durable_not_ahead_of_updates(mut self, source_id: u64) -> Self {
-        self.invariants
-            .push(Invariant::CheckpointDurableNotAheadOfUpdates { source_id });
-        self
-    }
-
     /// Require at least the given number of TCP rows received by the server.
     pub fn server_received_ge(mut self, minimum: u64) -> Self {
         self.invariants.push(Invariant::ServerReceivedGe(minimum));
@@ -718,6 +819,20 @@ impl InvariantSet {
             source_id,
             expected,
         });
+        self
+    }
+
+    /// Require that durable checkpoint is absent for a source.
+    pub fn checkpoint_durable_absent(mut self, source_id: u64) -> Self {
+        self.invariants
+            .push(Invariant::CheckpointDurableAbsent { source_id });
+        self
+    }
+
+    /// Require durable checkpoint not to exceed observed checkpoint updates.
+    pub fn checkpoint_durable_not_ahead_of_updates(mut self, source_id: u64) -> Self {
+        self.invariants
+            .push(Invariant::CheckpointDurableNotAheadOfUpdates { source_id });
         self
     }
 
@@ -811,24 +926,6 @@ impl InvariantSet {
                         outcome.replay_hint()
                     );
                 }
-                Invariant::CheckpointDurableAbsent { source_id } => {
-                    let checkpoint = outcome
-                        .checkpoint()
-                        .expect("checkpoint invariant requested without checkpoint handle");
-                    assert!(
-                        checkpoint.durable_offset(*source_id).is_none(),
-                        "scenario '{}' expected durable checkpoint to be absent for source {} ({})",
-                        outcome.scenario_name,
-                        source_id,
-                        outcome.replay_hint()
-                    );
-                }
-                Invariant::CheckpointDurableNotAheadOfUpdates { source_id } => {
-                    let checkpoint = outcome
-                        .checkpoint()
-                        .expect("checkpoint invariant requested without checkpoint handle");
-                    checkpoint.assert_durable_not_ahead_of_updates(*source_id);
-                }
                 Invariant::ServerReceivedGe(minimum) => {
                     let received = outcome
                         .server_received()
@@ -873,6 +970,27 @@ impl InvariantSet {
                         durable,
                         outcome.replay_hint()
                     );
+                }
+                Invariant::CheckpointDurableAbsent { source_id } => {
+                    let checkpoint = outcome
+                        .checkpoint()
+                        .expect("checkpoint invariant requested without checkpoint handle");
+                    let durable = checkpoint.durable_offset(*source_id);
+                    assert_eq!(
+                        durable,
+                        None,
+                        "scenario '{}' expected absent durable checkpoint for source {}, got {:?} ({})",
+                        outcome.scenario_name,
+                        source_id,
+                        durable,
+                        outcome.replay_hint()
+                    );
+                }
+                Invariant::CheckpointDurableNotAheadOfUpdates { source_id } => {
+                    let checkpoint = outcome
+                        .checkpoint()
+                        .expect("checkpoint invariant requested without checkpoint handle");
+                    checkpoint.assert_durable_not_ahead_of_updates(*source_id);
                 }
                 Invariant::TraceContractValid => {
                     if let Some(err) = &outcome.trace_validation_error {

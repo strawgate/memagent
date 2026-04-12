@@ -18,6 +18,11 @@ pub enum PipelinePhase {
 pub enum RuntimeBarrierEvent {
     /// Emitted when the pipeline transitions between lifecycle phases.
     PipelinePhase { phase: PipelinePhase },
+    /// Emitted when a batch is submitted to the output worker pool.
+    BatchSubmitted {
+        batch_id: u64,
+        checkpoints: Vec<(u64, u64)>,
+    },
     /// Emitted by worker tasks immediately before sending an ack item.
     BeforeWorkerAckSend {
         worker_id: usize,
@@ -25,6 +30,12 @@ pub enum RuntimeBarrierEvent {
         outcome: DeliveryOutcome,
         retries: usize,
         num_rows: u64,
+    },
+    /// Emitted after pipeline ticket/application logic applies an ack.
+    AckApplied {
+        batch_id: u64,
+        outcome: DeliveryOutcome,
+        checkpoint_advances: Vec<(u64, u64)>,
     },
     /// Emitted by checkpoint I/O immediately before each flush attempt.
     BeforeCheckpointFlushAttempt { attempt: u32 },

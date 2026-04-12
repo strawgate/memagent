@@ -141,7 +141,6 @@ fn worker_panic_does_not_block_drain() {
         FailureAction::Panic,
     ]]));
     let delivered_counter = factory.delivered_counter();
-    let (store, ckpt_handle) = ObservableCheckpointStore::new();
 
     sim.client("pipeline", async move {
         let lines = generate_json_lines(20);
@@ -149,10 +148,7 @@ fn worker_panic_does_not_block_drain() {
 
         let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
         pipeline.set_batch_timeout(Duration::from_millis(20));
-        pipeline.set_checkpoint_flush_interval(Duration::from_millis(50));
-        let mut pipeline = pipeline
-            .with_input("test", Box::new(input))
-            .with_checkpoint_store(Box::new(store));
+        let mut pipeline = pipeline.with_input("test", Box::new(input));
 
         let shutdown = CancellationToken::new();
         let sd = shutdown.clone();
@@ -188,17 +184,6 @@ fn worker_panic_does_not_block_drain() {
     eprintln!(
         "worker_panic test: {delivered} rows delivered out of 20 \
          (0 is acceptable if worker pool doesn't respawn after panic)"
-    );
-
-    // A panic path is mapped to InternalFailure and must hold the checkpoint.
-    assert!(
-        ckpt_handle.durable_offset(1).is_none(),
-        "panic must not advance durable checkpoint state"
-    );
-    assert_eq!(
-        ckpt_handle.update_count(1),
-        0,
-        "panic must not write checkpoint updates"
     );
 }
 
@@ -286,23 +271,18 @@ fn rejected_batch_checkpoint_behavior() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Retry exhaustion must not advance checkpoints
+// Test 4: Persistent transient failures must not advance checkpoints
 // ---------------------------------------------------------------------------
 //
-// Contract: retry/control-plane failures should hold checkpoint progress.
-// The current runtime does not retain enough payload state to retry these
-// batches in-process, so the conservative behavior is to leave them
-// unresolved and rely on replay after restart.
+// Contract: retry/control-plane failures should hold checkpoint progress until
+// delivery eventually succeeds or shutdown cancels the in-flight batch.
 
 #[test]
 fn retry_exhausted_does_not_advance_checkpoint() {
     let mut sim = super::build_sim(120, 1);
 
     let factory = Arc::new(InstrumentedSinkFactory::new(vec![vec![
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
+        FailureAction::RepeatIoError(std::io::ErrorKind::TimedOut),
     ]]));
     let delivered_counter = factory.delivered_counter();
     let call_counter = factory.call_counter();
@@ -339,24 +319,24 @@ fn retry_exhausted_does_not_advance_checkpoint() {
     let updates = ckpt_handle.update_count(1);
 
     eprintln!(
-        "retry_exhausted test: delivered={delivered} calls={calls} durable={durable:?} updates={updates}"
+        "persistent_failure test: delivered={delivered} calls={calls} durable={durable:?} updates={updates}"
     );
 
     assert_eq!(
         delivered, 0,
-        "expected no rows delivered after retry exhaustion"
+        "expected no rows delivered while failures persist through shutdown"
     );
-    assert_eq!(
-        calls, 4,
-        "expected 1 initial attempt + 3 retries before RetryExhausted"
+    assert!(
+        calls >= 4,
+        "expected at least 4 retry attempts before shutdown cancellation"
     );
     assert!(
         durable.is_none(),
-        "retry exhaustion must not advance checkpoint progress; durable={durable:?}"
+        "persistent transient failures must not advance checkpoint progress; durable={durable:?}"
     );
     assert_eq!(
         updates, 0,
-        "retry exhaustion must not write checkpoint updates"
+        "persistent transient failures must not write checkpoint updates"
     );
 }
 

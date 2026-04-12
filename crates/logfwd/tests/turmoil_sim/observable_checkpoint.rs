@@ -62,9 +62,6 @@ impl CheckpointHandle {
     }
 
     /// Crash exactly on the Nth `flush` call (1-indexed).
-    ///
-    /// Setting `n = 1` simulates a failure before any checkpoint durability
-    /// boundary is crossed.
     pub fn crash_on_nth_flush(&self, n: u64) {
         self.crash_on_flush_number.store(n, Ordering::SeqCst);
     }
@@ -110,7 +107,7 @@ impl CheckpointHandle {
             .count()
     }
 
-    /// Return the greatest checkpoint update offset seen for a source.
+    /// Highest checkpoint update observed for a source.
     pub fn max_update_offset(&self, source_id: u64) -> Option<u64> {
         let s = self.state.lock().unwrap();
         s.update_history
@@ -126,13 +123,13 @@ impl CheckpointHandle {
             let Some(max_update) = self.max_update_offset(source_id) else {
                 panic!(
                     "durable checkpoint exists for source {source_id} ({durable}) \
-                     but update history is empty"
+                     but no checkpoint updates were recorded"
                 );
             };
             assert!(
                 durable <= max_update,
                 "durable checkpoint for source {source_id} is {durable}, \
-                 expected <= max update {max_update}"
+                 ahead of max update {max_update}"
             );
         }
     }

@@ -12,7 +12,7 @@ use arrow::record_batch::RecordBatch;
 use logfwd_output::BatchMetadata;
 use logfwd_output::sink::{SendResult, Sink};
 
-use super::trace_bridge::{SinkOutcome, TraceDisposition, TraceEvent, TraceOutcome, TraceRecorder};
+use super::trace_bridge::{SinkOutcome, TraceEvent, TraceRecorder};
 
 /// What the sink should do on a given call.
 #[derive(Clone, Debug)]
@@ -24,6 +24,8 @@ pub enum FailureAction {
     RetryAfter(Duration),
     /// Return an IO error with the given kind.
     IoError(io::ErrorKind),
+    /// Return an IO error forever (does not consume script position).
+    RepeatIoError(io::ErrorKind),
     /// Reject with the given reason.
     Reject(String),
     /// Succeed after a delay (simulates slow delivery).
@@ -93,7 +95,12 @@ impl InstrumentedSink {
         let idx = self.call_index;
         self.call_index += 1;
         if idx < self.script.len() {
-            self.script[idx].clone()
+            let action = self.script[idx].clone();
+            if matches!(action, FailureAction::RepeatIoError(_)) {
+                // Keep repeating this script slot forever.
+                self.call_index = idx;
+            }
+            action
         } else {
             FailureAction::Succeed
         }
@@ -195,12 +202,8 @@ impl Sink for InstrumentedSink {
                         .push(SinkOutcome::Ok);
                     delivered.fetch_add(rows, Ordering::Relaxed);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::BatchTerminal {
-                            batch_id: None,
-                            source_id: None,
-                            checkpoint: None,
-                            outcome: TraceOutcome::Delivered,
-                            disposition: TraceDisposition::Ack,
+                        trace.record(TraceEvent::SinkResult {
+                            outcome: SinkOutcome::Ok,
                             rows,
                         });
                     }
@@ -212,7 +215,7 @@ impl Sink for InstrumentedSink {
                         .expect("outcomes mutex poisoned")
                         .push(SinkOutcome::RetryAfter);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::SinkAttempt {
+                        trace.record(TraceEvent::SinkResult {
                             outcome: SinkOutcome::RetryAfter,
                             rows,
                         });
@@ -225,12 +228,25 @@ impl Sink for InstrumentedSink {
                         .expect("outcomes mutex poisoned")
                         .push(SinkOutcome::IoError);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::SinkAttempt {
+                        trace.record(TraceEvent::SinkResult {
                             outcome: SinkOutcome::IoError,
                             rows,
                         });
                     }
                     SendResult::IoError(io::Error::new(kind, "simulated failure"))
+                }
+                FailureAction::RepeatIoError(kind) => {
+                    outcomes
+                        .lock()
+                        .expect("outcomes mutex poisoned")
+                        .push(SinkOutcome::IoError);
+                    if let Some(trace) = &trace {
+                        trace.record(TraceEvent::SinkResult {
+                            outcome: SinkOutcome::IoError,
+                            rows,
+                        });
+                    }
+                    SendResult::IoError(io::Error::new(kind, "simulated repeated failure"))
                 }
                 FailureAction::Reject(reason) => {
                     outcomes
@@ -238,12 +254,8 @@ impl Sink for InstrumentedSink {
                         .expect("outcomes mutex poisoned")
                         .push(SinkOutcome::Rejected);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::BatchTerminal {
-                            batch_id: None,
-                            source_id: None,
-                            checkpoint: None,
-                            outcome: TraceOutcome::Rejected,
-                            disposition: TraceDisposition::Reject,
+                        trace.record(TraceEvent::SinkResult {
+                            outcome: SinkOutcome::Rejected,
                             rows,
                         });
                     }
@@ -257,12 +269,8 @@ impl Sink for InstrumentedSink {
                         .push(SinkOutcome::Ok);
                     delivered.fetch_add(rows, Ordering::Relaxed);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::BatchTerminal {
-                            batch_id: None,
-                            source_id: None,
-                            checkpoint: None,
-                            outcome: TraceOutcome::Delivered,
-                            disposition: TraceDisposition::Ack,
+                        trace.record(TraceEvent::SinkResult {
+                            outcome: SinkOutcome::Ok,
                             rows,
                         });
                     }
@@ -274,12 +282,8 @@ impl Sink for InstrumentedSink {
                         .expect("outcomes mutex poisoned")
                         .push(SinkOutcome::Panic);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::BatchTerminal {
-                            batch_id: None,
-                            source_id: None,
-                            checkpoint: None,
-                            outcome: TraceOutcome::InternalFailure,
-                            disposition: TraceDisposition::Hold,
+                        trace.record(TraceEvent::SinkResult {
+                            outcome: SinkOutcome::Panic,
                             rows,
                         });
                     }

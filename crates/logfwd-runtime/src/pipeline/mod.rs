@@ -102,6 +102,12 @@ pub(crate) struct ChannelMsg {
     pub transform_ns: u64,
 }
 
+#[derive(Debug, Default)]
+struct TicketApplication {
+    held: bool,
+    checkpoint_advances: Vec<(u64, u64)>,
+}
+
 // ---------------------------------------------------------------------------
 // Per-input state
 // ---------------------------------------------------------------------------
@@ -177,6 +183,8 @@ pub struct Pipeline {
     last_checkpoint_flush: tokio::time::Instant,
     /// Checkpoint flush throttle interval. Default 5 seconds; overridable for tests.
     checkpoint_flush_interval: Duration,
+    /// Worker-pool drain timeout. Default 60 seconds; overridable for simulations.
+    pool_drain_timeout: Duration,
     /// Optional transition-event sink. Default handle is no-op.
     transition_events: TransitionEventEmitterHandle,
 }
@@ -302,6 +310,12 @@ impl Pipeline {
         self.batch_target_bytes = bytes;
     }
 
+    /// Override worker-pool drain timeout (for simulation testing).
+    #[cfg(feature = "turmoil")]
+    pub fn set_pool_drain_timeout(&mut self, timeout: Duration) {
+        self.pool_drain_timeout = timeout;
+    }
+
     /// Create a minimal pipeline for simulation testing.
     ///
     /// Bypasses config parsing, filesystem, and OTel meter setup.
@@ -333,6 +347,7 @@ impl Pipeline {
             held_tickets: Vec::new(),
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
+            pool_drain_timeout: Duration::from_secs(60),
             transition_events: TransitionEventEmitterHandle::noop(),
         }
     }
@@ -369,6 +384,7 @@ impl Pipeline {
             held_tickets: Vec::new(),
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
+            pool_drain_timeout: Duration::from_secs(60),
             transition_events: TransitionEventEmitterHandle::noop(),
         }
     }
@@ -513,7 +529,7 @@ impl Pipeline {
                 // we ingest or flush more data.
                 ack = self.pool.ack_rx_mut().recv() => {
                     if let Some(ack) = ack {
-                        if self.apply_pool_ack(ack) {
+                        if self.apply_pool_ack(ack).await {
                             shutdown.cancel();
                             should_drain_input_channel = false;
                             break;
@@ -630,11 +646,11 @@ impl Pipeline {
             },
         )
         .await;
-        self.pool.drain(Duration::from_secs(60)).await;
+        self.pool.drain(self.pool_drain_timeout).await;
 
         // Drain remaining acks that workers sent before exiting.
         while let Some(ack) = self.pool.try_recv_ack() {
-            self.apply_pool_ack(ack);
+            self.apply_pool_ack(ack).await;
         }
 
         // Transition machine: Running → Draining → Stopped.
@@ -758,7 +774,11 @@ impl Pipeline {
     /// Apply a pool `AckItem` at the worker/checkpoint seam.
     ///
     /// Called from the `select!` loop when a pool worker finishes a batch.
-    fn apply_pool_ack(&mut self, ack: AckItem) -> bool {
+    #[cfg_attr(not(feature = "turmoil"), allow(clippy::unused_async))]
+    async fn apply_pool_ack(&mut self, ack: AckItem) -> bool {
+        let batch_id = ack.batch_id;
+        #[cfg(feature = "turmoil")]
+        let outcome = ack.outcome.clone();
         if self
             .metrics
             .inflight_batches
@@ -770,11 +790,11 @@ impl Pipeline {
             .is_err()
         {
             tracing::warn!(
-                batch_id = ack.batch_id,
+                batch_id,
                 "pipeline: received ack with zero inflight_batches counter"
             );
         }
-        self.metrics.finish_active_batch(ack.batch_id);
+        self.metrics.finish_active_batch(batch_id);
         if ack.outcome.is_delivered() {
             self.metrics
                 .record_batch(ack.num_rows, ack.scan_ns, ack.transform_ns, ack.output_ns);
@@ -788,11 +808,21 @@ impl Pipeline {
             }
             self.metrics.output_error(&ack.output_name);
         }
-        self.ack_all_tickets(
-            Some(ack.batch_id),
+        let application = self.ack_all_tickets(
+            Some(batch_id),
             ack.tickets,
             default_ticket_disposition(&ack.outcome),
+        );
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::AckApplied {
+                batch_id,
+                outcome,
+                checkpoint_advances: application.checkpoint_advances.clone(),
+            },
         )
+        .await;
+        application.held
     }
 
     /// Finalize Sending tickets and apply receipts to the machine when present.
@@ -803,11 +833,12 @@ impl Pipeline {
         batch_id: Option<u64>,
         tickets: Vec<logfwd_types::pipeline::BatchTicket<logfwd_types::pipeline::Sending, u64>>,
         disposition: TicketDisposition,
-    ) -> bool {
+    ) -> TicketApplication {
         let Some(ref mut machine) = self.machine else {
-            return false;
+            return TicketApplication::default();
         };
         let transition_events = self.transition_events.clone();
+        let mut application = TicketApplication::default();
         let mut any_advanced = false;
         let mut held = 0usize;
         for ticket in tickets {
@@ -868,6 +899,9 @@ impl Pipeline {
                 });
                 if advance.advanced {
                     if let Some(offset) = advance.checkpoint {
+                        application
+                            .checkpoint_advances
+                            .push((advance.source.0, offset));
                         transition_events.emit_with(|seq, timestamp_nanos| {
                             let mut event = TransitionEvent::new(
                                 seq,
@@ -913,6 +947,7 @@ impl Pipeline {
             }
         }
         if held > 0 {
+            application.held = true;
             tracing::warn!(
                 held_tickets = held,
                 "pipeline: terminal hold requested; stopping ingestion so checkpoints do not advance past undelivered data"
@@ -945,7 +980,7 @@ impl Pipeline {
                 }
             }
         }
-        held > 0
+        application
     }
 }
 
@@ -2793,7 +2828,9 @@ output:
         let ticket = machine.begin_send(ticket);
 
         assert!(
-            pipeline.ack_all_tickets(None, vec![ticket], TicketDisposition::Hold),
+            pipeline
+                .ack_all_tickets(None, vec![ticket], TicketDisposition::Hold)
+                .held,
             "hold disposition must request terminal shutdown to bound held-ticket growth"
         );
 
@@ -2822,18 +2859,22 @@ output:
             .metrics
             .inflight_batches
             .store(0, Ordering::Relaxed);
-        pipeline.apply_pool_ack(AckItem {
-            tickets: vec![],
-            outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
-            num_rows: 0,
-            submitted_at: tokio::time::Instant::now(),
-            scan_ns: 0,
-            transform_ns: 0,
-            output_ns: 0,
-            queue_wait_ns: 0,
-            send_latency_ns: 0,
-            batch_id: 0,
-            output_name: "test".to_string(),
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            pipeline
+                .apply_pool_ack(AckItem {
+                    tickets: vec![],
+                    outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
+                    num_rows: 0,
+                    submitted_at: tokio::time::Instant::now(),
+                    scan_ns: 0,
+                    transform_ns: 0,
+                    output_ns: 0,
+                    queue_wait_ns: 0,
+                    send_latency_ns: 0,
+                    batch_id: 0,
+                    output_name: "test".to_string(),
+                })
+                .await;
         });
 
         assert_eq!(
@@ -2853,18 +2894,22 @@ output:
         let ticket = machine.create_batch(SourceId(42), 1000);
         let ticket = machine.begin_send(ticket);
 
-        let should_stop = pipeline.apply_pool_ack(AckItem {
-            tickets: vec![ticket],
-            outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
-            num_rows: 0,
-            submitted_at: tokio::time::Instant::now(),
-            scan_ns: 0,
-            transform_ns: 0,
-            output_ns: 0,
-            queue_wait_ns: 0,
-            send_latency_ns: 0,
-            batch_id: 0,
-            output_name: "test".to_string(),
+        let should_stop = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            pipeline
+                .apply_pool_ack(AckItem {
+                    tickets: vec![ticket],
+                    outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
+                    num_rows: 0,
+                    submitted_at: tokio::time::Instant::now(),
+                    scan_ns: 0,
+                    transform_ns: 0,
+                    output_ns: 0,
+                    queue_wait_ns: 0,
+                    send_latency_ns: 0,
+                    batch_id: 0,
+                    output_name: "test".to_string(),
+                })
+                .await
         });
 
         assert!(
