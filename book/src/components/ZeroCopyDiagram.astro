@@ -1,0 +1,275 @@
+---
+// Thin shell — all logic client-side
+---
+
+<div class="zc" id="zero-copy-diagram"></div>
+
+<style is:global>
+  .zc {
+    --zc-bg: var(--sl-color-bg-sidebar);
+    --zc-border: var(--sl-color-hairline);
+    --zc-accent: var(--sl-color-accent);
+    --zc-text: var(--sl-color-text);
+    --zc-muted: var(--sl-color-gray-3);
+    --c0: #22c55e; --c1: #60a5fa; --c2: #a78bfa; --c3: #f59e0b; --c4: #ec4899;
+    margin: 1.5rem 0;
+  }
+  .zc * { margin-top: 0 !important; }
+
+  /* Controls */
+  .zc-controls { display: flex; gap: 0.4rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+  .zc-btn {
+    padding: 0.4rem 0.8rem; border: 1px solid var(--zc-border); border-radius: 6px;
+    background: transparent; color: var(--zc-text); font-family: inherit;
+    font-size: 0.78rem; font-weight: 500; cursor: pointer; transition: all 0.12s;
+  }
+  .zc-btn:hover { border-color: var(--zc-accent); }
+  .zc-btn.on { border-color: var(--zc-accent); background: var(--zc-accent); color: white; font-weight: 600; }
+
+  /* Explanation */
+  .zc-exp {
+    padding: 0.6rem 0.85rem; background: var(--zc-bg);
+    border: 1px solid var(--zc-border); border-radius: 7px;
+    margin-bottom: 0.75rem; font-size: 0.78rem; line-height: 1.5;
+  }
+  .zc-exp b { display: block; font-size: 0.82rem; margin-bottom: 0.15rem; }
+
+  /* Buffer */
+  .zc-section { margin-bottom: 0.75rem; }
+  .zc-label { font-size: 0.7rem; font-weight: 600; color: var(--zc-muted); margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .zc-buffer {
+    display: flex; flex-wrap: wrap; gap: 1px;
+    font-family: var(--sl-font-mono, monospace);
+    padding: 0.4rem; background: var(--zc-bg);
+    border: 1px solid var(--zc-border); border-radius: 6px;
+    position: relative;
+  }
+  .zc-byte {
+    width: 22px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.68rem; border-radius: 3px;
+    transition: all 0.3s; color: var(--zc-text);
+  }
+  .zc-byte.hi { font-weight: 700; }
+
+  /* Columns */
+  .zc-cols { display: flex; flex-direction: column; gap: 0.4rem; }
+  .zc-col {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.3rem 0.5rem; border-radius: 5px;
+    border: 1px solid var(--zc-border);
+    font-size: 0.72rem; font-family: var(--sl-font-mono, monospace);
+    transition: all 0.25s; cursor: pointer;
+  }
+  .zc-col:hover { border-color: var(--fc); }
+  .zc-col.active { border-color: var(--fc); background: color-mix(in srgb, var(--fc) 8%, transparent); }
+  .zc-col-name { font-weight: 700; color: var(--fc); min-width: 85px; }
+  .zc-col-view { font-size: 0.62rem; color: var(--zc-muted); }
+  .zc-col-val { flex: 1; }
+  .zc-col-arrow { color: var(--fc); font-size: 0.65rem; opacity: 0; transition: opacity 0.2s; }
+  .zc-col.active .zc-col-arrow { opacity: 1; }
+
+  /* Memory counter */
+  .zc-mem {
+    display: flex; gap: 1rem; padding: 0.6rem 0.8rem;
+    background: color-mix(in srgb, var(--zc-accent) 5%, var(--zc-bg));
+    border: 1px solid color-mix(in srgb, var(--zc-accent) 20%, transparent);
+    border-radius: 7px; font-size: 0.78rem;
+  }
+  .zc-mem-item { display: flex; flex-direction: column; }
+  .zc-mem-label { font-size: 0.62rem; color: var(--zc-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .zc-mem-val { font-weight: 700; font-family: var(--sl-font-mono, monospace); font-size: 0.85rem; }
+  .zc-mem-val.good { color: var(--c0); }
+  .zc-mem-val.bad { color: #ef4444; }
+  .zc-mem-savings { font-size: 0.7rem; color: var(--c0); font-weight: 600; }
+</style>
+
+<script>
+(function() {
+  var root = document.getElementById('zero-copy-diagram');
+  if (!root) return;
+
+  // Sample data: a parsed JSON log line's field values
+  // The buffer contains all string values concatenated
+  var fields = [
+    { name: 'level', value: 'ERROR', color: 0 },
+    { name: 'message', value: 'request failed', color: 1 },
+    { name: 'method', value: 'GET', color: 2 },
+    { name: 'path', value: '/api/users', color: 3 },
+    { name: 'service', value: 'myapp', color: 4 },
+  ];
+
+  var buffer = fields.map(function(f) { return f.value; }).join('');
+  var bufferBytes = buffer.split('');
+  var colors = ['var(--c0)', 'var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)'];
+
+  // Compute view offsets
+  var offset = 0;
+  fields.forEach(function(f) {
+    f.offset = offset;
+    f.len = f.value.length;
+    offset += f.len;
+  });
+
+  var STEPS = [
+    { id: 'buffer', t: 'The shared buffer',
+      d: 'logfwd reads the input and parses JSON fields. All string values end up in a single contiguous buffer in memory. This buffer is reference-counted — it stays alive as long as any column references it.' },
+    { id: 'views', t: 'StringViewArray columns',
+      d: 'Each Arrow column stores 16-byte views — just an offset and length into the shared buffer. No string data is copied. Five columns pointing into one buffer use <strong>1x</strong> the memory, not 5x.' },
+    { id: 'compare', t: 'Memory savings',
+      d: 'If logfwd copied strings (like most parsers), each column would own its data independently. With zero-copy views, the total memory is the buffer size plus 5 tiny view structs — an <strong>80% reduction</strong>.' },
+  ];
+
+  // Build DOM
+  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+  // Controls
+  var controls = el('div', 'zc-controls');
+  var btns = STEPS.map(function(s, i) {
+    var b = el('button', 'zc-btn' + (i === 0 ? ' on' : ''));
+    b.textContent = (i + 1) + '. ' + s.t;
+    b.dataset.i = '' + i;
+    controls.appendChild(b);
+    return b;
+  });
+
+  // Explanation
+  var exp = el('div', 'zc-exp');
+
+  // Buffer section
+  var bufSection = el('div', 'zc-section');
+  var bufLabel = el('div', 'zc-label'); bufLabel.textContent = 'Shared Buffer (' + bufferBytes.length + ' bytes, 1 allocation)';
+  var bufEl = el('div', 'zc-buffer');
+  var byteEls = bufferBytes.map(function(ch, i) {
+    var d = el('div', 'zc-byte');
+    d.textContent = ch;
+    d.dataset.i = '' + i;
+    bufEl.appendChild(d);
+    return d;
+  });
+  bufSection.appendChild(bufLabel);
+  bufSection.appendChild(bufEl);
+
+  // Columns section
+  var colSection = el('div', 'zc-section');
+  var colLabel = el('div', 'zc-label'); colLabel.textContent = 'Arrow StringViewArray Columns (5 columns, 0 copies)';
+  var colsEl = el('div', 'zc-cols');
+  var colEls = fields.map(function(f, i) {
+    var row = el('div', 'zc-col');
+    row.style.setProperty('--fc', colors[i]);
+    row.dataset.i = '' + i;
+
+    var name = el('span', 'zc-col-name'); name.textContent = f.name;
+    var arrow = el('span', 'zc-col-arrow'); arrow.textContent = '\u2190 ';
+    var view = el('span', 'zc-col-view'); view.textContent = 'view[' + f.offset + '..' + (f.offset + f.len) + ']';
+    var val = el('span', 'zc-col-val'); val.textContent = '"' + f.value + '"';
+
+    row.appendChild(name);
+    row.appendChild(arrow);
+    row.appendChild(view);
+    row.appendChild(val);
+    colsEl.appendChild(row);
+    return row;
+  });
+  colSection.appendChild(colLabel);
+  colSection.appendChild(colsEl);
+
+  // Memory comparison
+  var memSection = el('div', 'zc-section');
+  var memEl = el('div', 'zc-mem');
+  var copySize = fields.reduce(function(s, f) { return s + f.len; }, 0);
+  var viewOverhead = fields.length * 16; // 16 bytes per view
+  var zeroCopyTotal = copySize + viewOverhead;
+  var naiveCopyTotal = copySize * 2; // each column copies + original buffer
+
+  var m1 = el('div', 'zc-mem-item');
+  var m1l = el('div', 'zc-mem-label'); m1l.textContent = 'With copying (traditional)';
+  var m1v = el('div', 'zc-mem-val bad'); m1v.textContent = (copySize * fields.length) + ' bytes';
+  m1.appendChild(m1l); m1.appendChild(m1v);
+
+  var m2 = el('div', 'zc-mem-item');
+  var m2l = el('div', 'zc-mem-label'); m2l.textContent = 'Zero-copy (logfwd)';
+  var m2v = el('div', 'zc-mem-val good'); m2v.textContent = copySize + ' + ' + viewOverhead + ' = ' + zeroCopyTotal + ' bytes';
+  m2.appendChild(m2l); m2.appendChild(m2v);
+
+  var m3 = el('div', 'zc-mem-item');
+  var m3l = el('div', 'zc-mem-label'); m3l.textContent = 'Savings';
+  var pct = Math.round((1 - zeroCopyTotal / (copySize * fields.length)) * 100);
+  var m3v = el('div', 'zc-mem-savings'); m3v.textContent = pct + '% less memory';
+  m3.appendChild(m3l); m3.appendChild(m3v);
+
+  memEl.appendChild(m1); memEl.appendChild(m2); memEl.appendChild(m3);
+  memSection.appendChild(memEl);
+
+  // Assemble
+  root.appendChild(controls);
+  root.appendChild(exp);
+  root.appendChild(bufSection);
+  root.appendChild(colSection);
+  root.appendChild(memSection);
+
+  // State
+  var curStep = 0;
+
+  function colorBytes(fieldIdx) {
+    // Reset all
+    byteEls.forEach(function(b) { b.style.background = ''; b.style.color = ''; b.className = 'zc-byte'; });
+    if (fieldIdx === -1) {
+      // Color all fields
+      fields.forEach(function(f, i) {
+        for (var j = f.offset; j < f.offset + f.len; j++) {
+          byteEls[j].style.background = 'color-mix(in srgb, ' + colors[i] + ' 20%, transparent)';
+          byteEls[j].style.color = colors[i];
+          byteEls[j].className = 'zc-byte hi';
+        }
+      });
+    } else if (fieldIdx >= 0) {
+      var f = fields[fieldIdx];
+      for (var j = f.offset; j < f.offset + f.len; j++) {
+        byteEls[j].style.background = 'color-mix(in srgb, ' + colors[fieldIdx] + ' 25%, transparent)';
+        byteEls[j].style.color = colors[fieldIdx];
+        byteEls[j].className = 'zc-byte hi';
+      }
+    }
+  }
+
+  function goToStep(idx) {
+    curStep = idx;
+    var s = STEPS[idx];
+    btns.forEach(function(b, i) { b.classList.toggle('on', i === idx); });
+    exp.innerHTML = '<b>' + s.t + '</b><p>' + s.d + '</p>';
+
+    colSection.style.display = s.id === 'buffer' ? 'none' : '';
+    memSection.style.display = s.id === 'compare' ? '' : 'none';
+
+    if (s.id === 'buffer') {
+      colorBytes(-1); // all fields colored
+    } else if (s.id === 'views') {
+      colorBytes(-1);
+      colEls.forEach(function(c) { c.classList.remove('active'); });
+    } else {
+      colorBytes(-1);
+    }
+  }
+
+  // Column hover → highlight corresponding buffer bytes
+  colEls.forEach(function(row, i) {
+    row.addEventListener('mouseenter', function() {
+      colEls.forEach(function(c) { c.classList.remove('active'); });
+      row.classList.add('active');
+      colorBytes(i);
+    });
+    row.addEventListener('mouseleave', function() {
+      row.classList.remove('active');
+      colorBytes(-1);
+    });
+  });
+
+  btns.forEach(function(b) {
+    b.addEventListener('click', function() { goToStep(+b.dataset.i); });
+  });
+
+  goToStep(0);
+})();
+</script>

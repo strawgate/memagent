@@ -57,11 +57,11 @@
   .sa-grid { display: flex; flex-wrap: wrap; gap: 2px; padding: 0.3rem 0; font-family: var(--sl-font-mono, monospace); }
   .sa-byte {
     display: flex; flex-direction: column; align-items: center;
-    width: 24px; height: 34px; border: 1px solid transparent;
-    border-radius: 2px; transition: all 0.25s; background: var(--sa-bg);
+    width: 28px; height: 38px; border: 1px solid transparent;
+    border-radius: 3px; transition: all 0.25s; background: var(--sa-bg);
   }
-  .sa-ch { font-size: 0.68rem; font-weight: 500; line-height: 22px; }
-  .sa-pos { font-size: 0.38rem; color: var(--sa-muted); line-height: 1; }
+  .sa-ch { font-size: 0.78rem; font-weight: 500; line-height: 24px; }
+  .sa-pos { font-size: 0.42rem; color: var(--sa-muted); line-height: 1; }
 
   /* Structural colors */
   .sa-byte.cQ { border-color: #e879a0; background: #e879a00a; }
@@ -90,7 +90,7 @@
   .sa-mask { display: flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0; font-family: var(--sl-font-mono, monospace); }
   .sa-mask-lbl { font-size: 0.62rem; font-weight: 600; color: var(--sa-muted); }
   .sa-bits { display: flex; flex-wrap: wrap; gap: 0px; }
-  .sa-bit { width: 12px; height: 14px; display: flex; align-items: center; justify-content: center; font-size: 0.45rem; font-weight: 700; color: var(--sa-muted); transition: all 0.15s; }
+  .sa-bit { width: 14px; height: 16px; display: flex; align-items: center; justify-content: center; font-size: 0.5rem; font-weight: 700; color: var(--sa-muted); transition: all 0.15s; }
   .sa-bit.on { color: var(--sa-accent); background: color-mix(in srgb, var(--sa-accent) 15%, transparent); border-radius: 1px; }
 
   /* Field chips */
@@ -137,7 +137,7 @@
 
   var STEPS = [
     { id:'log', t:'Step 1: The log line', dur:4000,
-      d:'A request fails. The application writes a JSON log line. This is what it looks like in your log file.' },
+      d:'A request fails and the application writes a JSON log line:<br><code style="font-size:0.72rem;line-height:1.8;display:inline-block;margin-top:0.3rem">{ "level": "ERROR", "message": "request failed", "status": 503, "duration_ms": 42.7 }</code>' },
     { id:'detect', t:'Step 2: SIMD detection', dur:5000,
       d:'logfwd runs one SIMD pass. Structural characters light up as the bitmask fills in — 32 bytes per CPU cycle.' },
     { id:'strings', t:'Step 3: String mask', dur:4500,

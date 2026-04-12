@@ -51,7 +51,9 @@ Before scanning, logfwd analyzes your SQL query and builds a `ScanConfig` listin
 
 The scanner produces Arrow `StringViewArray` columns — 16-byte views that point directly into the input buffer. String data is never copied. The input buffer stays alive via `bytes::Bytes` reference counting while any column references it.
 
-This is why logfwd uses ~6 MB of RAM per batch even when processing millions of string values. Five string columns sharing one buffer use 1x the memory, not 5x.
+import ZeroCopyDiagram from '../../../components/ZeroCopyDiagram.astro';
+
+<ZeroCopyDiagram />
 
 For persistence (Arrow IPC segments), the scanner has a second mode (`scan_detached`) that produces owned `StringArray` columns via a single bulk copy at batch finalization.
 
