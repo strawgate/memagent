@@ -153,7 +153,16 @@ pub struct Pipeline {
     /// The runtime cannot requeue these without also retaining payload ownership,
     /// but it must keep the queued ticket alive so the lifecycle machine keeps
     /// the batch unresolved and checkpoints do not advance past undelivered data.
+    ///
+    /// The pipeline continues processing new batches while held tickets
+    /// accumulate. Only when the held count exceeds `max_held_batches` does the
+    /// pipeline stop ingestion to bound memory growth. On shutdown, held batches
+    /// are abandoned via `force_stop` and replayed from the last committed
+    /// checkpoint on restart.
     held_tickets: Vec<logfwd_types::pipeline::BatchTicket<logfwd_types::pipeline::Queued, u64>>,
+    /// Safety valve: stop ingestion when held tickets exceed this count.
+    /// Prevents unbounded memory growth from persistent sink failures.
+    max_held_batches: usize,
     /// Throttle checkpoint flushes to at most once per this interval.
     /// Uses tokio::time::Instant so the throttle works correctly under
     /// both real and simulated (Turmoil) time.
@@ -328,6 +337,7 @@ impl Pipeline {
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store: None,
             held_tickets: Vec::new(),
+            max_held_batches: build::DEFAULT_MAX_HELD_BATCHES,
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
             pool_drain_timeout: Duration::from_secs(60),
@@ -364,6 +374,7 @@ impl Pipeline {
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store: None,
             held_tickets: Vec::new(),
+            max_held_batches: build::DEFAULT_MAX_HELD_BATCHES,
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
             pool_drain_timeout: Duration::from_secs(60),
@@ -678,6 +689,11 @@ impl Pipeline {
     /// Apply a pool `AckItem` at the worker/checkpoint seam.
     ///
     /// Called from the `select!` loop when a pool worker finishes a batch.
+    /// Returns `true` only when the held-ticket safety valve is tripped
+    /// (held count exceeds `max_held_batches`), signaling the pipeline to
+    /// stop ingestion. Transient holds (retry exhaustion, worker panics)
+    /// do NOT stop ingestion — the pipeline continues processing new batches
+    /// so that recovery is possible when the underlying failure resolves.
     #[allow(clippy::unused_async)] // async required for turmoil barrier await
     async fn apply_pool_ack(&mut self, ack: AckItem) -> bool {
         let batch_id = ack.batch_id;
@@ -729,7 +745,22 @@ impl Pipeline {
             },
         )
         .await;
-        has_held
+
+        // Only stop ingestion when the held-ticket safety valve is tripped.
+        // Individual holds are tolerated — the pipeline continues accepting new
+        // batches so that subsequent sends can succeed after transient failures
+        // (downstream bounce, worker panic recovery). Checkpoints are still
+        // blocked past held batches, so at-least-once delivery is preserved
+        // via replay on restart.
+        if has_held && self.held_tickets.len() >= self.max_held_batches {
+            tracing::error!(
+                held = self.held_tickets.len(),
+                max = self.max_held_batches,
+                "pipeline: held-ticket safety valve tripped; stopping ingestion"
+            );
+            return true;
+        }
+        false
     }
 
     /// Finalize Sending tickets and apply receipts to the machine when present.
@@ -780,7 +811,10 @@ impl Pipeline {
         if held > 0 {
             tracing::warn!(
                 held_tickets = held,
-                "pipeline: terminal hold requested; stopping ingestion so checkpoints do not advance past undelivered data"
+                total_held = self.held_tickets.len(),
+                max_held = self.max_held_batches,
+                "pipeline: batch held — checkpoint blocked past undelivered data, \
+                 pipeline continues processing new batches"
             );
         }
         // Flush to disk at most once per checkpoint_flush_interval to amortize fsync cost.
@@ -2685,7 +2719,7 @@ output:
         let (has_held, _advances) = pipeline.ack_all_tickets(vec![ticket], TicketDisposition::Hold);
         assert!(
             has_held,
-            "hold disposition must request terminal shutdown to bound held-ticket growth"
+            "hold disposition must signal that a batch was held"
         );
 
         let machine = pipeline.machine.as_ref().unwrap();
@@ -2700,6 +2734,99 @@ output:
             1,
             "hold must retain a failed queued ticket instead of dropping the sending ticket"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn apply_pool_ack_continues_below_held_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hold_continue.log");
+        std::fs::write(&log_path, b"").unwrap();
+
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        pipeline.max_held_batches = 5; // low threshold for testing
+        let machine = pipeline.machine.as_mut().unwrap();
+        let source = SourceId(42);
+
+        // Hold 1 batch — below threshold, apply_pool_ack must return false.
+        let ticket = machine.create_batch(source, 1000);
+        let ticket = machine.begin_send(ticket);
+        pipeline
+            .metrics
+            .inflight_batches
+            .store(1, Ordering::Relaxed);
+        let should_stop = pipeline
+            .apply_pool_ack(AckItem {
+                tickets: vec![ticket],
+                outcome: crate::worker_pool::DeliveryOutcome::RetryExhausted,
+                num_rows: 10,
+                submitted_at: tokio::time::Instant::now(),
+                scan_ns: 0,
+                transform_ns: 0,
+                output_ns: 0,
+                queue_wait_ns: 0,
+                send_latency_ns: 0,
+                batch_id: 1,
+                output_name: "test".to_string(),
+            })
+            .await;
+        assert!(
+            !should_stop,
+            "pipeline must continue when held count ({}) < max ({})",
+            pipeline.held_tickets.len(),
+            pipeline.max_held_batches,
+        );
+        assert_eq!(pipeline.held_tickets.len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn apply_pool_ack_stops_at_held_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("hold_stop.log");
+        std::fs::write(&log_path, b"").unwrap();
+
+        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
+        pipeline.max_held_batches = 2; // very low threshold for testing
+
+        // Hold 2 batches to reach the threshold.
+        for i in 0..2u64 {
+            let machine = pipeline.machine.as_mut().unwrap();
+            let ticket = machine.create_batch(SourceId(42), (i + 1) * 1000);
+            let ticket = machine.begin_send(ticket);
+            pipeline
+                .metrics
+                .inflight_batches
+                .store(1, Ordering::Relaxed);
+            let should_stop = pipeline
+                .apply_pool_ack(AckItem {
+                    tickets: vec![ticket],
+                    outcome: crate::worker_pool::DeliveryOutcome::RetryExhausted,
+                    num_rows: 10,
+                    submitted_at: tokio::time::Instant::now(),
+                    scan_ns: 0,
+                    transform_ns: 0,
+                    output_ns: 0,
+                    queue_wait_ns: 0,
+                    send_latency_ns: 0,
+                    batch_id: i + 1,
+                    output_name: "test".to_string(),
+                })
+                .await;
+
+            if i < 1 {
+                assert!(
+                    !should_stop,
+                    "pipeline must continue below threshold (held={})",
+                    pipeline.held_tickets.len(),
+                );
+            } else {
+                assert!(
+                    should_stop,
+                    "pipeline must stop at threshold (held={})",
+                    pipeline.held_tickets.len(),
+                );
+            }
+        }
+        assert_eq!(pipeline.held_tickets.len(), 2);
     }
 
     #[tokio::test(flavor = "current_thread")]

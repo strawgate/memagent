@@ -34,6 +34,15 @@ pub(crate) const DEFAULT_CHECKPOINT_FLUSH_INTERVAL: Duration = Duration::from_se
 /// Default maximum time to wait for worker-pool drain before cancellation.
 pub(crate) const DEFAULT_POOL_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Maximum number of held (undeliverable) batches before ingestion stops.
+///
+/// Held batches arise from transient failures (retry exhaustion, worker panics,
+/// timeouts). The pipeline continues processing new batches while held tickets
+/// accumulate — this allows recovery when the failure is transient (e.g.,
+/// downstream bounce). Only when the held count exceeds this limit does the
+/// pipeline stop accepting new input to bound memory growth.
+pub(crate) const DEFAULT_MAX_HELD_BATCHES: usize = 100;
+
 impl Pipeline {
     /// Construct a pipeline from parsed YAML config.
     pub fn from_config(
@@ -378,6 +387,7 @@ impl Pipeline {
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store,
             held_tickets: Vec::new(),
+            max_held_batches: DEFAULT_MAX_HELD_BATCHES,
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
             pool_drain_timeout: DEFAULT_POOL_DRAIN_TIMEOUT,
