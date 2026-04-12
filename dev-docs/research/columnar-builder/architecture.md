@@ -43,10 +43,16 @@ scanner / protocol decoder
 
 Backward compatibility with the current `StreamingBuilder` API is not a goal.
 Compatibility of produced RecordBatches with transforms and outputs is a goal.
+That compatibility includes the existing mixed-type conflict contract:
+`StreamingBuilder` emits one `StructArray` under the original field name when a
+field contains multiple primitive types in a batch. The shared columnar builder
+must preserve that representation, or change transforms and outputs in the same
+PR with explicit migration evidence.
 
 ## Current Evidence
 
-The experimental OTLP projected-view path has already shown large wins over
+The experimental OTLP projected-view path at foundation baseline commit
+`a622416d8f54686dc31c4a75b5c6877e7d57471c` has already shown large wins over
 `main`/prost on synthetic but decision-grade fixtures:
 
 | Fixture | Path | `main` prost | projected-view | Result |

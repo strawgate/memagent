@@ -85,8 +85,10 @@ just bench-otlp-io
 
 ## Baseline To Report Against
 
-Use the current branch baseline unless a design note provides a more recent table.
-Representative baseline after the foundation optimizations:
+Use foundation baseline commit
+`a622416d8f54686dc31c4a75b5c6877e7d57471c` unless a design note provides a
+newer pinned baseline. Representative baseline after the foundation
+optimizations:
 
 | Fixture | Mode | Time |
 |---|---:|---:|

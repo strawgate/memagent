@@ -7,6 +7,7 @@
 
 mod convert;
 mod decode;
+#[cfg(any(feature = "otlp-research", test))]
 mod projection;
 mod server;
 #[cfg(test)]
@@ -282,9 +283,9 @@ pub fn decode_protobuf_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> 
 
 /// Decode OTLP protobuf bytes with the experimental projected wire decoder.
 ///
-/// This is exposed for benchmarks and differential validation. Production
-/// receiver decode uses this path opportunistically and falls back to prost for
-/// unsupported semantic cases.
+/// This is exposed for benchmarks and differential validation only; production
+/// receiver decode stays on the prost path until the projection covers all
+/// accepted OTLP semantics.
 #[cfg(any(feature = "otlp-research", test))]
 #[doc(hidden)]
 pub fn decode_protobuf_to_batch_projected_experimental(

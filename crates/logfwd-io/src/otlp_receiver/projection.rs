@@ -228,6 +228,7 @@ fn decode_projected_otlp_logs_inner(
 struct WireScratch {
     hex: Vec<u8>,
     decimal: Vec<u8>,
+    resource_key: Vec<u8>,
     attr_ranges: Vec<(usize, usize)>,
     attr_field_cache: Vec<AttrFieldCache>,
 }
@@ -251,7 +252,13 @@ fn decode_resource_logs_wire(
     for_each_field(resource_logs, |field, value| {
         match (field, value) {
             (spec::resource_logs::RESOURCE, WireField::Len(resource)) => {
-                collect_resource_attrs(builder, &mut resource_attrs, resource_prefix, resource)?;
+                collect_resource_attrs(
+                    builder,
+                    scratch,
+                    &mut resource_attrs,
+                    resource_prefix,
+                    resource,
+                )?;
             }
             (spec::resource_logs::RESOURCE, _) => {
                 return Err(ProjectionError::Invalid(
@@ -288,6 +295,7 @@ fn decode_resource_logs_wire(
 
 fn collect_resource_attrs<'a>(
     builder: &mut StreamingBuilder,
+    scratch: &mut WireScratch,
     resource_attrs: &mut Vec<(usize, WireAny<'a>)>,
     resource_prefix: &str,
     resource: &'a [u8],
@@ -296,10 +304,15 @@ fn collect_resource_attrs<'a>(
         match (field, value) {
             (spec::resource::ATTRIBUTES, WireField::Len(attr)) => {
                 if let Some((key, value)) = decode_key_value_wire(attr)? {
-                    let mut prefixed = Vec::with_capacity(resource_prefix.len() + key.len());
-                    prefixed.extend_from_slice(resource_prefix.as_bytes());
-                    prefixed.extend_from_slice(key);
-                    let idx = builder.resolve_field(&prefixed);
+                    scratch.resource_key.clear();
+                    scratch
+                        .resource_key
+                        .reserve(resource_prefix.len() + key.len());
+                    scratch
+                        .resource_key
+                        .extend_from_slice(resource_prefix.as_bytes());
+                    scratch.resource_key.extend_from_slice(key);
+                    let idx = builder.resolve_field(&scratch.resource_key);
                     resource_attrs.push((idx, value));
                 }
             }
@@ -829,12 +842,15 @@ fn for_each_field<'a>(
 
 fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {
     let mut result = 0u64;
-    for shift in (0..64).step_by(7) {
+    for index in 0..10 {
         let Some((&byte, rest)) = input.split_first() else {
             return Err(ProjectionError::Invalid("truncated varint"));
         };
         *input = rest;
-        result |= u64::from(byte & 0x7f) << shift;
+        if index == 9 && byte > 0x01 {
+            return Err(ProjectionError::Invalid("varint overflow"));
+        }
+        result |= u64::from(byte & 0x7f) << (index * 7);
         if byte & 0x80 == 0 {
             return Ok(result);
         }
@@ -1050,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf8_string_field_is_rejected_without_prost_fallback() {
+    fn invalid_utf8_string_field_is_rejected_by_projection() {
         let mut log_record = Vec::new();
         encode_len_field(
             &mut log_record,
@@ -1082,11 +1098,9 @@ mod tests {
             matches!(projection_err, ProjectionError::Invalid(_)),
             "expected invalid projection reason, got {projection_err:?}"
         );
-        let production_err = crate::otlp_receiver::decode_protobuf_to_batch(&payload)
-            .expect_err("production decoder should reject invalid UTF-8");
         assert!(
-            production_err.to_string().contains("invalid OTLP protobuf"),
-            "production decoder should surface projection invalidity, got {production_err}"
+            crate::otlp_receiver::decode_protobuf_to_batch(&payload).is_err(),
+            "production decoder should reject invalid UTF-8"
         );
     }
 
@@ -1095,6 +1109,22 @@ mod tests {
         let err =
             decode_projected_otlp_logs(&[0x0a, 0x05, 0x01], field_names::DEFAULT_RESOURCE_PREFIX)
                 .expect_err("truncated top-level resource_logs field should fail projection");
+
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid projection reason, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_overlong_ten_byte_varint_is_invalid() {
+        let err = decode_projected_otlp_logs(
+            &[
+                0x08, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02,
+            ],
+            field_names::DEFAULT_RESOURCE_PREFIX,
+        )
+        .expect_err("overlong varint should fail projection");
 
         assert!(
             matches!(err, ProjectionError::Invalid(_)),
@@ -1131,11 +1161,9 @@ mod tests {
             matches!(projection_err, ProjectionError::Invalid(_)),
             "expected invalid projection reason, got {projection_err:?}"
         );
-        let production_err = crate::otlp_receiver::decode_protobuf_to_batch(&payload)
-            .expect_err("production decoder should reject invalid known-field wire types");
         assert!(
-            production_err.to_string().contains("invalid OTLP protobuf"),
-            "production decoder should surface projection invalidity, got {production_err}"
+            crate::otlp_receiver::decode_protobuf_to_batch(&payload).is_err(),
+            "production decoder should reject invalid known-field wire types"
         );
     }
 

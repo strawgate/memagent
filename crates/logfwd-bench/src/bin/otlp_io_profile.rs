@@ -140,6 +140,11 @@ fn main() {
         cli.case.name, fixture.rows, cli.iterations
     );
 
+    if cli.flamegraph.is_some() && cli.mode.is_none() {
+        eprintln!("--flamegraph requires --mode so each profile writes to a distinct path");
+        std::process::exit(2);
+    }
+
     let modes: Vec<Mode> = match cli.mode {
         Some(mode) => vec![mode],
         None => Mode::ALL.to_vec(),
@@ -336,15 +341,47 @@ fn build_fixture(profile: FixtureProfile) -> FixtureData {
     assert_eq!(batch.num_rows(), profile.rows);
     let projected = decode_protobuf_to_batch_projected_experimental(&payload)
         .expect("projected fixture decodes");
-    assert_eq!(projected.num_rows(), profile.rows);
+    assert_batch_matches(&batch, &projected, profile.name);
     let view = decode_protobuf_bytes_to_batch_projected_view_experimental(payload_bytes.clone())
         .expect("view fixture decodes");
-    assert_eq!(view.num_rows(), profile.rows);
+    let detached_view = logfwd_arrow::materialize::detach(&view);
+    assert_batch_matches(&batch, &detached_view, profile.name);
 
     FixtureData {
         payload,
         payload_bytes,
         rows: profile.rows,
+    }
+}
+
+fn assert_batch_matches(
+    expected: &arrow::record_batch::RecordBatch,
+    actual: &arrow::record_batch::RecordBatch,
+    fixture_name: &str,
+) {
+    assert_eq!(
+        expected.schema(),
+        actual.schema(),
+        "profile fixture schema must match prost batch for {fixture_name}"
+    );
+    assert_eq!(
+        expected.num_rows(),
+        actual.num_rows(),
+        "profile fixture row count must match prost batch for {fixture_name}"
+    );
+    assert_eq!(
+        expected.num_columns(),
+        actual.num_columns(),
+        "profile fixture column count must match prost batch for {fixture_name}"
+    );
+    for (idx, (expected_column, actual_column)) in
+        expected.columns().iter().zip(actual.columns()).enumerate()
+    {
+        assert_eq!(
+            expected_column.to_data(),
+            actual_column.to_data(),
+            "profile fixture column {idx} must match prost batch for {fixture_name}"
+        );
     }
 }
 

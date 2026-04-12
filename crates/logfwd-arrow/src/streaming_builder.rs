@@ -100,6 +100,10 @@ fn append_string_view(
 ) -> Result<(), ArrowError> {
     let block = match view.block {
         StringBlock::Input => input_block,
+        StringBlock::Decoded if view.len == 0 && decoded_block.is_none() => {
+            builder.append_value("");
+            return Ok(());
+        }
         StringBlock::Decoded => decoded_block.ok_or_else(|| {
             ArrowError::InvalidArgumentError(
                 "decoded string view without decoded block".to_string(),
@@ -117,6 +121,10 @@ fn append_line_view(
 ) -> Result<(), ArrowError> {
     let block = match view.block {
         StringBlock::Input => input_block,
+        StringBlock::Decoded if view.len == 0 && decoded_block.is_none() => {
+            builder.append_value("");
+            return Ok(());
+        }
         StringBlock::Decoded => decoded_block.ok_or_else(|| {
             ArrowError::InvalidArgumentError("decoded line view without decoded block".to_string())
         })?,
@@ -447,6 +455,9 @@ impl StreamingBuilder {
             // decoded_buf has grown past 4 GiB; drop this field rather than panic.
             return;
         };
+        let Ok(len) = u32::try_from(value.len()) else {
+            return;
+        };
         // All validation passed — safe to update dedup guard and extend decoded_buf.
         if idx >= u64::BITS as usize {
             self.fields[idx].last_row = self.row_count;
@@ -458,7 +469,7 @@ impl StreamingBuilder {
             row: self.row_count,
             block: StringBlock::Decoded,
             offset: decoded_offset,
-            len: value.len() as u32,
+            len,
         });
     }
 
@@ -482,6 +493,9 @@ impl StreamingBuilder {
         let Ok(decoded_offset) = u32::try_from(self.decoded_buf.len()) else {
             return;
         };
+        let Ok(len) = u32::try_from(value.len()) else {
+            return;
+        };
         if idx >= u64::BITS as usize {
             self.fields[idx].last_row = self.row_count;
         }
@@ -492,7 +506,7 @@ impl StreamingBuilder {
             row: self.row_count,
             block: StringBlock::Decoded,
             offset: decoded_offset,
-            len: value.len() as u32,
+            len,
         });
     }
 
@@ -1315,6 +1329,22 @@ mod tests {
         let child_names: Vec<&str> = sa.fields().iter().map(|f| f.name().as_str()).collect();
         assert!(child_names.contains(&"int"), "missing int child");
         assert!(child_names.contains(&"str"), "missing str child");
+    }
+
+    #[test]
+    fn decoded_empty_string_finishes_without_decoded_block() {
+        let mut b = StreamingBuilder::new(None);
+        b.begin_batch(bytes::Bytes::from_static(b"input"));
+        let idx = b.resolve_field(b"empty");
+
+        b.begin_row();
+        b.append_validated_decoded_str_by_idx(idx, b"");
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        let col = batch.column_by_name("empty").expect("empty column");
+        assert_eq!(col.to_data().len(), 1);
     }
 
     #[test]

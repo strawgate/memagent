@@ -13,7 +13,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use logfwd_bench::{generators, make_otlp_sink};
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::otlp_receiver::{
-    decode_protobuf_bytes_to_batch_projected_view_experimental,
+    decode_protobuf_bytes_to_batch_projected_view_experimental, decode_protobuf_to_batch,
     decode_protobuf_to_batch_projected_experimental, decode_protobuf_to_batch_prost_reference,
 };
 use logfwd_output::Compression;
@@ -37,9 +37,9 @@ struct FixtureProfile {
     attrs_per_record: usize,
     resource_attrs: usize,
     body_len: usize,
-    include_complex_any: bool,
-    include_duplicate_keys: bool,
-    include_trace_heavy: bool,
+    has_complex_any: bool,
+    has_duplicate_keys: bool,
+    has_trace_heavy: bool,
 }
 
 impl FixtureProfile {
@@ -57,9 +57,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 4,
         resource_attrs: 3,
         body_len: 48,
-        include_complex_any: false,
-        include_duplicate_keys: false,
-        include_trace_heavy: false,
+        has_complex_any: false,
+        has_duplicate_keys: false,
+        has_trace_heavy: false,
     },
     FixtureProfile {
         name: "narrow-1k",
@@ -69,9 +69,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 4,
         resource_attrs: 4,
         body_len: 72,
-        include_complex_any: false,
-        include_duplicate_keys: false,
-        include_trace_heavy: false,
+        has_complex_any: false,
+        has_duplicate_keys: false,
+        has_trace_heavy: false,
     },
     FixtureProfile {
         name: "wide-10k",
@@ -81,9 +81,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 20,
         resource_attrs: 6,
         body_len: 240,
-        include_complex_any: false,
-        include_duplicate_keys: false,
-        include_trace_heavy: false,
+        has_complex_any: false,
+        has_duplicate_keys: false,
+        has_trace_heavy: false,
     },
     FixtureProfile {
         name: "attrs-heavy",
@@ -93,9 +93,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 40,
         resource_attrs: 8,
         body_len: 96,
-        include_complex_any: false,
-        include_duplicate_keys: false,
-        include_trace_heavy: false,
+        has_complex_any: false,
+        has_duplicate_keys: false,
+        has_trace_heavy: false,
     },
     FixtureProfile {
         name: "multi-resource-scope",
@@ -105,9 +105,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 6,
         resource_attrs: 8,
         body_len: 96,
-        include_complex_any: false,
-        include_duplicate_keys: false,
-        include_trace_heavy: false,
+        has_complex_any: false,
+        has_duplicate_keys: false,
+        has_trace_heavy: false,
     },
     FixtureProfile {
         name: "complex-anyvalue",
@@ -117,9 +117,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 12,
         resource_attrs: 6,
         body_len: 128,
-        include_complex_any: true,
-        include_duplicate_keys: false,
-        include_trace_heavy: false,
+        has_complex_any: true,
+        has_duplicate_keys: false,
+        has_trace_heavy: false,
     },
     FixtureProfile {
         name: "duplicate-collision",
@@ -129,9 +129,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 14,
         resource_attrs: 6,
         body_len: 80,
-        include_complex_any: false,
-        include_duplicate_keys: true,
-        include_trace_heavy: false,
+        has_complex_any: false,
+        has_duplicate_keys: true,
+        has_trace_heavy: false,
     },
     FixtureProfile {
         name: "trace-heavy",
@@ -141,9 +141,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 8,
         resource_attrs: 6,
         body_len: 120,
-        include_complex_any: false,
-        include_duplicate_keys: false,
-        include_trace_heavy: true,
+        has_complex_any: false,
+        has_duplicate_keys: false,
+        has_trace_heavy: true,
     },
     FixtureProfile {
         name: "resource-heavy",
@@ -153,9 +153,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 5,
         resource_attrs: 24,
         body_len: 64,
-        include_complex_any: false,
-        include_duplicate_keys: false,
-        include_trace_heavy: false,
+        has_complex_any: false,
+        has_duplicate_keys: false,
+        has_trace_heavy: false,
     },
     FixtureProfile {
         name: "compression-relevant",
@@ -165,9 +165,9 @@ const FIXTURES: [FixtureProfile; 10] = [
         attrs_per_record: 20,
         resource_attrs: 16,
         body_len: 512,
-        include_complex_any: false,
-        include_duplicate_keys: false,
-        include_trace_heavy: true,
+        has_complex_any: false,
+        has_duplicate_keys: false,
+        has_trace_heavy: true,
     },
 ];
 
@@ -194,7 +194,7 @@ fn build_fixture(profile: FixtureProfile) -> FixtureData {
     assert_eq!(batch.num_rows(), profile.total_rows());
     let mut projected_batch = None;
     let mut projected_view_batch = None;
-    if !profile.include_complex_any {
+    if !profile.has_complex_any {
         let wire_batch = decode_protobuf_to_batch_projected_experimental(&payload)
             .expect("experimental wire decoder should decode primitive fixture");
         assert_batch_matches(&batch, &wire_batch, profile.name);
@@ -293,7 +293,19 @@ fn bench_decode_materialize(c: &mut Criterion) {
             },
         );
 
-        if !fixture.profile.include_complex_any {
+        group.bench_with_input(
+            BenchmarkId::new("production_to_batch", fixture.profile.name),
+            &fixture.payload,
+            |b, payload| {
+                b.iter(|| {
+                    let batch = decode_protobuf_to_batch(payload)
+                        .expect("production decode + materialize should decode fixture");
+                    std::hint::black_box(batch.num_rows());
+                });
+            },
+        );
+
+        if !fixture.profile.has_complex_any {
             group.bench_with_input(
                 BenchmarkId::new("experimental_wire_to_batch", fixture.profile.name),
                 &fixture.payload,
@@ -464,7 +476,35 @@ fn bench_end_to_end(c: &mut Criterion) {
             },
         );
 
-        if !fixture.profile.include_complex_any {
+        group.bench_with_input(
+            BenchmarkId::new("production_to_handwritten_encode", fixture.profile.name),
+            &fixture.payload,
+            |b, payload| {
+                let mut sink = make_otlp_sink(Compression::None);
+                b.iter(|| {
+                    let batch = decode_protobuf_to_batch(payload)
+                        .expect("production decode + materialize should decode fixture");
+                    sink.encode_batch(&batch, &metadata);
+                    std::hint::black_box(sink.encoded_payload().len());
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("production_to_generated_fast_encode", fixture.profile.name),
+            &fixture.payload,
+            |b, payload| {
+                let mut sink = make_otlp_sink(Compression::None);
+                b.iter(|| {
+                    let batch = decode_protobuf_to_batch(payload)
+                        .expect("production decode + materialize should decode fixture");
+                    sink.encode_batch_generated_fast(&batch, &metadata);
+                    std::hint::black_box(sink.encoded_payload().len());
+                });
+            },
+        );
+
+        if !fixture.profile.has_complex_any {
             group.bench_with_input(
                 BenchmarkId::new(
                     "experimental_wire_to_handwritten_encode",
@@ -518,14 +558,14 @@ fn build_request(profile: FixtureProfile) -> ExportLogsServiceRequest {
                     * profile.rows_per_scope)
                     + row;
                 let mut attributes = make_record_attrs(profile, global_row);
-                if profile.include_duplicate_keys {
+                if profile.has_duplicate_keys {
                     attributes.push(kv_string("body", "attr-body-shadow"));
                     attributes.push(kv_string("trace_id", "attr-trace-shadow"));
                     attributes.push(kv_string("flags", "attr-flags-shadow"));
                     attributes.push(kv_string("_resource_service.name", "attr-resource-shadow"));
                 }
 
-                let body = if profile.include_complex_any && row % 2 == 0 {
+                let body = if profile.has_complex_any && row % 2 == 0 {
                     complex_body_any_value(global_row)
                 } else {
                     AnyValue {
@@ -536,12 +576,12 @@ fn build_request(profile: FixtureProfile) -> ExportLogsServiceRequest {
                     }
                 };
 
-                let trace_id = if profile.include_trace_heavy || row % 3 != 0 {
+                let trace_id = if profile.has_trace_heavy || row % 3 != 0 {
                     trace_id_for(global_row)
                 } else {
                     Vec::new()
                 };
-                let span_id = if profile.include_trace_heavy || row % 5 != 0 {
+                let span_id = if profile.has_trace_heavy || row % 5 != 0 {
                     span_id_for(global_row)
                 } else {
                     Vec::new()
@@ -618,7 +658,7 @@ fn make_record_attrs(profile: FixtureProfile, row: usize) -> Vec<KeyValue> {
     attrs.push(kv_bool("success", row % 17 != 0));
 
     for idx in 0..profile.attrs_per_record.saturating_sub(4) {
-        let value = if profile.include_complex_any && idx % 5 == 0 {
+        let value = if profile.has_complex_any && idx % 5 == 0 {
             complex_body_any_value(row + idx)
         } else if idx % 3 == 0 {
             AnyValue {
