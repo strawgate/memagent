@@ -4,15 +4,18 @@ description: "Run logfwd as a standalone container"
 ---
 
 Use this page when you want to run logfwd as a standalone container on a single host.
+For Kubernetes clusters, see [Kubernetes deployment](/deployment/kubernetes/).
 
-## Safe defaults
-
+:::tip[Safe defaults]
 Start with these settings for predictable behavior:
 
 - Mount `/var/log` read-only.
 - Mount `config.yaml` read-only.
 - Enable diagnostics (`server.diagnostics: 0.0.0.0:9090`).
 - Use OTLP compression (`compression: zstd`) for remote collectors.
+- Mount a named volume for checkpoint persistence (see below).
+- Set resource constraints so logfwd cannot starve the host.
+:::
 
 ## Quick start
 
@@ -21,9 +24,189 @@ docker run -d \
   --name logfwd \
   -v /var/log:/var/log:ro \
   -v ./config.yaml:/etc/logfwd/config.yaml:ro \
+  -v logfwd-data:/var/lib/logfwd \
   -p 9090:9090 \
+  --cpus 1.0 \
+  --memory 256m \
   ghcr.io/strawgate/memagent:latest \
   run --config /etc/logfwd/config.yaml
+```
+
+### Flag breakdown
+
+| Flag | Purpose |
+|------|---------|
+| `-v /var/log:/var/log:ro` | Gives logfwd read-only access to host log files |
+| `-v ./config.yaml:/etc/logfwd/config.yaml:ro` | Injects your pipeline configuration (read-only) |
+| `-v logfwd-data:/var/lib/logfwd` | Persists checkpoint data between container restarts |
+| `-p 9090:9090` | Exposes the diagnostics/admin API on the host |
+| `--cpus 1.0` | Limits the container to one CPU core |
+| `--memory 256m` | Hard memory cap; the OOM killer fires if exceeded |
+
+## Checkpoint persistence
+
+:::tip[Always mount a checkpoint volume]
+Without a persistent volume for `/var/lib/logfwd`, logfwd loses its file-read
+position on every container restart. This causes **duplicate log delivery**
+(re-reading from the beginning) or **data loss** (if the output has
+already acknowledged earlier batches). A Docker named volume or a host-path
+bind mount eliminates both problems.
+:::
+
+```bash
+# Named volume (recommended — Docker manages the lifecycle)
+-v logfwd-data:/var/lib/logfwd
+
+# Host-path bind mount (useful when you need direct access to checkpoint files)
+-v /opt/logfwd/data:/var/lib/logfwd
+```
+
+Your configuration must reference the same directory:
+
+```yaml
+server:
+  checkpoint_dir: /var/lib/logfwd
+```
+
+## Resource constraints
+
+For most single-host deployments, one CPU core and 256 MB of memory are a
+reasonable starting point. Increase these if your host generates a high volume
+of logs or if you run complex SQL transforms.
+
+```bash
+# Conservative — suitable for light-to-moderate log volumes
+docker run -d --cpus 0.5 --memory 128m ...
+
+# Production — high-throughput hosts (>10 k lines/s)
+docker run -d --cpus 2.0 --memory 512m ...
+```
+
+Monitor `logfwd_stage_seconds_total` and container memory usage via `docker stats`
+to decide whether you need to adjust. See [Monitoring & Diagnostics](/deployment/monitoring/)
+for details on available metrics.
+
+## Environment variable passthrough
+
+Use `-e` flags to inject secrets or endpoint addresses without baking them into
+the configuration file. logfwd interpolates `${VAR}` references in YAML values
+at startup.
+
+```bash
+docker run -d \
+  --name logfwd \
+  -e OTEL_ENDPOINT=https://collector.internal:4318 \
+  -e OTEL_TOKEN=my-secret-token \
+  -v /var/log:/var/log:ro \
+  -v ./config.yaml:/etc/logfwd/config.yaml:ro \
+  -v logfwd-data:/var/lib/logfwd \
+  -p 9090:9090 \
+  --cpus 1.0 \
+  --memory 256m \
+  ghcr.io/strawgate/memagent:latest \
+  run --config /etc/logfwd/config.yaml
+```
+
+Then reference them in `config.yaml`:
+
+```yaml
+output:
+  type: otlp
+  endpoint: "${OTEL_ENDPOINT}"
+  compression: zstd
+  auth:
+    bearer_token: "${OTEL_TOKEN}"
+```
+
+## Network inputs with port mapping
+
+When logfwd receives logs over TCP or UDP (instead of tailing files), you need
+to publish the listener ports.
+
+```bash
+docker run -d \
+  --name logfwd \
+  -v ./config.yaml:/etc/logfwd/config.yaml:ro \
+  -v logfwd-data:/var/lib/logfwd \
+  -p 9090:9090 \
+  -p 5140:5140/tcp \
+  -p 5140:5140/udp \
+  --cpus 1.0 \
+  --memory 256m \
+  ghcr.io/strawgate/memagent:latest \
+  run --config /etc/logfwd/config.yaml
+```
+
+Matching input configuration:
+
+```yaml
+pipelines:
+  syslog-tcp:
+    input:
+      type: tcp
+      address: 0.0.0.0:5140
+      format: raw
+
+  syslog-udp:
+    input:
+      type: udp
+      address: 0.0.0.0:5140
+      format: raw
+```
+
+:::caution
+Binding to `0.0.0.0` inside the container is required for Docker port mapping
+to work. If you bind to `127.0.0.1`, external traffic will not reach logfwd.
+:::
+
+## Docker Compose
+
+A Compose file is the easiest way to run logfwd alongside an OpenTelemetry
+Collector on the same host. The example below tails host logs, forwards them
+over OTLP to the collector sidecar, and exposes the diagnostics API.
+
+```yaml
+# docker-compose.yml
+services:
+  logfwd:
+    image: ghcr.io/strawgate/memagent:latest
+    command: ["run", "--config", "/etc/logfwd/config.yaml"]
+    volumes:
+      - /var/log:/var/log:ro
+      - ./config.yaml:/etc/logfwd/config.yaml:ro
+      - logfwd-data:/var/lib/logfwd
+    ports:
+      - "9090:9090"
+    environment:
+      - OTEL_ENDPOINT=http://otel-collector:4318
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # gRPC receiver
+      - "4318:4318"   # HTTP receiver
+    restart: unless-stopped
+
+volumes:
+  logfwd-data:
+```
+
+Start the stack:
+
+```bash
+docker compose up -d
+docker compose logs -f logfwd
 ```
 
 ## Validate container health
@@ -40,6 +223,13 @@ curl -s http://localhost:9090/admin/v1/status | jq .
 
 You should see increasing `inputs[*].lines_total` and `outputs[*].lines_total` when logs are present.
 
+To verify the OTLP output is connected:
+
+```bash
+# Check that the output reports no errors
+curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[].output'
+```
+
 ## Rollback
 
 If a config/image update causes failures:
@@ -53,6 +243,7 @@ docker run -d \
   --name logfwd \
   -v /var/log:/var/log:ro \
   -v ./config.last-known-good.yaml:/etc/logfwd/config.yaml:ro \
+  -v logfwd-data:/var/lib/logfwd \
   -p 9090:9090 \
   ghcr.io/strawgate/memagent:<known-good-tag> \
   run --config /etc/logfwd/config.yaml
@@ -60,7 +251,22 @@ docker run -d \
 
 Then validate with the same diagnostics commands above.
 
+:::tip
+Because checkpoint data is stored in the `logfwd-data` volume, rolling back
+the image or configuration does not lose read position. logfwd resumes where
+it left off.
+:::
+
 ## Dockerfile
 
 The release workflow builds multi-arch images for `linux/amd64` and `linux/arm64` using a distroless base image.
 See `Dockerfile` and `.github/workflows/release.yml` for details.
+
+## What's next
+
+- [Monitoring & Diagnostics](/deployment/monitoring/) -- health probes, metrics, and the built-in dashboard.
+- [Input Types](/configuration/inputs/) -- configure file, TCP, and UDP inputs.
+- [Output Types](/configuration/outputs/) -- OTLP and other output options.
+- [SQL Transforms](/configuration/sql-transforms/) -- filter and reshape logs before they leave the host.
+- [Kubernetes Deployment](/deployment/kubernetes/) -- scale out to a cluster with a DaemonSet.
+- [Troubleshooting](/troubleshooting/) -- common issues and diagnostic steps.

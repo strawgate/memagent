@@ -1,0 +1,613 @@
+---
+type FlowType = 'pipeline' | 'list';
+type LayoutType = 'options' | 'pipeline';
+
+interface Component {
+  id: string;
+  label: string;
+  detail: string;
+  why?: string;
+  flow: string[];
+  flowType?: FlowType;
+  notes?: string;
+}
+
+interface Stage {
+  id: string;
+  label: string;
+  subtitle: string;
+  summary: string;
+  layout: LayoutType;
+  components: Component[];
+}
+
+const stages: Stage[] = [
+  {
+    id: 'inputs',
+    label: 'Inputs',
+    subtitle: '8 types',
+    summary: 'Sources produce raw bytes or Arrow batches independently',
+    layout: 'options',
+    components: [
+      {
+        id: 'file', label: 'File',
+        detail: 'Tail files matching glob patterns with position tracking across restarts. Detects rotation via inode/device identity, drains old files before switching.',
+        why: 'Never loses data. Checkpoints survive crashes via atomic write + fsync. File identity tracking (device + inode + fingerprint) means logfwd follows the real file through renames, rotations, and truncations — not just the path.',
+        flow: ['Glob Discovery', 'File Watcher', 'Read Loop', 'Budget Control', 'EOF Detection'],
+        notes: 'kqueue/inotify + polling hybrid. Adaptive fast-poll on budget hit. LRU eviction at 1024 open files. Checkpoint via atomic JSON write + fsync.',
+      },
+      {
+        id: 'tcp', label: 'TCP',
+        detail: 'Accept log lines on a TCP socket with automatic framing detection. Supports RFC 6587 octet counting and newline-delimited fallback.',
+        flow: ['Accept', 'Keepalive', 'Read (512KB/client)', 'Frame Detect', 'Line Extract'],
+        notes: 'Max 1024 concurrent clients. Global 256 MiB memory budget. Idle timeout 60s. Oversized lines (>1 MiB) discarded. Optional TLS/mTLS.',
+      },
+      {
+        id: 'udp', label: 'UDP',
+        detail: 'Receive log lines as individual datagrams. Kernel buffer tuned to 8 MiB. Drop detection via ENOBUFS/ENOMEM.',
+        flow: ['Socket Bind', 'Buffer Tune (8 MiB)', 'Drain Loop', 'Line Normalize'],
+        notes: 'Max 256 datagrams per poll, 1 MiB emit budget. Fire-and-forget: no ack, no ordering guarantee.',
+      },
+      {
+        id: 'otlp-in', label: 'OTLP',
+        detail: 'Receive OpenTelemetry log records over HTTP. Decodes protobuf and JSON payloads directly into Arrow RecordBatches — bypasses the scanner.',
+        why: 'Use logfwd as an OTLP relay or aggregator. Because the input produces structured Arrow data directly, there is no parsing overhead — just decode the protobuf envelope and convert. Resource attributes, trace context, and severity are all preserved.',
+        flow: ['HTTP Server', 'Proto/JSON Decode', 'Resource Flatten', 'Arrow Convert'],
+        notes: 'Structured input: produces RecordBatch directly, not raw bytes. Resource attributes flattened with configurable prefix. Bounded channel to pipeline.',
+      },
+      {
+        id: 'http-in', label: 'HTTP',
+        detail: 'Receive newline-delimited payloads via HTTP POST. Configurable path, method, body size limit, and response code.',
+        flow: ['Axum Server', 'Route Match', 'Body Read', 'Gzip Decompress', 'Channel Send'],
+        notes: 'Background thread with bounded channel. Max 10 MiB body. Supports gzip Content-Encoding.',
+      },
+      {
+        id: 'arrow-ipc-in', label: 'Arrow IPC',
+        detail: 'Receive Arrow IPC stream payloads over HTTP POST. Bypasses the scanner — decoded RecordBatches go directly into the pipeline.',
+        flow: ['HTTP POST /v1/arrow', 'Zstd Decompress', 'IPC Stream Decode', 'RecordBatch'],
+        notes: 'Scanner bypass: zero parsing overhead. Canonical content type: application/vnd.apache.arrow.stream.',
+      },
+      {
+        id: 'sensor', label: 'Platform Sensor',
+        detail: 'eBPF (Linux), EndpointSecurity (macOS), or ETW (Windows) sensor. Arrow-native control and signal rows for process, file, network, DNS events.',
+        flow: ['Kernel Attach', 'Ring Buffer Poll', 'Signal Decode', 'Arrow Emit'],
+        notes: 'Arrow-native: no format/scanner. Control-plane reload via JSON file. Configurable signal families.',
+      },
+      {
+        id: 'generator', label: 'Generator',
+        detail: 'Emit synthetic JSON log lines for benchmarking and pipeline testing. Configurable EPS, batch size, and timestamp generation.',
+        flow: ['Profile Select', 'Row Generate', 'JSON Serialize', 'Batch Emit'],
+        notes: 'Profiles: logs (synthetic requests) and record (flat JSON from attributes). Zero external dependencies.',
+      },
+    ],
+  },
+  {
+    id: 'scanner',
+    label: 'Scanner',
+    subtitle: '4 stages',
+    summary: 'SIMD-accelerated JSON/CRI to Arrow conversion',
+    layout: 'pipeline',
+    components: [
+      {
+        id: 'format-detect', label: 'Format Parser',
+        detail: 'Detects and parses CRI, JSON, or raw format. CRI parser strips timestamp/stream prefix and reassembles multi-line logs via the P partial flag.',
+        why: 'Auto-detection means one config works for mixed log sources. The CRI parser handles Kubernetes\' container runtime format natively — no sidecar or pre-processing needed. Multi-line reassembly via P/F flags means stack traces arrive as single log records.',
+        flow: ['Format Detect', 'CRI / JSON / Raw Parse', 'Line Extract', 'Remainder Track'],
+        notes: 'Auto mode: try CRI first, then JSON, then raw fallback. CRI reassembler buffers partials (P flag), emits on full (F flag). CRLF normalized.',
+      },
+      {
+        id: 'simd-index', label: 'Structural Index',
+        detail: 'One vectorized pass over the entire buffer using platform-native SIMD. Classifies 10 structural characters simultaneously in 64-byte blocks.',
+        why: 'This is why logfwd is fast. Instead of parsing JSON byte-by-byte, SIMD instructions process 16-32 bytes in a single CPU cycle. One pass over the buffer produces bitmasks that make every subsequent string lookup O(1) — just a trailing_zeros instruction. The same technique powers simdjson. logfwd uses AVX2 on Intel/AMD, NEON on ARM (Apple Silicon, Graviton).',
+        flow: ['64-byte Block Load', 'SIMD Compare', 'Escape Parity', 'Quote Mask', 'Bitmask Output'],
+        notes: 'AVX2/SSE2 on x86_64, NEON on aarch64 via wide crate. Output: real_quotes + in_string bitmasks. O(1) string boundary lookup via trailing_zeros.',
+      },
+      {
+        id: 'field-extract', label: 'Field Extraction',
+        detail: 'Scalar state machine walks top-level JSON objects using pre-computed bitmasks. Resolves field names to column indices once per batch via HashMap.',
+        why: 'Field pushdown is the key optimization here. logfwd analyzes your SQL query before scanning and only extracts the columns you reference. If your query uses 3 of 20 fields, the scanner skips the other 17 — giving you 2-3x throughput on wide data for free.',
+        flow: ['Find Opening {', 'Key Resolve', 'Value Type Detect', 'Append to Builder'],
+        notes: 'Field pushdown: QueryAnalyzer extracts referenced columns from SQL. Scanner skips unwanted fields for 2-3x throughput on wide data.',
+      },
+      {
+        id: 'batch-builder', label: 'Batch Builder',
+        detail: 'Deferred builder pattern: collects (row, offset, len) views during scan, bulk-builds Arrow columns at finish. Zero-copy StringViewArray shares the input buffer.',
+        why: 'Apache Arrow is the secret weapon. By building columnar RecordBatches, logfwd gets DataFusion SQL execution for free — the same query engine that powers Apache Spark and InfluxDB. StringViewArray means string data is never copied: 16-byte views point directly into the input buffer. This is why logfwd uses ~6 MB of RAM to process millions of log lines.',
+        flow: ['Accumulate Views', 'Type Resolution', 'Null Padding', 'finish_batch()', 'RecordBatch'],
+        notes: 'scan() produces StringViewArray (zero-copy via Bytes refcount). scan_detached() produces StringArray (single bulk copy). Resource metadata injected as columns.',
+      },
+    ],
+  },
+  {
+    id: 'transform',
+    label: 'SQL Transform',
+    subtitle: '3 components',
+    summary: 'DataFusion SQL over Arrow RecordBatches',
+    layout: 'options',
+    components: [
+      {
+        id: 'datafusion', label: 'DataFusion Engine',
+        detail: 'Each batch cycle registers source RecordBatches as partitions of a "logs" MemTable. Schema changes detected via hash — context rebuilt only when needed.',
+        why: 'Why SQL instead of a custom DSL? Because you already know SQL. DataFusion is a production-grade query engine (used in InfluxDB, Comet, and Ballista) that gives logfwd full SQL support — SELECT, WHERE, GROUP BY, JOINs, window functions, subqueries — without inventing a new language. Your team can write log filters on day one.',
+        flow: ['Schema Hash Check', 'MemTable Register', 'SQL Parse + Plan', 'Execute', 'Collect Batches'],
+        notes: 'Lazy SessionContext creation. Full SQL: SELECT, WHERE, GROUP BY, HAVING, JOINs, subqueries, window functions. Enrichment tables registered per batch.',
+      },
+      {
+        id: 'udfs', label: 'Custom UDFs',
+        detail: 'Scalar functions registered into the DataFusion context alongside built-in functions.',
+        flow: ['regexp_extract()', 'grok()', 'json() / json_int() / json_float()', 'int() / float()', 'geo_lookup()'],
+        flowType: 'list' as const,
+        notes: 'grok() supports 20+ built-in patterns (IP, UUID, TIMESTAMP_ISO8601, etc.). geo_lookup() requires MaxMind .mmdb database. hash() for deterministic partitioning.',
+      },
+      {
+        id: 'enrichment', label: 'Enrichment Tables',
+        detail: 'SQL-joinable tables injected into the DataFusion context. Refreshed per batch cycle if the underlying snapshot changes.',
+        flow: ['k8s_path (pod metadata)', 'host_info (hostname)', 'static (user labels)', 'geo_database (MaxMind)'],
+        flowType: 'list' as const,
+        notes: 'k8s_path: zero-cost path parsing, no K8s API calls. static: one-row table from config labels. All exposed as regular SQL tables for JOIN.',
+      },
+    ],
+  },
+  {
+    id: 'outputs',
+    label: 'Outputs',
+    subtitle: '8 types',
+    summary: 'Fan-out to multiple destinations via bounded channels',
+    layout: 'options',
+    components: [
+      {
+        id: 'otlp-out', label: 'OTLP',
+        detail: 'Encodes log records as OTLP protobuf with 3-phase encoding: encode LogRecords, group by resource/scope, write final protobuf with computed sizes.',
+        why: 'OTLP is the standard. By encoding directly to protobuf with zstd compression, logfwd produces payloads that are 5-10x smaller than JSON. Resource grouping means pods from the same deployment share metadata in a single ResourceLogs envelope — further reducing wire size.',
+        flow: ['Row Encode', 'Resource Group', 'Size Compute', 'Proto Serialize', 'Compress + Send'],
+        notes: 'Groups rows by _resource_* columns into ResourceLogs. Two encoders: handwritten (full) and generated fast path. zstd/gzip compression. HTTP and gRPC protocols.',
+      },
+      {
+        id: 'elasticsearch', label: 'Elasticsearch',
+        detail: 'Ships via the Bulk API with per-document error handling. Oversized payloads split recursively. @timestamp injected if missing.',
+        flow: ['Bulk Serialize', 'Size Check', 'Split if >5 MiB', 'HTTP Send', 'Error Parse'],
+        notes: 'Precomputed action bytes (zero alloc hot path). ISO-8601 timestamp on 47-byte stack buffer. Per-document error extraction. Reactive split on 413.',
+      },
+      {
+        id: 'loki', label: 'Loki',
+        detail: 'Pushes to Grafana Loki with automatic label grouping and key sanitization.',
+        flow: ['Label Extract', 'Key Sanitize', 'Stream Group', 'Proto Encode', 'HTTP Push'],
+        notes: 'Label cardinality control via config. Duplicate label key detection at validation time.',
+      },
+      {
+        id: 'stdout', label: 'stdout',
+        detail: 'Print to stdout for debugging. Console: colored, human-readable. JSON: one object per line. Text: raw body column.',
+        flow: ['Format Select', 'Row Serialize', 'Write to fd 1'],
+        notes: 'Three formats: console (colored), json (NDJSON), text (raw). Zero network overhead.',
+      },
+      {
+        id: 'file-out', label: 'File',
+        detail: 'Write NDJSON or raw text to a local file for capture, replay testing, and local archival.',
+        flow: ['Format Select', 'Serialize', 'File Write'],
+      },
+      {
+        id: 'tcp-out', label: 'TCP',
+        detail: 'Send records to a TCP endpoint with persistent connections and retry backoff.',
+        flow: ['Connect', 'Serialize', 'Send', 'Retry on Error'],
+      },
+      {
+        id: 'udp-out', label: 'UDP',
+        detail: 'Fire-and-forget datagram output for low-overhead forwarding.',
+        flow: ['Serialize', 'Send Datagram'],
+      },
+      {
+        id: 'arrow-ipc-out', label: 'Arrow IPC',
+        detail: 'Send Arrow IPC payloads for zero-copy handoff to downstream consumers.',
+        flow: ['IPC Serialize', 'Optional Compress', 'HTTP Send'],
+      },
+    ],
+  },
+];
+
+const icons: Record<string, string> = {
+  inputs: '<path d="M12 3v10m0 0l-3-3m3 3l3-3M5 17h14a2 2 0 002-2v0a2 2 0 00-2-2H5a2 2 0 00-2 2v0a2 2 0 002 2z" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  scanner: '<path d="M13 10V3L4 14h7v7l9-11h-7z" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  transform: '<path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  outputs: '<path d="M12 21V11m0 0l3 3m-3-3l-3 3M5 7h14a2 2 0 002-2v0a2 2 0 00-2-2H5a2 2 0 00-2 2v0a2 2 0 002 2z" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+};
+---
+
+<div class="pd" data-pd-root>
+  {/* Level 1: Use CSS Grid for pixel-perfect alignment */}
+  <div class="pd-grid">
+    {stages.map((stage, i) => (
+      <>
+        <button class="pd-stage" data-stage={stage.id} aria-expanded="false">
+          <svg class="pd-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <Fragment set:html={icons[stage.id]} />
+          </svg>
+          <span class="pd-label">{stage.label}</span>
+          <span class="pd-sub">{stage.subtitle}</span>
+        </button>
+        {i < stages.length - 1 && (
+          <div class="pd-arrow" aria-hidden="true">
+            <svg viewBox="0 0 40 12" preserveAspectRatio="none">
+              <line x1="0" y1="6" x2="32" y2="6" stroke="currentColor" stroke-width="2" stroke-dasharray="4 3" />
+              <polygon points="30,2 38,6 30,10" fill="currentColor" />
+            </svg>
+          </div>
+        )}
+      </>
+    ))}
+  </div>
+
+  <p class="pd-hint">Select a stage to explore its components</p>
+
+  {/* Level 2 + 3: Detail panels */}
+  {stages.map((stage) => (
+    <div class="pd-panel" data-detail-stage={stage.id} hidden>
+      <div class="pd-panel-head">
+        <svg class="pd-panel-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <Fragment set:html={icons[stage.id]} />
+        </svg>
+        <div>
+          <strong>{stage.label}</strong>
+          <span>{stage.summary}</span>
+        </div>
+      </div>
+
+      <div class={stage.layout === 'pipeline' ? 'pd-chips pd-chips--pipeline' : 'pd-chips'}>
+        {stage.components.map((comp, j) => (
+          <>
+            <button class="pd-chip" data-component={comp.id} aria-expanded="false">
+              {comp.label}
+            </button>
+            {stage.layout === 'pipeline' && j < stage.components.length - 1 && (
+              <svg class="pd-chip-arrow" viewBox="0 0 16 8" aria-hidden="true">
+                <line x1="0" y1="4" x2="10" y2="4" stroke="currentColor" stroke-width="1.5" />
+                <polygon points="9,1 15,4 9,7" fill="currentColor" />
+              </svg>
+            )}
+          </>
+        ))}
+      </div>
+
+      {stage.components.map((comp) => (
+        <div class="pd-detail" data-impl-component={comp.id} hidden>
+          <p class="pd-detail-desc">{comp.detail}</p>
+
+          {comp.why && (
+            <div class="pd-why">
+              <strong>Why it matters</strong>
+              <p>{comp.why}</p>
+            </div>
+          )}
+
+          {(comp.flowType ?? 'pipeline') === 'pipeline' ? (
+            <div class="pd-flow-steps">
+              {comp.flow.map((step, j) => (
+                <>
+                  <span class="pd-step">{step}</span>
+                  {j < comp.flow.length - 1 && (
+                    <svg class="pd-step-arrow" viewBox="0 0 12 8" aria-hidden="true">
+                      <line x1="0" y1="4" x2="7" y2="4" stroke="currentColor" stroke-width="1.5" />
+                      <polygon points="6,1 12,4 6,7" fill="currentColor" />
+                    </svg>
+                  )}
+                </>
+              ))}
+            </div>
+          ) : (
+            <div class="pd-tags">
+              {comp.flow.map((item) => (
+                <code class="pd-tag">{item}</code>
+              ))}
+            </div>
+          )}
+
+          {comp.notes && <p class="pd-detail-note">{comp.notes}</p>}
+        </div>
+      ))}
+    </div>
+  ))}
+</div>
+
+<style>
+  .pd {
+    --c-bg: var(--sl-color-bg-sidebar);
+    --c-border: var(--sl-color-hairline);
+    --c-accent: var(--sl-color-accent);
+    --c-accent-lo: color-mix(in srgb, var(--c-accent) 10%, transparent);
+    --c-accent-md: color-mix(in srgb, var(--c-accent) 22%, transparent);
+    --c-text: var(--sl-color-text);
+    --c-muted: var(--sl-color-gray-3);
+    --radius: 10px;
+    margin: 1.5rem 0;
+  }
+
+  /* ══════════════ LEVEL 1: Grid layout ══════════════ */
+
+  .pd-grid {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+    align-items: center;
+    justify-items: center;
+    padding: 1rem 0;
+  }
+
+  /* Override Starlight's lobotomized owl spacing (* + * { margin-top })
+     which adds 16px top margin to every sibling after the first.
+     This breaks all flex/grid alignment in our diagram. */
+  .pd :is(.pd-grid, .pd-chips, .pd-flow-steps, .pd-tags, .pd-panel, .pd-detail, .pd-panel-head, .pd-why) > * {
+    margin-top: 0 !important;
+  }
+
+  .pd-stage {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    width: 132px;
+    height: 132px;
+    padding: 1rem;
+    border: 1.5px solid var(--c-border);
+    border-radius: var(--radius);
+    background: var(--c-bg);
+    color: var(--c-text);
+    cursor: pointer;
+    font-family: inherit;
+    transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+  }
+
+  .pd-stage:hover {
+    border-color: var(--c-accent);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0,0,0,.06);
+  }
+
+  .pd-stage[aria-expanded="true"] {
+    border-color: var(--c-accent);
+    background: var(--c-accent-lo);
+    box-shadow: 0 0 0 3px var(--c-accent-md);
+    transform: none;
+  }
+
+  .pd-icon { width: 26px; height: 26px; color: var(--c-accent); }
+  .pd-label { font-weight: 700; font-size: 0.85rem; text-align: center; line-height: 1.2; }
+  .pd-sub { font-size: 0.7rem; color: var(--c-muted); }
+
+  /* Arrows: inline SVG, always vertically centered by grid */
+  .pd-arrow {
+    width: 40px;
+    color: var(--c-accent);
+    opacity: 0.4;
+  }
+  .pd-arrow svg { width: 100%; height: 12px; display: block; }
+
+  .pd-hint {
+    text-align: center;
+    font-size: 0.78rem;
+    color: var(--c-muted);
+    margin: 0.25rem 0 0;
+    transition: opacity 0.2s;
+  }
+
+  /* ══════════════ LEVEL 2: Panel ══════════════ */
+
+  .pd-panel {
+    margin-top: 1rem;
+    padding: 1.25rem;
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius);
+    background: var(--c-bg);
+    animation: pd-open 0.15s ease-out;
+  }
+
+  @keyframes pd-open {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .pd-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--c-border);
+  }
+  .pd-panel-icon { width: 28px; height: 28px; color: var(--c-accent); flex-shrink: 0; }
+  .pd-panel-head strong { display: block; font-size: 1rem; }
+  .pd-panel-head span { font-size: 0.8rem; color: var(--c-muted); }
+
+  /* Component chips */
+  .pd-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+  }
+  .pd-chips--pipeline { gap: 0; }
+
+  .pd-chip {
+    padding: 0.45rem 0.85rem;
+    border: 1px solid var(--c-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--c-text);
+    font-family: inherit;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .pd-chip:hover { border-color: var(--c-accent); background: var(--c-accent-lo); }
+  .pd-chip[aria-expanded="true"] {
+    border-color: var(--c-accent);
+    background: var(--c-accent);
+    color: white;
+    font-weight: 600;
+  }
+
+  .pd-chip-arrow {
+    width: 16px;
+    height: 8px;
+    color: var(--c-accent);
+    opacity: 0.4;
+    flex-shrink: 0;
+    margin: 0 2px;
+  }
+
+  /* ══════════════ LEVEL 3: Detail ══════════════ */
+
+  .pd-detail {
+    margin-top: 0.75rem;
+    padding: 1rem 1.25rem;
+    border-left: 3px solid var(--c-accent);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    background: var(--c-accent-lo);
+    animation: pd-open 0.12s ease-out;
+  }
+
+  .pd-detail-desc {
+    margin: 0 0 0.75rem;
+    font-size: 0.85rem;
+    line-height: 1.6;
+  }
+
+  /* Mini pipeline flow */
+  .pd-flow-steps {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    row-gap: 0.4rem;
+    padding: 0.4rem 0;
+  }
+
+  .pd-step {
+    padding: 0.3rem 0.55rem;
+    background: var(--c-bg);
+    border: 1px solid var(--c-border);
+    border-radius: 5px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .pd-step-arrow {
+    width: 12px;
+    height: 8px;
+    color: var(--c-accent);
+    opacity: 0.5;
+    flex-shrink: 0;
+    margin: 0 1px;
+  }
+
+  /* Tag list */
+  .pd-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    padding: 0.4rem 0;
+  }
+
+  .pd-tag {
+    padding: 0.25rem 0.5rem;
+    background: var(--c-bg);
+    border: 1px solid var(--c-border);
+    border-radius: 4px;
+    font-size: 0.72rem;
+  }
+
+  /* "Why it matters" callout */
+  .pd-why {
+    margin: 0.75rem 0;
+    padding: 0.75rem 1rem;
+    background: color-mix(in srgb, var(--c-accent) 6%, var(--c-bg));
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--c-accent) 20%, transparent);
+  }
+
+  .pd-why strong {
+    display: block;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--c-accent);
+    margin-bottom: 0.35rem;
+  }
+
+  .pd-why p {
+    margin: 0;
+    font-size: 0.83rem;
+    line-height: 1.6;
+  }
+
+  .pd-detail-note {
+    margin: 0.75rem 0 0;
+    font-size: 0.78rem;
+    color: var(--c-muted);
+    line-height: 1.5;
+    font-style: italic;
+  }
+
+  /* ══════════════ Responsive ══════════════ */
+
+  @media (max-width: 680px) {
+    .pd-grid {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto;
+      gap: 0;
+    }
+    .pd-stage { width: 100%; height: auto; flex-direction: row; gap: 0.75rem; padding: 0.75rem 1rem; }
+    .pd-arrow { transform: rotate(90deg); width: 24px; margin: 0.25rem auto; }
+    .pd-icon { width: 22px; height: 22px; }
+    .pd-chips--pipeline { flex-wrap: wrap; gap: 0.4rem; }
+    .pd-chip-arrow { display: none; }
+  }
+</style>
+
+<script>
+  document.querySelectorAll<HTMLDivElement>('[data-pd-root]').forEach((root) => {
+    const hint = root.querySelector<HTMLParagraphElement>('.pd-hint');
+
+    root.querySelectorAll<HTMLButtonElement>('.pd-stage').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.stage!;
+        const panel = root.querySelector<HTMLDivElement>(`[data-detail-stage="${id}"]`);
+        if (!panel) return;
+        const open = btn.getAttribute('aria-expanded') === 'true';
+
+        // close everything
+        root.querySelectorAll<HTMLButtonElement>('.pd-stage').forEach(b => b.setAttribute('aria-expanded', 'false'));
+        root.querySelectorAll<HTMLDivElement>('.pd-panel').forEach(p => p.hidden = true);
+        root.querySelectorAll<HTMLButtonElement>('.pd-chip').forEach(b => b.setAttribute('aria-expanded', 'false'));
+        root.querySelectorAll<HTMLDivElement>('.pd-detail').forEach(d => d.hidden = true);
+
+        if (!open) {
+          btn.setAttribute('aria-expanded', 'true');
+          panel.hidden = false;
+          if (hint) hint.style.opacity = '0';
+          panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } else if (hint) {
+          hint.style.opacity = '1';
+        }
+      });
+    });
+
+    root.querySelectorAll<HTMLButtonElement>('.pd-chip').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.component!;
+        const detail = root.querySelector<HTMLDivElement>(`[data-impl-component="${id}"]`);
+        if (!detail) return;
+        const open = btn.getAttribute('aria-expanded') === 'true';
+        const panel = btn.closest('.pd-panel');
+        if (!panel) return;
+
+        panel.querySelectorAll<HTMLButtonElement>('.pd-chip').forEach(b => b.setAttribute('aria-expanded', 'false'));
+        panel.querySelectorAll<HTMLDivElement>('.pd-detail').forEach(d => d.hidden = true);
+
+        if (!open) {
+          btn.setAttribute('aria-expanded', 'true');
+          detail.hidden = false;
+        }
+      });
+    });
+  });
+</script>

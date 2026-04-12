@@ -1,0 +1,329 @@
+---
+// Thin shell — all logic in client-side script to avoid Astro template compilation issues
+---
+
+<div class="sa" id="scanner-anim"></div>
+
+<style is:global>
+  .sa {
+    --sa-bg: var(--sl-color-bg-sidebar);
+    --sa-border: var(--sl-color-hairline);
+    --sa-accent: var(--sl-color-accent);
+    --sa-text: var(--sl-color-text);
+    --sa-muted: var(--sl-color-gray-3);
+    --f0: #22c55e; --f1: #8b5cf6; --f2: #f59e0b; --f3: #ec4899;
+    margin: 1.5rem 0;
+  }
+  .sa * { margin-top: 0 !important; }
+
+  /* Playbar */
+  .sa-bar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
+  .sa-play {
+    width: 30px; height: 30px; border-radius: 50%;
+    border: 1.5px solid var(--sa-accent); background: transparent;
+    color: var(--sa-accent); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .sa-play:hover { background: color-mix(in srgb, var(--sa-accent) 12%, transparent); }
+  .sa-prog { flex: 1; height: 3px; background: var(--sa-border); border-radius: 2px; overflow: hidden; }
+  .sa-prog-fill { height: 100%; width: 0; background: var(--sa-accent); transition: none; }
+  .sa-pills { display: flex; gap: 3px; }
+  .sa-pill {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1px solid var(--sa-border); background: transparent;
+    color: var(--sa-muted); font-size: 0.6rem; font-weight: 700;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  .sa-pill:hover { border-color: var(--sa-accent); }
+  .sa-pill.on { border-color: var(--sa-accent); background: var(--sa-accent); color: white; }
+
+  /* Explanation */
+  .sa-exp {
+    padding: 0.6rem 0.85rem; background: var(--sa-bg);
+    border: 1px solid var(--sa-border); border-radius: 7px;
+    margin-bottom: 0.6rem; min-height: 3rem;
+    font-size: 0.78rem; line-height: 1.5;
+    transition: opacity 0.3s;
+  }
+  .sa-exp b { display: block; font-size: 0.82rem; margin-bottom: 0.15rem; }
+
+  /* Raw log */
+  .sa-log {
+    padding: 0.7rem 0.9rem; background: #1e1e2e; border-radius: 7px;
+    overflow-x: auto; margin-bottom: 0.5rem;
+  }
+  .sa-log code { font-size: 0.73rem; color: #cdd6f4; white-space: pre; font-family: var(--sl-font-mono, monospace); }
+
+  /* Byte grid */
+  .sa-grid { display: flex; flex-wrap: wrap; gap: 2px; padding: 0.3rem 0; font-family: var(--sl-font-mono, monospace); }
+  .sa-byte {
+    display: flex; flex-direction: column; align-items: center;
+    width: 28px; height: 38px; border: 1px solid transparent;
+    border-radius: 3px; transition: all 0.25s; background: var(--sa-bg);
+  }
+  .sa-ch { font-size: 0.78rem; font-weight: 500; line-height: 24px; }
+  .sa-pos { font-size: 0.42rem; color: var(--sa-muted); line-height: 1; }
+
+  /* Structural colors */
+  .sa-byte.cQ { border-color: #e879a0; background: #e879a00a; }
+  .sa-byte.cC { border-color: #60a5fa; background: #60a5fa0a; }
+  .sa-byte.cM { border-color: #a78bfa; background: #a78bfa0a; }
+  .sa-byte.cB { border-color: #f59e0b; background: #f59e0b0a; }
+
+  /* Step states (applied by JS via data-step on root) */
+  [data-step="detect"] .sa-byte.lit { transform: scale(1.12); font-weight: 700; }
+  [data-step="strings"] .sa-byte.dim { opacity: 0.35; }
+  [data-step="strings"] .sa-byte.dimS { opacity: 0.2; border-style: dashed; transform: none; }
+  [data-step="result"] .sa-byte { opacity: 0.25; }
+  [data-step="result"] .sa-byte.keep { opacity: 1; transform: scale(1.12); font-weight: 700; }
+  [data-step="extract"] .sa-byte { opacity: 0.15; }
+  [data-step="extract"] .sa-byte.fK { opacity: 1; border-color: var(--f0); border-width: 1.5px; background: color-mix(in srgb, var(--f0) 10%, transparent); }
+  [data-step="extract"] .sa-byte.fCol { opacity: 1; border-color: #60a5fa; border-width: 2px; background: #60a5fa15; transform: translateY(-3px); box-shadow: 0 3px 10px rgba(96,165,250,0.25); }
+  [data-step="extract"] .sa-byte.fV { opacity: 1; border-color: #f97316; border-width: 1.5px; background: color-mix(in srgb, #f97316 10%, transparent); }
+  [data-step="allfields"] .sa-byte { opacity: 0.12; }
+  [data-step="allfields"] .sa-byte[data-fc] { opacity: 1; border-width: 1.5px; }
+  [data-step="allfields"] .sa-byte[data-fc="0"] { border-color: var(--f0); background: color-mix(in srgb, var(--f0) 10%, transparent); }
+  [data-step="allfields"] .sa-byte[data-fc="1"] { border-color: var(--f1); background: color-mix(in srgb, var(--f1) 10%, transparent); }
+  [data-step="allfields"] .sa-byte[data-fc="2"] { border-color: var(--f2); background: color-mix(in srgb, var(--f2) 10%, transparent); }
+  [data-step="allfields"] .sa-byte[data-fc="3"] { border-color: var(--f3); background: color-mix(in srgb, var(--f3) 10%, transparent); }
+
+  /* Bitmask */
+  .sa-mask { display: flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0; font-family: var(--sl-font-mono, monospace); }
+  .sa-mask-lbl { font-size: 0.62rem; font-weight: 600; color: var(--sa-muted); }
+  .sa-bits { display: flex; flex-wrap: wrap; gap: 0px; }
+  .sa-bit { width: 14px; height: 16px; display: flex; align-items: center; justify-content: center; font-size: 0.5rem; font-weight: 700; color: var(--sa-muted); transition: all 0.15s; }
+  .sa-bit.on { color: var(--sa-accent); background: color-mix(in srgb, var(--sa-accent) 15%, transparent); border-radius: 1px; }
+
+  /* Field chips */
+  .sa-fields { padding: 0.4rem 0; }
+  .sa-fields-row { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .sa-fc { padding: 0.3rem 0.6rem; border: 1.5px solid var(--fc); border-radius: 5px; background: color-mix(in srgb, var(--fc) 8%, transparent); font-size: 0.75rem; font-family: var(--sl-font-mono, monospace); }
+  .sa-fc b { color: var(--fc); }
+  .sa-fields p { margin: 0.4rem 0 0; font-size: 0.75rem; line-height: 1.5; }
+
+  /* Legend */
+  .sa-leg { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0.3rem 0; font-size: 0.62rem; color: var(--sa-muted); }
+  .sa-leg span { display: flex; align-items: center; gap: 0.2rem; }
+  .sa-sw { width: 8px; height: 8px; border-radius: 2px; border: 2px solid; display: inline-block; }
+</style>
+
+<script>
+(function() {
+  var root = document.getElementById('scanner-anim');
+  if (!root) return;
+
+  var LINE = '{"level":"ERROR","message":"request failed","status":503,"duration_ms":42.7}';
+  var chars = LINE.split('');
+
+  // Classify each byte
+  var CLS = { '"':'cQ', ':':'cC', ',':'cM', '{':'cB', '}':'cB' };
+  var inStr = false;
+  var info = chars.map(function(c, i) {
+    var isQ = c === '"';
+    if (isQ) inStr = !inStr;
+    var cls = CLS[c] || '';
+    var isIn = isQ ? false : inStr;
+    return { c: c, cls: cls, isStruct: cls !== '', inStr: isIn, structOut: cls !== '' && !isIn };
+  });
+
+  // Field ranges: [startIdx, endIdx, fieldColor, role]
+  var FR = [
+    [2,6,0,'k'],[8,8,0,'c'],[10,14,0,'v'],       // level:ERROR
+    [18,24,1,'k'],[26,26,1,'c'],[28,41,1,'v'],     // message:request failed
+    [45,50,2,'k'],[52,52,2,'c'],[53,55,2,'v'],      // status:503
+    [58,68,3,'k'],[70,70,3,'c'],[71,74,3,'v'],      // duration_ms:42.7
+  ];
+  // Mark field membership on info
+  FR.forEach(function(r) { for (var i = r[0]; i <= r[1]; i++) { info[i].fc = r[2]; info[i].fr = r[3]; } });
+
+  var STEPS = [
+    { id:'log', t:'Step 1: The log line', dur:4000,
+      d:'A request fails and the application writes a JSON log line:<br><code style="font-size:0.72rem;line-height:1.8;display:inline-block;margin-top:0.3rem">{ "level": "ERROR", "message": "request failed", "status": 503, "duration_ms": 42.7 }</code>' },
+    { id:'detect', t:'Step 2: SIMD detection', dur:5000,
+      d:'logfwd runs one SIMD pass. Structural characters light up as the bitmask fills in — 32 bytes per CPU cycle.' },
+    { id:'strings', t:'Step 3: String mask', dur:4500,
+      d:'<code>prefix_xor</code> identifies bytes inside strings. Structural chars inside strings (dashed) are false positives.' },
+    { id:'result', t:'Step 4: Usable positions', dur:4500,
+      d:'Only structural characters outside strings survive. Next colon or comma: one <code>trailing_zeros</code> — O(1).' },
+    { id:'extract', t:'Step 5: First field', dur:4000,
+      d:'Jump to colon at position 8 via bitmask. Read key left, value right. No scanning.' },
+    { id:'allfields', t:'Step 6: All fields', dur:6000,
+      d:'Same O(1) jump for every colon. All four fields extracted in one pass.' },
+  ];
+
+  // Build DOM
+  var PLAY_SVG = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>';
+  var PAUSE_SVG = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>';
+
+  var bar = el('div','sa-bar');
+  var playBtn = el('button','sa-play'); playBtn.innerHTML = PLAY_SVG;
+  var prog = el('div','sa-prog'); var progFill = el('div','sa-prog-fill'); prog.appendChild(progFill);
+  var pills = el('div','sa-pills');
+  var pillBtns = STEPS.map(function(_,i) { var b = el('button','sa-pill'); b.textContent = ''+(i+1); b.dataset.i = ''+i; return b; });
+  pillBtns.forEach(function(b) { pills.appendChild(b); });
+  bar.appendChild(playBtn); bar.appendChild(prog); bar.appendChild(pills);
+
+  var exp = el('div','sa-exp');
+  var logEl = el('div','sa-log'); logEl.innerHTML = '<code>' + LINE + '</code>';
+  var grid = el('div','sa-grid');
+  var byteEls = chars.map(function(c, i) {
+    var d = el('div','sa-byte'); d.dataset.i = ''+i;
+    if (info[i].fc !== undefined) d.dataset.fc = ''+info[i].fc;
+    var ch = el('span','sa-ch'); ch.textContent = c;
+    var pos = el('span','sa-pos'); pos.textContent = ''+i;
+    d.appendChild(ch); d.appendChild(pos);
+    grid.appendChild(d);
+    return d;
+  });
+  var mask = el('div','sa-mask');
+  var maskLbl = el('span','sa-mask-lbl'); maskLbl.textContent = 'Structural:';
+  var bitsEl = el('div','sa-bits');
+  var bitEls = chars.map(function(_, i) { var b = el('span','sa-bit'); b.textContent = '\u00b7'; bitsEl.appendChild(b); return b; });
+  mask.appendChild(maskLbl); mask.appendChild(bitsEl);
+
+  var extractEl = el('div','sa-fields'); extractEl.hidden = true;
+  extractEl.innerHTML = '<div class="sa-fields-row"><span class="sa-fc" style="--fc:var(--f0)"><b>level</b> = ERROR</span></div><p>Jumped to colon at position <b>8</b> via <code>trailing_zeros(colon_mask)</code>. Key left, value right — no scanning.</p>';
+
+  var allfieldsEl = el('div','sa-fields'); allfieldsEl.hidden = true;
+  allfieldsEl.innerHTML = '<div class="sa-fields-row"><span class="sa-fc" style="--fc:var(--f0)"><b>level</b> = ERROR</span><span class="sa-fc" style="--fc:var(--f1)"><b>message</b> = request failed</span><span class="sa-fc" style="--fc:var(--f2)"><b>status</b> = 503</span><span class="sa-fc" style="--fc:var(--f3)"><b>duration_ms</b> = 42.7</span></div><p>4 fields extracted in one pass. Ready for <code>SELECT level, status FROM logs WHERE status >= 500</code></p>';
+
+  var leg = el('div','sa-leg');
+  leg.innerHTML = '<span><i class="sa-sw" style="border-color:#e879a0"></i> Quote</span><span><i class="sa-sw" style="border-color:#60a5fa"></i> Colon</span><span><i class="sa-sw" style="border-color:#a78bfa"></i> Comma</span><span><i class="sa-sw" style="border-color:#f59e0b"></i> Brace</span>';
+
+  root.appendChild(bar); root.appendChild(exp); root.appendChild(logEl);
+  root.appendChild(grid); root.appendChild(mask);
+  root.appendChild(extractEl); root.appendChild(allfieldsEl); root.appendChild(leg);
+
+  // State
+  var cur = 0, playing = false, timer = null, sweeps = [];
+
+  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+  function clearT() { sweeps.forEach(clearTimeout); sweeps = []; if (timer) { clearTimeout(timer); timer = null; } }
+
+  function go(idx) {
+    cur = idx; var s = STEPS[idx]; root.dataset.step = s.id; clearT();
+    pillBtns.forEach(function(p,i) { p.classList.toggle('on', i===idx); });
+    exp.innerHTML = '<b>'+s.t+'</b><p>'+s.d+'</p>';
+    progFill.style.width = ((idx+1)/STEPS.length*100)+'%';
+
+    // Visibility
+    logEl.style.display = s.id==='log' ? '' : 'none';
+    grid.style.display = s.id==='log' ? 'none' : '';
+    mask.style.display = s.id==='log' ? 'none' : '';
+    leg.style.display = (s.id==='log'||s.id==='allfields'||s.id==='extract') ? 'none' : '';
+    extractEl.hidden = s.id !== 'extract';
+    allfieldsEl.hidden = s.id !== 'allfields';
+
+    // Reset byte classes
+    byteEls.forEach(function(b) { b.className = 'sa-byte'; });
+
+    if (s.id === 'log') {
+      bitEls.forEach(function(b) { b.textContent = '\u00b7'; b.className = 'sa-bit'; });
+    } else if (s.id === 'detect') {
+      bitEls.forEach(function(b) { b.textContent = '\u00b7'; b.className = 'sa-bit'; });
+      byteEls.forEach(function(b, i) {
+        sweeps.push(setTimeout(function() {
+          if (info[i].cls) b.classList.add(info[i].cls, 'lit');
+          bitEls[i].textContent = info[i].isStruct ? '1' : '0';
+          if (info[i].isStruct) bitEls[i].classList.add('on');
+        }, i * 16));
+      });
+    } else {
+      // Show full bitmask + colors
+      byteEls.forEach(function(b, i) { if (info[i].cls) b.classList.add(info[i].cls); });
+      bitEls.forEach(function(b, i) {
+        b.textContent = info[i].structOut ? '1' : '0';
+        b.className = info[i].structOut ? 'sa-bit on' : 'sa-bit';
+      });
+      // Step-specific classes
+      if (s.id === 'strings') {
+        byteEls.forEach(function(b, i) {
+          if (info[i].inStr) b.classList.add('dim');
+          if (info[i].isStruct && info[i].inStr) { b.classList.remove('dim'); b.classList.add('dimS'); }
+        });
+      } else if (s.id === 'result') {
+        byteEls.forEach(function(b, i) { if (info[i].structOut) b.classList.add('keep'); });
+      } else if (s.id === 'extract') {
+        byteEls.forEach(function(b, i) {
+          if (info[i].fc === 0 && info[i].fr === 'k') b.classList.add('fK');
+          if (info[i].fc === 0 && info[i].fr === 'c') b.classList.add('fCol');
+          if (info[i].fc === 0 && info[i].fr === 'v') b.classList.add('fV');
+        });
+      }
+    }
+
+    updatePlayIcon();
+  }
+
+  function updatePlayIcon() {
+    playBtn.innerHTML = playing
+      ? '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>';
+  }
+
+  function startPlay() {
+    playing = true;
+    updatePlayIcon();
+    scheduleNext();
+  }
+
+  function stopPlay() {
+    playing = false;
+    clearT();
+    updatePlayIcon();
+  }
+
+  function scheduleNext() {
+    if (!playing) return;
+    timer = setTimeout(function() {
+      if (!playing) return;
+      go((cur + 1) % STEPS.length);
+      scheduleNext();
+    }, STEPS[cur].dur);
+  }
+
+  playBtn.addEventListener('click', function() {
+    if (playing) { stopPlay(); }
+    else { if (cur >= STEPS.length - 1) go(0); startPlay(); }
+  });
+  pillBtns.forEach(function(b) {
+    b.addEventListener('click', function() { stopPlay(); go(+b.dataset.i); });
+  });
+
+  go(0);
+
+  // Auto-start after 1.5 seconds
+  setTimeout(function() { startPlay(); }, 1500);
+
+  // Scroll sync: map page headings to animation steps
+  var headingToStep = {
+    'the-log-line': 0,
+    'simd-structural-detection': 1,
+    'string-interior-mask': 2,
+    'usable-positions': 3,
+    'field-extraction': 4,
+    'all-fields-extracted': 5,
+  };
+
+  // Observe headings and activate corresponding step when scrolled into view
+  if ('IntersectionObserver' in window) {
+    var observer = new IntersectionObserver(function(entries) {
+      if (playing) return; // don't override autoplay
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) {
+          var id = entry.target.id;
+          if (id in headingToStep) {
+            go(headingToStep[id]);
+          }
+        }
+      });
+    }, { rootMargin: '-20% 0px -60% 0px' });
+
+    Object.keys(headingToStep).forEach(function(id) {
+      var heading = document.getElementById(id);
+      if (heading) observer.observe(heading);
+    });
+  }
+})();
+</script>

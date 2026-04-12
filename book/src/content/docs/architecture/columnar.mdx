@@ -1,0 +1,35 @@
+---
+title: "Why Columnar Storage Matters"
+description: "Row vs column layout — and why it makes logfwd's SQL transforms fast"
+---
+
+import ColumnarDiagram from '../../../components/ColumnarDiagram.astro';
+
+Most log agents process data row by row — each log line is one record, stored with all its fields together. logfwd does something different: it stores data in **Apache Arrow columnar format**, where each field is a contiguous array.
+
+This one change is why logfwd can run full SQL queries at 2.8 million lines per second.
+
+<ColumnarDiagram />
+
+## Why columns beat rows for analytics
+
+When you write `SELECT level, status FROM logs WHERE status >= 500`, you only need two columns out of potentially twenty. With row storage, the CPU has to load every field of every row just to check `status` — the `message`, `duration`, `request_id`, and everything else passes through the cache even though you never use it.
+
+With columnar storage, DataFusion reads **only** the `level` and `status` arrays. On a 20-field log line, that's a 90% reduction in data touched. The CPU cache stays hot with useful data instead of being polluted with irrelevant fields.
+
+## How logfwd builds columns
+
+The scanner doesn't build rows and then transpose them. It builds columns **directly** during the scan:
+
+1. For each JSON field encountered, the scanner looks up the column index
+2. The value is appended to that column's builder (int64 array, utf8 array, etc.)
+3. Fields not present in a row get a null appended
+4. At the end of the batch, each builder produces a typed Arrow array
+
+The result is a `RecordBatch` — Arrow's unit of columnar data. This batch flows directly to DataFusion without any serialization or format conversion.
+
+## The zero-copy trick
+
+Arrow's `StringViewArray` takes this further. String values aren't copied into the column — instead, 16-byte views point directly into the original input buffer. Five string columns sharing one buffer use 1x the memory, not 5x.
+
+See the [Scanner page](/architecture/scanner/#zero-copy-mode) for an interactive visualization of how this works.

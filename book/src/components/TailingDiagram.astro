@@ -1,0 +1,267 @@
+---
+// Thin shell — continuous auto-playing tailing simulation
+---
+
+<div class="tl" id="tailing-diagram"></div>
+
+<style is:global>
+  .tl {
+    --tl-bg: var(--sl-color-bg-sidebar);
+    --tl-border: var(--sl-color-hairline);
+    --tl-accent: var(--sl-color-accent);
+    --tl-text: var(--sl-color-text);
+    --tl-muted: var(--sl-color-gray-3);
+    --tl-green: #22c55e;
+    --tl-red: #ef4444;
+    --tl-amber: #f59e0b;
+    --tl-blue: #60a5fa;
+    margin: 1.5rem 0;
+  }
+  .tl * { margin-top: 0 !important; }
+
+  .tl-stage {
+    padding: 0.5rem 0.75rem;
+    background: var(--tl-bg);
+    border: 1px solid var(--tl-border);
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+    font-size: 0.82rem; line-height: 1.5;
+    min-height: 2.5rem;
+    transition: border-color 0.3s, background 0.3s;
+  }
+  .tl-stage.event {
+    border-color: var(--tl-amber);
+    background: color-mix(in srgb, var(--tl-amber) 5%, var(--tl-bg));
+  }
+  .tl-stage.danger {
+    border-color: var(--tl-red);
+    background: color-mix(in srgb, var(--tl-red) 5%, var(--tl-bg));
+  }
+  .tl-stage.success {
+    border-color: var(--tl-green);
+    background: color-mix(in srgb, var(--tl-green) 5%, var(--tl-bg));
+  }
+  .tl-stage b { font-size: 0.85rem; }
+
+  .tl-sim {
+    display: flex; gap: 0.75rem; flex-wrap: wrap;
+    margin-bottom: 0.5rem; align-items: flex-start;
+  }
+
+  .tl-file {
+    border: 1.5px solid var(--tl-border); border-radius: 8px;
+    padding: 0.5rem; flex: 1; min-width: 240px; max-width: 400px;
+    background: var(--tl-bg); transition: border-color 0.3s, opacity 0.5s;
+  }
+  .tl-file.active { border-color: var(--tl-green); }
+  .tl-file.old { border-color: var(--tl-amber); opacity: 0.5; }
+
+  .tl-file-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-bottom: 0.3rem; margin-bottom: 0.3rem;
+    border-bottom: 1px solid var(--tl-border);
+    font-size: 0.72rem; font-weight: 600;
+  }
+  .tl-fname { font-family: var(--sl-font-mono, monospace); }
+  .tl-fmeta { font-size: 0.58rem; color: var(--tl-muted); font-weight: 400; }
+
+  .tl-lines {
+    font-family: var(--sl-font-mono, monospace); font-size: 0.62rem;
+    line-height: 1.6; max-height: 180px; overflow-y: auto;
+  }
+  .tl-line { display: flex; gap: 0.25rem; transition: opacity 0.3s; }
+  .tl-line-num { color: var(--tl-muted); min-width: 20px; text-align: right; user-select: none; }
+  .tl-line-text { white-space: nowrap; }
+  .tl-line.read .tl-line-text { color: var(--tl-muted); }
+  .tl-line.new .tl-line-text { color: var(--tl-green); font-weight: 600; }
+
+  .tl-cursor {
+    display: flex; align-items: center; gap: 0.3rem;
+    margin-top: 0.25rem; padding-top: 0.25rem;
+    border-top: 1px dashed var(--tl-border);
+    font-size: 0.6rem; color: var(--tl-accent); font-weight: 600;
+  }
+
+  .tl-stats {
+    display: flex; gap: 0.75rem; flex-wrap: wrap;
+    font-size: 0.72rem; padding: 0.4rem 0;
+  }
+  .tl-stat { display: flex; flex-direction: column; }
+  .tl-stat-label { font-size: 0.58rem; color: var(--tl-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .tl-stat-val { font-weight: 700; font-family: var(--sl-font-mono, monospace); }
+  .tl-stat-val.green { color: var(--tl-green); }
+  .tl-stat-val.red { color: var(--tl-red); }
+</style>
+
+<script>
+(function() {
+  var root = document.getElementById('tailing-diagram');
+  if (!root) return;
+
+  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+  var LEVELS = ['INFO', 'INFO', 'INFO', 'DEBUG', 'INFO', 'WARN', 'INFO', 'INFO', 'ERROR', 'INFO'];
+  var MSGS = ['request handled', 'connection opened', 'query executed', 'cache hit', 'user login', 'slow response', 'health check ok', 'batch processed', 'connection refused', 'session created'];
+
+  function genLine(n) {
+    var lvl = LEVELS[n % LEVELS.length];
+    var msg = MSGS[n % MSGS.length];
+    return '{"level":"' + lvl + '","msg":"' + msg + '","n":' + n + '}';
+  }
+
+  // DOM
+  var stageEl = el('div', 'tl-stage');
+  var simEl = el('div', 'tl-sim');
+  var statsEl = el('div', 'tl-stats');
+
+  root.appendChild(stageEl);
+  root.appendChild(simEl);
+  root.appendChild(statsEl);
+
+  // State
+  var lineNum = 1;
+  var offset = 0;
+  var linesRead = 0;
+  var phase = 'tailing'; // tailing, rotating, recovery, done
+  var fileInode = 12345;
+  var rotateAt = 15; // rotate after 15 lines
+  var mainFile = null;
+  var oldFile = null;
+  var timer = null;
+
+  function createFileEl(name, inode, cls) {
+    var f = el('div', 'tl-file ' + cls);
+    var head = el('div', 'tl-file-head');
+    var fname = el('span', 'tl-fname'); fname.textContent = name;
+    var fmeta = el('span', 'tl-fmeta'); fmeta.textContent = 'inode: ' + inode;
+    head.appendChild(fname); head.appendChild(fmeta);
+    f.appendChild(head);
+    var lines = el('div', 'tl-lines');
+    f.appendChild(lines);
+    var cursor = el('div', 'tl-cursor');
+    f.appendChild(cursor);
+    return { el: f, lines: lines, cursor: cursor, fname: fname, fmeta: fmeta };
+  }
+
+  function updateStats() {
+    statsEl.innerHTML = '';
+    var items = [
+      ['Lines read', '' + linesRead, 'green'],
+      ['File offset', offset + ' bytes', ''],
+      ['Inode', '' + fileInode, ''],
+      ['Phase', phase, phase === 'tailing' ? 'green' : phase === 'rotating' ? '' : 'green'],
+    ];
+    items.forEach(function(item) {
+      var s = el('div', 'tl-stat');
+      var l = el('div', 'tl-stat-label'); l.textContent = item[0];
+      var v = el('div', 'tl-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = item[1];
+      s.appendChild(l); s.appendChild(v);
+      statsEl.appendChild(s);
+    });
+  }
+
+  function addLine(fileObj, num, text, cls) {
+    var line = el('div', 'tl-line ' + cls);
+    var numEl = el('span', 'tl-line-num'); numEl.textContent = '' + num;
+    var textEl = el('span', 'tl-line-text'); textEl.textContent = text;
+    line.appendChild(numEl); line.appendChild(textEl);
+    fileObj.lines.appendChild(line);
+    // Auto-scroll
+    fileObj.lines.scrollTop = fileObj.lines.scrollHeight;
+  }
+
+  // Initialize
+  mainFile = createFileEl('app.log', fileInode, 'active');
+  simEl.appendChild(mainFile.el);
+  stageEl.innerHTML = '<b>Tailing app.log</b> — logfwd reads new lines as they appear. Watch the line counter grow.';
+  mainFile.cursor.textContent = '\u25B6 reading...';
+
+  function tick() {
+    if (phase === 'tailing') {
+      var text = genLine(lineNum);
+      var len = text.length + 1;
+      addLine(mainFile, lineNum, text, 'new');
+      lineNum++;
+      offset += len;
+      linesRead++;
+      mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
+
+      if (lineNum > rotateAt) {
+        phase = 'rotating';
+        stageEl.className = 'tl-stage event';
+        stageEl.innerHTML = '<b>\u26A0 Log rotation!</b> — logrotate renames app.log \u2192 app.log.1 and creates a new empty app.log. The inode changes. A naive <code>tail -f</code> would keep reading the old file and miss all new data.';
+
+        // Show old file
+        mainFile.el.className = 'tl-file old';
+        mainFile.fname.textContent = 'app.log.1';
+        mainFile.fmeta.textContent = 'inode: ' + fileInode + ' (old)';
+        mainFile.cursor.textContent = '\u25B6 EOF — drained';
+
+        // Create new file
+        fileInode = 67890;
+        oldFile = mainFile;
+        mainFile = createFileEl('app.log', fileInode, 'active');
+        simEl.appendChild(mainFile.el);
+        mainFile.cursor.textContent = '\u25B6 detected! new inode ' + fileInode;
+
+        offset = 0;
+        lineNum = 1;
+
+        timer = setTimeout(tick, 1500);
+        updateStats();
+        return;
+      }
+
+      updateStats();
+      timer = setTimeout(tick, 500);
+
+    } else if (phase === 'rotating') {
+      // logfwd detects the new file and starts reading
+      stageEl.className = 'tl-stage success';
+      stageEl.innerHTML = '<b>\u2705 logfwd detected rotation</b> — New inode ' + fileInode + ' detected. Drained remaining lines from old file, opened new file at offset 0. No data lost.';
+      phase = 'new-tailing';
+      timer = setTimeout(tick, 800);
+
+    } else if (phase === 'new-tailing') {
+      var text = genLine(lineNum);
+      var len = text.length + 1;
+      addLine(mainFile, lineNum, text, 'new');
+      lineNum++;
+      offset += len;
+      linesRead++;
+      mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
+
+      updateStats();
+
+      if (lineNum > 8) {
+        // Loop: reset everything
+        phase = 'reset';
+        timer = setTimeout(function() {
+          // Clean reset
+          simEl.innerHTML = '';
+          lineNum = 1;
+          offset = 0;
+          linesRead = 0;
+          fileInode = 12345;
+          phase = 'tailing';
+          mainFile = createFileEl('app.log', fileInode, 'active');
+          simEl.appendChild(mainFile.el);
+          stageEl.className = 'tl-stage';
+          stageEl.innerHTML = '<b>Tailing app.log</b> — logfwd reads new lines as they appear. Watch the line counter grow.';
+          mainFile.cursor.textContent = '\u25B6 reading...';
+          updateStats();
+          timer = setTimeout(tick, 800);
+        }, 3000);
+        return;
+      }
+
+      timer = setTimeout(tick, 400);
+    }
+  }
+
+  updateStats();
+
+  // Auto-start after a brief delay
+  timer = setTimeout(tick, 1000);
+})();
+</script>

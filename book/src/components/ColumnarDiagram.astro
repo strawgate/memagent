@@ -1,0 +1,209 @@
+---
+// Thin shell — all logic client-side
+---
+
+<div class="cd" id="columnar-diagram"></div>
+
+<style is:global>
+  .cd {
+    --cd-bg: var(--sl-color-bg-sidebar);
+    --cd-border: var(--sl-color-hairline);
+    --cd-accent: var(--sl-color-accent);
+    --cd-text: var(--sl-color-text);
+    --cd-muted: var(--sl-color-gray-3);
+    --cd-green: #22c55e;
+    --cd-blue: #60a5fa;
+    --cd-purple: #a78bfa;
+    --cd-amber: #f59e0b;
+    margin: 1.5rem 0;
+  }
+  .cd * { margin-top: 0 !important; }
+
+  .cd-tabs { display: flex; gap: 0.35rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+  .cd-tab {
+    padding: 0.4rem 0.8rem; border: 1px solid var(--cd-border); border-radius: 6px;
+    background: transparent; color: var(--cd-text); font-family: inherit;
+    font-size: 0.78rem; font-weight: 500; cursor: pointer; transition: all 0.12s;
+  }
+  .cd-tab:hover { border-color: var(--cd-accent); }
+  .cd-tab.on { border-color: var(--cd-accent); background: var(--cd-accent); color: white; font-weight: 600; }
+
+  .cd-desc {
+    padding: 0.65rem 0.9rem; background: var(--cd-bg);
+    border: 1px solid var(--cd-border); border-radius: 8px;
+    margin-bottom: 0.75rem; font-size: 0.82rem; line-height: 1.6;
+  }
+  .cd-desc b { display: block; font-size: 0.88rem; margin-bottom: 0.2rem; }
+
+  .cd-grid-area { margin-bottom: 0.75rem; }
+  .cd-grid-label { font-size: 0.68rem; font-weight: 600; color: var(--cd-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.3rem; }
+
+  /* Row-oriented table */
+  .cd-row-table { border-collapse: collapse; width: 100%; font-size: 0.75rem; font-family: var(--sl-font-mono, monospace); }
+  .cd-row-table th {
+    text-align: left; padding: 0.3rem 0.5rem; font-weight: 700; font-size: 0.7rem;
+    border-bottom: 2px solid var(--cd-border); color: var(--cd-muted);
+  }
+  .cd-row-table td { padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--cd-border); }
+  .cd-row-table tr.hi td { background: color-mix(in srgb, var(--cd-amber) 8%, transparent); }
+  .cd-row-table tr.scan td { background: color-mix(in srgb, var(--cd-accent) 6%, transparent); }
+
+  /* Column-oriented blocks */
+  .cd-cols { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .cd-col-block {
+    border: 1.5px solid var(--cd-border); border-radius: 6px;
+    padding: 0.4rem; min-width: 80px; flex: 1; transition: all 0.3s;
+  }
+  .cd-col-block.hi { border-color: var(--cd-green); background: color-mix(in srgb, var(--cd-green) 6%, transparent); }
+  .cd-col-block.skip { opacity: 0.3; }
+  .cd-col-head {
+    font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.03em; margin-bottom: 0.25rem; padding-bottom: 0.2rem;
+    border-bottom: 1px solid var(--cd-border);
+  }
+  .cd-col-vals { font-family: var(--sl-font-mono, monospace); font-size: 0.68rem; line-height: 1.6; }
+  .cd-col-val { padding: 0.1rem 0; }
+
+  .cd-perf {
+    margin-top: 0.5rem; padding: 0.5rem 0.75rem;
+    background: color-mix(in srgb, var(--cd-green) 5%, var(--cd-bg));
+    border: 1px solid color-mix(in srgb, var(--cd-green) 20%, transparent);
+    border-radius: 6px; font-size: 0.78rem; line-height: 1.5;
+  }
+  .cd-perf b { color: var(--cd-green); }
+</style>
+
+<script>
+(function() {
+  var root = document.getElementById('columnar-diagram');
+  if (!root) return;
+
+  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+  var rows = [
+    { level: 'ERROR', message: 'connection refused', status: 503, duration: 142.5 },
+    { level: 'INFO', message: 'request handled', status: 200, duration: 3.2 },
+    { level: 'WARN', message: 'slow query', status: 200, duration: 891.0 },
+    { level: 'ERROR', message: 'timeout', status: 504, duration: 5000.0 },
+    { level: 'INFO', message: 'health check ok', status: 200, duration: 0.8 },
+  ];
+
+  var cols = ['level', 'message', 'status', 'duration'];
+  var colColors = [null, null, null, null]; // colored by step
+
+  var steps = [
+    {
+      id: 'row', title: 'Row-oriented storage (traditional)',
+      desc: 'Most log agents store data row by row. Each log line is one record with all fields together. To find all <code>status</code> values, you scan every byte of every row — even fields you don\'t care about.',
+      showRow: true, showCol: false, highlight: 'row', perf: null,
+    },
+    {
+      id: 'col', title: 'Column-oriented storage (Arrow)',
+      desc: 'logfwd stores data in <strong>Apache Arrow columnar format</strong>. Each field is a contiguous array. All <code>status</code> values are packed together in memory. To scan one field, you read only that column — everything else is untouched.',
+      showRow: false, showCol: true, highlight: null, perf: null,
+    },
+    {
+      id: 'query', title: 'Why columns make SQL fast',
+      desc: 'Query: <code>SELECT level, status FROM logs WHERE status >= 500</code><br><br>With columnar storage, DataFusion only reads the <strong>level</strong> and <strong>status</strong> columns. The <strong>message</strong> and <strong>duration</strong> columns are never loaded. On wide data with 20 fields, this skips 90% of the data.',
+      showRow: false, showCol: true, highlight: 'query', perf: 'With row storage, this query scans 100% of the data. With columnar storage, it scans only the 2 referenced columns — <b>60% less memory, 2-3x faster</b>.',
+    },
+  ];
+
+  // Build DOM
+  var tabs = el('div', 'cd-tabs');
+  var tabBtns = steps.map(function(s, i) {
+    var b = el('button', 'cd-tab' + (i === 0 ? ' on' : ''));
+    b.textContent = (i + 1) + '. ' + s.title;
+    b.dataset.i = '' + i;
+    tabs.appendChild(b);
+    return b;
+  });
+
+  var desc = el('div', 'cd-desc');
+
+  // Row table
+  var rowArea = el('div', 'cd-grid-area');
+  var rowLabel = el('div', 'cd-grid-label'); rowLabel.textContent = 'Row-oriented (each row = one log line)';
+  var rowTable = el('table', 'cd-row-table');
+  var thead = el('thead'); var thr = el('tr');
+  cols.forEach(function(c) { var th = el('th'); th.textContent = c; thr.appendChild(th); });
+  thead.appendChild(thr); rowTable.appendChild(thead);
+  var tbody = el('tbody');
+  var rowEls = rows.map(function(r) {
+    var tr = el('tr');
+    cols.forEach(function(c) { var td = el('td'); td.textContent = r[c]; tr.appendChild(td); });
+    tbody.appendChild(tr);
+    return tr;
+  });
+  rowTable.appendChild(tbody);
+  rowArea.appendChild(rowLabel); rowArea.appendChild(rowTable);
+
+  // Column blocks
+  var colArea = el('div', 'cd-grid-area');
+  var colLabel = el('div', 'cd-grid-label'); colLabel.textContent = 'Column-oriented (each column = contiguous array)';
+  var colsEl = el('div', 'cd-cols');
+  var colBlockEls = cols.map(function(c) {
+    var block = el('div', 'cd-col-block');
+    block.dataset.col = c;
+    var head = el('div', 'cd-col-head'); head.textContent = c;
+    var vals = el('div', 'cd-col-vals');
+    rows.forEach(function(r) {
+      var v = el('div', 'cd-col-val'); v.textContent = r[c];
+      vals.appendChild(v);
+    });
+    block.appendChild(head); block.appendChild(vals);
+    colsEl.appendChild(block);
+    return block;
+  });
+  colArea.appendChild(colLabel); colArea.appendChild(colsEl);
+
+  var perfEl = el('div', 'cd-perf');
+
+  root.appendChild(tabs);
+  root.appendChild(desc);
+  root.appendChild(rowArea);
+  root.appendChild(colArea);
+  root.appendChild(perfEl);
+
+  function showStep(idx) {
+    var s = steps[idx];
+    tabBtns.forEach(function(b, i) { b.classList.toggle('on', i === idx); });
+    desc.innerHTML = '<b>' + s.title + '</b><p>' + s.desc + '</p>';
+
+    rowArea.style.display = s.showRow ? '' : 'none';
+    colArea.style.display = s.showCol ? '' : 'none';
+
+    // Reset highlights
+    rowEls.forEach(function(tr) { tr.className = ''; });
+    colBlockEls.forEach(function(b) { b.className = 'cd-col-block'; });
+
+    if (s.highlight === 'row') {
+      // Highlight scanning across rows
+      rowEls.forEach(function(tr) { tr.className = 'scan'; });
+    } else if (s.highlight === 'query') {
+      // Highlight only queried columns
+      colBlockEls.forEach(function(b) {
+        var c = b.dataset.col;
+        if (c === 'level' || c === 'status') {
+          b.classList.add('hi');
+        } else {
+          b.classList.add('skip');
+        }
+      });
+    }
+
+    if (s.perf) {
+      perfEl.style.display = '';
+      perfEl.innerHTML = s.perf;
+    } else {
+      perfEl.style.display = 'none';
+    }
+  }
+
+  tabBtns.forEach(function(b) {
+    b.addEventListener('click', function() { showStep(+b.dataset.i); });
+  });
+
+  showStep(0);
+})();
+</script>
