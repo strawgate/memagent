@@ -8,7 +8,10 @@ use http_body_util::BodyExt as _;
 /// Maximum request body size shared by all HTTP receivers: 10 MB.
 pub(crate) const MAX_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;
 
-pub(crate) fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
+/// Parses the Content-Length header value.
+///
+/// Returns `None` when the header is missing, non-UTF-8, or not a valid `u64`.
+pub(crate) fn parse_content_length(headers: &HeaderMap) -> Option<u64> {
     headers
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())

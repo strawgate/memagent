@@ -399,9 +399,55 @@ fn inject_cri_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framed::FramedInput;
+    use crate::input::{FileInput, InputEvent, InputSource};
+    use crate::tail::TailConfig;
+    use std::time::{Duration, Instant};
 
     fn make_stats() -> Arc<ComponentStats> {
         Arc::new(ComponentStats::new())
+    }
+
+    fn process_cri_from_tempfile(input: &[u8]) -> Vec<u8> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cri.log");
+        std::fs::write(&path, input).expect("write CRI fixture");
+
+        let stats = make_stats();
+        let file_input = FileInput::new(
+            "cri-test".to_string(),
+            std::slice::from_ref(&path),
+            TailConfig {
+                start_from_end: false,
+                poll_interval_ms: 10,
+                ..Default::default()
+            },
+            Arc::clone(&stats),
+        )
+        .expect("file tailer");
+        let mut framed = FramedInput::new(
+            Box::new(file_input),
+            FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats)),
+            stats,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let events = framed.poll().expect("poll framed CRI tempfile");
+            let data: Vec<u8> = events
+                .into_iter()
+                .filter_map(|event| match event {
+                    InputEvent::Data { bytes, .. } => Some(bytes),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            if !data.is_empty() {
+                return data;
+            }
+            assert!(Instant::now() < deadline, "timed out reading CRI fixture");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -705,11 +751,8 @@ mod tests {
 
     #[test]
     fn cri_json_message_with_leading_whitespace_stays_json() {
-        let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
         let input = b"2024-01-15T10:30:00Z stdout F   {\"msg\":\"cri\"}\n";
-        let mut out = Vec::new();
-        proc.process_lines(input, &mut out);
+        let out = process_cri_from_tempfile(input);
         let output_str = std::str::from_utf8(&out).expect("output must be valid UTF-8");
         let trimmed = output_str.trim_end_matches('\n');
         let value: serde_json::Value =
@@ -727,8 +770,6 @@ mod tests {
     #[test]
     fn cri_message_with_non_json_ascii_whitespace_prefix_stays_plain_text() {
         for prefix in [b'\x0b', b'\x0c'] {
-            let stats = make_stats();
-            let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
             let input = [
                 b"2024-01-15T10:30:00Z stdout F ".as_slice(),
                 &[prefix],
@@ -736,8 +777,7 @@ mod tests {
                 b"\n",
             ]
             .concat();
-            let mut out = Vec::new();
-            proc.process_lines(&input, &mut out);
+            let out = process_cri_from_tempfile(&input);
             let output_str = std::str::from_utf8(&out).expect("output must be valid UTF-8");
             let trimmed = output_str.trim_end_matches('\n');
             let value: serde_json::Value =

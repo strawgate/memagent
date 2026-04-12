@@ -33,7 +33,7 @@ use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::input::{InputEvent, InputSource};
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
-use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, declared_content_length, read_limited_body};
+use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, parse_content_length, read_limited_body};
 
 /// Bounded channel capacity — limits memory when the pipeline falls behind.
 const CHANNEL_BOUND: usize = 256;
@@ -261,7 +261,7 @@ async fn handle_arrow_ipc_request(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let content_length = declared_content_length(&headers);
+    let content_length = parse_content_length(&headers);
     if content_length.is_some_and(|body_len| body_len > MAX_REQUEST_BODY_SIZE as u64) {
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }

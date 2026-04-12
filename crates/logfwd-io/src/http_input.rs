@@ -21,7 +21,7 @@ use tokio::sync::oneshot;
 
 use crate::InputError;
 use crate::input::{InputEvent, InputSource};
-use crate::receiver_http::{declared_content_length, read_limited_body};
+use crate::receiver_http::{parse_content_length, read_limited_body};
 
 /// Default max request body size (10 MiB).
 const DEFAULT_MAX_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -340,7 +340,7 @@ async fn handle_request(
             .into_response();
     }
 
-    let content_length = declared_content_length(request.headers());
+    let content_length = parse_content_length(request.headers());
     if content_length.is_some_and(|body_len| body_len > state.max_request_body_size as u64) {
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }
