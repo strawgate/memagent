@@ -65,7 +65,7 @@ pub async fn run_pipelines(
     let has_file_inputs = config.pipelines.values().any(|pipe| {
         pipe.inputs
             .iter()
-            .any(|input| matches!(input.input_type, logfwd_config::InputType::File))
+            .any(|input| matches!(input.type_config, logfwd_config::InputTypeConfig::File(_)))
     });
     let _lock_guard = if has_file_inputs {
         acquire_instance_lock(&config)?
@@ -393,19 +393,19 @@ pub fn format_bytes(b: u64) -> String {
 }
 
 fn input_label(i: &logfwd_config::InputConfig) -> String {
-    use logfwd_config::InputType;
-    match i.input_type {
-        InputType::File => format!("file  {}", i.path.as_deref().unwrap_or("*")),
-        InputType::Tcp => format!("tcp   {}", i.listen.as_deref().unwrap_or(":514")),
-        InputType::Udp => format!("udp   {}", i.listen.as_deref().unwrap_or(":514")),
-        InputType::Otlp => format!("otlp  {}", i.listen.as_deref().unwrap_or(":4318")),
-        InputType::Http => format!("http  {}", i.listen.as_deref().unwrap_or(":8080")),
-        InputType::ArrowIpc => "arrow_ipc".to_string(),
-        InputType::Generator => "generator".to_string(),
-        InputType::LinuxEbpfSensor => "linux_ebpf_sensor".to_string(),
-        InputType::MacosEsSensor => "macos_es_sensor".to_string(),
-        InputType::WindowsEbpfSensor => "windows_ebpf_sensor".to_string(),
-        _ => "unknown".to_string(),
+    use logfwd_config::InputTypeConfig;
+    match &i.type_config {
+        InputTypeConfig::File(f) => format!("file  {}", f.path),
+        InputTypeConfig::Tcp(t) => format!("tcp   {}", t.listen),
+        InputTypeConfig::Udp(u) => format!("udp   {}", u.listen),
+        InputTypeConfig::Otlp(o) => format!("otlp  {}", o.listen),
+        InputTypeConfig::Http(h) => format!("http  {}", h.listen),
+        InputTypeConfig::ArrowIpc(a) => format!("arrow_ipc  {}", a.listen),
+        InputTypeConfig::Generator(_) => "generator".to_string(),
+        InputTypeConfig::LinuxEbpfSensor(_) => "linux_ebpf_sensor".to_string(),
+        InputTypeConfig::MacosEsSensor(_) => "macos_es_sensor".to_string(),
+        InputTypeConfig::WindowsEbpfSensor(_) => "windows_ebpf_sensor".to_string(),
+        InputTypeConfig::Journald(_) => "journald".to_string(),
     }
 }
 
