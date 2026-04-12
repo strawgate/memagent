@@ -53,12 +53,14 @@ enum WireAny<'a> {
 #[derive(Clone, Copy)]
 enum StringStorage {
     Decoded,
+    #[cfg(any(feature = "otlp-research", test))]
     InputView,
 }
 
 #[derive(Clone, Copy)]
 enum BatchFinish {
     Detached,
+    #[cfg(any(feature = "otlp-research", test))]
     View,
 }
 
@@ -146,6 +148,7 @@ pub(super) fn decode_projected_otlp_logs(
     )
 }
 
+#[cfg(any(feature = "otlp-research", test))]
 pub(super) fn decode_projected_otlp_logs_view_bytes(
     body: Bytes,
     resource_prefix: &str,
@@ -190,23 +193,30 @@ fn decode_projected_otlp_logs_inner(
     let mut scratch = WireScratch::default();
 
     for_each_field(body, |field, value| {
-        if field == spec::export_logs_service_request::RESOURCE_LOGS
-            && let WireField::Len(resource_logs) = value
-        {
-            decode_resource_logs_wire(
-                &mut builder,
-                &fields,
-                &mut scratch,
-                resource_prefix,
-                resource_logs,
-                string_storage,
-            )?;
+        match (field, value) {
+            (spec::export_logs_service_request::RESOURCE_LOGS, WireField::Len(resource_logs)) => {
+                decode_resource_logs_wire(
+                    &mut builder,
+                    &fields,
+                    &mut scratch,
+                    resource_prefix,
+                    resource_logs,
+                    string_storage,
+                )?;
+            }
+            (spec::export_logs_service_request::RESOURCE_LOGS, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for ExportLogsServiceRequest.resource_logs",
+                ));
+            }
+            _ => {}
         }
         Ok(())
     })?;
 
     let batch = match finish {
         BatchFinish::Detached => builder.finish_batch_detached(),
+        #[cfg(any(feature = "otlp-research", test))]
         BatchFinish::View => builder.finish_batch(),
     };
     batch.map_err(|e| {
@@ -239,26 +249,38 @@ fn decode_resource_logs_wire(
     let mut resource_attrs = Vec::new();
 
     for_each_field(resource_logs, |field, value| {
-        if field == spec::resource_logs::RESOURCE
-            && let WireField::Len(resource) = value
-        {
-            collect_resource_attrs(builder, &mut resource_attrs, resource_prefix, resource)?;
+        match (field, value) {
+            (spec::resource_logs::RESOURCE, WireField::Len(resource)) => {
+                collect_resource_attrs(builder, &mut resource_attrs, resource_prefix, resource)?;
+            }
+            (spec::resource_logs::RESOURCE, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for ResourceLogs.resource",
+                ));
+            }
+            _ => {}
         }
         Ok(())
     })?;
 
     for_each_field(resource_logs, |field, value| {
-        if field == spec::resource_logs::SCOPE_LOGS
-            && let WireField::Len(scope_logs) = value
-        {
-            decode_scope_logs_wire(
-                builder,
-                fields,
-                scratch,
-                &resource_attrs,
-                scope_logs,
-                string_storage,
-            )?;
+        match (field, value) {
+            (spec::resource_logs::SCOPE_LOGS, WireField::Len(scope_logs)) => {
+                decode_scope_logs_wire(
+                    builder,
+                    fields,
+                    scratch,
+                    &resource_attrs,
+                    scope_logs,
+                    string_storage,
+                )?;
+            }
+            (spec::resource_logs::SCOPE_LOGS, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for ResourceLogs.scope_logs",
+                ));
+            }
+            _ => {}
         }
         Ok(())
     })
@@ -271,15 +293,22 @@ fn collect_resource_attrs<'a>(
     resource: &'a [u8],
 ) -> Result<(), ProjectionError> {
     for_each_field(resource, |field, value| {
-        if field == spec::resource::ATTRIBUTES
-            && let WireField::Len(attr) = value
-            && let Some((key, value)) = decode_key_value_wire(attr)?
-        {
-            let mut prefixed = Vec::with_capacity(resource_prefix.len() + key.len());
-            prefixed.extend_from_slice(resource_prefix.as_bytes());
-            prefixed.extend_from_slice(key);
-            let idx = builder.resolve_field(&prefixed);
-            resource_attrs.push((idx, value));
+        match (field, value) {
+            (spec::resource::ATTRIBUTES, WireField::Len(attr)) => {
+                if let Some((key, value)) = decode_key_value_wire(attr)? {
+                    let mut prefixed = Vec::with_capacity(resource_prefix.len() + key.len());
+                    prefixed.extend_from_slice(resource_prefix.as_bytes());
+                    prefixed.extend_from_slice(key);
+                    let idx = builder.resolve_field(&prefixed);
+                    resource_attrs.push((idx, value));
+                }
+            }
+            (spec::resource::ATTRIBUTES, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for Resource.attributes",
+                ));
+            }
+            _ => {}
         }
         Ok(())
     })
@@ -296,27 +325,39 @@ fn decode_scope_logs_wire(
     let mut scope_fields = ScopeFields::default();
 
     for_each_field(scope_logs, |field, value| {
-        if field == spec::scope_logs::SCOPE
-            && let WireField::Len(scope) = value
-        {
-            merge_scope_wire(scope, &mut scope_fields)?;
+        match (field, value) {
+            (spec::scope_logs::SCOPE, WireField::Len(scope)) => {
+                merge_scope_wire(scope, &mut scope_fields)?;
+            }
+            (spec::scope_logs::SCOPE, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for ScopeLogs.scope",
+                ));
+            }
+            _ => {}
         }
         Ok(())
     })?;
 
     for_each_field(scope_logs, |field, value| {
-        if field == spec::scope_logs::LOG_RECORDS
-            && let WireField::Len(log_record) = value
-        {
-            decode_log_record_wire(
-                builder,
-                fields,
-                scratch,
-                resource_attrs,
-                scope_fields,
-                log_record,
-                string_storage,
-            )?;
+        match (field, value) {
+            (spec::scope_logs::LOG_RECORDS, WireField::Len(log_record)) => {
+                decode_log_record_wire(
+                    builder,
+                    fields,
+                    scratch,
+                    resource_attrs,
+                    scope_fields,
+                    log_record,
+                    string_storage,
+                )?;
+            }
+            (spec::scope_logs::LOG_RECORDS, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for ScopeLogs.log_records",
+                ));
+            }
+            _ => {}
         }
         Ok(())
     })
@@ -328,11 +369,21 @@ fn merge_scope_wire<'a>(
 ) -> Result<(), ProjectionError> {
     for_each_field(scope, |field, value| {
         match (field, value) {
-            (spec::instrumentation_scope::NAME, WireField::Len(value)) if !value.is_empty() => {
+            (spec::instrumentation_scope::NAME, WireField::Len(value)) => {
                 scope_fields.name = Some(require_utf8(value, "invalid UTF-8 scope name")?);
             }
-            (spec::instrumentation_scope::VERSION, WireField::Len(value)) if !value.is_empty() => {
+            (spec::instrumentation_scope::NAME, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for InstrumentationScope.name",
+                ));
+            }
+            (spec::instrumentation_scope::VERSION, WireField::Len(value)) => {
                 scope_fields.version = Some(require_utf8(value, "invalid UTF-8 scope version")?);
+            }
+            (spec::instrumentation_scope::VERSION, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for InstrumentationScope.version",
+                ));
             }
             _ => {}
         }
@@ -365,25 +416,73 @@ fn decode_log_record_wire(
             (spec::log_record::TIME_UNIX_NANO, WireField::Fixed64(value)) => {
                 time_unix_nano = value;
             }
+            (spec::log_record::TIME_UNIX_NANO, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.time_unix_nano",
+                ));
+            }
             (spec::log_record::OBSERVED_TIME_UNIX_NANO, WireField::Fixed64(value)) => {
                 observed_time_unix_nano = value;
+            }
+            (spec::log_record::OBSERVED_TIME_UNIX_NANO, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.observed_time_unix_nano",
+                ));
             }
             (spec::log_record::SEVERITY_NUMBER, WireField::Varint(value)) => {
                 severity_number = value as i64;
             }
+            (spec::log_record::SEVERITY_NUMBER, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.severity_number",
+                ));
+            }
             (spec::log_record::SEVERITY_TEXT, WireField::Len(value)) if !value.is_empty() => {
                 severity_text = Some(require_utf8(value, "invalid UTF-8 severity text")?);
             }
+            (spec::log_record::SEVERITY_TEXT, WireField::Len(_)) => {}
+            (spec::log_record::SEVERITY_TEXT, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.severity_text",
+                ));
+            }
             (spec::log_record::BODY, WireField::Len(value)) => body = decode_any_value_wire(value)?,
+            (spec::log_record::BODY, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.body",
+                ));
+            }
             (spec::log_record::TRACE_ID, WireField::Len(value)) if !value.is_empty() => {
                 trace_id = Some(value);
+            }
+            (spec::log_record::TRACE_ID, WireField::Len(_)) => {}
+            (spec::log_record::TRACE_ID, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.trace_id",
+                ));
             }
             (spec::log_record::SPAN_ID, WireField::Len(value)) if !value.is_empty() => {
                 span_id = Some(value);
             }
+            (spec::log_record::SPAN_ID, WireField::Len(_)) => {}
+            (spec::log_record::SPAN_ID, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.span_id",
+                ));
+            }
             (spec::log_record::FLAGS, WireField::Fixed32(value)) => flags = i64::from(value),
+            (spec::log_record::FLAGS, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.flags",
+                ));
+            }
             (spec::log_record::ATTRIBUTES, WireField::Len(value)) => {
                 scratch.attr_ranges.push(subslice_range(log_record, value)?);
+            }
+            (spec::log_record::ATTRIBUTES, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.attributes",
+                ));
             }
             _ => {}
         }
@@ -425,10 +524,14 @@ fn decode_log_record_wire(
     if flags > 0 {
         builder.append_i64_value_by_idx(fields.flags, flags);
     }
-    if let Some(value) = scope_fields.name {
+    if let Some(value) = scope_fields.name
+        && !value.is_empty()
+    {
         append_validated_wire_str(builder, fields.scope_name, value, string_storage);
     }
-    if let Some(value) = scope_fields.version {
+    if let Some(value) = scope_fields.version
+        && !value.is_empty()
+    {
         append_validated_wire_str(builder, fields.scope_version, value, string_storage);
     }
 
@@ -458,8 +561,18 @@ fn decode_key_value_wire(kv: &[u8]) -> Result<Option<(&[u8], WireAny<'_>)>, Proj
             (spec::key_value::KEY, WireField::Len(bytes)) => {
                 key = require_utf8(bytes, "invalid UTF-8 attribute key")?;
             }
+            (spec::key_value::KEY, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for KeyValue.key",
+                ));
+            }
             (spec::key_value::VALUE, WireField::Len(bytes)) => {
                 value = decode_any_value_wire(bytes)?;
+            }
+            (spec::key_value::VALUE, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for KeyValue.value",
+                ));
             }
             _ => {}
         }
@@ -504,21 +617,56 @@ fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>, Projection
                     "invalid UTF-8 AnyValue string",
                 )?));
             }
+            (spec::any_value::STRING, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.string_value",
+                ));
+            }
             (spec::any_value::BOOL, WireField::Varint(value)) => {
                 out = Some(WireAny::Bool(value != 0));
+            }
+            (spec::any_value::BOOL, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.bool_value",
+                ));
             }
             (spec::any_value::INT, WireField::Varint(value)) => {
                 out = Some(WireAny::Int(value as i64));
             }
+            (spec::any_value::INT, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.int_value",
+                ));
+            }
             (spec::any_value::DOUBLE, WireField::Fixed64(value)) => {
                 out = Some(WireAny::Double(f64::from_bits(value)));
             }
+            (spec::any_value::DOUBLE, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.double_value",
+                ));
+            }
             (spec::any_value::BYTES, WireField::Len(bytes)) => out = Some(WireAny::Bytes(bytes)),
+            (spec::any_value::BYTES, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.bytes_value",
+                ));
+            }
             (spec::any_value::ARRAY, WireField::Len(_)) => {
                 return Err(ProjectionError::Unsupported("AnyValue::ArrayValue"));
             }
+            (spec::any_value::ARRAY, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.array_value",
+                ));
+            }
             (spec::any_value::KVLIST, WireField::Len(_)) => {
                 return Err(ProjectionError::Unsupported("AnyValue::KvListValue"));
+            }
+            (spec::any_value::KVLIST, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.kvlist_value",
+                ));
             }
             _ => {}
         }
@@ -600,6 +748,7 @@ fn append_validated_wire_str(
 ) {
     match string_storage {
         StringStorage::Decoded => builder.append_validated_decoded_str_by_idx(idx, value),
+        #[cfg(any(feature = "otlp-research", test))]
         StringStorage::InputView => builder.append_validated_str_by_idx(idx, value),
     }
 }
@@ -842,6 +991,45 @@ mod tests {
     }
 
     #[test]
+    fn projected_repeated_empty_scope_name_clears_prior_scope_like_prost() {
+        let first_scope = InstrumentationScope {
+            name: "scope-a".into(),
+            version: "1.2.3".into(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let mut second_scope = Vec::new();
+        encode_len_field(&mut second_scope, spec::instrumentation_scope::NAME, b"");
+        encode_len_field(&mut second_scope, spec::instrumentation_scope::VERSION, b"");
+        let record = LogRecord {
+            body: Some(any_string("hello")),
+            ..Default::default()
+        }
+        .encode_to_vec();
+
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, spec::scope_logs::SCOPE, &first_scope);
+        encode_len_field(&mut scope_logs, spec::scope_logs::SCOPE, &second_scope);
+        encode_len_field(&mut scope_logs, spec::scope_logs::LOG_RECORDS, &record);
+
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            spec::resource_logs::SCOPE_LOGS,
+            &scope_logs,
+        );
+
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            spec::export_logs_service_request::RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        assert_projected_payload_matches_prost(&payload);
+    }
+
+    #[test]
     fn projected_unknown_fields_match_prost_conversion() {
         let request = primitive_request();
         let mut payload = request.encode_to_vec();
@@ -862,7 +1050,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf8_string_field_falls_back_and_errors() {
+    fn invalid_utf8_string_field_is_rejected_without_prost_fallback() {
         let mut log_record = Vec::new();
         encode_len_field(
             &mut log_record,
@@ -894,9 +1082,11 @@ mod tests {
             matches!(projection_err, ProjectionError::Invalid(_)),
             "expected invalid projection reason, got {projection_err:?}"
         );
+        let production_err = crate::otlp_receiver::decode_protobuf_to_batch(&payload)
+            .expect_err("production decoder should reject invalid UTF-8");
         assert!(
-            crate::otlp_receiver::decode_protobuf_to_batch(&payload).is_err(),
-            "production decoder should fall back to prost and reject invalid UTF-8"
+            production_err.to_string().contains("invalid OTLP protobuf"),
+            "production decoder should surface projection invalidity, got {production_err}"
         );
     }
 
@@ -909,6 +1099,43 @@ mod tests {
         assert!(
             matches!(err, ProjectionError::Invalid(_)),
             "expected invalid projection reason, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_known_log_record_field_with_wrong_wire_type_is_invalid() {
+        let mut log_record = Vec::new();
+        encode_varint_field(&mut log_record, spec::log_record::SEVERITY_TEXT, 1);
+
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, spec::scope_logs::LOG_RECORDS, &log_record);
+
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            spec::resource_logs::SCOPE_LOGS,
+            &scope_logs,
+        );
+
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            spec::export_logs_service_request::RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        let projection_err =
+            decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+                .expect_err("wrong wire type should fail projection");
+        assert!(
+            matches!(projection_err, ProjectionError::Invalid(_)),
+            "expected invalid projection reason, got {projection_err:?}"
+        );
+        let production_err = crate::otlp_receiver::decode_protobuf_to_batch(&payload)
+            .expect_err("production decoder should reject invalid known-field wire types");
+        assert!(
+            production_err.to_string().contains("invalid OTLP protobuf"),
+            "production decoder should surface projection invalidity, got {production_err}"
         );
     }
 
@@ -986,6 +1213,11 @@ mod tests {
         encode_varint(out, u64::from(field << 3 | 2));
         encode_varint(out, value.len() as u64);
         out.extend_from_slice(value);
+    }
+
+    fn encode_varint_field(out: &mut Vec<u8>, field: u32, value: u64) {
+        encode_varint(out, u64::from(field << 3));
+        encode_varint(out, value);
     }
 
     fn encode_varint(out: &mut Vec<u8>, mut value: u64) {

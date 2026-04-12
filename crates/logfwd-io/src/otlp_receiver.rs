@@ -13,9 +13,11 @@ mod server;
 mod tests;
 #[cfg(test)]
 use convert::*;
+use decode::decode_otlp_logs_to_batch;
+#[cfg(any(feature = "otlp-research", test))]
+use decode::decode_otlp_protobuf_with_prost;
 #[cfg(test)]
 use decode::*;
-use decode::{decode_otlp_logs_to_batch, decode_otlp_protobuf_with_prost};
 
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -283,6 +285,8 @@ pub fn decode_protobuf_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> 
 /// This is exposed for benchmarks and differential validation. Production
 /// receiver decode uses this path opportunistically and falls back to prost for
 /// unsupported semantic cases.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
 pub fn decode_protobuf_to_batch_projected_experimental(
     body: &[u8],
 ) -> Result<RecordBatch, InputError> {
@@ -295,6 +299,8 @@ pub fn decode_protobuf_to_batch_projected_experimental(
 ///
 /// This is benchmark-only scaffolding for evaluating whether view-backed OTLP
 /// batches pay off before the production path adopts them.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
 pub fn decode_protobuf_bytes_to_batch_projected_view_experimental(
     body: bytes::Bytes,
 ) -> Result<RecordBatch, InputError> {
@@ -306,6 +312,8 @@ pub fn decode_protobuf_bytes_to_batch_projected_view_experimental(
 ///
 /// This is intentionally exposed for benchmarks so the projected decoder can
 /// be compared against the allocation-heavy prost object graph.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
 pub fn decode_protobuf_to_batch_prost_reference(body: &[u8]) -> Result<RecordBatch, InputError> {
     decode_otlp_protobuf_with_prost(body, field_names::DEFAULT_RESOURCE_PREFIX)
 }
