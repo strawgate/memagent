@@ -54,6 +54,12 @@ impl Pipeline {
         if config.batch_target_bytes == Some(0) {
             return Err("batch_target_bytes must be > 0".to_string());
         }
+        if config.batch_timeout_ms == Some(0) {
+            return Err("batch_timeout_ms must be > 0".to_string());
+        }
+        if config.poll_interval_ms == Some(0) {
+            return Err("poll_interval_ms must be > 0".to_string());
+        }
 
         // Collect enrichment sources once — they are shared across all
         // per-input transforms.
