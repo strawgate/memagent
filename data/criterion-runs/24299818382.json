@@ -1,0 +1,2281 @@
+{
+  "id": "24299818382",
+  "date": "2026-04-12T07:43:13Z",
+  "commit": "35a4c6a",
+  "benchmarks": {
+    "transform_overhead_plan_cost/plan/group_by_count": {
+      "mean_ns": 107667.0733324115
+    },
+    "transform_overhead_plan_cost/plan/like_filter": {
+      "mean_ns": 182634.84190284554
+    },
+    "transform_overhead_plan_cost/plan/where_eq": {
+      "mean_ns": 184209.2448615929
+    },
+    "transform_overhead_plan_cost/plan/where_compound": {
+      "mean_ns": 191768.5940938465
+    },
+    "transform_overhead_plan_cost/plan/order_limit": {
+      "mean_ns": 190825.33992978875
+    },
+    "transform_overhead_plan_cost/plan/select_star": {
+      "mean_ns": 171136.17635180178
+    },
+    "transform_overhead_plan_cost/plan/case_expr": {
+      "mean_ns": 219027.0876436199
+    },
+    "transform_overhead_plan_cost/plan/projection_3col": {
+      "mean_ns": 58187.5219053642
+    },
+    "transform_overhead_plan_cost/plan/group_by_avg": {
+      "mean_ns": 101981.59337032777
+    },
+    "compress/zstd_level1/100000": {
+      "mean_ns": 37828068.795,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "compress/zstd_level1/10000": {
+      "mean_ns": 3785397.673571429,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "compress/zstd_level1/1000": {
+      "mean_ns": 370076.0222994868,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "output/json_serialize": {
+      "mean_ns": 18693805.839609083,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "output/null_sink": {
+      "mean_ns": 0.31189694463659917,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "pipeline/where_filter/scan_detached": {
+      "mean_ns": 63736531.6875,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/where_filter/streaming": {
+      "mean_ns": 66168206.4375,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/passthrough/scan_detached": {
+      "mean_ns": 70979706.725,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/passthrough/streaming": {
+      "mean_ns": 75254389.9,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/proj_filter/scan_detached": {
+      "mean_ns": 61127647.46999999,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "pipeline/proj_filter/streaming": {
+      "mean_ns": 62707783.325,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "ceiling_by_schema/lines/wide_20f": {
+      "mean_ns": 146810134.23333332,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_schema/lines/mixed_var": {
+      "mean_ns": 70059319.35555555,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_schema/lines/narrow_5f": {
+      "mean_ns": 22334904.795833334,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_schema/bytes/wide_20f": {
+      "mean_ns": 147940923.58333334,
+      "throughput": {
+        "Bytes": 34699774
+      }
+    },
+    "ceiling_by_schema/bytes/mixed_var": {
+      "mean_ns": 66932739.95555555,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "ceiling_by_schema/bytes/narrow_5f": {
+      "mean_ns": 22057796.520833332,
+      "throughput": {
+        "Bytes": 5114322
+      }
+    },
+    "batch_transform/scan_passthrough/100": {
+      "mean_ns": 597055.986483155,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_transform/scan_passthrough/500": {
+      "mean_ns": 1142142.0332849508,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_transform/scan_passthrough/5000": {
+      "mean_ns": 6788798.663252779,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_transform/scan_passthrough/10000": {
+      "mean_ns": 13308152.2625,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_transform/scan_passthrough/1000": {
+      "mean_ns": 1805512.2055346884,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_transform/scan_passthrough/50000": {
+      "mean_ns": 69781267.16,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "batch_transform/scan_filter/100": {
+      "mean_ns": 742321.7685328764,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_transform/scan_filter/500": {
+      "mean_ns": 1293275.4646437124,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_transform/scan_filter/5000": {
+      "mean_ns": 7120173.162582117,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_transform/scan_filter/10000": {
+      "mean_ns": 13891230.0,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_transform/scan_filter/1000": {
+      "mean_ns": 1978949.252654424,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_transform/scan_filter/50000": {
+      "mean_ns": 73033100.13,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "bottleneck_isolation/null_sink_only/50000": {
+      "mean_ns": 0.3111523723784817,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "bottleneck_isolation/generator_only/50000": {
+      "mean_ns": 33043377.427777767,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "bottleneck_isolation/scan_only/50000": {
+      "mean_ns": 65794970.88888888,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "decompress/ipc_zstd_read/long_str_100k": {
+      "mean_ns": 91579114.61,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "decompress/ipc_zstd_read/wide_20f_100k": {
+      "mean_ns": 15819029.545,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "decompress/ipc_zstd_read/simple_7f_100k": {
+      "mean_ns": 7746702.141428576,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "ceiling_by_scan_config/lines/extract_all": {
+      "mean_ns": 67184816.83333333,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_scan_config/lines/3_fields": {
+      "mean_ns": 26752121.214285716,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_scan_config/lines/line_capture_off": {
+      "mean_ns": 67681870.62222223,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "transform_overhead_context_creation/session_context_new": {
+      "mean_ns": 101243.21439663103
+    },
+    "cri/parse_reassemble/10000": {
+      "mean_ns": 593252.6330566122,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "cri/parse_reassemble/1000": {
+      "mean_ns": 56029.10182929725,
+      "throughput": {
+        "Bytes": 278161
+      }
+    },
+    "cri/parse_only/10000": {
+      "mean_ns": 390882.4243585723,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "cri/parse_only/1000": {
+      "mean_ns": 37037.95974770489,
+      "throughput": {
+        "Bytes": 278161
+      }
+    },
+    "full_chain_grok/composed/10000": {
+      "mean_ns": 67531516.1375,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "full_chain_grok/composed/1000": {
+      "mean_ns": 14911729.11756413,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "file_io_framing/newline_frame/mixed_40k": {
+      "mean_ns": 4987592.840886634,
+      "throughput": {
+        "Bytes": 13050972
+      }
+    },
+    "file_io_framing/newline_frame/narrow_80k": {
+      "mean_ns": 3639667.701131469,
+      "throughput": {
+        "Bytes": 8184652
+      }
+    },
+    "file_io_framing/newline_frame/cri_30k": {
+      "mean_ns": 3104543.6927898307,
+      "throughput": {
+        "Bytes": 8111826
+      }
+    },
+    "file_io_framing/frame_only/mixed_40k": {
+      "mean_ns": 4379702.476301642,
+      "throughput": {
+        "Bytes": 13050972
+      }
+    },
+    "file_io_framing/frame_only/narrow_80k": {
+      "mean_ns": 3223246.6275968035,
+      "throughput": {
+        "Bytes": 8184652
+      }
+    },
+    "file_io_framing/frame_only/cri_30k": {
+      "mean_ns": 2739582.6521691745,
+      "throughput": {
+        "Bytes": 8111826
+      }
+    },
+    "file_io_framing/read_only/mixed_40k": {
+      "mean_ns": 452525.6633613583,
+      "throughput": {
+        "Bytes": 13050972
+      }
+    },
+    "file_io_framing/read_only/narrow_80k": {
+      "mean_ns": 285070.13320516725,
+      "throughput": {
+        "Bytes": 8184652
+      }
+    },
+    "file_io_framing/read_only/cri_30k": {
+      "mean_ns": 268420.1435904704,
+      "throughput": {
+        "Bytes": 8111826
+      }
+    },
+    "transform_overhead_context_reuse/steady_state/where_eq": {
+      "mean_ns": 953240.7116816866
+    },
+    "transform_overhead_context_reuse/steady_state/select_star": {
+      "mean_ns": 420229.34927536745
+    },
+    "transform_overhead_context_reuse/steady_state/regexp_extract": {
+      "mean_ns": 1988874.972992836
+    },
+    "transform_overhead_context_reuse/cold_start/where_eq": {
+      "mean_ns": 1135742.146898136
+    },
+    "transform_overhead_context_reuse/cold_start/select_star": {
+      "mean_ns": 590338.6694397556
+    },
+    "transform_overhead_context_reuse/cold_start/regexp_extract": {
+      "mean_ns": 2371654.876999597
+    },
+    "persist/scan_detached/long_str_100k": {
+      "mean_ns": 98707346.76666667,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "persist/scan_detached/int_heavy_100k": {
+      "mean_ns": 79389068.2875,
+      "throughput": {
+        "Bytes": 10206350
+      }
+    },
+    "persist/scan_detached/narrow_3f_100k": {
+      "mean_ns": 31789313.784695543,
+      "throughput": {
+        "Bytes": 4827780
+      }
+    },
+    "persist/scan_detached/wide_20f_100k": {
+      "mean_ns": 218058657.725,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "persist/scan_detached/simple_7f_100k": {
+      "mean_ns": 70587767.2125,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "persist/streaming/long_str_100k": {
+      "mean_ns": 102668730.83333333,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "persist/streaming/int_heavy_100k": {
+      "mean_ns": 80668854.2125,
+      "throughput": {
+        "Bytes": 10206350
+      }
+    },
+    "persist/streaming/narrow_3f_100k": {
+      "mean_ns": 33821892.81342301,
+      "throughput": {
+        "Bytes": 4827780
+      }
+    },
+    "persist/streaming/wide_20f_100k": {
+      "mean_ns": 241033561.575,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "persist/streaming/simple_7f_100k": {
+      "mean_ns": 74972079.45,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "otlp_output_compression/zstd_level1/attrs-heavy": {
+      "mean_ns": 2169374.191192366,
+      "throughput": {
+        "Bytes": 1796829
+      }
+    },
+    "otlp_output_compression/zstd_level1/compression-relevant": {
+      "mean_ns": 3975516.1395186335,
+      "throughput": {
+        "Bytes": 4704033
+      }
+    },
+    "otlp_output_compression/zstd_level1/multi-resource-scope": {
+      "mean_ns": 2100022.5829987377,
+      "throughput": {
+        "Bytes": 1532054
+      }
+    },
+    "otlp_output_compression/zstd_level1/wide-10k": {
+      "mean_ns": 7202305.182814407,
+      "throughput": {
+        "Bytes": 6607978
+      }
+    },
+    "otlp_output_compression/zstd_level1/narrow-1k": {
+      "mean_ns": 290550.271774021,
+      "throughput": {
+        "Bytes": 205589
+      }
+    },
+    "otlp_output_compression/zstd_level1/complex-anyvalue": {
+      "mean_ns": 1216532.0978671957,
+      "throughput": {
+        "Bytes": 1145803
+      }
+    },
+    "otlp_output_compression/zstd_level1/duplicate-collision": {
+      "mean_ns": 810064.085537997,
+      "throughput": {
+        "Bytes": 576943
+      }
+    },
+    "otlp_output_compression/zstd_level1/resource-heavy": {
+      "mean_ns": 1703355.1187882125,
+      "throughput": {
+        "Bytes": 1153134
+      }
+    },
+    "otlp_output_compression/zstd_level1/trace-heavy": {
+      "mean_ns": 3296483.4053132082,
+      "throughput": {
+        "Bytes": 2627915
+      }
+    },
+    "otlp_output_compression/zstd_level1/tiny": {
+      "mean_ns": 15272.066173453208,
+      "throughput": {
+        "Bytes": 6045
+      }
+    },
+    "batch_scan/scan/100": {
+      "mean_ns": 137888.62218994423,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_scan/scan/500": {
+      "mean_ns": 693677.6363739517,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_scan/scan/5000": {
+      "mean_ns": 6487542.426439067,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_scan/scan/100000": {
+      "mean_ns": 151623533.96,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "batch_scan/scan/10000": {
+      "mean_ns": 13022816.375,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_scan/scan/1000": {
+      "mean_ns": 1382263.8475802117,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_scan/scan/50000": {
+      "mean_ns": 70352222.45,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_to_batch/attrs-heavy": {
+      "mean_ns": 8750911.270490622,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_to_batch/compression-relevant": {
+      "mean_ns": 14414611.364353742,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_to_batch/multi-resource-scope": {
+      "mean_ns": 7008222.318066893,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_to_batch/wide-10k": {
+      "mean_ns": 25574415.496607143,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_to_batch/narrow-1k": {
+      "mean_ns": 891898.2274334844,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_to_batch/duplicate-collision": {
+      "mean_ns": 3492384.274263669,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_to_batch/resource-heavy": {
+      "mean_ns": 8042602.794785053,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_to_batch/trace-heavy": {
+      "mean_ns": 10779454.606199292,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_to_batch/tiny": {
+      "mean_ns": 47519.359118486616,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_view_to_batch/attrs-heavy": {
+      "mean_ns": 8801631.016168833,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_view_to_batch/compression-relevant": {
+      "mean_ns": 13356234.833497733,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_view_to_batch/multi-resource-scope": {
+      "mean_ns": 6441726.46255291,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_view_to_batch/wide-10k": {
+      "mean_ns": 24581750.724265873,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_view_to_batch/narrow-1k": {
+      "mean_ns": 834452.761838867,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_view_to_batch/duplicate-collision": {
+      "mean_ns": 3322983.078241213,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_view_to_batch/resource-heavy": {
+      "mean_ns": 7215814.472164226,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_view_to_batch/trace-heavy": {
+      "mean_ns": 10003384.993686508,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_input_decode_materialize/experimental_wire_view_to_batch/tiny": {
+      "mean_ns": 41893.416403186944,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/attrs-heavy": {
+      "mean_ns": 18013777.742599208,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/compression-relevant": {
+      "mean_ns": 28940749.662242062,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/multi-resource-scope": {
+      "mean_ns": 11406472.67376488,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/wide-10k": {
+      "mean_ns": 56150665.76626984,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/narrow-1k": {
+      "mean_ns": 1486351.3556509218,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/complex-anyvalue": {
+      "mean_ns": 10781586.174554674,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/duplicate-collision": {
+      "mean_ns": 6776908.746346371,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/resource-heavy": {
+      "mean_ns": 12277857.94939484,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/trace-heavy": {
+      "mean_ns": 18205186.42170635,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_input_decode_materialize/production_to_batch/tiny": {
+      "mean_ns": 68671.2077518315,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/attrs-heavy": {
+      "mean_ns": 18168348.67357143,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/compression-relevant": {
+      "mean_ns": 29234553.466547627,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/multi-resource-scope": {
+      "mean_ns": 11475747.879479166,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/wide-10k": {
+      "mean_ns": 56180492.760496035,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/narrow-1k": {
+      "mean_ns": 1477232.5588332051,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/complex-anyvalue": {
+      "mean_ns": 10814182.658020282,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/duplicate-collision": {
+      "mean_ns": 6786992.426037414,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/resource-heavy": {
+      "mean_ns": 12276460.211493056,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/trace-heavy": {
+      "mean_ns": 18391189.078023814,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_input_decode_materialize/prost_to_batch/tiny": {
+      "mean_ns": 68471.7365131776,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "file_io_cri/read_parse_reassemble/10k_lines": {
+      "mean_ns": 658801.405831449,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "file_io_cri/read_parse_reassemble/100k_lines": {
+      "mean_ns": 7438208.824493605,
+      "throughput": {
+        "Bytes": 26891544
+      }
+    },
+    "file_io_cri/parse_only/10k_lines": {
+      "mean_ns": 389344.7427380981,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "file_io_cri/parse_only/100k_lines": {
+      "mean_ns": 3892387.261553445,
+      "throughput": {
+        "Bytes": 26891544
+      }
+    },
+    "full_chain_json/transform_only/100000": {
+      "mean_ns": 407329.72477401816,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "full_chain_json/transform_only/10000": {
+      "mean_ns": 404695.0437874816,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "full_chain_json/transform_only/1000": {
+      "mean_ns": 404419.0164922391,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "full_chain_json/encode_only/100000": {
+      "mean_ns": 37523095.95929174,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "full_chain_json/encode_only/10000": {
+      "mean_ns": 3120351.344125057,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "full_chain_json/encode_only/1000": {
+      "mean_ns": 308451.52816212666,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "full_chain_json/composed/100000": {
+      "mean_ns": 194913746.175,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "full_chain_json/composed/10000": {
+      "mean_ns": 17029819.74638727,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "full_chain_json/composed/1000": {
+      "mean_ns": 2189177.488085727,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "full_chain_json/scan_only/100000": {
+      "mean_ns": 141515736.725,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "full_chain_json/scan_only/10000": {
+      "mean_ns": 12420236.130782181,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "full_chain_json/scan_only/1000": {
+      "mean_ns": 1318599.2878492756,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "sizes/noop": {
+      "mean_ns": 0.6217805106460389
+    },
+    "ceiling_by_batch_size/lines/5000": {
+      "mean_ns": 6257451.067981665,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "ceiling_by_batch_size/lines/100000": {
+      "mean_ns": 142475259.66666666,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "ceiling_by_batch_size/lines/10000": {
+      "mean_ns": 12619260.224897185,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "ceiling_by_batch_size/lines/1000": {
+      "mean_ns": 1327857.2704092807,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "ceiling_by_batch_size/lines/50000": {
+      "mean_ns": 68389884.15555556,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "otap_proto/status_decode_manual": {
+      "mean_ns": 38.79866010663907,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/decode_generated/small": {
+      "mean_ns": 568.3371154001487,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/decode_generated/large": {
+      "mean_ns": 35113.67129634925,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/encode_generated/small": {
+      "mean_ns": 316.4833891354953,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/encode_generated/large": {
+      "mean_ns": 13719.751150088177,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/status_decode_generated_fast": {
+      "mean_ns": 42.76088547087593,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/status_decode_generated": {
+      "mean_ns": 52.47839957666954,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/decode_manual/small": {
+      "mean_ns": 313.08556380708626,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/decode_manual/large": {
+      "mean_ns": 6789.700400370804,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/encode_manual/small": {
+      "mean_ns": 194.61069755449267,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/encode_manual/large": {
+      "mean_ns": 12929.21440024194,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/decode_generated_fast/small": {
+      "mean_ns": 332.19514066385995,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/decode_generated_fast/large": {
+      "mean_ns": 7019.00700263672,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "otap_proto/encode_generated_fast/small": {
+      "mean_ns": 119.09342683317952,
+      "throughput": {
+        "Bytes": 2081
+      }
+    },
+    "otap_proto/encode_generated_fast/large": {
+      "mean_ns": 7041.13705797279,
+      "throughput": {
+        "Bytes": 262177
+      }
+    },
+    "transform_overhead_batch_size_scaling/where_filter/100": {
+      "mean_ns": 559756.2743134277,
+      "throughput": {
+        "Elements": 100
+      }
+    },
+    "transform_overhead_batch_size_scaling/where_filter/100000": {
+      "mean_ns": 3622786.3150857068,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "transform_overhead_batch_size_scaling/where_filter/10000": {
+      "mean_ns": 957436.2267955147,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_batch_size_scaling/where_filter/1000": {
+      "mean_ns": 583384.6651415064,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "transform_overhead_batch_size_scaling/group_by/100": {
+      "mean_ns": 601649.2162883582,
+      "throughput": {
+        "Elements": 100
+      }
+    },
+    "transform_overhead_batch_size_scaling/group_by/100000": {
+      "mean_ns": 1766784.8373965987,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "transform_overhead_batch_size_scaling/group_by/10000": {
+      "mean_ns": 739964.1781126775,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_batch_size_scaling/group_by/1000": {
+      "mean_ns": 615915.1181703703,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "transform_overhead_batch_size_scaling/select_star/100": {
+      "mean_ns": 418244.792410744,
+      "throughput": {
+        "Elements": 100
+      }
+    },
+    "transform_overhead_batch_size_scaling/select_star/100000": {
+      "mean_ns": 422842.00264370255,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "transform_overhead_batch_size_scaling/select_star/10000": {
+      "mean_ns": 420597.5853882221,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_batch_size_scaling/select_star/1000": {
+      "mean_ns": 417019.35212574335,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "ceiling_by_scan_mode/scan_detached/50000": {
+      "mean_ns": 68683906.54444446,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "ceiling_by_scan_mode/streaming/50000": {
+      "mean_ns": 68016632.92222223,
+      "throughput": {
+        "Elements": 50000
+      }
+    },
+    "end_to_end/scan_grok_filter_capture": {
+      "mean_ns": 66085379.7,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "end_to_end/scan_filter_capture": {
+      "mean_ns": 14417680.1477999,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "end_to_end/scan_passthrough_capture": {
+      "mean_ns": 13973635.813969653,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "scan/scan_detached/long_str_100k": {
+      "mean_ns": 77055805.54444443,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "scan/scan_detached/simple_7f_10k": {
+      "mean_ns": 5712550.193057014,
+      "throughput": {
+        "Bytes": 1830840
+      }
+    },
+    "scan/scan_detached/int_heavy_100k": {
+      "mean_ns": 55612501.8,
+      "throughput": {
+        "Bytes": 10206350
+      }
+    },
+    "scan/scan_detached/simple_7f_500k": {
+      "mean_ns": 304677319.56666666,
+      "throughput": {
+        "Bytes": 91542000
+      }
+    },
+    "scan/scan_detached/narrow_3f_100k": {
+      "mean_ns": 23033161.179166667,
+      "throughput": {
+        "Bytes": 4827780
+      }
+    },
+    "scan/scan_detached/wide_20f_100k": {
+      "mean_ns": 188881378.83333334,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "scan/scan_detached/simple_7f_100k": {
+      "mean_ns": 60167682.944444455,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "scan/streaming/long_str_100k": {
+      "mean_ns": 71590026.94444443,
+      "throughput": {
+        "Bytes": 83878890
+      }
+    },
+    "scan/streaming/simple_7f_10k": {
+      "mean_ns": 5632969.0185365,
+      "throughput": {
+        "Bytes": 1830840
+      }
+    },
+    "scan/streaming/int_heavy_100k": {
+      "mean_ns": 55691186.30833333,
+      "throughput": {
+        "Bytes": 10206350
+      }
+    },
+    "scan/streaming/simple_7f_500k": {
+      "mean_ns": 309957381.9,
+      "throughput": {
+        "Bytes": 91542000
+      }
+    },
+    "scan/streaming/narrow_3f_100k": {
+      "mean_ns": 22557377.925,
+      "throughput": {
+        "Bytes": 4827780
+      }
+    },
+    "scan/streaming/wide_20f_100k": {
+      "mean_ns": 188542848.43333334,
+      "throughput": {
+        "Bytes": 42821956
+      }
+    },
+    "scan/streaming/simple_7f_100k": {
+      "mean_ns": 60064386.999999985,
+      "throughput": {
+        "Bytes": 18308400
+      }
+    },
+    "otlp_input_parser_only/prost_decode/attrs-heavy": {
+      "mean_ns": 12617111.885357143,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_input_parser_only/prost_decode/compression-relevant": {
+      "mean_ns": 17567584.35475529,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_input_parser_only/prost_decode/multi-resource-scope": {
+      "mean_ns": 6443810.499235449,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_input_parser_only/prost_decode/wide-10k": {
+      "mean_ns": 35479631.19400793,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_input_parser_only/prost_decode/narrow-1k": {
+      "mean_ns": 825995.7179925733,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_input_parser_only/prost_decode/complex-anyvalue": {
+      "mean_ns": 6924781.407460317,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_input_parser_only/prost_decode/duplicate-collision": {
+      "mean_ns": 4627446.444123017,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_input_parser_only/prost_decode/resource-heavy": {
+      "mean_ns": 5250727.653156967,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_input_parser_only/prost_decode/trace-heavy": {
+      "mean_ns": 10989861.736115519,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_input_parser_only/prost_decode/tiny": {
+      "mean_ns": 24422.58034476071,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "scanner/scan_3_fields/100000": {
+      "mean_ns": 56459451.28,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "scanner/scan_3_fields/10000": {
+      "mean_ns": 5347416.076,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "scanner/scan_3_fields/1000": {
+      "mean_ns": 540776.4661188183,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "scanner/scan_all_fields/100000": {
+      "mean_ns": 145437895.62,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "scanner/scan_all_fields/10000": {
+      "mean_ns": 12592250.345,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "scanner/scan_all_fields/1000": {
+      "mean_ns": 1341925.2918018647,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/100": {
+      "mean_ns": 644922.5563913003,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/500": {
+      "mean_ns": 1329630.237689714,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/5000": {
+      "mean_ns": 8416527.563333333,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/10000": {
+      "mean_ns": 16321303.985714285,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/1000": {
+      "mean_ns": 2157670.9607923822,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_pipeline/scan_transform_otlp/50000": {
+      "mean_ns": 88436012.28,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "batch_pipeline/scan_transform_json/100": {
+      "mean_ns": 814544.1837724489,
+      "throughput": {
+        "Bytes": 32532
+      }
+    },
+    "batch_pipeline/scan_transform_json/500": {
+      "mean_ns": 2149952.09337262,
+      "throughput": {
+        "Bytes": 167149
+      }
+    },
+    "batch_pipeline/scan_transform_json/5000": {
+      "mean_ns": 16416110.728571424,
+      "throughput": {
+        "Bytes": 1620334
+      }
+    },
+    "batch_pipeline/scan_transform_json/10000": {
+      "mean_ns": 32514332.575,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "batch_pipeline/scan_transform_json/1000": {
+      "mean_ns": 3773408.0616008462,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "batch_pipeline/scan_transform_json/50000": {
+      "mean_ns": 170673696.22,
+      "throughput": {
+        "Bytes": 16297535
+      }
+    },
+    "transform_overhead_execute_cost/execute/group_by_count": {
+      "mean_ns": 707200.6027326275
+    },
+    "transform_overhead_execute_cost/execute/where_eq": {
+      "mean_ns": 934293.2874466255
+    },
+    "transform_overhead_execute_cost/execute/order_limit": {
+      "mean_ns": 766724.2918179284
+    },
+    "transform_overhead_execute_cost/execute/select_star": {
+      "mean_ns": 385918.26984625193
+    },
+    "transform_overhead_execute_cost/execute/projection_3col": {
+      "mean_ns": 167381.44686921258
+    },
+    "otlp_output_encode_only/handwritten/attrs-heavy": {
+      "mean_ns": 2320857.827905983,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_output_encode_only/handwritten/compression-relevant": {
+      "mean_ns": 5493031.875329131,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_output_encode_only/handwritten/multi-resource-scope": {
+      "mean_ns": 3317586.7184481295,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_output_encode_only/handwritten/wide-10k": {
+      "mean_ns": 7829982.754398149,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_output_encode_only/handwritten/narrow-1k": {
+      "mean_ns": 409497.5665324934,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_output_encode_only/handwritten/complex-anyvalue": {
+      "mean_ns": 1263234.8926799304,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_output_encode_only/handwritten/duplicate-collision": {
+      "mean_ns": 1022858.374027109,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_output_encode_only/handwritten/resource-heavy": {
+      "mean_ns": 5286241.14529321,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_output_encode_only/handwritten/trace-heavy": {
+      "mean_ns": 4386572.940411942,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_output_encode_only/handwritten/tiny": {
+      "mean_ns": 14122.101878760042,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_view/attrs-heavy": {
+      "mean_ns": 2370517.095149573,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_view/compression-relevant": {
+      "mean_ns": 5579736.943011204,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_view/multi-resource-scope": {
+      "mean_ns": 3299702.7092020973,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_view/wide-10k": {
+      "mean_ns": 8137089.721855159,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_view/narrow-1k": {
+      "mean_ns": 411290.97012171685,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_view/duplicate-collision": {
+      "mean_ns": 1040849.9602448593,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_view/resource-heavy": {
+      "mean_ns": 5380708.900915032,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_view/trace-heavy": {
+      "mean_ns": 4327660.703050145,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_view/tiny": {
+      "mean_ns": 13888.06795930636,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_output_encode_only/generated_fast/attrs-heavy": {
+      "mean_ns": 2333317.7860978832,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_output_encode_only/generated_fast/compression-relevant": {
+      "mean_ns": 5583557.024677871,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_output_encode_only/generated_fast/multi-resource-scope": {
+      "mean_ns": 3301895.154380669,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_output_encode_only/generated_fast/wide-10k": {
+      "mean_ns": 7883189.84360119,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_output_encode_only/generated_fast/narrow-1k": {
+      "mean_ns": 412390.63676998427,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_output_encode_only/generated_fast/complex-anyvalue": {
+      "mean_ns": 1273961.305929784,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_output_encode_only/generated_fast/duplicate-collision": {
+      "mean_ns": 1023428.5391296593,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_output_encode_only/generated_fast/resource-heavy": {
+      "mean_ns": 5298243.886353615,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_output_encode_only/generated_fast/trace-heavy": {
+      "mean_ns": 4457403.199952759,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_output_encode_only/generated_fast/tiny": {
+      "mean_ns": 14156.62649976167,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_detached/attrs-heavy": {
+      "mean_ns": 2337294.0378337405,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_detached/compression-relevant": {
+      "mean_ns": 5530009.620555555,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_detached/multi-resource-scope": {
+      "mean_ns": 3317689.37505102,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_detached/wide-10k": {
+      "mean_ns": 8027439.483422619,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_detached/narrow-1k": {
+      "mean_ns": 408792.78652804473,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_detached/duplicate-collision": {
+      "mean_ns": 1018776.4627795613,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_detached/resource-heavy": {
+      "mean_ns": 5298781.545180776,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_detached/trace-heavy": {
+      "mean_ns": 4356568.721277399,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_output_encode_only/handwritten_projected_detached/tiny": {
+      "mean_ns": 14123.486046171005,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "transform/grok_parse": {
+      "mean_ns": 52019274.04,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform/where_filter": {
+      "mean_ns": 953410.2690258393,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform/select_star": {
+      "mean_ns": 420710.6170233373,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform/regexp_extract": {
+      "mean_ns": 3756708.9995304286,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "transform/projection_computed": {
+      "mean_ns": 215514.91252422184,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/attrs-heavy": {
+      "mean_ns": 19858734.796404764,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/compression-relevant": {
+      "mean_ns": 36486030.19142858,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/multi-resource-scope": {
+      "mean_ns": 14408818.401797052,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/wide-10k": {
+      "mean_ns": 64747484.30962302,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/narrow-1k": {
+      "mean_ns": 1912150.7611135915,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/complex-anyvalue": {
+      "mean_ns": 11693743.275119048,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/duplicate-collision": {
+      "mean_ns": 7583007.147554944,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/resource-heavy": {
+      "mean_ns": 18082180.752056874,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/trace-heavy": {
+      "mean_ns": 22620389.07840476,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_generated_fast_encode/tiny": {
+      "mean_ns": 83295.9679955771,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/attrs-heavy": {
+      "mean_ns": 20719021.725015875,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/compression-relevant": {
+      "mean_ns": 36179202.894735456,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/multi-resource-scope": {
+      "mean_ns": 14781354.522732425,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/wide-10k": {
+      "mean_ns": 63737850.93753968,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/narrow-1k": {
+      "mean_ns": 1913439.0345246363,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/complex-anyvalue": {
+      "mean_ns": 11582923.727539685,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/duplicate-collision": {
+      "mean_ns": 7530408.8076025145,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/resource-heavy": {
+      "mean_ns": 17856318.02187831,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/trace-heavy": {
+      "mean_ns": 22681743.49413492,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_e2e_in_process/decode_to_handwritten_encode/tiny": {
+      "mean_ns": 83535.35953995897,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/attrs-heavy": {
+      "mean_ns": 20602847.24611905,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/compression-relevant": {
+      "mean_ns": 35083456.50629629,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/multi-resource-scope": {
+      "mean_ns": 14465843.806184808,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/wide-10k": {
+      "mean_ns": 65735000.87841269,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/narrow-1k": {
+      "mean_ns": 1909199.1737516536,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/complex-anyvalue": {
+      "mean_ns": 11638857.52312996,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/duplicate-collision": {
+      "mean_ns": 7600945.652612435,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/resource-heavy": {
+      "mean_ns": 18274660.83976852,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/trace-heavy": {
+      "mean_ns": 22992868.135694444,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_e2e_in_process/production_to_generated_fast_encode/tiny": {
+      "mean_ns": 82741.12628264906,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_to_handwritten_encode/attrs-heavy": {
+      "mean_ns": 11010378.401516754,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_to_handwritten_encode/compression-relevant": {
+      "mean_ns": 20576580.666500002,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_to_handwritten_encode/multi-resource-scope": {
+      "mean_ns": 10046413.308791887,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_to_handwritten_encode/wide-10k": {
+      "mean_ns": 35444714.852486774,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_to_handwritten_encode/narrow-1k": {
+      "mean_ns": 1285653.9323502125,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_to_handwritten_encode/duplicate-collision": {
+      "mean_ns": 4446985.659537038,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_to_handwritten_encode/resource-heavy": {
+      "mean_ns": 13764719.616054421,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_to_handwritten_encode/trace-heavy": {
+      "mean_ns": 14994581.500017006,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_to_handwritten_encode/tiny": {
+      "mean_ns": 61651.73249375417,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_view_to_handwritten_encode/attrs-heavy": {
+      "mean_ns": 11139725.559431216,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_view_to_handwritten_encode/compression-relevant": {
+      "mean_ns": 18726748.019682538,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_view_to_handwritten_encode/multi-resource-scope": {
+      "mean_ns": 9410732.46693254,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_view_to_handwritten_encode/wide-10k": {
+      "mean_ns": 32885692.49068783,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_view_to_handwritten_encode/narrow-1k": {
+      "mean_ns": 1260005.790254719,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_view_to_handwritten_encode/duplicate-collision": {
+      "mean_ns": 4223655.611645022,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_view_to_handwritten_encode/resource-heavy": {
+      "mean_ns": 12866422.921797054,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_view_to_handwritten_encode/trace-heavy": {
+      "mean_ns": 14295291.399126986,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_e2e_in_process/experimental_wire_view_to_handwritten_encode/tiny": {
+      "mean_ns": 57256.275179246986,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/attrs-heavy": {
+      "mean_ns": 21011209.630095236,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/compression-relevant": {
+      "mean_ns": 35289694.65517196,
+      "throughput": {
+        "Elements": 5000
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/multi-resource-scope": {
+      "mean_ns": 14383526.459495464,
+      "throughput": {
+        "Elements": 5760
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/wide-10k": {
+      "mean_ns": 64527236.619226195,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/narrow-1k": {
+      "mean_ns": 1914865.4020196758,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/complex-anyvalue": {
+      "mean_ns": 11638603.02770337,
+      "throughput": {
+        "Elements": 2000
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/duplicate-collision": {
+      "mean_ns": 7588771.670998678,
+      "throughput": {
+        "Elements": 1500
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/resource-heavy": {
+      "mean_ns": 18280011.17984789,
+      "throughput": {
+        "Elements": 5120
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/trace-heavy": {
+      "mean_ns": 22335591.789174605,
+      "throughput": {
+        "Elements": 8000
+      }
+    },
+    "otlp_e2e_in_process/production_to_handwritten_encode/tiny": {
+      "mean_ns": 83366.71116655746,
+      "throughput": {
+        "Elements": 32
+      }
+    },
+    "output_encode/otlp_encode_manual/wide_1000": {
+      "mean_ns": 611076.8734137986,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_manual/narrow_1000": {
+      "mean_ns": 135657.5537207296,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_manual/narrow_10000": {
+      "mean_ns": 1360929.5094617053,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_manual/wide_10000": {
+      "mean_ns": 6032445.379122931,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_fast/wide_1000": {
+      "mean_ns": 607541.3855772332,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_fast/narrow_1000": {
+      "mean_ns": 135695.12258984003,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_fast/narrow_10000": {
+      "mean_ns": 1350158.4842556987,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_fast/wide_10000": {
+      "mean_ns": 5969049.9097172525,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/json_lines/wide_1000": {
+      "mean_ns": 3478270.2873211987,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/json_lines/narrow_1000": {
+      "mean_ns": 540670.4024627026,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/json_lines/narrow_10000": {
+      "mean_ns": 5496545.432333311,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/json_lines/wide_10000": {
+      "mean_ns": 34843875.3426605,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/json_lines_zstd/wide_1000": {
+      "mean_ns": 4118344.8373428537,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/json_lines_zstd/narrow_1000": {
+      "mean_ns": 646667.5822313433,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/json_lines_zstd/narrow_10000": {
+      "mean_ns": 6759118.084284169,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/json_lines_zstd/wide_10000": {
+      "mean_ns": 41208470.5378322,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_reuse/wide_1000": {
+      "mean_ns": 3909878.2882761126,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_reuse/narrow_1000": {
+      "mean_ns": 624729.967577826,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_reuse/narrow_10000": {
+      "mean_ns": 6394854.598136941,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_reuse/wide_10000": {
+      "mean_ns": 39182453.29711584,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/null_sink/wide_1000": {
+      "mean_ns": 0.30949887988929803,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/null_sink/narrow_1000": {
+      "mean_ns": 0.3116884347462472,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/null_sink/narrow_10000": {
+      "mean_ns": 0.3083660251189587,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/null_sink/wide_10000": {
+      "mean_ns": 0.31121170451677893,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_naive/wide_1000": {
+      "mean_ns": 4016116.9080876783,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_naive/narrow_1000": {
+      "mean_ns": 718591.3937698868,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "output_encode/otlp_encode_generated_naive/narrow_10000": {
+      "mean_ns": 7106794.696582606,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "output_encode/otlp_encode_generated_naive/wide_10000": {
+      "mean_ns": 46980227.39439872,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "elasticsearch/serialize_batch/100000": {
+      "mean_ns": 198465688.4,
+      "throughput": {
+        "Bytes": 32619303
+      }
+    },
+    "elasticsearch/serialize_batch/10000": {
+      "mean_ns": 19040297.724578414,
+      "throughput": {
+        "Bytes": 3268148
+      }
+    },
+    "elasticsearch/serialize_batch/1000": {
+      "mean_ns": 1886515.5368231218,
+      "throughput": {
+        "Bytes": 337160
+      }
+    },
+    "full_chain_cri/composed/10000": {
+      "mean_ns": 9951002.117010834,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "full_chain_cri/composed/1000": {
+      "mean_ns": 1461537.4741743528,
+      "throughput": {
+        "Bytes": 278161
+      }
+    },
+    "full_chain_cri/cri_parse_only/10000": {
+      "mean_ns": 563987.8470384998,
+      "throughput": {
+        "Bytes": 2693361
+      }
+    },
+    "full_chain_cri/cri_parse_only/1000": {
+      "mean_ns": 54948.412263994396,
+      "throughput": {
+        "Bytes": 278161
+      }
+    },
+    "transform_overhead_table_swap/memtable_create/100000": {
+      "mean_ns": 127.1801286676987,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "transform_overhead_table_swap/memtable_create/10000": {
+      "mean_ns": 127.06566872059882,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_table_swap/memtable_create/1000": {
+      "mean_ns": 129.8285894689355,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "transform_overhead_table_swap/deregister_register/100000": {
+      "mean_ns": 1295.775375965286,
+      "throughput": {
+        "Elements": 100000
+      }
+    },
+    "transform_overhead_table_swap/deregister_register/10000": {
+      "mean_ns": 1266.7676505166014,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_table_swap/deregister_register/1000": {
+      "mean_ns": 1284.6554148310504,
+      "throughput": {
+        "Elements": 1000
+      }
+    },
+    "transform_overhead_query_complexity/09_group_by_agg": {
+      "mean_ns": 902651.0629143302,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/11_like": {
+      "mean_ns": 1653241.7973130501,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/03_except": {
+      "mean_ns": 416256.7040590764,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/04_where_eq": {
+      "mean_ns": 962901.7948690025,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/01_passthrough": {
+      "mean_ns": 423397.9232443937,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/02_projection": {
+      "mean_ns": 202504.04139586882,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/12_regexp_extract": {
+      "mean_ns": 1986145.4426718447,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/10_order_limit": {
+      "mean_ns": 792380.5922954824,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/06_where_compound": {
+      "mean_ns": 762759.1855620987,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/07_computed_col": {
+      "mean_ns": 1055737.8442369932,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/08_group_by": {
+      "mean_ns": 743843.715015923,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/13_grok": {
+      "mean_ns": 51182065.86000001,
+      "throughput": {
+        "Elements": 10000
+      }
+    },
+    "transform_overhead_query_complexity/05_where_in": {
+      "mean_ns": 1382317.6709557786,
+      "throughput": {
+        "Elements": 10000
+      }
+    }
+  }
+}
