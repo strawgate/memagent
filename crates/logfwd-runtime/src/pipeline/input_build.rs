@@ -373,6 +373,7 @@ pub(super) fn build_input_state(
                     .unwrap_or_else(|| "journalctl".to_string()),
                 journal_directory: jd_cfg.and_then(|c| c.journal_directory.clone()),
                 journal_namespace: jd_cfg.and_then(|c| c.journal_namespace.clone()),
+                backend: jd_cfg.map(|c| c.backend).unwrap_or_default(),
             };
             let format = cfg.format.clone().unwrap_or(Format::Json);
             let source = JournaldInput::new(name, config, Arc::clone(&stats))
@@ -491,6 +492,7 @@ mod tests {
             sensor: Some(Default::default()),
             sql: None,
             tls: None,
+            journald: None,
         };
         let err = match build_input_state("sensor", &cfg, stats) {
             Ok(_) => panic!("sensor format must be rejected"),
@@ -529,6 +531,7 @@ mod tests {
             http: None,
             sql: None,
             tls: None,
+            journald: None,
         };
 
         // Note: build_input_state doesn't return the raw TailConfig directly in
@@ -563,6 +566,7 @@ mod tests {
             http: None,
             sql: None,
             tls: None,
+            journald: None,
         };
 
         let state = build_input_state("test_in", &cfg_overrides, Arc::clone(&stats))
@@ -601,6 +605,7 @@ mod tests {
                     sensor: None,
                     sql: None,
                     tls: None,
+                    journald: None,
                 };
                 let stats = pm.add_input("in", "test");
                 let err = match build_input_state("in", &cfg, stats) {
@@ -642,6 +647,7 @@ mod tests {
             sensor: None,
             sql: None,
             tls: None,
+            journald: None,
         };
         let stats = pm.add_input("file-in", "file");
         let err = match build_input_state("file-in", &file_cfg, stats) {
@@ -675,6 +681,7 @@ mod tests {
                 sensor: None,
                 sql: None,
                 tls: None,
+                journald: None,
             };
             let stats = pm.add_input("net-in", "net");
             let err = match build_input_state("net-in", &cfg, stats) {
