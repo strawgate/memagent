@@ -369,9 +369,24 @@ pub(super) fn build_input_state(
             });
         }
         InputType::Journald => {
-            use logfwd_io::journald_input::{JournaldConfig, JournaldInput};
+            use logfwd_io::journald_input::{JournaldBackendPref, JournaldConfig, JournaldInput};
+
+            // Fix #14: Reject non-JSON formats for journald — it always emits JSON.
+            if let Some(ref fmt) = cfg.format {
+                if !matches!(fmt, Format::Json) {
+                    return Err(format!(
+                        "input '{name}': journald input only supports json format (got {fmt:?})"
+                    ));
+                }
+            }
 
             let jd_cfg = cfg.journald.as_ref();
+            // Map from config crate's JournaldBackendConfig to IO crate's JournaldBackendPref.
+            let backend = match jd_cfg.map(|c| c.backend).unwrap_or_default() {
+                logfwd_config::JournaldBackendConfig::Auto => JournaldBackendPref::Auto,
+                logfwd_config::JournaldBackendConfig::Native => JournaldBackendPref::Native,
+                logfwd_config::JournaldBackendConfig::Subprocess => JournaldBackendPref::Subprocess,
+            };
             let config = JournaldConfig {
                 include_units: jd_cfg.map(|c| c.include_units.clone()).unwrap_or_default(),
                 exclude_units: jd_cfg.map(|c| c.exclude_units.clone()).unwrap_or_default(),
@@ -382,7 +397,7 @@ pub(super) fn build_input_state(
                     .unwrap_or_else(|| "journalctl".to_string()),
                 journal_directory: jd_cfg.and_then(|c| c.journal_directory.clone()),
                 journal_namespace: jd_cfg.and_then(|c| c.journal_namespace.clone()),
-                backend: jd_cfg.map(|c| c.backend).unwrap_or_default(),
+                backend,
             };
             let format = cfg.format.clone().unwrap_or(Format::Json);
             let source = JournaldInput::new(name, config, Arc::clone(&stats))

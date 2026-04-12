@@ -2673,7 +2673,6 @@ dependencies = [
  "libc",
  "libloading",
  "logfwd-arrow",
- "logfwd-config",
  "logfwd-core",
  "logfwd-otap-proto",
  "logfwd-test-utils",

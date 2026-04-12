@@ -49,7 +49,8 @@ pub enum InputType {
     #[serde(rename = "windows_ebpf_sensor", alias = "windows_sensor_beta")]
     WindowsEbpfSensor,
     ArrowIpc,
-    /// Journald (systemd journal) input via `journalctl` subprocess.
+    /// Journald (systemd journal) input via native `sd_journal` API or
+    /// `journalctl` subprocess fallback.
     Journald,
 }
 
@@ -288,7 +289,7 @@ pub struct TlsInputConfig {
 }
 
 /// Journald (systemd journal) input configuration.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JournaldInputConfig {
     /// Systemd units to include. If empty, all units are collected.
@@ -336,6 +337,21 @@ pub enum JournaldBackendConfig {
 
 fn default_true() -> bool {
     true
+}
+
+impl Default for JournaldInputConfig {
+    fn default() -> Self {
+        Self {
+            include_units: Vec::new(),
+            exclude_units: Vec::new(),
+            current_boot_only: true,
+            since_now: false,
+            journalctl_path: None,
+            journal_directory: None,
+            journal_namespace: None,
+            backend: JournaldBackendConfig::Auto,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

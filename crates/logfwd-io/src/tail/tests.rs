@@ -2006,7 +2006,7 @@ fn test_directory_path_does_not_fail_construction() {
     let tailer = FileTailer::new(
         std::slice::from_ref(&directory_as_path),
         config,
-        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        Arc::new(ComponentStats::new()),
     );
     assert!(
         tailer.is_ok(),
@@ -2032,7 +2032,7 @@ fn test_poll_during_active_backoff_still_records_watcher_errors() {
             poll_interval_ms: 60_000,
             ..Default::default()
         },
-        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        Arc::new(ComponentStats::new()),
     )
     .unwrap();
 
@@ -2066,7 +2066,7 @@ fn test_watcher_error_updates_backoff_even_without_poll_tick() {
             poll_interval_ms: 60_000,
             ..Default::default()
         },
-        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        Arc::new(ComponentStats::new()),
     )
     .unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();
@@ -2096,7 +2096,7 @@ fn test_source_id_for_missing_path_is_none() {
             poll_interval_ms: 10,
             ..Default::default()
         },
-        std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        Arc::new(ComponentStats::new()),
     )
     .unwrap();
 

@@ -13,13 +13,11 @@
 use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, TrySendError, bounded};
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
-
-use logfwd_config::JournaldBackendConfig;
 
 use crate::input::{InputEvent, InputSource};
 use crate::journal_ffi;
@@ -40,10 +38,27 @@ const RESTART_BACKOFF: Duration = Duration::from_secs(1);
 /// Wait timeout for `sd_journal_wait` in microseconds (250ms).
 const NATIVE_WAIT_USEC: u64 = 250_000;
 
+/// Maximum allowed binary field length in the export format (16 MB).
+/// Fields larger than this are skipped to prevent malicious/corrupt journals
+/// from causing huge allocations.
+const MAX_BINARY_FIELD_SIZE: usize = 16 * 1024 * 1024;
+
 /// Health encoding used in the atomic health byte.
 const HEALTH_OK: u8 = 0;
 const HEALTH_STARTING: u8 = 1;
 const HEALTH_DEGRADED: u8 = 2;
+
+/// Which journal-reading backend to use (IO-layer enum, decoupled from config).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JournaldBackendPref {
+    /// Use native API if available, otherwise subprocess (default).
+    #[default]
+    Auto,
+    /// Require the native `sd_journal` C API via `dlopen`.
+    Native,
+    /// Always use a `journalctl` subprocess.
+    Subprocess,
+}
 
 /// Runtime configuration for the journald input, derived from config types.
 #[derive(Debug, Clone)]
@@ -63,7 +78,7 @@ pub struct JournaldConfig {
     /// Journal namespace.
     pub journal_namespace: Option<String>,
     /// Which backend to use (auto/native/subprocess).
-    pub backend: JournaldBackendConfig,
+    pub backend: JournaldBackendPref,
 }
 
 impl Default for JournaldConfig {
@@ -76,7 +91,7 @@ impl Default for JournaldConfig {
             journalctl_path: "journalctl".to_string(),
             journal_directory: None,
             journal_namespace: None,
-            backend: JournaldBackendConfig::Auto,
+            backend: JournaldBackendPref::Auto,
         }
     }
 }
@@ -99,8 +114,12 @@ pub struct JournaldInput {
     rx: Receiver<Vec<u8>>,
     is_running: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
+    #[allow(dead_code)] // Retained for future per-input stats; accounted_bytes handles counting.
     stats: Arc<ComponentStats>,
     backend: JournaldBackend,
+    /// PID of the subprocess child (0 = no child / native backend).
+    /// Used by `Drop` to kill the child so `read_until` unblocks.
+    child_pid: Arc<AtomicU32>,
 }
 
 impl JournaldInput {
@@ -115,16 +134,18 @@ impl JournaldInput {
         let (tx, rx) = bounded(CHANNEL_CAPACITY);
         let is_running = Arc::new(AtomicBool::new(true));
         let health = Arc::new(AtomicU8::new(HEALTH_STARTING));
+        let child_pid = Arc::new(AtomicU32::new(0));
 
         let thread_running = Arc::clone(&is_running);
         let thread_health = Arc::clone(&health);
+        let thread_child_pid = Arc::clone(&child_pid);
         let thread_name = name.clone();
 
         // Resolve backend based on config + runtime availability.
         let native_available = journal_ffi::is_native_available();
         let use_native = match config.backend {
-            JournaldBackendConfig::Auto => native_available,
-            JournaldBackendConfig::Native => {
+            JournaldBackendPref::Auto => native_available,
+            JournaldBackendPref::Native => {
                 if !native_available {
                     return Err(io::Error::other(
                         "backend: native requested but libsystemd.so.0 is not available",
@@ -132,7 +153,7 @@ impl JournaldInput {
                 }
                 true
             }
-            JournaldBackendConfig::Subprocess => false,
+            JournaldBackendPref::Subprocess => false,
         };
 
         let backend = if use_native {
@@ -144,7 +165,7 @@ impl JournaldInput {
         if use_native {
             tracing::info!("journald input '{thread_name}': using native sd_journal API");
         } else {
-            let reason = if matches!(config.backend, JournaldBackendConfig::Subprocess) {
+            let reason = if matches!(config.backend, JournaldBackendPref::Subprocess) {
                 "subprocess backend selected by config"
             } else {
                 "libsystemd.so.0 not available, falling back to journalctl subprocess"
@@ -156,9 +177,33 @@ impl JournaldInput {
             .name(format!("journald-{thread_name}"))
             .spawn(move || {
                 if use_native {
-                    native_reader_loop(config, tx, thread_running, thread_health);
+                    // When backend is auto, fall back to subprocess if native
+                    // startup fails (e.g. permission denied, missing namespace).
+                    native_reader_loop(&config, &tx, &thread_running, &thread_health);
+
+                    // If health is degraded and backend was auto, try subprocess.
+                    if matches!(config.backend, JournaldBackendPref::Auto)
+                        && thread_health.load(Ordering::Acquire) == HEALTH_DEGRADED
+                        && thread_running.load(Ordering::Acquire)
+                    {
+                        tracing::warn!("native journal backend failed, falling back to subprocess");
+                        thread_health.store(HEALTH_STARTING, Ordering::Release);
+                        subprocess_reader_loop(
+                            config,
+                            tx,
+                            thread_running,
+                            thread_health,
+                            thread_child_pid,
+                        );
+                    }
                 } else {
-                    subprocess_reader_loop(config, tx, thread_running, thread_health);
+                    subprocess_reader_loop(
+                        config,
+                        tx,
+                        thread_running,
+                        thread_health,
+                        thread_child_pid,
+                    );
                 }
             })
             .map_err(io::Error::other)?;
@@ -170,6 +215,7 @@ impl JournaldInput {
             health,
             stats,
             backend,
+            child_pid,
         })
     }
 
@@ -182,6 +228,15 @@ impl JournaldInput {
 impl Drop for JournaldInput {
     fn drop(&mut self) {
         self.is_running.store(false, Ordering::Release);
+        // Kill the subprocess child (if any) so `read_until` gets EOF and
+        // the reader thread exits promptly.
+        let pid = self.child_pid.load(Ordering::Acquire);
+        if pid != 0 {
+            // SAFETY: sending SIGKILL to a known child PID we own.
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
     }
 }
 
@@ -197,7 +252,8 @@ impl InputSource for JournaldInput {
                     let len = line.len();
                     total_bytes += len;
                     lines_read += 1;
-                    self.stats.inc_bytes(len as u64);
+                    // Note: do NOT call stats.inc_bytes() here — the downstream
+                    // FramedInput already charges `accounted_bytes` to stats.
                     events.push(InputEvent::Data {
                         bytes: line,
                         source_id: None,
@@ -238,14 +294,14 @@ impl InputSource for JournaldInput {
 /// then enters a loop: drain all available entries → wait for new entries.
 /// Each entry is serialized to a JSON object and sent over the channel.
 fn native_reader_loop(
-    config: JournaldConfig,
-    tx: crossbeam_channel::Sender<Vec<u8>>,
-    running: Arc<AtomicBool>,
-    health: Arc<AtomicU8>,
+    config: &JournaldConfig,
+    tx: &crossbeam_channel::Sender<Vec<u8>>,
+    running: &Arc<AtomicBool>,
+    health: &Arc<AtomicU8>,
 ) {
     health.store(HEALTH_STARTING, Ordering::Release);
 
-    let mut journal = match open_native_journal(&config) {
+    let mut journal = match open_native_journal(config) {
         Ok(j) => j,
         Err(e) => {
             tracing::error!(error = %e, "failed to open native journal");
@@ -262,7 +318,7 @@ fn native_reader_loop(
     }
 
     // Seek to starting position.
-    if let Err(e) = seek_start(&mut journal, &config) {
+    if let Err(e) = seek_start(&mut journal, config) {
         tracing::error!(error = %e, "failed to seek journal");
         health.store(HEALTH_DEGRADED, Ordering::Release);
         return;
@@ -294,8 +350,10 @@ fn native_reader_loop(
                     match entry_to_json(&mut journal, &exclude_units, &mut json_buf) {
                         Ok(Some(())) => {
                             json_buf.push(b'\n');
-                            let payload = json_buf.clone();
-                            json_buf.clear();
+                            // Move the buffer to avoid cloning; allocate a
+                            // fresh one for the next entry.
+                            let payload =
+                                std::mem::replace(&mut json_buf, Vec::with_capacity(4096));
 
                             match tx.try_send(payload) {
                                 Ok(()) => {}
@@ -339,15 +397,33 @@ fn native_reader_loop(
     }
 }
 
-/// Open a journal handle with the appropriate flags/directory.
+/// Open a journal handle with the appropriate flags/directory/namespace.
 fn open_native_journal(config: &JournaldConfig) -> io::Result<journal_ffi::Journal> {
     let flags = journal_ffi::SD_JOURNAL_LOCAL_ONLY | journal_ffi::SD_JOURNAL_SYSTEM;
 
-    if let Some(ref dir) = config.journal_directory {
-        journal_ffi::Journal::open_directory(dir, flags)
+    let mut journal = if let Some(ref dir) = config.journal_directory {
+        journal_ffi::Journal::open_directory(dir, flags)?
+    } else if let Some(ref ns) = config.journal_namespace {
+        journal_ffi::Journal::open_namespace(ns, flags)?
     } else {
-        journal_ffi::Journal::open(flags)
+        journal_ffi::Journal::open(flags)?
+    };
+
+    // Apply _BOOT_ID filter for current_boot_only.
+    if config.current_boot_only {
+        let boot_id = read_current_boot_id()?;
+        let match_str = format!("_BOOT_ID={boot_id}");
+        journal.add_match(match_str.as_bytes())?;
     }
+
+    Ok(journal)
+}
+
+/// Read the current boot ID from `/proc/sys/kernel/random/boot_id`.
+fn read_current_boot_id() -> io::Result<String> {
+    let raw = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    // The kernel returns a UUID with hyphens; systemd stores it without hyphens.
+    Ok(raw.trim().replace('-', ""))
 }
 
 /// Add `_SYSTEMD_UNIT=<unit>` match expressions for each include unit.
@@ -448,11 +524,39 @@ fn write_fields_as_json(buf: &mut Vec<u8>, fields: &[(Vec<u8>, Vec<u8>)]) {
 
 /// Escape bytes for inclusion in a JSON string value.
 ///
-/// Non-UTF8 bytes are escaped as `\uXXXX`. This matches journalctl's behavior
-/// for binary fields (though journalctl uses integer arrays for fully binary
-/// fields — we use \u escapes as a simpler approximation for the POC).
+/// Valid UTF-8 sequences are written directly (with standard JSON escaping for
+/// control characters, `"`, and `\`). Invalid bytes are replaced with the
+/// Unicode replacement character (`\uFFFD`).
 fn json_escape_into(buf: &mut Vec<u8>, input: &[u8]) {
-    for &b in input {
+    let mut remaining = input;
+    while !remaining.is_empty() {
+        match std::str::from_utf8(remaining) {
+            Ok(valid) => {
+                // All remaining bytes are valid UTF-8.
+                escape_str_into(buf, valid);
+                break;
+            }
+            Err(e) => {
+                // Write the valid prefix.
+                let (valid_bytes, after) = remaining.split_at(e.valid_up_to());
+                if !valid_bytes.is_empty() {
+                    // SAFETY: `from_utf8` confirmed these bytes are valid.
+                    let valid_str = unsafe { std::str::from_utf8_unchecked(valid_bytes) };
+                    escape_str_into(buf, valid_str);
+                }
+                // Replace the invalid byte(s) with U+FFFD.
+                buf.extend_from_slice(b"\\uFFFD");
+                // Advance past the error.
+                let skip = e.error_len().unwrap_or(1);
+                remaining = &after[skip..];
+            }
+        }
+    }
+}
+
+/// Escape a valid UTF-8 string for JSON.
+fn escape_str_into(buf: &mut Vec<u8>, s: &str) {
+    for &b in s.as_bytes() {
         match b {
             b'"' => buf.extend_from_slice(b"\\\""),
             b'\\' => buf.extend_from_slice(b"\\\\"),
@@ -465,7 +569,6 @@ fn json_escape_into(buf: &mut Vec<u8>, input: &[u8]) {
                 buf.push(HEX[(b >> 4) as usize]);
                 buf.push(HEX[(b & 0xf) as usize]);
             }
-            // Printable ASCII and valid UTF-8 continuation bytes.
             _ => buf.push(b),
         }
     }
@@ -532,6 +635,7 @@ fn subprocess_reader_loop(
     tx: crossbeam_channel::Sender<Vec<u8>>,
     running: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
+    child_pid: Arc<AtomicU32>,
 ) {
     while running.load(Ordering::Acquire) {
         health.store(HEALTH_STARTING, Ordering::Release);
@@ -548,6 +652,9 @@ fn subprocess_reader_loop(
             }
         };
 
+        // Publish PID so `Drop` can kill the child.
+        child_pid.store(child.id(), Ordering::Release);
+
         health.store(HEALTH_OK, Ordering::Release);
         tracing::info!("journalctl started (pid={})", child.id());
 
@@ -557,6 +664,7 @@ fn subprocess_reader_loop(
                 tracing::error!("journalctl stdout not captured");
                 let _ = child.kill();
                 let _ = child.wait();
+                child_pid.store(0, Ordering::Release);
                 health.store(HEALTH_DEGRADED, Ordering::Release);
                 if !backoff_or_stop(&running) {
                     return;
@@ -579,6 +687,7 @@ fn subprocess_reader_loop(
 
         let _ = child.kill();
         let _ = child.wait();
+        child_pid.store(0, Ordering::Release);
 
         if let Some(Some(handle)) = stderr_thread {
             let _ = handle.join();
@@ -628,6 +737,16 @@ fn read_export_entries(
             return false;
         }
 
+        // Guard against oversized text fields (e.g. corrupt/malicious journal).
+        if line_buf.len() > MAX_BINARY_FIELD_SIZE {
+            tracing::warn!(
+                len = line_buf.len(),
+                "export text field exceeds maximum size, skipping"
+            );
+            line_buf.clear();
+            continue;
+        }
+
         // Strip trailing newline.
         let line = if line_buf.last() == Some(&b'\n') {
             &line_buf[..line_buf.len() - 1]
@@ -664,14 +783,40 @@ fn read_export_entries(
         } else {
             // Field name without `=` means binary field follows.
             // Next 8 bytes are LE length, then that many bytes of data.
-            // We skip binary fields (they're rare — e.g. coredumps).
             let field_name = line.to_vec();
             let mut len_buf = [0u8; 8];
             if reader.read_exact(&mut len_buf).is_err() {
                 return false;
             }
-            let data_len = u64::from_le_bytes(len_buf) as usize;
-            // Skip the binary data + trailing newline.
+            let data_len_u64 = u64::from_le_bytes(len_buf);
+
+            // Cap binary field length to prevent malicious/corrupt journals
+            // from causing huge allocations. Compare as u64 to avoid truncation
+            // on 32-bit platforms.
+            if data_len_u64 > MAX_BINARY_FIELD_SIZE as u64 {
+                tracing::warn!(
+                    field = %String::from_utf8_lossy(&field_name),
+                    data_len = data_len_u64,
+                    "binary journal field exceeds maximum size, skipping field"
+                );
+                // Skip past the oversized field data + trailing newline.
+                // Read in chunks to avoid huge allocations.
+                let mut remaining = data_len_u64 + 1; // +1 for trailing \n
+                let mut discard = vec![0u8; 64 * 1024];
+                while remaining > 0 {
+                    let chunk = remaining.min(discard.len() as u64) as usize;
+                    if reader.read_exact(&mut discard[..chunk]).is_err() {
+                        return false;
+                    }
+                    remaining -= chunk as u64;
+                }
+                // Skip this field but continue parsing the entry.
+                continue;
+            }
+
+            let data_len = data_len_u64 as usize;
+
+            // Read the binary data + trailing newline.
             let mut skip_buf = vec![0u8; data_len + 1];
             if reader.read_exact(&mut skip_buf).is_err() {
                 return false;
@@ -993,17 +1138,31 @@ mod tests {
         assert_eq!(v["_CMDLINE"], "/usr/bin/test --flag=val\\ue");
     }
 
-    // ── backend config validation ──────────────────────────────────────
+    // ── backend pref defaults ──────────────────────────────────────────
 
     #[test]
-    fn backend_config_deserializes() {
-        let auto: JournaldBackendConfig = serde_json::from_str("\"auto\"").unwrap();
-        assert_eq!(auto, JournaldBackendConfig::Auto);
+    fn backend_pref_defaults_to_auto() {
+        assert_eq!(JournaldBackendPref::default(), JournaldBackendPref::Auto);
+    }
 
-        let native: JournaldBackendConfig = serde_json::from_str("\"native\"").unwrap();
-        assert_eq!(native, JournaldBackendConfig::Native);
+    // ── json_escape_into handles invalid UTF-8 ─────────────────────────
 
-        let sub: JournaldBackendConfig = serde_json::from_str("\"subprocess\"").unwrap();
-        assert_eq!(sub, JournaldBackendConfig::Subprocess);
+    #[test]
+    fn json_escape_invalid_utf8_replaced() {
+        let mut buf = Vec::new();
+        // 0xFF is not valid UTF-8.
+        json_escape_into(&mut buf, &[b'a', 0xFF, b'b']);
+        let s = String::from_utf8(buf).expect("output should be valid UTF-8");
+        assert_eq!(s, "a\\uFFFDb");
+    }
+
+    #[test]
+    fn json_escape_mixed_valid_invalid() {
+        let mut buf = Vec::new();
+        // Valid UTF-8 "hello", then 0xFE (invalid), then "world".
+        let input = b"hello\xFEworld";
+        json_escape_into(&mut buf, input);
+        let s = String::from_utf8(buf).expect("output should be valid UTF-8");
+        assert_eq!(s, "hello\\uFFFDworld");
     }
 }

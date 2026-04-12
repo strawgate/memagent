@@ -15,6 +15,7 @@ use std::ffi::{CStr, CString};
 use std::io;
 use std::marker::PhantomData;
 use std::ptr;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use libloading::{Library, Symbol};
@@ -83,6 +84,8 @@ struct LibSystemd {
     _lib: Library,
     open: FnOpen,
     open_directory: FnOpenDirectory,
+    /// `sd_journal_open_namespace` — may be `None` on older libsystemd (<245).
+    open_namespace: Option<FnOpenNamespace>,
     close: FnClose,
     next: FnNext,
     previous: FnPrevious,
@@ -136,9 +139,16 @@ impl LibSystemd {
                 }};
             }
 
+            // `sd_journal_open_namespace` is optional — only available on
+            // systemd >= 245. We try to load it but fall back to None.
+            let open_namespace: Option<FnOpenNamespace> = load(b"sd_journal_open_namespace\0")
+                .ok()
+                .map(|ptr| std::mem::transmute::<*mut (), FnOpenNamespace>(ptr));
+
             Ok(Self {
                 open: sym!(b"sd_journal_open\0", FnOpen),
                 open_directory: sym!(b"sd_journal_open_directory\0", FnOpenDirectory),
+                open_namespace,
                 close: sym!(b"sd_journal_close\0", FnClose),
                 next: sym!(b"sd_journal_next\0", FnNext),
                 previous: sym!(b"sd_journal_previous\0", FnPrevious),
@@ -172,8 +182,8 @@ impl LibSystemd {
 pub struct Journal {
     handle: *mut SdJournal,
     lib: Arc<LibSystemd>,
-    /// Prevent Send + Sync.
-    _not_send: PhantomData<*mut ()>,
+    /// Prevent Send + Sync — `Rc` is `!Send + !Sync` on stable Rust.
+    _not_send: PhantomData<Rc<()>>,
 }
 
 impl Drop for Journal {
@@ -225,6 +235,31 @@ impl Journal {
         // is valid for the duration of this call.
         let ret =
             unsafe { (lib.open_directory)(std::ptr::addr_of_mut!(handle), c_path.as_ptr(), flags) };
+        if ret < 0 {
+            return Err(sd_err(ret));
+        }
+        Ok(Self {
+            handle,
+            lib,
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Open a journal scoped to a specific namespace.
+    ///
+    /// Requires systemd >= 245 (`sd_journal_open_namespace`). Returns an error
+    /// if the symbol is not available in the loaded `libsystemd.so.0`.
+    pub fn open_namespace(namespace: &str, flags: i32) -> io::Result<Self> {
+        let lib = Arc::new(LibSystemd::load()?);
+        let fn_open_ns = lib.open_namespace.ok_or_else(|| {
+            io::Error::other("sd_journal_open_namespace not available (requires systemd >= 245)")
+        })?;
+        let c_ns = CString::new(namespace)
+            .map_err(|_| io::Error::other("journal namespace contains null byte"))?;
+        let mut handle: *mut SdJournal = ptr::null_mut();
+        // SAFETY: `c_ns` is a valid NUL-terminated C string. `handle` pointer
+        // is valid for the duration of this call.
+        let ret = unsafe { fn_open_ns(std::ptr::addr_of_mut!(handle), c_ns.as_ptr(), flags) };
         if ret < 0 {
             return Err(sd_err(ret));
         }
