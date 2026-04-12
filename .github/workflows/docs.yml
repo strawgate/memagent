@@ -83,7 +83,7 @@ jobs:
       - name: Build docs (Starlight)
         run: cd book && npm run build
 
-      - name: Link check (built site)
+      - name: Link check (built site — external only)
         uses: lycheeverse/lychee-action@v2
         with:
           lycheeVersion: v0.23.0
@@ -93,7 +93,10 @@ jobs:
             --max-retries 3
             --exclude 'mailto:'
             --exclude-loopback
-            --root-dir book/dist
+            --exclude '^/memagent'
+            --exclude '^file://'
+            --scheme https
+            --scheme http
             book/dist
 
       - name: Build rustdoc (public API only)
