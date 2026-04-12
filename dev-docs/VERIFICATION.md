@@ -49,17 +49,24 @@ Update existing TLA+ specs when:
 | Property | Type | Description |
 |----------|------|-------------|
 | `DrainCompleteness` | Safety | `stop()` only reachable when all in-flight batches are resolved |
+| `NoHeldWorkAfterStop` | Safety | `Stopped` never leaves non-terminal held work behind |
 | `QuiescenceHasNoSilentStrandedWork` | Safety | `Stopped` never leaves sent batches without a terminal `acked`/`rejected`/`abandoned` outcome |
 | `NoUnresolvedSentAtQuiescence` | Safety | `Stopped` implies `sent \ terminal = {}` for every source (no stranded sent work) |
 | `StopMetadataConsistent` | Safety | `forced` and `stop_reason` stay phase-consistent (`Stopped` iff reason is non-`none`) |
 | `CheckpointOrderingInvariant` | Safety | `committed[s]=n` implies every sent batch `<= n` is commit-terminal via `acked`/`rejected` and none are in-flight |
+| `UnresolvedWorkNotCommittedPast` | Safety | active or held in-flight work cannot be silently committed past |
+| `CheckpointNeverAheadOfTerminalizedPrefix` | Safety | committed checkpoint is never ahead of the ack/reject terminalized prefix |
 | `CommittedMonotonic` | Safety | Checkpoint never goes backwards |
 | `FailureTerminalizationPreservesCheckpoint` | Safety | Force/crash terminalization cannot advance checkpoints |
 | `FailureClassMustTerminalizePrototype` | Safety | Force/crash transitions must leave no sent-but-unterminalized batches |
+| `HeldTransitionsDoNotCommit` | Safety | hold/retry/force-stop held-state transitions do not advance checkpoints |
+| `ForceStopAbandonsAllInFlight` | Safety | force-stop explicitly moves every unresolved in-flight batch to `abandoned` |
 | `NoCreateAfterDrain` | Safety | No new batches after `begin_drain` |
 | `NoDoubleComplete` | Safety | In-flight batches are disjoint from `acked`, `rejected`, and `abandoned` terminal sets |
 | `EventualDrain` | Liveness | Every started drain eventually reaches Stopped |
 | `NoBatchLeftBehind` | Liveness | Every in-flight batch eventually terminalizes (`ack`/`reject`/`abandon`) |
+| `HeldBatchEventuallyReleased` | Liveness | Every non-terminal hold is eventually retried/released |
+| `PanickedBatchEventuallyAccountedFor` | Liveness | Panic-held work eventually reaches `ack`/`reject`/`abandon` |
 | `StoppedIsStable` | Liveness | Once Stopped, stays Stopped |
 
 `tla/MCPipelineMachine.tla` is the TLC model checker configuration (symmetry sets, model
@@ -82,10 +89,18 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 
 Three models:
 - **Model 1 — Safety** (normal + ForceStop paths): `Sources={"s1","s2"}`,
-  `MaxBatchesPerSource=3`, ~50K states, < 30s
-- **Model 2 — Liveness**: `MaxBatchesPerSource=2`, ~5K states, < 5 min
+  `MaxBatchesPerSource=3`, `MaxNonTerminalHolds=1`, ~10.8M distinct states
+  locally with one TLC worker, < 10 min
+- **Model 2 — Liveness**: `MaxBatchesPerSource=2`, `MaxNonTerminalHolds=1`,
+  ~77K distinct states locally with one TLC worker, < 5 min
 - **Model 3 — Coverage**: reachability/vacuity witnesses via
   `PipelineMachine.coverage.cfg` (expected invariant violations as witnesses)
+
+The PipelineMachine model explicitly includes bounded non-terminal
+hold/fail/retry/panic behavior. `HoldBatch` keeps a batch in `in_flight` without
+advancing checkpoints; `RetryHeldBatch` releases the hold; `PanicHoldBatch`
+records a panic-originated hold; `ForceStop` explicitly abandons unresolved
+work. The model still abstracts away retry backoff timing and payload retention.
 
 > Do NOT use `CONSTRAINT` to bound state space for liveness — it silently breaks liveness
 > by cutting off infinite behaviors before they converge. Use model constants instead.

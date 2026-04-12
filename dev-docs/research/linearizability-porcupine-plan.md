@@ -32,6 +32,22 @@ Core legality rules:
 3. Failed flush does not advance durability.
 4. Force-stop may abandon in-flight work but must not fabricate advancement.
 
+## Verification scope
+
+Linearizability checking complements the existing TLA+ model; it does not replace
+`PipelineMachine.tla`. The TLA+ invariants `HeldTransitionsDoNotCommit` and
+`ForceStopAbandonsAllInFlight` remain the design-level proof obligations for
+failed flush and force-stop behavior. The proposed Porcupine-style checker would
+consume runtime histories and verify that implementation traces obey the same
+contract under concrete interleavings.
+
+Transition plan:
+
+1. Keep the TLA+ properties as required CI/review evidence for state-machine changes.
+2. Add history export and linearizability checking as an implementation-level cross-check.
+3. Treat any disagreement between TLC and runtime-history checking as a blocking spec/code drift bug.
+4. Do not remove or weaken TLA+ coverage unless a later architecture decision explicitly assigns the same proof obligation elsewhere.
+
 ## Porcupine integration options
 
 1. **Recommended**: keep checker as a small Go tool under `scripts/linearizability/`.
