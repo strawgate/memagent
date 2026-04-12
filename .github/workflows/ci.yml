@@ -718,6 +718,7 @@ jobs:
       - lint
       - test-linux
       - test-macos
+      - test-network
       - build-check
       - core-no-std
       - kani

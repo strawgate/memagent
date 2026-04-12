@@ -180,6 +180,7 @@ struct RunningState {
     last_emit: Instant,
     last_control_check: Instant,
     control: ControlState,
+    health: ComponentHealth,
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +264,7 @@ impl PlatformSensorState<InitState> {
                 last_emit: now,
                 last_control_check,
                 control: self.state.control,
+                health: ComponentHealth::Healthy,
             },
         };
         Ok((running, vec![event]))
@@ -299,13 +301,17 @@ impl PlatformSensorState<RunningState> {
         self.state.last_control_check = Instant::now();
 
         match read_control_file(path) {
-            Ok(None) => None,
+            Ok(None) => {
+                self.state.health = ComponentHealth::Healthy;
+                None
+            }
             Ok(Some(file_cfg)) => {
                 let mut next = self.state.control.clone();
                 if let Some(enabled) = file_cfg.enabled_families {
                     let parsed = match parse_enabled_families(Some(&enabled), self.common.target) {
                         Ok(v) => v,
                         Err(e) => {
+                            self.state.health = ComponentHealth::Degraded;
                             return Some(vec![self.common.control_row(
                                 &self.state.control,
                                 "control_reload_failed",
@@ -329,6 +335,7 @@ impl PlatformSensorState<RunningState> {
                     || generation_changed;
 
                 if !changed {
+                    self.state.health = ComponentHealth::Healthy;
                     return None;
                 }
 
@@ -336,6 +343,7 @@ impl PlatformSensorState<RunningState> {
                     .generation
                     .unwrap_or_else(|| self.state.control.generation.saturating_add(1));
                 self.state.control = next.clone();
+                self.state.health = ComponentHealth::Healthy;
 
                 let mut rows = vec![self.common.control_row(
                     &next,
@@ -351,12 +359,15 @@ impl PlatformSensorState<RunningState> {
                 ));
                 Some(rows)
             }
-            Err(e) => Some(vec![self.common.control_row(
-                &self.state.control,
-                "control_reload_failed",
-                &format!("failed to load control file: {e}"),
-                "error",
-            )]),
+            Err(e) => {
+                self.state.health = ComponentHealth::Degraded;
+                Some(vec![self.common.control_row(
+                    &self.state.control,
+                    "control_reload_failed",
+                    &format!("failed to load control file: {e}"),
+                    "error",
+                )])
+            }
         }
     }
 }
@@ -615,7 +626,7 @@ impl InputSource for PlatformSensorInput {
     fn health(&self) -> ComponentHealth {
         match self.machine.as_ref() {
             Some(PlatformSensorMachine::Init(_)) => ComponentHealth::Starting,
-            Some(PlatformSensorMachine::Running(_)) => ComponentHealth::Healthy,
+            Some(PlatformSensorMachine::Running(running)) => running.state.health,
             None => ComponentHealth::Failed,
         }
     }
@@ -1089,6 +1100,40 @@ mod tests {
                 .any(|v| v.as_deref() == Some("control_reload_failed")),
             "malformed control file should surface through reload failure rows"
         );
+    }
+
+    #[test]
+    fn health_degrades_on_reload_error_and_recovers_after_valid_reload() {
+        let (_dir, control_path) = tempfiles::control_file_path();
+        tempfiles::write_control_file(&control_path, r#"{"generation":"invalid"}"#);
+
+        let mut input = PlatformSensorInput::new(
+            "sensor",
+            host_target(),
+            PlatformSensorConfig {
+                control_path: Some(control_path.clone()),
+                control_reload_interval: Duration::from_millis(1),
+                emit_signal_rows: false,
+                ..PlatformSensorConfig::default()
+            },
+        )
+        .expect("startup should succeed");
+
+        assert_eq!(input.health(), ComponentHealth::Starting);
+        let _ = input.poll().expect("startup poll");
+        assert_eq!(input.health(), ComponentHealth::Healthy);
+
+        std::thread::sleep(Duration::from_millis(2));
+        let _ = input.poll().expect("reload poll");
+        assert_eq!(input.health(), ComponentHealth::Degraded);
+
+        tempfiles::write_control_file(
+            &control_path,
+            r#"{"generation":2,"enabled_families":["process"],"emit_signal_rows":false}"#,
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        let _ = input.poll().expect("recovery poll");
+        assert_eq!(input.health(), ComponentHealth::Healthy);
     }
 
     #[test]

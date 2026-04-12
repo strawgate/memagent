@@ -67,21 +67,36 @@ impl UdpSink {
 
         let has_v4 = resolved_targets.iter().any(SocketAddr::is_ipv4);
         let has_v6 = resolved_targets.iter().any(SocketAddr::is_ipv6);
+        let mut bind_error: Option<io::Error> = None;
         let socket_v4 = if has_v4 {
-            Some(Self::bind_socket("0.0.0.0:0")?)
+            match Self::bind_socket("0.0.0.0:0") {
+                Ok(socket) => Some(socket),
+                Err(err) => {
+                    bind_error = Some(err);
+                    None
+                }
+            }
         } else {
             None
         };
         let socket_v6 = if has_v6 {
-            Some(Self::bind_socket("[::]:0")?)
+            match Self::bind_socket("[::]:0") {
+                Ok(socket) => Some(socket),
+                Err(err) => {
+                    bind_error = Some(err);
+                    None
+                }
+            }
         } else {
             None
         };
         if socket_v4.is_none() && socket_v6.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "resolved targets had no usable address family",
-            ));
+            return Err(bind_error.unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "resolved targets had no usable address family",
+                )
+            }));
         }
 
         Ok(Self {
@@ -97,6 +112,7 @@ impl UdpSink {
 
     async fn send_datagram_to_resolved_targets(&self, payload: &[u8]) -> io::Result<()> {
         let mut attempted = false;
+        let mut saw_connection_refused = false;
         let mut last_error: Option<io::Error> = None;
 
         for target in &self.targets {
@@ -112,8 +128,9 @@ impl UdpSink {
             match socket.send_to(payload, *target).await {
                 Ok(_) => return Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-                    // Silently drop — UDP is best-effort.
-                    return Ok(());
+                    // Continue trying other resolved targets; a single refused
+                    // address should not prevent delivery to healthy peers.
+                    saw_connection_refused = true;
                 }
                 Err(e) => {
                     last_error = Some(e);
@@ -122,7 +139,15 @@ impl UdpSink {
         }
 
         if attempted {
-            Err(last_error.unwrap_or_else(|| io::Error::other("UDP send failed")))
+            if let Some(err) = last_error {
+                Err(err)
+            } else if saw_connection_refused {
+                // All attempted targets refused the datagram; keep best-effort
+                // semantics and do not fail the batch.
+                Ok(())
+            } else {
+                Err(io::Error::other("UDP send failed"))
+            }
         } else {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

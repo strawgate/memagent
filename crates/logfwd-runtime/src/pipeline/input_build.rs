@@ -80,7 +80,7 @@ fn require_non_empty<'a>(
     value: Option<&'a String>,
 ) -> Result<&'a str, String> {
     let value = value
-        .map(|v| v.as_str())
+        .map(String::as_str)
         .ok_or_else(|| format!("input '{name}': {input_type} input requires '{field}'"))?;
     if value.trim().is_empty() {
         return Err(format!(

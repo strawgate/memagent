@@ -110,9 +110,29 @@ fn advance_pending(client: &mut Client, consumed: usize) {
 
 #[inline]
 fn has_incomplete_octet_frame_tail(buf: &[u8]) -> bool {
-    let Some((len, prefix_len)) = parse_octet_prefix(buf) else {
+    if buf.is_empty() || !buf[0].is_ascii_digit() {
         return false;
-    };
+    }
+    let mut i = 0usize;
+    let mut len = 0usize;
+    while i < buf.len() && buf[i].is_ascii_digit() {
+        len = match len
+            .checked_mul(10)
+            .and_then(|v| v.checked_add((buf[i] - b'0') as usize))
+        {
+            Some(v) => v,
+            None => return true,
+        };
+        i += 1;
+    }
+    if i == 0 || i >= buf.len() {
+        // Digits with no delimiter can still be a truncated octet prefix.
+        return true;
+    }
+    if buf[i] != b' ' {
+        return false;
+    }
+    let prefix_len = i + 1;
     match prefix_len.checked_add(len) {
         Some(needed) => buf.len() < needed,
         None => true,
@@ -995,6 +1015,14 @@ mod tests {
         assert!(
             has_incomplete_octet_frame_tail(&buf),
             "overflowing octet prefix must be treated as incomplete to avoid flushing malformed tails"
+        );
+    }
+
+    #[test]
+    fn truncated_digits_only_octet_prefix_is_treated_as_incomplete_tail() {
+        assert!(
+            has_incomplete_octet_frame_tail(b"12"),
+            "truncated octet-count prefix must be treated as incomplete to avoid flushing malformed tails"
         );
     }
 
