@@ -1468,6 +1468,7 @@ fn validate_input_format_read_only(
         InputType::Http => matches!(format, Format::Json | Format::Raw),
         InputType::Udp | InputType::Tcp => matches!(format, Format::Json | Format::Raw),
         InputType::ArrowIpc => false,
+        InputType::Journald => matches!(format, Format::Json),
         other => {
             tracing::warn!(
                 "validate_input_format_read_only: unhandled input type {other:?} for input {name}"

@@ -208,6 +208,71 @@ impl Config {
                         | InputType::LinuxEbpfSensor
                         | InputType::MacosEsSensor
                         | InputType::WindowsEbpfSensor => {}
+                        InputType::Journald => {
+                            if let Some(jd) = &input.journald {
+                                // journal_directory and journal_namespace are mutually exclusive
+                                // in the native backend (directory opens a specific path, namespace
+                                // opens a named journal).
+                                if jd.journal_directory.is_some() && jd.journal_namespace.is_some()
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': 'journal_directory' and 'journal_namespace' cannot both be set"
+                                    )));
+                                }
+
+                                // Reject blank/whitespace-only optional string fields.
+                                if jd
+                                    .journalctl_path
+                                    .as_deref()
+                                    .is_some_and(|s| s.trim().is_empty())
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': 'journalctl_path' must not be blank"
+                                    )));
+                                }
+                                if jd
+                                    .journal_directory
+                                    .as_deref()
+                                    .is_some_and(|s| s.trim().is_empty())
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': 'journal_directory' must not be blank"
+                                    )));
+                                }
+                                if jd
+                                    .journal_namespace
+                                    .as_deref()
+                                    .is_some_and(|s| s.trim().is_empty())
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': 'journal_namespace' must not be blank"
+                                    )));
+                                }
+
+                                // Reject blank/whitespace-only unit names.
+                                for unit in jd.include_units.iter().chain(jd.exclude_units.iter()) {
+                                    if unit.trim().is_empty() {
+                                        return Err(ConfigError::Validation(format!(
+                                            "pipeline '{name}' input '{label}': unit names must not be blank"
+                                        )));
+                                    }
+                                }
+
+                                let norm_excludes: Vec<String> = jd
+                                    .exclude_units
+                                    .iter()
+                                    .map(|u| normalize_unit_name(u.trim()))
+                                    .collect();
+                                for unit in &jd.include_units {
+                                    let normalized = normalize_unit_name(unit.trim());
+                                    if norm_excludes.contains(&normalized) {
+                                        return Err(ConfigError::Validation(format!(
+                                            "pipeline '{name}' input '{label}': unit '{unit}' appears in both include_units and exclude_units"
+                                        )));
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Reject fields that don't apply to this input type.
@@ -236,6 +301,11 @@ impl Config {
                             if input.sensor.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
                                 )));
                             }
                         }
@@ -288,6 +358,11 @@ impl Config {
                             if input.sensor.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
                                 )));
                             }
                         }
@@ -359,6 +434,11 @@ impl Config {
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                                 )));
                             }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
+                                )));
+                            }
                         }
                         InputType::ArrowIpc => {
                             if input.tls.is_some() {
@@ -421,6 +501,11 @@ impl Config {
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
                                 )));
                             }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
+                                )));
+                            }
                         }
                         InputType::Http => {
                             if input.tls.is_some() {
@@ -471,6 +556,11 @@ impl Config {
                             if input.sensor.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
                                 )));
                             }
                             if let Some(http) = &input.http {
@@ -554,6 +644,11 @@ impl Config {
                             if input.sensor.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
                                 )));
                             }
                             if input.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
@@ -718,6 +813,11 @@ impl Config {
                                     "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
                                 )));
                             }
+                            if input.journald.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'journald' settings are only supported for journald inputs"
+                                )));
+                            }
                             if input.format.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': sensor inputs do not support 'format' (Arrow-native input)"
@@ -768,6 +868,76 @@ impl Config {
                                             sensor_supported_families_csv(&input.input_type)
                                         )));
                                     }
+                                }
+                            }
+                        }
+                        InputType::Journald => {
+                            if input.listen.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'listen' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.path.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'path' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.tls.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'tls' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.generator.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'generator' settings are only supported for generator inputs"
+                                )));
+                            }
+                            if input.http.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'http' settings are only supported for http inputs"
+                                )));
+                            }
+                            if input.sensor.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'sensor' settings are only supported for sensor inputs"
+                                )));
+                            }
+                            if input.max_open_files.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'max_open_files' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.glob_rescan_interval_ms.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'glob_rescan_interval_ms' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.poll_interval_ms.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'poll_interval_ms' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.read_buf_size.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'read_buf_size' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.per_file_read_budget_bytes.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' is not supported for journald inputs"
+                                )));
+                            }
+                            if input.adaptive_fast_polls_max.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'adaptive_fast_polls_max' is not supported for journald inputs"
+                                )));
+                            }
+                            // Journald always produces JSON; reject other formats at config time.
+                            if let Some(fmt) = &input.format {
+                                if !matches!(fmt, Format::Json) {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': journald input only supports format: json (got {fmt:?})"
+                                    )));
                                 }
                             }
                         }
@@ -1158,7 +1328,10 @@ impl Config {
             Ok(())
         } else if all_errors.len() == 1 {
             Err(ConfigError::Validation(
-                all_errors.into_iter().next().expect("checked len == 1"),
+                all_errors
+                    .into_iter()
+                    .next()
+                    .expect("guarded by len == 1 check"),
             ))
         } else {
             Err(ConfigError::Validation(format!(
@@ -1206,6 +1379,18 @@ fn normalize_path_lexically(path: &Path) -> std::path::PathBuf {
         std::path::PathBuf::from(".")
     } else {
         out
+    }
+}
+
+/// Normalize a systemd unit name for comparison.
+///
+/// Unit names without a `.` suffix get `.service` appended, matching
+/// runtime behavior (e.g. `sshd` → `sshd.service`).
+fn normalize_unit_name(name: &str) -> String {
+    if name.contains('.') {
+        name.to_string()
+    } else {
+        format!("{name}.service")
     }
 }
 

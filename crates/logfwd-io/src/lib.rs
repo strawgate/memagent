@@ -13,6 +13,10 @@ pub mod generator;
 /// HTTP NDJSON input source.
 pub mod http_input;
 pub mod input;
+/// FFI bindings for `libsystemd.so.0` `sd_journal` API (runtime dlopen).
+pub mod journal_ffi;
+/// Journald (systemd journal) input — native API with subprocess fallback.
+pub mod journald_input;
 pub mod otap_receiver;
 pub mod otlp_receiver;
 /// Platform sensor inputs and Arrow-native control/sample event emission.

@@ -6,7 +6,7 @@ use opentelemetry::metrics::Meter;
 
 #[cfg(feature = "datafusion")]
 use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
-use logfwd_config::{Format, PipelineConfig};
+use logfwd_config::{Format, InputType, PipelineConfig};
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
@@ -230,6 +230,21 @@ impl Pipeline {
                 }
             }
 
+            // Resolve journal_directory relative to config base_path.
+            if matches!(input_cfg.input_type, InputType::Journald) {
+                if let Some(ref mut jd) = resolved_cfg.journald {
+                    if let Some(ref dir) = jd.journal_directory {
+                        let mut path = PathBuf::from(dir);
+                        if path.is_relative()
+                            && let Some(base) = base_path
+                        {
+                            path = base.join(path);
+                        }
+                        jd.journal_directory = Some(path.to_string_lossy().into_owned());
+                    }
+                }
+            }
+
             let input_name = input_cfg
                 .name
                 .clone()
@@ -398,6 +413,7 @@ mod tests {
             http: None,
             sql: None,
             tls: None,
+            journald: None,
         }
     }
 

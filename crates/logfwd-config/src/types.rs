@@ -49,6 +49,9 @@ pub enum InputType {
     #[serde(rename = "windows_ebpf_sensor", alias = "windows_sensor_beta")]
     WindowsEbpfSensor,
     ArrowIpc,
+    /// Journald (systemd journal) input via native `sd_journal` API or
+    /// `journalctl` subprocess fallback.
+    Journald,
 }
 
 impl fmt::Display for InputType {
@@ -64,6 +67,7 @@ impl fmt::Display for InputType {
             InputType::MacosEsSensor => f.write_str("macos_es_sensor"),
             InputType::WindowsEbpfSensor => f.write_str("windows_ebpf_sensor"),
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
+            InputType::Journald => f.write_str("journald"),
         }
     }
 }
@@ -284,6 +288,72 @@ pub struct TlsInputConfig {
     pub require_client_auth: bool,
 }
 
+/// Journald (systemd journal) input configuration.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JournaldInputConfig {
+    /// Systemd units to include. If empty, all units are collected.
+    /// Unit names without a `.` are suffixed with `.service` automatically.
+    #[serde(default)]
+    pub include_units: Vec<String>,
+    /// Systemd units to exclude.
+    #[serde(default)]
+    pub exclude_units: Vec<String>,
+    /// Only include entries from the current boot (default: true).
+    #[serde(default = "default_true")]
+    pub current_boot_only: bool,
+    /// Only include entries appended after the receiver starts (default: false).
+    /// When false, reads all history from the current boot.
+    #[serde(default)]
+    pub since_now: bool,
+    /// Path to `journalctl` binary. Defaults to `journalctl` (found via PATH).
+    pub journalctl_path: Option<String>,
+    /// Custom journal directory (passed as `--directory=<path>`).
+    pub journal_directory: Option<String>,
+    /// Journal namespace (passed as `--namespace=<ns>`).
+    pub journal_namespace: Option<String>,
+    /// Backend to use for reading the journal.
+    ///
+    /// - `auto` (default): use native `sd_journal` API if `libsystemd.so.0` is
+    ///   available, otherwise fall back to a `journalctl` subprocess.
+    /// - `native`: require the native `sd_journal` API; error if unavailable.
+    /// - `subprocess`: always use a `journalctl` subprocess.
+    #[serde(default)]
+    pub backend: JournaldBackendConfig,
+}
+
+/// Which journal-reading backend to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JournaldBackendConfig {
+    /// Use native API if available, otherwise subprocess (default).
+    #[default]
+    Auto,
+    /// Require the native `sd_journal` C API via `dlopen`.
+    Native,
+    /// Always use a `journalctl` subprocess.
+    Subprocess,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for JournaldInputConfig {
+    fn default() -> Self {
+        Self {
+            include_units: Vec::new(),
+            exclude_units: Vec::new(),
+            current_boot_only: true,
+            since_now: false,
+            journalctl_path: None,
+            journal_directory: None,
+            journal_namespace: None,
+            backend: JournaldBackendConfig::Auto,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputConfig {
@@ -316,6 +386,8 @@ pub struct InputConfig {
     pub sql: Option<String>,
     #[serde(default)]
     pub tls: Option<TlsInputConfig>,
+    #[serde(default)]
+    pub journald: Option<JournaldInputConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

@@ -225,9 +225,9 @@ pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -
 ///
 /// For fields backed by struct conflict columns or multiple flat typed columns,
 /// the first non-null variant (by `json_variants` ordering) is used. If all
-/// variants are null the field is emitted as `"field":null` to preserve JSON
-/// field presence.  Type dispatch uses the Arrow DataType, not the column name
-/// suffix.
+/// variants are null the field is omitted entirely — absent keys are the JSON
+/// convention for "no value". Type dispatch uses the Arrow DataType, not the
+/// column name suffix.
 pub fn write_row_json(
     batch: &RecordBatch,
     row: usize,
@@ -240,6 +240,19 @@ pub fn write_row_json(
         // Find the first non-null variant for this field (json ordering).
         let variant = col.json_variants.iter().find(|v| !is_null(batch, v, row));
 
+        let Some(v) = variant else {
+            // All variants null for this row — omit field entirely.
+            continue;
+        };
+        let Some(arr) = get_array(batch, v) else {
+            debug_assert!(
+                false,
+                "non-null variant but array not found for field {}",
+                col.field_name
+            );
+            continue;
+        };
+
         if !first {
             out.push(b',');
         }
@@ -248,16 +261,6 @@ pub fn write_row_json(
         // Key — escape to produce valid JSON if field_name contains special chars.
         write_json_string(out, &col.field_name)?;
         out.push(b':');
-
-        let Some(v) = variant else {
-            // All variants null for this row — emit JSON null to preserve field presence.
-            out.extend_from_slice(b"null");
-            continue;
-        };
-        let Some(arr) = get_array(batch, v) else {
-            out.extend_from_slice(b"null");
-            continue;
-        };
 
         // Value — dispatch on Arrow DataType, not column name suffix
         write_json_value(arr, row, out)?;
