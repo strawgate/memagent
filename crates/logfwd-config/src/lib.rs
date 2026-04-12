@@ -17,12 +17,13 @@ mod validate;
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
 pub use types::{
-    AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
+    AuthConfig, Config, ConfigError, ContainerInfoConfig, CsvEnrichmentConfig, EnrichmentConfig,
     EnvVarsEnrichmentConfig, Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig,
     GeneratorInputConfig, GeneratorProfileConfig, GeneratorSequenceConfig, GeoDatabaseConfig,
     GeoDatabaseFormat, HostInfoConfig, HttpInputConfig, HttpMethodConfig, InputConfig, InputType,
-    JsonlEnrichmentConfig, K8sPathConfig, OutputConfig, OutputType, PipelineConfig,
-    PlatformSensorInputConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig, TlsInputConfig,
+    JsonlEnrichmentConfig, K8sClusterInfoConfig, K8sPathConfig, KvFileEnrichmentConfig,
+    NetworkInfoConfig, OutputConfig, OutputType, PipelineConfig, PlatformSensorInputConfig,
+    ProcessInfoConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig, TlsInputConfig,
 };
 pub use validate::validate_host_port;
 

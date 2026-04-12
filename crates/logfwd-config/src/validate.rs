@@ -1079,6 +1079,10 @@ impl Config {
                             }
                         }
                         EnrichmentConfig::HostInfo(_) => {}
+                        EnrichmentConfig::ProcessInfo(_) => {}
+                        EnrichmentConfig::NetworkInfo(_) => {}
+                        EnrichmentConfig::ContainerInfo(_) => {}
+                        EnrichmentConfig::K8sClusterInfo(_) => {}
                         EnrichmentConfig::EnvVars(cfg) => {
                             if cfg.table_name.is_empty() {
                                 return Err(ConfigError::Validation(format!(
@@ -1088,6 +1092,25 @@ impl Config {
                             if cfg.prefix.is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: env_vars 'prefix' must not be empty"
+                                )));
+                            }
+                        }
+                        EnrichmentConfig::KvFile(cfg) => {
+                            if cfg.table_name.is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                                )));
+                            }
+                            if cfg.path.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: kv_file 'path' must not be empty"
+                                )));
+                            }
+                            let p = Path::new(&cfg.path);
+                            if p.is_absolute() && !p.exists() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: kv_file not found: {}",
+                                    cfg.path,
                                 )));
                             }
                         }

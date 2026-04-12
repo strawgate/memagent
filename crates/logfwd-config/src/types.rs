@@ -419,6 +419,31 @@ pub struct EnvVarsEnrichmentConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessInfoConfig {}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KvFileEnrichmentConfig {
+    pub table_name: String,
+    pub path: String,
+    /// Reload the file from disk every N seconds.
+    pub refresh_interval: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkInfoConfig {}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerInfoConfig {}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct K8sClusterInfoConfig {}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnrichmentConfig {
     GeoDatabase(GeoDatabaseConfig),
@@ -429,6 +454,16 @@ pub enum EnrichmentConfig {
     Jsonl(JsonlEnrichmentConfig),
     /// Populate a one-row enrichment table from environment variables.
     EnvVars(EnvVarsEnrichmentConfig),
+    /// Agent self-metadata: name, version, PID, start time.
+    ProcessInfo(ProcessInfoConfig),
+    /// Parse a KEY=value properties file into a one-row enrichment table.
+    KvFile(KvFileEnrichmentConfig),
+    /// Network interface metadata: hostname, IPs.
+    NetworkInfo(NetworkInfoConfig),
+    /// Container runtime detection: container ID, runtime name.
+    ContainerInfo(ContainerInfoConfig),
+    /// Kubernetes cluster metadata from downward API.
+    K8sClusterInfo(K8sClusterInfoConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]

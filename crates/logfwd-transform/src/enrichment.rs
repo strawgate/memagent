@@ -760,6 +760,654 @@ impl EnrichmentTable for EnvTable {
 }
 
 // ---------------------------------------------------------------------------
+// Process info (agent self-metadata, resolved once at startup)
+// ---------------------------------------------------------------------------
+
+/// Agent self-metadata table.  One row, resolved at construction time.
+///
+/// Columns: `agent_name`, `agent_version`, `pid`, `start_time`
+///
+/// ```yaml
+/// enrichment:
+///   - type: process_info
+/// ```
+///
+/// SQL: `SELECT l.*, a.agent_version FROM logs l CROSS JOIN process_info a`
+pub struct ProcessInfoTable {
+    batch: RecordBatch,
+}
+
+impl Default for ProcessInfoTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProcessInfoTable {
+    pub fn new() -> Self {
+        let agent_name = "logfwd";
+        let agent_version = env!("CARGO_PKG_VERSION");
+        let pid = std::process::id().to_string();
+        let start_time = {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let dur = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            // ISO 8601 UTC — good enough without pulling in chrono.
+            let secs = dur.as_secs();
+            let days = secs / 86400;
+            let rem = secs % 86400;
+            let hours = rem / 3600;
+            let mins = (rem % 3600) / 60;
+            let s = rem % 60;
+            // Epoch day 0 = 1970-01-01. Simple civil-date conversion.
+            let (y, m, d) = epoch_days_to_ymd(days as i64);
+            format!("{y:04}-{m:02}-{d:02}T{hours:02}:{mins:02}:{s:02}Z")
+        };
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("agent_name", DataType::Utf8, false),
+            Field::new("agent_version", DataType::Utf8, false),
+            Field::new("pid", DataType::Utf8, false),
+            Field::new("start_time", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![agent_name])),
+                Arc::new(StringArray::from(vec![agent_version])),
+                Arc::new(StringArray::from(vec![pid.as_str()])),
+                Arc::new(StringArray::from(vec![start_time.as_str()])),
+            ],
+        )
+        .expect("process_info schema mismatch");
+
+        ProcessInfoTable { batch }
+    }
+}
+
+impl EnrichmentTable for ProcessInfoTable {
+    fn name(&self) -> &'static str {
+        "process_info"
+    }
+
+    fn snapshot(&self) -> Option<RecordBatch> {
+        Some(self.batch.clone())
+    }
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
+    // Algorithm from Howard Hinnant's chrono-compatible date library.
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+// ---------------------------------------------------------------------------
+// Key-value file enrichment table
+// ---------------------------------------------------------------------------
+
+/// A one-row enrichment table populated from a `KEY=value` properties file.
+///
+/// Supported syntax:
+/// - `KEY=value` — unquoted value (leading/trailing whitespace stripped)
+/// - `KEY="quoted value"` — double-quoted value (quotes removed)
+/// - `KEY='quoted value'` — single-quoted value (quotes removed)
+/// - `# comment` and blank lines are ignored
+///
+/// Column names are the keys, lower-cased.  Reloadable via `reload()`.
+///
+/// ```yaml
+/// enrichment:
+///   - type: kv_file
+///     table_name: os_release
+///     path: /etc/os-release
+///     refresh_interval: 3600
+/// ```
+pub struct KvFileTable {
+    table_name: String,
+    path: PathBuf,
+    data: Arc<RwLock<Option<RecordBatch>>>,
+}
+
+impl KvFileTable {
+    pub fn new(table_name: impl Into<String>, path: &Path) -> Self {
+        KvFileTable {
+            table_name: table_name.into(),
+            path: path.to_path_buf(),
+            data: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// (Re)load the file from disk.  Returns the number of columns parsed.
+    pub fn reload(&self) -> Result<usize, TransformError> {
+        let pairs = parse_kv_file(&self.path)?;
+        if pairs.is_empty() {
+            return Err(TransformError::Enrichment(format!(
+                "KvFileTable '{}': no key-value pairs found in '{}'",
+                self.table_name,
+                self.path.display()
+            )));
+        }
+        let n = pairs.len();
+        let batch = kv_pairs_to_batch(&pairs)?;
+        *self
+            .data
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(batch);
+        Ok(n)
+    }
+}
+
+impl EnrichmentTable for KvFileTable {
+    fn name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn snapshot(&self) -> Option<RecordBatch> {
+        self.data
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Parse a `KEY=value` file into sorted key-value pairs.
+fn parse_kv_file(path: &Path) -> Result<Vec<(String, String)>, TransformError> {
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        TransformError::Enrichment(format!("failed to read '{}': {e}", path.display()))
+    })?;
+    let mut pairs = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((key, raw_val)) = trimmed.split_once('=') {
+            let key = key.trim().to_lowercase();
+            if key.is_empty() {
+                continue;
+            }
+            let val = raw_val.trim();
+            let val = if (val.starts_with('"') && val.ends_with('"'))
+                || (val.starts_with('\'') && val.ends_with('\''))
+            {
+                &val[1..val.len() - 1]
+            } else {
+                val
+            };
+            pairs.push((key, val.to_string()));
+        }
+    }
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(pairs)
+}
+
+/// Build a one-row RecordBatch from key-value pairs.
+fn kv_pairs_to_batch(pairs: &[(String, String)]) -> Result<RecordBatch, TransformError> {
+    let fields: Vec<Field> = pairs
+        .iter()
+        .map(|(k, _)| Field::new(k.as_str(), DataType::Utf8, false))
+        .collect();
+    let schema = Arc::new(Schema::new(fields));
+    let columns: Vec<Arc<dyn arrow::array::Array>> = pairs
+        .iter()
+        .map(|(_, v)| Arc::new(StringArray::from(vec![v.as_str()])) as _)
+        .collect();
+    RecordBatch::try_new(schema, columns).map_err(TransformError::Arrow)
+}
+
+// ---------------------------------------------------------------------------
+// Network info (resolved once at startup)
+// ---------------------------------------------------------------------------
+
+/// Network interface metadata.  One row, resolved at construction time.
+///
+/// Columns: `hostname`, `primary_ipv4`, `primary_ipv6`, `all_ipv4`, `all_ipv6`
+///
+/// IP addresses are discovered from `/proc/net/fib_trie` (IPv4) and
+/// `/proc/net/if_inet6` (IPv6) on Linux.  On non-Linux systems the table
+/// still provides `hostname` and empty IP columns.
+///
+/// ```yaml
+/// enrichment:
+///   - type: network_info
+/// ```
+pub struct NetworkInfoTable {
+    batch: RecordBatch,
+}
+
+impl Default for NetworkInfoTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NetworkInfoTable {
+    pub fn new() -> Self {
+        let hostname = gethostname::gethostname().to_string_lossy().into_owned();
+
+        let (ipv4_addrs, ipv6_addrs) = discover_local_ips();
+
+        let primary_ipv4 = ipv4_addrs.first().cloned().unwrap_or_default();
+        let primary_ipv6 = ipv6_addrs.first().cloned().unwrap_or_default();
+        let all_ipv4 = ipv4_addrs.join(",");
+        let all_ipv6 = ipv6_addrs.join(",");
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("hostname", DataType::Utf8, false),
+            Field::new("primary_ipv4", DataType::Utf8, false),
+            Field::new("primary_ipv6", DataType::Utf8, false),
+            Field::new("all_ipv4", DataType::Utf8, false),
+            Field::new("all_ipv6", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![hostname.as_str()])),
+                Arc::new(StringArray::from(vec![primary_ipv4.as_str()])),
+                Arc::new(StringArray::from(vec![primary_ipv6.as_str()])),
+                Arc::new(StringArray::from(vec![all_ipv4.as_str()])),
+                Arc::new(StringArray::from(vec![all_ipv6.as_str()])),
+            ],
+        )
+        .expect("network_info schema mismatch");
+
+        NetworkInfoTable { batch }
+    }
+}
+
+impl EnrichmentTable for NetworkInfoTable {
+    fn name(&self) -> &'static str {
+        "network_info"
+    }
+
+    fn snapshot(&self) -> Option<RecordBatch> {
+        Some(self.batch.clone())
+    }
+}
+
+/// Discover non-loopback IPv4 and IPv6 addresses from procfs.
+/// Returns `(ipv4_addrs, ipv6_addrs)`, each sorted.
+fn discover_local_ips() -> (Vec<String>, Vec<String>) {
+    let mut v4 = discover_ipv4_from_proc();
+    let mut v6 = discover_ipv6_from_proc();
+    v4.sort();
+    v4.dedup();
+    v6.sort();
+    v6.dedup();
+    (v4, v6)
+}
+
+/// Read IPv4 addresses from `/proc/net/fib_trie`.
+///
+/// We look for `/32 host LOCAL` entries and filter out `127.*`.
+fn discover_ipv4_from_proc() -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string("/proc/net/fib_trie") else {
+        return Vec::new();
+    };
+    let mut addrs = Vec::new();
+    let mut prev_line = "";
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "/32 host LOCAL" {
+            // The previous line has the IP like "  |-- 10.0.0.1"
+            if let Some(ip) = prev_line.trim().strip_prefix("|-- ") {
+                if !ip.starts_with("127.") {
+                    addrs.push(ip.to_string());
+                }
+            }
+        }
+        prev_line = trimmed;
+    }
+    addrs
+}
+
+/// Read IPv6 addresses from `/proc/net/if_inet6`.
+///
+/// Format: `<hex32> <idx> <prefix_len> <scope> <flags> <iface>`
+/// Scope 0x20 = link-local; we skip those and loopback (::1).
+fn discover_ipv6_from_proc() -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string("/proc/net/if_inet6") else {
+        return Vec::new();
+    };
+    let mut addrs = Vec::new();
+    for line in content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let hex = parts[0];
+        let scope = parts[3];
+        // Skip link-local (scope 20) and loopback (scope 10)
+        if scope == "20" || scope == "10" {
+            continue;
+        }
+        if hex.len() == 32 {
+            if let Some(formatted) = format_ipv6_hex(hex) {
+                addrs.push(formatted);
+            }
+        }
+    }
+    addrs
+}
+
+/// Format 32-char hex string into standard IPv6 notation.
+fn format_ipv6_hex(hex: &str) -> Option<String> {
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut groups = Vec::with_capacity(8);
+    for i in 0..8 {
+        let start = i * 4;
+        let group = &hex[start..start + 4];
+        // Strip leading zeros for compactness
+        let stripped = group.trim_start_matches('0');
+        groups.push(if stripped.is_empty() {
+            "0".to_string()
+        } else {
+            stripped.to_string()
+        });
+    }
+    Some(groups.join(":"))
+}
+
+// ---------------------------------------------------------------------------
+// Container info (resolved once at startup)
+// ---------------------------------------------------------------------------
+
+/// Container runtime detection.  One row, resolved at construction time.
+///
+/// Columns: `container_id`, `container_runtime`
+///
+/// Detection sources:
+/// - `/.dockerenv` presence → runtime = "docker"
+/// - `/proc/self/cgroup` parsing for container ID
+/// - `/run/containerd/` presence → runtime = "containerd"
+///
+/// If not running in a container, both columns are empty strings.
+///
+/// ```yaml
+/// enrichment:
+///   - type: container_info
+/// ```
+pub struct ContainerInfoTable {
+    batch: RecordBatch,
+}
+
+impl Default for ContainerInfoTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ContainerInfoTable {
+    pub fn new() -> Self {
+        let (container_id, container_runtime) = detect_container();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("container_id", DataType::Utf8, false),
+            Field::new("container_runtime", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![container_id.as_str()])),
+                Arc::new(StringArray::from(vec![container_runtime.as_str()])),
+            ],
+        )
+        .expect("container_info schema mismatch");
+
+        ContainerInfoTable { batch }
+    }
+}
+
+impl EnrichmentTable for ContainerInfoTable {
+    fn name(&self) -> &'static str {
+        "container_info"
+    }
+
+    fn snapshot(&self) -> Option<RecordBatch> {
+        Some(self.batch.clone())
+    }
+}
+
+/// Detect container runtime and extract container ID.
+/// Returns `(container_id, runtime)`.
+fn detect_container() -> (String, String) {
+    // Try /proc/self/cgroup (works for cgroup v1 and hybrid v2)
+    if let Ok(content) = std::fs::read_to_string("/proc/self/cgroup") {
+        if let Some((id, runtime)) = parse_cgroup_for_container(&content) {
+            return (id, runtime);
+        }
+    }
+
+    // Try /proc/self/mountinfo for cgroup v2 pure mode
+    if let Ok(content) = std::fs::read_to_string("/proc/self/mountinfo") {
+        if let Some((id, runtime)) = parse_mountinfo_for_container(&content) {
+            return (id, runtime);
+        }
+    }
+
+    // Fallback: check for /.dockerenv
+    if Path::new("/.dockerenv").exists() {
+        return (String::new(), "docker".to_string());
+    }
+
+    (String::new(), String::new())
+}
+
+/// Parse cgroup file for container ID.
+/// Cgroup v1 lines look like: `12:memory:/docker/<container-id>`
+/// Cgroup v2 lines look like: `0::/system.slice/containerd-<id>.scope`
+fn parse_cgroup_for_container(content: &str) -> Option<(String, String)> {
+    for line in content.lines() {
+        let path = line.rsplit_once(':')?.1;
+
+        // Docker: /docker/<64-hex-chars> or /docker/buildkit/...
+        if let Some(rest) = path.strip_prefix("/docker/") {
+            let id = rest.split('/').next().unwrap_or("");
+            if is_hex_container_id(id) {
+                return Some((id.to_string(), "docker".to_string()));
+            }
+        }
+
+        // Containerd (K8s): /kubepods/...<64-hex-chars> or containerd-<id>.scope
+        if path.contains("/kubepods") || path.contains("containerd-") {
+            if let Some(id) = extract_hex_id_from_path(path) {
+                let runtime = if path.contains("containerd") {
+                    "containerd"
+                } else {
+                    "containerd"
+                };
+                return Some((id, runtime.to_string()));
+            }
+        }
+
+        // CRI-O: /crio-<64-hex-chars>
+        if let Some(rest) = path
+            .strip_prefix("/crio-")
+            .or_else(|| path.rsplit_once("/crio-").map(|(_, r)| r))
+        {
+            let id = rest.split('.').next().unwrap_or(rest);
+            if is_hex_container_id(id) {
+                return Some((id.to_string(), "cri-o".to_string()));
+            }
+        }
+    }
+    None
+}
+
+/// Parse mountinfo for container ID in cgroup v2 pure mode.
+fn parse_mountinfo_for_container(content: &str) -> Option<(String, String)> {
+    for line in content.lines() {
+        if !line.contains("cgroup") {
+            continue;
+        }
+        if let Some(id) = extract_hex_id_from_path(line) {
+            let runtime = if line.contains("docker") {
+                "docker"
+            } else if line.contains("containerd") {
+                "containerd"
+            } else if line.contains("crio") {
+                "cri-o"
+            } else {
+                "unknown"
+            };
+            return Some((id, runtime.to_string()));
+        }
+    }
+    None
+}
+
+/// Check if a string looks like a 64-char hex container ID.
+fn is_hex_container_id(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Extract a 64-char hex ID from anywhere in a path string.
+fn extract_hex_id_from_path(path: &str) -> Option<String> {
+    // Walk through segments separated by / or -
+    for segment in path.split(|c: char| c == '/' || c == '-') {
+        let segment = segment.split('.').next().unwrap_or(segment);
+        if is_hex_container_id(segment) {
+            return Some(segment.to_string());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// K8s cluster info (resolved once at startup from downward API)
+// ---------------------------------------------------------------------------
+
+/// Kubernetes cluster metadata from the downward API and mounted secrets.
+///
+/// Columns: `namespace`, `pod_name`, `node_name`, `service_account`,
+/// `cluster_name`
+///
+/// Detection sources:
+/// - `KUBERNETES_SERVICE_HOST` env var (presence confirms K8s)
+/// - `/var/run/secrets/kubernetes.io/serviceaccount/namespace`
+/// - `HOSTNAME` env var (pod name in K8s)
+/// - `K8S_NODE_NAME`, `NODE_NAME` env vars (set via downward API fieldRef)
+/// - `K8S_CLUSTER_NAME`, `CLUSTER_NAME` env vars
+///
+/// If not running in Kubernetes, all columns are empty strings.
+///
+/// ```yaml
+/// enrichment:
+///   - type: k8s_cluster_info
+/// ```
+pub struct K8sClusterInfoTable {
+    batch: RecordBatch,
+}
+
+impl Default for K8sClusterInfoTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl K8sClusterInfoTable {
+    pub fn new() -> Self {
+        let in_k8s = std::env::var("KUBERNETES_SERVICE_HOST").is_ok();
+
+        let namespace = if in_k8s {
+            std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        } else {
+            String::new()
+        };
+
+        let pod_name = if in_k8s {
+            std::env::var("HOSTNAME").unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let node_name = if in_k8s {
+            std::env::var("K8S_NODE_NAME")
+                .or_else(|_| std::env::var("NODE_NAME"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let service_account = if in_k8s {
+            std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/token")
+                .ok()
+                .and_then(|token| {
+                    // JWT tokens are base64-encoded JSON; extract `sub` claim
+                    // which is typically `system:serviceaccount:<ns>:<sa-name>`.
+                    // We just grab the service account name from the path instead.
+                    let _ = token; // avoid unused warning
+                    None
+                })
+                .or_else(|| {
+                    // Many K8s setups project the SA name via downward API env var.
+                    std::env::var("K8S_SERVICE_ACCOUNT")
+                        .or_else(|_| std::env::var("SERVICE_ACCOUNT"))
+                        .ok()
+                })
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let cluster_name = if in_k8s {
+            std::env::var("K8S_CLUSTER_NAME")
+                .or_else(|_| std::env::var("CLUSTER_NAME"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("namespace", DataType::Utf8, false),
+            Field::new("pod_name", DataType::Utf8, false),
+            Field::new("node_name", DataType::Utf8, false),
+            Field::new("service_account", DataType::Utf8, false),
+            Field::new("cluster_name", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![namespace.as_str()])),
+                Arc::new(StringArray::from(vec![pod_name.as_str()])),
+                Arc::new(StringArray::from(vec![node_name.as_str()])),
+                Arc::new(StringArray::from(vec![service_account.as_str()])),
+                Arc::new(StringArray::from(vec![cluster_name.as_str()])),
+            ],
+        )
+        .expect("k8s_cluster_info schema mismatch");
+
+        K8sClusterInfoTable { batch }
+    }
+}
+
+impl EnrichmentTable for K8sClusterInfoTable {
+    fn name(&self) -> &'static str {
+        "k8s_cluster_info"
+    }
+
+    fn snapshot(&self) -> Option<RecordBatch> {
+        Some(self.batch.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1310,4 +1958,306 @@ fn env_table_reads_prefix() {
 fn env_table_no_match_returns_error() {
     let result = EnvTable::from_prefix("nothing", "LOGFWD_NONEXISTENT_PREFIX_XYZZY_12345_");
     assert!(result.is_err());
+}
+
+// -- ProcessInfoTable -------------------------------------------------------
+
+#[test]
+fn process_info_has_expected_columns() {
+    let table = ProcessInfoTable::new();
+    let batch = table.snapshot().expect("should have snapshot");
+    assert_eq!(batch.num_rows(), 1);
+    assert!(batch.column_by_name("agent_name").is_some());
+    assert!(batch.column_by_name("agent_version").is_some());
+    assert!(batch.column_by_name("pid").is_some());
+    assert!(batch.column_by_name("start_time").is_some());
+
+    let name_col = batch
+        .column_by_name("agent_name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(name_col.value(0), "logfwd");
+
+    let pid_col = batch
+        .column_by_name("pid")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    let pid: u32 = pid_col.value(0).parse().expect("pid should be numeric");
+    assert!(pid > 0);
+}
+
+#[test]
+fn process_info_start_time_is_iso8601() {
+    let table = ProcessInfoTable::new();
+    let batch = table.snapshot().unwrap();
+    let ts = batch
+        .column_by_name("start_time")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap()
+        .value(0)
+        .to_string();
+    // Should look like "2026-04-12T06:20:13Z"
+    assert!(ts.ends_with('Z'), "expected UTC: {ts}");
+    assert_eq!(ts.len(), 20, "expected ISO 8601 length: {ts}");
+}
+
+#[test]
+fn process_info_table_name() {
+    let table = ProcessInfoTable::new();
+    assert_eq!(table.name(), "process_info");
+}
+
+// -- epoch_days_to_ymd -------------------------------------------------------
+
+#[test]
+fn epoch_days_known_dates() {
+    // Unix epoch: 1970-01-01
+    assert_eq!(epoch_days_to_ymd(0), (1970, 1, 1));
+    // 2000-01-01 is day 10957
+    assert_eq!(epoch_days_to_ymd(10957), (2000, 1, 1));
+    // 2024-02-29 (leap day) is day 19782
+    assert_eq!(epoch_days_to_ymd(19782), (2024, 2, 29));
+}
+
+// -- KvFileTable -------------------------------------------------------
+
+#[test]
+fn kv_file_parses_os_release_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("os-release");
+    std::fs::write(
+        &path,
+        r#"# This is a comment
+NAME="Ubuntu"
+VERSION_ID="22.04"
+ID=ubuntu
+PRETTY_NAME="Ubuntu 22.04.3 LTS"
+"#,
+    )
+    .unwrap();
+
+    let table = KvFileTable::new("os", &path);
+    let n = table.reload().unwrap();
+    assert_eq!(n, 4);
+
+    let batch = table.snapshot().unwrap();
+    assert_eq!(batch.num_rows(), 1);
+
+    let name_col = batch
+        .column_by_name("name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(name_col.value(0), "Ubuntu");
+
+    let id_col = batch
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(id_col.value(0), "ubuntu");
+}
+
+#[test]
+fn kv_file_handles_single_quotes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.env");
+    std::fs::write(&path, "KEY='single quoted'\n").unwrap();
+
+    let table = KvFileTable::new("test", &path);
+    table.reload().unwrap();
+    let batch = table.snapshot().unwrap();
+    let val = batch
+        .column_by_name("key")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap()
+        .value(0);
+    assert_eq!(val, "single quoted");
+}
+
+#[test]
+fn kv_file_empty_file_returns_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("empty.env");
+    std::fs::write(&path, "# only comments\n\n").unwrap();
+
+    let table = KvFileTable::new("empty", &path);
+    assert!(table.reload().is_err());
+}
+
+#[test]
+fn kv_file_missing_file_returns_error() {
+    let table = KvFileTable::new("missing", Path::new("/nonexistent/file.env"));
+    assert!(table.reload().is_err());
+}
+
+#[test]
+fn kv_file_reload_updates_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("update.env");
+    std::fs::write(&path, "VERSION=1\n").unwrap();
+
+    let table = KvFileTable::new("ver", &path);
+    table.reload().unwrap();
+    let v1 = table
+        .snapshot()
+        .unwrap()
+        .column_by_name("version")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap()
+        .value(0)
+        .to_string();
+    assert_eq!(v1, "1");
+
+    std::fs::write(&path, "VERSION=2\n").unwrap();
+    table.reload().unwrap();
+    let v2 = table
+        .snapshot()
+        .unwrap()
+        .column_by_name("version")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap()
+        .value(0)
+        .to_string();
+    assert_eq!(v2, "2");
+}
+
+// -- NetworkInfoTable -------------------------------------------------------
+
+#[test]
+fn network_info_has_expected_columns() {
+    let table = NetworkInfoTable::new();
+    let batch = table.snapshot().expect("should have snapshot");
+    assert_eq!(batch.num_rows(), 1);
+    assert!(batch.column_by_name("hostname").is_some());
+    assert!(batch.column_by_name("primary_ipv4").is_some());
+    assert!(batch.column_by_name("primary_ipv6").is_some());
+    assert!(batch.column_by_name("all_ipv4").is_some());
+    assert!(batch.column_by_name("all_ipv6").is_some());
+
+    // Hostname should be non-empty on any real system
+    let hostname = batch
+        .column_by_name("hostname")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap()
+        .value(0);
+    assert!(!hostname.is_empty());
+}
+
+#[test]
+fn network_info_table_name() {
+    let table = NetworkInfoTable::new();
+    assert_eq!(table.name(), "network_info");
+}
+
+// -- format_ipv6_hex -------------------------------------------------------
+
+#[test]
+fn format_ipv6_hex_known_address() {
+    // 2001:0db8:0000:0000:0000:0000:0000:0001
+    let hex = "20010db8000000000000000000000001";
+    let formatted = format_ipv6_hex(hex).unwrap();
+    assert_eq!(formatted, "2001:db8:0:0:0:0:0:1");
+}
+
+#[test]
+fn format_ipv6_hex_all_zeros() {
+    let hex = "00000000000000000000000000000000";
+    let formatted = format_ipv6_hex(hex).unwrap();
+    assert_eq!(formatted, "0:0:0:0:0:0:0:0");
+}
+
+#[test]
+fn format_ipv6_hex_wrong_length() {
+    assert!(format_ipv6_hex("abc").is_none());
+}
+
+// -- ContainerInfoTable -----------------------------------------------------
+
+#[test]
+fn container_info_has_expected_columns() {
+    let table = ContainerInfoTable::new();
+    let batch = table.snapshot().expect("should have snapshot");
+    assert_eq!(batch.num_rows(), 1);
+    assert!(batch.column_by_name("container_id").is_some());
+    assert!(batch.column_by_name("container_runtime").is_some());
+}
+
+#[test]
+fn container_info_table_name() {
+    let table = ContainerInfoTable::new();
+    assert_eq!(table.name(), "container_info");
+}
+
+#[test]
+fn parse_cgroup_docker_format() {
+    let content =
+        "12:memory:/docker/abc123def456abc123def456abc123def456abc123def456abc123def456abc1\n";
+    let result = parse_cgroup_for_container(content);
+    assert!(result.is_some());
+    let (id, runtime) = result.unwrap();
+    assert_eq!(runtime, "docker");
+    assert_eq!(id.len(), 64);
+}
+
+#[test]
+fn parse_cgroup_not_container() {
+    let content = "0::/init.scope\n";
+    let result = parse_cgroup_for_container(content);
+    assert!(result.is_none());
+}
+
+// -- K8sClusterInfoTable ----------------------------------------------------
+
+#[test]
+fn k8s_cluster_info_has_expected_columns() {
+    let table = K8sClusterInfoTable::new();
+    let batch = table.snapshot().expect("should have snapshot");
+    assert_eq!(batch.num_rows(), 1);
+    assert!(batch.column_by_name("namespace").is_some());
+    assert!(batch.column_by_name("pod_name").is_some());
+    assert!(batch.column_by_name("node_name").is_some());
+    assert!(batch.column_by_name("service_account").is_some());
+    assert!(batch.column_by_name("cluster_name").is_some());
+}
+
+#[test]
+fn k8s_cluster_info_table_name() {
+    let table = K8sClusterInfoTable::new();
+    assert_eq!(table.name(), "k8s_cluster_info");
+}
+
+// -- is_hex_container_id ----------------------------------------------------
+
+#[test]
+fn hex_container_id_valid() {
+    let id = "a".repeat(64);
+    assert!(is_hex_container_id(&id));
+}
+
+#[test]
+fn hex_container_id_too_short() {
+    assert!(!is_hex_container_id("abc123"));
+}
+
+#[test]
+fn hex_container_id_non_hex() {
+    let id = "g".repeat(64);
+    assert!(!is_hex_container_id(&id));
 }

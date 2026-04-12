@@ -281,6 +281,63 @@ impl Pipeline {
                         );
                         enrichment_tables.push(table);
                     }
+                    EnrichmentConfig::ProcessInfo(_) => {
+                        let table = Arc::new(crate::transform::enrichment::ProcessInfoTable::new());
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::KvFile(cfg) => {
+                        let mut path = PathBuf::from(&cfg.path);
+                        if path.is_relative()
+                            && let Some(base) = base_path
+                        {
+                            path = base.join(path);
+                        }
+                        let table = Arc::new(crate::transform::enrichment::KvFileTable::new(
+                            &cfg.table_name,
+                            &path,
+                        ));
+                        table
+                            .reload()
+                            .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                        if let Some(interval_secs) = cfg.refresh_interval {
+                            let t = Arc::clone(&table);
+                            let name = cfg.table_name.clone();
+                            tokio::spawn(async move {
+                                let mut ticker = tokio::time::interval(Duration::from_secs(
+                                    interval_secs.max(1),
+                                ));
+                                ticker.tick().await;
+                                loop {
+                                    ticker.tick().await;
+                                    match t.reload() {
+                                        Ok(n) => tracing::debug!(
+                                            table = %name, columns = n,
+                                            "KV file enrichment table reloaded"
+                                        ),
+                                        Err(e) => tracing::warn!(
+                                            table = %name, error = %e,
+                                            "KV file enrichment table reload failed"
+                                        ),
+                                    }
+                                }
+                            });
+                        }
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::NetworkInfo(_) => {
+                        let table = Arc::new(crate::transform::enrichment::NetworkInfoTable::new());
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::ContainerInfo(_) => {
+                        let table =
+                            Arc::new(crate::transform::enrichment::ContainerInfoTable::new());
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::K8sClusterInfo(_) => {
+                        let table =
+                            Arc::new(crate::transform::enrichment::K8sClusterInfoTable::new());
+                        enrichment_tables.push(table);
+                    }
                 }
             }
 
