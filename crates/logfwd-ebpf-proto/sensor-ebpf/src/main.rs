@@ -8,7 +8,7 @@
 //!   sudo ./sensor-ebpf <ebpf-binary-path> [--json] [--duration <seconds>]
 
 use aya::maps::RingBuf;
-use aya::programs::TracePoint;
+use aya::programs::{KProbe, TracePoint};
 use aya::Ebpf;
 use sensor_ebpf_common::*;
 use std::io::Write;
@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "sensor-ebpf-kern/target/bpfel-unknown-none/release/sensor-ebpf",
     );
     let json_mode = args.iter().any(|a| a == "--json");
+    let no_file_open = args.iter().any(|a| a == "--no-file-open");
     let duration_secs: u64 = args
         .iter()
         .position(|a| a == "--duration")
@@ -28,18 +29,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
 
+    // Self-PID for filtering out our own events.
+    let self_tgid = std::process::id();
+
     eprintln!("Loading eBPF from {ebpf_path}...");
     let ebpf_bytes = std::fs::read(ebpf_path)?;
     let mut ebpf = Ebpf::load(&ebpf_bytes)?;
 
     // Attach tracepoints.
-    let programs: &[(&str, &str, &str)] = &[
+    let tracepoints: &[(&str, &str, &str)] = &[
         ("sched_process_exec", "sched", "sched_process_exec"),
         ("sched_process_exit", "sched", "sched_process_exit"),
         ("sys_enter_openat", "syscalls", "sys_enter_openat"),
+        ("inet_sock_set_state", "sock", "inet_sock_set_state"),
     ];
 
-    for (prog_name, category, tracepoint) in programs {
+    for (prog_name, category, tracepoint) in tracepoints {
         match ebpf.program_mut(prog_name) {
             Some(prog) => {
                 let tp: &mut TracePoint = prog.try_into()?;
@@ -49,6 +54,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             None => {
                 eprintln!("  SKIP {prog_name}: not found in eBPF binary");
+            }
+        }
+    }
+
+    // Attach kprobes.
+    let kprobes: &[(&str, &str)] = &[
+        ("tcp_v4_connect", "tcp_v4_connect"),
+    ];
+
+    for (prog_name, fn_name) in kprobes {
+        match ebpf.program_mut(prog_name) {
+            Some(prog) => {
+                let kp: &mut KProbe = prog.try_into()?;
+                kp.load()?;
+                kp.attach(fn_name, 0)?;
+                eprintln!("  attached kprobe/{fn_name}");
+            }
+            None => {
+                eprintln!("  SKIP kprobe/{prog_name}: not found in eBPF binary");
             }
         }
     }
@@ -73,6 +97,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let header = unsafe { &*(ptr as *const EventHeader) };
+
+            // Skip events from our own process tree.
+            if header.tgid == self_tgid {
+                counts.self_filtered += 1;
+                continue;
+            }
+
             let now_wall = wall_clock_ns();
 
             match header.kind {
@@ -110,6 +141,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 k if k == EventKind::FileOpen as u32 && len >= size_of::<FileOpenEvent>() => {
+                    if no_file_open {
+                        counts.file_open += 1;
+                        continue;
+                    }
                     let ev = unsafe { &*(ptr as *const FileOpenEvent) };
                     counts.file_open += 1;
                     let fname = safe_str(&ev.filename, ev.filename_len as usize);
@@ -171,14 +206,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     eprintln!("\n=== Sensor Summary ({duration_secs}s) ===");
-    eprintln!("  exec:        {}", counts.exec);
-    eprintln!("  exit:        {}", counts.exit);
-    eprintln!("  file_open:   {}", counts.file_open);
-    eprintln!("  tcp_connect: {}", counts.tcp_connect);
-    eprintln!("  tcp_accept:  {}", counts.tcp_accept);
-    eprintln!("  malformed:   {}", counts.malformed);
+    eprintln!("  exec:          {}", counts.exec);
+    eprintln!("  exit:          {}", counts.exit);
+    eprintln!("  file_open:     {}", counts.file_open);
+    eprintln!("  tcp_connect:   {}", counts.tcp_connect);
+    eprintln!("  tcp_accept:    {}", counts.tcp_accept);
+    eprintln!("  self_filtered: {}", counts.self_filtered);
+    eprintln!("  malformed:     {}", counts.malformed);
     eprintln!(
-        "  total:       {}/s",
+        "  total:         {}/s",
         (counts.total() as f64 / duration_secs as f64) as u64
     );
 
@@ -215,6 +251,7 @@ struct EventCounts {
     file_open: u64,
     tcp_connect: u64,
     tcp_accept: u64,
+    self_filtered: u64,
     malformed: u64,
 }
 

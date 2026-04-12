@@ -1,11 +1,11 @@
 //! eBPF kernel programs for the logfwd EDR sensor.
 //!
 //! Tracepoints / kprobes:
-//!   - sched_process_exec  → process execution
-//!   - sched_process_exit  → process termination
-//!   - tcp_v4_connect      → outbound TCP connections
-//!   - inet_csk_accept     → inbound TCP connections
-//!   - sys_enter_openat    → file open
+//!   - sched_process_exec       → process execution
+//!   - sched_process_exit       → process termination
+//!   - kprobe/tcp_v4_connect    → stash PID for outbound TCP (runs in process context)
+//!   - inet_sock_set_state      → TCP state transitions (connect + accept with IPs/ports)
+//!   - sys_enter_openat         → file open
 //!
 //! Build:
 //!   cargo +nightly build --target bpfel-unknown-none -Z build-std=core --release
@@ -20,16 +20,27 @@ use aya_ebpf::{
         bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel_str_bytes,
         bpf_probe_read_user_str_bytes,
     },
-    macros::{map, tracepoint},
-    maps::RingBuf,
-    programs::TracePointContext,
+    macros::{kprobe, map, tracepoint},
+    maps::{HashMap, RingBuf},
+    programs::{ProbeContext, TracePointContext},
     EbpfContext,
 };
 use sensor_ebpf_common::*;
 
+// TCP state constants from include/net/tcp_states.h
+const TCP_ESTABLISHED: i32 = 1;
+const TCP_SYN_SENT: i32 = 2;
+const TCP_SYN_RECV: i32 = 3;
+
 /// 16 MB ring buffer — ~100ms headroom at high event rate.
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(16 * 1024 * 1024, 0);
+
+/// Stash process info from kprobe (process context) so the inet_sock_set_state
+/// tracepoint (softirq context) can attribute connections to the right process.
+/// Key: sock pointer address, Value: ProcessInfo with PID/comm.
+#[map]
+static SOCK_OWNERS: HashMap<u64, ConnProcessInfo> = HashMap::with_max_entries(8192, 0);
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -178,6 +189,144 @@ fn try_file_open(ctx: &TracePointContext) -> Result<(), i64> {
 
     entry.submit(0);
     Ok(())
+}
+
+// ── TCP connect (kprobe stash + tracepoint emit) ────────────────────────
+
+/// kprobe on `tcp_v4_connect` — fires in the connecting process's context.
+/// Stashes process info keyed by sock pointer for later lookup.
+/// Signature: int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
+#[kprobe]
+pub fn tcp_v4_connect(ctx: ProbeContext) -> u32 {
+    match try_tcp_v4_connect(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+fn try_tcp_v4_connect(ctx: &ProbeContext) -> Result<(), i64> {
+    // arg(0) = struct sock *sk
+    let sk: u64 = ctx.arg(0).ok_or(1i64)?;
+
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let info = ConnProcessInfo {
+        tgid: (pid_tgid >> 32) as u32,
+        pid: pid_tgid as u32,
+        uid: uid_gid as u32,
+        gid: (uid_gid >> 32) as u32,
+        cgroup_id: unsafe { bpf_get_current_cgroup_id() },
+        comm: bpf_get_current_comm().unwrap_or([0u8; COMM_SIZE]),
+    };
+
+    SOCK_OWNERS.insert(&sk, &info, 0).ok();
+    Ok(())
+}
+
+// ── TCP state transition (inet_sock_set_state) ──────────────────────────
+
+/// inet_sock_set_state tracepoint format:
+///   field: const void *skaddr   offset:8   size:8
+///   field: int oldstate          offset:16  size:4
+///   field: int newstate          offset:20  size:4
+///   field: __u16 sport           offset:24  size:2
+///   field: __u16 dport           offset:26  size:2
+///   field: __u16 family          offset:28  size:2
+///   field: __u16 protocol        offset:30  size:2
+///   field: __u8 saddr[4]         offset:32  size:4
+///   field: __u8 daddr[4]         offset:36  size:4
+#[tracepoint]
+pub fn inet_sock_set_state(ctx: TracePointContext) -> u32 {
+    match try_sock_state(&ctx) {
+        Ok(()) => 0,
+        Err(_) => 0,
+    }
+}
+
+fn try_sock_state(ctx: &TracePointContext) -> Result<(), i64> {
+    let oldstate: i32 = unsafe { ctx.read_at(16)? };
+    let newstate: i32 = unsafe { ctx.read_at(20)? };
+
+    // Outbound connect: SYN_SENT → ESTABLISHED
+    // Use stashed process info from kprobe for correct PID attribution.
+    if oldstate == TCP_SYN_SENT && newstate == TCP_ESTABLISHED {
+        let skaddr: u64 = unsafe { ctx.read_at(8).unwrap_or(0) };
+
+        let mut entry = match EVENTS.reserve::<TcpConnectEvent>(0) {
+            Some(e) => e,
+            None => return Ok(()),
+        };
+
+        let event = entry.as_mut_ptr();
+        unsafe {
+            // Look up the stashed process info from the kprobe.
+            if let Some(info) = SOCK_OWNERS.get(&skaddr) {
+                fill_header_from_info(&mut (*event).header, EventKind::TcpConnect, info);
+            } else {
+                // Fallback: use current context (may be softirq/swapper).
+                fill_header(&mut (*event).header, EventKind::TcpConnect);
+            }
+            read_sock_addrs(ctx, &mut (*event).saddr, &mut (*event).daddr,
+                            &mut (*event).sport, &mut (*event).dport);
+            // Clean up the stash entry.
+            SOCK_OWNERS.remove(&skaddr).ok();
+        }
+        entry.submit(0);
+    }
+
+    // Inbound accept: SYN_RECV → ESTABLISHED
+    // No kprobe stash for inbound — PID will be the softirq handler.
+    // Userspace can correlate via /proc/net/tcp if needed.
+    if oldstate == TCP_SYN_RECV && newstate == TCP_ESTABLISHED {
+        let mut entry = match EVENTS.reserve::<TcpAcceptEvent>(0) {
+            Some(e) => e,
+            None => return Ok(()),
+        };
+
+        let event = entry.as_mut_ptr();
+        unsafe {
+            fill_header(&mut (*event).header, EventKind::TcpAccept);
+            read_sock_addrs(ctx, &mut (*event).saddr, &mut (*event).daddr,
+                            &mut (*event).sport, &mut (*event).dport);
+        }
+        entry.submit(0);
+    }
+
+    Ok(())
+}
+
+/// Fill event header from stashed ConnProcessInfo (for kprobe→tracepoint handoff).
+#[inline(always)]
+fn fill_header_from_info(header: &mut EventHeader, kind: EventKind, info: &ConnProcessInfo) {
+    header.timestamp_ns = unsafe { bpf_ktime_get_ns() };
+    header.kind = kind as u32;
+    header.tgid = info.tgid;
+    header.pid = info.pid;
+    header.uid = info.uid;
+    header.gid = info.gid;
+    header.cgroup_id = info.cgroup_id;
+    header.ppid = 0;
+    header.comm = info.comm;
+}
+
+/// Read socket address fields from the inet_sock_set_state tracepoint.
+#[inline(always)]
+unsafe fn read_sock_addrs(
+    ctx: &TracePointContext,
+    saddr: &mut u32,
+    daddr: &mut u32,
+    sport: &mut u16,
+    dport: &mut u16,
+) {
+    // sport at offset 24, dport at 26
+    *sport = ctx.read_at(24).unwrap_or(0);
+    *dport = ctx.read_at(26).unwrap_or(0);
+
+    // saddr[4] at offset 32, daddr[4] at offset 36
+    // Read as u32 (4 bytes in network byte order).
+    *saddr = ctx.read_at(32).unwrap_or(0);
+    *daddr = ctx.read_at(36).unwrap_or(0);
 }
 
 #[panic_handler]

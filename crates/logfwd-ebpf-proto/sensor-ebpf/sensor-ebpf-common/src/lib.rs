@@ -120,3 +120,19 @@ pub struct FileOpenEvent {
     /// Filename argument to openat.
     pub filename: [u8; MAX_FILENAME],
 }
+
+// ── Process info stash (kernel-internal, for kprobe→tracepoint correlation) ─
+
+/// Stashed in a BPF HashMap by the kprobe on `tcp_v4_connect` (which runs in
+/// process context), then looked up by `inet_sock_set_state` (softirq context)
+/// to attribute connections to the correct process.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ConnProcessInfo {
+    pub tgid: u32,
+    pub pid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub cgroup_id: u64,
+    pub comm: [u8; COMM_SIZE],
+}
