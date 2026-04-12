@@ -814,6 +814,12 @@ impl Pipeline {
             default_ticket_disposition(&ack.outcome),
         );
         #[cfg(feature = "turmoil")]
+        let application = {
+            let mut application = application;
+            application.checkpoint_advances.sort_unstable();
+            application
+        };
+        #[cfg(feature = "turmoil")]
         crate::turmoil_barriers::trigger(
             crate::turmoil_barriers::RuntimeBarrierEvent::AckApplied {
                 batch_id,
@@ -980,7 +986,6 @@ impl Pipeline {
                 }
             }
         }
-        application.checkpoint_advances.sort_unstable();
         application
     }
 }
