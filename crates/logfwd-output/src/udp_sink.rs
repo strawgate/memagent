@@ -8,7 +8,6 @@
 
 use std::future::Future;
 use std::io;
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -27,9 +26,8 @@ const MAX_DATAGRAM_PAYLOAD: usize = 1400;
 
 pub struct UdpSink {
     name: String,
-    socket_v4: Option<UdpSocket>,
-    socket_v6: Option<UdpSocket>,
-    targets: Vec<SocketAddr>,
+    socket: UdpSocket,
+    target: String,
     /// Scratch buffer for serializing a single row before deciding whether
     /// it fits in the current datagram.
     row_buf: Vec<u8>,
@@ -39,120 +37,46 @@ pub struct UdpSink {
 }
 
 impl UdpSink {
-    fn bind_socket(bind_addr: &str) -> io::Result<UdpSocket> {
-        let std_socket = std::net::UdpSocket::bind(bind_addr)?;
-        std_socket.set_nonblocking(true)?;
-        UdpSocket::from_std(std_socket)
-    }
-
     /// Create a new UDP sink.
     ///
-    /// Resolves all target addresses once and keeps family-specific sockets for
-    /// outbound traffic.
+    /// Binds an outbound UDP socket and defers target DNS resolution until send
+    /// time so startup does not block on or fail due to transient DNS issues.
     pub fn new(
         name: impl Into<String>,
         target: impl Into<String>,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
-        let target = target.into();
-        let mut resolved_targets: Vec<SocketAddr> = target.to_socket_addrs()?.collect();
-        if resolved_targets.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "target resolved to no address",
-            ));
-        }
-        resolved_targets.sort_unstable();
-        resolved_targets.dedup();
-
-        let has_v4 = resolved_targets.iter().any(SocketAddr::is_ipv4);
-        let has_v6 = resolved_targets.iter().any(SocketAddr::is_ipv6);
-        let mut bind_error: Option<io::Error> = None;
-        let socket_v4 = if has_v4 {
-            match Self::bind_socket("0.0.0.0:0") {
-                Ok(socket) => Some(socket),
-                Err(err) => {
-                    bind_error = Some(err);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let socket_v6 = if has_v6 {
-            match Self::bind_socket("[::]:0") {
-                Ok(socket) => Some(socket),
-                Err(err) => {
-                    bind_error = Some(err);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        if socket_v4.is_none() && socket_v6.is_none() {
-            return Err(bind_error.unwrap_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "resolved targets had no usable address family",
-                )
-            }));
-        }
-
+        let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        std_socket.set_nonblocking(true)?;
+        let socket = UdpSocket::from_std(std_socket)?;
         Ok(Self {
             name: name.into(),
-            socket_v4,
-            socket_v6,
-            targets: resolved_targets,
+            socket,
+            target: target.into(),
             row_buf: Vec::with_capacity(2048),
             dgram_buf: Vec::with_capacity(MAX_DATAGRAM_PAYLOAD),
             stats,
         })
     }
 
-    async fn send_datagram_to_resolved_targets(&self, payload: &[u8]) -> io::Result<()> {
-        let mut attempted = false;
-        let mut saw_connection_refused = false;
-        let mut last_error: Option<io::Error> = None;
-
-        for target in &self.targets {
-            let socket = if target.is_ipv4() {
-                self.socket_v4.as_ref()
-            } else {
-                self.socket_v6.as_ref()
-            };
-            let Some(socket) = socket else {
-                continue;
-            };
-            attempted = true;
-            match socket.send_to(payload, *target).await {
-                Ok(_) => return Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-                    // Continue trying other resolved targets; a single refused
-                    // address should not prevent delivery to healthy peers.
-                    saw_connection_refused = true;
-                }
-                Err(e) => {
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        if attempted {
-            if let Some(err) = last_error {
-                Err(err)
-            } else if saw_connection_refused {
-                // All attempted targets refused the datagram; keep best-effort
-                // semantics and do not fail the batch.
-                Ok(())
-            } else {
-                Err(io::Error::other("UDP send failed"))
-            }
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "target resolved to no address",
-            ))
+    async fn send_packet(&self, payload: &[u8]) -> io::Result<()> {
+        let addr = tokio::net::lookup_host(&self.target)
+            .await?
+            .find(std::net::SocketAddr::is_ipv4)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!("DNS lookup returned no IPv4 addresses for {}", self.target),
+                )
+            })?;
+        match self.socket.send_to(payload, addr).await {
+            Ok(n) if n == payload.len() => Ok(()),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "UDP datagram was only partially sent",
+            )),
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => Ok(()),
+            Err(e) => Err(e),
         }
     }
 
@@ -163,8 +87,7 @@ impl UdpSink {
         if self.dgram_buf.is_empty() {
             return Ok(());
         }
-        self.send_datagram_to_resolved_targets(&self.dgram_buf)
-            .await?;
+        self.send_packet(&self.dgram_buf).await?;
         self.dgram_buf.clear();
         Ok(())
     }
@@ -192,8 +115,7 @@ impl UdpSink {
             // but that is better than silently dropping data.
             if row_len > MAX_DATAGRAM_PAYLOAD {
                 self.flush_dgram().await?;
-                self.send_datagram_to_resolved_targets(&self.row_buf)
-                    .await?;
+                self.send_packet(&self.row_buf).await?;
                 continue;
             }
 
@@ -222,7 +144,7 @@ impl Sink for UdpSink {
         Box::pin(async move {
             match self.do_send_batch(batch).await {
                 Ok(()) => SendResult::Ok,
-                Err(e) => SendResult::IoError(e),
+                Err(e) => SendResult::from_io_error(e),
             }
         })
     }
@@ -380,47 +302,5 @@ mod tests {
         assert_eq!(sink.name(), "test-udp");
 
         let _sink2 = factory.create().expect("second create should succeed");
-    }
-
-    #[tokio::test]
-    async fn flush_tries_all_resolved_targets() {
-        let receiver = StdSocket::bind("127.0.0.1:0").expect("bind receiver");
-        let receiver_addr = receiver.local_addr().expect("receiver addr");
-        receiver
-            .set_nonblocking(true)
-            .expect("receiver nonblocking");
-
-        let send_socket_v4 = {
-            let std_socket = StdSocket::bind("0.0.0.0:0").expect("bind sender v4");
-            std_socket
-                .set_nonblocking(true)
-                .expect("sender v4 nonblocking");
-            UdpSocket::from_std(std_socket).expect("tokio socket")
-        };
-
-        // First target is IPv6 and intentionally incompatible with the available
-        // socket set; sink must continue and deliver to the IPv4 target.
-        let mut sink = UdpSink {
-            name: "test-fallback".to_string(),
-            socket_v4: Some(send_socket_v4),
-            socket_v6: None,
-            targets: vec!["[::1]:9".parse().expect("valid ipv6 target"), receiver_addr],
-            row_buf: Vec::with_capacity(2048),
-            dgram_buf: Vec::with_capacity(MAX_DATAGRAM_PAYLOAD),
-            stats: Arc::new(ComponentStats::new()),
-        };
-        sink.dgram_buf.extend_from_slice(b"hello\n");
-        sink.flush_dgram().await.expect("flush should succeed");
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let mut buf = [0u8; 1024];
-        let n = receiver
-            .recv(&mut buf)
-            .expect("datagram should be received");
-        assert_eq!(
-            std::str::from_utf8(&buf[..n]).expect("utf8"),
-            "hello\n",
-            "sink should deliver to a later resolved target when the first is incompatible"
-        );
     }
 }

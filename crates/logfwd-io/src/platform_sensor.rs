@@ -768,8 +768,14 @@ mod tests {
             (dir, path)
         }
 
-        pub(super) fn write_control_file(path: &Path, json: &str) {
-            atomic_write_file(path, json.as_bytes()).expect("write control file");
+        pub(super) fn write_control_file(path: &Path, json: serde_json::Value) {
+            let bytes = serde_json::to_vec(&json).expect("serialize control file");
+            atomic_write_file(path, &bytes).expect("write control file");
+        }
+
+        pub(super) fn write_malformed_control_file(path: &Path) {
+            atomic_write_file(path, br#"{"generation":"invalid"}"#)
+                .expect("write malformed control file");
         }
     }
 
@@ -1003,7 +1009,11 @@ mod tests {
 
         tempfiles::write_control_file(
             &control_path,
-            r#"{"generation":42,"enabled_families":["dns"],"emit_signal_rows":true}"#,
+            serde_json::json!({
+                "generation": 42,
+                "enabled_families": ["dns"],
+                "emit_signal_rows": true,
+            }),
         );
         std::thread::sleep(Duration::from_millis(2));
 
@@ -1059,7 +1069,11 @@ mod tests {
 
         tempfiles::write_control_file(
             &control_path,
-            r#"{"generation":1,"enabled_families":["process"],"emit_signal_rows":true}"#,
+            serde_json::json!({
+                "generation": 1,
+                "enabled_families": ["process"],
+                "emit_signal_rows": true,
+            }),
         );
         std::thread::sleep(Duration::from_millis(2));
 
@@ -1073,7 +1087,7 @@ mod tests {
     #[test]
     fn malformed_control_file_does_not_fail_startup() {
         let (_dir, control_path) = tempfiles::control_file_path();
-        tempfiles::write_control_file(&control_path, r#"{"generation":"invalid"}"#);
+        tempfiles::write_malformed_control_file(&control_path);
 
         let mut input = PlatformSensorInput::new(
             "sensor",
@@ -1105,7 +1119,7 @@ mod tests {
     #[test]
     fn health_degrades_on_reload_error_and_recovers_after_valid_reload() {
         let (_dir, control_path) = tempfiles::control_file_path();
-        tempfiles::write_control_file(&control_path, r#"{"generation":"invalid"}"#);
+        tempfiles::write_malformed_control_file(&control_path);
 
         let mut input = PlatformSensorInput::new(
             "sensor",
@@ -1129,7 +1143,11 @@ mod tests {
 
         tempfiles::write_control_file(
             &control_path,
-            r#"{"generation":2,"enabled_families":["process"],"emit_signal_rows":false}"#,
+            serde_json::json!({
+                "generation": 2,
+                "enabled_families": ["process"],
+                "emit_signal_rows": false,
+            }),
         );
         std::thread::sleep(Duration::from_millis(2));
         let _ = input.poll().expect("recovery poll");

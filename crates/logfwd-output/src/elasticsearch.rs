@@ -229,7 +229,9 @@ impl ElasticsearchSink {
                 let status = action_obj
                     .get("status")
                     .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0);
+                    .ok_or_else(|| {
+                        io::Error::other("ES bulk response item missing numeric status field")
+                    })?;
                 if let Some(error) = action_obj.get("error") {
                     let error_type = error
                         .get("type")
