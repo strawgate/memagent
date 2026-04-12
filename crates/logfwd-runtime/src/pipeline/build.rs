@@ -398,6 +398,7 @@ mod tests {
             http: None,
             sql: None,
             tls: None,
+            journald: None,
         }
     }
 

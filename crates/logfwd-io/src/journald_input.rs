@@ -1,15 +1,16 @@
 //! Journald (systemd journal) input source.
 //!
-//! Reads the systemd journal using the native `sd_journal` C API (loaded at
-//! runtime via `dlopen`). If `libsystemd.so.0` is not available, falls back to
-//! spawning a `journalctl --follow --output=json` subprocess.
+//! Reads the systemd journal using either:
+//! - **Native backend**: the `sd_journal` C API loaded at runtime via `dlopen`
+//!   (~10× lower per-entry latency, no subprocess overhead).
+//! - **Subprocess backend**: `journalctl --follow --output=export`, parsing the
+//!   binary-safe export format and converting to JSON.
 //!
-//! The native path avoids the JSON serialization/deserialization roundtrip and
-//! pipe overhead of the subprocess approach, giving roughly 10× lower per-entry
-//! latency. Both backends produce newline-delimited JSON bytes so the
-//! downstream pipeline can process them identically.
+//! Both backends produce newline-delimited JSON bytes so the downstream pipeline
+//! processes them identically. The `backend` config controls selection:
+//! `auto` (default) tries native first then falls back to subprocess.
 
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -17,6 +18,8 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, TrySendError, bounded};
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
+
+use logfwd_config::JournaldBackendConfig;
 
 use crate::input::{InputEvent, InputSource};
 use crate::journal_ffi;
@@ -59,6 +62,8 @@ pub struct JournaldConfig {
     pub journal_directory: Option<String>,
     /// Journal namespace.
     pub journal_namespace: Option<String>,
+    /// Which backend to use (auto/native/subprocess).
+    pub backend: JournaldBackendConfig,
 }
 
 impl Default for JournaldConfig {
@@ -71,6 +76,7 @@ impl Default for JournaldConfig {
             journalctl_path: "journalctl".to_string(),
             journal_directory: None,
             journal_namespace: None,
+            backend: JournaldBackendConfig::Auto,
         }
     }
 }
@@ -114,8 +120,21 @@ impl JournaldInput {
         let thread_health = Arc::clone(&health);
         let thread_name = name.clone();
 
-        // Probe for native API availability before spawning the thread.
-        let use_native = journal_ffi::is_native_available();
+        // Resolve backend based on config + runtime availability.
+        let native_available = journal_ffi::is_native_available();
+        let use_native = match config.backend {
+            JournaldBackendConfig::Auto => native_available,
+            JournaldBackendConfig::Native => {
+                if !native_available {
+                    return Err(io::Error::other(
+                        "backend: native requested but libsystemd.so.0 is not available",
+                    ));
+                }
+                true
+            }
+            JournaldBackendConfig::Subprocess => false,
+        };
+
         let backend = if use_native {
             JournaldBackend::Native
         } else {
@@ -125,10 +144,12 @@ impl JournaldInput {
         if use_native {
             tracing::info!("journald input '{thread_name}': using native sd_journal API");
         } else {
-            tracing::info!(
-                "journald input '{thread_name}': libsystemd.so.0 not available, \
-                 falling back to journalctl subprocess"
-            );
+            let reason = if matches!(config.backend, JournaldBackendConfig::Subprocess) {
+                "subprocess backend selected by config"
+            } else {
+                "libsystemd.so.0 not available, falling back to journalctl subprocess"
+            };
+            tracing::info!("journald input '{thread_name}': {reason}");
         }
 
         std::thread::Builder::new()
@@ -381,35 +402,48 @@ fn entry_to_json(
         }
     }
 
-    // Serialize all fields to JSON.
-    buf.push(b'{');
-
+    // Collect all fields, then use the shared serializer.
+    let mut fields: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(32);
     journal.restart_data();
-    let mut first = true;
-
     while let Some(field_bytes) = journal.enumerate_data()? {
         let eq_pos = match memchr::memchr(b'=', field_bytes) {
             Some(p) => p,
             None => continue,
         };
-        let field_name = &field_bytes[..eq_pos];
-        let field_value = &field_bytes[eq_pos + 1..];
+        fields.push((
+            field_bytes[..eq_pos].to_vec(),
+            field_bytes[eq_pos + 1..].to_vec(),
+        ));
+    }
 
+    write_fields_as_json(buf, &fields);
+    Ok(Some(()))
+}
+
+/// Serialize a list of `(name, value)` field pairs as a JSON object into `buf`.
+///
+/// This is the **single** JSON serializer used by both the native and subprocess
+/// backends, guaranteeing identical output for the same field set.
+fn write_fields_as_json(buf: &mut Vec<u8>, fields: &[(Vec<u8>, Vec<u8>)]) {
+    buf.push(b'{');
+
+    let mut first = true;
+    for (name, value) in fields {
         if !first {
             buf.push(b',');
         }
         first = false;
 
-        // JSON key
         buf.push(b'"');
-        json_escape_into(buf, field_name);
+        // Field names are ASCII identifiers — no escaping needed in practice,
+        // but we escape defensively.
+        json_escape_into(buf, name);
         buf.extend_from_slice(b"\":\"");
-        json_escape_into(buf, field_value);
+        json_escape_into(buf, value);
         buf.push(b'"');
     }
 
     buf.push(b'}');
-    Ok(Some(()))
 }
 
 /// Escape bytes for inclusion in a JSON string value.
@@ -444,6 +478,10 @@ const HEX: &[u8; 16] = b"0123456789abcdef";
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Build the `journalctl` command with appropriate flags.
+///
+/// Uses `--output=export` for machine-optimized binary-safe output
+/// (faster than `--output=json`). Each entry is a block of `FIELD=value\n`
+/// lines separated by blank lines.
 fn build_command(config: &JournaldConfig) -> Command {
     let mut cmd = Command::new(&config.journalctl_path);
     cmd.stdout(Stdio::piped());
@@ -451,8 +489,7 @@ fn build_command(config: &JournaldConfig) -> Command {
 
     cmd.arg("--follow");
     cmd.arg("--all");
-    cmd.arg("--output=json");
-    cmd.arg("--show-cursor");
+    cmd.arg("--output=export");
 
     if let Some(dir) = &config.journal_directory {
         cmd.arg(format!("--directory={dir}"));
@@ -480,6 +517,16 @@ fn build_command(config: &JournaldConfig) -> Command {
 
 /// Read the journal via `journalctl` subprocess (fallback when libsystemd
 /// is not available).
+/// Reader loop for the `journalctl --output=export` subprocess backend.
+///
+/// The export format is:
+/// - Each field is `NAME=value\n` (text fields)
+/// - Binary fields: `NAME\n` followed by 8-byte LE length, then raw bytes, then `\n`
+/// - Entries separated by a blank line (`\n`)
+///
+/// We parse each entry into a set of key-value pairs and serialize to JSON
+/// (same format as the native backend), so the downstream pipeline sees
+/// identical data regardless of backend.
 fn subprocess_reader_loop(
     config: JournaldConfig,
     tx: crossbeam_channel::Sender<Vec<u8>>,
@@ -528,42 +575,7 @@ fn subprocess_reader_loop(
         });
 
         let reader = BufReader::with_capacity(256 * 1024, stdout);
-        let mut exited_cleanly = false;
-
-        for line_result in reader.split(b'\n') {
-            if !running.load(Ordering::Acquire) {
-                exited_cleanly = true;
-                break;
-            }
-
-            match line_result {
-                Ok(line) => {
-                    if !should_emit_line(&line, &config.exclude_units) {
-                        continue;
-                    }
-                    let mut payload = line;
-                    payload.push(b'\n');
-
-                    match tx.try_send(payload) {
-                        Ok(()) => {}
-                        Err(TrySendError::Full(payload)) => {
-                            if tx.send(payload).is_err() {
-                                exited_cleanly = true;
-                                break;
-                            }
-                        }
-                        Err(TrySendError::Disconnected(_)) => {
-                            exited_cleanly = true;
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "journalctl read error");
-                    break;
-                }
-            }
-        }
+        let exited_cleanly = read_export_entries(reader, &tx, &running, &config.exclude_units);
 
         let _ = child.kill();
         let _ = child.wait();
@@ -584,6 +596,130 @@ fn subprocess_reader_loop(
     }
 }
 
+/// Read export-format entries from a `BufReader`, parse to JSON, and send
+/// over the channel. Returns `true` if we exited because the channel closed
+/// or the running flag was cleared.
+fn read_export_entries(
+    mut reader: BufReader<std::process::ChildStdout>,
+    tx: &crossbeam_channel::Sender<Vec<u8>>,
+    running: &Arc<AtomicBool>,
+    exclude_units: &[String],
+) -> bool {
+    // Accumulate fields for the current entry.
+    let mut fields: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(32);
+    let mut line_buf = Vec::with_capacity(1024);
+
+    loop {
+        if !running.load(Ordering::Acquire) {
+            return true;
+        }
+
+        line_buf.clear();
+        let bytes_read = match reader.read_until(b'\n', &mut line_buf) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(error = %e, "journalctl read error");
+                return false;
+            }
+        };
+
+        if bytes_read == 0 {
+            // EOF — process exited.
+            return false;
+        }
+
+        // Strip trailing newline.
+        let line = if line_buf.last() == Some(&b'\n') {
+            &line_buf[..line_buf.len() - 1]
+        } else {
+            &line_buf[..]
+        };
+
+        if line.is_empty() {
+            // Blank line = end of entry.
+            if !fields.is_empty() {
+                // Check exclude filter before serializing.
+                if should_emit_export_entry(&fields, exclude_units) {
+                    let json = export_fields_to_json(&fields);
+                    match tx.try_send(json) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(json)) => {
+                            if tx.send(json).is_err() {
+                                return true;
+                            }
+                        }
+                        Err(TrySendError::Disconnected(_)) => return true,
+                    }
+                }
+                fields.clear();
+            }
+            continue;
+        }
+
+        // Look for `=` separator. In export format, text fields are `NAME=value`.
+        if let Some(eq_pos) = memchr::memchr(b'=', line) {
+            let name = line[..eq_pos].to_vec();
+            let value = line[eq_pos + 1..].to_vec();
+            fields.push((name, value));
+        } else {
+            // Field name without `=` means binary field follows.
+            // Next 8 bytes are LE length, then that many bytes of data.
+            // We skip binary fields (they're rare — e.g. coredumps).
+            let field_name = line.to_vec();
+            let mut len_buf = [0u8; 8];
+            if reader.read_exact(&mut len_buf).is_err() {
+                return false;
+            }
+            let data_len = u64::from_le_bytes(len_buf) as usize;
+            // Skip the binary data + trailing newline.
+            let mut skip_buf = vec![0u8; data_len + 1];
+            if reader.read_exact(&mut skip_buf).is_err() {
+                return false;
+            }
+            // Store as hex-encoded placeholder so the field is visible.
+            let placeholder = if data_len > 64 {
+                format!("[binary {data_len} bytes]").into_bytes()
+            } else {
+                skip_buf[..data_len].to_vec()
+            };
+            fields.push((field_name, placeholder));
+        }
+    }
+}
+
+/// Check whether an export-format entry should be emitted, based on exclude
+/// filters. Looks at the `_SYSTEMD_UNIT` field.
+fn should_emit_export_entry(fields: &[(Vec<u8>, Vec<u8>)], exclude_units: &[String]) -> bool {
+    if exclude_units.is_empty() {
+        return true;
+    }
+    for (name, value) in fields {
+        if name == b"_SYSTEMD_UNIT" {
+            if let Ok(unit) = std::str::from_utf8(value) {
+                let normalized = fixup_unit(unit);
+                for excluded in exclude_units {
+                    if fixup_unit(excluded) == normalized {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+    }
+    true
+}
+
+/// Convert a set of export-format fields to a JSON object (newline-terminated).
+///
+/// Uses the same `write_fields_as_json` serializer as the native backend,
+/// guaranteeing identical output for the same field set.
+fn export_fields_to_json(fields: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(512);
+    write_fields_as_json(&mut buf, fields);
+    buf.push(b'\n');
+    buf
+}
+
 // ── Shared helpers ────────────────────────────────────────────────────
 
 /// Ensure a unit name has a `.` — append `.service` if missing (like Vector).
@@ -593,43 +729,6 @@ fn fixup_unit(unit: &str) -> String {
     } else {
         format!("{unit}.service")
     }
-}
-
-/// Parse a `journalctl --output=json` line, optionally applying exclude filters.
-fn should_emit_line(line: &[u8], exclude_units: &[String]) -> bool {
-    if line.is_empty() {
-        return false;
-    }
-    if line.starts_with(b"-- cursor:") {
-        return false;
-    }
-    if line.first() != Some(&b'{') {
-        return false;
-    }
-    if !exclude_units.is_empty() {
-        if let Some(unit) = extract_systemd_unit(line) {
-            let normalized = fixup_unit(&unit);
-            for excluded in exclude_units {
-                if fixup_unit(excluded) == normalized {
-                    return false;
-                }
-            }
-        }
-    }
-    true
-}
-
-/// Fast extraction of `_SYSTEMD_UNIT` from a JSON line without full parsing.
-fn extract_systemd_unit(line: &[u8]) -> Option<String> {
-    let needle = b"\"_SYSTEMD_UNIT\":\"";
-    if let Some(pos) = memchr::memmem::find(line, needle) {
-        let start = pos + needle.len();
-        if let Some(end_offset) = memchr::memchr(b'"', &line[start..]) {
-            let value = &line[start..start + end_offset];
-            return String::from_utf8(value.to_vec()).ok();
-        }
-    }
-    None
 }
 
 /// Spawn `journalctl` with the configured arguments.
@@ -675,53 +774,64 @@ mod tests {
         assert_eq!(fixup_unit("sysinit.target"), "sysinit.target");
     }
 
-    // ── should_emit_line (subprocess filter) ──────────────────────────
+    // ── export format parsing ─────────────────────────────────────────
 
     #[test]
-    fn should_emit_line_skips_empty() {
-        assert!(!should_emit_line(b"", &[]));
+    fn export_fields_to_json_basic() {
+        let fields = vec![
+            (b"MESSAGE".to_vec(), b"hello world".to_vec()),
+            (b"PRIORITY".to_vec(), b"6".to_vec()),
+            (b"_SYSTEMD_UNIT".to_vec(), b"sshd.service".to_vec()),
+        ];
+        let json = export_fields_to_json(&fields);
+        let text = String::from_utf8(json).unwrap();
+        assert!(text.starts_with('{'));
+        assert!(text.ends_with("}\n"));
+        // Parse as JSON to verify structure.
+        let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(v["MESSAGE"], "hello world");
+        assert_eq!(v["PRIORITY"], "6");
+        assert_eq!(v["_SYSTEMD_UNIT"], "sshd.service");
     }
 
     #[test]
-    fn should_emit_line_skips_cursor() {
-        assert!(!should_emit_line(
-            b"-- cursor: s=abc;i=123;b=xyz;m=456;t=789;x=000",
-            &[]
-        ));
+    fn export_fields_to_json_escapes_special_chars() {
+        let fields = vec![(b"MESSAGE".to_vec(), b"line1\nline2\ttab\"quote".to_vec())];
+        let json = export_fields_to_json(&fields);
+        let text = String::from_utf8(json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(v["MESSAGE"], "line1\nline2\ttab\"quote");
     }
 
     #[test]
-    fn should_emit_line_skips_non_json() {
-        assert!(!should_emit_line(b"some random text", &[]));
+    fn export_fields_to_json_empty() {
+        let fields: Vec<(Vec<u8>, Vec<u8>)> = vec![];
+        let json = export_fields_to_json(&fields);
+        assert_eq!(&json, b"{}\n");
     }
 
     #[test]
-    fn should_emit_line_accepts_json() {
-        assert!(should_emit_line(
-            br#"{"MESSAGE":"hello","_SYSTEMD_UNIT":"test.service"}"#,
-            &[]
-        ));
+    fn should_emit_export_entry_no_excludes() {
+        let fields = vec![(b"MESSAGE".to_vec(), b"hello".to_vec())];
+        assert!(should_emit_export_entry(&fields, &[]));
     }
 
     #[test]
-    fn should_emit_line_excludes_unit() {
-        let line = br#"{"MESSAGE":"hello","_SYSTEMD_UNIT":"sshd.service"}"#;
-        assert!(!should_emit_line(line, &["sshd".to_string()]));
-        assert!(should_emit_line(line, &["docker".to_string()]));
-    }
-
-    // ── extract_systemd_unit ──────────────────────────────────────────
-
-    #[test]
-    fn extract_systemd_unit_works() {
-        let line = br#"{"MESSAGE":"hello","_SYSTEMD_UNIT":"sshd.service","PRIORITY":"6"}"#;
-        assert_eq!(extract_systemd_unit(line), Some("sshd.service".to_string()));
+    fn should_emit_export_entry_excludes_matching_unit() {
+        let fields = vec![
+            (b"MESSAGE".to_vec(), b"hello".to_vec()),
+            (b"_SYSTEMD_UNIT".to_vec(), b"sshd.service".to_vec()),
+        ];
+        assert!(!should_emit_export_entry(&fields, &["sshd".to_string()]));
     }
 
     #[test]
-    fn extract_systemd_unit_missing() {
-        let line = br#"{"MESSAGE":"hello","PRIORITY":"6"}"#;
-        assert_eq!(extract_systemd_unit(line), None);
+    fn should_emit_export_entry_allows_non_matching_unit() {
+        let fields = vec![
+            (b"MESSAGE".to_vec(), b"hello".to_vec()),
+            (b"_SYSTEMD_UNIT".to_vec(), b"sshd.service".to_vec()),
+        ];
+        assert!(should_emit_export_entry(&fields, &["docker".to_string()]));
     }
 
     // ── build_command (subprocess) ────────────────────────────────────
@@ -735,7 +845,7 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert!(args.contains(&"--follow".to_string()));
-        assert!(args.contains(&"--output=json".to_string()));
+        assert!(args.contains(&"--output=export".to_string()));
         assert!(args.contains(&"--boot".to_string()));
         assert!(args.contains(&"--since=2000-01-01".to_string()));
     }
@@ -836,5 +946,64 @@ mod tests {
         } else {
             eprintln!("native sd_journal API not available, subprocess fallback");
         }
+    }
+
+    // ── equivalence: shared write_fields_as_json ───────────────────────
+    // Both native and subprocess backends call `write_fields_as_json` for
+    // serialization. These tests verify the shared serializer produces
+    // correct JSON for various field sets.
+
+    #[test]
+    fn write_fields_as_json_roundtrips() {
+        let fields = vec![
+            (b"__CURSOR".to_vec(), b"s=abc;i=1".to_vec()),
+            (
+                b"__REALTIME_TIMESTAMP".to_vec(),
+                b"1712880000000000".to_vec(),
+            ),
+            (b"MESSAGE".to_vec(), b"hello world".to_vec()),
+            (b"PRIORITY".to_vec(), b"6".to_vec()),
+            (b"_SYSTEMD_UNIT".to_vec(), b"test.service".to_vec()),
+        ];
+
+        let json = export_fields_to_json(&fields);
+        let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        assert_eq!(v["MESSAGE"], "hello world");
+        assert_eq!(v["PRIORITY"], "6");
+        assert_eq!(v["_SYSTEMD_UNIT"], "test.service");
+        assert_eq!(v["__CURSOR"], "s=abc;i=1");
+    }
+
+    #[test]
+    fn write_fields_as_json_with_special_characters() {
+        let fields = vec![
+            (
+                b"MESSAGE".to_vec(),
+                b"has \"quotes\" and\nnewlines".to_vec(),
+            ),
+            (
+                b"_CMDLINE".to_vec(),
+                b"/usr/bin/test --flag=val\\ue".to_vec(),
+            ),
+        ];
+
+        let json = export_fields_to_json(&fields);
+        let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        assert_eq!(v["MESSAGE"], "has \"quotes\" and\nnewlines");
+        assert_eq!(v["_CMDLINE"], "/usr/bin/test --flag=val\\ue");
+    }
+
+    // ── backend config validation ──────────────────────────────────────
+
+    #[test]
+    fn backend_config_deserializes() {
+        let auto: JournaldBackendConfig = serde_json::from_str("\"auto\"").unwrap();
+        assert_eq!(auto, JournaldBackendConfig::Auto);
+
+        let native: JournaldBackendConfig = serde_json::from_str("\"native\"").unwrap();
+        assert_eq!(native, JournaldBackendConfig::Native);
+
+        let sub: JournaldBackendConfig = serde_json::from_str("\"subprocess\"").unwrap();
+        assert_eq!(sub, JournaldBackendConfig::Subprocess);
     }
 }

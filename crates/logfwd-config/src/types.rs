@@ -311,6 +311,27 @@ pub struct JournaldInputConfig {
     pub journal_directory: Option<String>,
     /// Journal namespace (passed as `--namespace=<ns>`).
     pub journal_namespace: Option<String>,
+    /// Backend to use for reading the journal.
+    ///
+    /// - `auto` (default): use native `sd_journal` API if `libsystemd.so.0` is
+    ///   available, otherwise fall back to a `journalctl` subprocess.
+    /// - `native`: require the native `sd_journal` API; error if unavailable.
+    /// - `subprocess`: always use a `journalctl` subprocess.
+    #[serde(default)]
+    pub backend: JournaldBackendConfig,
+}
+
+/// Which journal-reading backend to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JournaldBackendConfig {
+    /// Use native API if available, otherwise subprocess (default).
+    #[default]
+    Auto,
+    /// Require the native `sd_journal` C API via `dlopen`.
+    Native,
+    /// Always use a `journalctl` subprocess.
+    Subprocess,
 }
 
 fn default_true() -> bool {
