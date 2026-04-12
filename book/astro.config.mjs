@@ -49,8 +49,10 @@ export default defineConfig({
           label: "Architecture",
           items: [
             { label: "How logfwd Works", slug: "architecture" },
+            { label: "Why Tailing Is Hard", slug: "architecture/tailing" },
+            { label: "Why Columnar Storage Matters", slug: "architecture/columnar" },
+            { label: "Scanner Deep Dive", slug: "architecture/scanner" },
             { label: "Pipeline Design", slug: "architecture/pipeline" },
-            { label: "Scanner", slug: "architecture/scanner" },
             { label: "Performance", slug: "architecture/performance" },
           ],
         },

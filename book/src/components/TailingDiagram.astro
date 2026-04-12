@@ -1,0 +1,263 @@
+---
+// Thin shell — all logic client-side
+---
+
+<div class="tl" id="tailing-diagram"></div>
+
+<style is:global>
+  .tl {
+    --tl-bg: var(--sl-color-bg-sidebar);
+    --tl-border: var(--sl-color-hairline);
+    --tl-accent: var(--sl-color-accent);
+    --tl-text: var(--sl-color-text);
+    --tl-muted: var(--sl-color-gray-3);
+    --tl-green: #22c55e;
+    --tl-red: #ef4444;
+    --tl-amber: #f59e0b;
+    --tl-blue: #60a5fa;
+    margin: 1.5rem 0;
+  }
+  .tl * { margin-top: 0 !important; }
+
+  .tl-scenarios { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.75rem; }
+  .tl-sc {
+    padding: 0.4rem 0.8rem; border: 1px solid var(--tl-border); border-radius: 6px;
+    background: transparent; color: var(--tl-text); font-family: inherit;
+    font-size: 0.78rem; font-weight: 500; cursor: pointer; transition: all 0.12s;
+  }
+  .tl-sc:hover { border-color: var(--tl-accent); }
+  .tl-sc.on { border-color: var(--tl-accent); background: var(--tl-accent); color: white; font-weight: 600; }
+
+  .tl-story {
+    padding: 0.75rem 1rem; background: var(--tl-bg);
+    border: 1px solid var(--tl-border); border-radius: 8px;
+    margin-bottom: 0.75rem; min-height: 5rem;
+    font-size: 0.82rem; line-height: 1.6;
+  }
+  .tl-story b { display: block; font-size: 0.88rem; margin-bottom: 0.3rem; }
+
+  .tl-file-area {
+    display: flex; gap: 1rem; flex-wrap: wrap;
+    padding: 0.5rem 0; align-items: flex-start;
+  }
+
+  .tl-file {
+    border: 1.5px solid var(--tl-border); border-radius: 8px;
+    padding: 0.5rem; min-width: 200px; flex: 1; max-width: 320px;
+    background: var(--tl-bg); transition: border-color 0.3s;
+  }
+  .tl-file.active { border-color: var(--tl-green); }
+  .tl-file.danger { border-color: var(--tl-red); }
+  .tl-file.rotated { border-color: var(--tl-amber); opacity: 0.6; }
+
+  .tl-file-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-bottom: 0.35rem; margin-bottom: 0.35rem;
+    border-bottom: 1px solid var(--tl-border);
+    font-size: 0.72rem; font-weight: 600;
+  }
+  .tl-file-name { font-family: var(--sl-font-mono, monospace); }
+  .tl-file-meta { font-size: 0.6rem; color: var(--tl-muted); font-weight: 400; }
+
+  .tl-lines { font-family: var(--sl-font-mono, monospace); font-size: 0.65rem; line-height: 1.7; }
+  .tl-line { display: flex; gap: 0.3rem; }
+  .tl-line-num { color: var(--tl-muted); min-width: 18px; text-align: right; user-select: none; }
+  .tl-line-text { color: var(--tl-text); }
+  .tl-line.read { color: var(--tl-muted); }
+  .tl-line.unread .tl-line-text { color: var(--tl-green); font-weight: 600; }
+  .tl-line.new .tl-line-text { color: var(--tl-blue); font-weight: 600; }
+
+  .tl-cursor {
+    display: flex; align-items: center; gap: 0.3rem;
+    margin-top: 0.35rem; padding-top: 0.35rem;
+    border-top: 1px dashed var(--tl-border);
+    font-size: 0.62rem; color: var(--tl-accent); font-weight: 600;
+  }
+
+  .tl-checkpoint {
+    margin-top: 0.5rem; padding: 0.5rem 0.75rem;
+    background: color-mix(in srgb, var(--tl-accent) 5%, var(--tl-bg));
+    border: 1px solid color-mix(in srgb, var(--tl-accent) 20%, transparent);
+    border-radius: 6px; font-size: 0.72rem;
+    font-family: var(--sl-font-mono, monospace);
+  }
+  .tl-checkpoint b { color: var(--tl-accent); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .tl-naive {
+    margin-top: 0.5rem; padding: 0.5rem 0.75rem;
+    background: color-mix(in srgb, var(--tl-red) 5%, var(--tl-bg));
+    border: 1px solid color-mix(in srgb, var(--tl-red) 20%, transparent);
+    border-radius: 6px; font-size: 0.75rem;
+  }
+  .tl-naive b { color: var(--tl-red); display: block; font-size: 0.72rem; margin-bottom: 0.2rem; }
+
+  .tl-logfwd {
+    margin-top: 0.5rem; padding: 0.5rem 0.75rem;
+    background: color-mix(in srgb, var(--tl-green) 5%, var(--tl-bg));
+    border: 1px solid color-mix(in srgb, var(--tl-green) 20%, transparent);
+    border-radius: 6px; font-size: 0.75rem;
+  }
+  .tl-logfwd b { color: var(--tl-green); display: block; font-size: 0.72rem; margin-bottom: 0.2rem; }
+</style>
+
+<script>
+(function() {
+  var root = document.getElementById('tailing-diagram');
+  if (!root) return;
+
+  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+  var scenarios = [
+    {
+      id: 'happy', label: 'Normal tailing',
+      title: 'The easy case: tailing an active log file',
+      story: 'The application writes to <code>app.log</code>. logfwd opens the file, seeks to the end (or to the last checkpoint), and reads new lines as they appear. Simple — but only when nothing goes wrong.',
+      files: [
+        { name: 'app.log', cls: 'active', inode: 'inode: 12345', lines: [
+          { n: 1, t: '{"level":"INFO","msg":"started"}', cls: 'read' },
+          { n: 2, t: '{"level":"INFO","msg":"listening on :8080"}', cls: 'read' },
+          { n: 3, t: '{"level":"ERROR","msg":"connection refused"}', cls: 'read' },
+          { n: 4, t: '{"level":"WARN","msg":"retrying in 5s"}', cls: 'unread' },
+          { n: 5, t: '{"level":"INFO","msg":"reconnected"}', cls: 'unread' },
+        ], cursor: 'offset: 156 → reading new lines' },
+      ],
+      checkpoint: 'source_id: 0xa1b2c3 (hash of inode 12345) | offset: 89',
+      naive: null,
+      logfwd: null,
+    },
+    {
+      id: 'rotate', label: 'Log rotation',
+      title: 'The hard case: the file gets rotated',
+      story: 'logrotate renames <code>app.log</code> to <code>app.log.1</code> and creates a new empty <code>app.log</code>. A naive tailer following the file descriptor keeps reading the old (renamed) file. The new file gets ignored — <strong>new logs are lost</strong>.',
+      files: [
+        { name: 'app.log.1', cls: 'rotated', inode: 'inode: 12345 (old)', lines: [
+          { n: 1, t: '{"level":"INFO","msg":"started"}', cls: 'read' },
+          { n: 2, t: '{"level":"INFO","msg":"listening"}', cls: 'read' },
+          { n: 3, t: '{"level":"ERROR","msg":"timeout"}', cls: 'read' },
+        ], cursor: 'EOF — no more data here' },
+        { name: 'app.log', cls: 'active', inode: 'inode: 67890 (new)', lines: [
+          { n: 1, t: '{"level":"INFO","msg":"rotated"}', cls: 'new' },
+          { n: 2, t: '{"level":"ERROR","msg":"disk full"}', cls: 'new' },
+        ], cursor: 'offset: 0 → reading from start' },
+      ],
+      checkpoint: 'source_id: 0xa1b2c3 → old file (drained)\nsource_id: 0xd4e5f6 → new file, offset: 0',
+      naive: 'tail -f follows the file descriptor, not the path. After rotation it keeps reading the old file (now app.log.1) until it reaches EOF, then hangs forever. New data written to app.log is never seen.',
+      logfwd: 'logfwd detects the inode change on the next poll. It drains remaining data from the old file, then opens the new file at offset 0. No data is lost. Both files get different source_ids based on their inode + device + fingerprint.',
+    },
+    {
+      id: 'truncate', label: 'Truncation',
+      title: 'The tricky case: the file gets truncated',
+      story: 'Some applications truncate the log file instead of rotating (e.g., <code>copytruncate</code> in logrotate, or <code>> app.log</code>). The file keeps the same inode, but the size drops to zero and new data starts from the beginning.',
+      files: [
+        { name: 'app.log', cls: 'danger', inode: 'inode: 12345 (same!)', lines: [
+          { n: 1, t: '{"level":"INFO","msg":"after truncate"}', cls: 'new' },
+          { n: 2, t: '{"level":"ERROR","msg":"new error"}', cls: 'new' },
+        ], cursor: 'size < saved offset → truncation detected!' },
+      ],
+      checkpoint: 'Saved offset: 256 | Current size: 78\n→ TRUNCATED: reset offset to 0, recompute fingerprint',
+      naive: 'A naive tailer with saved offset 256 tries to seek past the end of the 78-byte file. It either errors out, reads garbage, or hangs at EOF waiting for more data that will never come at that position.',
+      logfwd: 'logfwd detects size < offset on every poll. It resets to offset 0, recomputes the file fingerprint, and starts reading the new content. The source_id may change if the fingerprint differs.',
+    },
+    {
+      id: 'crash', label: 'Crash recovery',
+      title: 'The critical case: logfwd crashes mid-batch',
+      story: 'logfwd has read 500 lines but only checkpointed offset 400. It crashes. On restart, it needs to resume from the <strong>checkpointed</strong> offset (400), not the read offset (500). This means 100 lines are re-read — at-least-once delivery.',
+      files: [
+        { name: 'app.log', cls: 'active', inode: 'inode: 12345', lines: [
+          { n: '...', t: '(lines 1-400: already delivered)', cls: 'read' },
+          { n: 401, t: '{"level":"INFO","msg":"re-read after crash"}', cls: 'unread' },
+          { n: 402, t: '{"level":"ERROR","msg":"re-read"}', cls: 'unread' },
+          { n: '...', t: '(lines 403-500: re-read)', cls: 'unread' },
+          { n: 501, t: '{"level":"INFO","msg":"new after crash"}', cls: 'new' },
+        ], cursor: 'resume from checkpoint offset 400' },
+      ],
+      checkpoint: 'Checkpoint file: checkpoints.json\n  write → checkpoints.json.tmp\n  fsync → flush to disk\n  rename → atomic swap\n\nCrash at ANY point → last good checkpoint survives',
+      naive: 'Without atomic checkpointing, a crash during checkpoint write corrupts the offset file. On restart, the tailer has no idea where it was — it either re-reads everything (duplicates) or starts from the end (data loss).',
+      logfwd: 'logfwd writes checkpoints atomically: tmp file → fsync → rename. Even if the process crashes during the write, the previous checkpoint survives intact. Restart resumes from the last good offset.',
+    },
+  ];
+
+  // Build DOM
+  var scenBtns = el('div', 'tl-scenarios');
+  var btns = scenarios.map(function(s, i) {
+    var b = el('button', 'tl-sc' + (i === 0 ? ' on' : ''));
+    b.textContent = s.label;
+    b.dataset.i = '' + i;
+    scenBtns.appendChild(b);
+    return b;
+  });
+
+  var storyEl = el('div', 'tl-story');
+  var fileArea = el('div', 'tl-file-area');
+  var checkpointEl = el('div', 'tl-checkpoint');
+  var naiveEl = el('div', 'tl-naive');
+  var logfwdEl = el('div', 'tl-logfwd');
+
+  root.appendChild(scenBtns);
+  root.appendChild(storyEl);
+  root.appendChild(fileArea);
+  root.appendChild(checkpointEl);
+  root.appendChild(naiveEl);
+  root.appendChild(logfwdEl);
+
+  function showScenario(idx) {
+    var s = scenarios[idx];
+    btns.forEach(function(b, i) { b.classList.toggle('on', i === idx); });
+
+    storyEl.innerHTML = '<b>' + s.title + '</b><p>' + s.story + '</p>';
+
+    // Render files
+    fileArea.innerHTML = '';
+    s.files.forEach(function(f) {
+      var fileEl = el('div', 'tl-file ' + f.cls);
+      var head = el('div', 'tl-file-head');
+      var name = el('span', 'tl-file-name'); name.textContent = f.name;
+      var meta = el('span', 'tl-file-meta'); meta.textContent = f.inode;
+      head.appendChild(name); head.appendChild(meta);
+      fileEl.appendChild(head);
+
+      var lines = el('div', 'tl-lines');
+      f.lines.forEach(function(l) {
+        var line = el('div', 'tl-line ' + l.cls);
+        var num = el('span', 'tl-line-num'); num.textContent = l.n;
+        var text = el('span', 'tl-line-text'); text.textContent = l.t;
+        line.appendChild(num); line.appendChild(text);
+        lines.appendChild(line);
+      });
+      fileEl.appendChild(lines);
+
+      if (f.cursor) {
+        var cur = el('div', 'tl-cursor');
+        cur.textContent = '\u25B6 ' + f.cursor;
+        fileEl.appendChild(cur);
+      }
+
+      fileArea.appendChild(fileEl);
+    });
+
+    // Checkpoint
+    checkpointEl.innerHTML = '<b>Checkpoint state</b><pre style="margin:0;font-size:0.68rem;white-space:pre-wrap">' + s.checkpoint + '</pre>';
+
+    // Naive vs logfwd
+    if (s.naive) {
+      naiveEl.style.display = '';
+      naiveEl.innerHTML = '<b>\u274C Naive tail -f</b>' + s.naive;
+    } else {
+      naiveEl.style.display = 'none';
+    }
+
+    if (s.logfwd) {
+      logfwdEl.style.display = '';
+      logfwdEl.innerHTML = '<b>\u2705 logfwd</b>' + s.logfwd;
+    } else {
+      logfwdEl.style.display = 'none';
+    }
+  }
+
+  btns.forEach(function(b) {
+    b.addEventListener('click', function() { showScenario(+b.dataset.i); });
+  });
+
+  showScenario(0);
+})();
+</script>
