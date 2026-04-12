@@ -369,16 +369,6 @@ main {
   font-family: var(--mono);
   font-size: 10px;
 }
-.t2-body {
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.pipe-traces .t2-body {
-  padding: 10px 12px;
-  background: transparent;
-}
 
 /* === Inspector === */
 .inspector {
@@ -602,6 +592,16 @@ main {
   color: var(--t4);
   font-size: 10px;
   font-family: var(--mono);
+}
+.t2-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pipe-traces .t2-body {
+  padding: 10px 12px;
+  background: transparent;
 }
 
 /* Top bar: stats + window picker */

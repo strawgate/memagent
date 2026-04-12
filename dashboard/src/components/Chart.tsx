@@ -158,8 +158,8 @@ export function Chart({ series }: Props) {
           ye[n] = lastVal;
 
           plotRef.current.batch(() => {
-            plotRef.current?.setData([xs, ys, ye]);
-            plotRef.current?.setScale("x", { min: now2 - win2, max: now2 });
+            plotRef.current!.setData([xs, ys, ye]);
+            plotRef.current!.setScale("x", { min: now2 - win2, max: now2 });
           });
         }
       }

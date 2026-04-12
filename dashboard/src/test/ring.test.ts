@@ -6,7 +6,7 @@ import { RingBuffer } from "../lib/ring";
 
 /** Push n values at evenly-spaced timestamps starting at t0, stepping by stepMs. */
 function _pushAt(rb: RingBuffer, t0: number, stepMs: number, values: number[]) {
-  for (let i = 0; i < values.length; i++) rb.pushRaw(t0 + i * stepMs, values[i] as number);
+  for (let i = 0; i < values.length; i++) rb.pushRaw(t0 + i * stepMs, values[i]!);
 }
 
 // ─── push & capacity ─────────────────────────────────────────────────────────
@@ -296,7 +296,7 @@ describe("RingBuffer — property-based invariants", () => {
     fc.array(fc.float({ noNaN: true, noDefaultInfinity: true }), { minLength: 0, maxLength: 300 }),
   ])("length never exceeds capacity regardless of push count", (capacity, values) => {
     const rb = new RingBuffer(capacity);
-    for (let i = 0; i < values.length; i++) rb.pushRaw(i * 100, values[i] as number);
+    for (let i = 0; i < values.length; i++) rb.pushRaw(i * 100, values[i]!);
     expect(rb.length).toBeLessThanOrEqual(capacity);
   });
 
@@ -337,7 +337,7 @@ describe("RingBuffer — property-based invariants", () => {
     vi.setSystemTime(now);
     const rb = new RingBuffer(200);
     for (let i = 0; i < values.length; i++)
-      rb.pushRaw(now - (values.length - i) * 1000, values[i] as number);
+      rb.pushRaw(now - (values.length - i) * 1000, values[i]!);
     const maxAge = values.length * 1100;
     const pts = rb.points(maxAge);
     const buckets = rb.bucket(bucketMs * 1000, maxAge);
