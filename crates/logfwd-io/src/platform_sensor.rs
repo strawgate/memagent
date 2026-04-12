@@ -243,6 +243,16 @@ struct SensorRow {
     process_start_time_unix_sec: Option<u64>,
     process_disk_read_delta_bytes: Option<u64>,
     process_disk_write_delta_bytes: Option<u64>,
+    process_user_id: Option<u32>,
+    process_effective_user_id: Option<u32>,
+    process_group_id: Option<u32>,
+    process_effective_group_id: Option<u32>,
+    process_cwd: Option<String>,
+    process_session_id: Option<u32>,
+    process_run_time_secs: Option<u64>,
+    process_open_files: Option<u64>,
+    process_thread_count: Option<u64>,
+    process_container_id: Option<String>,
 
     // Network fields
     network_interface: Option<String>,
@@ -254,6 +264,20 @@ struct SensorRow {
     network_packets_transmitted_delta: Option<u64>,
     network_errors_received_delta: Option<u64>,
     network_errors_transmitted_delta: Option<u64>,
+    network_mac_address: Option<String>,
+    network_ip_addresses: Option<String>,
+    network_mtu: Option<u64>,
+
+    // System-level fields
+    system_total_memory_bytes: Option<u64>,
+    system_used_memory_bytes: Option<u64>,
+    system_available_memory_bytes: Option<u64>,
+    system_total_swap_bytes: Option<u64>,
+    system_used_swap_bytes: Option<u64>,
+    system_cpu_usage_percent: Option<f32>,
+    system_uptime_secs: Option<u64>,
+    system_cgroup_memory_limit: Option<u64>,
+    system_cgroup_memory_current: Option<u64>,
 
     // Disk I/O fields
     disk_io_read_delta_bytes: Option<u64>,
@@ -452,6 +476,16 @@ impl PlatformSensorCommon {
             process_start_time_unix_sec: None,
             process_disk_read_delta_bytes: None,
             process_disk_write_delta_bytes: None,
+            process_user_id: None,
+            process_effective_user_id: None,
+            process_group_id: None,
+            process_effective_group_id: None,
+            process_cwd: None,
+            process_session_id: None,
+            process_run_time_secs: None,
+            process_open_files: None,
+            process_thread_count: None,
+            process_container_id: None,
             network_interface: None,
             network_received_delta_bytes: None,
             network_transmitted_delta_bytes: None,
@@ -461,6 +495,18 @@ impl PlatformSensorCommon {
             network_packets_transmitted_delta: None,
             network_errors_received_delta: None,
             network_errors_transmitted_delta: None,
+            network_mac_address: None,
+            network_ip_addresses: None,
+            network_mtu: None,
+            system_total_memory_bytes: None,
+            system_used_memory_bytes: None,
+            system_available_memory_bytes: None,
+            system_total_swap_bytes: None,
+            system_used_swap_bytes: None,
+            system_cpu_usage_percent: None,
+            system_uptime_secs: None,
+            system_cgroup_memory_limit: None,
+            system_cgroup_memory_current: None,
             disk_io_read_delta_bytes: None,
             disk_io_write_delta_bytes: None,
             disk_io_read_total_bytes: None,
@@ -559,6 +605,9 @@ impl PlatformSensorCommon {
             return 0;
         }
 
+        // Always emit system health regardless of family budget.
+        self.emit_system_rows(control, out);
+
         // Only refresh the subsystems we actually need.
         let needs_processes =
             enabled.contains(&SignalFamily::Process) || enabled.contains(&SignalFamily::File);
@@ -571,7 +620,9 @@ impl PlatformSensorCommon {
                     .with_memory()
                     .with_disk_usage()
                     .with_cmd(UpdateKind::OnlyIfNotSet)
-                    .with_exe(UpdateKind::OnlyIfNotSet),
+                    .with_exe(UpdateKind::OnlyIfNotSet)
+                    .with_user(UpdateKind::OnlyIfNotSet)
+                    .with_cwd(UpdateKind::OnlyIfNotSet),
             );
         }
         if enabled.contains(&SignalFamily::Network) {
@@ -628,6 +679,16 @@ impl PlatformSensorCommon {
             row.process_start_time_unix_sec = Some(process.start_time());
             row.process_disk_read_delta_bytes = Some(disk_usage.read_bytes);
             row.process_disk_write_delta_bytes = Some(disk_usage.written_bytes);
+            row.process_user_id = process.user_id().map(|uid| **uid);
+            row.process_effective_user_id = process.effective_user_id().map(|uid| **uid);
+            row.process_group_id = process.group_id().map(|gid| *gid);
+            row.process_effective_group_id = process.effective_group_id().map(|gid| *gid);
+            row.process_cwd = process.cwd().map(|p| p.to_string_lossy().to_string());
+            row.process_session_id = process.session_id().map(sysinfo::Pid::as_u32);
+            row.process_run_time_secs = Some(process.run_time());
+            row.process_open_files = process.open_files().map(|n| n as u64);
+            row.process_thread_count = process.tasks().map(|t| t.len() as u64);
+            row.process_container_id = extract_container_id(pid.as_u32());
             out.push(row);
             emitted += 1;
         }
@@ -657,11 +718,55 @@ impl PlatformSensorCommon {
             row.network_packets_transmitted_delta = Some(data.packets_transmitted());
             row.network_errors_received_delta = Some(data.errors_on_received());
             row.network_errors_transmitted_delta = Some(data.errors_on_transmitted());
+            row.network_mac_address = Some(data.mac_address().to_string());
+            row.network_ip_addresses = {
+                let ips: Vec<String> = data
+                    .ip_networks()
+                    .iter()
+                    .map(|ip| ip.addr.to_string())
+                    .collect();
+                if ips.is_empty() {
+                    None
+                } else {
+                    Some(ips.join(","))
+                }
+            };
+            row.network_mtu = Some(data.mtu());
             out.push(row);
             emitted += 1;
         }
 
         emitted
+    }
+
+    fn emit_system_rows(&mut self, control: &ControlState, out: &mut Vec<SensorRow>) -> usize {
+        self.system.refresh_memory();
+        self.system.refresh_cpu_usage();
+
+        let mut row = self.base_row(
+            control,
+            "system",
+            "snapshot",
+            "ok",
+            "system health snapshot",
+        );
+        row.signal_family = Some("system".to_string());
+        row.system_total_memory_bytes = Some(self.system.total_memory());
+        row.system_used_memory_bytes = Some(self.system.used_memory());
+        row.system_available_memory_bytes = Some(self.system.available_memory());
+        row.system_total_swap_bytes = Some(self.system.total_swap());
+        row.system_used_swap_bytes = Some(self.system.used_swap());
+        row.system_cpu_usage_percent = Some(self.system.global_cpu_usage());
+        row.system_uptime_secs = Some(System::uptime());
+
+        if let Some(limits) = self.system.cgroup_limits() {
+            row.system_cgroup_memory_limit = Some(limits.total_memory);
+            row.system_cgroup_memory_current =
+                Some(limits.total_memory.saturating_sub(limits.free_memory));
+        }
+
+        out.push(row);
+        1
     }
 
     fn emit_disk_io_rows(
@@ -736,6 +841,16 @@ impl PlatformSensorCommon {
         let mut process_start_time_unix_sec: Vec<Option<u64>> = Vec::with_capacity(len);
         let mut process_disk_read_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
         let mut process_disk_write_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut process_user_id: Vec<Option<u32>> = Vec::with_capacity(len);
+        let mut process_effective_user_id: Vec<Option<u32>> = Vec::with_capacity(len);
+        let mut process_group_id: Vec<Option<u32>> = Vec::with_capacity(len);
+        let mut process_effective_group_id: Vec<Option<u32>> = Vec::with_capacity(len);
+        let mut process_cwd: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut process_session_id: Vec<Option<u32>> = Vec::with_capacity(len);
+        let mut process_run_time_secs: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut process_open_files: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut process_thread_count: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut process_container_id: Vec<Option<String>> = Vec::with_capacity(len);
 
         let mut network_interface: Vec<Option<String>> = Vec::with_capacity(len);
         let mut network_received_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
@@ -746,6 +861,19 @@ impl PlatformSensorCommon {
         let mut network_packets_transmitted_delta: Vec<Option<u64>> = Vec::with_capacity(len);
         let mut network_errors_received_delta: Vec<Option<u64>> = Vec::with_capacity(len);
         let mut network_errors_transmitted_delta: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut network_mac_address: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut network_ip_addresses: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut network_mtu: Vec<Option<u64>> = Vec::with_capacity(len);
+
+        let mut system_total_memory_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut system_used_memory_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut system_available_memory_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut system_total_swap_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut system_used_swap_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut system_cpu_usage_percent: Vec<Option<f32>> = Vec::with_capacity(len);
+        let mut system_uptime_secs: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut system_cgroup_memory_limit: Vec<Option<u64>> = Vec::with_capacity(len);
+        let mut system_cgroup_memory_current: Vec<Option<u64>> = Vec::with_capacity(len);
 
         let mut disk_io_read_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
         let mut disk_io_write_delta_bytes: Vec<Option<u64>> = Vec::with_capacity(len);
@@ -783,6 +911,16 @@ impl PlatformSensorCommon {
             process_start_time_unix_sec.push(row.process_start_time_unix_sec);
             process_disk_read_delta_bytes.push(row.process_disk_read_delta_bytes);
             process_disk_write_delta_bytes.push(row.process_disk_write_delta_bytes);
+            process_user_id.push(row.process_user_id);
+            process_effective_user_id.push(row.process_effective_user_id);
+            process_group_id.push(row.process_group_id);
+            process_effective_group_id.push(row.process_effective_group_id);
+            process_cwd.push(row.process_cwd);
+            process_session_id.push(row.process_session_id);
+            process_run_time_secs.push(row.process_run_time_secs);
+            process_open_files.push(row.process_open_files);
+            process_thread_count.push(row.process_thread_count);
+            process_container_id.push(row.process_container_id);
 
             network_interface.push(row.network_interface);
             network_received_delta_bytes.push(row.network_received_delta_bytes);
@@ -793,6 +931,19 @@ impl PlatformSensorCommon {
             network_packets_transmitted_delta.push(row.network_packets_transmitted_delta);
             network_errors_received_delta.push(row.network_errors_received_delta);
             network_errors_transmitted_delta.push(row.network_errors_transmitted_delta);
+            network_mac_address.push(row.network_mac_address);
+            network_ip_addresses.push(row.network_ip_addresses);
+            network_mtu.push(row.network_mtu);
+
+            system_total_memory_bytes.push(row.system_total_memory_bytes);
+            system_used_memory_bytes.push(row.system_used_memory_bytes);
+            system_available_memory_bytes.push(row.system_available_memory_bytes);
+            system_total_swap_bytes.push(row.system_total_swap_bytes);
+            system_used_swap_bytes.push(row.system_used_swap_bytes);
+            system_cpu_usage_percent.push(row.system_cpu_usage_percent);
+            system_uptime_secs.push(row.system_uptime_secs);
+            system_cgroup_memory_limit.push(row.system_cgroup_memory_limit);
+            system_cgroup_memory_current.push(row.system_cgroup_memory_current);
 
             disk_io_read_delta_bytes.push(row.disk_io_read_delta_bytes);
             disk_io_write_delta_bytes.push(row.disk_io_write_delta_bytes);
@@ -827,6 +978,16 @@ impl PlatformSensorCommon {
             Arc::new(UInt64Array::from(process_start_time_unix_sec)),
             Arc::new(UInt64Array::from(process_disk_read_delta_bytes)),
             Arc::new(UInt64Array::from(process_disk_write_delta_bytes)),
+            Arc::new(UInt32Array::from(process_user_id)),
+            Arc::new(UInt32Array::from(process_effective_user_id)),
+            Arc::new(UInt32Array::from(process_group_id)),
+            Arc::new(UInt32Array::from(process_effective_group_id)),
+            Arc::new(StringArray::from(process_cwd)),
+            Arc::new(UInt32Array::from(process_session_id)),
+            Arc::new(UInt64Array::from(process_run_time_secs)),
+            Arc::new(UInt64Array::from(process_open_files)),
+            Arc::new(UInt64Array::from(process_thread_count)),
+            Arc::new(StringArray::from(process_container_id)),
             Arc::new(StringArray::from(network_interface)),
             Arc::new(UInt64Array::from(network_received_delta_bytes)),
             Arc::new(UInt64Array::from(network_transmitted_delta_bytes)),
@@ -836,6 +997,18 @@ impl PlatformSensorCommon {
             Arc::new(UInt64Array::from(network_packets_transmitted_delta)),
             Arc::new(UInt64Array::from(network_errors_received_delta)),
             Arc::new(UInt64Array::from(network_errors_transmitted_delta)),
+            Arc::new(StringArray::from(network_mac_address)),
+            Arc::new(StringArray::from(network_ip_addresses)),
+            Arc::new(UInt64Array::from(network_mtu)),
+            Arc::new(UInt64Array::from(system_total_memory_bytes)),
+            Arc::new(UInt64Array::from(system_used_memory_bytes)),
+            Arc::new(UInt64Array::from(system_available_memory_bytes)),
+            Arc::new(UInt64Array::from(system_total_swap_bytes)),
+            Arc::new(UInt64Array::from(system_used_swap_bytes)),
+            Arc::new(Float32Array::from(system_cpu_usage_percent)),
+            Arc::new(UInt64Array::from(system_uptime_secs)),
+            Arc::new(UInt64Array::from(system_cgroup_memory_limit)),
+            Arc::new(UInt64Array::from(system_cgroup_memory_current)),
             Arc::new(UInt64Array::from(disk_io_read_delta_bytes)),
             Arc::new(UInt64Array::from(disk_io_write_delta_bytes)),
             Arc::new(UInt64Array::from(disk_io_read_total_bytes)),
@@ -1015,6 +1188,26 @@ fn enabled_families_csv(control: &ControlState) -> String {
         .join(",")
 }
 
+fn extract_container_id(pid: u32) -> Option<String> {
+    let path = format!("/proc/{pid}/cgroup");
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        for segment in line.rsplit('/') {
+            let cleaned = segment
+                .strip_prefix("docker-")
+                .or_else(|| segment.strip_prefix("cri-containerd-"))
+                .or_else(|| segment.strip_prefix("crio-"))
+                .unwrap_or(segment)
+                .strip_suffix(".scope")
+                .unwrap_or(segment);
+            if cleaned.len() == 64 && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Some(cleaned.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn sensor_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("timestamp_unix_nano", DataType::UInt64, false),
@@ -1043,6 +1236,16 @@ fn sensor_schema() -> Arc<Schema> {
         Field::new("process_start_time_unix_sec", DataType::UInt64, true),
         Field::new("process_disk_read_delta_bytes", DataType::UInt64, true),
         Field::new("process_disk_write_delta_bytes", DataType::UInt64, true),
+        Field::new("process_user_id", DataType::UInt32, true),
+        Field::new("process_effective_user_id", DataType::UInt32, true),
+        Field::new("process_group_id", DataType::UInt32, true),
+        Field::new("process_effective_group_id", DataType::UInt32, true),
+        Field::new("process_cwd", DataType::Utf8, true),
+        Field::new("process_session_id", DataType::UInt32, true),
+        Field::new("process_run_time_secs", DataType::UInt64, true),
+        Field::new("process_open_files", DataType::UInt64, true),
+        Field::new("process_thread_count", DataType::UInt64, true),
+        Field::new("process_container_id", DataType::Utf8, true),
         Field::new("network_interface", DataType::Utf8, true),
         Field::new("network_received_delta_bytes", DataType::UInt64, true),
         Field::new("network_transmitted_delta_bytes", DataType::UInt64, true),
@@ -1052,6 +1255,18 @@ fn sensor_schema() -> Arc<Schema> {
         Field::new("network_packets_transmitted_delta", DataType::UInt64, true),
         Field::new("network_errors_received_delta", DataType::UInt64, true),
         Field::new("network_errors_transmitted_delta", DataType::UInt64, true),
+        Field::new("network_mac_address", DataType::Utf8, true),
+        Field::new("network_ip_addresses", DataType::Utf8, true),
+        Field::new("network_mtu", DataType::UInt64, true),
+        Field::new("system_total_memory_bytes", DataType::UInt64, true),
+        Field::new("system_used_memory_bytes", DataType::UInt64, true),
+        Field::new("system_available_memory_bytes", DataType::UInt64, true),
+        Field::new("system_total_swap_bytes", DataType::UInt64, true),
+        Field::new("system_used_swap_bytes", DataType::UInt64, true),
+        Field::new("system_cpu_usage_percent", DataType::Float32, true),
+        Field::new("system_uptime_secs", DataType::UInt64, true),
+        Field::new("system_cgroup_memory_limit", DataType::UInt64, true),
+        Field::new("system_cgroup_memory_current", DataType::UInt64, true),
         Field::new("disk_io_read_delta_bytes", DataType::UInt64, true),
         Field::new("disk_io_write_delta_bytes", DataType::UInt64, true),
         Field::new("disk_io_read_total_bytes", DataType::UInt64, true),
@@ -1748,9 +1963,14 @@ mod tests {
         assert_eq!(events.len(), 1);
         let batch = first_batch(&events);
         // On any real system there are more than 3 processes; the cap should hold.
+        // The system health row is always emitted outside the budget, so exclude it.
+        let event_families = string_col(batch, "event_family");
         let snapshot_count = string_col(batch, "event_kind")
             .iter()
-            .filter(|v| v.as_deref() == Some("snapshot"))
+            .zip(event_families.iter())
+            .filter(|(kind, family)| {
+                kind.as_deref() == Some("snapshot") && family.as_deref() != Some("system")
+            })
             .count();
         assert!(
             snapshot_count <= 3,
@@ -1906,8 +2126,8 @@ mod tests {
         let schema = sensor_schema();
         assert_eq!(
             schema.fields().len(),
-            39,
-            "schema should have 14 base + 25 telemetry columns"
+            61,
+            "schema should have 14 base + 47 telemetry columns"
         );
     }
 
