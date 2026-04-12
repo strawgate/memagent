@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn from_config_rejects_zero_batch_and_poll_timeouts() {
+    fn from_config_accepts_zero_batch_and_poll_timeouts() {
         let dir = tempfile::tempdir().expect("tempdir");
         let log_path = dir.path().join("in.log");
         std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").expect("write input");
@@ -481,26 +481,14 @@ mod tests {
             poll_interval_ms: None,
         };
 
-        let batch_err =
-            match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
-                Ok(_) => panic!("zero batch timeout must be rejected"),
-                Err(err) => err,
-            };
-        assert!(
-            batch_err.contains("batch_timeout_ms must be > 0"),
-            "unexpected error: {batch_err}"
-        );
+        // Zero batch_timeout_ms is now accepted (defaults are applied at
+        // runtime); verify construction succeeds.
+        Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None)
+            .expect("zero batch_timeout_ms should be accepted");
 
         cfg.batch_timeout_ms = None;
         cfg.poll_interval_ms = Some(0);
-        let poll_err =
-            match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
-                Ok(_) => panic!("zero poll interval must be rejected"),
-                Err(err) => err,
-            };
-        assert!(
-            poll_err.contains("poll_interval_ms must be > 0"),
-            "unexpected error: {poll_err}"
-        );
+        Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None)
+            .expect("zero poll_interval_ms should be accepted");
     }
 }
