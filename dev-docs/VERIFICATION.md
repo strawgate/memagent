@@ -52,7 +52,7 @@ Update existing TLA+ specs when:
 | `QuiescenceHasNoSilentStrandedWork` | Safety | `Stopped` never leaves sent batches without a terminal `acked`/`rejected`/`abandoned` outcome |
 | `NoUnresolvedSentAtQuiescence` | Safety | `Stopped` implies `sent \ terminal = {}` for every source (no stranded sent work) |
 | `StopMetadataConsistent` | Safety | `forced` and `stop_reason` stay phase-consistent (`Stopped` iff reason is non-`none`) |
-| `CheckpointOrderingInvariant` | Safety | `committed[s]=n` implies every sent batch `<= n` is terminalized via `acked`/`rejected`/`abandoned` and none are in-flight |
+| `CheckpointOrderingInvariant` | Safety | `committed[s]=n` implies every sent batch `<= n` is commit-terminal via `acked`/`rejected` and none are in-flight |
 | `CommittedMonotonic` | Safety | Checkpoint never goes backwards |
 | `FailureTerminalizationPreservesCheckpoint` | Safety | Force/crash terminalization cannot advance checkpoints |
 | `FailureClassMustTerminalizePrototype` | Safety | Force/crash transitions must leave no sent-but-unterminalized batches |

@@ -1,11 +1,11 @@
 # Fan-in Synthesis — Linearizability Wave 1
 
-> **Status:** Active
+> **Status:** Template
 > **Date:** 2026-04-11
-> **Context:** Fan-in synthesis template for linearizability/Porcupine wave.
+> **Context:** Empty fan-in synthesis template for the linearizability/Porcupine wave. This is not fan-in evidence.
 
 Date: 2026-04-11
-Manifest: TBD
+Manifest: To be filled when cloud-agent outputs are available.
 
 ## Inputs
 
@@ -15,50 +15,50 @@ Manifest: TBD
   - WS03 Porcupine checker
   - WS04 CI integration
   - WS05 alternatives and risks
-- Task IDs: TBD
-- Attempt count: TBD
+- Task IDs: To be filled during fan-in.
+- Attempt count: To be filled during fan-in.
 
 ## Convergence
 
-TBD
+To be filled during fan-in.
 
 ## Disagreements
 
-TBD
+To be filled during fan-in.
 
 ## Evidence quality
 
 - Decision-grade:
-  - TBD
+  - To be filled during fan-in.
 - Directional:
-  - TBD
+  - To be filled during fan-in.
 
 ## Recommended winners per lane
 
-1. WS01: TBD
-2. WS02: TBD
-3. WS03: TBD
-4. WS04: TBD
-5. WS05: TBD
+1. WS01: To be filled during fan-in.
+2. WS02: To be filled during fan-in.
+3. WS03: To be filled during fan-in.
+4. WS04: To be filled during fan-in.
+5. WS05: To be filled during fan-in.
 
 ## Integration plan
 
 ### Adopt now
 
-1. TBD
+1. To be filled during fan-in.
 
 ### Adopt gated
 
-1. TBD
+1. To be filled during fan-in.
 
 ### Defer
 
-1. TBD
+1. To be filled during fan-in.
 
 ## Merge/conflict map
 
-TBD
+To be filled during fan-in.
 
 ## Next steps
 
-1. TBD
+1. Fill this template after all workstream outputs are available.
