@@ -32,6 +32,7 @@ Point-in-time investigations that informed architecture decisions.
 ## Completed Research
 
 - [completed-rollup-2026-04.md](completed-rollup-2026-04.md)
+- [columnar-batch-builder.md](columnar-batch-builder.md)
 
 ## Historical / Superseded
 

@@ -231,6 +231,8 @@ Because maintaining column alignment across multiple type builders (str, int, fl
 
 The deferred pattern is correct by construction: each column is built independently. Gaps are nulls. Columns can never mismatch.
 
+Canonical design note: [dev-docs/research/columnar-batch-builder.md](dev-docs/research/columnar-batch-builder.md).
+
 ### Chunk-level SIMD classification beats per-line SIMD
 
 We tried three approaches:
