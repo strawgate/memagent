@@ -125,9 +125,9 @@
   var rowArea = el('div', 'cd-grid-area');
   var rowLabel = el('div', 'cd-grid-label'); rowLabel.textContent = 'Row-oriented (each row = one log line)';
   var rowTable = el('table', 'cd-row-table');
-  var thead = el('thead'); var thr = el('tr');
-  cols.forEach(function(c) { var th = el('th'); th.textContent = c; thr.appendChild(th); });
-  thead.appendChild(thr); rowTable.appendChild(thead);
+  var thead = el('thead'); var headRow = el('tr');
+  cols.forEach(function(c) { var th = el('th'); th.textContent = c; headRow.appendChild(th); });
+  thead.appendChild(headRow); rowTable.appendChild(thead);
   var tbody = el('tbody');
   var rowEls = rows.map(function(r) {
     var tr = el('tr');
