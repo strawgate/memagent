@@ -701,7 +701,7 @@ fn subprocess_reader_loop(
         let exited_cleanly = read_export_entries(reader, &tx, &running, &config.exclude_units);
 
         // Atomically take the PID before kill+wait so Drop cannot race.
-        child_pid.store(0, Ordering::Release);
+        child_pid.swap(0, Ordering::AcqRel);
         let _ = child.kill();
         let _ = child.wait();
 
