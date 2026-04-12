@@ -43,6 +43,25 @@ fn classify_empty_read_result(was_truncated: bool) -> ReadResult {
     }
 }
 
+fn clamp_evicted_offset(path: &Path, source_id: SourceId, offset: u64) -> u64 {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return offset;
+    };
+    let file_size = metadata.len();
+    if offset > file_size {
+        tracing::warn!(
+            path = %path.display(),
+            source_id = source_id.0,
+            saved_offset = offset,
+            file_size,
+            "evicted checkpoint offset exceeds file size — resetting to 0"
+        );
+        0
+    } else {
+        offset
+    }
+}
+
 /// Owns the open file descriptors, read buffer, and byte-level I/O.
 pub(super) struct FileReader {
     pub(super) files: HashMap<PathBuf, TailedFile>,
@@ -374,7 +393,7 @@ impl FileReader {
             return Ok(());
         }
         if let Some(evicted) = self.evicted_offsets.get_mut(path) {
-            evicted.offset = offset;
+            evicted.offset = clamp_evicted_offset(&evicted.path, evicted.source_id, offset);
         }
         Ok(())
     }
@@ -410,7 +429,7 @@ impl FileReader {
         }
         for evicted in self.evicted_offsets.values_mut() {
             if evicted.source_id == source_id {
-                evicted.offset = offset;
+                evicted.offset = clamp_evicted_offset(&evicted.path, evicted.source_id, offset);
                 return Ok(());
             }
         }
@@ -558,6 +577,74 @@ mod tests {
                 .expect("evicted entry should remain present")
                 .offset,
             17
+        );
+    }
+
+    #[test]
+    fn set_offset_clamps_evicted_entry_to_zero_when_file_shrunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("evicted.log");
+        fs::write(&path, b"abc").unwrap();
+        let mut reader = test_reader();
+        reader.evicted_offsets.insert(
+            path.clone(),
+            EvictedFile {
+                identity: FileIdentity {
+                    device: 1,
+                    inode: 2,
+                    fingerprint: 123,
+                },
+                offset: 2,
+                path: path.clone(),
+                source_id: SourceId(99),
+            },
+        );
+
+        reader
+            .set_offset(&path, 17)
+            .expect("set_offset should update evicted entry");
+
+        assert_eq!(
+            reader
+                .evicted_offsets
+                .get(&path)
+                .expect("evicted entry should remain present")
+                .offset,
+            0
+        );
+    }
+
+    #[test]
+    fn set_offset_by_source_clamps_evicted_entry_to_zero_when_file_shrunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("evicted.log");
+        fs::write(&path, b"abc").unwrap();
+        let mut reader = test_reader();
+        reader.evicted_offsets.insert(
+            path.clone(),
+            EvictedFile {
+                identity: FileIdentity {
+                    device: 1,
+                    inode: 2,
+                    fingerprint: 123,
+                },
+                offset: 2,
+                path: path.clone(),
+                source_id: SourceId(99),
+            },
+        );
+
+        reader
+            .set_offset_by_source(SourceId(99), 17)
+            .expect("set_offset_by_source should update evicted entry");
+
+        assert_eq!(
+            reader
+                .evicted_offsets
+                .get(&path)
+                .expect("evicted entry should remain present")
+                .offset,
+            0
         );
     }
 
