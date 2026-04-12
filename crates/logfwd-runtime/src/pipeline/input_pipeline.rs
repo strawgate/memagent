@@ -60,41 +60,6 @@ use super::{InputState, InputTransform};
 #[cfg(not(feature = "turmoil"))]
 const IO_CPU_CHANNEL_CAPACITY: usize = 4;
 
-#[cfg(not(feature = "turmoil"))]
-#[inline]
-fn should_flush_buffer(
-    buffered_len: usize,
-    batch_target_bytes: usize,
-    timeout_elapsed: bool,
-) -> bool {
-    // Config validation rejects zero, but keep this path robust for
-    // programmatic construction in tests/fuzzing.
-    let target = batch_target_bytes.max(1);
-    buffered_len > 0 && (buffered_len >= target || timeout_elapsed)
-}
-
-#[cfg(not(feature = "turmoil"))]
-fn send_io_work_item(
-    tx: &mpsc::Sender<IoWorkItem>,
-    item: IoWorkItem,
-    input_name: &str,
-    metrics: &PipelineMetrics,
-    last_bp_warn: &mut Option<Instant>,
-) -> bool {
-    match tx.try_send(item) {
-        Ok(()) => true,
-        Err(mpsc::error::TrySendError::Full(item)) => {
-            if last_bp_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
-                tracing::warn!(input = input_name, "input.backpressure");
-                *last_bp_warn = Some(Instant::now());
-            }
-            metrics.inc_backpressure_stall();
-            tx.blocking_send(item).is_ok()
-        }
-        Err(mpsc::error::TrySendError::Closed(_)) => false,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // I/O worker — reads bytes from source, accumulates, sends to CPU worker
 // ---------------------------------------------------------------------------
@@ -199,14 +164,24 @@ fn io_worker_loop(
                                 queued_at: tokio::time::Instant::now(),
                                 input_index,
                             });
-                            if !send_io_work_item(
-                                &tx,
-                                chunk,
-                                input.source.name(),
-                                &metrics,
-                                &mut last_bp_warn,
-                            ) {
-                                break 'io_loop;
+                            match tx.try_send(chunk) {
+                                Ok(()) => {}
+                                Err(mpsc::error::TrySendError::Full(chunk)) => {
+                                    if last_bp_warn
+                                        .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
+                                    {
+                                        tracing::warn!(
+                                            input = input.source.name(),
+                                            "input.backpressure"
+                                        );
+                                        last_bp_warn = Some(Instant::now());
+                                    }
+                                    metrics.inc_backpressure_stall();
+                                    if tx.blocking_send(chunk).is_err() {
+                                        break 'io_loop;
+                                    }
+                                }
+                                Err(mpsc::error::TrySendError::Closed(_)) => break 'io_loop,
                             }
                             buffered_since = None;
                         }
@@ -217,14 +192,24 @@ fn io_worker_loop(
                             queued_at: tokio::time::Instant::now(),
                             input_index,
                         };
-                        if !send_io_work_item(
-                            &tx,
-                            item,
-                            input.source.name(),
-                            &metrics,
-                            &mut last_bp_warn,
-                        ) {
-                            break 'io_loop;
+                        match tx.try_send(item) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Full(item)) => {
+                                if last_bp_warn
+                                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
+                                {
+                                    tracing::warn!(
+                                        input = input.source.name(),
+                                        "input.backpressure"
+                                    );
+                                    last_bp_warn = Some(Instant::now());
+                                }
+                                metrics.inc_backpressure_stall();
+                                if tx.blocking_send(item).is_err() {
+                                    break 'io_loop;
+                                }
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => break 'io_loop,
                         }
                     }
                     InputEvent::Rotated { .. } => {
@@ -243,9 +228,12 @@ fn io_worker_loop(
             }
         }
 
+        let safe_batch_target_bytes = batch_target_bytes.max(1);
         let timeout_elapsed = buffered_since.is_some_and(|t| t.elapsed() >= batch_timeout);
-        let flush_by_size = input.buf.len() >= batch_target_bytes.max(1) && !input.buf.is_empty();
-        if should_flush_buffer(input.buf.len(), batch_target_bytes, timeout_elapsed) {
+        let flush_by_size = input.buf.len() >= safe_batch_target_bytes;
+        let flush_by_timeout = !input.buf.is_empty() && timeout_elapsed;
+
+        if flush_by_size || flush_by_timeout {
             if flush_by_size {
                 metrics.inc_flush_by_size();
             } else {
@@ -264,8 +252,19 @@ fn io_worker_loop(
             // Try non-blocking first; if full, log backpressure and block.
             // Shutdown awareness comes from the channel-close cascade: when
             // the CPU worker exits, it drops its rx, so blocking_send returns Err.
-            if !send_io_work_item(&tx, chunk, input.source.name(), &metrics, &mut last_bp_warn) {
-                break;
+            match tx.try_send(chunk) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(chunk)) => {
+                    if last_bp_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
+                        tracing::warn!(input = input.source.name(), "input.backpressure");
+                        last_bp_warn = Some(Instant::now());
+                    }
+                    metrics.inc_backpressure_stall();
+                    if tx.blocking_send(chunk).is_err() {
+                        break;
+                    }
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
             }
             buffered_since = None;
         }
@@ -513,17 +512,6 @@ impl InputPipelineManager {
 #[cfg(all(test, not(feature = "turmoil")))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn should_flush_buffer_only_when_non_empty() {
-        assert!(!should_flush_buffer(0, 1024, false));
-        assert!(!should_flush_buffer(0, 1024, true));
-        assert!(!should_flush_buffer(0, 0, true));
-
-        assert!(!should_flush_buffer(1, 1024, false));
-        assert!(should_flush_buffer(1, 1024, true));
-        assert!(should_flush_buffer(1024, 1024, false));
-    }
 
     // --- InputPipelineManager integration tests ---
     // These test the full split pipeline via from_config + run, so they

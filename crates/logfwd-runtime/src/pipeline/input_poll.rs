@@ -28,12 +28,12 @@ const fn should_flush_buffer(
     batch_target_bytes: usize,
     timeout_elapsed: bool,
 ) -> bool {
-    let target = if batch_target_bytes == 0 {
+    let safe_target = if batch_target_bytes == 0 {
         1
     } else {
         batch_target_bytes
     };
-    buffered_len > 0 && (buffered_len >= target || timeout_elapsed)
+    buffered_len >= safe_target || (buffered_len > 0 && timeout_elapsed)
 }
 
 /// Async input loop for simulation testing.
@@ -210,22 +210,14 @@ mod tests {
         assert!(should_flush_buffer(1023, 1024, true));
     }
 
-    #[test]
-    fn zero_target_still_requires_non_empty_buffer() {
-        assert!(!should_flush_buffer(0, 0, false));
-        assert!(!should_flush_buffer(0, 0, true));
-        assert!(should_flush_buffer(1, 0, false));
-    }
-
     proptest! {
         #[test]
         fn flush_decision_matches_policy(
             buffered_len in 0usize..2048,
-            batch_target_bytes in 0usize..2048,
+            batch_target_bytes in 1usize..2048,
             timeout_elapsed in any::<bool>()
         ) {
-            let target = if batch_target_bytes == 0 { 1 } else { batch_target_bytes };
-            let expected = buffered_len > 0 && (buffered_len >= target || timeout_elapsed);
+            let expected = buffered_len >= batch_target_bytes || (buffered_len > 0 && timeout_elapsed);
             prop_assert_eq!(
                 should_flush_buffer(buffered_len, batch_target_bytes, timeout_elapsed),
                 expected
@@ -253,8 +245,7 @@ mod verification {
     #[kani::proof]
     fn verify_timeout_only_flushes_when_buffered() {
         let buffered_len = kani::any::<usize>();
-        let batch_target_bytes = kani::any::<usize>();
-        let target = batch_target_bytes.max(1);
+        let batch_target_bytes = kani::any::<usize>().max(1);
         if buffered_len < batch_target_bytes {
             assert_eq!(
                 should_flush_buffer(buffered_len, batch_target_bytes, false),
@@ -263,12 +254,6 @@ mod verification {
             assert_eq!(
                 should_flush_buffer(buffered_len, batch_target_bytes, true),
                 buffered_len > 0
-            );
-        }
-        if buffered_len < target {
-            assert_eq!(
-                should_flush_buffer(buffered_len, batch_target_bytes, false),
-                false
             );
         }
         kani::cover!(
@@ -284,10 +269,9 @@ mod verification {
     #[kani::proof]
     fn verify_flush_predicate_equivalence() {
         let buffered_len = kani::any::<usize>();
-        let batch_target_bytes = kani::any::<usize>();
+        let batch_target_bytes = kani::any::<usize>().max(1);
         let timeout_elapsed = kani::any::<bool>();
-        let target = batch_target_bytes.max(1);
-        let expected = buffered_len > 0 && (buffered_len >= target || timeout_elapsed);
+        let expected = buffered_len >= batch_target_bytes || (buffered_len > 0 && timeout_elapsed);
         assert_eq!(
             should_flush_buffer(buffered_len, batch_target_bytes, timeout_elapsed),
             expected

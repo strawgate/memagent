@@ -599,57 +599,31 @@ fn build_tracer_provider(
 }
 
 fn redact_url(url: &str) -> String {
-    let (scheme, authority_and_tail) = match url.split_once("://") {
-        Some((scheme, rest)) => (Some(scheme), rest),
-        None => (None, url),
+    let (scheme, rest) = if let Some(i) = url.find("://") {
+        (&url[..i], &url[i + 3..])
+    } else {
+        ("", url)
     };
 
-    let authority = authority_and_tail
-        .split_once(['/', '?', '#'])
-        .map_or(authority_and_tail, |(head, _)| head);
-    let (had_userinfo, host) = match authority.rsplit_once('@') {
-        Some((_, host)) => (true, host),
-        None => (false, authority),
-    };
-
-    if host.is_empty() && !had_userinfo {
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let (has_userinfo, host) = authority
+        .rsplit_once('@')
+        .map_or((false, authority), |(_, host)| (true, host));
+    if host.is_empty() {
+        if has_userinfo {
+            return if scheme.is_empty() {
+                String::new()
+            } else {
+                format!("{scheme}://")
+            };
+        }
         return url.to_string();
     }
-
-    match scheme {
-        Some(scheme) => format!("{scheme}://{host}"),
-        None => host.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::redact_url;
-
-    #[test]
-    fn redact_url_strips_path_and_credentials() {
-        assert_eq!(
-            redact_url("http://user:pass@example.com:4318/v1/traces?api_key=secret"),
-            "http://example.com:4318"
-        );
-    }
-
-    #[test]
-    fn redact_url_keeps_host_for_no_scheme_endpoint() {
-        assert_eq!(
-            redact_url("collector.local:4318/v1/traces"),
-            "collector.local:4318"
-        );
-    }
-
-    #[test]
-    fn redact_url_returns_original_for_hostless_value() {
-        assert_eq!(redact_url("https:///v1/traces"), "https:///v1/traces");
-    }
-
-    #[test]
-    fn redact_url_strips_credentials_when_host_is_empty() {
-        assert_eq!(redact_url("http://user:pass@/path"), "http://");
+    if scheme.is_empty() {
+        host.to_string()
+    } else {
+        format!("{scheme}://{host}")
     }
 }
 
@@ -699,5 +673,44 @@ fn style(use_color: bool, color: &'static str, bold: &'static str) -> &'static s
         }
     } else {
         ""
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_url;
+
+    #[test]
+    fn redact_url_handles_urls_without_scheme() {
+        assert_eq!(
+            redact_url("collector.local:4318/v1/traces"),
+            "collector.local:4318"
+        );
+    }
+
+    #[test]
+    fn redact_url_uses_last_at_in_userinfo() {
+        assert_eq!(
+            redact_url("https://user:pa@ss@example.com/v1/traces"),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn redact_url_keeps_original_when_host_is_empty() {
+        assert_eq!(redact_url("https:///v1/traces"), "https:///v1/traces");
+    }
+
+    #[test]
+    fn redact_url_does_not_treat_query_at_as_userinfo() {
+        assert_eq!(
+            redact_url("https://example.com/path?email=user@domain.com"),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn redact_url_redacts_hostless_userinfo() {
+        assert_eq!(redact_url("http://user:pass@/v1/traces"), "http://");
     }
 }

@@ -62,37 +62,6 @@ pub(crate) fn dispatch_step(states: &[ChannelState], max_workers: usize) -> Disp
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{ChannelState, DispatchOutcome, dispatch_step};
-
-    #[test]
-    fn dispatch_step_prefers_first_available_worker() {
-        let states = [
-            ChannelState::Full,
-            ChannelState::HasSpace,
-            ChannelState::HasSpace,
-        ];
-        assert_eq!(dispatch_step(&states, 3), DispatchOutcome::SentToIndex(1));
-    }
-
-    #[test]
-    fn dispatch_step_ignores_closed_workers_when_counting_capacity() {
-        let states = [ChannelState::Closed, ChannelState::Full];
-        // Active workers = 1 (< max), so we should spawn instead of waiting.
-        assert_eq!(dispatch_step(&states, 2), DispatchOutcome::SpawnNew);
-    }
-
-    #[test]
-    fn dispatch_step_waits_when_every_active_worker_is_full_at_capacity() {
-        // Both workers are Full and active == max_workers == 2, so backpressure
-        // must kick in. states.len() <= max_workers satisfies the Kani-proven
-        // precondition.
-        let states = [ChannelState::Full, ChannelState::Full];
-        assert_eq!(dispatch_step(&states, 2), DispatchOutcome::WaitOnFront);
-    }
-}
-
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;

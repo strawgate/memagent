@@ -13,7 +13,6 @@ use logfwd_output::sink::{OutputHealthEvent, SendResult, Sink};
 
 use super::pool::{OutputHealthTracker, WorkerConfig, WorkerSlotCleanup};
 use super::types::{AckItem, DeliveryOutcome, WorkItem, WorkerMsg, bound_rejection_reason};
-use super::{emit_delivery_outcome, transition_outcome_for_delivery};
 
 // Worker task
 // ---------------------------------------------------------------------------
@@ -37,7 +36,6 @@ pub(super) async fn worker_task(
         max_retry_delay,
         metrics,
         output_health,
-        transition_events,
     } = cfg;
     let _slot_cleanup = WorkerSlotCleanup {
         output_health: Arc::clone(&output_health),
@@ -112,13 +110,6 @@ pub(super) async fn worker_task(
                                 (DeliveryOutcome::InternalFailure, 0, 0)
                             }
                         };
-                        emit_delivery_outcome(
-                            &transition_events,
-                            batch_id,
-                            &tickets,
-                            Some(id),
-                            transition_outcome_for_delivery(&outcome),
-                        );
                         output_span.record("retries", retries);
                         output_span.record("send_ns", send_latency_ns);
                         let output_ns = submitted_at.elapsed().as_nanos() as u64 - queue_wait_ns;
@@ -226,14 +217,19 @@ pub(super) async fn process_item(
 ) -> (DeliveryOutcome, u64, usize) {
     sink.begin_batch();
 
-    const MAX_RETRIES: usize = 3; // 1 initial + 3 retries = 4 total attempts
+    // Retry budget for transient IoError failures. When exhausted the worker
+    // reports RetryExhausted so the pipeline can hold tickets and initiate an
+    // orderly shutdown (checkpoints do not advance past undelivered data).
+    // RetryAfter (server-specified backoff) resets the cycle and retries
+    // indefinitely until cancellation since the server explicitly asked to wait.
+    const RETRY_BUDGET: usize = 3;
     const BATCH_TIMEOUT_SECS: u64 = 60;
 
     let mut backoff = ExponentialBuilder::default()
         .with_min_delay(Duration::from_millis(100))
         .with_max_delay(max_retry_delay)
         .with_factor(2.0)
-        .with_max_times(MAX_RETRIES)
+        .with_max_times(RETRY_BUDGET)
         .with_jitter()
         .build();
 
@@ -287,17 +283,18 @@ pub(super) async fn process_item(
                 // Server specified delay — consume a backoff slot but use
                 // the server's delay (capped at max_retry_delay).
                 if backoff.next().is_none() {
-                    tracing::error!(
+                    tracing::warn!(
                         worker_id,
-                        max_retries = MAX_RETRIES,
-                        "worker_pool: RetryAfter exceeded max retries"
+                        retry_budget = RETRY_BUDGET,
+                        "worker_pool: retry budget exhausted under RetryAfter; continuing until cancellation"
                     );
-                    output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
-                    return (
-                        DeliveryOutcome::RetryExhausted,
-                        send_latency_ns,
-                        retries_count,
-                    );
+                    backoff = ExponentialBuilder::default()
+                        .with_min_delay(Duration::from_millis(100))
+                        .with_max_delay(max_retry_delay)
+                        .with_factor(2.0)
+                        .with_max_times(RETRY_BUDGET)
+                        .with_jitter()
+                        .build();
                 }
                 retries_count += 1;
                 let sleep_for = retry_dur.min(max_retry_delay);
@@ -334,9 +331,9 @@ pub(super) async fn process_item(
                 None => {
                     tracing::error!(
                         worker_id,
-                        max_retries = MAX_RETRIES,
+                        retry_budget = RETRY_BUDGET,
                         error = %e,
-                        "worker_pool: gave up after retries"
+                        "worker_pool: retry budget exhausted on transient error"
                     );
                     output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
                     return (
@@ -377,7 +374,6 @@ mod tests {
     use logfwd_output::BatchMetadata;
     use logfwd_output::sink::{SendResult, Sink};
 
-    use crate::pipeline::transition::TransitionEventEmitterHandle;
     use crate::worker_pool::pool::OutputHealthTracker;
 
     use super::super::pool::WorkerConfig;
@@ -487,7 +483,6 @@ mod tests {
             max_retry_delay: Duration::from_millis(10),
             metrics: make_metrics(),
             output_health: Arc::new(OutputHealthTracker::new(vec![])),
-            transition_events: TransitionEventEmitterHandle::noop(),
         };
 
         let join = tokio::spawn(worker_task(0, Box::new(OkSink), rx, ack_tx, cfg));
