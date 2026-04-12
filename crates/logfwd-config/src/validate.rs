@@ -210,8 +210,24 @@ impl Config {
                         | InputType::WindowsEbpfSensor => {}
                         InputType::Journald => {
                             if let Some(jd) = &input.journald {
+                                // journal_directory and journal_namespace are mutually exclusive
+                                // in the native backend (directory opens a specific path, namespace
+                                // opens a named journal).
+                                if jd.journal_directory.is_some() && jd.journal_namespace.is_some()
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': 'journal_directory' and 'journal_namespace' cannot both be set"
+                                    )));
+                                }
+
+                                let norm_excludes: Vec<String> = jd
+                                    .exclude_units
+                                    .iter()
+                                    .map(|u| normalize_unit_name(u))
+                                    .collect();
                                 for unit in &jd.include_units {
-                                    if jd.exclude_units.contains(unit) {
+                                    let normalized = normalize_unit_name(unit);
+                                    if norm_excludes.contains(&normalized) {
                                         return Err(ConfigError::Validation(format!(
                                             "pipeline '{name}' input '{label}': unit '{unit}' appears in both include_units and exclude_units"
                                         )));
@@ -878,6 +894,14 @@ impl Config {
                                     "pipeline '{name}' input '{label}': 'adaptive_fast_polls_max' is not supported for journald inputs"
                                 )));
                             }
+                            // Journald always produces JSON; reject other formats at config time.
+                            if let Some(fmt) = &input.format {
+                                if !matches!(fmt, Format::Json) {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': journald input only supports format: json (got {fmt:?})"
+                                    )));
+                                }
+                            }
                         }
                     }
 
@@ -1266,7 +1290,10 @@ impl Config {
             Ok(())
         } else if all_errors.len() == 1 {
             Err(ConfigError::Validation(
-                all_errors.into_iter().next().expect("checked len == 1"),
+                all_errors
+                    .into_iter()
+                    .next()
+                    .expect("guarded by len == 1 check"),
             ))
         } else {
             Err(ConfigError::Validation(format!(
@@ -1314,6 +1341,18 @@ fn normalize_path_lexically(path: &Path) -> std::path::PathBuf {
         std::path::PathBuf::from(".")
     } else {
         out
+    }
+}
+
+/// Normalize a systemd unit name for comparison.
+///
+/// Unit names without a `.` suffix get `.service` appended, matching
+/// runtime behavior (e.g. `sshd` → `sshd.service`).
+fn normalize_unit_name(name: &str) -> String {
+    if name.contains('.') {
+        name.to_string()
+    } else {
+        format!("{name}.service")
     }
 }
 

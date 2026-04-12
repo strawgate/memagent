@@ -245,6 +245,11 @@ pub fn write_row_json(
             continue;
         };
         let Some(arr) = get_array(batch, v) else {
+            debug_assert!(
+                false,
+                "non-null variant but array not found for field {}",
+                col.field_name
+            );
             continue;
         };
 
