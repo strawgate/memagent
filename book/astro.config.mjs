@@ -2,6 +2,8 @@ import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 
 export default defineConfig({
+  site: 'https://strawgate.github.io',
+  base: '/memagent',
   integrations: [
     starlight({
       title: "logfwd",
